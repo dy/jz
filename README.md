@@ -1,6 +1,6 @@
 # jasm ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
 
-_Jasm_ is minimal JS subset for numeric calc purposes, compiling AOT into minimal WASM.
+_Jasm_ is minimal JS -> WASM compiler. 
 
 ## Reference
 
@@ -29,33 +29,36 @@ _Jasm_ is minimal JS subset for numeric calc purposes, compiling AOT into minima
 * `try {...} catch (e) {...}`
 * `export`
 
-## Why jasm?
+## Why?
 
-Originally made for purpose of floatbeats/bytebeats.
+It is minimal natural JS wrapper over WASM.
+Originally made for numberic purposes, like floatbeats/bytebeats.
 
-It aims to have minimal set of language features:
+It aims to have minimal set of features:
   * No classes – use functional style/closures
   * No old syntax – use modern ES5+
   * No null – that is one of [regrets](https://github.com/DavidBruant/ECMAScript-regrets)
-  * No objects (for now) – use arrays
+  * No computed props - use structs
   * No ASI - keep syntax ordered
   * No async – keep code flat, fast & simple
 
 It aims to:
-  * be light – to embed on websites
+  * be light – embeddable on websites
   * be fast – compile wasm faster than `eval` parses string
   * produce compact wasm – no runtime
-  * map exports 1:1 to JS – that allows frictionless integration
+  * directly map exports to JS – frictionless integration
 
 
 ## Why not [porf](https://github.com/CanadaHonk/porffor)?
 
-Porffor? Porrfor? Porforr? It is great. But it has TC39 compatibility as a goal, due to that it becomes heavier and slower.
-Also it minimizes use of WASM features, which makes export to JS not direct.
+Porrfor? Porffor? Porforr is great. But it has TC39 compatibility as a goal, due to that it becomes heavier and slower.
+Also it minimizes use of WASM features, which makes JS exports indirect.
 
+<!--
 ## Why not [piezo](https://github.com/dy/piezo)?
 
 Piezo offers extra features like groups, pipes, units, ranges and extra operators.
-It might be solid niche language, but  takes time for R&D, whereas jasm design decisions are clear.
+It might become solid niche language, but  takes time for R&D, whereas jasm design decisions are clear.
+-->
 
 <p align=center><a href="https://github.com/krsnzd/license/">🕉</a></p>

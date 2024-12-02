@@ -1,4 +1,4 @@
-## [ ] Name -> jiva?
+## [ ] Name -> jasm
 
   * jzu
   * jezu
@@ -20,12 +20,19 @@
   * sruti
   * jasm?
     + wasm + js
+    - taken, hard discussion
+  * jazm
+    + like jasm, but with reference to zz
+    + jazz
   * wasc
     + wasm compiler
     + wasm script
   * floatscript
   * numscript
   * bytescript
+  * mela
+    + assembly
+    ~ has to do with language, not compiler
 
 ## [ ] Applications?
 
