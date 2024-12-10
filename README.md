@@ -22,12 +22,12 @@ _Jasm_ is minimal JS -> WASM compiler.
 * `a ||= b`, `a &&= b`, `a ??= b`
 * `[a, b]`, `...a` (no objects for now)
 * `let a, b; const c;` (no var)
-* `(a, b) => c`
+* `(a, b) => c` (no function)
 * `// foo`, `/* bar */`
 * `if (a) {...} else if (b) {...} else {}`
 * `for (a;b;c) {...}`, `while (a) {...}`
 * `try {...} catch (e) {...}`
-* `export`
+* `import`, `export`
 
 ## Why?
 
