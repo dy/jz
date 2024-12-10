@@ -6,7 +6,7 @@ _Jasm_ is minimal JS -> WASM compiler.
 
 * `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0b357`
 * `"abc"`, `'abc'`
-+ `true`, `false`, `undefined`, `NaN`, `Infinity`, ~~`null`~~
+* `true`, `false`, `undefined`, `NaN`, `Infinity`, ~~`null`~~
 * `a.b`, `a[b]`, `a(b)`
 * `+a`, `-a`, `a + b`, `a - b`
 * `a * b`, `a / b`, `a % b`, `a ** b`
