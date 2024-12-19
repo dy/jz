@@ -1,6 +1,6 @@
-# jasm ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
+# jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
 
-_Jasm_ is minimal JS -> WASM compiler. 
+_JZ_ (javascript zero) is minimal JS -> WASM compiler.
 
 ## Reference
 
@@ -31,27 +31,28 @@ _Jasm_ is minimal JS -> WASM compiler.
 
 ## Why?
 
-It is minimal natural JS wrapper over WASM.
-Originally made for numberic purposes, like floatbeats/bytebeats.
+Initially conceived for numeric purposes, such as floatbeats/bytebeats.
+Inspired by [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+The idea is minimal JS surface expressed through WASM.
 
-It aims to have minimal set of features:
+Minimal set of features:
   * No classes – use functional style/closures
   * No old syntax – use modern ES5+
-  * No null – that is one of [regrets](https://github.com/DavidBruant/ECMAScript-regrets)
+  * No `null` – that is one of [regrets](https://github.com/DavidBruant/ECMAScript-regrets)
   * No computed props - use structs
-  * No ASI - keep syntax ordered
-  * No async – keep code flat, fast & simple
+  * No autosemicolons - keep syntax ordered
+  * No async – keep code plain & simple
 
-It aims to:
-  * be light – embeddable on websites
-  * be fast – compile wasm faster than `eval` parses string
-  * produce compact wasm – no runtime
-  * directly map exports to JS – frictionless integration
+Qualifications:
+  * light – embeddable on websites
+  * fast – compile wasm faster than `eval` parses string
+  * minimal WASM output – no runtime, heap or wrappers
+  * direct exports to JS – frictionless integration
 
 
 ## Why not [porf](https://github.com/CanadaHonk/porffor)?
 
-Porrfor? Porffor? Porforr is great. But it has TC39 compatibility as a goal, due to that it becomes heavier and slower.
+Porrfor? Porffor? Porforr is great. But it has some TC39 compatibility as a goal, which is unnecessary baggage.
 Also it minimizes use of WASM features, which makes JS exports indirect.
 
 <!--

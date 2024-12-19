@@ -17,6 +17,8 @@
     - taken
   * subji
     + sub-ji
+    + sub js
+  * subj
   * sruti
   * jasm?
     + wasm + js
@@ -24,6 +26,7 @@
   * jazm
     + like jasm, but with reference to zz
     + jazz
+  * tasm, sasm, zazm
   * wasc
     + wasm compiler
     + wasm script
@@ -33,6 +36,13 @@
   * mela
     + assembly
     ~ has to do with language, not compiler
+  * @dy/spee
+  * jazzz
+  * wazz
+  * jz
+    + java zcript
+    + js zero
+    + jazz
 
 ## [ ] Applications?
 
