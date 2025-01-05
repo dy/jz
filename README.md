@@ -35,7 +35,7 @@ Initially conceived for floatbeats/bytebeats purposes.
 Inspired by [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 The aim is minimal modern JS subset expressable through WASM without hacks.
 
-* No classes – use functional style/closures.
+* No classes/prototypes – use functional style/closures.
 * No old syntax – use modern ES5+.
 * No `null` – that is one of [regrets](https://github.com/DavidBruant/ECMAScript-regrets).
 * No computed props - objects are structs.
