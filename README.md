@@ -52,8 +52,8 @@ The aim is minimal modern JS subset expressable through WASM without hacks.
 
 ## Why not [porf](https://github.com/CanadaHonk/porffor)?
 
-Porrfor? Porffor? Porforr is great. But it has some TC39 compatibility as a goal, which makes it heavy
-Also it minimizes use of WASM features, which makes JS exports indirect.
+Porrfor? Porffor? Porforr is great. But it has some TC39 compatibility as a goal, which makes it heavy.
+Also it minimizes use of WASM features, which encumbers JS exports.
 
 ## Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 
