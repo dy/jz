@@ -18,6 +18,8 @@
 
 * web-audio-api
 * color-space
+* zzfx
+* floatbeats
 
 ## Playground
 
