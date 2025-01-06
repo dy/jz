@@ -1,12 +1,12 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
 
-_JZ_ is JS subset compiling to WASM.
+_JZ_ is subset of JS compiling to WASM.
 
 ## Reference
 
-* `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0b357`
+* `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0o357`
 * `"abc"`, `'abc'`
-* `true`, `false`, `undefined`, `NaN`, `Infinity`, ~~`null`~~
+* `true`, `false`, `null`, `NaN`, `Infinity`, ~~`undefined`~~
 * `a.b`, `a[b]`, `a(b)`
 * `+a`, `-a`, `a + b`, `a - b`
 * `a * b`, `a / b`, `a % b`, `a ** b`
