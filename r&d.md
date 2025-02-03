@@ -1,4 +1,4 @@
-## [ ] Name -> jasm
+## [x] Name -> jz
 
   * jzu
   * jezu
