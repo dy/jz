@@ -64,15 +64,13 @@ _Coming soon_.
 
 ## Why?
 
-JS has grown complex with legacy features (e.g., var, OOP) and niche additions (e.g., generators).<br>
-JZ focuses on a minimal, modern, stripped to essentials subset that compiles cleanly to WebAssembly — offering speed, portability, and simplicity without sacrificing power.
-
-It is inspired by floatbeats/bytebeats, [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+JS has grown complex with legacy features (var, OOP) and niche additions (generators, async loops, etc).<br>
+JZ is inspired by floatbeats/bytebeats, it focuses on a minimal, modern, essential subset that ties to WebAssembly features.<br>
 
 * No classes/prototypes – use functions & closures.
 * No old syntax – use modern ES5+.
 * No [regrets](https://github.com/DavidBruant/ECMAScript-regrets) – drop `undefined`.
-* No computed string props - objects are structs.
+* No computed props - objects are structs.
 * No autosemicolons - keep syntax ordered.
 * No async – keep code plain & simple.
 
@@ -81,11 +79,11 @@ It is inspired by floatbeats/bytebeats, [porf](https://github.com/CanadaHonk/por
 * _lightweight_ – embed anywhere, from websites to microcontrollers.
 * _fast_ – compiles to WASM faster than `eval` parses.
 * _tiny WASM output_ – no runtime, no heap, no wrappers.
-* _seamless JS integration_ – export / import directly.
+* _seamless JS integration_ – export / import, same func signatures.
 
 ### Why not [porf](https://github.com/CanadaHonk/porffor)?
 
-Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ prioritizes small, WASM-first feature set and flexibility.
+Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small and flexible.
 
 ### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 
@@ -94,11 +92,12 @@ AssemblyScript is built on TypeScript, while JZ stays pure JS.
 ### Why not [piezo](https://github.com/dy/piezo)?
 
 Piezo offers extra features like groups, pipes, units, ranges and extra operators.
-It might become solid niche language, but takes time for R&D, and jz is possible first step for it.
+It might become a solid niche language, but takes time for R&D.<br>
+JZ is possible first step for it.
 
 ### Why _jz_?
 
-JZ stands for JavasSript Zero – a return to core, stripped to essentials. (Also is has jazzy vibe).
+JZ stands for JavasSript Zero – a return to core, stripped to essentials. Also jazzy vibe.
 
 <!--
 ## Who's using jz?
