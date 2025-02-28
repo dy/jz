@@ -1,7 +1,7 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
 
-_JZ_ is minimal modern functional JS subset that compiles to WebAssembly (WASM).
-Think of it as _JavaScript to WASM compiler_, stripped to its essentials.
+_JZ_ is minimal modern functional JS subset that compiles to WebAssembly (WASM).<br>
+Think of it as tiny _JavaScript to WASM compiler_.
 <!-- By the time it takes new Function to parse, jz compiles WASM -->
 
 ## Reference
@@ -18,8 +18,8 @@ Think of it as _JavaScript to WASM compiler_, stripped to its essentials.
 * Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`, `a **= b`, `a <<= b`, `a >>= b`, `a >>>= b`
 * Logical Assignment: `a ||= b`, `a &&= b`, `a ??= b`
 * Arrays: `[a, b]`, `...a` (no objects yet)
-* Declarations: `let a, b; const c;` (no `var`)
-* Functions: `(a, b) => c` (no `function`)
+* Declarations: `let a, b`, `const c` (no `var`)
+* Functions: `(a, b) => c` (no `function` keyword)
 * Comments: `// foo`, `/* bar */`
 * Control Flow: `if (a) {...} else if (b) {...} else {}`, `for (a;b;c) {...}`, `while (a) {...}`
 * Exceptions: `try {...} catch (e) {...}`
@@ -30,10 +30,14 @@ Think of it as _JavaScript to WASM compiler_, stripped to its essentials.
 ```js
 import jz from 'jz'
 
+// compile JS (function multiplying 2 numbers) - it returns WASM buffer
 const buf = jz(`export x = (a, b) => a * b`)
+
+// compile WASM module and create an instance
 const mod = new WebAssembly.Module(buf)
 const { exports: { x } } = new WebAssembly.Instance(mod, { ...imports })
 
+// use exported WASM function
 x(2,3) === 6
 ```
 
@@ -48,12 +52,22 @@ _Coming soon:_ CLI with jz a.js → a.wasm and batch compilation.
 `jz *.jz` - compiles all files in a folder into wasm.
  -->
 
+## Examples
+
+_Coming soon_.
+
+<!--
+* [ ] Microcontroller program
+* [ ] Floatbeat
+* [ ] Embed into website
+ -->
 
 ## Why?
 
-JS is bloated with niche features (generators, async loops), redundant syntax and legacy (var, OOP). Also it's volatile.<br>
-JZ is nspired by floatbeats/bytebeats, [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
-The aim is minimal modern JS subset expressable through WASM without hacks.
+JS has grown complex with legacy features (e.g., var, OOP) and niche additions (e.g., generators).<br>
+JZ focuses on a minimal, modern, stripped to essentials subset that compiles cleanly to WebAssembly — offering speed, portability, and simplicity without sacrificing power.
+
+It is inspired by floatbeats/bytebeats, [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
 * No classes/prototypes – use functions & closures.
 * No old syntax – use modern ES5+.
@@ -65,17 +79,17 @@ The aim is minimal modern JS subset expressable through WASM without hacks.
 ### Goals
 
 * _lightweight_ – embed anywhere, from websites to microcontrollers.
-* _fast_ – compile wasm quicker than `eval` parses.
+* _fast_ – compiles to WASM faster than `eval` parses.
 * _tiny WASM output_ – no runtime, no heap, no wrappers.
 * _seamless JS integration_ – export / import directly.
 
 ### Why not [porf](https://github.com/CanadaHonk/porffor)?
 
-~~Porrfor~~ ~~Porforr~~ Porffor is brilliant, but tied to TC39 and hesitant on full WASM.
+Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ prioritizes small, WASM-first feature set and flexibility.
 
 ### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 
-It's tied to TypeScript, JZ stays pure JS.
+AssemblyScript is built on TypeScript, while JZ stays pure JS.
 
 ### Why not [piezo](https://github.com/dy/piezo)?
 
@@ -84,7 +98,7 @@ It might become solid niche language, but takes time for R&D, and jz is possible
 
 ### Why _jz_?
 
-Javascript zero. I also like jazz.
+JZ stands for JavasSript Zero – a return to core, stripped to essentials. (Also is has jazzy vibe).
 
 <!--
 ## Who's using jz?
