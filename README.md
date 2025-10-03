@@ -91,9 +91,7 @@ AssemblyScript is built on TypeScript, while JZ stays pure JS.
 
 ### Why not [piezo](https://github.com/dy/piezo)?
 
-Piezo offers extra features like groups, pipes, units, ranges and extra operators.
-It might become a solid niche language, but takes time for R&D.<br>
-JZ is possible first step for it.
+Piezo is experimental and will take time to solidify. JZ is possible first step for it.
 
 ### Why _jz_?
 
