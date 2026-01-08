@@ -1,14 +1,31 @@
 {
-  "name": "jayscript",
+  "name": "jz",
   "version": "0.0.0",
-  "description": "Jiv jago",
+  "description": "Minimal modern functional JS subset that compiles to WebAssembly",
   "main": "index.js",
+  "type": "module",
+  "bin": {
+    "jz": "cli.js"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test.js",
+    "dev": "node cli.js",
+    "build": "node cli.js compile examples/*.js",
+    "bench": "node bench.js"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^9.0.0"
-  }
+    "subscript": "^9.0.0",
+    "watr": "^3.2.1",
+    "tst": "^4.0.0"
+  },
+  "keywords": [
+    "javascript",
+    "webassembly",
+    "compiler",
+    "functional",
+    "minimal",
+    "wasm"
+  ]
 }
