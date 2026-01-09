@@ -2,72 +2,68 @@ import { parse as justin } from 'subscript/justin'
 
 export const parse = justin
 
-// Normalize subscript/justin AST to our internal form
+// Normalize subscript/justin AST for codegen
+// Input format: [op, ...args] where [, value] is literal, string is identifier
+// Output: same format but with clean ops for codegen
 export function normalize(ast) {
-  if (ast === null) return { type: 'literal', value: 0 }
-  if (typeof ast === 'number') return { type: 'literal', value: ast }
-  if (typeof ast === 'boolean') return { type: 'literal', value: ast }
+  // Placeholder null in AST → 0 literal
+  if (ast === null) return [, 0]
 
+  // Numbers stay as literals
+  if (typeof ast === 'number') return [, ast]
+  if (typeof ast === 'boolean') return [, ast]
+
+  // Strings are identifiers, but handle null/undefined keywords
+  // (subscript sometimes leaves these as strings after operators)
   if (typeof ast === 'string') {
-    if (ast === 'true') return { type: 'literal', value: true }
-    if (ast === 'false') return { type: 'literal', value: false }
-    return { type: 'identifier', name: ast }
-  }
-
-  if (ast?.type === 'call') {
-    return { type: 'call', fn: normalize(ast.fn), args: (ast.args || []).map(normalize) }
+    if (ast === 'null') return [, null]
+    if (ast === 'undefined') return [, undefined]
+    return ast
   }
 
   if (!Array.isArray(ast)) throw new Error(`Unsupported AST: ${JSON.stringify(ast)}`)
 
   const [op, ...args] = ast
 
-  // Handle [null, value] or [undefined, value] wrapper for literals
-  if ((op === null || op === undefined) && args.length === 1) {
-    return { type: 'literal', value: args[0] }
+  // Literal [, value] - includes null, undefined, NaN from justin
+  if (op === undefined || op === null) {
+    return [, args[0]]
   }
 
-  // Disambiguate unary +/-
-  const operator = (op === '+' || op === '-') && args.length === 1 ? 'u' + op : op
+  // Disambiguate unary +/- from binary
+  const normOp = (op === '+' || op === '-') && args.length === 1 ? 'u' + op : op
 
   // Grouping: unwrap single-arg ()
   if (op === '()' && args.length === 1) return normalize(args[0])
 
-  // Call: () with multiple args
+  // Call: () with function + args
   if (op === '()') {
     const fn = normalize(args[0])
-    // Handle no-arg call: fn() parses as ["()", "fn", null]
+    // No-arg call: fn() parses as ["()", "fn", null]
     if (args.length === 2 && args[1] === null) {
-      return { type: 'call', fn, args: [] }
+      return ['()', fn]
     }
-    // If the second arg is a comma expression, flatten it into separate args
+    // Comma-separated args: ["()", fn, [",", a, b, c]]
     if (args.length === 2 && Array.isArray(args[1]) && args[1][0] === ',') {
-      return { type: 'call', fn, args: args[1].slice(1).map(normalize) }
+      return ['()', fn, ...args[1].slice(1).map(normalize)]
     }
-    return { type: 'call', fn, args: args.slice(1).map(normalize) }
+    return ['()', fn, ...args.slice(1).map(normalize)]
   }
 
-  // Array literal or indexing: []
+  // Array literal vs indexing: []
   if (op === '[]') {
     if (args.length === 1) {
       // Array literal: [x, y, z]
       const inner = args[0]
       if (Array.isArray(inner) && inner[0] === ',') {
-        // Comma-separated elements
-        return { type: 'operator', operator: '[', args: inner.slice(1).map(normalize) }
-      } else {
-        // Single element array
-        return { type: 'operator', operator: '[', args: [normalize(inner)] }
+        return ['[', ...inner.slice(1).map(normalize)]
       }
-    } else if (args.length === 2) {
-      // Array indexing: arr[i]
-      return { type: 'index', array: normalize(args[0]), index: normalize(args[1]) }
+      return ['[', normalize(inner)]
     }
+    // Array indexing: arr[i]
+    return ['[]', normalize(args[0]), normalize(args[1])]
   }
 
-  // Member access
-  if (op === '.') return { type: 'member', object: normalize(args[0]), property: normalize(args[1]) }
-
-  // Operators (including ternary)
-  return { type: 'operator', operator, args: args.map(normalize) }
+  // All other operators
+  return [normOp, ...args.map(normalize)]
 }
