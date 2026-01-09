@@ -1,25 +1,19 @@
-import { JZOutput } from './src/output.js'
-
-const output = new JZOutput()
+import { compile as outputCompile, compileToWat, compileAndInstantiateFromBinary, createInterface } from './src/output.js'
 
 export function compile(code, options = {}) {
   const { format = 'binary' } = options
-  return format === 'wat' ? output.compileToWat(code, options) : output.compile(code, options)
-}
-
-export function compileToWat(code, options = {}) {
-  return output.compileToWat(code, options)
+  return format === 'wat' ? compileToWat(code, options) : outputCompile(code, options)
 }
 
 export async function instantiate(wasm, imports = {}) {
-  const instance = await output.compileAndInstantiateFromBinary(wasm, imports)
-  return output.createInterface(instance)
+  const instance = await compileAndInstantiateFromBinary(wasm, imports)
+  return createInterface(instance)
 }
 
-export async function evaluate(code) {
+export async function evaluate(code, t = 0) {
   const wasm = compile(code)
   const instance = await instantiate(wasm)
-  return instance.run()
+  return instance.run(t)
 }
 
 export default { compile, compileToWat, instantiate, evaluate }

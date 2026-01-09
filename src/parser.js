@@ -1,93 +1,73 @@
-import { parse as subscriptParse } from 'subscript'
+import { parse as justin } from 'subscript/justin'
 
-export const operators = {
-  '+': { precedence: 12, arity: 2 },
-  '-': { precedence: 12, arity: 2 },
-  '*': { precedence: 13, arity: 2 },
-  '/': { precedence: 13, arity: 2 },
-  '%': { precedence: 13, arity: 2 },
-  '**': { precedence: 14, arity: 2 },
-  
-  '==': { precedence: 9, arity: 2 },
-  '!=': { precedence: 9, arity: 2 },
-  '===': { precedence: 9, arity: 2 },
-  '!==': { precedence: 9, arity: 2 },
-  '<': { precedence: 10, arity: 2 },
-  '<=': { precedence: 10, arity: 2 },
-  '>': { precedence: 10, arity: 2 },
-  '>=': { precedence: 10, arity: 2 },
-  
-  '&&': { precedence: 5, arity: 2 },
-  '||': { precedence: 4, arity: 2 },
-  '??': { precedence: 3, arity: 2 },
-  
-  '!': { precedence: 15, arity: 1 },
-  '~': { precedence: 15, arity: 1 },
-  '+': { precedence: 15, arity: 1 },
-  '-': { precedence: 15, arity: 1 },
-  
-  '&': { precedence: 8, arity: 2 },
-  '^': { precedence: 7, arity: 2 },
-  '|': { precedence: 6, arity: 2 },
-  '<<': { precedence: 11, arity: 2 },
-  '>>': { precedence: 11, arity: 2 },
-  '>>>': { precedence: 11, arity: 2 }
-}
+export const parse = justin
 
-export function parse(code) {
-  return subscriptParse(code)
-}
-
-export function validate(ast) {
-  return true // TODO: Implement validation
-}
-
+// Normalize subscript/justin AST to our internal form
 export function normalize(ast) {
-  if (Array.isArray(ast)) {
-    const [operator, ...args] = ast
-    
-    if (operator === undefined) {
-      return { type: 'literal', value: args[0] }
-    }
-    
-    if (operators[operator]) {
-      const normalizedArgs = args.map(arg => normalize(arg))
-      return {
-        type: 'operator',
-        operator,
-        args: normalizedArgs,
-        precedence: operators[operator].precedence
-      }
-    }
-    
-    if (operator === '()') {
-      return {
-        type: 'call',
-        fn: normalize(args[0]),
-        args: args.slice(1).map(arg => normalize(arg))
-      }
-    }
-    
-    if (operator === '.') {
-      return {
-        type: 'member',
-        object: normalize(args[0]),
-        property: normalize(args[1])
-      }
-    }
-    
-    if (operator === '[]') {
-      return {
-        type: 'index',
-        array: normalize(args[0]),
-        index: normalize(args[1])
-      }
-    }
-  }
-  
+  if (ast === null) return { type: 'literal', value: 0 }
+  if (typeof ast === 'number') return { type: 'literal', value: ast }
+  if (typeof ast === 'boolean') return { type: 'literal', value: ast }
+
   if (typeof ast === 'string') {
+    if (ast === 'true') return { type: 'literal', value: true }
+    if (ast === 'false') return { type: 'literal', value: false }
     return { type: 'identifier', name: ast }
   }
-  
-  throw new Error(`Unsupported AST node: ${JSON.stringify(ast)}`)
+
+  if (ast?.type === 'call') {
+    return { type: 'call', fn: normalize(ast.fn), args: (ast.args || []).map(normalize) }
+  }
+
+  if (!Array.isArray(ast)) throw new Error(`Unsupported AST: ${JSON.stringify(ast)}`)
+
+  const [op, ...args] = ast
+
+  // Handle [null, value] or [undefined, value] wrapper for literals
+  if ((op === null || op === undefined) && args.length === 1) {
+    return { type: 'literal', value: args[0] }
+  }
+
+  // Disambiguate unary +/-
+  const operator = (op === '+' || op === '-') && args.length === 1 ? 'u' + op : op
+
+  // Grouping: unwrap single-arg ()
+  if (op === '()' && args.length === 1) return normalize(args[0])
+
+  // Call: () with multiple args
+  if (op === '()') {
+    const fn = normalize(args[0])
+    // Handle no-arg call: fn() parses as ["()", "fn", null]
+    if (args.length === 2 && args[1] === null) {
+      return { type: 'call', fn, args: [] }
+    }
+    // If the second arg is a comma expression, flatten it into separate args
+    if (args.length === 2 && Array.isArray(args[1]) && args[1][0] === ',') {
+      return { type: 'call', fn, args: args[1].slice(1).map(normalize) }
+    }
+    return { type: 'call', fn, args: args.slice(1).map(normalize) }
+  }
+
+  // Array literal or indexing: []
+  if (op === '[]') {
+    if (args.length === 1) {
+      // Array literal: [x, y, z]
+      const inner = args[0]
+      if (Array.isArray(inner) && inner[0] === ',') {
+        // Comma-separated elements
+        return { type: 'operator', operator: '[', args: inner.slice(1).map(normalize) }
+      } else {
+        // Single element array
+        return { type: 'operator', operator: '[', args: [normalize(inner)] }
+      }
+    } else if (args.length === 2) {
+      // Array indexing: arr[i]
+      return { type: 'index', array: normalize(args[0]), index: normalize(args[1]) }
+    }
+  }
+
+  // Member access
+  if (op === '.') return { type: 'member', object: normalize(args[0]), property: normalize(args[1]) }
+
+  // Operators (including ternary)
+  return { type: 'operator', operator, args: args.map(normalize) }
 }

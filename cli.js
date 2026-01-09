@@ -33,14 +33,14 @@ Options:
 
 async function main() {
   const args = process.argv.slice(2)
-  
+
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     showHelp()
     return
   }
 
   const command = args[0]
-  
+
   try {
     switch (command) {
       case 'compile':
@@ -60,7 +60,7 @@ async function main() {
 
 async function handleEvaluate(args) {
   const input = args.join(' ')
-  
+
   // Check if it's a file
   if (args.length === 1 && (args[0].endsWith('.wat') || args[0].endsWith('.js'))) {
     const code = readFileSync(args[0], 'utf8')
@@ -81,7 +81,7 @@ async function handleCompile(args) {
   const inputFile = args[0]
   let outputFile = 'out.wasm'
   let format = 'binary'
-  
+
   // Parse options
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') {
@@ -98,7 +98,7 @@ async function handleCompile(args) {
 
   const code = readFileSync(inputFile, 'utf8')
   const result = JZ.compile(code, { format })
-  
+
   if (format === 'binary') {
     writeFileSync(outputFile, result)
     console.log(`Compiled ${inputFile} to ${outputFile} (${result.byteLength} bytes)`)
@@ -115,7 +115,7 @@ async function handleRun(args) {
 
   const inputFile = args[0]
   const code = readFileSync(inputFile, 'utf8')
-  
+
   const result = await JZ.evaluate(code)
   console.log(result)
 }

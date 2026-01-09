@@ -69,4 +69,27 @@
     + only 2 condition checks overhead
     + can be handled on polyfill level
 
-## [ ]
+## [ ] Stdlib sources
+
+* [Metallic](https://github.com/jdh8/metallic)
+* [Piezo](https://github.com/dy/piezo/blob/main/src/stdlib.js)
+* [AssemblyScript](https://github.com/AssemblyScript/musl/tree/master)
+*
+
+## [ ] Tier-B runtime model (no wrapper)
+
+Goal: emit a self-contained wasm module that interoperates with JS directly via wasm GC + JS stringref.
+
+### Value representation (proposal)
+
+* `f64` numbers stay unboxed where possible.
+* `stringref` (JS string extension) for strings.
+* `externref` for JS objects passed through (optional).
+* wasm-gc structs/arrays for JZ-created objects/arrays.
+* Closures as `(struct $Closure (field (ref $Fn)) (field (ref $Env)))` where env is a wasm-gc struct.
+
+Notes:
+
+* Logical ops (`&&`, `||`, `??`) must be lowered with short-circuit control flow.
+* `+` becomes numeric add or string concat depending on operand types (initially: if either is stringref).
+* Remaining helpers can be injected as WAT placeholders and filled later.
