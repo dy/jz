@@ -8,7 +8,9 @@
     "jz": "cli.js"
   },
   "scripts": {
-    "test": "node test.js",
+    "test": "node test/index.js",
+    "test262": "node test/test262.js",
+    "test262:runner": "node test/runner.js",
     "dev": "node cli.js",
     "build": "node cli.js compile examples/*.js",
     "bench": "node bench.js"
