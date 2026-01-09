@@ -33,7 +33,7 @@ export async function compileAndInstantiateFromBinary(wasm, imports = {}) {
 }
 
 export function compileToWat(code, options = {}) {
-  const isWatExpr = typeof code === 'string' && /^\s*\(/.test(code)
+  const isWatExpr = typeof code === 'string' && /^\s*\((i32|i64|f32|f64|local|global|call|block|loop|if|br|return|unreachable|nop|drop|select|memory|table|ref|struct|array)\b/.test(code)
   const compiled = isWatExpr ? { exprWat: code } : compileJs(code, options)
   return generateModuleWithStdLib(compiled.exprWat, options)
 }

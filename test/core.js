@@ -160,9 +160,11 @@ test('meaningful-base coercions (piezo-ish)', async t => {
   t.equal(await evaluate('true & 3'), 1)
   t.equal(await evaluate('~1.9'), -2) // trunc(1.9)=1; ~1 == -2
 
-  // coalesce: 0 is "nullish" sentinel for now
+  // coalesce: only null/undefined trigger fallback (JS semantics)
   t.equal(await evaluate('1 ?? 9'), 1)
-  t.equal(await evaluate('0 ?? 9'), 9)
+  t.equal(await evaluate('0 ?? 9'), 0)  // 0 is NOT nullish in JS
+  t.equal(await evaluate('null ?? 9'), 9)  // null IS nullish
+  t.equal(await evaluate('undefined ?? 9'), 9)  // undefined IS nullish
 
   // ternary: condition is booleanized; branches conciliate
   t.equal(await evaluate('1 ? 2 : 3'), 2)

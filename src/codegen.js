@@ -1,7 +1,9 @@
 // Typed codegen for floatbeat/bytebeat
+// AST format: [op, ...args] where [, value] is literal, string is identifier
 // Features:
 //   - t parameter (sample counter)
-//   - Constants: PI, E
+//   - Constants: PI, E, Infinity, NaN
+//   - null/undefined via WASM GC ref.null
 //   - Native WASM math: sqrt, abs, floor, ceil, min, max, trunc, copysign, nearest
 //   - Imported math: sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, log, log2, log10, pow, cbrt, sign, random
 //   - Variables via comma expressions: (a = 1, b = 2, a + b)
@@ -10,21 +12,17 @@
 const tv = (t, wat) => ({ t, wat })
 
 // --- Coercions ---
-const asF64 = v => v.t === 'f64' ? v : tv('f64', `(f64.convert_i32_s ${v.wat})`)
-const asI32 = v => v.t === 'i32' ? v : tv('i32', `(i32.trunc_f64_s ${v.wat})`)
-const truthy = v => v.t === 'i32'
-  ? tv('i32', `(i32.ne ${v.wat} (i32.const 0))`)
-  : tv('i32', `(f64.ne ${v.wat} (f64.const 0))`)
+const asF64 = v => v.t === 'f64' ? v : v.t === 'ref' ? tv('f64', '(f64.const 0)') : tv('f64', `(f64.convert_i32_s ${v.wat})`)
+const asI32 = v => v.t === 'i32' ? v : v.t === 'ref' ? tv('i32', '(i32.const 0)') : tv('i32', `(i32.trunc_f64_s ${v.wat})`)
+const truthy = v =>
+  v.t === 'ref' ? tv('i32', `(i32.eqz (ref.is_null ${v.wat}))`) :
+  v.t === 'i32' ? tv('i32', `(i32.ne ${v.wat} (i32.const 0))`) :
+  tv('i32', `(f64.ne ${v.wat} (f64.const 0))`)
 const conciliate = (a, b) =>
   a.t === 'i32' && b.t === 'i32' ? [a, b] : [asF64(a), asF64(b)]
 
 // --- Constants ---
-const CONSTANTS = {
-  PI: Math.PI,
-  E: Math.E,
-  Infinity: Infinity,
-  NaN: NaN,
-}
+const CONSTANTS = { PI: Math.PI, E: Math.E, Infinity: Infinity, NaN: NaN }
 
 // --- Native WASM f64 unary math ---
 const NATIVE_UNARY = {
@@ -48,6 +46,7 @@ class CodegenContext {
     this.localDecls = []
     this.usedImports = new Set()
     this.usedArrayType = false
+    this.usedNullRef = false
     this.localCounter = 0
   }
   addLocal(name, type = 'f64') {
@@ -100,42 +99,58 @@ export function needsArrayType() {
   return ctx?.usedArrayType || false
 }
 
-// --- Internal typed generator ---
-function gen(ast) {
-  if (ast == null) return tv('f64', '(f64.const 0)')
-  if (typeof ast === 'number') return tv('f64', `(f64.const ${fmtNum(ast)})`)
-  if (typeof ast === 'boolean') return tv('i32', `(i32.const ${ast ? 1 : 0})`)
+export function needsNullRef() {
+  return ctx?.usedNullRef || false
+}
 
-  if (ast.type === 'literal') {
-    const v = ast.value
+// --- Internal typed generator ---
+// AST: [op, ...args] | [, literal] | string (identifier)
+function gen(ast) {
+  // Literal: [, value]
+  if (Array.isArray(ast) && ast.length >= 1 && ast[0] === undefined) {
+    const v = ast[1]
+    if (v === null || v === undefined) {
+      ctx.usedNullRef = true
+      return tv('ref', '(ref.null none)')
+    }
     if (typeof v === 'number') return tv('f64', `(f64.const ${fmtNum(v)})`)
     if (typeof v === 'boolean') return tv('i32', `(i32.const ${v ? 1 : 0})`)
-    if (Array.isArray(v) && typeof v[1] === 'number') return tv('f64', `(f64.const ${fmtNum(v[1])})`)
     throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
   }
 
-  if (ast.type === 'identifier') {
-    const name = ast.name
-    if (name === 't') return tv('f64', '(local.get $t)')
-    if (name === 'die') return tv('f64', '(call $die)')
-    if (name in CONSTANTS) return tv('f64', `(f64.const ${fmtNum(CONSTANTS[name])})`)
-    const local = ctx.getLocal(name)
-    if (local) return tv(local.type, `(local.get $${name})`)
-    throw new Error(`Unknown identifier: ${name}`)
+  // Identifier: string
+  if (typeof ast === 'string') {
+    if (ast === 't') return tv('f64', '(local.get $t)')
+    if (ast === 'die') return tv('f64', '(call $die)')
+    if (ast in CONSTANTS) return tv('f64', `(f64.const ${fmtNum(CONSTANTS[ast])})`)
+    const local = ctx.getLocal(ast)
+    if (local) return tv(local.type, `(local.get $${ast})`)
+    throw new Error(`Unknown identifier: ${ast}`)
   }
 
-  if (ast.type === 'call') return genCall(ast)
-  if (ast.type === 'operator') return genOp(ast.operator, ast.args)
-  if (ast.type === 'index') return genArrayIndex(ast)
+  // Operator/call: [op, ...args]
+  if (!Array.isArray(ast)) throw new Error(`Unsupported AST: ${JSON.stringify(ast)}`)
 
-  throw new Error(`Unsupported AST: ${JSON.stringify(ast)}`)
+  const [op, ...args] = ast
+
+  // Function call: ['()', fn, ...args]
+  if (op === '()') return genCall(args[0], args.slice(1))
+
+  // Array literal: ['[', ...elements]
+  if (op === '[') return genArrayLiteral(args)
+
+  // Array index: ['[]', arr, idx]
+  if (op === '[]') return genArrayIndex(args[0], args[1])
+
+  // Operators
+  return genOp(op, args)
 }
 
-function genCall(ast) {
-  if (ast.fn?.type === 'identifier' && ast.fn.name === 'die') return tv('f64', '(call $die)')
-  const fnName = ast.fn?.name
-  if (!fnName) throw new Error(`Unsupported call: ${JSON.stringify(ast)}`)
-  const args = ast.args || []
+function genCall(fn, args) {
+  const fnName = typeof fn === 'string' ? fn : null
+  if (!fnName) throw new Error(`Unsupported call: ${JSON.stringify(fn)}`)
+
+  if (fnName === 'die') return tv('f64', '(call $die)')
 
   if (fnName in NATIVE_UNARY && args.length === 1)
     return tv('f64', `(${NATIVE_UNARY[fnName]} ${asF64(gen(args[0])).wat})`)
@@ -171,27 +186,25 @@ function genOp(op, args) {
   // Comma expression - for variable binding
   if (op === ',') {
     let code = ''
-    for (let i = 0; i < args.length - 1; i++) {
+    for (let i = 0; i < n - 1; i++) {
       const arg = args[i]
-      if (arg.type === 'operator' && arg.operator === '=') {
-        const name = arg.args[0]?.name
-        if (!name) throw new Error('Assignment target must be identifier')
-        const val = gen(arg.args[1])
+      // Check for assignment: ['=', name, value]
+      if (Array.isArray(arg) && arg[0] === '=') {
+        const name = arg[1]
+        if (typeof name !== 'string') throw new Error('Assignment target must be identifier')
+        const val = gen(arg[2])
         ctx.addLocal(name, val.t)
         code += `(local.set $${name} ${val.wat})\n    `
       } else {
         code += `(drop ${gen(arg).wat})\n    `
       }
     }
-    const last = gen(args[args.length - 1])
+    const last = gen(args[n - 1])
     return tv(last.t, code + last.wat)
   }
 
-  // Array literal: [1, 2, 3]
-  if (op === '[') return genArrayLiteral({ elements: args })
-
-  // Ternary
-  if (op === '?' && n === 3) {
+  // Ternary: ['?', cond, then, else]
+  if (op === '?') {
     const c = truthy(gen(args[0])).wat
     const [t, f] = conciliate(gen(args[1]), gen(args[2]))
     return tv(t.t, `(if (result ${t.t}) ${c} (then ${t.wat}) (else ${f.wat}))`)
@@ -216,10 +229,10 @@ function genOp(op, args) {
     if (op === '&&') return genAnd(args[0], args[1])
     if (op === '||') return genOr(args[0], args[1])
 
-    // Assignment
+    // Assignment: ['=', name, value]
     if (op === '=') {
-      const name = args[0]?.name
-      if (!name) throw new Error('Assignment target must be identifier')
+      const name = args[0]
+      if (typeof name !== 'string') throw new Error('Assignment target must be identifier')
       const val = gen(args[1])
       ctx.addLocal(name, val.t)
       return tv(val.t, `(local.tee $${name} ${val.wat})`)
@@ -265,10 +278,14 @@ function genOp(op, args) {
       return tv('i32', `(i32.${inst} ${ai} ${bi})`)
     }
 
-    // Nullish coalesce
+    // Nullish coalesce - only null/undefined trigger fallback
     if (op === '??') {
-      const [ac, bc] = conciliate(a, b)
-      return tv(ac.t, `(select ${ac.wat} ${bc.wat} (${ac.t}.ne ${ac.wat} (${ac.t}.const 0)))`)
+      if (a.t === 'ref') {
+        // null ?? b → b (ref.null is always "nullish")
+        return gen(args[1])
+      }
+      // Non-ref types (i32, f64) are never nullish, return left value
+      return a
     }
 
     throw new Error(`Unsupported binary: ${op}`)
@@ -278,19 +295,18 @@ function genOp(op, args) {
 }
 
 // WASM GC array literal
-function genArrayLiteral(ast) {
+function genArrayLiteral(elements) {
   ctx.usedArrayType = true
-  const elements = ast.elements || ast.args || []
   const values = elements.map(e => asF64(gen(e)).wat)
   return tv('array', `(array.new_fixed $f64array ${values.length} ${values.join(' ')})`)
 }
 
 // WASM GC array index
-function genArrayIndex(ast) {
+function genArrayIndex(arr, idx) {
   ctx.usedArrayType = true
-  const arr = gen(ast.array)
-  const idx = asI32(gen(ast.index))
-  return tv('f64', `(array.get $f64array ${arr.wat} ${idx.wat})`)
+  const arrVal = gen(arr)
+  const idxVal = asI32(gen(idx))
+  return tv('f64', `(array.get $f64array ${arrVal.wat} ${idxVal.wat})`)
 }
 
 function genAnd(aAst, bAst) {

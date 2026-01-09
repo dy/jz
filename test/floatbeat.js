@@ -229,3 +229,29 @@ test('floatbeat - fract function', async t => {
   const f2 = await evaluate('fract(5.25)')
   t.ok(Math.abs(f2 - 0.25) < 0.0001)
 })
+
+test('floatbeat - null and undefined (WASM GC ref.null)', async t => {
+  // null coerces to 0 when used in numeric context
+  t.equal(await evaluate('null'), 0)
+  t.equal(await evaluate('undefined'), 0)
+
+  // null + number = 0 + number
+  t.equal(await evaluate('null + 5'), 5)
+  t.equal(await evaluate('undefined + 5'), 5)
+
+  // Nullish coalescing: null ?? value = value
+  t.equal(await evaluate('null ?? 42'), 42)
+  t.equal(await evaluate('undefined ?? 42'), 42)
+
+  // Non-null doesn't trigger ??
+  t.equal(await evaluate('5 ?? 42'), 5)
+  t.equal(await evaluate('0 ?? 42'), 0) // 0 is not null
+
+  // Boolean context: null is falsy
+  t.equal(await evaluate('!null'), 1)
+  t.equal(await evaluate('!undefined'), 1)
+
+  // Ternary with null
+  t.equal(await evaluate('null ? 1 : 2'), 2)
+  t.equal(await evaluate('undefined ? 1 : 2'), 2)
+})
