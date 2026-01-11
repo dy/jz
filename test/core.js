@@ -178,3 +178,185 @@ test('short-circuit (no rhs evaluation)', async t => {
   t.equal(await evaluate('0 && die()'), 0)
   t.equal(await evaluate('1 || die()'), 1)
 })
+
+test('i32 bit operations', async t => {
+  // clz32 - count leading zeros (32-bit)
+  t.equal(await evaluate('clz32(1)'), 31)
+  t.equal(await evaluate('clz32(2)'), 30)
+  t.equal(await evaluate('clz32(256)'), 23)
+  t.equal(await evaluate('clz32(0)'), 32)
+
+  // ctz32 - count trailing zeros (32-bit)
+  t.equal(await evaluate('ctz32(1)'), 0)
+  t.equal(await evaluate('ctz32(2)'), 1)
+  t.equal(await evaluate('ctz32(4)'), 2)
+  t.equal(await evaluate('ctz32(256)'), 8)
+
+  // popcnt32 - count bits set (32-bit)
+  t.equal(await evaluate('popcnt32(0)'), 0)
+  t.equal(await evaluate('popcnt32(1)'), 1)
+  t.equal(await evaluate('popcnt32(3)'), 2)
+  t.equal(await evaluate('popcnt32(7)'), 3)
+  t.equal(await evaluate('popcnt32(255)'), 8)
+
+  // rotl - rotate left (32-bit)
+  t.equal(await evaluate('rotl(1, 1)'), 2)
+  t.equal(await evaluate('rotl(1, 4)'), 16)
+  t.equal(await evaluate('rotl(1, 31)'), -2147483648) // wraps to negative
+
+  // rotr - rotate right (32-bit)
+  t.equal(await evaluate('rotr(2, 1)'), 1)
+  t.equal(await evaluate('rotr(16, 4)'), 1)
+  t.equal(await evaluate('rotr(1, 1)'), -2147483648) // wraps to negative
+})
+
+test('integer div/rem', async t => {
+  // idiv - integer division (truncated toward zero)
+  t.equal(await evaluate('idiv(7, 3)'), 2)
+  t.equal(await evaluate('idiv(10, 4)'), 2)
+  t.equal(await evaluate('idiv(-7, 3)'), -2)
+  t.equal(await evaluate('idiv(7, -3)'), -2)
+  t.equal(await evaluate('idiv(-7, -3)'), 2)
+
+  // irem - integer remainder
+  t.equal(await evaluate('irem(7, 3)'), 1)
+  t.equal(await evaluate('irem(10, 4)'), 2)
+  t.equal(await evaluate('irem(-7, 3)'), -1)
+  t.equal(await evaluate('irem(7, -3)'), 1)
+  t.equal(await evaluate('irem(-7, -3)'), -1)
+})
+
+test('isNaN and isFinite', async t => {
+  // isNaN
+  t.equal(await evaluate('isNaN(NaN)'), 1)
+  t.equal(await evaluate('isNaN(0)'), 0)
+  t.equal(await evaluate('isNaN(1)'), 0)
+  t.equal(await evaluate('isNaN(Infinity)'), 0)
+  t.equal(await evaluate('isNaN(-Infinity)'), 0)
+
+  // isFinite
+  t.equal(await evaluate('isFinite(0)'), 1)
+  t.equal(await evaluate('isFinite(1)'), 1)
+  t.equal(await evaluate('isFinite(-1)'), 1)
+  t.equal(await evaluate('isFinite(Infinity)'), 0)
+  t.equal(await evaluate('isFinite(-Infinity)'), 0)
+  t.equal(await evaluate('isFinite(NaN)'), 0)
+})
+
+test('array.set (arr[i] = x)', async t => {
+  // Basic array mutation
+  t.equal(await evaluate('(a = [1,2,3], a[0] = 10, a[0])'), 10)
+  t.equal(await evaluate('(a = [1,2,3], a[1] = 20, a[1])'), 20)
+  t.equal(await evaluate('(a = [1,2,3], a[2] = 30, a[2])'), 30)
+
+  // Assignment returns the value
+  t.equal(await evaluate('(a = [0,0], a[0] = 42)'), 42)
+
+  // Multiple mutations
+  t.equal(await evaluate('(a = [1,2,3], a[0] = 10, a[1] = 20, a[0] + a[1])'), 30)
+
+  // Dynamic index
+  t.equal(await evaluate('(a = [1,2,3], i = 1, a[i] = 99, a[1])'), 99)
+})
+
+test('array.length', async t => {
+  // Basic length
+  t.equal(await evaluate('[1,2,3].length'), 3)
+  t.equal(await evaluate('[].length'), 0)
+  t.equal(await evaluate('[1].length'), 1)
+
+  // Length via variable
+  t.equal(await evaluate('(a = [1,2,3,4,5], a.length)'), 5)
+
+  // Use in expressions
+  t.equal(await evaluate('[1,2,3].length + 1'), 4)
+  t.equal(await evaluate('(a = [1,2], a.length * 2)'), 4)
+})
+
+test('optional chaining (?.)', async t => {
+  // Optional array access - returns 0 for null
+  t.equal(await evaluate('(a = [1,2,3], a?.[0])'), 1)
+  t.equal(await evaluate('(a = null, a?.[0])'), 0)
+
+  // Optional length - returns 0 for null
+  t.equal(await evaluate('(a = [1,2,3], a?.length)'), 3)
+  t.equal(await evaluate('(a = null, a?.length)'), 0)
+
+  // Chained with expressions
+  t.equal(await evaluate('(a = [10,20], a?.[1] + 5)'), 25)
+  t.equal(await evaluate('(a = null, a?.[1] + 5)'), 5)
+})
+
+test('compound assignment', async t => {
+  // Basic compound assignment
+  t.equal(await evaluate('(a = 5, a += 3, a)'), 8)
+  t.equal(await evaluate('(a = 10, a -= 4, a)'), 6)
+  t.equal(await evaluate('(a = 3, a *= 4, a)'), 12)
+  t.equal(await evaluate('(a = 20, a /= 5, a)'), 4)
+  t.equal(await evaluate('(a = 17, a %= 5, a)'), 2)
+
+  // Compound returns the new value
+  t.equal(await evaluate('(a = 5, a += 3)'), 8)
+
+  // Array element compound assignment
+  t.equal(await evaluate('(arr = [1,2,3], arr[0] += 10, arr[0])'), 11)
+  t.equal(await evaluate('(arr = [10,20], arr[1] *= 2, arr[1])'), 40)
+})
+
+test('object literals and property access', async t => {
+  // Basic object literal
+  t.equal(await evaluate('{x: 1}.x'), 1)
+  t.equal(await evaluate('{x: 1, y: 2}.y'), 2)
+  t.equal(await evaluate('{a: 10, b: 20, c: 30}.b'), 20)
+
+  // Object in variable
+  t.equal(await evaluate('(obj = {x: 5, y: 10}, obj.x)'), 5)
+  t.equal(await evaluate('(obj = {x: 5, y: 10}, obj.y)'), 10)
+
+  // Expressions in values
+  t.equal(await evaluate('{x: 1 + 2, y: 3 * 4}.x'), 3)
+  t.equal(await evaluate('{x: 1 + 2, y: 3 * 4}.y'), 12)
+
+  // Object with t
+  t.equal(await evaluate('{val: t * 2}.val', 5), 10)
+
+  // Nested property expressions
+  t.equal(await evaluate('(o = {a: 1, b: 2}, o.a + o.b)'), 3)
+})
+
+test('string literals', async t => {
+  // String indexing returns char code
+  t.equal(await evaluate('"hello"[0]'), 104) // 'h'
+  t.equal(await evaluate('"hello"[1]'), 101) // 'e'
+  t.equal(await evaluate('"A"[0]'), 65)
+
+  // String length
+  t.equal(await evaluate('"hello".length'), 5)
+  t.equal(await evaluate('"".length'), 0)
+  t.equal(await evaluate('"abc".length'), 3)
+
+  // String in variable
+  t.equal(await evaluate('(s = "test", s.length)'), 4)
+  t.equal(await evaluate('(s = "test", s[0])'), 116) // 't'
+
+  // Use char codes in expressions
+  t.equal(await evaluate('"A"[0] + 32'), 97) // 'a'
+})
+
+test('destructuring', async t => {
+  // Array destructuring
+  t.equal(await evaluate('([a, b] = [1, 2], a)'), 1)
+  t.equal(await evaluate('([a, b] = [1, 2], b)'), 2)
+  t.equal(await evaluate('([a, b] = [1, 2], a + b)'), 3)
+  t.equal(await evaluate('([x, y, z] = [10, 20, 30], x + y + z)'), 60)
+
+  // Object destructuring
+  t.equal(await evaluate('({a, b} = {a: 5, b: 10}, a)'), 5)
+  t.equal(await evaluate('({a, b} = {a: 5, b: 10}, b)'), 10)
+  t.equal(await evaluate('({a, b} = {a: 5, b: 10}, a + b)'), 15)
+  t.equal(await evaluate('({x, y, z} = {x: 1, y: 2, z: 3}, x * y * z)'), 6)
+
+  // Destructure from variable
+  t.equal(await evaluate('(arr = [7, 8], [a, b] = arr, a * b)'), 56)
+  t.equal(await evaluate('(obj = {a: 3, b: 4}, {a, b} = obj, a + b)'), 7)
+})

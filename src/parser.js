@@ -53,6 +53,8 @@ export function normalize(ast) {
   // Array literal vs indexing: []
   if (op === '[]') {
     if (args.length === 1) {
+      // Empty array: [] parses as ['[]', null] or ['[]', undefined]
+      if (args[0] == null) return ['[']
       // Array literal: [x, y, z]
       const inner = args[0]
       if (Array.isArray(inner) && inner[0] === ',') {
@@ -62,6 +64,37 @@ export function normalize(ast) {
     }
     // Array indexing: arr[i]
     return ['[]', normalize(args[0]), normalize(args[1])]
+  }
+
+  // Object literal: {} with key-value pairs
+  // {x: 1, y: 2} parses as ['{}', [',', [':', 'x', 1], [':', 'y', 2]]]
+  // {a, b} shorthand parses as ['{}', [',', 'a', 'b']]
+  if (op === '{}') {
+    if (args.length === 0 || args[0] == null) return ['{']
+    const inner = args[0]
+    // Single property: {x: 1} or {x} shorthand
+    if (typeof inner === 'string') {
+      // Shorthand {x} → {x: x}
+      return ['{', [inner, inner]]
+    }
+    if (Array.isArray(inner) && inner[0] === ':') {
+      return ['{', [inner[1], normalize(inner[2])]]
+    }
+    // Multiple properties: {x: 1, y: 2} or {a, b} shorthand
+    if (Array.isArray(inner) && inner[0] === ',') {
+      const props = inner.slice(1).map(p => {
+        // Shorthand: identifier only
+        if (typeof p === 'string') {
+          return [p, p]  // {a} → {a: a}
+        }
+        if (Array.isArray(p) && p[0] === ':') {
+          return [p[1], normalize(p[2])]
+        }
+        throw new Error(`Invalid object property: ${JSON.stringify(p)}`)
+      })
+      return ['{', ...props]
+    }
+    throw new Error(`Invalid object literal: ${JSON.stringify(inner)}`)
   }
 
   // All other operators

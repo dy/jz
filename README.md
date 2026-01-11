@@ -1,8 +1,15 @@
-# jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/piezo/actions/workflows/test.yml/badge.svg)](https://github.com/dy/piezo/actions/workflows/test.yml)
+# jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-_JZ_ is minimal modern functional JS subset that compiles to WebAssembly (WASM).<br>
-Think of it as tiny _JavaScript to WASM compiler_.
-<!-- By the time it takes new Function to parse, jz compiles WASM -->
+Tiny _JavaScript to WASM compiler_, supporting modern minimal functional JS subset.
+
+## Usage
+
+```js
+import jz from 'jz'
+
+const { mul } = jz`export mul = (a, b) => a * b`
+mul(2, 3) === 6
+```
 
 ## Reference
 
@@ -27,25 +34,7 @@ Think of it as tiny _JavaScript to WASM compiler_.
 * Modules: `import`, `export`
 
 
-## Usage
-
-```js
-import jz from 'jz'
-
-// compile JS (function multiplying 2 numbers) - it returns WASM buffer
-const buf = jz(`export x = (a, b) => a * b`)
-
-// compile WASM module and create an instance
-const mod = new WebAssembly.Module(buf)
-const { exports: { x } } = new WebAssembly.Instance(mod, { ...imports })
-
-// use exported WASM function
-x(2,3) === 6
-```
-
-## Quick Start
-
-### JavaScript API
+## API
 
 ```js
 import { compile, evaluate, instantiate } from 'jz'
@@ -73,7 +62,7 @@ const wasmInstance = await WebAssembly.instantiate(module)
 console.log(wasmInstance.exports.main()) // 3
 ```
 
-### Command Line Interface
+### CLI
 
 ```bash
 # Install globally
@@ -99,12 +88,6 @@ jz run program.wat
 jz --help
 ```
 
-### Output Formats
-
-JZ supports two output formats:
-- **`binary`** (default): Compiled WebAssembly binary (`.wasm`)
-- **`wat`**: WebAssembly Text format source (`.wat`)
-
 ## Examples
 
 _Coming soon_.
@@ -115,46 +98,37 @@ _Coming soon_.
 * [ ] Embed into website
  -->
 
+
 ## Why?
 
-JS has grown complex with legacy features (var, OOP) and niche additions (generators, async loops, etc).<br>
-JZ is inspired by floatbeats/bytebeats, it focuses on a minimal, modern, essential subset that ties to WebAssembly features.<br>
+JS grew complex with legacy (`var`, OOP) and niche features (generators, async).
+JZ is minimal modern subset that maps directly to WebAssembly.
 
 * No classes/prototypes – use functions & closures.
-* No old syntax – use modern ES5+.
-* No [regrets](https://github.com/DavidBruant/ECMAScript-regrets) – drop `undefined`.
-* No computed props - objects are structs.
-* No autosemicolons - keep syntax ordered.
+* No old syntax – modern ES6+ only.
 * No async – keep code plain & simple.
 
 ### Goals
 
-* _lightweight_ – embed anywhere, from websites to microcontrollers.
-* _fast_ – compiles to WASM faster than `eval` parses.
-* _tiny WASM output_ – no runtime, no heap, no wrappers.
-* _seamless JS integration_ – export / import, same func signatures.
+* _Lightweight_ – embed anywhere, from websites to microcontrollers.
+* _Fast_ – compiles faster than `eval` parses.
+* _Tiny output_ – no runtime, no heap.
 
-### Why not [porf](https://github.com/CanadaHonk/porffor)?
+### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
-Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small and flexible.
+Porffor is brilliant, but aligns to TC39. JZ stays small and flexible.
 
 ### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 
-AssemblyScript is built on TypeScript, while JZ stays pure JS.
-
-### Why not [piezo](https://github.com/dy/piezo)?
-
-Piezo is experimental and will take time to solidify. JZ is possible first step for it.
+AssemblyScript is TypeScript-based. JZ stays pure JS.
 
 ### Why _jz_?
 
-JZ stands for JavasSript Zero – a return to core, stripped to essentials. Also jazzy vibe.
+JavaScript Zero – stripped to essentials. Also jazzy.
 
-<!--
-## Who's using jz?
+## Built With
 
-* [color-space](https://github.com/colorjs/color-space)
-* [web-audio-api](https://github.com/audiojs/web-audio-api) -->
+* [subscript](https://github.com/dy/subscript) – parser
+* [watr](https://www.npmjs.com/package/watr) – WAT to WASM
 
-
-<p align=center><a href="https://github.com/krsnzd/license/">🕉</a></p>
+<p align=center><a href="https://github.com/krishnized/license/">🕉</a></p>

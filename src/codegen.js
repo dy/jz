@@ -1,332 +1,432 @@
-// Typed codegen for floatbeat/bytebeat
-// AST format: [op, ...args] where [, value] is literal, string is identifier
-// Features:
-//   - t parameter (sample counter)
-//   - Constants: PI, E, Infinity, NaN
-//   - null/undefined via WASM GC ref.null
-//   - Native WASM math: sqrt, abs, floor, ceil, min, max, trunc, copysign, nearest
-//   - Imported math: sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, log, log2, log10, pow, cbrt, sign, random
-//   - Variables via comma expressions: (a = 1, b = 2, a + b)
-//   - WASM GC arrays: [1,2,3] and arr[i]
-
-const tv = (t, wat) => ({ t, wat })
-
-// --- Coercions ---
-const asF64 = v => v.t === 'f64' ? v : v.t === 'ref' ? tv('f64', '(f64.const 0)') : tv('f64', `(f64.convert_i32_s ${v.wat})`)
-const asI32 = v => v.t === 'i32' ? v : v.t === 'ref' ? tv('i32', '(i32.const 0)') : tv('i32', `(i32.trunc_f64_s ${v.wat})`)
-const truthy = v =>
-  v.t === 'ref' ? tv('i32', `(i32.eqz (ref.is_null ${v.wat}))`) :
-  v.t === 'i32' ? tv('i32', `(i32.ne ${v.wat} (i32.const 0))`) :
-  tv('i32', `(f64.ne ${v.wat} (f64.const 0))`)
-const conciliate = (a, b) =>
-  a.t === 'i32' && b.t === 'i32' ? [a, b] : [asF64(a), asF64(b)]
+// AST to WAT code generation
+// AST format: [op, ...args] | [, literal] | string (identifier)
+import { tv, asF64, asI32, truthy, conciliate, fmtNum, f64, i32 } from './build.js'
 
 // --- Constants ---
 const CONSTANTS = { PI: Math.PI, E: Math.E, Infinity: Infinity, NaN: NaN }
 
-// --- Native WASM f64 unary math ---
-const NATIVE_UNARY = {
+// --- Native WASM operations ---
+const NATIVE_F64_UNARY = {
   sqrt: 'f64.sqrt', abs: 'f64.abs', floor: 'f64.floor',
   ceil: 'f64.ceil', trunc: 'f64.trunc', nearest: 'f64.nearest',
   neg: 'f64.neg', int: 'f64.trunc',
 }
+const NATIVE_I32_UNARY = { clz32: 'i32.clz', ctz32: 'i32.ctz', popcnt32: 'i32.popcnt' }
+const NATIVE_I32_BINARY = { rotl: 'i32.rotl', rotr: 'i32.rotr', idiv: 'i32.div_s', irem: 'i32.rem_s' }
+const NATIVE_F64_BINARY = { min: 'f64.min', max: 'f64.max', copysign: 'f64.copysign' }
 
-// --- Native WASM f64 binary math ---
-const NATIVE_BINARY = { min: 'f64.min', max: 'f64.max', copysign: 'f64.copysign' }
-
-// --- Imported math functions ---
+// --- Imported math ---
+const IMPORTED_NULLARY = ['random']
 const IMPORTED_UNARY = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'exp', 'log', 'log2', 'log10', 'cbrt', 'sign', 'round', 'fract']
 const IMPORTED_BINARY = ['pow', 'atan2']
-const IMPORTED_NULLARY = ['random']
 
-// --- Code generation context ---
-class CodegenContext {
+// --- Codegen context ---
+class Context {
   constructor() {
     this.locals = new Map()
     this.localDecls = []
     this.usedImports = new Set()
     this.usedArrayType = false
     this.usedNullRef = false
+    this.usedStringType = false
     this.localCounter = 0
+    this.structTypes = new Map()
+    this.structCounter = 0
   }
+
   addLocal(name, type = 'f64') {
     if (!this.locals.has(name)) {
       this.locals.set(name, { idx: this.localCounter++, type })
-      this.localDecls.push(`(local $${name} ${type})`)
+      let wasmType = type
+      if (type === 'array' || type === 'ref') wasmType = '(ref null $f64array)'
+      else if (type === 'string') wasmType = '(ref null $string)'
+      else if (type.startsWith('struct:')) wasmType = `(ref null $${type.slice(7)})`
+      this.localDecls.push(`(local $${name} ${wasmType})`)
     }
     return this.locals.get(name)
   }
+
   getLocal(name) { return this.locals.get(name) }
+
+  getStructType(fields) {
+    const sorted = [...fields].sort()
+    const key = sorted.join(',')
+    if (!this.structTypes.has(key)) {
+      this.structTypes.set(key, { fields: sorted, typeName: `struct${this.structCounter++}` })
+    }
+    return this.structTypes.get(key)
+  }
 }
 
 let ctx = null
 
 // --- Public API ---
+export function generate(ast) {
+  ctx = new Context()
+  const result = asF64(gen(ast)).wat
+  return { wat: result, ctx }
+}
+
 export function generateExpression(ast) {
-  ctx = new CodegenContext()
+  ctx = new Context()
   return asF64(gen(ast)).wat
 }
 
 export function getContext() { return ctx }
+export const generateImports = () => ''
+export const generateLocals = () => ctx?.localDecls.join(' ') || ''
+export const needsArrayType = () => ctx?.usedArrayType || false
+export const needsStringType = () => ctx?.usedStringType || false
+export const needsNullRef = () => ctx?.usedNullRef || false
+export const getStructTypes = () => ctx?.structTypes || new Map()
+export const generateStdLib = () => ''
 
-export function generateStdLib() {
-  if (!ctx) return ''
-  return `
-  (func $die (result f64) (unreachable))
-  (func $f64.rem (param f64 f64) (result f64)
-    (f64.sub (local.get 0) (f64.mul (f64.trunc (f64.div (local.get 0) (local.get 1))) (local.get 1))))`
-}
-
-export function generateImports() {
-  if (!ctx) return ''
-  let code = ''
-  for (const fn of ctx.usedImports) {
-    if (IMPORTED_NULLARY.includes(fn))
-      code += `  (import "math" "${fn}" (func $${fn} (result f64)))\n`
-    else if (IMPORTED_UNARY.includes(fn))
-      code += `  (import "math" "${fn}" (func $${fn} (param f64) (result f64)))\n`
-    else if (IMPORTED_BINARY.includes(fn))
-      code += `  (import "math" "${fn}" (func $${fn} (param f64 f64) (result f64)))\n`
-  }
-  return code
-}
-
-export function generateLocals() {
-  return ctx?.localDecls.join(' ') || ''
-}
-
-export function needsArrayType() {
-  return ctx?.usedArrayType || false
-}
-
-export function needsNullRef() {
-  return ctx?.usedNullRef || false
-}
-
-// --- Internal typed generator ---
-// AST: [op, ...args] | [, literal] | string (identifier)
+// --- Core generator ---
 function gen(ast) {
   // Literal: [, value]
-  if (Array.isArray(ast) && ast.length >= 1 && ast[0] === undefined) {
-    const v = ast[1]
-    if (v === null || v === undefined) {
+  if (Array.isArray(ast) && ast[0] === undefined) return genLiteral(ast[1])
+
+  // Identifier
+  if (typeof ast === 'string') return genIdent(ast)
+
+  // Operator
+  if (!Array.isArray(ast)) throw new Error(`Invalid AST: ${JSON.stringify(ast)}`)
+  const [op, ...args] = ast
+  if (op in operators) return operators[op](args)
+  throw new Error(`Unknown operator: ${op}`)
+}
+
+// --- Literals ---
+function genLiteral(v) {
+  if (v === null || v === undefined) {
+    ctx.usedNullRef = true
+    return tv('ref', '(ref.null none)')
+  }
+  if (typeof v === 'number') return tv('f64', `(f64.const ${fmtNum(v)})`)
+  if (typeof v === 'boolean') return tv('i32', `(i32.const ${v ? 1 : 0})`)
+  if (typeof v === 'string') {
+    ctx.usedStringType = true
+    const bytes = [...v].map(c => `(i32.const ${c.charCodeAt(0)})`).join(' ')
+    return tv('string', `(array.new_fixed $string ${v.length} ${bytes})`)
+  }
+  throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
+}
+
+// --- Identifiers ---
+function genIdent(name) {
+  if (name === 't') return tv('f64', '(local.get $t)')
+  if (name === 'die') return tv('f64', '(call $die)')
+  if (name in CONSTANTS) return tv('f64', `(f64.const ${fmtNum(CONSTANTS[name])})`)
+  const loc = ctx.getLocal(name)
+  if (loc) return tv(loc.type, `(local.get $${name})`)
+  throw new Error(`Unknown identifier: ${name}`)
+}
+
+// --- Operators (object dispatch) ---
+const operators = {
+  // Function call
+  '()'([fn, ...args]) {
+    const name = typeof fn === 'string' ? fn : null
+    if (!name) throw new Error(`Invalid call: ${JSON.stringify(fn)}`)
+    if (name === 'die') return tv('f64', '(call $die)')
+
+    // Native f64 unary
+    if (name in NATIVE_F64_UNARY && args.length === 1)
+      return tv('f64', `(${NATIVE_F64_UNARY[name]} ${asF64(gen(args[0])).wat})`)
+    // Native i32 unary
+    if (name in NATIVE_I32_UNARY && args.length === 1)
+      return tv('i32', `(${NATIVE_I32_UNARY[name]} ${asI32(gen(args[0])).wat})`)
+    // Native i32 binary
+    if (name in NATIVE_I32_BINARY && args.length === 2)
+      return tv('i32', `(${NATIVE_I32_BINARY[name]} ${asI32(gen(args[0])).wat} ${asI32(gen(args[1])).wat})`)
+    // Native f64 binary
+    if (name in NATIVE_F64_BINARY && args.length === 2)
+      return tv('f64', `(${NATIVE_F64_BINARY[name]} ${asF64(gen(args[0])).wat} ${asF64(gen(args[1])).wat})`)
+    // Variadic min/max
+    if (name in NATIVE_F64_BINARY && args.length > 2) {
+      let result = asF64(gen(args[0])).wat
+      for (let i = 1; i < args.length; i++)
+        result = `(${NATIVE_F64_BINARY[name]} ${result} ${asF64(gen(args[i])).wat})`
+      return tv('f64', result)
+    }
+    // isNaN
+    if (name === 'isNaN' && args.length === 1) {
+      const v = asF64(gen(args[0])).wat
+      return tv('i32', `(f64.ne ${v} ${v})`)
+    }
+    // isFinite
+    if (name === 'isFinite' && args.length === 1) {
+      const v = asF64(gen(args[0])).wat
+      return tv('i32', `(i32.and (f64.eq ${v} ${v}) (f64.ne (f64.abs ${v}) (f64.const inf)))`)
+    }
+    // Imported
+    if (IMPORTED_NULLARY.includes(name) && args.length === 0) {
+      ctx.usedImports.add(name)
+      return tv('f64', `(call $${name})`)
+    }
+    if (IMPORTED_UNARY.includes(name) && args.length === 1) {
+      ctx.usedImports.add(name)
+      return tv('f64', `(call $${name} ${asF64(gen(args[0])).wat})`)
+    }
+    if (IMPORTED_BINARY.includes(name) && args.length === 2) {
+      ctx.usedImports.add(name)
+      return tv('f64', `(call $${name} ${asF64(gen(args[0])).wat} ${asF64(gen(args[1])).wat})`)
+    }
+    throw new Error(`Unknown function: ${name}`)
+  },
+
+  // Array literal
+  '['(elements) {
+    ctx.usedArrayType = true
+    const vals = elements.map(e => asF64(gen(e)).wat)
+    return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
+  },
+
+  // Object literal
+  '{'(props) {
+    if (props.length === 0) {
       ctx.usedNullRef = true
       return tv('ref', '(ref.null none)')
     }
-    if (typeof v === 'number') return tv('f64', `(f64.const ${fmtNum(v)})`)
-    if (typeof v === 'boolean') return tv('i32', `(i32.const ${v ? 1 : 0})`)
-    throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
-  }
+    const fields = props.map(p => p[0])
+    const st = ctx.getStructType(fields)
+    const valueMap = new Map(props.map(([k, v]) => [k, asF64(gen(v)).wat]))
+    const vals = st.fields.map(f => valueMap.get(f))
+    return tv(`struct:${st.typeName}`, `(struct.new $${st.typeName} ${vals.join(' ')})`)
+  },
 
-  // Identifier: string
-  if (typeof ast === 'string') {
-    if (ast === 't') return tv('f64', '(local.get $t)')
-    if (ast === 'die') return tv('f64', '(call $die)')
-    if (ast in CONSTANTS) return tv('f64', `(f64.const ${fmtNum(CONSTANTS[ast])})`)
-    const local = ctx.getLocal(ast)
-    if (local) return tv(local.type, `(local.get $${ast})`)
-    throw new Error(`Unknown identifier: ${ast}`)
-  }
-
-  // Operator/call: [op, ...args]
-  if (!Array.isArray(ast)) throw new Error(`Unsupported AST: ${JSON.stringify(ast)}`)
-
-  const [op, ...args] = ast
-
-  // Function call: ['()', fn, ...args]
-  if (op === '()') return genCall(args[0], args.slice(1))
-
-  // Array literal: ['[', ...elements]
-  if (op === '[') return genArrayLiteral(args)
-
-  // Array index: ['[]', arr, idx]
-  if (op === '[]') return genArrayIndex(args[0], args[1])
-
-  // Operators
-  return genOp(op, args)
-}
-
-function genCall(fn, args) {
-  const fnName = typeof fn === 'string' ? fn : null
-  if (!fnName) throw new Error(`Unsupported call: ${JSON.stringify(fn)}`)
-
-  if (fnName === 'die') return tv('f64', '(call $die)')
-
-  if (fnName in NATIVE_UNARY && args.length === 1)
-    return tv('f64', `(${NATIVE_UNARY[fnName]} ${asF64(gen(args[0])).wat})`)
-  if (fnName in NATIVE_BINARY && args.length === 2)
-    return tv('f64', `(${NATIVE_BINARY[fnName]} ${asF64(gen(args[0])).wat} ${asF64(gen(args[1])).wat})`)
-  // Variadic min/max: chain binary operations
-  if (fnName in NATIVE_BINARY && args.length > 2) {
-    const instr = NATIVE_BINARY[fnName]
-    let result = asF64(gen(args[0])).wat
-    for (let i = 1; i < args.length; i++) {
-      result = `(${instr} ${result} ${asF64(gen(args[i])).wat})`
+  // Array/string index
+  '[]'([arr, idx]) {
+    const isOptional = Array.isArray(arr) && arr[0] === '?.'
+    if (isOptional) {
+      const a = gen(arr[1]), i = asI32(gen(idx))
+      ctx.usedNullRef = true
+      if (a.t === 'string') {
+        ctx.usedStringType = true
+        return tv('i32', `(if (result i32) (ref.is_null ${a.wat}) (then (i32.const 0)) (else (array.get_s $string ${a.wat} ${i.wat})))`)
+      }
+      ctx.usedArrayType = true
+      return tv('f64', `(if (result f64) (ref.is_null ${a.wat}) (then (f64.const 0)) (else (array.get $f64array ${a.wat} ${i.wat})))`)
     }
-    return tv('f64', result)
-  }
-  if (IMPORTED_NULLARY.includes(fnName) && args.length === 0) {
-    ctx.usedImports.add(fnName)
-    return tv('f64', `(call $${fnName})`)
-  }
-  if (IMPORTED_UNARY.includes(fnName) && args.length === 1) {
-    ctx.usedImports.add(fnName)
-    return tv('f64', `(call $${fnName} ${asF64(gen(args[0])).wat})`)
-  }
-  if (IMPORTED_BINARY.includes(fnName) && args.length === 2) {
-    ctx.usedImports.add(fnName)
-    return tv('f64', `(call $${fnName} ${asF64(gen(args[0])).wat} ${asF64(gen(args[1])).wat})`)
-  }
-  throw new Error(`Unsupported function call: ${fnName}`)
-}
+    const a = gen(arr), i = asI32(gen(idx))
+    if (a.t === 'string') {
+      ctx.usedStringType = true
+      return tv('i32', `(array.get_s $string ${a.wat} ${i.wat})`)
+    }
+    ctx.usedArrayType = true
+    return tv('f64', `(array.get $f64array ${a.wat} ${i.wat})`)
+  },
 
-function genOp(op, args) {
-  const n = args.length
+  // Property access
+  '.'([obj, prop]) {
+    const o = gen(obj)
+    if (prop === 'length' && (o.t === 'array' || o.t === 'string')) {
+      if (o.t === 'array') ctx.usedArrayType = true
+      else ctx.usedStringType = true
+      return tv('i32', `(array.len ${o.wat})`)
+    }
+    if (o.t.startsWith('struct:')) {
+      const typeName = o.t.slice(7)
+      for (const [, st] of ctx.structTypes) {
+        if (st.typeName === typeName) {
+          const idx = st.fields.indexOf(prop)
+          if (idx === -1) throw new Error(`Unknown property: ${prop}`)
+          return tv('f64', `(struct.get $${typeName} ${idx} ${o.wat})`)
+        }
+      }
+    }
+    throw new Error(`Invalid property access: .${prop}`)
+  },
 
-  // Comma expression - for variable binding
-  if (op === ',') {
+  // Optional chaining
+  '?.'([obj, prop]) {
+    const o = gen(obj)
+    if (o.t === 'array' || o.t === 'ref') {
+      ctx.usedNullRef = true
+      if (prop === 'length') {
+        ctx.usedArrayType = true
+        return tv('f64', `(if (result f64) (ref.is_null ${o.wat}) (then (f64.const 0)) (else (f64.convert_i32_s (array.len ${o.wat}))))`)
+      }
+      return o
+    }
+    return o
+  },
+
+  // Comma (sequence)
+  ','(args) {
     let code = ''
-    for (let i = 0; i < n - 1; i++) {
+    for (let i = 0; i < args.length - 1; i++) {
       const arg = args[i]
-      // Check for assignment: ['=', name, value]
       if (Array.isArray(arg) && arg[0] === '=') {
-        const name = arg[1]
-        if (typeof name !== 'string') throw new Error('Assignment target must be identifier')
-        const val = gen(arg[2])
-        ctx.addLocal(name, val.t)
-        code += `(local.set $${name} ${val.wat})\n    `
+        code += genAssignmentSideEffect(arg[1], arg[2])
       } else {
         code += `(drop ${gen(arg).wat})\n    `
       }
     }
-    const last = gen(args[n - 1])
+    const last = gen(args[args.length - 1])
     return tv(last.t, code + last.wat)
-  }
+  },
 
-  // Ternary: ['?', cond, then, else]
-  if (op === '?') {
-    const c = truthy(gen(args[0])).wat
-    const [t, f] = conciliate(gen(args[1]), gen(args[2]))
-    return tv(t.t, `(if (result ${t.t}) ${c} (then ${t.wat}) (else ${f.wat}))`)
-  }
+  // Ternary
+  '?'([cond, then, els]) {
+    const c = truthy(gen(cond))
+    const [t, e] = conciliate(gen(then), gen(els))
+    return tv(t.t, `(if (result ${t.t}) ${c.wat} (then ${t.wat}) (else ${e.wat}))`)
+  },
+
+  // Assignment
+  '='([target, value]) {
+    // Array destructuring
+    if (Array.isArray(target) && target[0] === '[' && target.length > 1 && typeof target[1] === 'string')
+      return genArrayDestructure(target.slice(1), value)
+    // Object destructuring
+    if (Array.isArray(target) && target[0] === '{' && target.length > 1) {
+      const isDestr = target.slice(1).every(p => typeof p === 'string' || (Array.isArray(p) && typeof p[0] === 'string'))
+      if (isDestr) return genObjectDestructure(target.slice(1).map(p => typeof p === 'string' ? p : p[0]), value)
+    }
+    // Array element
+    if (Array.isArray(target) && target[0] === '[]') {
+      const arr = gen(target[1]), idx = asI32(gen(target[2])), val = asF64(gen(value))
+      ctx.usedArrayType = true
+      return tv('f64', `(array.set $f64array ${arr.wat} ${idx.wat} ${val.wat}) ${val.wat}`)
+    }
+    // Simple variable
+    if (typeof target !== 'string') throw new Error('Invalid assignment target')
+    const val = gen(value)
+    ctx.addLocal(target, val.t)
+    return tv(val.t, `(local.tee $${target} ${val.wat})`)
+  },
 
   // Unary
-  if (n === 1) {
-    const a = gen(args[0])
-    switch (op) {
-      case 'u+': return asF64(a)
-      case 'u-': return a.t === 'i32'
-        ? tv('i32', `(i32.sub (i32.const 0) ${a.wat})`)
-        : tv('f64', `(f64.neg ${a.wat})`)
-      case '!': return tv('i32', `(i32.eqz ${truthy(a).wat})`)
-      case '~': return tv('i32', `(i32.xor ${asI32(a).wat} (i32.const -1))`)
-    }
-    throw new Error(`Unsupported unary: ${op}`)
+  'u+'([a]) { return asF64(gen(a)) },
+  'u-'([a]) {
+    const v = gen(a)
+    return v.t === 'i32' ? tv('i32', `(i32.sub (i32.const 0) ${v.wat})`) : tv('f64', `(f64.neg ${asF64(v).wat})`)
+  },
+  '!'([a]) { return tv('i32', `(i32.eqz ${truthy(gen(a)).wat})`) },
+  '~'([a]) { return tv('i32', `(i32.xor ${asI32(gen(a)).wat} (i32.const -1))`) },
+
+  // Arithmetic
+  '+'([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.add(va, vb) : f64.add(va, vb) },
+  '-'([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.sub(va, vb) : f64.sub(va, vb) },
+  '*'([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.mul(va, vb) : f64.mul(va, vb) },
+  '/'([a, b]) { return f64.div(gen(a), gen(b)) },
+  '%'([a, b]) { return tv('f64', `(call $f64.rem ${asF64(gen(a)).wat} ${asF64(gen(b)).wat})`) },
+  '**'([a, b]) { ctx.usedImports.add('pow'); return tv('f64', `(call $pow ${asF64(gen(a)).wat} ${asF64(gen(b)).wat})`) },
+
+  // Comparisons
+  '=='([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.eq(va, vb) : f64.eq(va, vb) },
+  '==='([a, b]) { return operators['==']([a, b]) },
+  '!='([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.ne(va, vb) : f64.ne(va, vb) },
+  '!=='([a, b]) { return operators['!=']([a, b]) },
+  '<'([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.lt_s(va, vb) : f64.lt(va, vb) },
+  '<='([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.le_s(va, vb) : f64.le(va, vb) },
+  '>'([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.gt_s(va, vb) : f64.gt(va, vb) },
+  '>='([a, b]) { const va = gen(a), vb = gen(b); return va.t === 'i32' && vb.t === 'i32' ? i32.ge_s(va, vb) : f64.ge(va, vb) },
+
+  // Bitwise
+  '&'([a, b]) { return i32.and(gen(a), gen(b)) },
+  '|'([a, b]) { return i32.or(gen(a), gen(b)) },
+  '^'([a, b]) { return i32.xor(gen(a), gen(b)) },
+  '<<'([a, b]) { return i32.shl(gen(a), gen(b)) },
+  '>>'([a, b]) { return i32.shr_s(gen(a), gen(b)) },
+  '>>>'([a, b]) { return i32.shr_u(gen(a), gen(b)) },
+
+  // Logical
+  '&&'([a, b]) {
+    const va = gen(a), vb = gen(b), cond = truthy(va)
+    const [ca, cb] = conciliate(va, vb)
+    return tv(ca.t, `(if (result ${ca.t}) ${cond.wat} (then ${cb.wat}) (else (${ca.t}.const 0)))`)
+  },
+  '||'([a, b]) {
+    const va = gen(a), vb = gen(b), cond = truthy(va)
+    const [ca, cb] = conciliate(va, vb)
+    return tv(ca.t, `(if (result ${ca.t}) ${cond.wat} (then ${ca.wat}) (else ${cb.wat}))`)
+  },
+  '??'([a, b]) {
+    const va = gen(a)
+    return va.t === 'ref' ? gen(b) : va
+  },
+
+  // Compound assignment
+  '+='([a, b]) { return operators['=']([a, ['+', a, b]]) },
+  '-='([a, b]) { return operators['=']([a, ['-', a, b]]) },
+  '*='([a, b]) { return operators['=']([a, ['*', a, b]]) },
+  '/='([a, b]) { return operators['=']([a, ['/', a, b]]) },
+  '%='([a, b]) { return operators['=']([a, ['%', a, b]]) },
+  '&='([a, b]) { return operators['=']([a, ['&', a, b]]) },
+  '|='([a, b]) { return operators['=']([a, ['|', a, b]]) },
+  '^='([a, b]) { return operators['=']([a, ['^', a, b]]) },
+  '<<='([a, b]) { return operators['=']([a, ['<<', a, b]]) },
+  '>>='([a, b]) { return operators['=']([a, ['>>', a, b]]) },
+  '>>>='([a, b]) { return operators['=']([a, ['>>>', a, b]]) },
+}
+
+// --- Helper: assignment as side effect (in comma expr) ---
+function genAssignmentSideEffect(target, value) {
+  // Array destructuring
+  if (Array.isArray(target) && target[0] === '[' && target.length > 1 && typeof target[1] === 'string') {
+    return `(drop ${genArrayDestructure(target.slice(1), value).wat})\n    `
   }
-
-  // Binary
-  if (n === 2) {
-    if (op === '&&') return genAnd(args[0], args[1])
-    if (op === '||') return genOr(args[0], args[1])
-
-    // Assignment: ['=', name, value]
-    if (op === '=') {
-      const name = args[0]
-      if (typeof name !== 'string') throw new Error('Assignment target must be identifier')
-      const val = gen(args[1])
-      ctx.addLocal(name, val.t)
-      return tv(val.t, `(local.tee $${name} ${val.wat})`)
+  // Object destructuring
+  if (Array.isArray(target) && target[0] === '{' && target.length > 1) {
+    const isDestr = target.slice(1).every(p => typeof p === 'string' || (Array.isArray(p) && typeof p[0] === 'string'))
+    if (isDestr) {
+      const vars = target.slice(1).map(p => typeof p === 'string' ? p : p[0])
+      return `(drop ${genObjectDestructure(vars, value).wat})\n    `
     }
-
-    const a = gen(args[0]), b = gen(args[1])
-
-    // Arithmetic
-    if ('+-*'.includes(op)) {
-      if (a.t === 'i32' && b.t === 'i32') {
-        const inst = op === '+' ? 'add' : op === '-' ? 'sub' : 'mul'
-        return tv('i32', `(i32.${inst} ${a.wat} ${b.wat})`)
-      }
-      const inst = op === '+' ? 'add' : op === '-' ? 'sub' : 'mul'
-      return tv('f64', `(f64.${inst} ${asF64(a).wat} ${asF64(b).wat})`)
-    }
-
-    if (op === '/') return tv('f64', `(f64.div ${asF64(a).wat} ${asF64(b).wat})`)
-    if (op === '%') return tv('f64', `(call $f64.rem ${asF64(a).wat} ${asF64(b).wat})`)
-    if (op === '**') {
-      ctx.usedImports.add('pow')
-      return tv('f64', `(call $pow ${asF64(a).wat} ${asF64(b).wat})`)
-    }
-
-    // Comparisons
-    const cmpOps = { '==': 'eq', '===': 'eq', '!=': 'ne', '!==': 'ne', '<': 'lt', '<=': 'le', '>': 'gt', '>=': 'ge' }
-    if (op in cmpOps) {
-      if (a.t === 'i32' && b.t === 'i32') {
-        const inst = cmpOps[op] === 'eq' || cmpOps[op] === 'ne' ? cmpOps[op] : cmpOps[op] + '_s'
-        return tv('i32', `(i32.${inst} ${a.wat} ${b.wat})`)
-      }
-      return tv('i32', `(f64.${cmpOps[op]} ${asF64(a).wat} ${asF64(b).wat})`)
-    }
-
-    // Bitwise
-    const bitOps = { '&': 'and', '|': 'or', '^': 'xor' }
-    if (op in bitOps) return tv('i32', `(i32.${bitOps[op]} ${asI32(a).wat} ${asI32(b).wat})`)
-
-    // Shifts
-    if (op === '<<' || op === '>>' || op === '>>>') {
-      const ai = asI32(a).wat, bi = `(i32.and ${asI32(b).wat} (i32.const 31))`
-      const inst = op === '<<' ? 'shl' : op === '>>' ? 'shr_s' : 'shr_u'
-      return tv('i32', `(i32.${inst} ${ai} ${bi})`)
-    }
-
-    // Nullish coalesce - only null/undefined trigger fallback
-    if (op === '??') {
-      if (a.t === 'ref') {
-        // null ?? b → b (ref.null is always "nullish")
-        return gen(args[1])
-      }
-      // Non-ref types (i32, f64) are never nullish, return left value
-      return a
-    }
-
-    throw new Error(`Unsupported binary: ${op}`)
   }
-
-  throw new Error(`Unsupported operator arity: ${op}(${n})`)
+  // Array element
+  if (Array.isArray(target) && target[0] === '[]') {
+    const arr = gen(target[1]), idx = asI32(gen(target[2])), val = asF64(gen(value))
+    ctx.usedArrayType = true
+    return `(array.set $f64array ${arr.wat} ${idx.wat} ${val.wat})\n    `
+  }
+  // Simple variable
+  if (typeof target === 'string') {
+    const val = gen(value)
+    ctx.addLocal(target, val.t)
+    return `(local.set $${target} ${val.wat})\n    `
+  }
+  throw new Error('Invalid assignment target')
 }
 
-// WASM GC array literal
-function genArrayLiteral(elements) {
+// --- Destructuring helpers ---
+function genArrayDestructure(vars, valueAst) {
   ctx.usedArrayType = true
-  const values = elements.map(e => asF64(gen(e)).wat)
-  return tv('array', `(array.new_fixed $f64array ${values.length} ${values.join(' ')})`)
+  const arr = gen(valueAst)
+  const temp = `_destruct${ctx.localCounter}`
+  ctx.addLocal(temp, arr.t)
+  let code = `(local.set $${temp} ${arr.wat})\n    `
+  for (let i = 0; i < vars.length; i++) {
+    if (typeof vars[i] === 'string') {
+      ctx.addLocal(vars[i], 'f64')
+      code += `(local.set $${vars[i]} (array.get $f64array (local.get $${temp}) (i32.const ${i})))\n    `
+    }
+  }
+  const last = vars[vars.length - 1]
+  return tv('f64', typeof last === 'string' ? code + `(local.get $${last})` : code + '(f64.const 0)')
 }
 
-// WASM GC array index
-function genArrayIndex(arr, idx) {
-  ctx.usedArrayType = true
-  const arrVal = gen(arr)
-  const idxVal = asI32(gen(idx))
-  return tv('f64', `(array.get $f64array ${arrVal.wat} ${idxVal.wat})`)
-}
+function genObjectDestructure(vars, valueAst) {
+  const obj = gen(valueAst)
+  if (!obj.t.startsWith('struct:')) throw new Error('Object destructuring requires struct')
+  const typeName = obj.t.slice(7)
+  let st = null
+  for (const [, s] of ctx.structTypes) if (s.typeName === typeName) { st = s; break }
+  if (!st) throw new Error(`Unknown struct: ${typeName}`)
 
-function genAnd(aAst, bAst) {
-  const a = gen(aAst), b = gen(bAst)
-  const cond = truthy(a).wat
-  const [ac, bc] = conciliate(a, b)
-  return tv(ac.t, `(if (result ${ac.t}) ${cond} (then ${bc.wat}) (else (${ac.t}.const 0)))`)
-}
-
-function genOr(aAst, bAst) {
-  const a = gen(aAst), b = gen(bAst)
-  const cond = truthy(a).wat
-  const [ac, bc] = conciliate(a, b)
-  return tv(ac.t, `(if (result ${ac.t}) ${cond} (then ${ac.wat}) (else ${bc.wat}))`)
-}
-
-function fmtNum(n) {
-  if (Object.is(n, -0)) return '-0'
-  if (Number.isNaN(n)) return 'nan'
-  if (n === Infinity) return 'inf'
-  if (n === -Infinity) return '-inf'
-  return String(n)
+  const temp = `_destruct${ctx.localCounter}`
+  ctx.addLocal(temp, obj.t)
+  let code = `(local.set $${temp} ${obj.wat})\n    `
+  for (const v of vars) {
+    if (typeof v === 'string') {
+      const idx = st.fields.indexOf(v)
+      if (idx === -1) throw new Error(`Unknown field: ${v}`)
+      ctx.addLocal(v, 'f64')
+      code += `(local.set $${v} (struct.get $${typeName} ${idx} (local.get $${temp})))\n    `
+    }
+  }
+  const last = vars[vars.length - 1]
+  return tv('f64', typeof last === 'string' ? code + `(local.get $${last})` : code + '(f64.const 0)')
 }
