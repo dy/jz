@@ -19,8 +19,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "^9.0.0",
-    "watr": "^3.2.1",
-    "tst": "^4.0.0"
+    "watr": "^4.0.0"
   },
   "keywords": [
     "javascript",
@@ -29,5 +28,8 @@
     "functional",
     "minimal",
     "wasm"
-  ]
+  ],
+  "devDependencies": {
+    "tst": "^9.0.0"
+  }
 }
