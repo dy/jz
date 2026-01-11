@@ -18,8 +18,9 @@ export async function instantiate(wasm, imports = {}) {
     const fullImports = { math: mathImports, ...imports }
     const instance = await WebAssembly.instantiate(module, fullImports)
     return {
-      run: (t = 0) => instance.exports.main(t),
-      exports: instance.exports
+      run: (t = 0) => instance.exports.main?.(t),
+      exports: instance.exports,
+      ...instance.exports  // Spread exports for convenience
     }
   } catch (error) {
     throw new Error(`WASM instantiation failed: ${error.message}`)

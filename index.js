@@ -1,6 +1,6 @@
 // jz - JS expression to WASM compiler
 import { parse, normalize } from './src/parser.js'
-import { generate, generateExpression, getContext } from './src/codegen.js'
+import { generate, generateExpression, getContext, generateFunctions } from './src/codegen.js'
 import { assembleModule, mathImports } from './src/module.js'
 import { compileWat, instantiate } from './src/wasm.js'
 
@@ -25,12 +25,15 @@ export function compile(code, options = {}) {
   if (isWat) {
     wat = assembleModule(code, {
       usedArrayType: false, usedStringType: false,
-      usedImports: new Set(), structTypes: new Map(), localDecls: []
+      usedImports: new Set(), structTypes: new Map(), localDecls: [],
+      functions: new Map(), globals: new Map()
     })
   } else {
     const ast = normalize(parse(preprocess(code)))
     const bodyWat = generateExpression(ast)
-    wat = assembleModule(bodyWat, getContext())
+    const ctx = getContext()
+    const extraFunctions = generateFunctions()
+    wat = assembleModule(bodyWat, ctx, extraFunctions)
   }
 
   return format === 'wat' ? wat : compileWat(wat)

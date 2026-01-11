@@ -6,8 +6,9 @@ export const parse = justin
 // Input format: [op, ...args] where [, value] is literal, string is identifier
 // Output: same format but with clean ops for codegen
 export function normalize(ast) {
-  // Placeholder null in AST → 0 literal
+  // Placeholder null/undefined in AST → literal
   if (ast === null) return [, 0]
+  if (ast === undefined) return [, 0]
 
   // Numbers stay as literals
   if (typeof ast === 'number') return [, ast]

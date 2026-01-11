@@ -7,31 +7,71 @@ Tiny _JavaScript to WASM compiler_, supporting modern minimal functional JS subs
 ```js
 import jz from 'jz'
 
-const { mul } = jz`export mul = (a, b) => a * b`
-mul(2, 3) === 6
+// Define and export functions
+const { add, mul } = await jz.instantiate(jz.compile(`
+  add = (a, b) => a + b,
+  mul = (x, y) => x * y
+`))
+
+add(2, 3)  // 5
+mul(4, 5)  // 20
+```
+
+### Audio Synthesis
+
+```js
+const { synth } = await jz.instantiate(jz.compile(`
+  osc = (t, freq) => sin(t * freq * PI * 2),
+  env = (t, attack, decay) => t < attack ? t / attack : exp(-(t - attack) / decay),
+  synth = (t, freq, attack, decay) => osc(t, freq) * env(t, attack, decay)
+`))
+
+synth(0.1, 440, 0.01, 0.5)  // -0.000... (decaying sine)
+```
+
+### Math Utilities
+
+```js
+const { dist, lerp, clamp } = await jz.instantiate(jz.compile(`
+  dist = (x, y) => Math.sqrt(x*x + y*y),
+  lerp = (a, b, t) => a + (b - a) * t,
+  clamp = (x, lo, hi) => min(max(x, lo), hi)
+`))
+
+dist(3, 4)        // 5
+lerp(0, 100, 0.5) // 50
+clamp(150, 0, 100) // 100
 ```
 
 ## Reference
 
+### Supported Features
+
 * Numbers: `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0o357`
-* Strings: `"abc"`, `'abc'`, `` `template ${literals}` ``
-* Values: `true`, `false`, `null`, `NaN`, `Infinity`, ~~`undefined`~~
-* Access: `a.b`, `a[b]`, `a(b)`, `a?.b`, `a?.(b)`
+* Strings: `"abc"`, `'abc'`
+* Values: `true`, `false`, `null`, `NaN`, `Infinity`, `PI`, `E`
+* Access: `a.b`, `a[b]`, `a(b)`, `a?.b`
 * Arithmetic:`+a`, `-a`, `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`
-* Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`, `a === b`, `a !== b`
+* Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`
 * Bitwise: `~a`, `a & b`, `a ^ b`, `a | b`, `a << b`, `a >> b`, `a >>> b`
 * Logic: `!a`, `a && b`, `a || b`, `a ?? b`, `a ? b : c`
-* Increments: `a++`, `a--`, `++a`, `--a`
-* Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`, `a **= b`, `a <<= b`, `a >>= b`, `a >>>= b`
-* Logical Assignment: `a ||= b`, `a &&= b`, `a ??= b`
-* Arrays: `[a, b]`, `...a`, `[a, ...b]`
-* Objects: `{a: b}`, `{a, b}`, `{...obj}`
-* Declarations: `let a, b`, `const c` (no `var`)
+* Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`
+* Arrays: `[a, b]`, `arr[i]`, `arr[i] = x`, `arr.length`
+* Objects: `{a: b}`, `{a, b}`, `obj.prop`
 * Functions: `(a, b) => c`, `a => b`, `() => c`
 * Comments: `// foo`, `/* bar */`
-* Control Flow: `if (a) {...} else if (b) {...} else {}`, `for (a;b;c) {...}`, `while (a) {...}`
-* Exceptions: `try {...} catch (e) {...}`, `throw expression`
-* Modules: `import`, `export`
+
+### Math Functions
+
+Native (WASM): `sqrt`, `abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `copysign`
+
+Imported: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `exp`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`, `cbrt`, `hypot`, `sign`, `fround`, `random`
+
+### Planned
+
+* Control Flow: `if (a) {...} else {...}`, `for`, `while`
+* Closures: capture outer variables
+* Template literals: `` `template ${literals}` ``
 
 
 ## API
@@ -39,16 +79,13 @@ mul(2, 3) === 6
 ```js
 import { compile, evaluate, instantiate } from 'jz'
 
-// Evaluate WAT expressions directly
-const result = await evaluate('(f64.add (f64.const 1) (f64.const 2))')
-console.log(result) // 3
 
 // Compile to WASM binary (default)
-const wasm = compile('(f64.add (f64.const 1) (f64.const 2))')
+const wasm = compile('1 + 2')
 console.log('WASM size:', wasm.byteLength, 'bytes')
 
 // Compile to WAT source text
-const wat = compile('(f64.add (f64.const 1) (f64.const 2))', { format: 'wat' })
+const wat = compile('1 + 2', { format: 'wat' })
 console.log('WAT source:', wat)
 
 // Compile and instantiate separately
@@ -68,16 +105,16 @@ console.log(wasmInstance.exports.main()) // 3
 # Install globally
 npm install -g jz
 
-# Evaluate WAT expressions
-jz "(f64.add (f64.const 1) (f64.const 2))"
+# Evaluate expressions
+jz "console.log(3)"
 # Output: 3
 
 # Compile to WASM binary (default)
-jz compile program.wat -o program.wasm
+jz compile program.jz -o program.wasm
 # Creates: program.wasm
 
 # Compile to WAT source text
-jz compile program.wat --format wat -o program.wat
+jz compile program.jz --format wat -o program.wat
 # Creates: program.wat (copy with stdlib)
 
 # Run WAT files directly
@@ -90,13 +127,28 @@ jz --help
 
 ## Examples
 
-_Coming soon_.
+### Color Space Conversion
 
-<!--
-* [ ] Microcontroller program
-* [ ] Floatbeat
-* [ ] Embed into website
- -->
+```js
+const { rgb2gray } = await jz.instantiate(jz.compile(`
+  rgb2gray = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b
+`))
+
+rgb2gray(255, 128, 0)  // 161.279...
+```
+
+### Floatbeat
+
+```js
+const { floatbeat } = await jz.instantiate(jz.compile(`
+  floatbeat = t => sin(t * 440 * PI * 2 / 8000) * 0.5
+`))
+
+// Generate audio samples
+for (let t = 0; t < 8000; t++) {
+  audioBuffer[t] = floatbeat(t)
+}
+```
 
 
 ## Why?

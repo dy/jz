@@ -1,52 +1,53 @@
 ## MVP
 
-* [ ] parser
-* [ ] numbers
-* [ ] strings
-* [ ] primitives
-* [ ] arithmetic
-* [ ] comparisons
-* [ ] bitwise
-* [ ] logic
-* [ ] increments
-* [ ] assignments
-* [ ] declarations
-* [ ] functions
-* [ ] Control Flow
-* [ ] Exceptions
-* [ ] Modules
-* [ ] functions
-* [ ] arrays
-* [ ] objects
-* [ ] access
-* [ ] closures
-* [ ] TC262 some tests
-* [ ] stdlib
-  * [ ] Math
-  * [ ] Number
-  * [ ] TypedArrays?
+* [x] parser (subscript/justin)
+* [x] numbers (0.1, 0xff, 0b11, 0o77)
+* [x] strings ("abc", 'xyz')
+* [x] primitives (true, false, null, NaN, Infinity, PI, E)
+* [x] arithmetic (+, -, *, /, %, **)
+* [x] comparisons (<, <=, >, >=, ==, !=)
+* [x] bitwise (~, &, |, ^, <<, >>, >>>)
+* [x] logic (!, &&, ||, ??, ?:)
+* [x] assignments (=, +=, -=, *=, /=, %=)
+* [x] arrays ([a, b], arr[i], arr[i]=x, arr.length)
+* [x] objects ({a: b}, obj.prop)
+* [x] access (a.b, a[b], a?.b)
+* [x] functions (arrow functions, exports)
+* [x] inter-function calls
+* [x] module-level constants (globals)
+* [x] Math (native + imported, all functions)
+* [ ] Control Flow (if, for, while)
+* [ ] full closures (captured non-literal variables)
+* [ ] template literals
+* [ ] destructuring in function params
+
+## Done
+
+* [x] WASM GC arrays
+* [x] WASM GC structs (objects)
+* [x] Optional chaining
+* [x] Nullish coalescing
+* [x] Short-circuit evaluation
+* [x] test262 basics
+
+## WASM Output
+
+* Simple expr: 86 bytes
+* Single fn: 66 bytes
+* Multi fn: 99 bytes
+* With trig: 108 bytes
 
 ## CLI
 
-## Proposals
-
-* [?] Pipeline Operator (value |> fn |> fn2) - Perfect for functional composition
-* [?] Record & Tuple (#{a: 1},[1, 2]`) - Immutable data structures ideal for WASM
-* [?] Pattern Matching - Expressive branching that aligns with functional programming
-* [?] Partial Application (fn(?, 2)) - Currying support for functional patterns
-* [ ] Throw Expressions - Inline error handling
-* [ ] Decimal (0.1m + 0.2m === 0.3m) - Precise arithmetic for financial/math applications
-* [?] Temporal - Modern date/time API replacing legacy Date
-* [ ] Do Expressions - Expression blocks for functional flow
-* [?] Method Parameter Decorators - Meta-programming capabilities
-* [?] Symbol Predicates - Type introspection
+* [ ] jz run
+* [ ] jz compile
 
 ## Applications
 
-* [ ] web-audio-api
-* [ ] color-space
-* [ ] zzfx
-* [ ] floatbeats
+* [x] floatbeat expressions
+* [ ] web-audio-api module
+* [ ] color-space conversions
+* [ ] zzfx synth
 
 ## Playground
 

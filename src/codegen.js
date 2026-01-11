@@ -17,14 +17,15 @@ const NATIVE_F64_BINARY = { min: 'f64.min', max: 'f64.max', copysign: 'f64.copys
 
 // --- Imported math ---
 const IMPORTED_NULLARY = ['random']
-const IMPORTED_UNARY = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'exp', 'log', 'log2', 'log10', 'cbrt', 'sign', 'round', 'fract']
-const IMPORTED_BINARY = ['pow', 'atan2']
+const IMPORTED_UNARY = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p', 'cbrt', 'sign', 'round', 'fract', 'fround']
+const IMPORTED_BINARY = ['pow', 'atan2', 'hypot']
 
 // --- Codegen context ---
 class Context {
   constructor() {
     this.locals = new Map()
     this.localDecls = []
+    this.globals = new Map()  // Module-level bindings: name -> { type, init }
     this.usedImports = new Set()
     this.usedArrayType = false
     this.usedNullRef = false
@@ -32,6 +33,9 @@ class Context {
     this.localCounter = 0
     this.structTypes = new Map()
     this.structCounter = 0
+    // Function definitions: name -> { params, body, exported }
+    this.functions = new Map()
+    this.inFunction = false  // Whether we're generating inside a function body
   }
 
   addLocal(name, type = 'f64') {
@@ -47,6 +51,15 @@ class Context {
   }
 
   getLocal(name) { return this.locals.get(name) }
+
+  addGlobal(name, type = 'f64', init = '(f64.const 0)') {
+    if (!this.globals.has(name)) {
+      this.globals.set(name, { type, init })
+    }
+    return this.globals.get(name)
+  }
+
+  getGlobal(name) { return this.globals.get(name) }
 
   getStructType(fields) {
     const sorted = [...fields].sort()
@@ -117,8 +130,12 @@ function genIdent(name) {
   if (name === 't') return tv('f64', '(local.get $t)')
   if (name === 'die') return tv('f64', '(call $die)')
   if (name in CONSTANTS) return tv('f64', `(f64.const ${fmtNum(CONSTANTS[name])})`)
+  // Check local first
   const loc = ctx.getLocal(name)
   if (loc) return tv(loc.type, `(local.get $${name})`)
+  // Check global (for module-level bindings)
+  const glob = ctx.getGlobal(name)
+  if (glob) return tv(glob.type, `(global.get $${name})`)
   throw new Error(`Unknown identifier: ${name}`)
 }
 
@@ -126,7 +143,13 @@ function genIdent(name) {
 const operators = {
   // Function call
   '()'([fn, ...args]) {
-    const name = typeof fn === 'string' ? fn : null
+    // Extract function name - handles Math.fn, simple fn
+    let name = null
+    if (typeof fn === 'string') {
+      name = fn
+    } else if (Array.isArray(fn) && fn[0] === '.' && fn[1] === 'Math' && typeof fn[2] === 'string') {
+      name = fn[2]  // Math.sqrt -> sqrt
+    }
     if (!name) throw new Error(`Invalid call: ${JSON.stringify(fn)}`)
     if (name === 'die') return tv('f64', '(call $die)')
 
@@ -171,6 +194,14 @@ const operators = {
     if (IMPORTED_BINARY.includes(name) && args.length === 2) {
       ctx.usedImports.add(name)
       return tv('f64', `(call $${name} ${asF64(gen(args[0])).wat} ${asF64(gen(args[1])).wat})`)
+    }
+    // User-defined function call
+    if (ctx.functions.has(name)) {
+      const fn = ctx.functions.get(name)
+      if (args.length !== fn.params.length)
+        throw new Error(`${name} expects ${fn.params.length} args, got ${args.length}`)
+      const argWats = args.map(a => asF64(gen(a)).wat).join(' ')
+      return tv('f64', `(call $${name} ${argWats})`)
     }
     throw new Error(`Unknown function: ${name}`)
   },
@@ -276,6 +307,22 @@ const operators = {
 
   // Assignment
   '='([target, value]) {
+    // Function definition: name = (params) => body
+    if (Array.isArray(value) && value[0] === '=>') {
+      const [, rawParams, body] = value
+      const name = typeof target === 'string' ? target : null
+      if (!name) throw new Error('Function must be assigned to a variable')
+
+      // Extract params
+      const params = extractParams(rawParams)
+
+      // Register function for later generation
+      ctx.functions.set(name, { params, body, exported: true })
+
+      // Return a reference (for now, return 0 as placeholder)
+      return tv('f64', `(f64.const 0)`)
+    }
+
     // Array destructuring
     if (Array.isArray(target) && target[0] === '[' && target.length > 1 && typeof target[1] === 'string')
       return genArrayDestructure(target.slice(1), value)
@@ -295,6 +342,11 @@ const operators = {
     const val = gen(value)
     ctx.addLocal(target, val.t)
     return tv(val.t, `(local.tee $${target} ${val.wat})`)
+  },
+
+  // Arrow function (standalone)
+  '=>'([rawParams, body]) {
+    throw new Error('Arrow functions must be assigned to a variable: name = (a) => ...')
   },
 
   // Unary
@@ -364,6 +416,31 @@ const operators = {
 
 // --- Helper: assignment as side effect (in comma expr) ---
 function genAssignmentSideEffect(target, value) {
+  // Arrow function assignment - register function, emit nothing
+  if (Array.isArray(value) && value[0] === '=>') {
+    const [, rawParams, body] = value
+    const name = typeof target === 'string' ? target : null
+    if (!name) throw new Error('Function must be assigned to a variable')
+    const params = extractParams(rawParams)
+    ctx.functions.set(name, { params, body, exported: true })
+    return ''  // No runtime code - function is compiled separately
+  }
+
+  // Simple variable with literal number or constant → create global (accessible in functions)
+  if (typeof target === 'string' && !ctx.inFunction) {
+    // Check if value is a simple numeric literal
+    if (Array.isArray(value) && value[0] === undefined && typeof value[1] === 'number') {
+      ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(value[1])})`)
+      return ''  // No runtime init needed
+    }
+    // Check if value is a constant identifier
+    if (typeof value === 'string' && value in CONSTANTS) {
+      ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(CONSTANTS[value])})`)
+      return ''
+    }
+    // Everything else (arrays, objects, expressions) → fall through to local
+  }
+
   // Array destructuring
   if (Array.isArray(target) && target[0] === '[' && target.length > 1 && typeof target[1] === 'string') {
     return `(drop ${genArrayDestructure(target.slice(1), value).wat})\n    `
@@ -429,4 +506,80 @@ function genObjectDestructure(vars, valueAst) {
   }
   const last = vars[vars.length - 1]
   return tv('f64', typeof last === 'string' ? code + `(local.get $${last})` : code + '(f64.const 0)')
+}
+
+// --- Extract params from arrow function AST ---
+function extractParams(rawParams) {
+  // No params: null, undefined, or literal [, 0] from normalize
+  if (rawParams == null) return []
+  if (Array.isArray(rawParams) && rawParams[0] === undefined) return []  // literal [, x] → no params
+
+  // Single param: just a string
+  if (typeof rawParams === 'string') return [rawParams]
+
+  // Multiple params directly: [',', 'a', 'b']
+  if (Array.isArray(rawParams) && rawParams[0] === ',') {
+    return rawParams.slice(1).filter(p => typeof p === 'string')
+  }
+
+  // Grouped: ['()', ...]
+  if (Array.isArray(rawParams) && rawParams[0] === '()') {
+    const inner = rawParams[1]
+    if (inner == null) return []
+    // Literal [, x] inside () → no params
+    if (Array.isArray(inner) && inner[0] === undefined) return []
+    if (typeof inner === 'string') return [inner]
+    // Multiple params: ['()', [',', 'a', 'b']]
+    if (Array.isArray(inner) && inner[0] === ',') {
+      return inner.slice(1).filter(p => typeof p === 'string')
+    }
+  }
+
+  throw new Error(`Invalid params: ${JSON.stringify(rawParams)}`)
+}
+
+// --- Generate function code ---
+export function generateFunction(name, params, bodyAst, parentCtx) {
+  // Create a fresh context for this function
+  const prevCtx = ctx
+  ctx = new Context()
+
+  // Copy over shared state but not locals
+  ctx.usedImports = parentCtx.usedImports
+  ctx.usedArrayType = parentCtx.usedArrayType
+  ctx.usedStringType = parentCtx.usedStringType
+  ctx.structTypes = parentCtx.structTypes
+  ctx.functions = parentCtx.functions  // Share functions for cross-calls
+  ctx.globals = parentCtx.globals      // Share globals for module-level bindings
+  ctx.inFunction = true                // Mark we're inside a function
+
+  // Add params as locals (they become the first locals)
+  for (const p of params) {
+    ctx.locals.set(p, { idx: ctx.localCounter++, type: 'f64' })
+  }
+
+  // Generate body
+  const body = asF64(gen(bodyAst))
+
+  // Build function WAT
+  const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
+  const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
+
+  const wat = `(func $${name} (export "${name}") ${paramDecls} (result f64)${localDecls}
+    ${body.wat}
+  )`
+
+  // Restore context
+  ctx = prevCtx
+
+  return wat
+}
+
+// --- Generate all registered functions ---
+export function generateFunctions() {
+  const fns = []
+  for (const [name, def] of ctx.functions) {
+    fns.push(generateFunction(name, def.params, def.body, ctx))
+  }
+  return fns
 }
