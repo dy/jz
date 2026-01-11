@@ -1,22 +1,9 @@
 // WAT module assembly
-// Combines codegen output with types, imports, and stdlib into complete module
+// Combines codegen output with types and pure WASM stdlib
+import { mathStdLib } from '../lib/math.wat.js'
 
-// Math import object for WASM instantiation
-export const mathImports = {
-  sin: Math.sin, cos: Math.cos, tan: Math.tan,
-  asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
-  sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
-  asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
-  exp: Math.exp, expm1: Math.expm1, log: Math.log, log2: Math.log2, log10: Math.log10, log1p: Math.log1p,
-  pow: Math.pow, cbrt: Math.cbrt, hypot: Math.hypot, sign: Math.sign, round: Math.round, fround: Math.fround,
-  random: Math.random,
-  fract: x => x - Math.floor(x),
-}
-
-// Import signatures
-const NULLARY = ['random']
-const UNARY = ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p', 'cbrt', 'sign', 'round', 'fract', 'fround']
-const BINARY = ['pow', 'atan2', 'hypot']
+// No JS imports needed - all math is pure WASM
+export const mathImports = {}
 
 // Generate complete WAT module
 export function assembleModule(bodyWat, ctx, extraFunctions = []) {
@@ -32,15 +19,8 @@ export function assembleModule(bodyWat, ctx, extraFunctions = []) {
     wat += `  (type $${st.typeName} (struct ${fields}))\n`
   }
 
-  // Math imports
-  for (const fn of ctx.usedImports) {
-    if (NULLARY.includes(fn))
-      wat += `  (import "math" "${fn}" (func $${fn} (result f64)))\n`
-    else if (UNARY.includes(fn))
-      wat += `  (import "math" "${fn}" (func $${fn} (param f64) (result f64)))\n`
-    else if (BINARY.includes(fn))
-      wat += `  (import "math" "${fn}" (func $${fn} (param f64 f64) (result f64)))\n`
-  }
+  // Pure WASM math stdlib - no imports
+  wat += mathStdLib()
 
   // Module-level globals
   for (const [name, g] of ctx.globals) {
