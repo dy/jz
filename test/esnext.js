@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { evaluate } from '../index.js'
+import { evaluateWat as evaluate } from './util.js'
 
 // ESNext Test Suite - Focused on minimal functional JS subset
 // Tests that align with JZ's philosophy: functional, minimal, WASM-compatible
