@@ -1,6 +1,5 @@
 // WAT to WASM compilation and instantiation
 import { compile as watrCompile } from 'watr'
-import { mathImports } from './module.js'
 
 // Compile WAT string to WASM binary
 export function compileWat(wat) {
@@ -15,8 +14,7 @@ export function compileWat(wat) {
 export async function instantiate(wasm, imports = {}) {
   try {
     const module = await WebAssembly.compile(wasm)
-    const fullImports = { math: mathImports, ...imports }
-    const instance = await WebAssembly.instantiate(module, fullImports)
+    const instance = await WebAssembly.instantiate(module, imports)
     return {
       run: (t = 0) => instance.exports.main?.(t),
       exports: instance.exports,

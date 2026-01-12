@@ -7,7 +7,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join, extname } from 'path'
-import { evaluate } from '../index.js'
+import { evaluate } from './util.js'
 
 const TEST262_DIR = './test262'
 

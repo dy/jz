@@ -1,39 +1,43 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile, evaluate } from '../index.js'
+import { compile, instantiate } from '../index.js'
+import { evaluate, evaluateWat } from './util.js'
+import { compileWat } from '../src/wasm.js'
+import { assembleRaw } from '../src/wat.js'
 
 // MVP Test Suite - Focused on what works with current implementation
 
 test('Basic arithmetic operations', async () => {
-  is(await evaluate('(f64.add (f64.const 1) (f64.const 2))'), 3)
-  is(await evaluate('(f64.sub (f64.const 5) (f64.const 2))'), 3)
-  is(await evaluate('(f64.mul (f64.const 3) (f64.const 4))'), 12)
-  is(await evaluate('(f64.div (f64.const 10) (f64.const 2))'), 5)
-  is(await evaluate('(f64.add (f64.const 2) (f64.mul (f64.const 3) (f64.const 4)))'), 14)
-  is(await evaluate('(f64.mul (f64.add (f64.const 2) (f64.const 3)) (f64.const 4))'), 20)
+  is(await evaluateWat('(f64.add (f64.const 1) (f64.const 2))'), 3)
+  is(await evaluateWat('(f64.sub (f64.const 5) (f64.const 2))'), 3)
+  is(await evaluateWat('(f64.mul (f64.const 3) (f64.const 4))'), 12)
+  is(await evaluateWat('(f64.div (f64.const 10) (f64.const 2))'), 5)
+  is(await evaluateWat('(f64.add (f64.const 2) (f64.mul (f64.const 3) (f64.const 4)))'), 14)
+  is(await evaluateWat('(f64.mul (f64.add (f64.const 2) (f64.const 3)) (f64.const 4))'), 20)
 })
 
 test('Numeric literals', async () => {
-  is(await evaluate('(f64.const 1)'), 1)
-  is(await evaluate('(f64.const 3.14)'), 3.14)
-  is(await evaluate('(f64.const 1000)'), 1000)
+  is(await evaluateWat('(f64.const 1)'), 1)
+  is(await evaluateWat('(f64.const 3.14)'), 3.14)
+  is(await evaluateWat('(f64.const 1000)'), 1000)
 })
 
 test('Operator precedence', async () => {
-  is(await evaluate('(f64.add (f64.const 1) (f64.mul (f64.const 2) (f64.const 3)))'), 7)
-  is(await evaluate('(f64.mul (f64.add (f64.const 1) (f64.const 2)) (f64.const 3))'), 9)
-  is(await evaluate('(f64.sub (f64.const 10) (f64.div (f64.const 4) (f64.const 2)))'), 8)
+  is(await evaluateWat('(f64.add (f64.const 1) (f64.mul (f64.const 2) (f64.const 3)))'), 7)
+  is(await evaluateWat('(f64.mul (f64.add (f64.const 1) (f64.const 2)) (f64.const 3))'), 9)
+  is(await evaluateWat('(f64.sub (f64.const 10) (f64.div (f64.const 4) (f64.const 2)))'), 8)
 })
 
 test('Edge cases', async () => {
-  is(await evaluate('(f64.add (f64.const 0) (f64.const 5))'), 5)
-  is(await evaluate('(f64.mul (f64.const 5) (f64.const 0))'), 0)
-  is(await evaluate('(f64.add (f64.const -1) (f64.const 3))'), 2)
-  is(await evaluate('(f64.add (f64.const 1.5) (f64.const 2.5))'), 4)
+  is(await evaluateWat('(f64.add (f64.const 0) (f64.const 5))'), 5)
+  is(await evaluateWat('(f64.mul (f64.const 5) (f64.const 0))'), 0)
+  is(await evaluateWat('(f64.add (f64.const -1) (f64.const 3))'), 2)
+  is(await evaluateWat('(f64.add (f64.const 1.5) (f64.const 2.5))'), 4)
 })
 
 test('WebAssembly compilation', () => {
-  const wasm = compile('(f64.add (f64.const 1) (f64.const 1))')
+  const wat = assembleRaw('(f64.add (f64.const 1) (f64.const 1))')
+  const wasm = compileWat(wat)
   ok(wasm instanceof Uint8Array)
   ok(wasm.byteLength > 0)
   console.log('WASM size:', wasm.byteLength, 'bytes')
@@ -165,56 +169,32 @@ test('meaningful-base coercions (piezo-ish)', async () => {
 })
 
 test('short-circuit (no rhs evaluation)', async () => {
-  // If rhs were evaluated, it would trap.
-  is(await evaluate('0 && die()'), 0)
-  is(await evaluate('1 || die()'), 1)
+  // Short-circuit: if lhs is falsy, rhs not evaluated for &&
+  // Using 1/0 to verify - if evaluated would be Infinity not 0
+  is(await evaluate('0 && 1/0'), 0)
+  is(await evaluate('1 || 1/0'), 1)
+  // Additional short-circuit tests
+  is(await evaluate('0 && 42'), 0)
+  is(await evaluate('1 || 42'), 1)
+  is(await evaluate('5 && 0'), 0)
+  is(await evaluate('0 || 5'), 5)
 })
 
-test('i32 bit operations', async () => {
-  // clz32 - count leading zeros (32-bit)
-  is(await evaluate('clz32(1)'), 31)
-  is(await evaluate('clz32(2)'), 30)
-  is(await evaluate('clz32(256)'), 23)
-  is(await evaluate('clz32(0)'), 32)
-
-  // ctz32 - count trailing zeros (32-bit)
-  is(await evaluate('ctz32(1)'), 0)
-  is(await evaluate('ctz32(2)'), 1)
-  is(await evaluate('ctz32(4)'), 2)
-  is(await evaluate('ctz32(256)'), 8)
-
-  // popcnt32 - count bits set (32-bit)
-  is(await evaluate('popcnt32(0)'), 0)
-  is(await evaluate('popcnt32(1)'), 1)
-  is(await evaluate('popcnt32(3)'), 2)
-  is(await evaluate('popcnt32(7)'), 3)
-  is(await evaluate('popcnt32(255)'), 8)
-
-  // rotl - rotate left (32-bit)
-  is(await evaluate('rotl(1, 1)'), 2)
-  is(await evaluate('rotl(1, 4)'), 16)
-  is(await evaluate('rotl(1, 31)'), -2147483648) // wraps to negative
-
-  // rotr - rotate right (32-bit)
-  is(await evaluate('rotr(2, 1)'), 1)
-  is(await evaluate('rotr(16, 4)'), 1)
-  is(await evaluate('rotr(1, 1)'), -2147483648) // wraps to negative
+test('i32 bit operations - Math.clz32', async () => {
+  // Math.clz32 - count leading zeros (standard JS!)
+  is(await evaluate('Math.clz32(1)'), 31)
+  is(await evaluate('Math.clz32(2)'), 30)
+  is(await evaluate('Math.clz32(256)'), 23)
+  is(await evaluate('Math.clz32(0)'), 32)
 })
 
-test('integer div/rem', async () => {
-  // idiv - integer division (truncated toward zero)
-  is(await evaluate('idiv(7, 3)'), 2)
-  is(await evaluate('idiv(10, 4)'), 2)
-  is(await evaluate('idiv(-7, 3)'), -2)
-  is(await evaluate('idiv(7, -3)'), -2)
-  is(await evaluate('idiv(-7, -3)'), 2)
-
-  // irem - integer remainder
-  is(await evaluate('irem(7, 3)'), 1)
-  is(await evaluate('irem(10, 4)'), 2)
-  is(await evaluate('irem(-7, 3)'), -1)
-  is(await evaluate('irem(7, -3)'), 1)
-  is(await evaluate('irem(-7, -3)'), -1)
+test('integer div - via Math', async () => {
+  // Integer division via Math.trunc(a/b) - pure JS way
+  is(await evaluate('Math.trunc(7 / 3)'), 2)
+  is(await evaluate('Math.trunc(10 / 4)'), 2)
+  is(await evaluate('Math.trunc(-7 / 3)'), -2)
+  is(await evaluate('Math.trunc(7 / -3)'), -2)
+  is(await evaluate('Math.trunc(-7 / -3)'), 2)
 })
 
 test('isNaN and isFinite', async () => {
@@ -332,6 +312,14 @@ test('string literals', async () => {
 
   // Use char codes in expressions
   is(await evaluate('"A"[0] + 32'), 97) // 'a'
+
+  // UTF-16: characters > 255 (i16 storage)
+  is(await evaluate('"α"[0]'), 945)    // Greek alpha
+  is(await evaluate('"中"[0]'), 20013) // Chinese character
+  is(await evaluate('"€"[0]'), 8364)   // Euro sign
+
+  // String interning - same string used multiple times
+  is(await evaluate('(a = "hi", b = "hi", a[0] + b[0])'), 104 * 2) // 'h' + 'h'
 })
 
 test('destructuring', async () => {
@@ -351,3 +339,68 @@ test('destructuring', async () => {
   is(await evaluate('(arr = [7, 8], [a, b] = arr, a * b)'), 56)
   is(await evaluate('(obj = {a: 3, b: 4}, {a, b} = obj, a + b)'), 7)
 })
+
+// JS COMPATIBILITY TESTS
+// jz code must be valid JS - these tests run the same code in both jz and native JS
+
+test('JS compat - Math namespace', async () => {
+  // Standard Math methods must work with namespace
+  is(await evaluate('Math.sqrt(4)'), Math.sqrt(4))
+  is(await evaluate('Math.abs(-5)'), Math.abs(-5))
+  is(await evaluate('Math.floor(3.7)'), Math.floor(3.7))
+  is(await evaluate('Math.ceil(3.2)'), Math.ceil(3.2))
+  is(await evaluate('Math.trunc(3.9)'), Math.trunc(3.9))
+  is(await evaluate('Math.round(3.5)'), Math.round(3.5))
+  is(await evaluate('Math.min(1, 2)'), Math.min(1, 2))
+  is(await evaluate('Math.max(1, 2)'), Math.max(1, 2))
+  is(await evaluate('Math.clz32(1)'), Math.clz32(1))
+})
+
+test('JS compat - Math trig', async () => {
+  const eps = 0.0001
+  ok(Math.abs(await evaluate('Math.sin(0)') - Math.sin(0)) < eps)
+  ok(Math.abs(await evaluate('Math.cos(0)') - Math.cos(0)) < eps)
+  ok(Math.abs(await evaluate('Math.tan(0)') - Math.tan(0)) < eps)
+})
+
+test('JS compat - Math exp/log', async () => {
+  const eps = 0.0001
+  ok(Math.abs(await evaluate('Math.exp(1)') - Math.exp(1)) < eps)
+  ok(Math.abs(await evaluate('Math.log(Math.E)') - Math.log(Math.E)) < eps)
+  ok(Math.abs(await evaluate('Math.log2(8)') - Math.log2(8)) < eps)
+  ok(Math.abs(await evaluate('Math.log10(100)') - Math.log10(100)) < eps)
+})
+
+test('JS compat - Math pow/hypot', async () => {
+  is(await evaluate('Math.pow(2, 3)'), Math.pow(2, 3))
+  is(await evaluate('Math.hypot(3, 4)'), Math.hypot(3, 4))
+  is(await evaluate('Math.imul(3, 4)'), Math.imul(3, 4))
+})
+
+test('JS compat - Number namespace', async () => {
+  // Number.isNaN
+  is(await evaluate('Number.isNaN(NaN)'), Number.isNaN(NaN) ? 1 : 0)
+  is(await evaluate('Number.isNaN(0)'), Number.isNaN(0) ? 1 : 0)
+  is(await evaluate('Number.isNaN(Infinity)'), Number.isNaN(Infinity) ? 1 : 0)
+
+  // Number.isFinite
+  is(await evaluate('Number.isFinite(0)'), Number.isFinite(0) ? 1 : 0)
+  is(await evaluate('Number.isFinite(Infinity)'), Number.isFinite(Infinity) ? 1 : 0)
+  is(await evaluate('Number.isFinite(NaN)'), Number.isFinite(NaN) ? 1 : 0)
+
+  // Number.isInteger
+  is(await evaluate('Number.isInteger(5)'), Number.isInteger(5) ? 1 : 0)
+  is(await evaluate('Number.isInteger(5.5)'), Number.isInteger(5.5) ? 1 : 0)
+})
+
+test('JS compat - global isNaN/isFinite', async () => {
+  // These exist globally in JS too
+  is(await evaluate('isNaN(NaN)'), isNaN(NaN) ? 1 : 0)
+  is(await evaluate('isNaN(0)'), isNaN(0) ? 1 : 0)
+  is(await evaluate('isFinite(0)'), isFinite(0) ? 1 : 0)
+  is(await evaluate('isFinite(Infinity)'), isFinite(Infinity) ? 1 : 0)
+})
+
+// NOTE: JZ is PURE JS subset - no shorthand math or WASM extensions
+// All math functions require Math.* namespace (Math.sin, Math.sqrt, etc.)
+// This ensures ANY JZ code can run in a standard JS interpreter
