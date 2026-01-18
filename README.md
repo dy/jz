@@ -182,20 +182,25 @@ JZ is minimal modern subset that maps directly to WebAssembly.
 ### Goals
 
 * _Lightweight_ – embed anywhere, from websites to microcontrollers.
-* _Fast_ – compiles faster than `eval` parses.
-* _Tiny output_ – no runtime, no heap.
+* _Fast_ – compiles to WASM faster than `eval` parses.
+* _Tiny output_ – no runtime, no heap, no wrappers.
+* _Seamless JS integration_ – export/import, same func signatures.
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
-Porffor is brilliant, but aligns to TC39. JZ stays small and flexible.
+Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small and flexible.
 
 ### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 
 AssemblyScript is TypeScript-based. JZ stays pure JS.
 
+### Why not [piezo](https://github.com/dy/piezo)?
+
+Piezo offers extra features like groups, pipes, units, ranges and extra operators. JZ is a possible first step for it.
+
 ### Why _jz_?
 
-JavaScript Zero – stripped to essentials. Also jazzy.
+JavaScript Zero – a return to core, stripped to essentials. Also jazzy.
 
 ## Built With
 
