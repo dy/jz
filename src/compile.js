@@ -306,6 +306,556 @@ function resolveCall(namespace, name, args, receiver = null) {
     (local.get ${acc})`)
         }
       }
+      // Array.filter
+      if (name === 'filter' && args.length === 1) {
+        ctx.usedArrayType = true
+        const callback = args[0]
+        if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.filter requires arrow function')
+        const [, params, body] = callback
+        const paramName = extractParams(params)[0] || '_v'
+        const id = ctx.loopCounter++
+        const arr = `$_filter_arr_${id}`, result = `$_filter_result_${id}`, idx = `$_filter_i_${id}`, len = `$_filter_len_${id}`, outIdx = `$_filter_out_${id}`, val = `$_filter_val_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(result.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(outIdx.slice(1), 'i32')
+        ctx.addLocal(val.slice(1), 'f64')
+        ctx.addLocal(paramName, 'f64')
+        if (opts.gc) {
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${result} (array.new $f64array (f64.const 0) (local.get ${len})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${outIdx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${val} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (local.set $${paramName} (local.get ${val}))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (array.set $f64array (local.get ${result}) (local.get ${outIdx}) (local.get ${val}))
+          (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (local.get ${len})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${outIdx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${val} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (local.set $${paramName} (local.get ${val}))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${outIdx}) (i32.const 3))) (local.get ${val}))
+          (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.find
+      if (name === 'find' && args.length === 1) {
+        ctx.usedArrayType = true
+        const callback = args[0]
+        if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.find requires arrow function')
+        const [, params, body] = callback
+        const paramName = extractParams(params)[0] || '_v'
+        const id = ctx.loopCounter++
+        const arr = `$_find_arr_${id}`, idx = `$_find_i_${id}`, len = `$_find_len_${id}`, val = `$_find_val_${id}`, found = `$_find_found_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(val.slice(1), 'f64')
+        ctx.addLocal(found.slice(1), 'f64')
+        ctx.addLocal(paramName, 'f64')
+        if (opts.gc) {
+          return tv('f64', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${found} (f64.const nan))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${val} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (local.set $${paramName} (local.get ${val}))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${found} (local.get ${val}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${found})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('f64', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${found} (f64.const nan))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${val} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (local.set $${paramName} (local.get ${val}))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${found} (local.get ${val}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${found})`)
+        }
+      }
+      // Array.findIndex
+      if (name === 'findIndex' && args.length === 1) {
+        ctx.usedArrayType = true
+        const callback = args[0]
+        if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.findIndex requires arrow function')
+        const [, params, body] = callback
+        const paramName = extractParams(params)[0] || '_v'
+        const id = ctx.loopCounter++
+        const arr = `$_findi_arr_${id}`, idx = `$_findi_i_${id}`, len = `$_findi_len_${id}`, result = `$_findi_result_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'i32')
+        ctx.addLocal(paramName, 'f64')
+        if (opts.gc) {
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.indexOf
+      if (name === 'indexOf' && args.length >= 1) {
+        ctx.usedArrayType = true
+        const id = ctx.loopCounter++
+        const arr = `$_indexof_arr_${id}`, idx = `$_indexof_i_${id}`, len = `$_indexof_len_${id}`, result = `$_indexof_result_${id}`, target = `$_indexof_target_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'i32')
+        ctx.addLocal(target.slice(1), 'f64')
+        const startIdx = args.length >= 2 ? asI32(gen(args[1]))[1] : '(i32.const 0)'
+        if (opts.gc) {
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${target} ${asF64(gen(args[0]))[1]})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} ${startIdx})
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (f64.eq (array.get $f64array (local.get ${arr}) (local.get ${idx})) (local.get ${target}))
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${target} ${asF64(gen(args[0]))[1]})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} ${startIdx})
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (f64.eq (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))) (local.get ${target}))
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.includes
+      if (name === 'includes' && args.length >= 1) {
+        ctx.usedArrayType = true
+        const id = ctx.loopCounter++
+        const arr = `$_includes_arr_${id}`, idx = `$_includes_i_${id}`, len = `$_includes_len_${id}`, result = `$_includes_result_${id}`, target = `$_includes_target_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'i32')
+        ctx.addLocal(target.slice(1), 'f64')
+        if (opts.gc) {
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${target} ${asF64(gen(args[0]))[1]})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (f64.eq (array.get $f64array (local.get ${arr}) (local.get ${idx})) (local.get ${target}))
+        (then
+          (local.set ${result} (i32.const 1))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${target} ${asF64(gen(args[0]))[1]})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (f64.eq (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))) (local.get ${target}))
+        (then
+          (local.set ${result} (i32.const 1))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.every
+      if (name === 'every' && args.length === 1) {
+        ctx.usedArrayType = true
+        const callback = args[0]
+        if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.every requires arrow function')
+        const [, params, body] = callback
+        const paramName = extractParams(params)[0] || '_v'
+        const id = ctx.loopCounter++
+        const arr = `$_every_arr_${id}`, idx = `$_every_i_${id}`, len = `$_every_len_${id}`, result = `$_every_result_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'i32')
+        ctx.addLocal(paramName, 'f64')
+        if (opts.gc) {
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (if (i32.eqz ${truthy(gen(body))[1]})
+        (then
+          (local.set ${result} (i32.const 0))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (if (i32.eqz ${truthy(gen(body))[1]})
+        (then
+          (local.set ${result} (i32.const 0))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.some
+      if (name === 'some' && args.length === 1) {
+        ctx.usedArrayType = true
+        const callback = args[0]
+        if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.some requires arrow function')
+        const [, params, body] = callback
+        const paramName = extractParams(params)[0] || '_v'
+        const id = ctx.loopCounter++
+        const arr = `$_some_arr_${id}`, idx = `$_some_i_${id}`, len = `$_some_len_${id}`, result = `$_some_result_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'i32')
+        ctx.addLocal(paramName, 'f64')
+        if (opts.gc) {
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${result} (i32.const 1))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('i32', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (if ${truthy(gen(body))[1]}
+        (then
+          (local.set ${result} (i32.const 1))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.slice
+      if (name === 'slice' && args.length >= 0) {
+        ctx.usedArrayType = true
+        const id = ctx.loopCounter++
+        const arr = `$_slice_arr_${id}`, idx = `$_slice_i_${id}`, len = `$_slice_len_${id}`, result = `$_slice_result_${id}`, start = `$_slice_start_${id}`, end = `$_slice_end_${id}`, newLen = `$_slice_newlen_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'array')
+        ctx.addLocal(start.slice(1), 'i32')
+        ctx.addLocal(end.slice(1), 'i32')
+        ctx.addLocal(newLen.slice(1), 'i32')
+        const startArg = args.length >= 1 ? asI32(gen(args[0]))[1] : '(i32.const 0)'
+        if (opts.gc) {
+          const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : `(array.len (local.get ${arr}))`
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${start} ${startArg})
+    (local.set ${end} ${endArg})
+    ;; Handle negative indices
+    (if (i32.lt_s (local.get ${start}) (i32.const 0))
+      (then (local.set ${start} (i32.add (local.get ${len}) (local.get ${start})))))
+    (if (i32.lt_s (local.get ${end}) (i32.const 0))
+      (then (local.set ${end} (i32.add (local.get ${len}) (local.get ${end})))))
+    ;; Clamp
+    (if (i32.lt_s (local.get ${start}) (i32.const 0)) (then (local.set ${start} (i32.const 0))))
+    (if (i32.gt_s (local.get ${end}) (local.get ${len})) (then (local.set ${end} (local.get ${len}))))
+    (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
+    (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
+    (local.set ${result} (array.new $f64array (f64.const 0) (local.get ${newLen})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
+      (array.set $f64array (local.get ${result}) (local.get ${idx})
+        (array.get $f64array (local.get ${arr}) (i32.add (local.get ${start}) (local.get ${idx}))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : `(call $__ptr_len (local.get ${arr}))`
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${start} ${startArg})
+    (local.set ${end} ${endArg})
+    ;; Handle negative indices
+    (if (i32.lt_s (local.get ${start}) (i32.const 0))
+      (then (local.set ${start} (i32.add (local.get ${len}) (local.get ${start})))))
+    (if (i32.lt_s (local.get ${end}) (i32.const 0))
+      (then (local.set ${end} (i32.add (local.get ${len}) (local.get ${end})))))
+    ;; Clamp
+    (if (i32.lt_s (local.get ${start}) (i32.const 0)) (then (local.set ${start} (i32.const 0))))
+    (if (i32.gt_s (local.get ${end}) (local.get ${len})) (then (local.set ${end} (local.get ${len}))))
+    (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
+    (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
+    (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (local.get ${newLen})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
+      (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${idx}) (i32.const 3)))
+        (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (i32.add (local.get ${start}) (local.get ${idx})) (i32.const 3)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // Array.reverse
+      if (name === 'reverse' && args.length === 0) {
+        ctx.usedArrayType = true
+        const id = ctx.loopCounter++
+        const arr = `$_rev_arr_${id}`, idx = `$_rev_i_${id}`, len = `$_rev_len_${id}`, tmp = `$_rev_tmp_${id}`, j = `$_rev_j_${id}`
+        ctx.addLocal(arr.slice(1), 'array')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(tmp.slice(1), 'f64')
+        ctx.addLocal(j.slice(1), 'i32')
+        if (opts.gc) {
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (array.len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (local.set ${j} (i32.sub (i32.sub (local.get ${len}) (local.get ${idx})) (i32.const 1)))
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${j})))
+      (local.set ${tmp} (array.get $f64array (local.get ${arr}) (local.get ${idx})))
+      (array.set $f64array (local.get ${arr}) (local.get ${idx}) (array.get $f64array (local.get ${arr}) (local.get ${j})))
+      (array.set $f64array (local.get ${arr}) (local.get ${j}) (local.get ${tmp}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${arr})`)
+        } else {
+          ctx.usedMemory = true
+          return tv('array', `(local.set ${arr} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${arr})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (local.set ${j} (i32.sub (i32.sub (local.get ${len}) (local.get ${idx})) (i32.const 1)))
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${j})))
+      (local.set ${tmp} (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      (f64.store (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${idx}) (i32.const 3)))
+        (f64.load (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${j}) (i32.const 3)))))
+      (f64.store (i32.add (call $__ptr_offset (local.get ${arr})) (i32.shl (local.get ${j}) (i32.const 3))) (local.get ${tmp}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${arr})`)
+        }
+      }
+    }
+    // String methods
+    if (rt === 'string') {
+      // String.length is handled via '.' operator
+      // String.slice
+      if (name === 'slice' && args.length >= 0) {
+        ctx.usedStringType = true
+        const id = ctx.loopCounter++
+        const str = `$_sslice_str_${id}`, idx = `$_sslice_i_${id}`, len = `$_sslice_len_${id}`, result = `$_sslice_result_${id}`, start = `$_sslice_start_${id}`, end = `$_sslice_end_${id}`, newLen = `$_sslice_newlen_${id}`
+        ctx.addLocal(str.slice(1), 'string')
+        ctx.addLocal(idx.slice(1), 'i32')
+        ctx.addLocal(len.slice(1), 'i32')
+        ctx.addLocal(result.slice(1), 'string')
+        ctx.addLocal(start.slice(1), 'i32')
+        ctx.addLocal(end.slice(1), 'i32')
+        ctx.addLocal(newLen.slice(1), 'i32')
+        const startArg = args.length >= 1 ? asI32(gen(args[0]))[1] : '(i32.const 0)'
+        if (opts.gc) {
+          const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : `(array.len (local.get ${str}))`
+          return tv('string', `(local.set ${str} ${rw})
+    (local.set ${len} (array.len (local.get ${str})))
+    (local.set ${start} ${startArg})
+    (local.set ${end} ${endArg})
+    (if (i32.lt_s (local.get ${start}) (i32.const 0))
+      (then (local.set ${start} (i32.add (local.get ${len}) (local.get ${start})))))
+    (if (i32.lt_s (local.get ${end}) (i32.const 0))
+      (then (local.set ${end} (i32.add (local.get ${len}) (local.get ${end})))))
+    (if (i32.lt_s (local.get ${start}) (i32.const 0)) (then (local.set ${start} (i32.const 0))))
+    (if (i32.gt_s (local.get ${end}) (local.get ${len})) (then (local.set ${end} (local.get ${len}))))
+    (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
+    (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
+    (local.set ${result} (array.new $string (i32.const 0) (local.get ${newLen})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
+      (array.set $string (local.get ${result}) (local.get ${idx})
+        (array.get_u $string (local.get ${str}) (i32.add (local.get ${start}) (local.get ${idx}))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        } else {
+          ctx.usedMemory = true
+          const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : `(call $__ptr_len (local.get ${str}))`
+          return tv('string', `(local.set ${str} ${rw})
+    (local.set ${len} (call $__ptr_len (local.get ${str})))
+    (local.set ${start} ${startArg})
+    (local.set ${end} ${endArg})
+    (if (i32.lt_s (local.get ${start}) (i32.const 0))
+      (then (local.set ${start} (i32.add (local.get ${len}) (local.get ${start})))))
+    (if (i32.lt_s (local.get ${end}) (i32.const 0))
+      (then (local.set ${end} (i32.add (local.get ${len}) (local.get ${end})))))
+    (if (i32.lt_s (local.get ${start}) (i32.const 0)) (then (local.set ${start} (i32.const 0))))
+    (if (i32.gt_s (local.get ${end}) (local.get ${len})) (then (local.set ${end} (local.get ${len}))))
+    (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
+    (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
+    (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${newLen})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
+      (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${idx}) (i32.const 1)))
+        (i32.load16_u (i32.add (call $__ptr_offset (local.get ${str})) (i32.shl (i32.add (local.get ${start}) (local.get ${idx})) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+        }
+      }
+      // String.indexOf
+      if (name === 'indexOf' && args.length >= 1) {
+        ctx.usedStringType = true
+        const searchVal = gen(args[0])
+        // For simplicity, only support single char search (number)
+        if (searchVal[0] === 'i32' || searchVal[0] === 'f64') {
+          const id = ctx.loopCounter++
+          const str = `$_sindexof_str_${id}`, idx = `$_sindexof_i_${id}`, len = `$_sindexof_len_${id}`, result = `$_sindexof_result_${id}`, target = `$_sindexof_target_${id}`
+          ctx.addLocal(str.slice(1), 'string')
+          ctx.addLocal(idx.slice(1), 'i32')
+          ctx.addLocal(len.slice(1), 'i32')
+          ctx.addLocal(result.slice(1), 'i32')
+          ctx.addLocal(target.slice(1), 'i32')
+          if (opts.gc) {
+            return tv('i32', `(local.set ${str} ${rw})
+    (local.set ${target} ${asI32(searchVal)[1]})
+    (local.set ${len} (array.len (local.get ${str})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (i32.eq (array.get_u $string (local.get ${str}) (local.get ${idx})) (local.get ${target}))
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+          } else {
+            ctx.usedMemory = true
+            return tv('i32', `(local.set ${str} ${rw})
+    (local.set ${target} ${asI32(searchVal)[1]})
+    (local.set ${len} (call $__ptr_len (local.get ${str})))
+    (local.set ${idx} (i32.const 0))
+    (local.set ${result} (i32.const -1))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (if (i32.eq (i32.load16_u (i32.add (call $__ptr_offset (local.get ${str})) (i32.shl (local.get ${idx}) (i32.const 1)))) (local.get ${target}))
+        (then
+          (local.set ${result} (local.get ${idx}))
+          (br $done_${id})))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`)
+          }
+        }
+      }
     }
     throw new Error(`Unknown method: .${name}`)
   }
@@ -659,6 +1209,77 @@ const operators = {
   '{}'([body]) {
     if (!Array.isArray(body) || body[0] !== ';') return gen(body)
     return operators[';'](body.slice(1))
+  },
+
+  // If statement
+  'if'([cond, then, els]) {
+    const [, cw] = truthy(gen(cond))
+    if (els === undefined) {
+      // if without else - returns 0 when false
+      const [t, tw] = asF64(gen(then))
+      return tv(t, `(if (result ${t}) ${cw} (then ${tw}) (else (${t}.const 0)))`)
+    }
+    // if/else
+    const [[t, tw], [, ew]] = conciliate(gen(then), gen(els))
+    return tv(t, `(if (result ${t}) ${cw} (then ${tw}) (else ${ew}))`)
+  },
+
+  // Break and continue
+  'break'([label]) {
+    // Find the innermost loop's break label
+    const id = ctx.loopCounter - 1
+    if (id < 0) throw new Error('break outside of loop')
+    return tv('f64', `(br $break_${id})`)
+  },
+
+  'continue'([label]) {
+    // Find the innermost loop's continue label
+    const id = ctx.loopCounter - 1
+    if (id < 0) throw new Error('continue outside of loop')
+    return tv('f64', `(br $continue_${id})`)
+  },
+
+  // typeof and void
+  'typeof'([a]) {
+    // In WASM context, typeof returns type strings as encoded numbers
+    // 0: undefined, 1: number, 2: string, 3: boolean, 4: object, 5: function
+    const val = gen(a)
+    if (val[0] === 'f64') return tv('i32', '(i32.const 1)')  // number
+    if (val[0] === 'i32') return tv('i32', '(i32.const 3)')  // boolean
+    if (val[0] === 'string') return tv('i32', '(i32.const 2)')  // string
+    if (val[0] === 'ref') return tv('i32', '(i32.const 0)')  // undefined (null ref)
+    if (val[0] === 'array' || val[0] === 'object') return tv('i32', '(i32.const 4)')  // object
+    return tv('i32', '(i32.const 1)')  // default to number
+  },
+
+  'void'([a]) {
+    // void evaluates expression and returns undefined (0)
+    const [, w] = gen(a)
+    return tv('f64', `(drop ${w}) (f64.const 0)`)
+  },
+
+  // Template literals
+  '\`'(parts) {
+    // Template literal: [`parts] where parts alternate between strings and expressions
+    // For now, return concatenation length or the first string if simple
+    // Full string concatenation requires memory allocation
+    if (parts.length === 1) {
+      // Simple string without interpolation
+      if (Array.isArray(parts[0]) && parts[0][0] === null) {
+        return genLiteral(parts[0][1])
+      }
+    }
+    // For expressions, we'd need string concatenation - for now return first part or 0
+    // TODO: implement full string concatenation
+    ctx.usedStringType = true
+    let totalLen = 0
+    for (const part of parts) {
+      if (Array.isArray(part) && part[0] === null && typeof part[1] === 'string') {
+        totalLen += part[1].length
+      }
+    }
+    // Return length as proxy for now
+    return tv('i32', `(i32.const ${totalLen})`)
   },
 
   // Statements
