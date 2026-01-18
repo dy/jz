@@ -10,14 +10,19 @@ const ALLOWED = new Set([
   '&&', '||', '!', '??',
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=',
   '?',            // ternary
+  'if',           // if/else statement
   'for', 'while',
+  'break', 'continue',
   '{}',           // block statement
   ';',            // statements
   '=>', '()', 'return',
   '[]', '[',      // array indexing / array literal
+  '{',            // object literal
   '.', '?.', '?.[]', // property / optional access
   ',',
   'let', 'const', 'var', 'function',
+  'typeof', 'void',
+  '\`',           // template literals
 ])
 
 // Allowed namespaces
@@ -237,6 +242,22 @@ const handlers = {
     return ['while', expr(cond, ctx), expr(body, ctx)]
   },
 
+  // If statement
+  'if'(op, [cond, then, els], ctx) {
+    return els !== undefined
+      ? ['if', expr(cond, ctx), expr(then, ctx), expr(els, ctx)]
+      : ['if', expr(cond, ctx), expr(then, ctx)]
+  },
+
+  // Break and continue
+  'break'(op, [label], ctx) {
+    return label ? ['break', label] : ['break']
+  },
+
+  'continue'(op, [label], ctx) {
+    return label ? ['continue', label] : ['continue']
+  },
+
   // Ternary
   '?'(op, [cond, then, els], ctx) {
     return ['?', expr(cond, ctx), expr(then, ctx), expr(els, ctx)]
@@ -255,6 +276,21 @@ const handlers = {
   // Return
   'return'(op, [value], ctx) {
     return value !== undefined ? ['return', expr(value, ctx)] : ['return']
+  },
+
+  // typeof
+  'typeof'(op, [value], ctx) {
+    return ['typeof', expr(value, ctx)]
+  },
+
+  // void
+  'void'(op, [value], ctx) {
+    return ['void', expr(value, ctx)]
+  },
+
+  // Template literals
+  '\`'(op, parts, ctx) {
+    return ['\`', ...parts.map(p => expr(p, ctx))]
   },
 }
 

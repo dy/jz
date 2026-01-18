@@ -34,14 +34,15 @@
   * [ ] Add validation
   * [ ] Add optimizations
   * [ ] Remove var, function
-* [ ] if/else, early return, break/continue
-* [ ] full closures
-* [ ] tempalte literals
+* [x] if/else, break/continue
+* [x] typeof, void
+* [x] array methods (filter, find, findIndex, indexOf, includes, every, some, slice, reverse)
+* [x] string ops (slice, indexOf)
+* [x] template literals (basic)
+* [ ] full closures (nested function variable capture)
 * [ ] destructuring func params, rest/spread
-* [ ] string ops
-* [ ] array methods
-* [ ] switch statement
-* [ ] typeof, void
+* [ ] switch statement (not supported by jessie parser)
+* [ ] early return (requires function-level return handling)
 * [ ] metacircularity
 * [ ] test262
 * [ ] WASM to C / ASM

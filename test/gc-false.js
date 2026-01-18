@@ -115,7 +115,7 @@ test('gc:true vs gc:false - same results', async () => {
     '[1, 2, 3].map(x => x + 1)[0]',
     '[1, 2, 3, 4].reduce((a, b) => a + b)',
   ]
-  
+
   for (const code of tests) {
     const gcTrue = await evaluate(code, 0, { gc: true })
     const gcFalse = await evaluate(code, 0, { gc: false })
