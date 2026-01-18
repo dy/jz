@@ -88,6 +88,9 @@ console.log('WASM size:', wasm.byteLength, 'bytes')
 const wat = compile('1 + 2', { format: 'wat' })
 console.log('WAT source:', wat)
 
+// Compile with gc:false (memory-based arrays/objects)
+const wasmNoGc = compile('[1,2,3]', { gc: false })
+
 // Compile and instantiate separately
 const instance = await instantiate(wasm)
 const runResult = instance.run()
@@ -98,6 +101,22 @@ const module = await WebAssembly.compile(wasm)
 const wasmInstance = await WebAssembly.instantiate(module)
 console.log(wasmInstance.exports.main()) // 3
 ```
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `format` | `'wasm'` | Output format: `'wasm'` (binary) or `'wat'` (text) |
+| `gc` | `true` | Use WASM GC arrays/objects. Set `false` for linear memory-based encoding |
+
+#### gc: false
+
+Encodes arrays/objects in linear memory with pointer format:
+- **Pointer encoding**: `[type:4][length:28][offset:32]` packed as f64
+- **Types**: F64_ARRAY=0, I32_ARRAY=1, STRING=2, I8_ARRAY=3, OBJECT=4
+- **Memory**: Bump allocator starting at offset 1024
+
+Useful for environments without WASM GC support or when exporting memory to JS.
 
 ### CLI
 
@@ -183,4 +202,4 @@ JavaScript Zero – stripped to essentials. Also jazzy.
 * [subscript](https://github.com/dy/subscript) – parser
 * [watr](https://www.npmjs.com/package/watr) – WAT to WASM
 
-<p align=center><a href="https://github.com/krishnized/license/">🕉</a></p>
+<p align=center><a href="https://github.com/krishnized/license/">ॐ</a></p>

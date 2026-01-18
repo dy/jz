@@ -16,26 +16,43 @@
 * [x] inter-function calls
 * [x] module-level constants (globals)
 * [x] Math (native + imported, all functions)
-* [ ] Control Flow (if, for, while)
-* [ ] full closures (captured non-literal variables)
-* [ ] template literals
-* [ ] destructuring in function params
-
-## Done
-
 * [x] WASM GC arrays
 * [x] WASM GC structs (objects)
 * [x] Optional chaining
 * [x] Nullish coalescing
 * [x] Short-circuit evaluation
 * [x] test262 basics
+* [x] gc:false mode (memory-based arrays/objects, no GC)
+  * [x] array literals, indexing, mutation
+  * [x] object literals, property access
+  * [x] Array constructor
+  * [x] array destructuring, object destructuring
+  * [x] array.map, array.reduce
+  * [x] optional chaining
+  * [x] string literals and charCodeAt
+* [ ] Jessie-based
+  * [ ] Add validation
+  * [ ] Add optimizations
+  * [ ] Remove var, function
+* [ ] if/else, early return, break/continue
+* [ ] full closures
+* [ ] tempalte literals
+* [ ] destructuring func params, rest/spread
+* [ ] string ops
+* [ ] array methods
+* [ ] switch statement
+* [ ] typeof, void
+* [ ] metacircularity
+* [ ] test262
+* [ ] WASM to C / ASM
 
-## WASM Output
+## Floatbeat playground
 
-* Simple expr: 86 bytes
-* Single fn: 66 bytes
-* Multi fn: 99 bytes
-* With trig: 108 bytes
+* [ ] syntax highlighter
+* [ ] waveform renderer (wavefont + linefont?)
+  * [ ] waveform copy-paste
+* [ ] database + recipe book
+* [ ] samples collection
 
 ## CLI
 
@@ -44,7 +61,8 @@
 
 ## Applications
 
-* [x] floatbeat expressions
+* [ ] floatbeat expressions
+  * [ ] floatbeat playground
 * [ ] web-audio-api module
 * [ ] color-space conversions
 * [ ] zzfx synth

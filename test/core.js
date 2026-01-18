@@ -3,7 +3,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { compile, instantiate } from '../index.js'
 import { evaluate, evaluateWat } from './util.js'
 import { compileWat } from '../src/wasm.js'
-import { assembleRaw } from '../src/wat.js'
+import { assembleRaw } from '../src/compile.js'
 
 // MVP Test Suite - Focused on what works with current implementation
 
