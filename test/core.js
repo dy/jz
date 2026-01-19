@@ -403,6 +403,61 @@ test('JS compat - global isNaN/isFinite', async () => {
   is(await evaluate('isFinite(Infinity)'), isFinite(Infinity) ? 1 : 0)
 })
 
+// Default params
+test('Default params - basic', async () => {
+  is(await evaluate('add = (a, b = 10) => a + b; add(5)'), 15)
+  is(await evaluate('add = (a, b = 10) => a + b; add(5, 3)'), 8)
+  is(await evaluate('greet = (x = 1, y = 2, z = 3) => x + y + z; greet()'), 6)
+  is(await evaluate('greet = (x = 1, y = 2, z = 3) => x + y + z; greet(10)'), 15)
+  is(await evaluate('greet = (x = 1, y = 2, z = 3) => x + y + z; greet(10, 20)'), 33)
+  is(await evaluate('greet = (x = 1, y = 2, z = 3) => x + y + z; greet(10, 20, 30)'), 60)
+})
+
+test('Default params - expression defaults', async () => {
+  is(await evaluate('f = (x = 2 + 3) => x * 2; f()'), 10)
+  is(await evaluate('f = (x = 2 * 3) => x + 1; f()'), 7)
+})
+
+// Rest params
+test('Rest params - basic', async () => {
+  is(await evaluate('len = (...args) => args.length; len(1, 2, 3)'), 3)
+  is(await evaluate('len = (...args) => args.length; len()'), 0)
+  is(await evaluate('sum = (...args) => args.reduce((a, b) => a + b, 0); sum(1, 2, 3, 4)'), 10)
+})
+
+test('Rest params - mixed with regular', async () => {
+  is(await evaluate('f = (a, ...rest) => a + rest.length; f(10, 1, 2, 3)'), 13)
+  is(await evaluate('f = (a, b, ...rest) => a + b + rest.length; f(10, 20, 1, 2)'), 32)
+})
+
+// Spread in arrays
+test('Spread in arrays', async () => {
+  is(await evaluate('arr = [1, 2]; [...arr, 3].length'), 3)
+  is(await evaluate('arr = [1, 2]; [...arr, 3][2]'), 3)
+  is(await evaluate('a = [1, 2]; b = [3, 4]; [...a, ...b].length'), 4)
+  is(await evaluate('a = [1, 2]; b = [3, 4]; [...a, ...b][3]'), 4)
+  is(await evaluate('[...[1, 2, 3]][1]'), 2)
+})
+
+// Spread in calls
+test('Spread in calls', async () => {
+  is(await evaluate('sum = (...args) => args.length; arr = [1, 2, 3]; sum(...arr)'), 3)
+  is(await evaluate('sum = (...args) => args.reduce((a, b) => a + b, 0); sum(...[1, 2, 3, 4])'), 10)
+})
+
+// Array destructuring params
+test('Array destructuring params', async () => {
+  is(await evaluate('add = ([a, b]) => a + b; add([3, 5])'), 8)
+  is(await evaluate('first = ([x]) => x; first([42])'), 42)
+  is(await evaluate('sum3 = ([a, b, c]) => a + b + c; sum3([1, 2, 3])'), 6)
+})
+
+// Object destructuring params
+test('Object destructuring params', async () => {
+  is(await evaluate('sum = ({x, y}) => x + y; sum({x: 10, y: 20})'), 30)
+  is(await evaluate('getX = ({x}) => x; getX({x: 42, y: 1})'), 42)
+})
+
 // NOTE: JZ is PURE JS subset - no shorthand math or WASM extensions
 // All math functions require Math.* namespace (Math.sin, Math.sqrt, etc.)
 // This ensures ANY JZ code can run in a standard JS interpreter

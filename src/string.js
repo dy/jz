@@ -1,13 +1,13 @@
 // String method implementations
 import { ctx, opts, gen } from './compile.js'
-import { PTR_TYPE, tv, asF64, asI32 } from './types.js'
+import { PTR_TYPE, wat, i32 } from './types.js'
 import { strCharAt, strLen, strNew, strSetChar } from './gc.js'
 
 export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null
   ctx.usedStringType = true
   if (!opts.gc) ctx.usedMemory = true
-  return tv('i32', strCharAt(opts.gc, rw, asI32(gen(args[0]))[1]))
+  return wat(strCharAt(opts.gc, rw, i32(gen(args[0]))), 'i32')
 }
 
 export const slice = (rw, args) => {
@@ -23,9 +23,9 @@ export const slice = (rw, args) => {
   ctx.addLocal(end.slice(1), 'i32')
   ctx.addLocal(newLen.slice(1), 'i32')
   const gc = opts.gc
-  const startArg = args.length >= 1 ? asI32(gen(args[0]))[1] : '(i32.const 0)'
-  const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : strLen(gc, `(local.get ${str})`)
-  return tv('string', `(local.set ${str} ${rw})
+  const startArg = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 0)'
+  const endArg = args.length >= 2 ? i32(gen(args[1])) : strLen(gc, `(local.get ${str})`)
+  return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${start} ${startArg})
     (local.set ${end} ${endArg})
@@ -44,7 +44,7 @@ export const slice = (rw, args) => {
       ${strSetChar(gc, `(local.get ${result})`, `(local.get ${idx})`, strCharAt(gc, `(local.get ${str})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'string')
 }
 
 export const indexOf = (rw, args) => {
@@ -53,7 +53,7 @@ export const indexOf = (rw, args) => {
   if (!opts.gc) ctx.usedMemory = true
   const searchVal = gen(args[0])
   // For simplicity, only support single char search (number)
-  if (searchVal[0] !== 'i32' && searchVal[0] !== 'f64') return null
+  if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
   const id = ctx.loopCounter++
   const str = `$_sindexof_str_${id}`, idx = `$_sindexof_i_${id}`, len = `$_sindexof_len_${id}`, result = `$_sindexof_result_${id}`, target = `$_sindexof_target_${id}`
   ctx.addLocal(str.slice(1), 'string')
@@ -62,8 +62,8 @@ export const indexOf = (rw, args) => {
   ctx.addLocal(result.slice(1), 'i32')
   ctx.addLocal(target.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${str} ${rw})
-    (local.set ${target} ${asI32(searchVal)[1]})
+  return wat(`(local.set ${str} ${rw})
+    (local.set ${target} ${i32(searchVal)})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const -1))
@@ -75,7 +75,7 @@ export const indexOf = (rw, args) => {
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const substring = (rw, args) => {
@@ -92,9 +92,9 @@ export const substring = (rw, args) => {
   ctx.addLocal(end.slice(1), 'i32')
   ctx.addLocal(newLen.slice(1), 'i32')
   const gc = opts.gc
-  const startArg = asI32(gen(args[0]))[1]
-  const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : strLen(gc, `(local.get ${str})`)
-  return tv('string', `(local.set ${str} ${rw})
+  const startArg = i32(gen(args[0]))
+  const endArg = args.length >= 2 ? i32(gen(args[1])) : strLen(gc, `(local.get ${str})`)
+  return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${start} ${startArg})
     (local.set ${end} ${endArg})
@@ -115,7 +115,7 @@ export const substring = (rw, args) => {
       ${strSetChar(gc, `(local.get ${result})`, `(local.get ${idx})`, strCharAt(gc, `(local.get ${str})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'string')
 }
 
 export const toLowerCase = (rw, args) => {
@@ -129,7 +129,7 @@ export const toLowerCase = (rw, args) => {
   ctx.addLocal(result.slice(1), 'string')
   ctx.addLocal(ch.slice(1), 'i32')
   const gc = opts.gc
-  return tv('string', `(local.set ${str} ${rw})
+  return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${result} ${strNew(gc, `(local.get ${len})`)})
     (local.set ${idx} (i32.const 0))
@@ -141,7 +141,7 @@ export const toLowerCase = (rw, args) => {
       ${strSetChar(gc, `(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'string')
 }
 
 export const toUpperCase = (rw, args) => {
@@ -155,7 +155,7 @@ export const toUpperCase = (rw, args) => {
   ctx.addLocal(result.slice(1), 'string')
   ctx.addLocal(ch.slice(1), 'i32')
   const gc = opts.gc
-  return tv('string', `(local.set ${str} ${rw})
+  return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${result} ${strNew(gc, `(local.get ${len})`)})
     (local.set ${idx} (i32.const 0))
@@ -167,7 +167,7 @@ export const toUpperCase = (rw, args) => {
       ${strSetChar(gc, `(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'string')
 }
 
 export const includes = (rw, args) => {
@@ -175,7 +175,7 @@ export const includes = (rw, args) => {
   ctx.usedStringType = true
   if (!opts.gc) ctx.usedMemory = true
   const searchVal = gen(args[0])
-  if (searchVal[0] !== 'i32' && searchVal[0] !== 'f64') return null
+  if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
   const id = ctx.loopCounter++
   const str = `$_sincludes_str_${id}`, idx = `$_sincludes_i_${id}`, len = `$_sincludes_len_${id}`, target = `$_sincludes_target_${id}`, result = `$_sincludes_result_${id}`
   ctx.addLocal(str.slice(1), 'string')
@@ -184,8 +184,8 @@ export const includes = (rw, args) => {
   ctx.addLocal(target.slice(1), 'i32')
   ctx.addLocal(result.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${str} ${rw})
-    (local.set ${target} ${asI32(searchVal)[1]})
+  return wat(`(local.set ${str} ${rw})
+    (local.set ${target} ${i32(searchVal)})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const 0))
@@ -197,7 +197,7 @@ export const includes = (rw, args) => {
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const startsWith = (rw, args) => {
@@ -205,19 +205,19 @@ export const startsWith = (rw, args) => {
   ctx.usedStringType = true
   if (!opts.gc) ctx.usedMemory = true
   const searchVal = gen(args[0])
-  if (searchVal[0] !== 'i32' && searchVal[0] !== 'f64') return null
+  if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
   const id = ctx.loopCounter++
   const str = `$_starts_str_${id}`, ch = `$_starts_ch_${id}`, target = `$_starts_target_${id}`
   ctx.addLocal(str.slice(1), 'string')
   ctx.addLocal(ch.slice(1), 'i32')
   ctx.addLocal(target.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${str} ${rw})
-    (local.set ${target} ${asI32(searchVal)[1]})
+  return wat(`(local.set ${str} ${rw})
+    (local.set ${target} ${i32(searchVal)})
     (local.set ${ch} (if (result i32) (i32.gt_s ${strLen(gc, `(local.get ${str})`)} (i32.const 0))
       (then ${strCharAt(gc, `(local.get ${str})`, '(i32.const 0)')})
       (else (i32.const -1))))
-    (i32.eq (local.get ${ch}) (local.get ${target}))`)
+    (i32.eq (local.get ${ch}) (local.get ${target}))`, 'i32')
 }
 
 export const endsWith = (rw, args) => {
@@ -225,7 +225,7 @@ export const endsWith = (rw, args) => {
   ctx.usedStringType = true
   if (!opts.gc) ctx.usedMemory = true
   const searchVal = gen(args[0])
-  if (searchVal[0] !== 'i32' && searchVal[0] !== 'f64') return null
+  if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
   const id = ctx.loopCounter++
   const str = `$_ends_str_${id}`, ch = `$_ends_ch_${id}`, target = `$_ends_target_${id}`, len = `$_ends_len_${id}`
   ctx.addLocal(str.slice(1), 'string')
@@ -233,13 +233,13 @@ export const endsWith = (rw, args) => {
   ctx.addLocal(target.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${str} ${rw})
-    (local.set ${target} ${asI32(searchVal)[1]})
+  return wat(`(local.set ${str} ${rw})
+    (local.set ${target} ${i32(searchVal)})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${ch} (if (result i32) (i32.gt_s (local.get ${len}) (i32.const 0))
       (then ${strCharAt(gc, `(local.get ${str})`, `(i32.sub (local.get ${len}) (i32.const 1))`)})
       (else (i32.const -1))))
-    (i32.eq (local.get ${ch}) (local.get ${target}))`)
+    (i32.eq (local.get ${ch}) (local.get ${target}))`, 'i32')
 }
 
 export const trim = (rw, args) => {
@@ -256,7 +256,7 @@ export const trim = (rw, args) => {
   ctx.addLocal(ch.slice(1), 'i32')
   ctx.addLocal(newLen.slice(1), 'i32')
   const gc = opts.gc
-  return tv('string', `(local.set ${str} ${rw})
+  return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen(gc, `(local.get ${str})`)})
     (local.set ${start} (i32.const 0))
     (local.set ${end} (local.get ${len}))
@@ -282,15 +282,15 @@ export const trim = (rw, args) => {
       ${strSetChar(gc, `(local.get ${result})`, `(local.get ${idx})`, strCharAt(gc, `(local.get ${str})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'string')
 }
 
 // Stub implementations
 export const split = (rw, args) => {
   ctx.usedArrayType = true
-  if (opts.gc) return tv('array', `(array.new $f64array (f64.const 0) (i32.const 0))`)
+  if (opts.gc) return wat(`(array.new $f64array (f64.const 0) (i32.const 0))`, 'array')
   ctx.usedMemory = true
-  return tv('f64', `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0))`)
+  return wat(`(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0))`, 'f64')
 }
 
-export const replace = (rw, args) => tv('string', rw)
+export const replace = (rw, args) => wat(rw, 'string')

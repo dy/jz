@@ -18,15 +18,85 @@ const BUILTIN_IDENTS = new Set([
 
 /**
  * Extract parameter names from arrow function AST
- * Handles: x, (x), (x, y), destructuring patterns
+ * Handles: x, (x), (x, y), default params, rest params, destructuring patterns
+ * For destructuring, uses extractParamInfo to get consistent synthetic names
+ * @returns {string[]} List of WASM-level parameter names
  */
 export function extractParams(params) {
+  // Use extractParamInfo for consistent handling of all param types
+  return extractParamInfo(params).map(pi => pi.name)
+}
+
+/**
+ * Extract all variable names from destructuring pattern
+ */
+function extractDestructNames(pattern) {
+  if (!pattern) return []
+  if (typeof pattern === 'string') return [pattern]
+  if (Array.isArray(pattern)) {
+    if (pattern[0] === ',') return pattern.slice(1).flatMap(extractDestructNames)
+    if (pattern[0] === '=' && typeof pattern[1] === 'string') return [pattern[1]]
+    if (pattern[0] === '...' && typeof pattern[1] === 'string') return [pattern[1]]
+    if (pattern[0] === '[]' || pattern[0] === '{}') return extractDestructNames(pattern[1])
+    return pattern.flatMap(extractDestructNames)
+  }
+  return []
+}
+
+/**
+ * Extract names from object destructuring pattern ["{", key:val, ...]
+ */
+function extractObjDestructNames(pairs) {
+  const names = []
+  for (const p of pairs) {
+    if (typeof p === 'string') names.push(p)
+    else if (Array.isArray(p) && p[0] === ':' && typeof p[2] === 'string') names.push(p[2])
+    else if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string') names.push(p[1])
+  }
+  return names
+}
+
+/**
+ * Extract rich parameter info for compilation
+ * @returns {Array<{name: string, default?: any, rest?: boolean, destruct?: 'array'|'object', pattern?: any}>}
+ */
+export function extractParamInfo(params, idx = 0) {
   if (!params) return []
-  if (typeof params === 'string') return [params]
+  if (typeof params === 'string') return [{ name: params }]
   if (Array.isArray(params)) {
-    if (params[0] === '()' && params.length === 2) return extractParams(params[1])
-    if (params[0] === ',') return params.slice(1).flatMap(extractParams)
-    return params.flatMap(extractParams)
+    if (params[0] === '()' && params.length === 2) return extractParamInfo(params[1], idx)
+    if (params[0] === ',') {
+      // Track index across comma-separated params
+      const result = []
+      for (let i = 1; i < params.length; i++) {
+        const infos = extractParamInfo(params[i], idx)
+        result.push(...infos)
+        idx += infos.length
+      }
+      return result
+    }
+    // Default param: ["=", name, default]
+    if (params[0] === '=' && typeof params[1] === 'string') return [{ name: params[1], default: params[2] }]
+    // Rest param: ["...", name]
+    if (params[0] === '...' && typeof params[1] === 'string') return [{ name: params[1], rest: true }]
+    // Array destructuring: ["[]", pattern] or ["[]", singleName]
+    if (params[0] === '[]') {
+      // Single element: ["[]", "x"] or with pattern: ["[]", [",", "a", "b"]]
+      const pattern = params[1]
+      const names = typeof pattern === 'string' ? [pattern] : extractDestructNames(pattern)
+      return [{ name: `_d${idx}`, destruct: 'array', pattern, names }]
+    }
+    // Object destructuring: ["{}", pattern] or ["{", ...pairs]
+    if (params[0] === '{}') {
+      const pattern = params[1]
+      const names = typeof pattern === 'string' ? [pattern] : extractDestructNames(pattern)
+      return [{ name: `_d${idx}`, destruct: 'object', pattern, names }]
+    }
+    if (params[0] === '{') {
+      const names = extractObjDestructNames(params.slice(1))
+      return [{ name: `_d${idx}`, destruct: 'object', pattern: params.slice(1), names }]
+    }
+    return params.flatMap((p, i) => extractParamInfo(p, idx + i))
   }
   return []
 }

@@ -61,7 +61,7 @@
     * [x] `typeof` returns strings - "number", "string", "boolean", "object", "undefined", "function"
     * [x] `===` strict equality - same as `==` for primitives, ref equality for objects
     * [x] `!==` strict inequality
-  * [ ] Closures
+  * [x] Closures
     * [x] closure capture - inner functions capture outer variables
     * [x] closure lifting - hoist captured vars to shared scope/struct
     * [x] nested function definitions
@@ -69,13 +69,13 @@
     * [x] shared environment - multiple closures share same captured vars
     * [x] first-class functions (currying) - return closure, call it later (funcref/call_indirect)
     * [x] capture array/objects in gc:true mode (needs anyref env fields)
-  * [ ]  Rest/Spread & Destructuring
-    * [ ] rest params `(...args) => args.length`
-    * [ ] spread in arrays `[...arr, x]`
-    * [ ] spread in calls `fn(...args)`
-    * [ ] destructuring params `({ x, y }) => x + y`
-    * [ ] destructuring params `([a, b]) => a + b`
-    * [ ] default params `(x = 0) => x`
+  * [x]  Rest/Spread & Destructuring
+    * [x] rest params `(...args) => args.length`
+    * [x] spread in arrays `[...arr, x]`
+    * [x] spread in calls `fn(...args)`
+    * [x] destructuring params `({ x, y }) => x + y`
+    * [x] destructuring params `([a, b]) => a + b`
+    * [x] default params `(x = 0) => x`
   * [ ] Array Methods
     * [ ] `.push(x)` - add to end, return new length
     * [ ] `.pop()` - remove from end, return element
