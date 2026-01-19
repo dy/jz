@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile, instantiate } from '../index.js'
+import { compile, instantiate, compileWat } from '../index.js'
 import { evaluate, evaluateWat, isGcTrue, isGcFalse } from './util.js'
-import { compileWat } from '../src/wasm.js'
 import { assembleRaw } from '../src/compile.js'
 
 // MVP Test Suite - Focused on what works with current implementation

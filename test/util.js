@@ -1,6 +1,5 @@
 // Test utilities
-import { compile, instantiate } from '../index.js'
-import { compileWat } from '../src/wasm.js'
+import { compile, instantiate, compileWat } from '../index.js'
 import { assembleRaw } from '../src/compile.js'
 
 // Get GC mode from environment variable
