@@ -171,10 +171,33 @@ export const objGet = (gc, wat, idx) => gc
 
 // === Environment (closures) ===
 
-/** Read from environment struct/memory at field index */
-export const envGet = (gc, envType, envVar, fieldIdx) => gc
-  ? `(struct.get ${envType} ${fieldIdx} (local.get ${envVar}))`
-  : `(f64.load (i32.add (call $__ptr_offset (local.get ${envVar})) (i32.const ${fieldIdx * 8})))`
+/** Check if type is a reference type that needs anyref storage */
+export const isRefType = (type) =>
+  type === 'array' || type === 'object' || type === 'string' || type === 'refarray' || type === 'closure'
+
+/** Get WASM type for casting anyref to specific type */
+const refCastType = (type) =>
+  type === 'array' ? '(ref null $f64array)'
+  : type === 'object' ? '(ref null $f64array)'  // objects use f64array
+  : type === 'string' ? '(ref null $string)'
+  : type === 'refarray' ? '(ref null $anyarray)'
+  : type === 'closure' ? '(ref null $closure)'
+  : null
+
+/** Read from environment struct/memory at field index
+ * @param {boolean} gc - gc mode
+ * @param {string} envType - env struct type name
+ * @param {string} envVar - local variable name for env
+ * @param {number} fieldIdx - field index
+ * @param {string} [fieldType] - type of field (for gc:true anyref handling)
+ */
+export const envGet = (gc, envType, envVar, fieldIdx, fieldType = 'f64') => {
+  if (!gc) return `(f64.load (i32.add (call $__ptr_offset (local.get ${envVar})) (i32.const ${fieldIdx * 8})))`
+  const get = `(struct.get ${envType} ${fieldIdx} (local.get ${envVar}))`
+  // For reference types, cast from anyref to the specific type
+  const castType = refCastType(fieldType)
+  return castType ? `(ref.cast ${castType} ${get})` : get
+}
 
 /** Write to environment struct/memory at field index */
 export const envSet = (gc, envType, envVar, fieldIdx, val) => gc

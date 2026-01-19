@@ -80,14 +80,12 @@ export function setCtx(context) {
 // Public API
 export function compile(ast, options = {}) {
   const { gc = true } = options
-  const newOpts = { gc }
-  const newCtx = createContext(gc)
   // Initialize shared state for method modules
-  ctx = newCtx
-  opts = newOpts
+  opts = { gc }
+  setCtx(createContext(gc))
   gen = generate
   const [, bodyWat] = asF64(generate(ast))
-  return assemble(bodyWat, newCtx, generateFunctions(), gc)
+  return assemble(bodyWat, ctx, generateFunctions(), gc)
 }
 
 
@@ -162,15 +160,15 @@ function genIdent(name) {
 
   // Check if this is a hoisted variable (in our own env, for nested closure access)
   if (ctx.hoistedVars && name in ctx.hoistedVars) {
-    const fieldIdx = ctx.hoistedVars[name]
-    return tv('f64', envGet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx))
+    const { index, type } = ctx.hoistedVars[name]
+    return tv(type, envGet(opts.gc, ctx.ownEnvType, '$__ownenv', index, type))
   }
 
   // Check if this is a captured variable (from closure environment passed to us)
   if (ctx.capturedVars && name in ctx.capturedVars) {
-    const fieldIdx = ctx.capturedVars[name]
+    const { index, type } = ctx.capturedVars[name]
     const envVar = opts.gc ? '$__envcast' : '$__env'
-    return tv('f64', envGet(opts.gc, ctx.currentEnv, envVar, fieldIdx))
+    return tv(type, envGet(opts.gc, ctx.currentEnv, envVar, index, type))
   }
 
   const loc = ctx.getLocal(name)
@@ -295,13 +293,13 @@ function resolveCall(namespace, name, args, receiver = null) {
         const envVals = envFields.map(f => {
           // Check our own hoisted vars first
           if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-            const fieldIdx = ctx.hoistedVars[f.name]
-            return `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`
+            const { index } = ctx.hoistedVars[f.name]
+            return `(struct.get ${ctx.ownEnvType} ${index} (local.get $__ownenv))`
           }
           // Then check received env (capturedVars)
           if (ctx.capturedVars && f.name in ctx.capturedVars) {
-            const fieldIdx = ctx.capturedVars[f.name]
-            return `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env))`
+            const { index } = ctx.capturedVars[f.name]
+            return `(struct.get ${ctx.currentEnv} ${index} (local.get $__env))`
           }
           const loc = ctx.getLocal(f.name)
           if (loc) return `(local.get $${loc.scopedName})`
@@ -317,10 +315,10 @@ function resolveCall(namespace, name, args, receiver = null) {
         const envVals = envFields.map((f, i) => {
           let val
           if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-            const offset = ctx.hoistedVars[f.name] * 8
+            const offset = ctx.hoistedVars[f.name].index * 8
             val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
           } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
-            const offset = ctx.capturedVars[f.name] * 8
+            const offset = ctx.capturedVars[f.name].index * 8
             val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
           } else {
             const loc = ctx.getLocal(f.name)
@@ -411,13 +409,13 @@ function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
       // Build new env struct with captured values
       const envVals = envFields.map(f => {
         if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-          const fieldIdx = ctx.hoistedVars[f.name]
-          return `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`
+          const { index } = ctx.hoistedVars[f.name]
+          return `(struct.get ${ctx.ownEnvType} ${index} (local.get $__ownenv))`
         }
         if (ctx.capturedVars && f.name in ctx.capturedVars) {
-          const fieldIdx = ctx.capturedVars[f.name]
+          const { index } = ctx.capturedVars[f.name]
           // Use $__envcast in gc:true mode
-          return `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast))`
+          return `(struct.get ${ctx.currentEnv} ${index} (local.get $__envcast))`
         }
         const loc = ctx.getLocal(f.name)
         if (loc) return `(local.get $${loc.scopedName})`
@@ -466,10 +464,10 @@ function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
       const f = envFields[i]
       let val
       if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
-        const offset = ctx.hoistedVars[f.name] * 8
+        const offset = ctx.hoistedVars[f.name].index * 8
         val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
       } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
-        const offset = ctx.capturedVars[f.name] * 8
+        const offset = ctx.capturedVars[f.name].index * 8
         val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
       } else {
         const loc = ctx.getLocal(f.name)
@@ -745,6 +743,24 @@ const operators = {
     const analysis = analyzeScope(body, new Set(fnParams), true)
     const captured = [...analysis.free].filter(v => outerDefined.has(v) && !fnParams.includes(v))
 
+    // Helper to get variable type for captured var
+    const getVarType = (v) => {
+      // Check local first
+      const loc = ctx.getLocal(v)
+      if (loc) return loc.type
+      // Then hoisted vars (stored in ownEnvFields with type)
+      if (ctx.ownEnvFields) {
+        const field = ctx.ownEnvFields.find(f => f.name === v)
+        if (field) return field.type || 'f64'
+      }
+      // Then captured vars (stored in closure.envFields)
+      if (ctx.closureInfo?.envFields) {
+        const field = ctx.closureInfo.envFields.find(f => f.name === v)
+        if (field) return field.type || 'f64'
+      }
+      return 'f64'  // default
+    }
+
     // Generate unique name for anonymous closure
     const closureName = `__anon${ctx.closureCounter++}`
 
@@ -762,9 +778,9 @@ const operators = {
     } else {
       const envId = ctx.closureCounter++
       envType = `$env${envId}`
-      envFields = captured.map((v, i) => ({ name: v, index: i }))
+      envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v) }))
       if (opts.gc) {
-        ctx.closureEnvTypes.push({ id: envId, fields: captured })
+        ctx.closureEnvTypes.push({ id: envId, fields: envFields })
       }
     }
 
@@ -1236,6 +1252,21 @@ function genAssign(target, value, returnValue) {
     const hoistedNames = ctx.hoistedVars ? Object.keys(ctx.hoistedVars) : []
     const outerDefined = new Set([...localNames, ...capturedNames, ...hoistedNames])
 
+    // Helper to get variable type for captured var
+    const getVarType = (v) => {
+      const loc = ctx.getLocal(v)
+      if (loc) return loc.type
+      if (ctx.ownEnvFields) {
+        const field = ctx.ownEnvFields.find(f => f.name === v)
+        if (field) return field.type || 'f64'
+      }
+      if (ctx.closureInfo?.envFields) {
+        const field = ctx.closureInfo.envFields.find(f => f.name === v)
+        if (field) return field.type || 'f64'
+      }
+      return 'f64'
+    }
+
     // Analyze the function body to find free variables
     const analysis = analyzeScope(body, new Set(params), true)
 
@@ -1258,9 +1289,9 @@ function genAssign(target, value, returnValue) {
         // Need a new env type (captures from multiple sources)
         const envId = ctx.closureCounter++
         envType = `$env${envId}`
-        envFields = captured.map((v, i) => ({ name: v, index: i }))
+        envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v) }))
         if (opts.gc) {
-          ctx.closureEnvTypes.push({ id: envId, fields: captured })
+          ctx.closureEnvTypes.push({ id: envId, fields: envFields })
         }
       }
 
@@ -1380,22 +1411,22 @@ function genAssign(target, value, returnValue) {
 
   // Check if this is a hoisted variable (must be written to own env)
   if (ctx.hoistedVars && target in ctx.hoistedVars) {
-    const fieldIdx = ctx.hoistedVars[target]
-    const setCode = envSet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx, asF64(val)[1])
-    const getCode = envGet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx)
+    const { index, type } = ctx.hoistedVars[target]
+    const setCode = envSet(opts.gc, ctx.ownEnvType, '$__ownenv', index, asF64(val)[1])
+    const getCode = envGet(opts.gc, ctx.ownEnvType, '$__ownenv', index, type)
     return returnValue
-      ? tv('f64', `(block (result f64) ${setCode} ${getCode})`)
+      ? tv(type, `(block (result f64) ${setCode} ${getCode})`)
       : setCode + '\n    '
   }
 
   // Check if this is a captured variable (must be written to received env)
   if (ctx.capturedVars && target in ctx.capturedVars) {
-    const fieldIdx = ctx.capturedVars[target]
+    const { index, type } = ctx.capturedVars[target]
     const envVar = opts.gc ? '$__envcast' : '$__env'
-    const setCode = envSet(opts.gc, ctx.currentEnv, envVar, fieldIdx, asF64(val)[1])
-    const getCode = envGet(opts.gc, ctx.currentEnv, envVar, fieldIdx)
+    const setCode = envSet(opts.gc, ctx.currentEnv, envVar, index, asF64(val)[1])
+    const getCode = envGet(opts.gc, ctx.currentEnv, envVar, index, type)
     return returnValue
-      ? tv('f64', `(block (result f64) ${setCode} ${getCode})`)
+      ? tv(type, `(block (result f64) ${setCode} ${getCode})`)
       : setCode + '\n    '
   }
 
@@ -1465,25 +1496,28 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
     // This is a closure - receives env from caller
     newCtx.currentEnv = closureInfo.envType
     newCtx.capturedVars = {}
+    newCtx.closureInfo = closureInfo  // Store for getVarType helper
     for (const field of closureInfo.envFields) {
-      newCtx.capturedVars[field.name] = field.index
+      newCtx.capturedVars[field.name] = { index: field.index, type: field.type || 'f64' }
     }
   }
 
   // If this function has hoisted vars, create OWN env for them
   // This is separate from the received env (if any)
+  // Note: hoisted vars currently assume f64 type - arrays/objects as hoisted vars
+  // would need type tracking during body compilation (TODO)
   if (hoistedVars.size > 0) {
     const envId = parentCtx.closureCounter++
     newCtx.ownEnvType = `$env${envId}`
-    newCtx.ownEnvFields = [...hoistedVars].map((v, i) => ({ name: v, index: i }))
+    newCtx.ownEnvFields = [...hoistedVars].map((v, i) => ({ name: v, index: i, type: 'f64' }))
     // Track which vars are in our own env (for read/write)
     newCtx.hoistedVars = {}
     for (const field of newCtx.ownEnvFields) {
-      newCtx.hoistedVars[field.name] = field.index
+      newCtx.hoistedVars[field.name] = { index: field.index, type: field.type }
     }
     // Register env type
     if (opts.gc) {
-      parentCtx.closureEnvTypes.push({ id: envId, fields: [...hoistedVars] })
+      parentCtx.closureEnvTypes.push({ id: envId, fields: newCtx.ownEnvFields })
     }
   }
 
