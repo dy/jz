@@ -39,13 +39,15 @@
 * [x] simplify files structure
 * [x] Audit compiler/project architecture/structure: flexible enough? allows extension? performant enough? What seems redundant, questionable, suboptimal, unreliable? What one thing would you change that would unblock everything?
   * [x] deduplicate files (removed stale src/compile/methods/)
-  * [x] format API: 'wasm', 'wasm-mvp', 'wat', 'wat-mvp' (replaces gc option)
-  * [ ] extract closure analysis into analyze.js
-  * [ ] make operators return IR nodes instead of WAT strings
-  * [ ] add emit(ir, target) layer
-  * [ ] unmonolith compile.js into backends/
+  * [x] gc/text options (replaces format API)
+  * [x] extract closure analysis into analyze.js
+  * [x] extract GC-mode abstractions into gc.js (nullRef, mkString, envGet/Set, arrGet, etc)
+  * [x] extract types into types.js (PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate)
+  * [x] extract ops into ops.js (f64, i32, MATH_OPS, GLOBAL_CONSTANTS)
+  * [x] clean imports in compile.js (removed unused CONSTANTS, DEPS, gc.js re-exports)
+  * [x] update methods/array.js, methods/string.js to import from source modules directly
+  * [x] remove dead files (debug.js, floatbeat.html/)
   * [ ] capture array/objects in gc:true mode (needs anyref env fields)
-  * [ ] proper type system (struct fields?)
   * [ ] add JSDoc to types
   * [ ] add comments for difficult parts
 * [ ] JS Compatibility (priority order)
@@ -119,6 +121,7 @@
     * [ ] String operations (i16x8)
     * [ ] Math/vector ops (RGBA, XYZW, quaternions)
     * [ ] Batch comparisons
+* [ ] Excellent WASM output
 * [ ] Future features (not in API yet)
   * [ ] i31ref (small integer refs)
   * [ ] Exception handling (try/catch/throw)
@@ -131,9 +134,8 @@
   * [ ] Custom imports - user-provided functions
   * [ ] Source maps
   * [ ] WASM modules definitions?
-* [ ] Compile targets
-  * [ ] GLSL / WebGPU
-  * [ ] C
+* [ ] WebGPU compute shaders
+* [ ] Tooling: sourcemaps, debuggins, playground
 * [ ] Jessie validation & optimizations
 * [ ] metacircularity
 * [ ] test262 full

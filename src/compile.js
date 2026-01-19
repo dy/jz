@@ -1,60 +1,30 @@
-// AST to WAT compilation
-import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
+/**
+ * jz compiler - AST to WAT compilation
+ *
+ * Architecture:
+ * - types.js: Type system, coercions (tv, asF64, asI32, truthy)
+ * - analyze.js: Closure analysis (analyzeScope, findHoistedVars)
+ * - ops.js: WAT operations (f64, i32, MATH_OPS)
+ * - gc.js: GC-mode abstractions (nullRef, mkString, envGet, etc)
+ * - context.js: Compilation context factory
+ * - emit.js: WAT module assembly
+ * - compile.js: Core AST->WAT generator and operators (this file)
+ *
+ * Flow: AST → analyze closures → generate WAT → assemble module
+ */
+
+import { FUNCTIONS } from './stdlib.js'
 import { arrayMethods, stringMethods } from './methods/index.js'
+import { PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate } from './types.js'
+import { extractParams, analyzeScope, findHoistedVars } from './analyze.js'
+import { f64, i32, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
+import { createContext } from './context.js'
+import { assemble } from './emit.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrLen, objGet, strCharAt } from './gc.js'
 
-// Shared compilation state - accessible by all compiler modules
-// Pointer types for gc:false NaN-boxing mode
-// Types 1-7 are pointers (quiet bit clear, bit 51=0)
-// Types 8-15 reserved for canonical quiet NaN (bit 51=1)
-// Layout: f64 NaN pattern with mantissa [type:4][length:28][offset:20]
-export const PTR_TYPE = {
-  // Type 0 unused (signaling NaN pattern, rare)
-  F64_ARRAY: 1,   // Float64Array
-  I32_ARRAY: 2,   // Int32Array
-  STRING: 3,      // UTF-16 string
-  I8_ARRAY: 4,    // Int8Array
-  OBJECT: 5,      // Object
-  REF_ARRAY: 6,   // Mixed-type array
-  CLOSURE: 7      // Closure environment
-}
-export const PTR_ELEM_SIZE = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 8, 6: 8, 7: 8 }
-
-// Current compilation context - set by compile()
+// Current compilation state (module-level for nested access)
 export let ctx = null
 export let opts = { gc: true }
-
-// Typed value constructor
-export const tv = (t, wat, schema) => [t, wat, schema]
-
-// Number formatting for WAT
-export const fmtNum = n =>
-  Object.is(n, -0) ? '-0' :
-  Number.isNaN(n) ? 'nan' :
-  n === Infinity ? 'inf' :
-  n === -Infinity ? '-inf' :
-  String(n)
-
-// Type coercions
-export const asF64 = ([t, w]) =>
-  t === 'f64' || t === 'array' || t === 'string' ? [t, w] :
-  t === 'ref' || t === 'object' ? ['f64', '(f64.const 0)'] :
-  t === 'closure' ? [t, w] :  // Keep closure as-is
-  ['f64', `(f64.convert_i32_s ${w})`]
-
-export const asI32 = ([t, w]) =>
-  t === 'i32' ? [t, w] :
-  t === 'ref' || t === 'object' || t === 'closure' ? ['i32', '(i32.const 0)'] :
-  ['i32', `(i32.trunc_f64_s ${w})`]
-
-export const truthy = ([t, w]) =>
-  t === 'ref' ? ['i32', `(i32.eqz (ref.is_null ${w}))`] :
-  t === 'i32' ? ['i32', `(i32.ne ${w} (i32.const 0))`] :
-  ['i32', `(f64.ne ${w} (f64.const 0))`]
-
-export const conciliate = (a, b) =>
-  a[0] === 'i32' && b[0] === 'i32' ? [a, b] : [asF64(a), asF64(b)]
-
-// AST generator - set by compile() after _gen is defined
 export let gen = null
 
 // Initialize state for a new compilation
@@ -71,278 +41,16 @@ export function setCtx(context) {
   return prev
 }
 
-// Helper to extract params from arrow function AST
-export function extractParams(params) {
-  if (!params) return []
-  if (typeof params === 'string') return [params]
-  if (Array.isArray(params)) {
-    if (params[0] === '()' && params.length === 2) return extractParams(params[1])
-    if (params[0] === ',') return params.slice(1).flatMap(extractParams)
-    return params.flatMap(extractParams)
-  }
-  return []
-}
-
-// WAT binary ops generators
-const binOp = (resType, argType, op) => (a, b) => {
-  const [, wa] = argType === 'f64' ? asF64(a) : asI32(a)
-  const [, wb] = argType === 'f64' ? asF64(b) : asI32(b)
-  return [resType, `(${op} ${wa} ${wb})`]
-}
-
-const f64 = {
-  add: binOp('f64', 'f64', 'f64.add'), sub: binOp('f64', 'f64', 'f64.sub'),
-  mul: binOp('f64', 'f64', 'f64.mul'), div: binOp('f64', 'f64', 'f64.div'),
-  eq: binOp('i32', 'f64', 'f64.eq'), ne: binOp('i32', 'f64', 'f64.ne'),
-  lt: binOp('i32', 'f64', 'f64.lt'), le: binOp('i32', 'f64', 'f64.le'),
-  gt: binOp('i32', 'f64', 'f64.gt'), ge: binOp('i32', 'f64', 'f64.ge'),
-}
-
-const i32 = {
-  add: binOp('i32', 'i32', 'i32.add'), sub: binOp('i32', 'i32', 'i32.sub'), mul: binOp('i32', 'i32', 'i32.mul'),
-  and: binOp('i32', 'i32', 'i32.and'), or: binOp('i32', 'i32', 'i32.or'), xor: binOp('i32', 'i32', 'i32.xor'),
-  eq: binOp('i32', 'i32', 'i32.eq'), ne: binOp('i32', 'i32', 'i32.ne'),
-  lt_s: binOp('i32', 'i32', 'i32.lt_s'), le_s: binOp('i32', 'i32', 'i32.le_s'),
-  gt_s: binOp('i32', 'i32', 'i32.gt_s'), ge_s: binOp('i32', 'i32', 'i32.ge_s'),
-  shl: (a, b) => ['i32', `(i32.shl ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
-  shr_s: (a, b) => ['i32', `(i32.shr_s ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
-  shr_u: (a, b) => ['i32', `(i32.shr_u ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
-}
-
-// Native WASM ops for Math
-const MATH_OPS = {
-  f64_unary: { sqrt: 'f64.sqrt', abs: 'f64.abs', floor: 'f64.floor', ceil: 'f64.ceil', trunc: 'f64.trunc', round: 'f64.nearest' },
-  i32_unary: { clz32: 'i32.clz' },
-  f64_binary: { min: 'f64.min', max: 'f64.max' },
-  stdlib_unary: ['sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p', 'cbrt', 'sign', 'fround'],
-  stdlib_binary: ['pow', 'atan2', 'hypot', 'imul'],
-  constants: { PI: Math.PI, E: Math.E, SQRT2: Math.SQRT2, SQRT1_2: Math.SQRT1_2, LN2: Math.LN2, LN10: Math.LN10, LOG2E: Math.LOG2E, LOG10E: Math.LOG10E },
-}
-const GLOBAL_CONSTANTS = { Infinity: Infinity, NaN: NaN }
-
-// Closure analysis - find free variables in an AST
-// Returns { free: Set<string>, defined: Set<string>, innerFunctions: [...] }
-function analyzeScope(ast, outerDefined = new Set(), inFunction = false) {
-  const defined = new Set(outerDefined)
-  const free = new Set()
-  const innerFunctions = []
-
-  function walk(node, inFunc = inFunction) {
-    if (node == null) return
-    if (typeof node === 'string') {
-      // Identifier reference
-      if (!defined.has(node) && !node.startsWith('_') &&
-          !(node in GLOBAL_CONSTANTS) && !(node in MATH_OPS.constants) &&
-          !['t', 'true', 'false', 'null', 'undefined'].includes(node)) {
-        free.add(node)
-      }
-      return
-    }
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === undefined) return // Literal like [undefined, 5]
-    if (op === null) return // Special literal like NaN
-
-    // Variable declarations define new names
-    if (op === '=' && typeof args[0] === 'string') {
-      // Check if RHS is a function (closure)
-      if (Array.isArray(args[1]) && args[1][0] === '=>') {
-        const fnParams = extractParams(args[1][1])
-        const fnBody = args[1][2]
-        // Analyze inner function with ONLY its own params as defined
-        // This way, uses of outer variables will be marked as 'free'
-        const analysis = analyzeScope(fnBody, new Set(fnParams), true)
-        // Captured = free vars that are defined in outer scope
-        const captured = [...analysis.free].filter(v => defined.has(v) || outerDefined.has(v))
-        innerFunctions.push({
-          name: args[0],
-          params: fnParams,
-          body: fnBody,
-          captured,
-          innerFunctions: analysis.innerFunctions
-        })
-        defined.add(args[0])
-        return
-      }
-      walk(args[1], inFunc)
-      defined.add(args[0])
-      return
-    }
-    if (op === 'let' || op === 'const' || op === 'var') {
-      if (Array.isArray(args[0]) && args[0][0] === '=') {
-        walk(args[0][1], inFunc)
-        defined.add(args[0][0])
-      } else if (typeof args[0] === 'string') {
-        defined.add(args[0])
-      }
-      return
-    }
-    if (op === 'function') {
-      const [name, params, body] = args
-      const fnParams = extractParams(params)
-      // Analyze inner function with ONLY its own params as defined
-      const analysis = analyzeScope(body, new Set(fnParams), true)
-      const captured = [...analysis.free].filter(v => defined.has(v) || outerDefined.has(v))
-      innerFunctions.push({ name, params: fnParams, body, captured, innerFunctions: analysis.innerFunctions })
-      defined.add(name)
-      return
-    }
-    if (op === '=>') {
-      // Anonymous arrow - analyzed when assigned
-      const fnParams = extractParams(args[0])
-      // Analyze with only params as defined
-      const analysis = analyzeScope(args[1], new Set(fnParams), true)
-      // Pass through free vars that come from outer scopes
-      for (const v of analysis.free) {
-        if (!fnParams.includes(v)) free.add(v)
-      }
-      return
-    }
-    // Loop variables
-    if (op === 'for') {
-      const [init, cond, update, body] = args
-      if (Array.isArray(init) && (init[0] === 'let' || init[0] === 'const' || init[0] === 'var')) {
-        if (Array.isArray(init[1]) && init[1][0] === '=') {
-          walk(init[1][1], inFunc)
-          defined.add(init[1][0])
-        }
-      } else {
-        walk(init, inFunc)
-      }
-      walk(cond, inFunc)
-      walk(update, inFunc)
-      walk(body, inFunc)
-      return
-    }
-    // Recurse into all children
-    for (const arg of args) walk(arg, inFunc)
-  }
-
-  walk(ast)
-  return { free, defined, innerFunctions }
-}
-
-// Find all variables in a function that are captured by ANY nested closure
-// These need to be stored in an environment struct for shared access
-function findHoistedVars(bodyAst, params) {
-  const analysis = analyzeScope(bodyAst, new Set(params), true)
-  const hoisted = new Set()
-
-  function collectCaptured(innerFunctions) {
-    for (const fn of innerFunctions) {
-      for (const v of fn.captured) hoisted.add(v)
-      if (fn.innerFunctions) collectCaptured(fn.innerFunctions)
-    }
-  }
-  collectCaptured(analysis.innerFunctions)
-  return hoisted
-}
-
-const createContext = () => ({
-  locals: {}, localDecls: [], globals: {},
-  usedStdlib: [], usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
-  usedClosureType: false, // For funcref-based closures (gc:true)
-  usedFuncTable: false,   // For call_indirect closures (gc:false)
-  funcTableEntries: [],   // Functions to add to table (gc:false)
-  refFuncs: new Set(),    // Functions referenced via ref.func (need elem declare)
-  localCounter: 0, loopCounter: 0, functions: {}, inFunction: false,
-  strings: {}, stringData: [], stringCounter: 0, internedStringGlobals: {},
-  staticArrays: {}, arrayDataOffset: 0,
-  objectCounter: 0, objectSchemas: {}, localSchemas: {},
-  // Memory allocation tracking for gc:false mode
-  staticAllocs: [], staticOffset: 0,
-  // Scope tracking for let/const block scoping
-  scopeDepth: 0, scopes: [{}], constVars: {},
-  // Closure tracking
-  closures: {},          // name -> { envType, envFields, captured }
-  closureEnvTypes: [],   // Struct type definitions for GC mode
-  closureCounter: 0,     // Unique ID for closure types
-  currentEnv: null,      // Current closure environment (if inside a closure)
-  capturedVars: {},      // Map of captured var name -> field index in env
-
-  // Add a local variable (for internal compiler temps and declared vars)
-  // If scopedName is provided, use it directly; otherwise apply scoping rules
-  addLocal(name, type = 'f64', schema, scopedName = null) {
-    // Use provided scoped name, or compute it
-    const finalName = scopedName || name
-    if (!(finalName in this.locals)) {
-      this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
-      // In gc:false mode, arrays/objects are f64 (encoded pointers)
-      const wasmType = opts.gc
-        ? (type === 'refarray' ? '(ref null $anyarray)'
-          : type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)'
-          : type === 'string' ? '(ref null $string)'
-          : type === 'closure' ? '(ref null $closure)'
-          : type)
-        : (type === 'array' || type === 'ref' || type === 'refarray' || type === 'object' || type === 'string' || type === 'closure' ? 'f64' : type)
-      this.localDecls.push(`(local $${finalName} ${wasmType})`)
-    }
-    if (schema !== undefined) this.localSchemas[finalName] = schema
-    return { ...this.locals[finalName], scopedName: finalName }
-  },
-  getLocal(name) {
-    // Internal variables don't have scope
-    if (name.startsWith('_')) {
-      return name in this.locals ? { ...this.locals[name], scopedName: name } : null
-    }
-    // Search from innermost scope outward
-    for (let i = this.scopes.length - 1; i >= 0; i--) {
-      const scopedName = i > 0 ? `${name}_s${i}` : name
-      if (scopedName in this.locals) return { ...this.locals[scopedName], scopedName }
-    }
-    // Fallback: check unscoped name
-    if (name in this.locals) return { ...this.locals[name], scopedName: name }
-    return null
-  },
-  pushScope() {
-    this.scopeDepth++
-    this.scopes.push({})
-  },
-  popScope() {
-    this.scopes.pop()
-    this.scopeDepth--
-  },
-  declareVar(name, isConst = false) {
-    const scopedName = this.scopeDepth > 0 ? `${name}_s${this.scopeDepth}` : name
-    this.scopes[this.scopes.length - 1][name] = true
-    if (isConst) this.constVars[scopedName] = true
-    return scopedName
-  },
-  addGlobal(name, type = 'f64', init = '(f64.const 0)') {
-    if (!(name in this.globals)) this.globals[name] = { type, init }
-    return this.globals[name]
-  },
-  getGlobal(name) { return this.globals[name] },
-  internString(str) {
-    if (str in this.strings) return this.strings[str]
-    const id = this.stringCounter++
-    const offset = this.stringData.length / 2
-    for (const char of str) {
-      const code = char.charCodeAt(0)
-      this.stringData.push(code & 0xFF, (code >> 8) & 0xFF)
-    }
-    const info = { id, offset, length: str.length }
-    this.strings[str] = info
-    return info
-  },
-  // Allocate static memory (for gc:false literals)
-  allocStatic(size) {
-    const offset = this.staticOffset
-    this.staticOffset += size
-    return offset
-  }
-})
-
 // Public API
 export function compile(ast, options = {}) {
   const { gc = true } = options
   const newOpts = { gc }
-  const newCtx = createContext()
+  const newCtx = createContext(gc)
   newCtx.locals.t = { type: 'f64', idx: newCtx.localCounter++ }
   // Initialize shared state for method modules
   initState(newCtx, newOpts, _gen)
   const [, bodyWat] = asF64(_gen(ast))
-  return assemble(bodyWat, newCtx, generateFunctions())
+  return assemble(bodyWat, newCtx, generateFunctions(), gc)
 }
 
 export function assembleRaw(bodyWat) {
@@ -351,7 +59,7 @@ export function assembleRaw(bodyWat) {
     localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
     staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: [],
     refFuncs: new Set(), usedClosureType: false
-  })
+  }, [], true)
 }
 
 // Check if an AST node is a constant expression (can be computed at compile time)
@@ -409,34 +117,16 @@ function closureDepth(body) {
 
 // Literals
 function genLiteral(v) {
-  if (v === null || v === undefined) {
-    return opts.gc ? tv('ref', '(ref.null none)') : tv('f64', '(f64.const 0)')
-  }
+  if (v === null || v === undefined) return nullRef(opts.gc)
   if (typeof v === 'number') return tv('f64', `(f64.const ${fmtNum(v)})`)
   if (typeof v === 'boolean') return tv('i32', `(i32.const ${v ? 1 : 0})`)
-  if (typeof v === 'string') {
-    ctx.usedStringType = true
-    const { id, length } = ctx.internString(v)
-    if (opts.gc) {
-      // Use interned string global - created once, reused for same string literals
-      ctx.internedStringGlobals[id] = { length }
-      // Global is (ref null $string), use ref.as_non_null to get (ref $string) for function calls
-      return tv('string', `(ref.as_non_null (global.get $__str${id}))`)
-    } else {
-      // gc:false - string is stored in data segment, return encoded pointer
-      // Data segment offset will be resolved at assembly time
-      ctx.usedMemory = true
-      return tv('string', `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`)
-    }
-  }
+  if (typeof v === 'string') return mkString(opts.gc, ctx, v)
   throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
 }
 
 // Identifiers
 function genIdent(name) {
-  if (name === 'null' || name === 'undefined') {
-    return opts.gc ? tv('ref', '(ref.null none)') : tv('f64', '(f64.const 0)')
-  }
+  if (name === 'null' || name === 'undefined') return nullRef(opts.gc)
   if (name === 'true') return tv('i32', '(i32.const 1)')
   if (name === 'false') return tv('i32', '(i32.const 0)')
   if (name in GLOBAL_CONSTANTS) return tv('f64', `(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`)
@@ -444,24 +134,14 @@ function genIdent(name) {
   // Check if this is a hoisted variable (in our own env, for nested closure access)
   if (ctx.hoistedVars && name in ctx.hoistedVars) {
     const fieldIdx = ctx.hoistedVars[name]
-    if (opts.gc) {
-      return tv('f64', `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`)
-    } else {
-      const offset = fieldIdx * 8
-      return tv('f64', `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`)
-    }
+    return tv('f64', envGet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx))
   }
 
   // Check if this is a captured variable (from closure environment passed to us)
   if (ctx.capturedVars && name in ctx.capturedVars) {
     const fieldIdx = ctx.capturedVars[name]
-    if (opts.gc) {
-      // Use $__envcast which is the typed version of $__env
-      return tv('f64', `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast))`)
-    } else {
-      const offset = fieldIdx * 8
-      return tv('f64', `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`)
-    }
+    const envVar = opts.gc ? '$__envcast' : '$__env'
+    return tv('f64', envGet(opts.gc, ctx.currentEnv, envVar, fieldIdx))
   }
 
   const loc = ctx.getLocal(name)
@@ -1009,9 +689,7 @@ const operators = {
   },
 
   '{'(props) {
-    if (props.length === 0) {
-      return opts.gc ? tv('ref', '(ref.null none)') : tv('f64', '(f64.const 0)')
-    }
+    if (props.length === 0) return nullRef(opts.gc)
     ctx.usedArrayType = true
     const keys = props.map(p => p[0])
     const vals = props.map(p => asF64(gen(p[1]))[1])
@@ -1040,7 +718,7 @@ const operators = {
     if (opts.gc) {
       if (a[0] === 'string') {
         ctx.usedStringType = true
-        return tv('i32', `(array.get_u $string ${a[1]} ${iw})`)
+        return tv('i32', strCharAt(true, a[1], iw))
       }
       if (a[0] === 'refarray') {
         // Indexing into anyarray - returns anyref, need to cast based on element type
@@ -1066,10 +744,8 @@ const operators = {
         const effectiveSchema = elemSchema || uniformSchema
 
         if (effectiveType === 'array') {
-          // Element is a plain f64 array
           return tv('array', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
         } else if (effectiveType === 'refarray') {
-          // Element is a nested refarray (anyarray) - pass along its schema
           return tv('refarray', `(ref.cast (ref $anyarray) (array.get $anyarray ${a[1]} ${iw}))`, effectiveSchema)
         } else if (effectiveType === 'object') {
           return tv('object', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
@@ -1077,25 +753,20 @@ const operators = {
           ctx.usedStringType = true
           return tv('string', `(ref.cast (ref $string) (array.get $anyarray ${a[1]} ${iw}))`)
         } else if (effectiveType === 'f64' || effectiveType === 'i32') {
-          // Scalar wrapped in array - unwrap
           return tv('f64', `(array.get $f64array (ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw})) (i32.const 0))`)
         } else {
-          // Truly unknown - return as generic array ref (caller will need to handle)
           return tv('array', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
         }
       }
       ctx.usedArrayType = true
-      return tv('f64', `(array.get $f64array ${a[1]} ${iw})`)
+      return tv('f64', arrGet(true, a[1], iw))
     } else {
       // gc:false - load from memory
       ctx.usedMemory = true
-      // If the array has a compile-time element schema and the index is a literal,
-      // propagate object schema for property access.
       const schema = a[2]
       let litIdx = null
       if (isConstant(idx)) {
         const v = evalConstant(idx)
-        // Ensure integer index
         litIdx = Number.isFinite(v) ? (v | 0) : null
       }
       if (Array.isArray(schema) && litIdx !== null) {
@@ -1105,9 +776,9 @@ const operators = {
         }
       }
       if (a[0] === 'string') {
-        return tv('i32', `(i32.load16_u (i32.add (call $__ptr_offset ${a[1]}) (i32.shl ${iw} (i32.const 1))))`)
+        return tv('i32', strCharAt(false, a[1], iw))
       }
-      return tv('f64', `(f64.load (i32.add (call $__ptr_offset ${a[1]}) (i32.shl ${iw} (i32.const 3))))`)
+      return tv('f64', arrGet(false, a[1], iw))
     }
   },
 
@@ -1127,20 +798,14 @@ const operators = {
     if (obj === 'Math' && prop in MATH_OPS.constants)
       return tv('f64', `(f64.const ${fmtNum(MATH_OPS.constants[prop])})`)
     const o = gen(obj)
-    // For length: gc:true arrays are type 'array', gc:false arrays are type 'f64' (pointers)
-    // Strings are type 'string' in gc:true but type 'f64' (pointers) in gc:false
     if (prop === 'length') {
       if (o[0] === 'array' || (o[0] === 'string' && opts.gc)) {
-        if (opts.gc) {
-          if (o[0] === 'array') ctx.usedArrayType = true
-          else ctx.usedStringType = true
-          return tv('i32', `(array.len ${o[1]})`)
-        }
+        if (o[0] === 'array') ctx.usedArrayType = true
+        else ctx.usedStringType = true
+        return tv('i32', arrLen(opts.gc, o[1]))
       } else if (o[0] === 'string' || o[0] === 'f64') {
-        // gc:false: either explicit string type or f64 pointer (could be string, array, or object)
-        // Try pointer extraction which works for all pointer types
         ctx.usedMemory = true
-        return tv('i32', `(call $__ptr_len ${o[1]})`)
+        return tv('i32', arrLen(false, o[1]))  // gc:false uses ptr_len
       }
       throw new Error(`Cannot get length of ${o[0]}`)
     }
@@ -1149,13 +814,9 @@ const operators = {
       if (schema) {
         const idx = schema.indexOf(prop)
         if (idx >= 0) {
-          if (opts.gc) {
-            ctx.usedArrayType = true
-            return tv('f64', `(array.get $f64array ${o[1]} (i32.const ${idx}))`)
-          } else {
-            ctx.usedMemory = true
-            return tv('f64', `(f64.load (i32.add (call $__ptr_offset ${o[1]}) (i32.const ${idx * 8})))`)
-          }
+          if (opts.gc) ctx.usedArrayType = true
+          else ctx.usedMemory = true
+          return tv('f64', objGet(opts.gc, o[1], idx))
         }
       }
     }
@@ -1848,36 +1509,22 @@ function genAssign(target, value, returnValue) {
   // Check if this is a hoisted variable (must be written to own env)
   if (ctx.hoistedVars && target in ctx.hoistedVars) {
     const fieldIdx = ctx.hoistedVars[target]
-    if (opts.gc) {
-      const code = `(struct.set ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv) ${asF64(val)[1]})`
-      return returnValue
-        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv)))`)
-        : code + '\n    '
-    } else {
-      const offset = fieldIdx * 8
-      const code = `(f64.store (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})) ${asF64(val)[1]})`
-      return returnValue
-        ? tv('f64', `(block (result f64) ${code} (f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset}))))`)
-        : code + '\n    '
-    }
+    const setCode = envSet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx, asF64(val)[1])
+    const getCode = envGet(opts.gc, ctx.ownEnvType, '$__ownenv', fieldIdx)
+    return returnValue
+      ? tv('f64', `(block (result f64) ${setCode} ${getCode})`)
+      : setCode + '\n    '
   }
 
   // Check if this is a captured variable (must be written to received env)
   if (ctx.capturedVars && target in ctx.capturedVars) {
     const fieldIdx = ctx.capturedVars[target]
-    if (opts.gc) {
-      // Use $__envcast for gc:true mode
-      const code = `(struct.set ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast) ${asF64(val)[1]})`
-      return returnValue
-        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast)))`)
-        : code + '\n    '
-    } else {
-      const offset = fieldIdx * 8
-      const code = `(f64.store (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})) ${asF64(val)[1]})`
-      return returnValue
-        ? tv('f64', `(block (result f64) ${code} (f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset}))))`)
-        : code + '\n    '
-    }
+    const envVar = opts.gc ? '$__envcast' : '$__env'
+    const setCode = envSet(opts.gc, ctx.currentEnv, envVar, fieldIdx, asF64(val)[1])
+    const getCode = envGet(opts.gc, ctx.currentEnv, envVar, fieldIdx)
+    return returnValue
+      ? tv('f64', `(block (result f64) ${setCode} ${getCode})`)
+      : setCode + '\n    '
   }
 
   const glob = ctx.getGlobal(target)
@@ -2086,201 +1733,4 @@ function generateFunctions() {
     }
   }
   return results
-}
-
-// Module assembly
-function assemble(bodyWat, ctx, extraFunctions = []) {
-  let wat = '(module\n'
-
-  // Function types for closure calls (needed before other types reference them)
-  if (ctx.usedFuncTypes && ctx.usedFuncTypes.size > 0) {
-    for (const arity of ctx.usedFuncTypes) {
-      // Function type: (func (param anyref) (param f64)* (result f64))
-      // First param is env (anyref for gc:true, f64 for gc:false)
-      const envParam = opts.gc ? 'anyref' : 'f64'
-      const params = `(param ${envParam})` + ' (param f64)'.repeat(arity)
-      wat += `  (type $fntype${arity} (func ${params} (result f64)))\n`
-    }
-  }
-  // Function types for closures that return closures (result anyref)
-  if (ctx.usedClFuncTypes && ctx.usedClFuncTypes.size > 0) {
-    for (const arity of ctx.usedClFuncTypes) {
-      const envParam = opts.gc ? 'anyref' : 'f64'
-      const params = `(param ${envParam})` + ' (param f64)'.repeat(arity)
-      wat += `  (type $clfntype${arity} (func ${params} (result anyref)))\n`
-    }
-  }
-
-  // GC types (only in gc:true mode)
-  if (opts.gc) {
-    if (ctx.usedArrayType) wat += '  (type $f64array (array (mut f64)))\n'
-    if (ctx.usedStringType) wat += '  (type $string (array (mut i16)))\n'
-    if (ctx.usedRefArrayType) wat += '  (type $anyarray (array (mut anyref)))\n'
-    // Closure value type: struct with funcref and anyref env
-    if (ctx.usedClosureType) {
-      wat += '  (type $closure (struct (field $fn funcref) (field $env anyref)))\n'
-    }
-    // Closure environment types
-    for (const env of ctx.closureEnvTypes) {
-      const fields = env.fields.map(f => `(field $${f} (mut f64))`).join(' ')
-      wat += `  (type $env${env.id} (struct ${fields}))\n`
-    }
-    // Declare functions referenced via ref.func
-    if (ctx.refFuncs.size > 0) {
-      const funcs = Array.from(ctx.refFuncs).map(n => `$${n}`).join(' ')
-      wat += `  (elem declare func ${funcs})\n`
-    }
-  }
-
-  // Function table for gc:false closure calls
-  if (ctx.usedFuncTable && ctx.funcTableEntries.length > 0) {
-    const tableSize = ctx.funcTableEntries.length
-    wat += `  (table $fntable ${tableSize} funcref)\n`
-    // elem segment to initialize table
-    const elems = ctx.funcTableEntries.map(name => `$${name}`).join(' ')
-    wat += `  (elem (i32.const 0) func ${elems})\n`
-  }
-
-  // Memory (required for gc:false mode)
-  if (ctx.usedMemory || !opts.gc) {
-    wat += '  (memory (export "memory") 1)\n'
-    // Heap pointer global - starts after static data
-    const heapStart = ctx.staticOffset || 1024  // Reserve 1KB for static data by default
-    wat += `  (global $__heap (mut i32) (i32.const ${heapStart}))\n`
-  }
-
-  // String data segments
-  for (const str in ctx.strings) {
-    const info = ctx.strings[str]
-    const startByte = info.offset * 2, endByte = startByte + info.length * 2
-    const hex = ctx.stringData.slice(startByte, endByte).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
-    if (opts.gc) {
-      wat += `  (data $str${info.id} "${hex}")\n`
-    } else {
-      // gc:false - strings go into memory at fixed offsets
-      const memOffset = info.id * 256  // Simple: each string gets 256 bytes max
-      wat += `  (data (i32.const ${memOffset}) "${hex}")\n`
-    }
-  }
-
-  // Static array data segments (gc:false mode)
-  const staticArrayKeys = Object.keys(ctx.staticArrays)
-  if (!opts.gc && staticArrayKeys.length > 0) {
-    for (const key of staticArrayKeys) {
-      const {offset, values} = ctx.staticArrays[key]
-      // Encode f64 values as 8 bytes each (little-endian IEEE 754)
-      let hex = ''
-      for (const val of values) {
-        const f64bytes = new Float64Array([val])
-        const bytes = new Uint8Array(f64bytes.buffer)
-        hex += Array.from(bytes).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
-      }
-      if (hex) wat += `  (data (i32.const ${offset}) "${hex}")\n`
-    }
-  }
-
-  // Memory helper functions for gc:false mode
-  if (ctx.usedMemory && !opts.gc) {
-    wat += `
-  ;; NaN-boxing pointer encoding
-  ;; IEEE 754 f64: [sign:1][exponent:11][mantissa:52]
-  ;; NaN pattern: exponent=0x7FF, mantissa=[type:4][length:28][offset:20]
-  ;; Canonical quiet NaN (0x7FF8...) has bit 51 set (type field bits 51-48 = 8+)
-  ;; We use types 1-7 for pointers (bit 51 clear), type 0 is also pointer-able
-  ;; Types 8-15 (bit 51 set) are reserved for quiet NaN numbers
-  ;; This allows typeof NaN === "number" to work correctly
-
-  ;; Allocate memory and return NaN-encoded pointer
-  (func $__alloc (param $type i32) (param $len i32) (result f64)
-    (local $offset i32) (local $size i32)
-    ;; Calculate size based on type: 1=f64(8), 2=i32(4), 3=i16(2), 4=i8(1), 5=object(8), 6=refarray(8)
-    (local.set $size
-      (i32.shl (local.get $len)
-        (select (i32.const 3)
-          (select (i32.const 2)
-            (select (i32.const 1) (i32.const 0) (i32.eq (local.get $type) (i32.const 3)))
-            (i32.eq (local.get $type) (i32.const 2)))
-          (i32.or (i32.eq (local.get $type) (i32.const 1)) (i32.ge_u (local.get $type) (i32.const 5))))))
-    ;; 8-byte align
-    (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
-    (local.set $offset (global.get $__heap))
-    (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
-    (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
-
-  ;; Create NaN-encoded pointer
-  (func $__mkptr (param $type i32) (param $len i32) (param $offset i32) (result f64)
-    (f64.reinterpret_i64
-      (i64.or
-        (i64.const 0x7FF0000000000000)  ;; NaN exponent
-        (i64.or
-          (i64.or
-            (i64.shl (i64.extend_i32_u (i32.and (local.get $type) (i32.const 0x0F))) (i64.const 48))
-            (i64.shl (i64.extend_i32_u (i32.and (local.get $len) (i32.const 0x0FFFFFFF))) (i64.const 20)))
-          (i64.extend_i32_u (i32.and (local.get $offset) (i32.const 0x0FFFFF)))))))
-
-  ;; Check if f64 is a pointer (NaN with type < 8, i.e., quiet bit clear)
-  ;; Canonical NaN has type=8+ (quiet bit set), pointers use types 1-7
-  (func $__is_pointer (param $val f64) (result i32)
-    (i32.and
-      (i32.eq  ;; Is NaN?
-        (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $val)) (i64.const 52))) (i32.const 0x7FF))
-        (i32.const 0x7FF))
-      (i32.lt_u (call $__ptr_type (local.get $val)) (i32.const 8))))  ;; type < 8?
-
-  ;; Extract offset from pointer (bits 0-19)
-  (func $__ptr_offset (param $ptr f64) (result i32)
-    (i32.and (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr))) (i32.const 0x0FFFFF)))
-
-  ;; Extract length from pointer (bits 20-47)
-  (func $__ptr_len (param $ptr f64) (result i32)
-    (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 20))) (i32.const 0x0FFFFFFF)))
-
-  ;; Extract type from pointer (bits 48-51)
-  (func $__ptr_type (param $ptr f64) (result i32)
-    (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 48))) (i32.const 0x0F)))
-`
-  }
-
-  const included = {}
-  function include(name) {
-    if (name in included) return
-    included[name] = true
-    for (const dep of DEPS[name] || []) include(dep)
-    if (FUNCTIONS[name]) wat += `  ${FUNCTIONS[name]}\n`
-  }
-  if (ctx.usedStdlib.length > 0) {
-    wat += CONSTANTS
-    for (const name of ctx.usedStdlib) include(name)
-  }
-
-  // Interned string globals (gc:true mode only)
-  // Declare with null, initialize in main function start
-  if (opts.gc) {
-    for (const id in ctx.internedStringGlobals) {
-      wat += `  (global $__str${id} (mut (ref null $string)) (ref.null $string))\n`
-    }
-  }
-
-  for (const name in ctx.globals) wat += `  (global $${name} (mut f64) ${ctx.globals[name].init})\n`
-
-  wat += `  (func $die (result f64) (unreachable))\n`
-  wat += `  (func $f64.rem (param f64 f64) (result f64)\n    (f64.sub (local.get 0) (f64.mul (f64.trunc (f64.div (local.get 0) (local.get 1))) (local.get 1))))\n`
-
-  for (const fn of extraFunctions) wat += `  ${fn}\n`
-
-  const hasMainBody = bodyWat && bodyWat.trim() && bodyWat.trim() !== '(f64.const 0)'
-  if (hasMainBody || extraFunctions.length === 0) {
-    const locals = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
-    // Initialize interned strings at start of main (gc:true mode)
-    let strInit = ''
-    if (opts.gc) {
-      for (const id in ctx.internedStringGlobals) {
-        const { length } = ctx.internedStringGlobals[id]
-        strInit += `(if (ref.is_null (global.get $__str${id})) (then (global.set $__str${id} (array.new_data $string $str${id} (i32.const 0) (i32.const ${length})))))\n    `
-      }
-    }
-    wat += `\n  (func $main (export "main") (param $t f64) (result f64)${locals}\n    ${strInit}${bodyWat}\n  )`
-  }
-
-  return wat + '\n)'
 }
