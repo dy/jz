@@ -1,15 +1,15 @@
 // Array method implementations
-import { ctx, opts, gen, tv, asF64, asI32, truthy, PTR_TYPE, extractParams } from '../compile.js'
+import { ctx, opts, gen, tv, asF64, asI32, truthy, PTR_TYPE, extractParams } from '../../compile.js'
 
 export const fill = (rw, args) => {
   if (args.length < 1) return null  // Let fallback handle error
   ctx.usedArrayType = true
   if (opts.gc) {
-    ctx.usedStdlib.push('arrayFill')
+    ctx.usedStdlib.add('arrayFill')
     return tv('array', `(call $arrayFill ${rw} ${asF64(gen(args[0]))[1]})`)
   }
   ctx.usedMemory = true
-  ctx.usedStdlib.push('arrayFillMem')
+  ctx.usedStdlib.add('arrayFillMem')
   return tv('f64', `(call $arrayFillMem ${rw} ${asF64(gen(args[0]))[1]})`)
 }
 
