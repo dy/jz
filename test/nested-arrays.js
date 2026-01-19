@@ -1,11 +1,38 @@
 // Tests for nested arrays with mixed types
 // gc:false: Full support via NaN-based pointer encoding in f64 arrays
-// gc:true: Homogeneous arrays only (no nested types) - refs don't fit in f64 slots
-// Focus: Ensure gc:false handles all nested/mixed array cases correctly
+// gc:true (features: 'gc'): Full support via anyref arrays
+// Focus: Ensure both modes handle nested array cases correctly
 
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { evaluate } from './util.js'
+
+// ===== gc:true NESTED ARRAYS (anyref arrays) =====
+
+test('nested arrays - static nested f64 arrays (gc:true)', async () => {
+  is(await evaluate('[[1, 2, 3], [4, 5, 6]][0][1]', 0, { features: 'gc' }), 2)
+})
+
+test('nested arrays - static triple nested (gc:true)', async () => {
+  is(await evaluate('[[[1, 2], [3, 4]], [[5, 6]]][0][0][1]', 0, { features: 'gc' }), 2)
+})
+
+test('nested arrays - quad nested (gc:true)', async () => {
+  is(await evaluate('[[[[5]]]][0][0][0][0]', 0, { features: 'gc' }), 5)
+})
+
+test('nested arrays - dynamic index (gc:true)', async () => {
+  is(await evaluate('let i = 1; [[1,2],[3,4]][i][0]', 0, { features: 'gc' }), 3)
+})
+
+test('nested arrays - nested with var (gc:true)', async () => {
+  is(await evaluate('let a = [[1,2],[3,4]]; a[0][1]', 0, { features: 'gc' }), 2)
+})
+
+test('nested arrays - mixed depth (gc:true)', async () => {
+  // Inner arrays have different lengths
+  is(await evaluate('[[[1,2],[3,4,5]],[[6]]][0][1][2]', 0, { features: 'gc' }), 5)
+})
 
 // ===== gc:false NESTED ARRAYS (Full support) =====
 
