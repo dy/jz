@@ -38,11 +38,12 @@ export const fmtNum = n =>
 export const asF64 = ([t, w]) =>
   t === 'f64' || t === 'array' || t === 'string' ? [t, w] :
   t === 'ref' || t === 'object' ? ['f64', '(f64.const 0)'] :
+  t === 'closure' ? [t, w] :  // Keep closure as-is
   ['f64', `(f64.convert_i32_s ${w})`]
 
 export const asI32 = ([t, w]) =>
   t === 'i32' ? [t, w] :
-  t === 'ref' || t === 'object' ? ['i32', '(i32.const 0)'] :
+  t === 'ref' || t === 'object' || t === 'closure' ? ['i32', '(i32.const 0)'] :
   ['i32', `(i32.trunc_f64_s ${w})`]
 
 export const truthy = ([t, w]) =>
@@ -240,6 +241,10 @@ function findHoistedVars(bodyAst, params) {
 const createContext = () => ({
   locals: {}, localDecls: [], globals: {},
   usedStdlib: [], usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
+  usedClosureType: false, // For funcref-based closures (gc:true)
+  usedFuncTable: false,   // For call_indirect closures (gc:false)
+  funcTableEntries: [],   // Functions to add to table (gc:false)
+  refFuncs: new Set(),    // Functions referenced via ref.func (need elem declare)
   localCounter: 0, loopCounter: 0, functions: {}, inFunction: false,
   strings: {}, stringData: [], stringCounter: 0, internedStringGlobals: {},
   staticArrays: {}, arrayDataOffset: 0,
@@ -267,8 +272,9 @@ const createContext = () => ({
         ? (type === 'refarray' ? '(ref null $anyarray)'
           : type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)'
           : type === 'string' ? '(ref null $string)'
+          : type === 'closure' ? '(ref null $closure)'
           : type)
-        : (type === 'array' || type === 'ref' || type === 'refarray' || type === 'object' || type === 'string' ? 'f64' : type)
+        : (type === 'array' || type === 'ref' || type === 'refarray' || type === 'object' || type === 'string' || type === 'closure' ? 'f64' : type)
       this.localDecls.push(`(local $${finalName} ${wasmType})`)
     }
     if (schema !== undefined) this.localSchemas[finalName] = schema
@@ -336,14 +342,15 @@ export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   initState(newCtx, newOpts, _gen)
   const [, bodyWat] = asF64(_gen(ast))
-  return assemble(bodyWat, ctx, generateFunctions())
+  return assemble(bodyWat, newCtx, generateFunctions())
 }
 
 export function assembleRaw(bodyWat) {
   return assemble(bodyWat, {
     usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: [],
     localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
-    staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: []
+    staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: [],
+    refFuncs: new Set(), usedClosureType: false
   })
 }
 
@@ -391,6 +398,13 @@ function _gen(ast) {
   const [op, ...args] = ast
   if (op in operators) return operators[op](args)
   throw new Error(`Unknown operator: ${op}`)
+}
+
+// Calculate closure depth: how many nested arrows before reaching a non-arrow expression
+// Returns 0 for f64 result, 1+ for closure result
+function closureDepth(body) {
+  if (!Array.isArray(body) || body[0] !== '=>') return 0
+  return 1 + closureDepth(body[2])  // body[2] is the arrow body
 }
 
 // Literals
@@ -442,7 +456,8 @@ function genIdent(name) {
   if (ctx.capturedVars && name in ctx.capturedVars) {
     const fieldIdx = ctx.capturedVars[name]
     if (opts.gc) {
-      return tv('f64', `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env))`)
+      // Use $__envcast which is the typed version of $__env
+      return tv('f64', `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast))`)
     } else {
       const offset = fieldIdx * 8
       return tv('f64', `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`)
@@ -622,10 +637,240 @@ function resolveCall(namespace, name, args, receiver = null) {
     // Regular function call
     if (args.length !== fn.params.length) throw new Error(`${name} expects ${fn.params.length} args`)
     const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
+    // Check if function returns a closure (for gc:true mode)
+    if (opts.gc && fn.returnsClosure) {
+      // Cast anyref result to (ref null $closure)
+      ctx.usedClosureType = true
+      // Pass closure depth minus 1 (we consumed one level by calling)
+      const depth = (fn.closureDepth || 1) - 1
+      return tv('closure', `(ref.cast (ref null $closure) (call $${name} ${argWats}))`, { closureDepth: depth })
+    }
     return tv('f64', `(call $${name} ${argWats})`)
   }
 
   throw new Error(`Unknown function: ${namespace ? namespace + '.' : ''}${name}`)
+}
+
+// Call a closure value stored in a variable
+// gc:true: closure is (struct (field $fn funcref) (field $env anyref)), use call_ref
+// gc:false: closure is NaN-box with table index and env ptr, use call_indirect
+function genClosureCall(name, args) {
+  const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
+  const numArgs = args.length
+
+  // Get the closure value from the variable
+  const closureVal = genIdent(name)
+
+  if (opts.gc) {
+    ctx.usedClosureType = true
+    // Extract funcref and env from closure struct
+    // We need function type based on arity: (func (param anyref) (param f64)* (result f64))
+    const funcTypeName = `$fntype${numArgs}`
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(numArgs)
+    // call_ref the funcref with env + args
+    // Need to handle both (ref $closure) and (ref null $closure) inputs
+    const closureRef = closureVal[0] === 'closure'
+      ? `(ref.as_non_null ${closureVal[1]})`  // Cast to non-null if nullable
+      : closureVal[1]
+    return tv('f64', `(call_ref ${funcTypeName}
+      (struct.get $closure $env ${closureRef})
+      ${argWats}
+      (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef})))`)
+  } else {
+    ctx.usedFuncTable = true
+    ctx.usedMemory = true
+    // gc:false: closure is NaN-encoded {table_idx:16, env_offset:32}
+    // Extract table index from bits 32-47 (shifted right by 32)
+    // Extract env offset from bits 0-31
+    const funcTypeName = `$fntype${numArgs}`
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(numArgs)
+    const id = ctx.loopCounter++
+    const tmpClosure = `$_clos_${id}`
+    const tmpI64 = `$_closi64_${id}`
+    ctx.addLocal(tmpClosure.slice(1), 'f64')
+    ctx.localDecls.push(`(local ${tmpI64} i64)`)
+    // Decode: reinterpret to i64, extract table idx (bits 32-47) and env (bits 0-31)
+    return tv('f64', `(block (result f64)
+      (local.set ${tmpClosure} ${closureVal[1]})
+      (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
+      (call_indirect ${funcTypeName}
+        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
+          (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
+          (i32.wrap_i64 (local.get ${tmpI64})))
+        ${argWats}
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`)
+  }
+}
+
+// Call a closure value from an expression (not a variable)
+// This handles cases like a(1)(2) where a(1) returns a closure
+function genClosureCallExpr(closureVal, args) {
+  const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
+  const numArgs = args.length
+  // Check if we have closure depth info (stored as 3rd element for closure types)
+  const remainingDepth = closureVal[2]?.closureDepth ?? 0
+
+  if (opts.gc) {
+    ctx.usedClosureType = true
+    // Determine return type based on remaining depth
+    const returnsClosure = remainingDepth > 0
+    const funcTypeName = returnsClosure ? `$clfntype${numArgs}` : `$fntype${numArgs}`
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(numArgs)
+    if (returnsClosure) {
+      if (!ctx.usedClFuncTypes) ctx.usedClFuncTypes = new Set()
+      ctx.usedClFuncTypes.add(numArgs)
+    }
+
+    // Store the closure in a temp local to avoid re-evaluation
+    const id = ctx.loopCounter++
+    const tmpClosure = `$_closexpr_${id}`
+    ctx.addLocal(tmpClosure.slice(1), 'closure')
+    const closureRef = `(ref.as_non_null (local.get ${tmpClosure}))`
+
+    if (returnsClosure) {
+      return tv('closure', `(block (result (ref null $closure))
+        (local.set ${tmpClosure} ${closureVal[1]})
+        (ref.cast (ref null $closure) (call_ref ${funcTypeName}
+          (struct.get $closure $env ${closureRef})
+          ${argWats}
+          (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef})))))`, { closureDepth: remainingDepth - 1 })
+    }
+    return tv('f64', `(block (result f64)
+      (local.set ${tmpClosure} ${closureVal[1]})
+      (call_ref ${funcTypeName}
+        (struct.get $closure $env ${closureRef})
+        ${argWats}
+        (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef}))))`)
+  } else {
+    ctx.usedFuncTable = true
+    ctx.usedMemory = true
+    const funcTypeName = `$fntype${numArgs}`
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(numArgs)
+    const id = ctx.loopCounter++
+    const tmpClosure = `$_closexpr_${id}`
+    const tmpI64 = `$_closexpr_i64_${id}`
+    ctx.addLocal(tmpClosure.slice(1), 'f64')
+    ctx.localDecls.push(`(local ${tmpI64} i64)`)
+    return tv('f64', `(block (result f64)
+      (local.set ${tmpClosure} ${closureVal[1]})
+      (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
+      (call_indirect ${funcTypeName}
+        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
+          (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
+          (i32.wrap_i64 (local.get ${tmpI64})))
+        ${argWats}
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`)
+  }
+}
+
+// Create a closure value (funcref + env for gc:true, table_idx + env_ptr for gc:false)
+function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
+  if (opts.gc) {
+    ctx.usedClosureType = true
+    // Track function type for funcref
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(arity)
+
+    // Build environment
+    let envWat
+    if (!envType || envFields.length === 0) {
+      // No environment needed - use null anyref
+      envWat = '(ref.null none)'
+    } else if (usesOwnEnv && ctx.ownEnvType) {
+      // Pass our own env directly
+      envWat = '(local.get $__ownenv)'
+    } else {
+      // Build new env struct with captured values
+      const envVals = envFields.map(f => {
+        if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
+          const fieldIdx = ctx.hoistedVars[f.name]
+          return `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`
+        }
+        if (ctx.capturedVars && f.name in ctx.capturedVars) {
+          const fieldIdx = ctx.capturedVars[f.name]
+          // Use $__envcast in gc:true mode
+          return `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast))`
+        }
+        const loc = ctx.getLocal(f.name)
+        if (loc) return `(local.get $${loc.scopedName})`
+        const glob = ctx.getGlobal(f.name)
+        if (glob) return `(global.get $${f.name})`
+        throw new Error(`Cannot capture ${f.name}: not found`)
+      }).join(' ')
+      envWat = `(struct.new ${envType} ${envVals})`
+    }
+
+    // Create closure struct: (struct.new $closure funcref env)
+    ctx.refFuncs.add(fnName) // Track for elem declare
+    return tv('closure', `(struct.new $closure (ref.func $${fnName}) ${envWat})`)
+  } else {
+    // gc:false: NaN-encode table index + env pointer
+    ctx.usedFuncTable = true
+    ctx.usedMemory = true
+    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+    ctx.usedFuncTypes.add(arity)
+
+    // Add function to table and get its index
+    let tableIdx = ctx.funcTableEntries.indexOf(fnName)
+    if (tableIdx === -1) {
+      tableIdx = ctx.funcTableEntries.length
+      ctx.funcTableEntries.push(fnName)
+    }
+
+    // Build environment in memory
+    if (!envType || envFields.length === 0) {
+      // No env - encode just table index, env length=0
+      return tv('closure', `(f64.reinterpret_i64 (i64.or
+        (i64.const 0x7FF0000000000000)
+        (i64.or
+          (i64.shl (i64.const ${tableIdx}) (i64.const 32))
+          (i64.const 0))))`)
+    }
+
+    // Allocate env in memory
+    const id = ctx.loopCounter++
+    const tmpEnv = `$_closenv_${id}`
+    ctx.addLocal(tmpEnv.slice(1), 'f64')
+
+    // Store captured values in env
+    let stores = ''
+    for (let i = 0; i < envFields.length; i++) {
+      const f = envFields[i]
+      let val
+      if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
+        const offset = ctx.hoistedVars[f.name] * 8
+        val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
+      } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
+        const offset = ctx.capturedVars[f.name] * 8
+        val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
+      } else {
+        const loc = ctx.getLocal(f.name)
+        if (loc) val = `(local.get $${loc.scopedName})`
+        else {
+          const glob = ctx.getGlobal(f.name)
+          if (glob) val = `(global.get $${f.name})`
+          else throw new Error(`Cannot capture ${f.name}: not found`)
+        }
+      }
+      stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
+    }
+
+    // Create closure: NaN-box with [0x7FF][tableIdx:16][envLen:16][envOffset:20]
+    // Actually simpler: use lower 32 bits for env offset, bits 32-47 for table idx, bits 48-51 for env length
+    return tv('closure', `(block (result f64)
+      (local.set ${tmpEnv} (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length})))
+      ${stores}(f64.reinterpret_i64 (i64.or
+        (i64.const 0x7FF0000000000000)
+        (i64.or
+          (i64.shl (i64.const ${tableIdx}) (i64.const 32))
+          (i64.or
+            (i64.shl (i64.extend_i32_u (call $__ptr_len (local.get ${tmpEnv}))) (i64.const 48))
+            (i64.extend_i32_u (call $__ptr_offset (local.get ${tmpEnv}))))))))`)
+  }
 }
 
 // Operators
@@ -648,8 +893,30 @@ const operators = {
         receiver = gen(obj)
         name = method
       }
+    } else if (Array.isArray(fn)) {
+      // Callee is a complex expression (e.g., a(1)(2) where a(1) returns a closure)
+      // Generate the closure expression and call it directly
+      const callee = gen(fn)
+      if (callee[0] === 'closure') {
+        // Call the closure value from the expression
+        return genClosureCallExpr(callee, args)
+      }
+      throw new Error(`Cannot call non-closure expression: ${JSON.stringify(fn)}`)
     }
     if (!name) throw new Error(`Invalid call: ${JSON.stringify(fn)}`)
+
+    // Check if this is a closure value call (variable holding a closure, not a known function)
+    if (namespace === null && !(name in ctx.functions)) {
+      // Check if it's a local or captured variable
+      const loc = ctx.getLocal(name)
+      const captured = ctx.capturedVars && name in ctx.capturedVars
+      const hoisted = ctx.hoistedVars && name in ctx.hoistedVars
+      if (loc || captured || hoisted) {
+        // This is calling a closure value stored in a variable
+        return genClosureCall(name, args)
+      }
+    }
+
     return resolveCall(namespace, name, args, receiver)
   },
 
@@ -932,7 +1199,52 @@ const operators = {
   },
 
   '=>'([params, body]) {
-    throw new Error('Arrow functions must be assigned: name = (x) => ...')
+    // Arrow function as expression - create a closure value
+    // This is for cases like: `add = x => (y => x + y)` where the inner arrow is returned
+    const fnParams = extractParams(params)
+
+    // Analyze for captured variables
+    const localNames = Object.keys(ctx.locals)
+    const capturedNames = ctx.capturedVars ? Object.keys(ctx.capturedVars) : []
+    const hoistedNames = ctx.hoistedVars ? Object.keys(ctx.hoistedVars) : []
+    const outerDefined = new Set([...localNames, ...capturedNames, ...hoistedNames])
+
+    const analysis = analyzeScope(body, new Set(fnParams), true)
+    const captured = [...analysis.free].filter(v => outerDefined.has(v) && !fnParams.includes(v))
+
+    // Generate unique name for anonymous closure
+    const closureName = `__anon${ctx.closureCounter++}`
+
+    // Determine environment
+    let envType, envFields
+    const allFromOwnEnv = ctx.hoistedVars && captured.length > 0 && captured.every(v => v in ctx.hoistedVars)
+
+    if (captured.length === 0) {
+      // No captures - simple funcref, null env
+      envType = null
+      envFields = []
+    } else if (allFromOwnEnv) {
+      envType = ctx.ownEnvType
+      envFields = ctx.ownEnvFields
+    } else {
+      const envId = ctx.closureCounter++
+      envType = `$env${envId}`
+      envFields = captured.map((v, i) => ({ name: v, index: i }))
+      if (opts.gc) {
+        ctx.closureEnvTypes.push({ id: envId, fields: captured })
+      }
+    }
+
+    // Register the lifted function
+    ctx.functions[closureName] = {
+      params: fnParams,
+      body,
+      exported: false,
+      closure: captured.length > 0 ? { envType, envFields, captured, usesOwnEnv: allFromOwnEnv } : null
+    }
+
+    // Return closure value
+    return genClosureValue(closureName, envType, envFields, allFromOwnEnv, fnParams.length)
   },
 
   'return'([value]) {
@@ -1416,18 +1728,25 @@ function genAssign(target, value, returnValue) {
       ctx.closures[target] = { envType, envFields, captured, params, body, usesOwnEnv: allFromOwnEnv }
 
       // Register the lifted function (with env param)
+      // Track closure depth for call sites
+      const depth = closureDepth(body)
       ctx.functions[target] = {
         params,
         body,
         exported: false,
-        closure: { envType, envFields, captured, usesOwnEnv: allFromOwnEnv }
+        closure: { envType, envFields, captured, usesOwnEnv: allFromOwnEnv },
+        closureDepth: depth
       }
 
       return returnValue ? tv('f64', '(f64.const 0)') : ''
     }
 
+    // Check if function body returns a closure (arrow function as body)
+    const returnsClosure = Array.isArray(body) && body[0] === '=>'
+    const depth = closureDepth(body)
+
     // Regular function (no captures)
-    ctx.functions[target] = { params, body, exported: true }
+    ctx.functions[target] = { params, body, exported: true, returnsClosure, closureDepth: depth }
     return returnValue ? tv('f64', '(f64.const 0)') : ''
   }
 
@@ -1541,9 +1860,10 @@ function genAssign(target, value, returnValue) {
   if (ctx.capturedVars && target in ctx.capturedVars) {
     const fieldIdx = ctx.capturedVars[target]
     if (opts.gc) {
-      const code = `(struct.set ${ctx.currentEnv} ${fieldIdx} (local.get $__env) ${asF64(val)[1]})`
+      // Use $__envcast for gc:true mode
+      const code = `(struct.set ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast) ${asF64(val)[1]})`
       return returnValue
-        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env)))`)
+        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__envcast)))`)
         : code + '\n    '
     } else {
       const offset = fieldIdx * 8
@@ -1639,10 +1959,18 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
   const prevCtx = setCtx(newCtx)
 
   // Add env parameter for closures
+  // For first-class functions, we use generic anyref/f64 and cast inside
   if (closureInfo) {
     if (opts.gc) {
-      envParam = `(param $__env (ref ${closureInfo.envType})) `
-      ctx.locals.__env = { idx: ctx.localCounter++, type: 'ref' }
+      // Use anyref for compatibility with $closure struct, cast to specific type inside
+      envParam = `(param $__env anyref) `
+      ctx.locals.__env = { idx: ctx.localCounter++, type: 'anyref' }
+      // Cast to specific env type for field access
+      if (closureInfo.envType) {
+        ctx.localDecls.push(`(local $__envcast (ref null ${closureInfo.envType}))`)
+        ctx.locals.__envcast = { idx: ctx.localCounter++, type: 'ref' }
+        envInit = `(local.set $__envcast (ref.cast (ref null ${closureInfo.envType}) (local.get $__env)))\n      `
+      }
     } else {
       envParam = `(param $__env f64) `
       ctx.locals.__env = { idx: ctx.localCounter++, type: 'f64' }
@@ -1679,16 +2007,56 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
   }
 
   for (const p of params) ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
-  const [, bodyWat] = asF64(gen(bodyAst))
+  const bodyResult = gen(bodyAst)
+  const [bodyType, bodyWatRaw] = bodyResult
+
+  // Determine return type and final body
+  let returnType, bodyWat
+  if (opts.gc && bodyType === 'closure') {
+    // Function returns a closure - use anyref return type
+    returnType = 'anyref'
+    bodyWat = bodyWatRaw
+  } else {
+    // Normal f64 return
+    returnType = 'f64'
+    bodyWat = asF64(bodyResult)[1]
+  }
+
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
   // Export only if not a closure
   const exportClause = closureInfo ? '' : ` (export "${name}")`
   // Wrap body in block to support early return
-  const wat = `(func $${name}${exportClause} ${envParam}${paramDecls} (result f64)${localDecls}\n    (block ${ctx.returnLabel} (result f64)\n      ${envInit}${bodyWat}\n    )\n  )`
+  const wat = `(func $${name}${exportClause} ${envParam}${paramDecls} (result ${returnType})${localDecls}\n    (block ${ctx.returnLabel} (result ${returnType})\n      ${envInit}${bodyWat}\n    )\n  )`
 
-  // Propagate usedMemory to parent context
+  // Track if this function returns a closure (for call sites)
+  if (bodyType === 'closure') {
+    parentCtx.functions[name].returnsClosure = true
+  }
+
+  // Propagate flags to parent context
   if (ctx.usedMemory) parentCtx.usedMemory = true
+  if (ctx.usedClosureType) parentCtx.usedClosureType = true
+  if (ctx.usedFuncTable) parentCtx.usedFuncTable = true
+  if (ctx.usedFuncTypes) {
+    if (!parentCtx.usedFuncTypes) parentCtx.usedFuncTypes = new Set()
+    for (const arity of ctx.usedFuncTypes) parentCtx.usedFuncTypes.add(arity)
+  }
+  if (ctx.usedClFuncTypes) {
+    if (!parentCtx.usedClFuncTypes) parentCtx.usedClFuncTypes = new Set()
+    for (const arity of ctx.usedClFuncTypes) parentCtx.usedClFuncTypes.add(arity)
+  }
+  if (ctx.funcTableEntries) {
+    for (const fn of ctx.funcTableEntries) {
+      if (!parentCtx.funcTableEntries.includes(fn)) parentCtx.funcTableEntries.push(fn)
+    }
+  }
+  // Propagate ref.func declarations
+  if (ctx.refFuncs && ctx.refFuncs.size > 0) {
+    for (const fn of ctx.refFuncs) parentCtx.refFuncs.add(fn)
+  }
+  // Sync closure counter back to parent
+  parentCtx.closureCounter = ctx.closureCounter
 
   setCtx(prevCtx)
   return wat
@@ -1717,16 +2085,53 @@ function generateFunctions() {
 function assemble(bodyWat, ctx, extraFunctions = []) {
   let wat = '(module\n'
 
+  // Function types for closure calls (needed before other types reference them)
+  if (ctx.usedFuncTypes && ctx.usedFuncTypes.size > 0) {
+    for (const arity of ctx.usedFuncTypes) {
+      // Function type: (func (param anyref) (param f64)* (result f64))
+      // First param is env (anyref for gc:true, f64 for gc:false)
+      const envParam = opts.gc ? 'anyref' : 'f64'
+      const params = `(param ${envParam})` + ' (param f64)'.repeat(arity)
+      wat += `  (type $fntype${arity} (func ${params} (result f64)))\n`
+    }
+  }
+  // Function types for closures that return closures (result anyref)
+  if (ctx.usedClFuncTypes && ctx.usedClFuncTypes.size > 0) {
+    for (const arity of ctx.usedClFuncTypes) {
+      const envParam = opts.gc ? 'anyref' : 'f64'
+      const params = `(param ${envParam})` + ' (param f64)'.repeat(arity)
+      wat += `  (type $clfntype${arity} (func ${params} (result anyref)))\n`
+    }
+  }
+
   // GC types (only in gc:true mode)
   if (opts.gc) {
     if (ctx.usedArrayType) wat += '  (type $f64array (array (mut f64)))\n'
     if (ctx.usedStringType) wat += '  (type $string (array (mut i16)))\n'
     if (ctx.usedRefArrayType) wat += '  (type $anyarray (array (mut anyref)))\n'
+    // Closure value type: struct with funcref and anyref env
+    if (ctx.usedClosureType) {
+      wat += '  (type $closure (struct (field $fn funcref) (field $env anyref)))\n'
+    }
     // Closure environment types
     for (const env of ctx.closureEnvTypes) {
       const fields = env.fields.map(f => `(field $${f} (mut f64))`).join(' ')
       wat += `  (type $env${env.id} (struct ${fields}))\n`
     }
+    // Declare functions referenced via ref.func
+    if (ctx.refFuncs.size > 0) {
+      const funcs = Array.from(ctx.refFuncs).map(n => `$${n}`).join(' ')
+      wat += `  (elem declare func ${funcs})\n`
+    }
+  }
+
+  // Function table for gc:false closure calls
+  if (ctx.usedFuncTable && ctx.funcTableEntries.length > 0) {
+    const tableSize = ctx.funcTableEntries.length
+    wat += `  (table $fntable ${tableSize} funcref)\n`
+    // elem segment to initialize table
+    const elems = ctx.funcTableEntries.map(name => `$${name}`).join(' ')
+    wat += `  (elem (i32.const 0) func ${elems})\n`
   }
 
   // Memory (required for gc:false mode)

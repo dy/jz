@@ -31,6 +31,7 @@ mul(4, 5)  // 20
 * Arrays: `[a, b]`, `arr[i]`, `arr[i] = x`, `arr.length`
 * Objects: `{a: b}`, `{a, b}`, `obj.prop`
 * Functions: `(a, b) => c`, `a => b`, `() => c`
+* Currying: `add = x => y => x + y; add(5)(3)` (gc:true)
 * Comments: `// foo`, `/* bar */`
 * Declarations: `let`, `const`, block scope
 * Strict equality: `===`, `!==`
@@ -109,6 +110,8 @@ jz run program.wat
 jz --help
 ```
 
+<!--
+
 ## Examples
 
 ### Color Space Conversion
@@ -134,6 +137,12 @@ for (let t = 0; t < 8000; t++) {
 }
 ```
 
+## Used by
+
+* [color-space]()
+* [web-audio-api]()
+
+-->
 
 ## Why?
 

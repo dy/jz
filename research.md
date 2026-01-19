@@ -52,6 +52,23 @@
   * Player?
   * Srutibox
 
+## First-class functions / Closures
+
+### gc:true mode (funcref + call_ref)
+- Closures represented as `(struct (field $fn funcref) (field $env anyref))`
+- Function types: `$fntype{N}` returns f64, `$clfntype{N}` returns anyref (for closures returning closures)
+- Uses `call_ref` to invoke closure functions
+- `ref.func` requires `elem declare` section for forward references
+- Captures tracked via closure environment structs (`$env{N}`)
+- Supports arbitrary nesting depth via closure depth tracking
+
+### gc:false mode (table + call_indirect)
+- Closures NaN-boxed: table_idx in bits 32-47, env_ptr in bits 0-19
+- Function table holds closure function pointers
+- Environment stored in linear memory
+- Uses `call_indirect` via function table
+- **Limitation**: First-class function currying (returning closures) not yet fully implemented
+
 ## [ ] Stdlib sources
 
 * [Metallic](https://github.com/jdh8/metallic)
