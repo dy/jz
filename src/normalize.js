@@ -34,38 +34,15 @@ const NAMESPACES = { Math: new Set([
   'PI', 'E', 'SQRT2', 'SQRT1_2', 'LN2', 'LN10', 'LOG2E', 'LOG10E',
 ]), Number: new Set(['isNaN', 'isFinite', 'isInteger']) }
 
-const GLOBALS = new Set(['Math', 'Number', 'Array', 'Infinity', 'NaN', 'true', 'false', 'null', 'undefined', 'isNaN', 'isFinite', 'parseInt'])
-
-// Context for tracking scope
-const createCtx = (parent) => ({ vars: new Set(parent?.vars), fns: new Set(parent?.fns) })
-
 // Main entry
-export default function normalize(node, ctx = createCtx()) {
-  ctx.vars.add('t')  // floatbeat param
-  collectFns(node, ctx)  // Forward declare functions
-  return expr(node, ctx)
-}
-
-// Collect function names in first pass for forward references
-function collectFns(node, ctx) {
-  if (!Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === '=' && Array.isArray(args[1]) && args[1][0] === '=>' && typeof args[0] === 'string')
-    ctx.fns.add(args[0])
-  else if (op === 'function' && typeof args[0] === 'string')
-    ctx.fns.add(args[0])
-  else if (op === ',' || op === ';')
-    args.forEach(a => collectFns(a, ctx))
+export default function normalize(node) {
+  return expr(node)
 }
 
 // Core normalizer
-function expr(node, ctx) {
+function expr(node) {
   if (node == null) return node
-  if (typeof node === 'string') {
-    if (!ctx.vars.has(node) && !ctx.fns.has(node) && !GLOBALS.has(node))
-      throw new Error(`Unknown identifier: ${node}`)
-    return node
-  }
+  if (typeof node === 'string') return node
   if (!Array.isArray(node)) return node
 
   const [op, ...args] = node
@@ -80,148 +57,148 @@ function expr(node, ctx) {
 
   if (!ALLOWED.has(op)) throw new Error(`Unsupported: ${op}`)
 
-  return (handlers[op] || defaultHandler)(op, args, ctx)
+  return (handlers[op] || defaultHandler)(op, args)
 }
 
 // Handlers
 const handlers = {
   // Unary +/- disambiguation
-  '+'(op, [a, b], ctx) {
+  '+'(op, [a, b]) {
     if (b === undefined) {
-      a = expr(a, ctx)
+      a = expr(a)
       return a[0] === undefined && typeof a[1] === 'number' ? a : ['u+', a]
     }
-    return optimize('+', expr(a, ctx), expr(b, ctx))
+    return optimize('+', expr(a), expr(b))
   },
 
-  '-'(op, [a, b], ctx) {
+  '-'(op, [a, b]) {
     if (b === undefined) {
-      a = expr(a, ctx)
+      a = expr(a)
       return a[0] === undefined && typeof a[1] === 'number' ? [, -a[1]] : ['u-', a]
     }
-    return optimize('-', expr(a, ctx), expr(b, ctx))
+    return optimize('-', expr(a), expr(b))
   },
 
   // Binary with optimization
-  '*'(op, [a, b], ctx) { return optimize('*', expr(a, ctx), expr(b, ctx)) },
-  '/'(op, [a, b], ctx) { return optimize('/', expr(a, ctx), expr(b, ctx)) },
-  '%'(op, [a, b], ctx) { return optimize('%', expr(a, ctx), expr(b, ctx)) },
-  '**'(op, [a, b], ctx) { return optimize('**', expr(a, ctx), expr(b, ctx)) },
-  '&'(op, [a, b], ctx) { return optimize('&', expr(a, ctx), expr(b, ctx)) },
-  '|'(op, [a, b], ctx) { return optimize('|', expr(a, ctx), expr(b, ctx)) },
-  '^'(op, [a, b], ctx) { return optimize('^', expr(a, ctx), expr(b, ctx)) },
-  '<<'(op, [a, b], ctx) { return optimize('<<', expr(a, ctx), expr(b, ctx)) },
-  '>>'(op, [a, b], ctx) { return optimize('>>', expr(a, ctx), expr(b, ctx)) },
-  '>>>'(op, [a, b], ctx) { return optimize('>>>', expr(a, ctx), expr(b, ctx)) },
+  '*'(op, [a, b]) { return optimize('*', expr(a), expr(b)) },
+  '/'(op, [a, b]) { return optimize('/', expr(a), expr(b)) },
+  '%'(op, [a, b]) { return optimize('%', expr(a), expr(b)) },
+  '**'(op, [a, b]) { return optimize('**', expr(a), expr(b)) },
+  '&'(op, [a, b]) { return optimize('&', expr(a), expr(b)) },
+  '|'(op, [a, b]) { return optimize('|', expr(a), expr(b)) },
+  '^'(op, [a, b]) { return optimize('^', expr(a), expr(b)) },
+  '<<'(op, [a, b]) { return optimize('<<', expr(a), expr(b)) },
+  '>>'(op, [a, b]) { return optimize('>>', expr(a), expr(b)) },
+  '>>>'(op, [a, b]) { return optimize('>>>', expr(a), expr(b)) },
 
   // Variable declarations
-  'let'(op, [init], ctx) { return handleDecl('let', init, ctx) },
-  'const'(op, [init], ctx) { return handleDecl('const', init, ctx) },
-  'var'(op, [init], ctx) { return handleDecl('var', init, ctx) },
+  'let'(op, [init]) {
+    if (Array.isArray(init) && init[0] === '=') return ['let', ['=', init[1], expr(init[2])]]
+    return ['let', init]
+  },
+  'const'(op, [init]) {
+    if (Array.isArray(init) && init[0] === '=') return ['const', ['=', init[1], expr(init[2])]]
+    return ['const', init]
+  },
+  'var'(op, [init]) {
+    if (Array.isArray(init) && init[0] === '=') return ['var', ['=', init[1], expr(init[2])]]
+    return ['var', init]
+  },
 
   // Function definition
-  'function'(op, [name, params, body], ctx) {
+  'function'(op, [name, params, body]) {
     if (typeof name !== 'string') throw new Error('Function needs name')
-    ctx.fns.add(name)
-    const fnCtx = createCtx(ctx)
-    addParams(params, fnCtx)
-    return ['function', name, params, expr(body, fnCtx)]
+    return ['function', name, params, expr(body)]
   },
 
   // Arrow function
-  '=>'(op, [params, body], ctx) {
-    const fnCtx = createCtx(ctx)
-    addParams(params, fnCtx)
-    return ['=>', params, expr(body, fnCtx)]
+  '=>'(op, [params, body]) {
+    return ['=>', params, expr(body)]
   },
 
   // Assignment
-  '='(op, [target, value], ctx) {
+  '='(op, [target, value]) {
     // Handle var parsed as ["=", ["var", name], value] -> ["var", ["=", name, value]]
     if (Array.isArray(target) && target[0] === 'var') {
-      const name = target[1]
-      ctx.vars.add(name)
-      return ['var', ['=', name, expr(value, ctx)]]
+      return ['var', ['=', target[1], expr(value)]]
     }
-    addVars(target, ctx)
-    return ['=', target, expr(value, ctx)]
+    return ['=', target, expr(value)]
   },
 
   // Compound assignment
-  '+='(op, [a, b], ctx) { addVars(a, ctx); return ['+=', a, expr(b, ctx)] },
-  '-='(op, [a, b], ctx) { addVars(a, ctx); return ['-=', a, expr(b, ctx)] },
-  '*='(op, [a, b], ctx) { addVars(a, ctx); return ['*=', a, expr(b, ctx)] },
-  '/='(op, [a, b], ctx) { addVars(a, ctx); return ['/=', a, expr(b, ctx)] },
-  '%='(op, [a, b], ctx) { addVars(a, ctx); return ['%=', a, expr(b, ctx)] },
-  '&='(op, [a, b], ctx) { addVars(a, ctx); return ['&=', a, expr(b, ctx)] },
-  '|='(op, [a, b], ctx) { addVars(a, ctx); return ['|=', a, expr(b, ctx)] },
-  '^='(op, [a, b], ctx) { addVars(a, ctx); return ['^=', a, expr(b, ctx)] },
-  '<<='(op, [a, b], ctx) { addVars(a, ctx); return ['<<=', a, expr(b, ctx)] },
-  '>>='(op, [a, b], ctx) { addVars(a, ctx); return ['>>=', a, expr(b, ctx)] },
-  '>>>='(op, [a, b], ctx) { addVars(a, ctx); return ['>>>=', a, expr(b, ctx)] },
+  '+='(op, [a, b]) { return ['+=', a, expr(b)] },
+  '-='(op, [a, b]) { return ['-=', a, expr(b)] },
+  '*='(op, [a, b]) { return ['*=', a, expr(b)] },
+  '/='(op, [a, b]) { return ['/=', a, expr(b)] },
+  '%='(op, [a, b]) { return ['%=', a, expr(b)] },
+  '&='(op, [a, b]) { return ['&=', a, expr(b)] },
+  '|='(op, [a, b]) { return ['|=', a, expr(b)] },
+  '^='(op, [a, b]) { return ['^=', a, expr(b)] },
+  '<<='(op, [a, b]) { return ['<<=', a, expr(b)] },
+  '>>='(op, [a, b]) { return ['>>=', a, expr(b)] },
+  '>>>='(op, [a, b]) { return ['>>>=', a, expr(b)] },
 
   // Function call
-  '()'(op, args, ctx) {
+  '()'(op, args) {
     const [fn, ...callArgs] = args
-    return ['()', expr(fn, ctx), ...callArgs.map(a => expr(a, ctx))]
+    return ['()', expr(fn), ...callArgs.map(a => expr(a))]
   },
 
   // Property access
-  '.'(op, [obj, prop], ctx) {
+  '.'(op, [obj, prop]) {
     if (typeof obj === 'string' && obj in NAMESPACES) {
       if (!NAMESPACES[obj].has(prop)) throw new Error(`Unknown: ${obj}.${prop}`)
       return ['.', obj, prop]
     }
-    return ['.', expr(obj, ctx), prop]
+    return ['.', expr(obj), prop]
   },
 
   // Optional chaining
-  '?.'(op, [obj, prop], ctx) {
-    return ['?.', expr(obj, ctx), typeof prop === 'string' ? prop : expr(prop, ctx)]
+  '?.'(op, [obj, prop]) {
+    return ['?.', expr(obj), typeof prop === 'string' ? prop : expr(prop)]
   },
 
   // Optional array access: a?.[i]
-  '?.[]'(op, [arr, idx], ctx) {
-    return ['?.[]', expr(arr, ctx), expr(idx, ctx)]
+  '?.[]'(op, [arr, idx]) {
+    return ['?.[]', expr(arr), expr(idx)]
   },
 
   // Array literal / indexing
-  '[]'(op, args, ctx) {
+  '[]'(op, args) {
     if (args.length === 1) {
       // Array literal
       const inner = args[0]
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',')
-        return ['[', ...inner.slice(1).map(e => expr(e, ctx))]
-      return ['[', expr(inner, ctx)]
+        return ['[', ...inner.slice(1).map(e => expr(e))]
+      return ['[', expr(inner)]
     }
     // Indexing
-    return ['[]', expr(args[0], ctx), expr(args[1], ctx)]
+    return ['[]', expr(args[0]), expr(args[1])]
   },
 
   // Normalized array literal (already processed)
-  '['(op, elements, ctx) {
-    return ['[', ...elements.map(e => expr(e, ctx))]
+  '['(op, elements) {
+    return ['[', ...elements.map(e => expr(e))]
   },
 
   // Object literal / block
-  '{}'(op, [inner], ctx) {
+  '{}'(op, [inner]) {
     if (inner == null) return ['{']
 
     // Block: contains statements
     if (Array.isArray(inner) && (inner[0] === ';' || inner[0] === '=' || inner[0] === 'let' ||
         inner[0] === 'const' || inner[0] === 'var' || inner[0] === 'for' || inner[0] === 'while' || inner[0] === 'return')) {
-      const blockCtx = createCtx(ctx)
-      return ['{}', expr(inner, blockCtx)]
+      return ['{}', expr(inner)]
     }
 
     // Object literal
     if (typeof inner === 'string') return ['{', [inner, inner]]
-    if (Array.isArray(inner) && inner[0] === ':') return ['{', [inner[1], expr(inner[2], ctx)]]
+    if (Array.isArray(inner) && inner[0] === ':') return ['{', [inner[1], expr(inner[2])]]
     if (Array.isArray(inner) && inner[0] === ',') {
       const props = inner.slice(1).map(p => {
         if (typeof p === 'string') return [p, p]
-        if (Array.isArray(p) && p[0] === ':') return [p[1], expr(p[2], ctx)]
+        if (Array.isArray(p) && p[0] === ':') return [p[1], expr(p[2])]
         throw new Error(`Invalid object property: ${JSON.stringify(p)}`)
       })
       return ['{', ...props]
@@ -230,93 +207,92 @@ const handlers = {
   },
 
   // For loop
-  'for'(op, [head, body], ctx) {
-    const loopCtx = createCtx(ctx)
+  'for'(op, [head, body]) {
     if (Array.isArray(head) && head[0] === ';') {
       const [, init, cond, step] = head
       return ['for',
-        init ? expr(init, loopCtx) : null,
-        cond ? expr(cond, loopCtx) : null,
-        step ? expr(step, loopCtx) : null,
-        expr(body, loopCtx)
+        init ? expr(init) : null,
+        cond ? expr(cond) : null,
+        step ? expr(step) : null,
+        expr(body)
       ]
     }
-    return ['for', expr(head, loopCtx), expr(body, loopCtx)]
+    return ['for', expr(head), expr(body)]
   },
 
   // While loop
-  'while'(op, [cond, body], ctx) {
-    return ['while', expr(cond, ctx), expr(body, ctx)]
+  'while'(op, [cond, body]) {
+    return ['while', expr(cond), expr(body)]
   },
 
   // If statement
-  'if'(op, [cond, then, els], ctx) {
+  'if'(op, [cond, then, els]) {
     return els !== undefined
-      ? ['if', expr(cond, ctx), expr(then, ctx), expr(els, ctx)]
-      : ['if', expr(cond, ctx), expr(then, ctx)]
+      ? ['if', expr(cond), expr(then), expr(els)]
+      : ['if', expr(cond), expr(then)]
   },
 
   // Break and continue
-  'break'(op, [label], ctx) {
+  'break'(op, [label]) {
     return label ? ['break', label] : ['break']
   },
 
-  'continue'(op, [label], ctx) {
+  'continue'(op, [label]) {
     return label ? ['continue', label] : ['continue']
   },
 
   // Switch statement
-  'switch'(op, [discriminant, ...cases], ctx) {
-    return ['switch', expr(discriminant, ctx), ...cases.map(c => expr(c, ctx))]
+  'switch'(op, [discriminant, ...cases]) {
+    return ['switch', expr(discriminant), ...cases.map(c => expr(c))]
   },
 
-  'case'(op, [test, consequent], ctx) {
-    return ['case', expr(test, ctx), expr(consequent, ctx)]
+  'case'(op, [test, consequent]) {
+    return ['case', expr(test), expr(consequent)]
   },
 
-  'default'(op, [consequent], ctx) {
-    return ['default', expr(consequent, ctx)]
+  'default'(op, [consequent]) {
+    return ['default', expr(consequent)]
   },
 
   // Ternary
-  '?'(op, [cond, then, els], ctx) {
-    return ['?', expr(cond, ctx), expr(then, ctx), expr(els, ctx)]
+  '?'(op, [cond, then, els]) {
+    return ['?', expr(cond), expr(then), expr(els)]
   },
 
   // Statements
-  ';'(op, stmts, ctx) {
-    return [';', ...stmts.filter((s, i) => i === 0 || s != null).map(s => expr(s, ctx))]
+  ';'(op, stmts) {
+    return [';', ...stmts.filter((s, i) => i === 0 || s != null).map(s => expr(s))]
   },
 
   // Comma
-  ','(op, items, ctx) {
-    return [',', ...items.map(i => expr(i, ctx))]
+  ','(op, items) {
+    return [',', ...items.map(i => expr(i))]
   },
 
   // Return
-  'return'(op, [value], ctx) {
-    return value !== undefined ? ['return', expr(value, ctx)] : ['return']
+  'return'(op, [value]) {
+    return value !== undefined ? ['return', expr(value)] : ['return']
   },
 
   // typeof
-  'typeof'(op, [value], ctx) {
-    return ['typeof', expr(value, ctx)]
+  'typeof'(op, [value]) {
+    return ['typeof', expr(value)]
   },
 
   // void
-  'void'(op, [value], ctx) {
-    return ['void', expr(value, ctx)]
+  'void'(op, [value]) {
+    return ['void', expr(value)]
   },
 
   // Template literals
-  '\`'(op, parts, ctx) {
-    return ['\`', ...parts.map(p => expr(p, ctx))]
+  '\`'(op, parts) {
+    return ['\`', ...parts.map(p => expr(p))]
   },
 }
 
 // Default: just recurse
-function defaultHandler(op, args, ctx) {
-  return [op, ...args.map(a => expr(a, ctx))]
+function defaultHandler(op, args) {
+  return [op, ...args.map(a => expr(a))]
 }
 
 // Constant folding optimization
@@ -347,42 +323,4 @@ function optimize(op, a, b) {
   if (a[0] === undefined && a[1] === 1 && op === '*') return b
 
   return [op, a, b]
-}
-
-// Handle variable declaration init - preserve let/const/var wrapper
-function handleDecl(op, init, ctx) {
-  if (Array.isArray(init) && init[0] === '=') {
-    addVars(init[1], ctx)
-    return [op, ['=', init[1], expr(init[2], ctx)]]
-  }
-  if (typeof init === 'string') ctx.vars.add(init)
-  return [op, init]
-}
-
-// Add variable names from target
-function addVars(target, ctx) {
-  if (typeof target === 'string') ctx.vars.add(target)
-  else if (Array.isArray(target)) {
-    const op = target[0]
-    if (op === '[]' || op === ',') target.slice(1).forEach(v => addVars(v, ctx))
-    // Object destructuring: ['{}', [',', 'a', 'b']] or ['{}', [',', [':', 'a', 'a'], ...]]
-    else if (op === '{}' && Array.isArray(target[1])) {
-      const inner = target[1]
-      if (inner[0] === ',') inner.slice(1).forEach(v => addVars(v, ctx))
-      else if (inner[0] === ':') addVars(inner[1], ctx)
-      else addVars(inner, ctx)
-    }
-    // Handle [':','a','a'] -> add 'a'
-    else if (op === ':') addVars(target[1], ctx)
-  }
-}
-
-// Add params to context
-function addParams(params, ctx) {
-  if (params == null) return
-  if (typeof params === 'string') ctx.vars.add(params)
-  else if (Array.isArray(params)) {
-    if (params[0] === ',') params.slice(1).forEach(p => addParams(p, ctx))
-    else params.forEach(p => addParams(p, ctx))
-  }
 }
