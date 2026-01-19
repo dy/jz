@@ -50,8 +50,8 @@
   * [x] refactor methods/array.js to use gc.js helpers (arrLen, arrGet, arrSet, arrNew) - reduced 795→488 lines
   * [x] refactor methods/string.js to use gc.js helpers (strLen, strCharAt, strNew, strSetChar) - reduced 450→296 lines
   * [ ] capture array/objects in gc:true mode (needs anyref env fields)
-  * [ ] add JSDoc to types
-  * [ ] add comments for difficult parts
+  * [x] add JSDoc to types
+  * [x] add comments for difficult parts (section headers in compile.js)
 * [ ] JS Compatibility (priority order)
   * [x] Declarations & Scoping
     * [x] `let` declaration - block-scoped variable

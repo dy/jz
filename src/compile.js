@@ -1,16 +1,42 @@
 /**
  * jz compiler - AST to WAT compilation
  *
- * Architecture:
- * - types.js: Type system, coercions (tv, asF64, asI32, truthy)
- * - analyze.js: Closure analysis (analyzeScope, findHoistedVars)
- * - ops.js: WAT operations (f64, i32, MATH_OPS)
- * - gc.js: GC-mode abstractions (nullRef, mkString, envGet, etc)
- * - context.js: Compilation context factory
- * - emit.js: WAT module assembly
- * - compile.js: Core AST->WAT generator and operators (this file)
+ * This is the core compiler that transforms JavaScript AST into WAT code.
  *
- * Flow: AST → analyze closures → generate WAT → assemble module
+ * === Module Map ===
+ * src/
+ *   types.js     - Type system: tv(), asF64(), asI32(), truthy(), predicates
+ *   ops.js       - WAT operations: f64.*, i32.*, MATH_OPS
+ *   gc.js        - GC abstraction: nullRef, mkString, arrGet, envGet/Set
+ *   analyze.js   - Closure analysis: analyzeScope, findHoistedVars
+ *   context.js   - Compilation context: locals, globals, functions, closures
+ *   emit.js      - WAT assembly: assemble() builds final module
+ *   stdlib.js    - Standard library: Math, isNaN, parseInt, etc.
+ *   normalize.js - AST normalization from parser
+ *   compile.js   - This file: AST→WAT generator, operators, functions
+ *   methods/     - Array/string method implementations
+ *
+ * === This File Sections ===
+ * Line ~25   - Imports and exports
+ * Line ~55   - Public API: compile()
+ * Line ~65   - Core helpers: isConstant(), evalConstant(), generate()
+ * Line ~100  - Identifiers: closureDepth(), genLiteral(), genIdent()
+ * Line ~145  - Call resolution: resolveCall()
+ * Line ~330  - Closure calls: genClosureCall(), genClosureCallExpr()
+ * Line ~480  - Closure creation: genClosureValue()
+ * Line ~590  - Operators object: all AST operators
+ * Line ~1210 - Assignment: genAssign()
+ * Line ~1450 - Loop init: genLoopInit()
+ * Line ~1480 - Function generation: generateFunction(), generateFunctions()
+ *
+ * === Data Flow ===
+ * 1. compile(ast) creates context, calls generate(ast)
+ * 2. generate() dispatches to operators[op] based on AST node type
+ * 3. operators return typed values [type, wat, schema?]
+ * 4. generateFunctions() compiles user-defined functions
+ * 5. assemble() builds final WAT module from all parts
+ *
+ * @module compile
  */
 
 import { FUNCTIONS } from './stdlib.js'
@@ -323,6 +349,10 @@ function resolveCall(namespace, name, args, receiver = null) {
   throw new Error(`Unknown function: ${namespace ? namespace + '.' : ''}${name}`)
 }
 
+// =============================================================================
+// CLOSURE CALLS
+// =============================================================================
+
 // Call a closure value stored in a variable
 // gc:true: closure is (struct (field $fn funcref) (field $env anyref)), use call_ref
 // gc:false: closure is NaN-box with table index and env ptr, use call_indirect
@@ -441,6 +471,10 @@ function genClosureCallExpr(closureVal, args) {
   }
 }
 
+// =============================================================================
+// CLOSURE CREATION
+// =============================================================================
+
 // Create a closure value (funcref + env for gc:true, table_idx + env_ptr for gc:false)
 function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
   if (opts.gc) {
@@ -547,8 +581,14 @@ function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
   }
 }
 
-// Operators
+// =============================================================================
+// OPERATORS
+// All AST node handlers, keyed by operator symbol
+// Each returns a typed value [type, wat, schema?]
+// =============================================================================
+
 const operators = {
+  // --- Calls and Access ---
   '()'([fn, ...args]) {
     // Parenthesized expression: (expr) parsed as ['()', expr]
     if (args.length === 0 && Array.isArray(fn)) return gen(fn)
@@ -1254,6 +1294,12 @@ const operators = {
   },
 }
 
+// =============================================================================
+// ASSIGNMENT
+// Assignment handling for simple variables, captured vars, closures, and arrays.
+// Compound operators (+=, -=, etc.) generated programmatically from base operators.
+// =============================================================================
+
 // Generate compound assignment operators
 for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
   operators[op + '='] = ([a, b]) => operators['=']([a, [op, a, b]])
@@ -1472,6 +1518,11 @@ function genLoopInit(target, value) {
   const newLoc = ctx.getLocal(target)
   return `(local.set $${newLoc.scopedName} ${asF64([t, w])[1]})\n    `
 }
+
+// =============================================================================
+// FUNCTION GENERATION
+// Creates WASM function definitions from AST, handling params, locals, closures.
+// =============================================================================
 
 function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) {
   const newCtx = createContext()
