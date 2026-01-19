@@ -137,6 +137,12 @@ const handlers = {
 
   // Assignment
   '='(op, [target, value], ctx) {
+    // Handle var parsed as ["=", ["var", name], value] -> ["var", ["=", name, value]]
+    if (Array.isArray(target) && target[0] === 'var') {
+      const name = target[1]
+      ctx.vars.add(name)
+      return ['var', ['=', name, expr(value, ctx)]]
+    }
     addVars(target, ctx)
     return ['=', target, expr(value, ctx)]
   },

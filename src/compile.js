@@ -907,8 +907,12 @@ const operators = {
     return tv(val[0], `(local.tee $${scopedName} ${val[1]})`, val[2])
   },
 
-  'var'([name, value]) {
+  'var'([assignment]) {
     // var is function-scoped, use global scope (depth 0)
+    if (!Array.isArray(assignment) || assignment[0] !== '=') {
+      throw new Error('var requires assignment')
+    }
+    const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('var requires simple identifier')
     const val = gen(value)
     ctx.addLocal(name, val[0], val[2], name)  // no scope prefix for var
@@ -1113,8 +1117,8 @@ function genAssign(target, value, returnValue) {
     }
   }
 
-  // Global constant optimization (only at top level)
-  if (typeof target === 'string' && !ctx.inFunction && !returnValue) {
+  // Global constant optimization (only at top level, and only for new variables)
+  if (typeof target === 'string' && !ctx.inFunction && !returnValue && !ctx.getLocal(target)) {
     if (Array.isArray(value) && value[0] === undefined && typeof value[1] === 'number') {
       ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(value[1])})`)
       return ''
