@@ -18,7 +18,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.0.2",
+    "subscript": "^10.0.3",
     "watr": "^4.0.0"
   },
   "keywords": [
@@ -30,6 +30,6 @@
     "wasm"
   ],
   "devDependencies": {
-    "tst": "^9.0.0"
+    "tst": "^9.2.0"
   }
 }

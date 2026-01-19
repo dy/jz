@@ -13,6 +13,7 @@ const ALLOWED = new Set([
   'if',           // if/else statement
   'for', 'while',
   'break', 'continue',
+  'switch', 'case', 'default',
   '{}',           // block statement
   ';',            // statements
   '=>', '()', 'return',
@@ -256,6 +257,19 @@ const handlers = {
 
   'continue'(op, [label], ctx) {
     return label ? ['continue', label] : ['continue']
+  },
+
+  // Switch statement
+  'switch'(op, [discriminant, ...cases], ctx) {
+    return ['switch', expr(discriminant, ctx), ...cases.map(c => expr(c, ctx))]
+  },
+
+  'case'(op, [test, consequent], ctx) {
+    return ['case', expr(test, ctx), expr(consequent, ctx)]
+  },
+
+  'default'(op, [consequent], ctx) {
+    return ['default', expr(consequent, ctx)]
   },
 
   // Ternary
