@@ -58,3 +58,26 @@ export const truthy = ([t, w]) =>
 // Make two values same type for comparison (both i32 or both f64)
 export const conciliate = (a, b) =>
   a[0] === 'i32' && b[0] === 'i32' ? [a, b] : [asF64(a), asF64(b)]
+
+// Type inference helpers - reduce explicit [0] access
+export const typeOf = v => v[0]
+export const watOf = v => v[1]
+export const schemaOf = v => v[2]
+
+// Type predicates
+export const isType = (v, t) => v[0] === t
+export const isF64 = v => v[0] === 'f64'
+export const isI32 = v => v[0] === 'i32'
+export const isString = v => v[0] === 'string'
+export const isArray = v => v[0] === 'array'
+export const isObject = v => v[0] === 'object'
+export const isClosure = v => v[0] === 'closure'
+export const isRef = v => v[0] === 'ref'
+export const isRefArray = v => v[0] === 'refarray'
+
+// Compound predicates
+export const isNumeric = v => v[0] === 'f64' || v[0] === 'i32'
+export const bothI32 = (a, b) => a[0] === 'i32' && b[0] === 'i32'
+export const isHeapRef = v => v[0] === 'array' || v[0] === 'object' || v[0] === 'refarray' || v[0] === 'ref'
+export const isArrayLike = v => v[0] === 'array' || v[0] === 'refarray'
+export const hasSchema = v => v[2] !== undefined

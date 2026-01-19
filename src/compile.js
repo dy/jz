@@ -15,7 +15,7 @@
 
 import { FUNCTIONS } from './stdlib.js'
 import { arrayMethods, stringMethods } from './methods/index.js'
-import { PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate } from './types.js'
+import { PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate, typeOf, watOf, isType, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isNumeric, bothI32, isHeapRef, isArrayLike, hasSchema } from './types.js'
 import { extractParams, analyzeScope, findHoistedVars } from './analyze.js'
 import { f64, i32, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
@@ -44,8 +44,8 @@ export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   ctx = newCtx
   opts = newOpts
-  gen = _gen
-  const [, bodyWat] = asF64(_gen(ast))
+  gen = generate
+  const [, bodyWat] = asF64(generate(ast))
   return assemble(bodyWat, newCtx, generateFunctions(), gc)
 }
 
@@ -85,8 +85,8 @@ function evalConstant(ast) {
   }
 }
 
-// Core generator
-function _gen(ast) {
+// Core generator: AST node → typed WAT value
+function generate(ast) {
   if (ast == null) return tv('f64', '(f64.const 0)')
   if (Array.isArray(ast) && ast[0] === undefined) return genLiteral(ast[1])
   if (typeof ast === 'string') return genIdent(ast)
@@ -218,7 +218,7 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (name === 'parseInt') {
       const val = gen(args[0])
       const radix = args.length >= 2 ? asI32(gen(args[1]))[1] : '(i32.const 10)'
-      if (val[0] === 'string') {
+      if (isString(val)) {
         ctx.usedStdlib.push('parseInt')
         ctx.usedStringType = true
         return tv('f64', `(call $parseInt ${val[1]} ${radix})`)
@@ -342,7 +342,7 @@ function genClosureCall(name, args) {
     ctx.usedFuncTypes.add(numArgs)
     // call_ref the funcref with env + args
     // Need to handle both (ref $closure) and (ref null $closure) inputs
-    const closureRef = closureVal[0] === 'closure'
+    const closureRef = isClosure(closureVal)
       ? `(ref.as_non_null ${closureVal[1]})`  // Cast to non-null if nullable
       : closureVal[1]
     return tv('f64', `(call_ref ${funcTypeName}
@@ -571,7 +571,7 @@ const operators = {
       // Callee is a complex expression (e.g., a(1)(2) where a(1) returns a closure)
       // Generate the closure expression and call it directly
       const callee = gen(fn)
-      if (callee[0] === 'closure') {
+      if (isClosure(callee)) {
         // Call the closure value from the expression
         return genClosureCallExpr(callee, args)
       }
@@ -596,8 +596,8 @@ const operators = {
 
   '['(elements) {
     const gens = elements.map(e => gen(e))
-    const elementTypes = gens.map(g => g[0])
-    const hasRefTypes = elementTypes.some(t => t === 'array' || t === 'object' || t === 'string' || t === 'ref' || t === 'refarray')
+    const elementTypes = gens.map(g => typeOf(g))
+    const hasRefTypes = gens.some(g => isHeapRef(g) || isString(g))
     const hasNestedTypes = hasRefTypes  // Alias for gc:false code
 
     if (opts.gc) {
@@ -606,9 +606,9 @@ const operators = {
         ctx.usedArrayType = true
         ctx.usedRefArrayType = true
         const vals = gens.map(g => {
-          if (g[0] === 'array' || g[0] === 'object' || g[0] === 'refarray' || g[0] === 'ref') {
+          if (isHeapRef(g)) {
             return g[1]  // Already a ref
-          } else if (g[0] === 'string') {
+          } else if (isString(g)) {
             return g[1]  // String is also a ref
           } else {
             // Wrap scalar in single-element f64 array to make it a ref
@@ -704,11 +704,11 @@ const operators = {
   '[]'([arr, idx]) {
     const a = gen(arr), [, iw] = asI32(gen(idx))
     if (opts.gc) {
-      if (a[0] === 'string') {
+      if (isString(a)) {
         ctx.usedStringType = true
         return tv('i32', strCharAt(true, a[1], iw))
       }
-      if (a[0] === 'refarray') {
+      if (isRefArray(a)) {
         // Indexing into anyarray - returns anyref, need to cast based on element type
         ctx.usedRefArrayType = true
         ctx.usedArrayType = true
@@ -763,7 +763,7 @@ const operators = {
           return tv('object', `(f64.load (i32.add (call $__ptr_offset ${a[1]}) (i32.const ${litIdx * 8})))`, elem.id)
         }
       }
-      if (a[0] === 'string') {
+      if (isString(a)) {
         return tv('i32', strCharAt(false, a[1], iw))
       }
       return tv('f64', arrGet(false, a[1], iw))
@@ -787,17 +787,17 @@ const operators = {
       return tv('f64', `(f64.const ${fmtNum(MATH_OPS.constants[prop])})`)
     const o = gen(obj)
     if (prop === 'length') {
-      if (o[0] === 'array' || (o[0] === 'string' && opts.gc)) {
-        if (o[0] === 'array') ctx.usedArrayType = true
+      if (isArray(o) || (isString(o) && opts.gc)) {
+        if (isArray(o)) ctx.usedArrayType = true
         else ctx.usedStringType = true
         return tv('i32', arrLen(opts.gc, o[1]))
-      } else if (o[0] === 'string' || o[0] === 'f64') {
+      } else if (isString(o) || isF64(o)) {
         ctx.usedMemory = true
         return tv('i32', arrLen(false, o[1]))  // gc:false uses ptr_len
       }
-      throw new Error(`Cannot get length of ${o[0]}`)
+      throw new Error(`Cannot get length of ${typeOf(o)}`)
     }
-    if (o[0] === 'object' && o[2] !== undefined) {
+    if (isObject(o) && hasSchema(o)) {
       const schema = ctx.objectSchemas[o[2]]
       if (schema) {
         const idx = schema.indexOf(prop)
@@ -815,13 +815,13 @@ const operators = {
     const o = gen(obj)
     if (prop === 'length') {
       if (opts.gc) {
-        if (o[0] === 'array' || o[0] === 'ref') {
+        if (isArray(o) || isRef(o)) {
           ctx.usedArrayType = true
           return tv('f64', `(if (result f64) (ref.is_null ${o[1]}) (then (f64.const 0)) (else (f64.convert_i32_s (array.len ${o[1]}))))`)
         }
       } else {
         // gc:false: arrays and strings are f64 pointers
-        if (o[0] === 'f64' || o[0] === 'string') {
+        if (isF64(o) || isString(o)) {
           ctx.usedMemory = true
           return tv('f64', `(if (result f64) (f64.eq ${o[1]} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o[1]}))))`)
         }
@@ -918,9 +918,9 @@ const operators = {
   '~'([a]) { return ['i32', `(i32.xor ${asI32(gen(a))[1]} (i32.const -1))`] },
 
   // Arithmetic
-  '+'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.add(va, vb) : f64.add(va, vb) },
-  '-'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.sub(va, vb) : f64.sub(va, vb) },
-  '*'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.mul(va, vb) : f64.mul(va, vb) },
+  '+'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.add(va, vb) : f64.add(va, vb) },
+  '-'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.sub(va, vb) : f64.sub(va, vb) },
+  '*'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.mul(va, vb) : f64.mul(va, vb) },
   '/'([a, b]) { return f64.div(gen(a), gen(b)) },
   '%'([a, b]) { return ['f64', `(call $f64.rem ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
   '**'([a, b]) { ctx.usedStdlib.push('pow'); return ['f64', `(call $pow ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
@@ -953,7 +953,7 @@ const operators = {
         // Get type code without generating string
         const val = gen(typeofArg)
         let typeCode
-        if (!opts.gc && val[0] === 'f64') {
+        if (!opts.gc && isF64(val)) {
           // gc:false: f64 might be a regular number, the NaN number, or a NaN-boxed pointer
           // Check using our pointer detection: type > 0 means pointer
           // If f64.eq x x is true → regular number (type 1)
@@ -964,11 +964,11 @@ const operators = {
           typeCode = `(if (result i32) (f64.eq ${val[1]} ${val[1]})
             (then (i32.const 1))
             (else (select (i32.const 4) (i32.const 1) (call $__is_pointer ${val[1]}))))`
-        } else if (val[0] === 'f64') typeCode = '(i32.const 1)'
-        else if (val[0] === 'i32') typeCode = '(i32.const 3)'
-        else if (val[0] === 'string') typeCode = '(i32.const 2)'
-        else if (val[0] === 'ref') typeCode = '(i32.const 0)'
-        else if (val[0] === 'array' || val[0] === 'object') typeCode = '(i32.const 4)'
+        } else if (isF64(val)) typeCode = '(i32.const 1)'
+        else if (isI32(val)) typeCode = '(i32.const 3)'
+        else if (isString(val)) typeCode = '(i32.const 2)'
+        else if (isRef(val)) typeCode = '(i32.const 0)'
+        else if (isArray(val) || isObject(val)) typeCode = '(i32.const 4)'
         else typeCode = '(i32.const 1)'
         return tv('i32', `(i32.eq ${typeCode} (i32.const ${code}))`)
       }
@@ -981,7 +981,7 @@ const operators = {
     }
     const va = gen(a), vb = gen(b)
     // String comparison: for interned strings, compare string IDs
-    if (va[0] === 'string' && vb[0] === 'string') {
+    if (isString(va) && isString(vb)) {
       if (opts.gc) {
         return tv('i32', `(ref.eq ${va[1]} ${vb[1]})`)
       } else {
@@ -989,7 +989,7 @@ const operators = {
       }
     }
     // Array/object comparison: reference equality
-    if ((va[0] === 'array' || va[0] === 'object') && (vb[0] === 'array' || vb[0] === 'object')) {
+    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
       if (opts.gc) {
         return tv('i32', `(ref.eq ${va[1]} ${vb[1]})`)
       } else {
@@ -997,10 +997,10 @@ const operators = {
       }
     }
     // gc:false f64 comparison: use i64.eq to handle NaN-boxed pointers correctly
-    if (!opts.gc && va[0] === 'f64' && vb[0] === 'f64') {
+    if (!opts.gc && isF64(va) && isF64(vb)) {
       return tv('i32', `(i64.eq (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
     }
-    return va[0] === 'i32' && vb[0] === 'i32' ? i32.eq(va, vb) : f64.eq(va, vb)
+    return bothI32(va, vb) ? i32.eq(va, vb) : f64.eq(va, vb)
   },
   '==='([a, b]) { return operators['==']([a, b]) },
   '!='([a, b]) {
@@ -1018,7 +1018,7 @@ const operators = {
     }
     const va = gen(a), vb = gen(b)
     // String comparison
-    if (va[0] === 'string' && vb[0] === 'string') {
+    if (isString(va) && isString(vb)) {
       if (opts.gc) {
         return tv('i32', `(i32.eqz (ref.eq ${va[1]} ${vb[1]}))`)
       } else {
@@ -1026,7 +1026,7 @@ const operators = {
       }
     }
     // Array/object comparison: reference inequality
-    if ((va[0] === 'array' || va[0] === 'object') && (vb[0] === 'array' || vb[0] === 'object')) {
+    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
       if (opts.gc) {
         return tv('i32', `(i32.eqz (ref.eq ${va[1]} ${vb[1]}))`)
       } else {
@@ -1034,16 +1034,16 @@ const operators = {
       }
     }
     // gc:false f64 comparison: use i64.ne to handle NaN-boxed pointers correctly
-    if (!opts.gc && va[0] === 'f64' && vb[0] === 'f64') {
+    if (!opts.gc && isF64(va) && isF64(vb)) {
       return tv('i32', `(i64.ne (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
     }
-    return va[0] === 'i32' && vb[0] === 'i32' ? i32.ne(va, vb) : f64.ne(va, vb)
+    return bothI32(va, vb) ? i32.ne(va, vb) : f64.ne(va, vb)
   },
   '!=='([a, b]) { return operators['!=']([a, b]) },
-  '<'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.lt_s(va, vb) : f64.lt(va, vb) },
-  '<='([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.le_s(va, vb) : f64.le(va, vb) },
-  '>'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.gt_s(va, vb) : f64.gt(va, vb) },
-  '>='([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.ge_s(va, vb) : f64.ge(va, vb) },
+  '<'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.lt_s(va, vb) : f64.lt(va, vb) },
+  '<='([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.le_s(va, vb) : f64.le(va, vb) },
+  '>'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.gt_s(va, vb) : f64.gt(va, vb) },
+  '>='([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32.ge_s(va, vb) : f64.ge(va, vb) },
 
   // Bitwise
   '&'([a, b]) { return i32.and(gen(a), gen(b)) },
@@ -1062,7 +1062,7 @@ const operators = {
     const va = gen(a), vb = gen(b), [, cw] = truthy(va), [[t, aw], [, bw]] = conciliate(va, vb)
     return [t, `(if (result ${t}) ${cw} (then ${aw}) (else ${bw}))`]
   },
-  '??'([a, b]) { const va = gen(a); return va[0] === 'ref' ? gen(b) : va },
+  '??'([a, b]) { const va = gen(a); return isRef(va) ? gen(b) : va },
 
   // For loop
   'for'([init, cond, step, body]) {
