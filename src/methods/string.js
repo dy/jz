@@ -1,5 +1,5 @@
 // String method implementations
-import { ctx, opts, gen, tv, asF64, asI32, PTR_TYPE } from '../state.js'
+import { ctx, opts, gen, tv, asF64, asI32, PTR_TYPE } from '../compile.js'
 
 export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null

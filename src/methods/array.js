@@ -1,5 +1,5 @@
 // Array method implementations
-import { ctx, opts, gen, tv, asF64, asI32, truthy, PTR_TYPE, extractParams } from '../state.js'
+import { ctx, opts, gen, tv, asF64, asI32, truthy, PTR_TYPE, extractParams } from '../compile.js'
 
 export const fill = (rw, args) => {
   if (args.length < 1) return null  // Let fallback handle error

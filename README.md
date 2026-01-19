@@ -19,8 +19,6 @@ mul(4, 5)  // 20
 
 ## Reference
 
-### Supported Features
-
 * Numbers: `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0o357`
 * Strings: `"abc"`, `'abc'`
 * Values: `true`, `false`, `null`, `NaN`, `Infinity`, `PI`, `E`
@@ -34,15 +32,6 @@ mul(4, 5)  // 20
 * Objects: `{a: b}`, `{a, b}`, `obj.prop`
 * Functions: `(a, b) => c`, `a => b`, `() => c`
 * Comments: `// foo`, `/* bar */`
-
-### Math Functions
-
-Native (WASM): `sqrt`, `abs`, `floor`, `ceil`, `trunc`, `min`, `max`, `copysign`
-
-Imported: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `exp`, `expm1`, `log`, `log2`, `log10`, `log1p`, `pow`, `cbrt`, `hypot`, `sign`, `fround`, `random`
-
-### Planned
-
 * Declarations: `let`, `const`, block scope
 * Strict equality: `===`, `!==`
 * Closures: capture outer variables
