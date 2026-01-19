@@ -37,7 +37,19 @@
 * [x] string ops (slice, indexOf)
 * [x] template literals (basic)
 * [x] simplify files structure
-* [ ] Audit compiler/project architecture/structure: flexible enough? allows extension? performant enough? What seems redundant, questionable, suboptimal, unreliable? What one thing would you change that would unblock everything?
+* [x] Audit compiler/project architecture/structure: flexible enough? allows extension? performant enough? What seems redundant, questionable, suboptimal, unreliable? What one thing would you change that would unblock everything?
+  * [ ] deduplicate files (array.js etc in methods)
+  * [ ] extract closure analysis into analyze.js
+  * [ ] make operators return IR nodes instead of WAT strings
+  * [ ] Add think emit (ir, target)
+  * [ ] unmonolith compile.js
+  * [ ] unconfuse structure
+  * [ ] think about the ways to prevent console bloat
+  * [ ] separate gc vs non-gc compile targets?
+  * [ ] capture array/objects in gc:true mode better
+  * [ ] proper type system (struct fields?)
+  * [ ] add JSDoc to types, anywhere where needful
+  * [ ] add comments for all difficult parts
 * [ ] JS Compatibility (priority order)
   * [x] Declarations & Scoping
     * [x] `let` declaration - block-scoped variable
