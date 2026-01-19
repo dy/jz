@@ -49,7 +49,6 @@
   * [x] remove dead files (debug.js, floatbeat.html/)
   * [x] refactor methods/array.js to use gc.js helpers (arrLen, arrGet, arrSet, arrNew) - reduced 795→488 lines
   * [x] refactor methods/string.js to use gc.js helpers (strLen, strCharAt, strNew, strSetChar) - reduced 450→296 lines
-  * [ ] capture array/objects in gc:true mode (needs anyref env fields)
   * [x] add JSDoc to types
   * [x] add comments for difficult parts (section headers in compile.js)
 * [ ] JS Compatibility (priority order)
@@ -69,7 +68,7 @@
     * [x] closure mutation - inner function can modify outer vars, outer sees changes
     * [x] shared environment - multiple closures share same captured vars
     * [x] first-class functions (currying) - return closure, call it later (funcref/call_indirect)
-    * [ ] array capture in gc:true mode (needs polymorphic env structs)
+    * [ ] capture array/objects in gc:true mode (needs anyref env fields)
   * [ ]  Rest/Spread & Destructuring
     * [ ] rest params `(...args) => args.length`
     * [ ] spread in arrays `[...arr, x]`

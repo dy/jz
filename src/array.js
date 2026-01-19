@@ -1,8 +1,8 @@
 // Array method implementations
-import { ctx, opts, gen } from '../compile.js'
-import { PTR_TYPE, tv, asF64, asI32, truthy } from '../types.js'
-import { extractParams } from '../analyze.js'
-import { arrGet, arrSet, arrLen, arrNew } from '../gc.js'
+import { ctx, opts, gen } from './compile.js'
+import { PTR_TYPE, tv, asF64, asI32, truthy } from './types.js'
+import { extractParams } from './analyze.js'
+import { arrGet, arrSet, arrLen, arrNew } from './gc.js'
 
 export const fill = (rw, args) => {
   if (args.length < 1) return null  // Let fallback handle error
