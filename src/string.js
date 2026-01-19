@@ -1,7 +1,7 @@
 // String method implementations
-import { ctx, opts, gen } from '../compile.js'
-import { PTR_TYPE, tv, asF64, asI32 } from '../types.js'
-import { strCharAt, strLen, strNew, strSetChar } from '../gc.js'
+import { ctx, opts, gen } from './compile.js'
+import { PTR_TYPE, tv, asF64, asI32 } from './types.js'
+import { strCharAt, strLen, strNew, strSetChar } from './gc.js'
 
 export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null

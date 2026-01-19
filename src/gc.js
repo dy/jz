@@ -90,6 +90,37 @@ export function arrGetTv(ctx, gc, arrWat, idxWat) {
   }
 }
 
+// === Loop helpers ===
+
+/**
+ * Generate standard array iteration loop scaffold
+ * @param {Object} ctx - compilation context
+ * @param {boolean} gc - gc mode
+ * @param {string} name - method name for local naming
+ * @param {string} arrWat - WAT for input array
+ * @param {Object} opts - { extraLocals: {name: type}, initResult: wat, onElem: (arr,idx,len)=>wat, result: wat }
+ */
+export function arrLoop(ctx, gc, name, arrWat, { extraLocals = {}, initResult = '', onElem, result }) {
+  ctx.usedArrayType = true
+  if (!gc) ctx.usedMemory = true
+  const id = ctx.loopCounter++
+  const arr = `$_${name}_arr_${id}`, idx = `$_${name}_i_${id}`, len = `$_${name}_len_${id}`
+  ctx.addLocal(arr.slice(1), gc ? 'array' : 'f64')
+  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(len.slice(1), 'i32')
+  for (const [n, t] of Object.entries(extraLocals)) ctx.addLocal(n, t)
+  const body = onElem(arr, idx, len, id)
+  return `(local.set ${arr} ${arrWat})
+    (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
+    ${initResult}(local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      ${body}
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    ${result}`
+}
+
 /** Create fixed-size f64 array from values */
 export function mkF64Array(gc, ctx, values) {
   ctx.usedArrayType = true
