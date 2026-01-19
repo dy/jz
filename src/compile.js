@@ -3,9 +3,20 @@ import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
 import { arrayMethods, stringMethods } from './methods/index.js'
 
 // Shared compilation state - accessible by all compiler modules
-// Pointer types for gc:false mode
-export const PTR_TYPE = { F64_ARRAY: 0, I32_ARRAY: 1, STRING: 2, I8_ARRAY: 3, OBJECT: 4, REF_ARRAY: 5 }
-export const PTR_ELEM_SIZE = { 0: 8, 1: 4, 2: 2, 3: 1, 4: 8, 5: 8 }
+// Pointer types for gc:false NaN-boxing mode
+// Types 1-7 are pointers (quiet bit clear, bit 51=0)
+// Types 8-15 reserved for canonical quiet NaN (bit 51=1)
+// Layout: f64 NaN pattern with mantissa [type:4][length:28][offset:20]
+export const PTR_TYPE = {
+  // Type 0 unused (signaling NaN pattern, rare)
+  F64_ARRAY: 1,   // Float64Array
+  I32_ARRAY: 2,   // Int32Array
+  STRING: 3,      // UTF-16 string
+  I8_ARRAY: 4,    // Int8Array
+  OBJECT: 5,      // Object
+  REF_ARRAY: 6    // Mixed-type array
+}
+export const PTR_ELEM_SIZE = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 8, 6: 8 }
 
 // Current compilation context - set by compile()
 export let ctx = null
@@ -111,7 +122,7 @@ const createContext = () => ({
   locals: {}, localDecls: [], globals: {},
   usedStdlib: [], usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
   localCounter: 0, loopCounter: 0, functions: {}, inFunction: false,
-  strings: {}, stringData: [], stringCounter: 0,
+  strings: {}, stringData: [], stringCounter: 0, internedStringGlobals: {},
   staticArrays: {}, arrayDataOffset: 0,
   objectCounter: 0, objectSchemas: {}, localSchemas: {},
   // Memory allocation tracking for gc:false mode
@@ -264,7 +275,10 @@ function genLiteral(v) {
     ctx.usedStringType = true
     const { id, length } = ctx.internString(v)
     if (opts.gc) {
-      return tv('string', `(array.new_data $string $str${id} (i32.const 0) (i32.const ${length}))`)
+      // Use interned string global - created once, reused for same string literals
+      ctx.internedStringGlobals[id] = { length }
+      // Global is (ref null $string), use ref.as_non_null to get (ref $string) for function calls
+      return tv('string', `(ref.as_non_null (global.get $__str${id}))`)
     } else {
       // gc:false - string is stored in data segment, return encoded pointer
       // Data segment offset will be resolved at assembly time
@@ -679,11 +693,28 @@ const operators = {
           // typeof null === "undefined" or typeof undefined === "undefined"
           return tv('i32', `(i32.const ${code === 0 ? 1 : 0})`)
         }
+        // Check for NaN/Infinity constants - parser represents them as [null, null]
+        // In gc:false, these are always numbers (not pointers)
+        if (Array.isArray(typeofArg) && typeofArg[0] === null && typeofArg[1] === null) {
+          // Could be null, undefined, NaN, or Infinity - but at AST level we can't tell
+          // However, we know the runtime value: null/undefined generate 0, NaN/Infinity generate nan/inf
+          // At runtime, we check: if not NaN → number; if NaN with type=0 → number; else object
+          // For compile-time constant folding, we can't know here, so fall through to runtime check
+        }
         // Get type code without generating string
         const val = gen(typeofArg)
         let typeCode
         if (!opts.gc && val[0] === 'f64') {
-          typeCode = `(select (i32.const 1) (i32.const 4) (f64.eq ${val[1]} ${val[1]}))`
+          // gc:false: f64 might be a regular number, the NaN number, or a NaN-boxed pointer
+          // Check using our pointer detection: type > 0 means pointer
+          // If f64.eq x x is true → regular number (type 1)
+          // If f64.eq x x is false → NaN pattern:
+          //   - type field = 0 → canonical NaN number (type 1)
+          //   - type field > 0 → pointer (type 4 = object)
+          ctx.usedMemory = true
+          typeCode = `(if (result i32) (f64.eq ${val[1]} ${val[1]})
+            (then (i32.const 1))
+            (else (select (i32.const 4) (i32.const 1) (call $__is_pointer ${val[1]}))))`
         } else if (val[0] === 'f64') typeCode = '(i32.const 1)'
         else if (val[0] === 'i32') typeCode = '(i32.const 3)'
         else if (val[0] === 'string') typeCode = '(i32.const 2)'
@@ -702,13 +733,23 @@ const operators = {
     const va = gen(a), vb = gen(b)
     // String comparison: for interned strings, compare string IDs
     if (va[0] === 'string' && vb[0] === 'string') {
-      // For now, string comparison returns false unless same literal
-      // TODO: implement proper string comparison
       if (opts.gc) {
         return tv('i32', `(ref.eq ${va[1]} ${vb[1]})`)
       } else {
         return tv('i32', `(i64.eq (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
       }
+    }
+    // Array/object comparison: reference equality
+    if ((va[0] === 'array' || va[0] === 'object') && (vb[0] === 'array' || vb[0] === 'object')) {
+      if (opts.gc) {
+        return tv('i32', `(ref.eq ${va[1]} ${vb[1]})`)
+      } else {
+        return tv('i32', `(i64.eq (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
+      }
+    }
+    // gc:false f64 comparison: use i64.eq to handle NaN-boxed pointers correctly
+    if (!opts.gc && va[0] === 'f64' && vb[0] === 'f64') {
+      return tv('i32', `(i64.eq (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
     }
     return va[0] === 'i32' && vb[0] === 'i32' ? i32.eq(va, vb) : f64.eq(va, vb)
   },
@@ -734,6 +775,18 @@ const operators = {
       } else {
         return tv('i32', `(i64.ne (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
       }
+    }
+    // Array/object comparison: reference inequality
+    if ((va[0] === 'array' || va[0] === 'object') && (vb[0] === 'array' || vb[0] === 'object')) {
+      if (opts.gc) {
+        return tv('i32', `(i32.eqz (ref.eq ${va[1]} ${vb[1]}))`)
+      } else {
+        return tv('i32', `(i64.ne (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
+      }
+    }
+    // gc:false f64 comparison: use i64.ne to handle NaN-boxed pointers correctly
+    if (!opts.gc && va[0] === 'f64' && vb[0] === 'f64') {
+      return tv('i32', `(i64.ne (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
     }
     return va[0] === 'i32' && vb[0] === 'i32' ? i32.ne(va, vb) : f64.ne(va, vb)
   },
@@ -1245,68 +1298,62 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   // Memory helper functions for gc:false mode
   if (ctx.usedMemory && !opts.gc) {
     wat += `
-  ;; Pointer encoding: NaN-based with mantissa [type:4][length:28][offset:20]
+  ;; NaN-boxing pointer encoding
   ;; IEEE 754 f64: [sign:1][exponent:11][mantissa:52]
-  ;; We use NaN pattern (exponent=0x7FF) with mantissa=[type:4][length:28][offset:20]
-  ;; This makes pointers self-describing: numbers have exponent != 0x7FF
-  ;; Encoding: bits 51-48=type, bits 47-20=length, bits 19-0=offset
+  ;; NaN pattern: exponent=0x7FF, mantissa=[type:4][length:28][offset:20]
+  ;; Canonical quiet NaN (0x7FF8...) has bit 51 set (type field bits 51-48 = 8+)
+  ;; We use types 1-7 for pointers (bit 51 clear), type 0 is also pointer-able
+  ;; Types 8-15 (bit 51 set) are reserved for quiet NaN numbers
+  ;; This allows typeof NaN === "number" to work correctly
 
   ;; Allocate memory and return NaN-encoded pointer
   (func $__alloc (param $type i32) (param $len i32) (result f64)
     (local $offset i32) (local $size i32)
-    ;; Calculate size based on type: 0=f64(8), 1=i32(4), 2=i16(2), 3=i8(1), 4=object(8), 5=refarray(8)
-    ;; Compute shift: 3 for types 0,4,5; 2 for type 1; 1 for type 2; 0 for type 3
+    ;; Calculate size based on type: 1=f64(8), 2=i32(4), 3=i16(2), 4=i8(1), 5=object(8), 6=refarray(8)
     (local.set $size
       (i32.shl (local.get $len)
         (select (i32.const 3)
           (select (i32.const 2)
-            (select (i32.const 1) (i32.const 0) (i32.eq (local.get $type) (i32.const 2)))
-            (i32.eq (local.get $type) (i32.const 1)))
-          (i32.or (i32.eq (local.get $type) (i32.const 0)) (i32.ge_u (local.get $type) (i32.const 4))))))
-    ;; 8-byte align the size
+            (select (i32.const 1) (i32.const 0) (i32.eq (local.get $type) (i32.const 3)))
+            (i32.eq (local.get $type) (i32.const 2)))
+          (i32.or (i32.eq (local.get $type) (i32.const 1)) (i32.ge_u (local.get $type) (i32.const 5))))))
+    ;; 8-byte align
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
     (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
     (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
 
   ;; Create NaN-encoded pointer
-  ;; Mantissa layout: [type:4 bits][length:28 bits][offset:20 bits]
-  ;; Bits 51-48=type, bits 47-20=length, bits 19-0=offset
   (func $__mkptr (param $type i32) (param $len i32) (param $offset i32) (result f64)
     (f64.reinterpret_i64
       (i64.or
-        (i64.const 0x7FF0000000000000)  ;; NaN exponent bits 52-62
+        (i64.const 0x7FF0000000000000)  ;; NaN exponent
         (i64.or
           (i64.or
             (i64.shl (i64.extend_i32_u (i32.and (local.get $type) (i32.const 0x0F))) (i64.const 48))
             (i64.shl (i64.extend_i32_u (i32.and (local.get $len) (i32.const 0x0FFFFFFF))) (i64.const 20)))
           (i64.extend_i32_u (i32.and (local.get $offset) (i32.const 0x0FFFFF)))))))
 
-  ;; Check if f64 value is a pointer (is NaN with our encoding)
+  ;; Check if f64 is a pointer (NaN with type < 8, i.e., quiet bit clear)
+  ;; Canonical NaN has type=8+ (quiet bit set), pointers use types 1-7
   (func $__is_pointer (param $val f64) (result i32)
-    (i32.eq
-      (i32.and
-        (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $val)) (i64.const 52)))
+    (i32.and
+      (i32.eq  ;; Is NaN?
+        (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $val)) (i64.const 52))) (i32.const 0x7FF))
         (i32.const 0x7FF))
-      (i32.const 0x7FF)))
+      (i32.lt_u (call $__ptr_type (local.get $val)) (i32.const 8))))  ;; type < 8?
 
   ;; Extract offset from pointer (bits 0-19)
   (func $__ptr_offset (param $ptr f64) (result i32)
-    (i32.and
-      (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr)))
-      (i32.const 0x0FFFFF)))
+    (i32.and (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr))) (i32.const 0x0FFFFF)))
 
   ;; Extract length from pointer (bits 20-47)
   (func $__ptr_len (param $ptr f64) (result i32)
-    (i32.and
-      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 20)))
-      (i32.const 0x0FFFFFFF)))
+    (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 20))) (i32.const 0x0FFFFFFF)))
 
   ;; Extract type from pointer (bits 48-51)
   (func $__ptr_type (param $ptr f64) (result i32)
-    (i32.and
-      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 48)))
-      (i32.const 0x0F)))
+    (i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 48))) (i32.const 0x0F)))
 `
   }
 
@@ -1322,6 +1369,14 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
     for (const name of ctx.usedStdlib) include(name)
   }
 
+  // Interned string globals (gc:true mode only)
+  // Declare with null, initialize in main function start
+  if (opts.gc) {
+    for (const id in ctx.internedStringGlobals) {
+      wat += `  (global $__str${id} (mut (ref null $string)) (ref.null $string))\n`
+    }
+  }
+
   for (const name in ctx.globals) wat += `  (global $${name} (mut f64) ${ctx.globals[name].init})\n`
 
   wat += `  (func $die (result f64) (unreachable))\n`
@@ -1332,7 +1387,15 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   const hasMainBody = bodyWat && bodyWat.trim() && bodyWat.trim() !== '(f64.const 0)'
   if (hasMainBody || extraFunctions.length === 0) {
     const locals = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
-    wat += `\n  (func $main (export "main") (param $t f64) (result f64)${locals}\n    ${bodyWat}\n  )`
+    // Initialize interned strings at start of main (gc:true mode)
+    let strInit = ''
+    if (opts.gc) {
+      for (const id in ctx.internedStringGlobals) {
+        const { length } = ctx.internedStringGlobals[id]
+        strInit += `(if (ref.is_null (global.get $__str${id})) (then (global.set $__str${id} (array.new_data $string $str${id} (i32.const 0) (i32.const ${length})))))\n    `
+      }
+    }
+    wat += `\n  (func $main (export "main") (param $t f64) (result f64)${locals}\n    ${strInit}${bodyWat}\n  )`
   }
 
   return wat + '\n)'

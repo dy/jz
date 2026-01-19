@@ -41,15 +41,15 @@
 ## JS Compatibility (priority order)
 
 ### 1. Declarations & Scoping
-* [ ] `let` declaration - block-scoped variable
-* [ ] `const` declaration - block-scoped constant
-* [ ] `var` declaration - function-scoped (deprecated, but support)
-* [ ] block scope `{ let x = 1 }` - scope tracking per block
+* [x] `let` declaration - block-scoped variable
+* [x] `const` declaration - block-scoped constant
+* [x] `var` declaration - function-scoped (deprecated, but support)
+* [x] block scope `{ let x = 1 }` - scope tracking per block
 
 ### 2. Type System
-* [ ] `typeof` returns strings - "number", "string", "boolean", "object", "undefined", "function"
-* [ ] `===` strict equality - same as `==` for primitives, ref equality for objects
-* [ ] `!==` strict inequality
+* [x] `typeof` returns strings - "number", "string", "boolean", "object", "undefined", "function"
+* [x] `===` strict equality - same as `==` for primitives, ref equality for objects
+* [x] `!==` strict inequality
 
 ### 3. Closures
 * [ ] closure capture - inner functions capture outer variables
@@ -90,6 +90,12 @@
 * [ ] `export { name }` - export existing
 * [ ] auto-export mode (current behavior, opt-in)
 * [ ] internal functions not exported by default
+
+## JS improvements
+
+* [ ] Identify obsolete parts we don't support
+  * [ ] Compile them into modern parts, give warning
+* [ ] Identify and document all divergencies (improvements) from JS
 
 ## Optimizations
 
