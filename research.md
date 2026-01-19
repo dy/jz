@@ -64,10 +64,10 @@
 
 ### gc:false mode (table + call_indirect)
 - Closures NaN-boxed: table_idx in bits 32-47, env_ptr in bits 0-19
-- Function table holds closure function pointers
+- Function table holds closure function pointers (shared across all contexts)
 - Environment stored in linear memory
-- Uses `call_indirect` via function table
-- **Limitation**: First-class function currying (returning closures) not yet fully implemented
+- Uses `call_indirect (type $fntype{N})` via function table
+- Supports arbitrary nesting depth via closure depth tracking
 
 ## [ ] Stdlib sources
 

@@ -637,13 +637,17 @@ function resolveCall(namespace, name, args, receiver = null) {
     // Regular function call
     if (args.length !== fn.params.length) throw new Error(`${name} expects ${fn.params.length} args`)
     const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
-    // Check if function returns a closure (for gc:true mode)
-    if (opts.gc && fn.returnsClosure) {
-      // Cast anyref result to (ref null $closure)
-      ctx.usedClosureType = true
-      // Pass closure depth minus 1 (we consumed one level by calling)
+    // Check if function returns a closure
+    if (fn.returnsClosure) {
       const depth = (fn.closureDepth || 1) - 1
-      return tv('closure', `(ref.cast (ref null $closure) (call $${name} ${argWats}))`, { closureDepth: depth })
+      if (opts.gc) {
+        // Cast anyref result to (ref null $closure)
+        ctx.usedClosureType = true
+        return tv('closure', `(ref.cast (ref null $closure) (call $${name} ${argWats}))`, { closureDepth: depth })
+      } else {
+        // gc:false: closure is f64 NaN-boxed, but we track type for chained calls
+        return tv('closure', `(call $${name} ${argWats})`, { closureDepth: depth })
+      }
     }
     return tv('f64', `(call $${name} ${argWats})`)
   }
@@ -695,7 +699,7 @@ function genClosureCall(name, args) {
     return tv('f64', `(block (result f64)
       (local.set ${tmpClosure} ${closureVal[1]})
       (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
-      (call_indirect ${funcTypeName}
+      (call_indirect (type ${funcTypeName})
         (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
           (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
           (i32.wrap_i64 (local.get ${tmpI64})))
@@ -755,15 +759,17 @@ function genClosureCallExpr(closureVal, args) {
     const tmpI64 = `$_closexpr_i64_${id}`
     ctx.addLocal(tmpClosure.slice(1), 'f64')
     ctx.localDecls.push(`(local ${tmpI64} i64)`)
-    return tv('f64', `(block (result f64)
+    const returnsClosure = remainingDepth > 0
+    const resultType = returnsClosure ? 'closure' : 'f64'
+    return tv(resultType, `(block (result f64)
       (local.set ${tmpClosure} ${closureVal[1]})
       (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
-      (call_indirect ${funcTypeName}
+      (call_indirect (type ${funcTypeName})
         (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
           (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
           (i32.wrap_i64 (local.get ${tmpI64})))
         ${argWats}
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`)
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`, returnsClosure ? { closureDepth: remainingDepth - 1 } : undefined)
   }
 }
 
@@ -1920,6 +1926,7 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
   newCtx.closureEnvTypes = parentCtx.closureEnvTypes
   newCtx.closureCounter = parentCtx.closureCounter
   newCtx.globals = parentCtx.globals
+  newCtx.funcTableEntries = parentCtx.funcTableEntries  // Share table entries for correct indices
   newCtx.inFunction = true
   newCtx.returnLabel = '$return_' + name
 

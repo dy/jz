@@ -37,7 +37,7 @@
 * [x] string ops (slice, indexOf)
 * [x] template literals (basic)
 * [x] simplify files structure
-* [ ] `features` flag
+* [ ] Audit compiler/project architecture/structure: flexible enough? allows extension? performant enough? What seems redundant, questionable, suboptimal, unreliable? What one thing would you change that would unblock everything?
 * [ ] JS Compatibility (priority order)
   * [x] Declarations & Scoping
     * [x] `let` declaration - block-scoped variable
@@ -54,7 +54,7 @@
     * [x] nested function definitions
     * [x] closure mutation - inner function can modify outer vars, outer sees changes
     * [x] shared environment - multiple closures share same captured vars
-    * [ ] first-class functions (currying) - return closure, call it later (needs funcref)
+    * [x] first-class functions (currying) - return closure, call it later (funcref/call_indirect)
     * [ ] array capture in gc:true mode (needs polymorphic env structs)
   * [ ]  Rest/Spread & Destructuring
     * [ ] rest params `(...args) => args.length`
