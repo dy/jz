@@ -108,50 +108,50 @@ const MATH_OPS = {
 const GLOBAL_CONSTANTS = { Infinity: Infinity, NaN: NaN }
 
 const createContext = () => ({
-  locals: new Map(), localDecls: [], globals: new Map(),
-  usedStdlib: new Set(), usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
-  localCounter: 0, loopCounter: 0, functions: new Map(), inFunction: false,
-  strings: new Map(), stringData: [], stringCounter: 0,
-  staticArrays: new Map(), arrayDataOffset: 0,
-  objectCounter: 0, objectSchemas: new Map(), localSchemas: new Map(),
+  locals: {}, localDecls: [], globals: {},
+  usedStdlib: [], usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
+  localCounter: 0, loopCounter: 0, functions: {}, inFunction: false,
+  strings: {}, stringData: [], stringCounter: 0,
+  staticArrays: {}, arrayDataOffset: 0,
+  objectCounter: 0, objectSchemas: {}, localSchemas: {},
   // Memory allocation tracking for gc:false mode
   staticAllocs: [], staticOffset: 0,
   // Scope tracking for let/const block scoping
-  scopeDepth: 0, scopes: [new Set()], constVars: new Set(),
+  scopeDepth: 0, scopes: [{}], constVars: {},
 
   // Add a local variable (for internal compiler temps and declared vars)
   // If scopedName is provided, use it directly; otherwise apply scoping rules
   addLocal(name, type = 'f64', schema, scopedName = null) {
     // Use provided scoped name, or compute it
     const finalName = scopedName || name
-    if (!this.locals.has(finalName)) {
-      this.locals.set(finalName, { idx: this.localCounter++, type, originalName: name })
+    if (!(finalName in this.locals)) {
+      this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
       // In gc:false mode, arrays/objects are f64 (encoded pointers)
       const wasmType = opts.gc
         ? (type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)' : type === 'string' ? '(ref null $string)' : type)
         : (type === 'array' || type === 'ref' || type === 'object' || type === 'string' ? 'f64' : type)
       this.localDecls.push(`(local $${finalName} ${wasmType})`)
     }
-    if (schema !== undefined) this.localSchemas.set(finalName, schema)
-    return { ...this.locals.get(finalName), scopedName: finalName }
+    if (schema !== undefined) this.localSchemas[finalName] = schema
+    return { ...this.locals[finalName], scopedName: finalName }
   },
   getLocal(name) {
     // Internal variables don't have scope
     if (name.startsWith('_')) {
-      return this.locals.has(name) ? { ...this.locals.get(name), scopedName: name } : null
+      return name in this.locals ? { ...this.locals[name], scopedName: name } : null
     }
     // Search from innermost scope outward
     for (let i = this.scopes.length - 1; i >= 0; i--) {
       const scopedName = i > 0 ? `${name}_s${i}` : name
-      if (this.locals.has(scopedName)) return { ...this.locals.get(scopedName), scopedName }
+      if (scopedName in this.locals) return { ...this.locals[scopedName], scopedName }
     }
     // Fallback: check unscoped name
-    if (this.locals.has(name)) return { ...this.locals.get(name), scopedName: name }
+    if (name in this.locals) return { ...this.locals[name], scopedName: name }
     return null
   },
   pushScope() {
     this.scopeDepth++
-    this.scopes.push(new Set())
+    this.scopes.push({})
   },
   popScope() {
     this.scopes.pop()
@@ -159,17 +159,17 @@ const createContext = () => ({
   },
   declareVar(name, isConst = false) {
     const scopedName = this.scopeDepth > 0 ? `${name}_s${this.scopeDepth}` : name
-    this.scopes[this.scopes.length - 1].add(name)
-    if (isConst) this.constVars.add(scopedName)
+    this.scopes[this.scopes.length - 1][name] = true
+    if (isConst) this.constVars[scopedName] = true
     return scopedName
   },
   addGlobal(name, type = 'f64', init = '(f64.const 0)') {
-    if (!this.globals.has(name)) this.globals.set(name, { type, init })
-    return this.globals.get(name)
+    if (!(name in this.globals)) this.globals[name] = { type, init }
+    return this.globals[name]
   },
-  getGlobal(name) { return this.globals.get(name) },
+  getGlobal(name) { return this.globals[name] },
   internString(str) {
-    if (this.strings.has(str)) return this.strings.get(str)
+    if (str in this.strings) return this.strings[str]
     const id = this.stringCounter++
     const offset = this.stringData.length / 2
     for (const char of str) {
@@ -177,7 +177,7 @@ const createContext = () => ({
       this.stringData.push(code & 0xFF, (code >> 8) & 0xFF)
     }
     const info = { id, offset, length: str.length }
-    this.strings.set(str, info)
+    this.strings[str] = info
     return info
   },
   // Allocate static memory (for gc:false literals)
@@ -192,7 +192,7 @@ const createContext = () => ({
 export function compile(ast, options = {}) {
   const newOpts = { gc: true, ...options }
   const newCtx = createContext()
-  newCtx.locals.set('t', { type: 'f64', idx: newCtx.locals.size })
+  newCtx.locals.t = { type: 'f64', idx: newCtx.localCounter++ }
   // Initialize shared state for method modules
   initState(newCtx, newOpts, _gen)
   const [, bodyWat] = asF64(_gen(ast))
@@ -201,9 +201,9 @@ export function compile(ast, options = {}) {
 
 export function assembleRaw(bodyWat) {
   return assemble(bodyWat, {
-    usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: new Set(),
-    localDecls: [], functions: new Map(), globals: new Map(), strings: new Map(), stringData: [],
-    staticArrays: new Map(), arrayDataOffset: 0
+    usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: [],
+    localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
+    staticArrays: {}, arrayDataOffset: 0
   })
 }
 
@@ -284,7 +284,7 @@ function genIdent(name) {
   if (name === 'false') return tv('i32', '(i32.const 0)')
   if (name in GLOBAL_CONSTANTS) return tv('f64', `(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`)
   const loc = ctx.getLocal(name)
-  if (loc) return tv(loc.type, `(local.get $${loc.scopedName})`, ctx.localSchemas.get(loc.scopedName))
+  if (loc) return tv(loc.type, `(local.get $${loc.scopedName})`, ctx.localSchemas[loc.scopedName])
   const glob = ctx.getGlobal(name)
   if (glob) return tv(glob.type, `(global.get $${name})`)
   throw new Error(`Unknown identifier: ${name}`)
@@ -323,15 +323,15 @@ function resolveCall(namespace, name, args, receiver = null) {
       return tv('f64', result)
     }
     if (MATH_OPS.stdlib_unary.includes(name) && args.length === 1) {
-      ctx.usedStdlib.add(name)
+      ctx.usedStdlib.push(name)
       return tv('f64', `(call $${name} ${asF64(gen(args[0]))[1]})`)
     }
     if (MATH_OPS.stdlib_binary.includes(name) && args.length === 2) {
-      ctx.usedStdlib.add(name)
+      ctx.usedStdlib.push(name)
       return tv('f64', `(call $${name} ${asF64(gen(args[0]))[1]} ${asF64(gen(args[1]))[1]})`)
     }
     if (name === 'random' && args.length === 0) {
-      ctx.usedStdlib.add('random')
+      ctx.usedStdlib.push('random')
       return tv('f64', '(call $random)')
     }
     throw new Error(`Unknown Math.${name}`)
@@ -348,7 +348,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       return tv('i32', `(i32.and (f64.eq ${w} ${w}) (f64.ne (f64.abs ${w}) (f64.const inf)))`)
     }
     if (name === 'isInteger' && args.length === 1) {
-      ctx.usedStdlib.add('isInteger')
+      ctx.usedStdlib.push('isInteger')
       return tv('i32', `(i32.trunc_f64_s (call $isInteger ${asF64(gen(args[0]))[1]}))`)
     }
     throw new Error(`Unknown Number.${name}`)
@@ -370,18 +370,18 @@ function resolveCall(namespace, name, args, receiver = null) {
       const val = gen(args[0])
       const radix = args.length >= 2 ? asI32(gen(args[1]))[1] : '(i32.const 10)'
       if (val[0] === 'string') {
-        ctx.usedStdlib.add('parseInt')
+        ctx.usedStdlib.push('parseInt')
         ctx.usedStringType = true
         return tv('f64', `(call $parseInt ${val[1]} ${radix})`)
       }
-      ctx.usedStdlib.add('parseIntFromCode')
+      ctx.usedStdlib.push('parseIntFromCode')
       return tv('f64', `(call $parseIntFromCode ${asI32(val)[1]} ${radix})`)
     }
   }
 
   // User-defined function
-  if (namespace === null && ctx.functions.has(name)) {
-    const fn = ctx.functions.get(name)
+  if (namespace === null && name in ctx.functions) {
+    const fn = ctx.functions[name]
     if (args.length !== fn.params.length) throw new Error(`${name} expects ${fn.params.length} args`)
     const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
     return tv('f64', `(call $${name} ${argWats})`)
@@ -437,10 +437,10 @@ const operators = {
       if (isStatic && !hasNestedTypes) {
         // Static f64 array - store in data segment
         ctx.usedMemory = true
-        const arrayId = ctx.staticArrays.size
+        const arrayId = Object.keys(ctx.staticArrays).length
         const values = elements.map(evalConstant)
         const offset = 4096 + (arrayId * 64)
-        ctx.staticArrays.set(arrayId, { offset, values })
+        ctx.staticArrays[arrayId] = { offset, values }
         return tv('f64', `(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, values.map(() => ({ type: 'f64' })))
       } else if (hasNestedTypes) {
         // Mixed-type array: store all values (numbers as f64, pointers as NaN-encoded)
@@ -489,7 +489,7 @@ const operators = {
     const keys = props.map(p => p[0])
     const vals = props.map(p => asF64(gen(p[1]))[1])
     const objId = ctx.objectCounter++
-    ctx.objectSchemas.set(objId, keys)
+    ctx.objectSchemas[objId] = keys
     if (opts.gc) {
       return tv('object', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`, objId)
     } else {
@@ -576,7 +576,7 @@ const operators = {
       throw new Error(`Cannot get length of ${o[0]}`)
     }
     if (o[0] === 'object' && o[2] !== undefined) {
-      const schema = ctx.objectSchemas.get(o[2])
+      const schema = ctx.objectSchemas[o[2]]
       if (schema) {
         const idx = schema.indexOf(prop)
         if (idx >= 0) {
@@ -631,7 +631,7 @@ const operators = {
   '='([target, value]) { return genAssign(target, value, true) },
 
   'function'([name, params, body]) {
-    ctx.functions.set(name, { params: extractParams(params), body, exported: true })
+    ctx.functions[name] = { params: extractParams(params), body, exported: true }
     return tv('f64', '(f64.const 0)')
   },
 
@@ -660,7 +660,7 @@ const operators = {
   '*'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.mul(va, vb) : f64.mul(va, vb) },
   '/'([a, b]) { return f64.div(gen(a), gen(b)) },
   '%'([a, b]) { return ['f64', `(call $f64.rem ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
-  '**'([a, b]) { ctx.usedStdlib.add('pow'); return ['f64', `(call $pow ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
+  '**'([a, b]) { ctx.usedStdlib.push('pow'); return ['f64', `(call $pow ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
 
   // Comparisons
   '=='([a, b]) {
@@ -1036,7 +1036,7 @@ function genAssign(target, value, returnValue) {
   // Function definition
   if (Array.isArray(value) && value[0] === '=>') {
     if (typeof target !== 'string') throw new Error('Function must have name')
-    ctx.functions.set(target, { params: extractParams(value[1]), body: value[2], exported: true })
+    ctx.functions[target] = { params: extractParams(value[1]), body: value[2], exported: true }
     return returnValue ? tv('f64', '(f64.const 0)') : ''
   }
 
@@ -1076,7 +1076,7 @@ function genAssign(target, value, returnValue) {
     const obj = gen(value)
     if (obj[0] !== 'object' || obj[2] === undefined)
       throw new Error('Object destructuring requires object literal on RHS')
-    const schema = ctx.objectSchemas.get(obj[2])
+    const schema = ctx.objectSchemas[obj[2]]
     let code = `(local.set ${tmp} ${obj[1]})\n    `
     let lastVar = null
     for (const p of props) {
@@ -1137,7 +1137,7 @@ function genAssign(target, value, returnValue) {
   const existing = ctx.getLocal(target)
   if (existing) {
     // Check const
-    if (ctx.constVars.has(existing.scopedName)) {
+    if (existing.scopedName in ctx.constVars) {
       throw new Error(`Assignment to constant variable: ${target}`)
     }
     return returnValue
@@ -1175,7 +1175,7 @@ function generateFunction(name, params, bodyAst, parentCtx) {
   newCtx.returnLabel = '$return_' + name
 
   const prevCtx = setCtx(newCtx)
-  for (const p of params) ctx.locals.set(p, { idx: ctx.localCounter++, type: 'f64' })
+  for (const p of params) ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
   const [, bodyWat] = asF64(gen(bodyAst))
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
@@ -1186,7 +1186,7 @@ function generateFunction(name, params, bodyAst, parentCtx) {
 }
 
 function generateFunctions() {
-  return [...ctx.functions].map(([name, def]) => generateFunction(name, def.params, def.body, ctx))
+  return Object.entries(ctx.functions).map(([name, def]) => generateFunction(name, def.params, def.body, ctx))
 }
 
 // Module assembly
@@ -1209,7 +1209,8 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   }
 
   // String data segments
-  for (const [, info] of ctx.strings) {
+  for (const str in ctx.strings) {
+    const info = ctx.strings[str]
     const startByte = info.offset * 2, endByte = startByte + info.length * 2
     const hex = ctx.stringData.slice(startByte, endByte).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
     if (opts.gc) {
@@ -1222,8 +1223,10 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   }
 
   // Static array data segments (gc:false mode)
-  if (!opts.gc && ctx.staticArrays.size > 0) {
-    for (const [, {offset, values}] of ctx.staticArrays) {
+  const staticArrayKeys = Object.keys(ctx.staticArrays)
+  if (!opts.gc && staticArrayKeys.length > 0) {
+    for (const key of staticArrayKeys) {
+      const {offset, values} = ctx.staticArrays[key]
       // Encode f64 values as 8 bytes each (little-endian IEEE 754)
       let hex = ''
       for (const val of values) {
@@ -1303,19 +1306,19 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
 `
   }
 
-  const included = new Set()
+  const included = {}
   function include(name) {
-    if (included.has(name)) return
-    included.add(name)
+    if (name in included) return
+    included[name] = true
     for (const dep of DEPS[name] || []) include(dep)
     if (FUNCTIONS[name]) wat += `  ${FUNCTIONS[name]}\n`
   }
-  if (ctx.usedStdlib.size > 0) {
+  if (ctx.usedStdlib.length > 0) {
     wat += CONSTANTS
     for (const name of ctx.usedStdlib) include(name)
   }
 
-  for (const [name, g] of ctx.globals) wat += `  (global $${name} (mut f64) ${g.init})\n`
+  for (const name in ctx.globals) wat += `  (global $${name} (mut f64) ${ctx.globals[name].init})\n`
 
   wat += `  (func $die (result f64) (unreachable))\n`
   wat += `  (func $f64.rem (param f64 f64) (result f64)\n    (f64.sub (local.get 0) (f64.mul (f64.trunc (f64.div (local.get 0) (local.get 1))) (local.get 1))))\n`

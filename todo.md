@@ -36,7 +36,7 @@
 * [x] array methods (filter, find, findIndex, indexOf, includes, every, some, slice, reverse)
 * [x] string ops (slice, indexOf)
 * [x] template literals (basic)
-* [ ] simplify files structure
+* [x] simplify files structure
 
 ## JS Compatibility (priority order)
 
