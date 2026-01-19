@@ -27,12 +27,7 @@ export let ctx = null
 export let opts = { gc: true }
 export let gen = null
 
-// Initialize state for a new compilation
-export function initState(context, options, generator) {
-  ctx = context
-  opts = options
-  gen = generator
-}
+export { assemble };
 
 // Set context only (for nested function generation)
 export function setCtx(context) {
@@ -47,19 +42,13 @@ export function compile(ast, options = {}) {
   const newOpts = { gc }
   const newCtx = createContext(gc)
   // Initialize shared state for method modules
-  initState(newCtx, newOpts, _gen)
+  ctx = newCtx
+  opts = newOpts
+  gen = _gen
   const [, bodyWat] = asF64(_gen(ast))
   return assemble(bodyWat, newCtx, generateFunctions(), gc)
 }
 
-export function assembleRaw(bodyWat) {
-  return assemble(bodyWat, {
-    usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: [],
-    localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
-    staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: [],
-    refFuncs: new Set(), usedClosureType: false
-  }, [], true)
-}
 
 // Check if an AST node is a constant expression (can be computed at compile time)
 function isConstant(ast) {

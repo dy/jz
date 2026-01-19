@@ -16,7 +16,12 @@ import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
  * @param {boolean} gc - Whether GC mode is enabled
  * @returns {string} - Complete WAT module text
  */
-export function assemble(bodyWat, ctx, extraFunctions = [], gc = true) {
+export function assemble(bodyWat, ctx = {
+  usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: [],
+  localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
+  staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: [],
+  refFuncs: new Set(), usedClosureType: false
+}, extraFunctions = [], gc = true) {
   let wat = '(module\n'
 
   // === Type definitions ===
