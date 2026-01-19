@@ -38,18 +38,16 @@
 * [x] template literals (basic)
 * [x] simplify files structure
 * [x] Audit compiler/project architecture/structure: flexible enough? allows extension? performant enough? What seems redundant, questionable, suboptimal, unreliable? What one thing would you change that would unblock everything?
-  * [ ] deduplicate files (array.js etc in methods)
+  * [x] deduplicate files (removed stale src/compile/methods/)
+  * [x] format API: 'wasm', 'wasm-mvp', 'wat', 'wat-mvp' (replaces gc option)
   * [ ] extract closure analysis into analyze.js
   * [ ] make operators return IR nodes instead of WAT strings
-  * [ ] Add think emit (ir, target)
-  * [ ] unmonolith compile.js
-  * [ ] unconfuse structure
-  * [ ] think about the ways to prevent console bloat
-  * [ ] separate gc vs non-gc compile targets?
-  * [ ] capture array/objects in gc:true mode better
+  * [ ] add emit(ir, target) layer
+  * [ ] unmonolith compile.js into backends/
+  * [ ] capture array/objects in gc:true mode (needs anyref env fields)
   * [ ] proper type system (struct fields?)
-  * [ ] add JSDoc to types, anywhere where needful
-  * [ ] add comments for all difficult parts
+  * [ ] add JSDoc to types
+  * [ ] add comments for difficult parts
 * [ ] JS Compatibility (priority order)
   * [x] Declarations & Scoping
     * [x] `let` declaration - block-scoped variable
@@ -105,10 +103,10 @@
     * [ ] Compile them into modern parts, give warning
   * [ ] Identify and document all divergencies (improvements) from JS
 * [ ] Optimizations
-  * [ ] `funcref` - first-class functions, currying, closures
-    * [ ] Closure representation: struct { funcref fn, ref env }
-    * [ ] call_ref for indirect function calls
-    * [ ] Fallback to call_indirect + table when funcref disabled
+  * [x] `funcref` - first-class functions, currying, closures
+    * [x] Closure representation: struct { funcref fn, ref env }
+    * [x] call_ref for indirect function calls
+    * [x] Fallback to call_indirect + table for wasm-mvp
   * [ ] `multivalue` - multiple return values
     * [ ] Destructuring assignment via multi-value returns
     * [ ] Error+value pattern (result i32 f64)

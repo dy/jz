@@ -44,21 +44,20 @@ mul(4, 5)  // 20
 ## API
 
 ```js
-import { compile, evaluate, instantiate } from 'jz'
+import { compile, instantiate } from 'jz'
 
-
-// Compile to WASM binary (default)
+// Compile to WASM binary (default, uses GC)
 const wasm = compile('1 + 2')
-console.log('WASM size:', wasm.byteLength, 'bytes')
 
-// Compile to WAT source text
-const wat = compile('1 + 2', { format: 'wat' })
-console.log('WAT source:', wat)
+// Compile to different formats
+compile('1 + 2', { format: 'wasm' })      // WASM with GC (default)
+compile('1 + 2', { format: 'wasm-mvp' })  // WASM without GC (portable)
+compile('1 + 2', { format: 'wat' })       // WAT text with GC
+compile('1 + 2', { format: 'wat-mvp' })   // WAT text without GC
 
-// Compile and instantiate separately
+// Instantiate and run
 const instance = await instantiate(wasm)
-const runResult = instance.run()
-console.log(runResult) // 3
+console.log(instance.run()) // 3
 
 // Or use WebAssembly API directly
 const module = await WebAssembly.compile(wasm)
@@ -66,19 +65,21 @@ const wasmInstance = await WebAssembly.instantiate(module)
 console.log(wasmInstance.exports.main()) // 3
 ```
 
-### Options
+### Formats
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `format` | `'wasm'` | Output format: `'wasm'` (binary) or `'wat'` (text) |
-| `gc` | `true` | Use WASM GC — direct JS interop, managed memory |
+| Format | Description |
+|--------|-------------|
+| `wasm` | Modern WASM with GC — Chrome 119+, Firefox 120+ |
+| `wasm-mvp` | WASM MVP — works everywhere |
+| `wat` | WAT text with GC |
+| `wat-mvp` | WAT text without GC |
 
-**gc: true** (default) — WASM GC mode:
+**wasm** (default) — WASM GC mode:
 - Uses `struct`, `array`, `anyref`, `funcref` for JS-native types
 - Direct export to JavaScript — no decoding needed
 - Best for general use, prototyping, JS interop
 
-**gc: false** — Linear memory mode:
+**wasm-mvp** — Linear memory mode:
 - Uses `memory`, `i32.load/store`, `call_indirect` for manual management
 - Numeric pipelines: primitives in/out, arrays stay internal
 - Faster, deterministic, works on all WASM runtimes

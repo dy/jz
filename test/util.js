@@ -2,15 +2,21 @@
 import { compile, instantiate, compileWat } from '../index.js'
 import { assembleRaw } from '../src/compile.js'
 
-// GC mode from environment (default: true)
-export const gc = process.env.GC !== 'false'
-export const isGcTrue = gc
-export const isGcFalse = !gc
+// Format from environment: GC=false -> wasm-mvp, otherwise wasm
+export const format = process.env.GC === 'false' ? 'wasm-mvp' : 'wasm'
+export const isGcTrue = format === 'wasm'
+export const isGcFalse = format === 'wasm-mvp'
+// Legacy export for compatibility
+export const gc = isGcTrue
 
 // Evaluate JS expression at sample time t
 export async function evaluate(code, t = 0, options = {}) {
-  const gcOption = 'gc' in options ? options.gc : gc
-  const wasm = compile(code, { gc: gcOption })
+  // Support both legacy gc option and new format option
+  let fmt = format
+  if ('gc' in options) fmt = options.gc ? 'wasm' : 'wasm-mvp'
+  if ('format' in options) fmt = options.format
+  
+  const wasm = compile(code, { format: fmt })
   const instance = await instantiate(wasm)
   return instance.run(t)
 }
