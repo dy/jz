@@ -8,7 +8,7 @@
  * All functions take gc flag and return appropriate WAT code.
  */
 
-import { PTR_TYPE, tv } from './types.js'
+import { PTR_TYPE, tv, asF64, typeOf, isHeapRef, isString, isObject } from './types.js'
 
 // === Null/undefined ===
 
@@ -79,6 +79,17 @@ export const arrNew = (gc, lenWat) => gc
   ? `(array.new $f64array (f64.const 0) ${lenWat})`
   : `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${lenWat})`
 
+/** Get array element with typed value return - auto-sets ctx flags */
+export function arrGetTv(ctx, gc, arrWat, idxWat) {
+  if (gc) {
+    ctx.usedArrayType = true
+    return tv('f64', `(array.get $f64array ${arrWat} ${idxWat})`)
+  } else {
+    ctx.usedMemory = true
+    return tv('f64', `(f64.load (i32.add (call $__ptr_offset ${arrWat}) (i32.shl ${idxWat} (i32.const 3))))`)
+  }
+}
+
 /** Create fixed-size f64 array from values */
 export function mkF64Array(gc, ctx, values) {
   ctx.usedArrayType = true
@@ -96,6 +107,83 @@ export function mkF64Array(gc, ctx, values) {
     return tv('array', `(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length})))
       ${stores}(local.get ${tmp}))`)
+  }
+}
+
+/**
+ * Create array literal from generated values - handles all array literal cases
+ * @param {Object} ctx - compilation context
+ * @param {boolean} gc - gc mode flag
+ * @param {Array} gens - array of typed values [type, wat, schema?]
+ * @param {Function} isConstant - check if AST node is constant
+ * @param {Function} evalConstant - evaluate constant AST node
+ * @param {Array} elements - original AST elements (for static array optimization)
+ */
+export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elements) {
+  const hasRefTypes = gens.some(g => isHeapRef(g) || isString(g))
+
+  if (gc) {
+    if (hasRefTypes) {
+      // gc:true with nested refs: use $anyarray (array of anyref)
+      ctx.usedArrayType = true
+      ctx.usedRefArrayType = true
+      const vals = gens.map(g => {
+        if (isHeapRef(g) || isString(g)) return g[1]
+        // Wrap scalar in single-element f64 array
+        ctx.usedArrayType = true
+        return `(array.new_fixed $f64array 1 ${asF64(g)[1]})`
+      })
+      const elementSchemas = gens.map(g => ({ type: typeOf(g), schema: g[2] }))
+      return tv('refarray', `(array.new_fixed $anyarray ${vals.length} ${vals.join(' ')})`, elementSchemas)
+    } else {
+      // gc:true: homogeneous f64 array
+      ctx.usedArrayType = true
+      const vals = gens.map(g => asF64(g)[1])
+      return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
+    }
+  } else {
+    // gc:false: all values are f64 (either normal floats or NaN-encoded pointers)
+    const isStatic = elements.every(isConstant)
+    if (isStatic && !hasRefTypes) {
+      // Static f64 array - store in data segment
+      ctx.usedMemory = true
+      const arrayId = Object.keys(ctx.staticArrays).length
+      const values = elements.map(evalConstant)
+      const offset = 4096 + (arrayId * 64)
+      ctx.staticArrays[arrayId] = { offset, values }
+      return tv('f64', `(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, values.map(() => ({ type: 'f64' })))
+    } else if (hasRefTypes) {
+      // Mixed-type array: REF_ARRAY stores 8-byte slots
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_arr_${id}`
+      ctx.addLocal(tmp.slice(1), 'f64')
+      let stores = ''
+      const elementSchema = []
+      for (let i = 0; i < gens.length; i++) {
+        const [type, w, schemaId] = gens[i]
+        const val = (type === 'array' || type === 'object' || type === 'string') ? w : asF64(gens[i])[1]
+        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${val})\n      `
+        if (isObject(gens[i]) && schemaId !== undefined) elementSchema.push({ type: 'object', id: schemaId })
+        else elementSchema.push({ type })
+      }
+      return tv('f64', `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (i32.const ${gens.length})))
+      ${stores}(local.get ${tmp}))`, elementSchema)
+    } else {
+      // Dynamic homogeneous f64 array
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_arr_${id}`
+      ctx.addLocal(tmp.slice(1), 'f64')
+      let stores = ''
+      for (let i = 0; i < gens.length; i++) {
+        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${asF64(gens[i])[1]})\n      `
+      }
+      return tv('f64', `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${gens.length})))
+      ${stores}(local.get ${tmp}))`, gens.map(() => ({ type: 'f64' })))
+    }
   }
 }
 

@@ -20,7 +20,7 @@ import { extractParams, analyzeScope, findHoistedVars } from './analyze.js'
 import { f64, i32, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './emit.js'
-import { nullRef, mkString, envGet, envSet, arrGet, arrLen, objGet, strCharAt } from './gc.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrGetTv, arrLen, objGet, strCharAt, mkArrayLiteralTv } from './gc.js'
 
 // Current compilation state (module-level for nested access)
 export let ctx = null
@@ -596,84 +596,7 @@ const operators = {
 
   '['(elements) {
     const gens = elements.map(e => gen(e))
-    const elementTypes = gens.map(g => typeOf(g))
-    const hasRefTypes = gens.some(g => isHeapRef(g) || isString(g))
-    const hasNestedTypes = hasRefTypes  // Alias for gc:false code
-
-    if (opts.gc) {
-      if (hasRefTypes) {
-        // gc:true with nested refs: use $anyarray (array of anyref) for maximum flexibility
-        ctx.usedArrayType = true
-        ctx.usedRefArrayType = true
-        const vals = gens.map(g => {
-          if (isHeapRef(g)) {
-            return g[1]  // Already a ref
-          } else if (isString(g)) {
-            return g[1]  // String is also a ref
-          } else {
-            // Wrap scalar in single-element f64 array to make it a ref
-            ctx.usedArrayType = true
-            return `(array.new_fixed $f64array 1 ${asF64(g)[1]})`
-          }
-        })
-        // Track element types AND schemas for proper nested indexing
-        const elementSchemas = gens.map(g => ({ type: g[0], schema: g[2] }))
-        return tv('refarray', `(array.new_fixed $anyarray ${vals.length} ${vals.join(' ')})`, elementSchemas)
-      } else {
-        // gc:true: homogeneous f64 array
-        ctx.usedArrayType = true
-        const vals = gens.map(g => asF64(g)[1])
-        return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
-      }
-    } else {
-      // gc:false: all values are f64 (either normal floats or NaN-encoded pointers)
-      // Return as type 'f64' not 'array' since pointers are f64
-      const isStatic = elements.every(isConstant)
-      if (isStatic && !hasNestedTypes) {
-        // Static f64 array - store in data segment
-        ctx.usedMemory = true
-        const arrayId = Object.keys(ctx.staticArrays).length
-        const values = elements.map(evalConstant)
-        const offset = 4096 + (arrayId * 64)
-        ctx.staticArrays[arrayId] = { offset, values }
-        return tv('f64', `(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, values.map(() => ({ type: 'f64' })))
-      } else if (hasNestedTypes) {
-        // Mixed-type array: store all values (numbers as f64, pointers as NaN-encoded)
-        // REF_ARRAY stores 8-byte slots, can hold both f64 values and pointer NaNs
-        ctx.usedMemory = true
-        const id = ctx.loopCounter++
-        const tmp = `$_arr_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        const elementSchema = []
-        for (let i = 0; i < gens.length; i++) {
-          const [type, w, schemaId] = gens[i]
-          // For nested arrays/objects, value is already a pointer (NaN-encoded)
-          // For scalars, convert to f64 but leave as normal IEEE 754 (not NaN)
-          const val = (type === 'array' || type === 'object' || type === 'string') ? w : asF64(gens[i])[1]
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${val})\n      `
-          if (type === 'object' && schemaId !== undefined) elementSchema.push({ type: 'object', id: schemaId })
-          else elementSchema.push({ type })
-        }
-        return tv('f64', `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, elementSchema)
-      } else {
-        // Dynamic homogeneous f64 array
-        ctx.usedMemory = true
-        const id = ctx.loopCounter++
-        const tmp = `$_arr_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < gens.length; i++) {
-          const [, w] = asF64(gens[i])
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${w})\n      `
-        }
-        return tv('f64', `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, gens.map(() => ({ type: 'f64' })))
-      }
-    }
+    return mkArrayLiteralTv(ctx, opts.gc, gens, isConstant, evalConstant, elements)
   },
 
   '{'(props) {
@@ -746,8 +669,7 @@ const operators = {
           return tv('array', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
         }
       }
-      ctx.usedArrayType = true
-      return tv('f64', arrGet(true, a[1], iw))
+      return arrGetTv(ctx, true, a[1], iw)
     } else {
       // gc:false - load from memory
       ctx.usedMemory = true
@@ -766,7 +688,7 @@ const operators = {
       if (isString(a)) {
         return tv('i32', strCharAt(false, a[1], iw))
       }
-      return tv('f64', arrGet(false, a[1], iw))
+      return arrGetTv(ctx, false, a[1], iw)
     }
   },
 
