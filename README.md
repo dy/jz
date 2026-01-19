@@ -31,7 +31,7 @@ mul(4, 5)  // 20
 * Arrays: `[a, b]`, `arr[i]`, `arr[i] = x`, `arr.length`
 * Objects: `{a: b}`, `{a, b}`, `obj.prop`
 * Functions: `(a, b) => c`, `a => b`, `() => c`
-* Currying: `add = x => y => x + y; add(5)(3)` (gc:true)
+* Currying: `add = x => y => x + y; add(5)(3)`
 * Comments: `// foo`, `/* bar */`
 * Declarations: `let`, `const`, block scope
 * Strict equality: `===`, `!==`

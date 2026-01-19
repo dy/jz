@@ -55,17 +55,15 @@ test.todo('closure - array capture (gc:false only)', async () => {
   is(await evaluate('arr = [1, 2, 3]; sum = () => arr[0] + arr[1] + arr[2]; sum()'), 6)
 })
 
-// First-class functions (returning closures, currying) - gc:true only
-// gc:false currying requires more implementation work
-const skipGCFalse = process.env.GC === 'false'
-;(skipGCFalse ? test.skip : test)('closure - currying', async () => {
+// First-class functions (returning closures, currying)
+test('closure - currying', async () => {
   is(await evaluate('add = (x) => (y) => x + y; add5 = add(5); add5(3)'), 8)
 })
 
-;(skipGCFalse ? test.skip : test)('closure - currying with multiple args', async () => {
+test('closure - currying with multiple args', async () => {
   is(await evaluate('make = (a, b) => (c) => a * b + c; fn = make(2, 3); fn(4)'), 10)
 })
 
-;(skipGCFalse ? test.skip : test)('closure - nested depth 2', async () => {
+test('closure - nested depth 2', async () => {
   is(await evaluate('a = (x) => (y) => (z) => x + y + z; a(1)(2)(3)'), 6)
 })
