@@ -1,6 +1,6 @@
 // Array method implementations
 import { ctx, opts, gen } from './compile.js'
-import { PTR_TYPE, tv, asF64, asI32, truthy } from './types.js'
+import { PTR_TYPE, wat, f64, i32, bool } from './types.js'
 import { extractParams } from './analyze.js'
 import { arrGet, arrSet, arrLen, arrNew } from './gc.js'
 
@@ -9,11 +9,11 @@ export const fill = (rw, args) => {
   ctx.usedArrayType = true
   if (opts.gc) {
     ctx.usedStdlib.push('arrayFill')
-    return tv('array', `(call $arrayFill ${rw} ${asF64(gen(args[0]))[1]})`)
+    return wat(`(call $arrayFill ${rw} ${f64(gen(args[0]))})`, 'array')
   }
   ctx.usedMemory = true
   ctx.usedStdlib.push('arrayFillMem')
-  return tv('f64', `(call $arrayFillMem ${rw} ${asF64(gen(args[0]))[1]})`)
+  return wat(`(call $arrayFillMem ${rw} ${f64(gen(args[0]))})`, 'f64')
 }
 
 export const map = (rw, args) => {
@@ -32,17 +32,17 @@ export const map = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${result} ${arrNew(gc, `(local.get ${len})`)})
     (local.set ${idx} (i32.const 0))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, asF64(gen(body))[1])}
+      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, f64(gen(body)))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, gc ? 'array' : 'f64')
 }
 
 export const reduce = (rw, args) => {
@@ -62,9 +62,9 @@ export const reduce = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(accName, 'f64')
   ctx.addLocal(curName, 'f64')
-  const initVal = args.length >= 2 ? asF64(gen(args[1]))[1] : '(f64.const 0)'
+  const initVal = args.length >= 2 ? f64(gen(args[1])) : '(f64.const 0)'
   const gc = opts.gc
-  return tv('f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${acc} ${initVal})
     (local.set ${idx} (i32.const 0))
@@ -72,10 +72,10 @@ export const reduce = (rw, args) => {
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${accName} (local.get ${acc}))
       (local.set $${curName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (local.set ${acc} ${asF64(gen(body))[1]})
+      (local.set ${acc} ${f64(gen(body))})
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${acc})`)
+    (local.get ${acc})`, 'f64')
 }
 
 export const filter = (rw, args) => {
@@ -95,7 +95,7 @@ export const filter = (rw, args) => {
   ctx.addLocal(count.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${result} ${arrNew(gc, `(local.get ${len})`)})
     (local.set ${idx} (i32.const 0))
@@ -103,13 +103,13 @@ export const filter = (rw, args) => {
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (if ${truthy(gen(body))[1]}
+      (if ${bool(gen(body))}
         (then
           ${arrSet(gc, `(local.get ${result})`, `(local.get ${count})`, `(local.get $${paramName})`)}
           (local.set ${count} (i32.add (local.get ${count}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, gc ? 'array' : 'f64')
 }
 
 export const find = (rw, args) => {
@@ -128,20 +128,20 @@ export const find = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv('f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (f64.const nan))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (if ${truthy(gen(body))[1]}
+      (if ${bool(gen(body))}
         (then
           (local.set ${result} (local.get $${paramName}))
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'f64')
 }
 
 export const findIndex = (rw, args) => {
@@ -160,20 +160,20 @@ export const findIndex = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv('i32', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const -1))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (if ${truthy(gen(body))[1]}
+      (if ${bool(gen(body))}
         (then
           (local.set ${result} (local.get ${idx}))
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const indexOf = (rw, args) => {
@@ -189,8 +189,8 @@ export const indexOf = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(result.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${arr} ${rw})
-    (local.set ${target} ${asF64(searchVal)[1]})
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${target} ${f64(searchVal)})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const -1))
@@ -202,7 +202,7 @@ export const indexOf = (rw, args) => {
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const includes = (rw, args) => {
@@ -218,8 +218,8 @@ export const includes = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(result.slice(1), 'i32')
   const gc = opts.gc
-  return tv('i32', `(local.set ${arr} ${rw})
-    (local.set ${target} ${asF64(searchVal)[1]})
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${target} ${f64(searchVal)})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const 0))
@@ -231,7 +231,7 @@ export const includes = (rw, args) => {
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const every = (rw, args) => {
@@ -250,20 +250,20 @@ export const every = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv('i32', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const 1))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (if (i32.eqz ${truthy(gen(body))[1]})
+      (if (i32.eqz ${bool(gen(body))})
         (then
           (local.set ${result} (i32.const 0))
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const some = (rw, args) => {
@@ -282,20 +282,20 @@ export const some = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv('i32', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (local.set ${result} (i32.const 0))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (if ${truthy(gen(body))[1]}
+      (if ${bool(gen(body))}
         (then
           (local.set ${result} (i32.const 1))
           (br $done_${id})))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'i32')
 }
 
 export const slice = (rw, args) => {
@@ -311,9 +311,9 @@ export const slice = (rw, args) => {
   ctx.addLocal(end.slice(1), 'i32')
   ctx.addLocal(newLen.slice(1), 'i32')
   const gc = opts.gc
-  const startArg = args.length >= 1 ? asI32(gen(args[0]))[1] : '(i32.const 0)'
-  const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : arrLen(gc, `(local.get ${arr})`)
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr} ${rw})
+  const startArg = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 0)'
+  const endArg = args.length >= 2 ? i32(gen(args[1])) : arrLen(gc, `(local.get ${arr})`)
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${start} ${startArg})
     (local.set ${end} ${endArg})
@@ -332,7 +332,7 @@ export const slice = (rw, args) => {
       ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, gc ? 'array' : 'f64')
 }
 
 export const reverse = (rw, args) => {
@@ -346,7 +346,7 @@ export const reverse = (rw, args) => {
   ctx.addLocal(tmp.slice(1), 'f64')
   ctx.addLocal(len.slice(1), 'i32')
   const gc = opts.gc
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${left} (i32.const 0))
     (local.set ${right} (i32.sub (local.get ${len}) (i32.const 1)))
@@ -358,7 +358,7 @@ export const reverse = (rw, args) => {
       (local.set ${left} (i32.add (local.get ${left}) (i32.const 1)))
       (local.set ${right} (i32.sub (local.get ${right}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${arr})`)
+    (local.get ${arr})`, gc ? 'array' : 'f64')
 }
 
 export const push = (rw, args) => {
@@ -374,7 +374,7 @@ export const push = (rw, args) => {
   ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
   const gc = opts.gc
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${result} ${arrNew(gc, `(i32.add (local.get ${len}) (i32.const 1))`)})
     (local.set ${idx} (i32.const 0))
@@ -383,8 +383,8 @@ export const push = (rw, args) => {
       ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    ${arrSet(gc, `(local.get ${result})`, `(local.get ${len})`, asF64(val)[1])}
-    (local.get ${result})`)
+    ${arrSet(gc, `(local.get ${result})`, `(local.get ${len})`, f64(val))}
+    (local.get ${result})`, gc ? 'array' : 'f64')
 }
 
 export const pop = (rw, args) => {
@@ -396,11 +396,11 @@ export const pop = (rw, args) => {
   ctx.addLocal(arr.slice(1), opts.gc ? 'array' : 'f64')
   ctx.addLocal(len.slice(1), 'i32')
   const gc = opts.gc
-  return tv('f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (if (result f64) (i32.gt_s (local.get ${len}) (i32.const 0))
       (then ${arrGet(gc, `(local.get ${arr})`, `(i32.sub (local.get ${len}) (i32.const 1))`)})
-      (else (f64.const nan)))`)
+      (else (f64.const nan)))`, 'f64')
 }
 
 export const forEach = (rw, args) => {
@@ -418,16 +418,16 @@ export const forEach = (rw, args) => {
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(paramName, 'f64')
   const gc = opts.gc
-  return tv('f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${idx} (i32.const 0))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)})
-      (drop ${asF64(gen(body))[1]})
+      (drop ${f64(gen(body))})
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (f64.const 0)`)
+    (f64.const 0)`, 'f64')
 }
 
 export const concat = (rw, args) => {
@@ -444,8 +444,8 @@ export const concat = (rw, args) => {
   ctx.addLocal(len1.slice(1), 'i32')
   ctx.addLocal(len2.slice(1), 'i32')
   const gc = opts.gc
-  return tv(gc ? 'array' : 'f64', `(local.set ${arr1} ${rw})
-    (local.set ${arr2loc} ${arr2[1]})
+  return wat(`(local.set ${arr1} ${rw})
+    (local.set ${arr2loc} ${arr2})
     (local.set ${len1} ${arrLen(gc, `(local.get ${arr1})`)})
     (local.set ${len2} ${arrLen(gc, `(local.get ${arr2loc})`)})
     (local.set ${result} ${arrNew(gc, `(i32.add (local.get ${len1}) (local.get ${len2}))`)})
@@ -461,7 +461,7 @@ export const concat = (rw, args) => {
       ${arrSet(gc, `(local.get ${result})`, `(i32.add (local.get ${len1}) (local.get ${idx}))`, arrGet(gc, `(local.get ${arr2loc})`, `(local.get ${idx})`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop2_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, gc ? 'array' : 'f64')
 }
 
 export const join = (rw, args) => {
@@ -475,7 +475,7 @@ export const join = (rw, args) => {
   ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
   const gc = opts.gc
-  return tv('f64', `(local.set ${arr} ${rw})
+  return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(gc, `(local.get ${arr})`)})
     (local.set ${result} (f64.const 0))
     (local.set ${idx} (i32.const 0))
@@ -484,5 +484,5 @@ export const join = (rw, args) => {
       (local.set ${result} (f64.add (local.get ${result}) ${arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`)}))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`)
+    (local.get ${result})`, 'f64')
 }

@@ -8,14 +8,14 @@
  * All functions take gc flag and return appropriate WAT code.
  */
 
-import { PTR_TYPE, tv, asF64, typeOf, isHeapRef, isString, isObject } from './types.js'
+import { PTR_TYPE, wat, f64, isHeapRef, isString, isObject } from './types.js'
 
 // === Null/undefined ===
 
 /** Create null reference */
 export const nullRef = (gc) => gc
-  ? tv('ref', '(ref.null none)')
-  : tv('f64', '(f64.const 0)')
+  ? wat('(ref.null none)', 'ref')
+  : wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
@@ -25,10 +25,10 @@ export function mkString(gc, ctx, str) {
   const { id, length } = ctx.internString(str)
   if (gc) {
     ctx.internedStringGlobals[id] = { length }
-    return tv('string', `(ref.as_non_null (global.get $__str${id}))`)
+    return wat(`(ref.as_non_null (global.get $__str${id}))`, 'string')
   } else {
     ctx.usedMemory = true
-    return tv('string', `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`)
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`, 'string')
   }
 }
 
@@ -75,13 +75,13 @@ export const arrNew = (gc, lenWat) => gc
   : `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${lenWat})`
 
 /** Get array element with typed value return - auto-sets ctx flags */
-export function arrGetTv(ctx, gc, arrWat, idxWat) {
+export function arrGetTyped(ctx, gc, arrWat, idxWat) {
   if (gc) {
     ctx.usedArrayType = true
-    return tv('f64', `(array.get $f64array ${arrWat} ${idxWat})`)
+    return wat(`(array.get $f64array ${arrWat} ${idxWat})`, 'f64')
   } else {
     ctx.usedMemory = true
-    return tv('f64', `(f64.load (i32.add (call $__ptr_offset ${arrWat}) (i32.shl ${idxWat} (i32.const 3))))`)
+    return wat(`(f64.load (i32.add (call $__ptr_offset ${arrWat}) (i32.shl ${idxWat} (i32.const 3))))`, 'f64')
   }
 }
 
@@ -89,12 +89,12 @@ export function arrGetTv(ctx, gc, arrWat, idxWat) {
  * Create array literal from generated values - handles all array literal cases
  * @param {Object} ctx - compilation context
  * @param {boolean} gc - gc mode flag
- * @param {Array} gens - array of typed values [type, wat, schema?]
+ * @param {Array} gens - array of typed WAT values with .type and .schema
  * @param {Function} isConstant - check if AST node is constant
  * @param {Function} evalConstant - evaluate constant AST node
  * @param {Array} elements - original AST elements (for static array optimization)
  */
-export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elements) {
+export function mkArrayLiteral(ctx, gc, gens, isConstant, evalConstant, elements) {
   const hasRefTypes = gens.some(g => isHeapRef(g) || isString(g))
 
   if (gc) {
@@ -103,18 +103,18 @@ export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elemen
       ctx.usedArrayType = true
       ctx.usedRefArrayType = true
       const vals = gens.map(g => {
-        if (isHeapRef(g) || isString(g)) return g[1]
+        if (isHeapRef(g) || isString(g)) return String(g)
         // Wrap scalar in single-element f64 array
         ctx.usedArrayType = true
-        return `(array.new_fixed $f64array 1 ${asF64(g)[1]})`
+        return `(array.new_fixed $f64array 1 ${f64(g)})`
       })
-      const elementSchemas = gens.map(g => ({ type: typeOf(g), schema: g[2] }))
-      return tv('refarray', `(array.new_fixed $anyarray ${vals.length} ${vals.join(' ')})`, elementSchemas)
+      const elementSchemas = gens.map(g => ({ type: g.type, schema: g.schema }))
+      return wat(`(array.new_fixed $anyarray ${vals.length} ${vals.join(' ')})`, 'refarray', elementSchemas)
     } else {
       // gc:true: homogeneous f64 array
       ctx.usedArrayType = true
-      const vals = gens.map(g => asF64(g)[1])
-      return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
+      const vals = gens.map(g => String(f64(g)))
+      return wat(`(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`, 'array')
     }
   } else {
     // gc:false: all values are f64 (either normal floats or NaN-encoded pointers)
@@ -126,7 +126,7 @@ export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elemen
       const values = elements.map(evalConstant)
       const offset = 4096 + (arrayId * 64)
       ctx.staticArrays[arrayId] = { offset, values }
-      return tv('f64', `(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, values.map(() => ({ type: 'f64' })))
+      return wat(`(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, 'f64', values.map(() => ({ type: 'f64' })))
     } else if (hasRefTypes) {
       // Mixed-type array: REF_ARRAY stores 8-byte slots
       ctx.usedMemory = true
@@ -136,15 +136,15 @@ export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elemen
       let stores = ''
       const elementSchema = []
       for (let i = 0; i < gens.length; i++) {
-        const [type, w, schemaId] = gens[i]
-        const val = (type === 'array' || type === 'object' || type === 'string') ? w : asF64(gens[i])[1]
+        const g = gens[i]
+        const val = (g.type === 'array' || g.type === 'object' || g.type === 'string') ? String(g) : String(f64(g))
         stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${val})\n      `
-        if (isObject(gens[i]) && schemaId !== undefined) elementSchema.push({ type: 'object', id: schemaId })
-        else elementSchema.push({ type })
+        if (isObject(g) && g.schema !== undefined) elementSchema.push({ type: 'object', id: g.schema })
+        else elementSchema.push({ type: g.type })
       }
-      return tv('f64', `(block (result f64)
+      return wat(`(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, elementSchema)
+      ${stores}(local.get ${tmp}))`, 'f64', elementSchema)
     } else {
       // Dynamic homogeneous f64 array
       ctx.usedMemory = true
@@ -153,11 +153,11 @@ export function mkArrayLiteralTv(ctx, gc, gens, isConstant, evalConstant, elemen
       ctx.addLocal(tmp.slice(1), 'f64')
       let stores = ''
       for (let i = 0; i < gens.length; i++) {
-        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${asF64(gens[i])[1]})\n      `
+        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${f64(gens[i])})\n      `
       }
-      return tv('f64', `(block (result f64)
+      return wat(`(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, gens.map(() => ({ type: 'f64' })))
+      ${stores}(local.get ${tmp}))`, 'f64', gens.map(() => ({ type: 'f64' })))
     }
   }
 }
@@ -170,10 +170,6 @@ export const objGet = (gc, wat, idx) => gc
   : `(f64.load (i32.add (call $__ptr_offset ${wat}) (i32.const ${idx * 8})))`
 
 // === Environment (closures) ===
-
-/** Check if type is a reference type that needs anyref storage */
-export const isRefType = (type) =>
-  type === 'array' || type === 'object' || type === 'string' || type === 'refarray' || type === 'closure'
 
 /** Get WASM type for casting anyref to specific type */
 const refCastType = (type) =>

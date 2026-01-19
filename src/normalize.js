@@ -24,6 +24,7 @@ const ALLOWED = new Set([
   'let', 'const', 'var', 'function',
   'typeof', 'void',
   '\`',           // template literals
+  '...',          // spread/rest operator
 ])
 
 // Allowed namespaces

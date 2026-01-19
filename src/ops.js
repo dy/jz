@@ -5,17 +5,17 @@
  * bitwise, and Math operations.
  */
 
-import { asF64, asI32 } from './types.js'
+import { wat, f64, i32 } from './types.js'
 
 // Binary operation generator factory
 const binOp = (resType, argType, op) => (a, b) => {
-  const [, wa] = argType === 'f64' ? asF64(a) : asI32(a)
-  const [, wb] = argType === 'f64' ? asF64(b) : asI32(b)
-  return [resType, `(${op} ${wa} ${wb})`]
+  const wa = argType === 'f64' ? f64(a) : i32(a)
+  const wb = argType === 'f64' ? f64(b) : i32(b)
+  return wat(`(${op} ${wa} ${wb})`, resType)
 }
 
 // f64 operations
-export const f64 = {
+export const f64ops = {
   add: binOp('f64', 'f64', 'f64.add'),
   sub: binOp('f64', 'f64', 'f64.sub'),
   mul: binOp('f64', 'f64', 'f64.mul'),
@@ -29,7 +29,7 @@ export const f64 = {
 }
 
 // i32 operations
-export const i32 = {
+export const i32ops = {
   add: binOp('i32', 'i32', 'i32.add'),
   sub: binOp('i32', 'i32', 'i32.sub'),
   mul: binOp('i32', 'i32', 'i32.mul'),
@@ -43,9 +43,9 @@ export const i32 = {
   gt_s: binOp('i32', 'i32', 'i32.gt_s'),
   ge_s: binOp('i32', 'i32', 'i32.ge_s'),
   // Shifts mask to 5 bits (0-31)
-  shl: (a, b) => ['i32', `(i32.shl ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
-  shr_s: (a, b) => ['i32', `(i32.shr_s ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
-  shr_u: (a, b) => ['i32', `(i32.shr_u ${asI32(a)[1]} (i32.and ${asI32(b)[1]} (i32.const 31)))`],
+  shl: (a, b) => wat(`(i32.shl ${i32(a)} (i32.and ${i32(b)} (i32.const 31)))`, 'i32'),
+  shr_s: (a, b) => wat(`(i32.shr_s ${i32(a)} (i32.and ${i32(b)} (i32.const 31)))`, 'i32'),
+  shr_u: (a, b) => wat(`(i32.shr_u ${i32(a)} (i32.and ${i32(b)} (i32.const 31)))`, 'i32'),
 }
 
 // Native WASM instructions for Math functions

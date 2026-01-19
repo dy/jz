@@ -9,7 +9,7 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| types.js | 120 | Type system: tv(), asF64(), asI32(), truthy(), type predicates |
+| types.js | 120 | Type system, type predicates |
 | ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS, GLOBAL_CONSTANTS |
 | analyze.js | 165 | Scope analysis: extractParams(), analyzeScope(), findHoistedVars() |
 | context.js | 181 | Compilation state factory: createContext() - locals, globals, scopes |

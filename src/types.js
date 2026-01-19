@@ -1,10 +1,10 @@
 /**
  * Type system and coercions for jz compiler
  *
- * Typed values: [type, wat, schema?]
- * - type: 'f64' | 'i32' | 'ref' | 'array' | 'string' | 'object' | 'closure' | 'refarray'
- * - wat: WAT expression string
- * - schema: optional metadata (object property names, array element types)
+ * WAT values are boxed strings: String objects with .type and optional .schema
+ * This allows natural template literal interpolation: `(f64.add ${a} ${b})`
+ *
+ * Types: 'f64' | 'i32' | 'ref' | 'array' | 'string' | 'object' | 'closure' | 'refarray'
  *
  * gc:false uses NaN-boxing for pointers (arrays, strings, objects, closures)
  * NaN-boxing encodes pointer metadata in the mantissa of a quiet NaN
@@ -29,13 +29,14 @@ export const PTR_TYPE = {
 }
 
 /**
- * Typed value constructor
- * @param {string} t - Type name
- * @param {string} wat - WAT expression
+ * WAT value constructor - creates boxed string with type metadata
+ * @param {string} code - WAT expression string
+ * @param {string} [type='f64'] - Type name
  * @param {*} [schema] - Optional schema metadata
- * @returns {[string, string, *]} Typed value tuple
+ * @returns {String & {type: string, schema?: *}} Boxed WAT string
  */
-export const tv = (t, wat, schema) => [t, wat, schema]
+export const wat = (code, type = 'f64', schema) =>
+  Object.assign(new String(code), { type, schema })
 
 /**
  * Format number for WAT output (handles special values)
@@ -50,71 +51,72 @@ export const fmtNum = n =>
   String(n)
 
 /**
- * Coerce typed value to f64
- * @param {[string, string]} tv - Typed value
- * @returns {[string, string]} f64 typed value
+ * Coerce WAT value to f64
+ * @param {String & {type: string}} op - Boxed WAT string
+ * @returns {String & {type: string}} f64 WAT value
  */
-export const asF64 = ([t, w]) =>
-  t === 'f64' || t === 'array' || t === 'string' ? [t, w] :
-  t === 'ref' || t === 'object' ? ['f64', '(f64.const 0)'] :
-  t === 'closure' ? [t, w] :
-  ['f64', `(f64.convert_i32_s ${w})`]
+export const f64 = op => {
+  const t = op.type
+  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure') return op
+  if (t === 'ref' || t === 'object') return wat('(f64.const 0)', 'f64')
+  return wat(`(f64.convert_i32_s ${op})`, 'f64')
+}
 
 /**
- * Coerce typed value to i32
- * @param {[string, string]} tv - Typed value
- * @returns {[string, string]} i32 typed value
+ * Coerce WAT value to i32
+ * @param {String & {type: string}} op - Boxed WAT string
+ * @returns {String & {type: string}} i32 WAT value
  */
-export const asI32 = ([t, w]) =>
-  t === 'i32' ? [t, w] :
-  t === 'ref' || t === 'object' || t === 'closure' ? ['i32', '(i32.const 0)'] :
-  ['i32', `(i32.trunc_f64_s ${w})`]
+export const i32 = op => {
+  const t = op.type
+  if (t === 'i32') return op
+  if (t === 'ref' || t === 'object' || t === 'closure') return wat('(i32.const 0)', 'i32')
+  return wat(`(i32.trunc_f64_s ${op})`, 'i32')
+}
 
 /**
- * Convert typed value to boolean (i32 0 or 1)
- * @param {[string, string]} tv - Typed value
- * @returns {[string, string]} i32 boolean typed value
+ * Convert WAT value to boolean (i32 0 or 1)
+ * @param {String & {type: string}} op - Boxed WAT string
+ * @returns {String & {type: string}} i32 boolean WAT value
  */
-export const truthy = ([t, w]) =>
-  t === 'ref' ? ['i32', `(i32.eqz (ref.is_null ${w}))`] :
-  t === 'i32' ? ['i32', `(i32.ne ${w} (i32.const 0))`] :
-  ['i32', `(f64.ne ${w} (f64.const 0))`]
+export const bool = op => {
+  const t = op.type
+  if (t === 'ref') return wat(`(i32.eqz (ref.is_null ${op}))`, 'i32')
+  if (t === 'i32') return wat(`(i32.ne ${op} (i32.const 0))`, 'i32')
+  return wat(`(f64.ne ${op} (f64.const 0))`, 'i32')
+}
 
 /**
  * Make two values same type for comparison
- * @param {[string, string]} a - First typed value
- * @param {[string, string]} b - Second typed value
- * @returns {[[string, string], [string, string]]} Both as i32 or both as f64
+ * @param {String & {type: string}} a - First WAT value
+ * @param {String & {type: string}} b - Second WAT value
+ * @returns {[String, String]} Both as i32 or both as f64
  */
 export const conciliate = (a, b) =>
-  a[0] === 'i32' && b[0] === 'i32' ? [a, b] : [asF64(a), asF64(b)]
+  a.type === 'i32' && b.type === 'i32' ? [a, b] : [f64(a), f64(b)]
 
-// === Type accessors ===
-/** @param {[string, string, *]} v */
-export const typeOf = v => v[0]
-
-// === Type predicates ===
-/** @param {[string, string]} v */
-export const isF64 = v => v[0] === 'f64'
-/** @param {[string, string]} v */
-export const isI32 = v => v[0] === 'i32'
-/** @param {[string, string]} v */
-export const isString = v => v[0] === 'string'
-/** @param {[string, string]} v */
-export const isArray = v => v[0] === 'array'
-/** @param {[string, string]} v */
-export const isObject = v => v[0] === 'object'
-/** @param {[string, string]} v */
-export const isClosure = v => v[0] === 'closure'
-/** @param {[string, string]} v */
-export const isRef = v => v[0] === 'ref'
-/** @param {[string, string]} v */
-export const isRefArray = v => v[0] === 'refarray'
+// === Type predicates (work with boxed strings) ===
+/** @param {String & {type: string}} v */
+export const isF64 = v => v.type === 'f64'
+/** @param {String & {type: string}} v */
+export const isI32 = v => v.type === 'i32'
+/** @param {String & {type: string}} v */
+export const isString = v => v.type === 'string'
+/** @param {String & {type: string}} v */
+export const isArray = v => v.type === 'array'
+/** @param {String & {type: string}} v */
+export const isObject = v => v.type === 'object'
+/** @param {String & {type: string}} v */
+export const isClosure = v => v.type === 'closure'
+/** @param {String & {type: string}} v */
+export const isRef = v => v.type === 'ref'
+/** @param {String & {type: string}} v */
+export const isRefArray = v => v.type === 'refarray'
 
 // === Compound predicates ===
-/** @param {[string, string]} a @param {[string, string]} b */
-export const bothI32 = (a, b) => a[0] === 'i32' && b[0] === 'i32'
-/** @param {[string, string]} v */
-export const isHeapRef = v => v[0] === 'array' || v[0] === 'object' || v[0] === 'refarray' || v[0] === 'ref'
-/** @param {[string, string, *]} v */
-export const hasSchema = v => v[2] !== undefined
+/** @param {String & {type: string}} a @param {String & {type: string}} b */
+export const bothI32 = (a, b) => a.type === 'i32' && b.type === 'i32'
+/** @param {String & {type: string}} v */
+export const isHeapRef = v => v.type === 'array' || v.type === 'object' || v.type === 'refarray' || v.type === 'ref'
+/** @param {String & {type: string, schema?: *}} v */
+export const hasSchema = v => v.schema !== undefined
