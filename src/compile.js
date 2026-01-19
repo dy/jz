@@ -14,9 +14,10 @@ export const PTR_TYPE = {
   STRING: 3,      // UTF-16 string
   I8_ARRAY: 4,    // Int8Array
   OBJECT: 5,      // Object
-  REF_ARRAY: 6    // Mixed-type array
+  REF_ARRAY: 6,   // Mixed-type array
+  CLOSURE: 7      // Closure environment
 }
-export const PTR_ELEM_SIZE = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 8, 6: 8 }
+export const PTR_ELEM_SIZE = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 8, 6: 8, 7: 8 }
 
 // Current compilation context - set by compile()
 export let ctx = null
@@ -118,6 +119,124 @@ const MATH_OPS = {
 }
 const GLOBAL_CONSTANTS = { Infinity: Infinity, NaN: NaN }
 
+// Closure analysis - find free variables in an AST
+// Returns { free: Set<string>, defined: Set<string>, innerFunctions: [...] }
+function analyzeScope(ast, outerDefined = new Set(), inFunction = false) {
+  const defined = new Set(outerDefined)
+  const free = new Set()
+  const innerFunctions = []
+
+  function walk(node, inFunc = inFunction) {
+    if (node == null) return
+    if (typeof node === 'string') {
+      // Identifier reference
+      if (!defined.has(node) && !node.startsWith('_') &&
+          !(node in GLOBAL_CONSTANTS) && !(node in MATH_OPS.constants) &&
+          !['t', 'true', 'false', 'null', 'undefined'].includes(node)) {
+        free.add(node)
+      }
+      return
+    }
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === undefined) return // Literal like [undefined, 5]
+    if (op === null) return // Special literal like NaN
+
+    // Variable declarations define new names
+    if (op === '=' && typeof args[0] === 'string') {
+      // Check if RHS is a function (closure)
+      if (Array.isArray(args[1]) && args[1][0] === '=>') {
+        const fnParams = extractParams(args[1][1])
+        const fnBody = args[1][2]
+        // Analyze inner function with ONLY its own params as defined
+        // This way, uses of outer variables will be marked as 'free'
+        const analysis = analyzeScope(fnBody, new Set(fnParams), true)
+        // Captured = free vars that are defined in outer scope
+        const captured = [...analysis.free].filter(v => defined.has(v) || outerDefined.has(v))
+        innerFunctions.push({
+          name: args[0],
+          params: fnParams,
+          body: fnBody,
+          captured,
+          innerFunctions: analysis.innerFunctions
+        })
+        defined.add(args[0])
+        return
+      }
+      walk(args[1], inFunc)
+      defined.add(args[0])
+      return
+    }
+    if (op === 'let' || op === 'const' || op === 'var') {
+      if (Array.isArray(args[0]) && args[0][0] === '=') {
+        walk(args[0][1], inFunc)
+        defined.add(args[0][0])
+      } else if (typeof args[0] === 'string') {
+        defined.add(args[0])
+      }
+      return
+    }
+    if (op === 'function') {
+      const [name, params, body] = args
+      const fnParams = extractParams(params)
+      // Analyze inner function with ONLY its own params as defined
+      const analysis = analyzeScope(body, new Set(fnParams), true)
+      const captured = [...analysis.free].filter(v => defined.has(v) || outerDefined.has(v))
+      innerFunctions.push({ name, params: fnParams, body, captured, innerFunctions: analysis.innerFunctions })
+      defined.add(name)
+      return
+    }
+    if (op === '=>') {
+      // Anonymous arrow - analyzed when assigned
+      const fnParams = extractParams(args[0])
+      // Analyze with only params as defined
+      const analysis = analyzeScope(args[1], new Set(fnParams), true)
+      // Pass through free vars that come from outer scopes
+      for (const v of analysis.free) {
+        if (!fnParams.includes(v)) free.add(v)
+      }
+      return
+    }
+    // Loop variables
+    if (op === 'for') {
+      const [init, cond, update, body] = args
+      if (Array.isArray(init) && (init[0] === 'let' || init[0] === 'const' || init[0] === 'var')) {
+        if (Array.isArray(init[1]) && init[1][0] === '=') {
+          walk(init[1][1], inFunc)
+          defined.add(init[1][0])
+        }
+      } else {
+        walk(init, inFunc)
+      }
+      walk(cond, inFunc)
+      walk(update, inFunc)
+      walk(body, inFunc)
+      return
+    }
+    // Recurse into all children
+    for (const arg of args) walk(arg, inFunc)
+  }
+
+  walk(ast)
+  return { free, defined, innerFunctions }
+}
+
+// Find all variables in a function that are captured by ANY nested closure
+// These need to be stored in an environment struct for shared access
+function findHoistedVars(bodyAst, params) {
+  const analysis = analyzeScope(bodyAst, new Set(params), true)
+  const hoisted = new Set()
+  
+  function collectCaptured(innerFunctions) {
+    for (const fn of innerFunctions) {
+      for (const v of fn.captured) hoisted.add(v)
+      if (fn.innerFunctions) collectCaptured(fn.innerFunctions)
+    }
+  }
+  collectCaptured(analysis.innerFunctions)
+  return hoisted
+}
+
 const createContext = () => ({
   locals: {}, localDecls: [], globals: {},
   usedStdlib: [], usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
@@ -129,6 +248,12 @@ const createContext = () => ({
   staticAllocs: [], staticOffset: 0,
   // Scope tracking for let/const block scoping
   scopeDepth: 0, scopes: [{}], constVars: {},
+  // Closure tracking
+  closures: {},          // name -> { envType, envFields, captured }
+  closureEnvTypes: [],   // Struct type definitions for GC mode
+  closureCounter: 0,     // Unique ID for closure types
+  currentEnv: null,      // Current closure environment (if inside a closure)
+  capturedVars: {},      // Map of captured var name -> field index in env
 
   // Add a local variable (for internal compiler temps and declared vars)
   // If scopedName is provided, use it directly; otherwise apply scoping rules
@@ -214,7 +339,7 @@ export function assembleRaw(bodyWat) {
   return assemble(bodyWat, {
     usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: [],
     localDecls: [], functions: {}, globals: {}, strings: {}, stringData: [],
-    staticArrays: {}, arrayDataOffset: 0
+    staticArrays: {}, arrayDataOffset: 0, closureEnvTypes: []
   })
 }
 
@@ -297,6 +422,29 @@ function genIdent(name) {
   if (name === 'true') return tv('i32', '(i32.const 1)')
   if (name === 'false') return tv('i32', '(i32.const 0)')
   if (name in GLOBAL_CONSTANTS) return tv('f64', `(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`)
+
+  // Check if this is a hoisted variable (in our own env, for nested closure access)
+  if (ctx.hoistedVars && name in ctx.hoistedVars) {
+    const fieldIdx = ctx.hoistedVars[name]
+    if (opts.gc) {
+      return tv('f64', `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`)
+    } else {
+      const offset = fieldIdx * 8
+      return tv('f64', `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`)
+    }
+  }
+
+  // Check if this is a captured variable (from closure environment passed to us)
+  if (ctx.capturedVars && name in ctx.capturedVars) {
+    const fieldIdx = ctx.capturedVars[name]
+    if (opts.gc) {
+      return tv('f64', `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env))`)
+    } else {
+      const offset = fieldIdx * 8
+      return tv('f64', `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`)
+    }
+  }
+
   const loc = ctx.getLocal(name)
   if (loc) return tv(loc.type, `(local.get $${loc.scopedName})`, ctx.localSchemas[loc.scopedName])
   const glob = ctx.getGlobal(name)
@@ -393,9 +541,81 @@ function resolveCall(namespace, name, args, receiver = null) {
     }
   }
 
-  // User-defined function
+  // User-defined function (including closures)
   if (namespace === null && name in ctx.functions) {
     const fn = ctx.functions[name]
+    if (fn.closure) {
+      // Closure call - need to pass environment
+      if (args.length !== fn.params.length) throw new Error(`${name} expects ${fn.params.length} args`)
+      const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
+
+      const { envFields, envType, usesOwnEnv } = fn.closure
+      
+      // If the closure uses our own env, pass it directly
+      if (usesOwnEnv && ctx.ownEnvType) {
+        if (opts.gc) {
+          // Convert from (ref null) to (ref) for the call
+          return tv('f64', `(call $${name} (ref.as_non_null (local.get $__ownenv)) ${argWats})`)
+        } else {
+          return tv('f64', `(call $${name} (local.get $__ownenv) ${argWats})`)
+        }
+      }
+      
+      // Otherwise, build a new environment with captured variables
+      if (opts.gc) {
+        // GC mode: create struct with captured values
+        const envVals = envFields.map(f => {
+          // Check our own hoisted vars first
+          if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
+            const fieldIdx = ctx.hoistedVars[f.name]
+            return `(struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv))`
+          }
+          // Then check received env (capturedVars)
+          if (ctx.capturedVars && f.name in ctx.capturedVars) {
+            const fieldIdx = ctx.capturedVars[f.name]
+            return `(struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env))`
+          }
+          const loc = ctx.getLocal(f.name)
+          if (loc) return `(local.get $${loc.scopedName})`
+          const glob = ctx.getGlobal(f.name)
+          if (glob) return `(global.get $${f.name})`
+          throw new Error(`Cannot capture ${f.name}: not found`)
+        }).join(' ')
+        return tv('f64', `(call $${name} (struct.new ${envType} ${envVals}) ${argWats})`)
+      } else {
+        // gc:false mode: allocate env in memory
+        ctx.usedMemory = true
+        const envSize = envFields.length * 8
+        const envVals = envFields.map((f, i) => {
+          let val
+          if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
+            const offset = ctx.hoistedVars[f.name] * 8
+            val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
+          } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
+            const offset = ctx.capturedVars[f.name] * 8
+            val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
+          } else {
+            const loc = ctx.getLocal(f.name)
+            if (loc) val = `(local.get $${loc.scopedName})`
+            else {
+              const glob = ctx.getGlobal(f.name)
+              if (glob) val = `(global.get $${f.name})`
+              else throw new Error(`Cannot capture ${f.name}: not found`)
+            }
+          }
+          return `(f64.store (i32.add (global.get $__heap) (i32.const ${i * 8})) ${val})`
+        }).join('\n        ')
+        // Allocate env, store values, call function
+        return tv('f64', `(block (result f64)
+          ${envVals}
+          (call $${name}
+            (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
+            ${argWats})
+          (global.set $__heap (i32.add (global.get $__heap) (i32.const ${envSize})))
+        )`)
+      }
+    }
+    // Regular function call
     if (args.length !== fn.params.length) throw new Error(`${name} expects ${fn.params.length} args`)
     const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
     return tv('f64', `(call $${name} ${argWats})`)
@@ -1090,10 +1310,62 @@ for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
 
 // Unified assignment handler - returns value if returnValue=true, else just side effect
 function genAssign(target, value, returnValue) {
-  // Function definition
+  // Function/closure definition
   if (Array.isArray(value) && value[0] === '=>') {
     if (typeof target !== 'string') throw new Error('Function must have name')
-    ctx.functions[target] = { params: extractParams(value[1]), body: value[2], exported: true }
+    const params = extractParams(value[1])
+    const body = value[2]
+
+    // Analyze for captured variables from the CURRENT scope
+    // Include: ctx.locals, ctx.capturedVars (from received env), ctx.hoistedVars (from own env)
+    const localNames = Object.keys(ctx.locals)
+    const capturedNames = ctx.capturedVars ? Object.keys(ctx.capturedVars) : []
+    const hoistedNames = ctx.hoistedVars ? Object.keys(ctx.hoistedVars) : []
+    const outerDefined = new Set([...localNames, ...capturedNames, ...hoistedNames])
+
+    // Analyze the function body to find free variables
+    const analysis = analyzeScope(body, new Set(params), true)
+
+    // Captured = free vars in the inner function that exist in our current scope
+    const captured = [...analysis.free].filter(v =>
+      outerDefined.has(v) && !params.includes(v)
+    )
+
+    if (captured.length > 0) {
+      // Check if all captured vars are in our own hoisted env
+      // If so, we can pass our __ownenv directly
+      const allFromOwnEnv = ctx.hoistedVars && captured.every(v => v in ctx.hoistedVars)
+      
+      let envType, envFields
+      if (allFromOwnEnv) {
+        // Reuse our own env type - the closure will receive our __ownenv
+        envType = ctx.ownEnvType
+        envFields = ctx.ownEnvFields
+      } else {
+        // Need a new env type (captures from multiple sources)
+        const envId = ctx.closureCounter++
+        envType = `$env${envId}`
+        envFields = captured.map((v, i) => ({ name: v, index: i }))
+        if (opts.gc) {
+          ctx.closureEnvTypes.push({ id: envId, fields: captured })
+        }
+      }
+
+      ctx.closures[target] = { envType, envFields, captured, params, body, usesOwnEnv: allFromOwnEnv }
+
+      // Register the lifted function (with env param)
+      ctx.functions[target] = {
+        params,
+        body,
+        exported: false,
+        closure: { envType, envFields, captured, usesOwnEnv: allFromOwnEnv }
+      }
+
+      return returnValue ? tv('f64', '(f64.const 0)') : ''
+    }
+
+    // Regular function (no captures)
+    ctx.functions[target] = { params, body, exported: true }
     return returnValue ? tv('f64', '(f64.const 0)') : ''
   }
 
@@ -1185,6 +1457,41 @@ function genAssign(target, value, returnValue) {
   // Simple variable
   if (typeof target !== 'string') throw new Error('Invalid assignment target')
   const val = gen(value)
+  
+  // Check if this is a hoisted variable (must be written to own env)
+  if (ctx.hoistedVars && target in ctx.hoistedVars) {
+    const fieldIdx = ctx.hoistedVars[target]
+    if (opts.gc) {
+      const code = `(struct.set ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv) ${asF64(val)[1]})`
+      return returnValue 
+        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv)))`)
+        : code + '\n    '
+    } else {
+      const offset = fieldIdx * 8
+      const code = `(f64.store (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})) ${asF64(val)[1]})`
+      return returnValue
+        ? tv('f64', `(block (result f64) ${code} (f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset}))))`)
+        : code + '\n    '
+    }
+  }
+  
+  // Check if this is a captured variable (must be written to received env)
+  if (ctx.capturedVars && target in ctx.capturedVars) {
+    const fieldIdx = ctx.capturedVars[target]
+    if (opts.gc) {
+      const code = `(struct.set ${ctx.currentEnv} ${fieldIdx} (local.get $__env) ${asF64(val)[1]})`
+      return returnValue 
+        ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env)))`)
+        : code + '\n    '
+    } else {
+      const offset = fieldIdx * 8
+      const code = `(f64.store (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})) ${asF64(val)[1]})`
+      return returnValue
+        ? tv('f64', `(block (result f64) ${code} (f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset}))))`)
+        : code + '\n    '
+    }
+  }
+  
   const glob = ctx.getGlobal(target)
   if (glob) {
     const code = `(global.set $${target} ${asF64(val)[1]})`
@@ -1221,29 +1528,127 @@ function genLoopInit(target, value) {
   return `(local.set $${newLoc.scopedName} ${asF64([t, w])[1]})\n    `
 }
 
-function generateFunction(name, params, bodyAst, parentCtx) {
+function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) {
   const newCtx = createContext()
   newCtx.usedStdlib = parentCtx.usedStdlib
   newCtx.usedArrayType = parentCtx.usedArrayType
   newCtx.usedStringType = parentCtx.usedStringType
   newCtx.functions = parentCtx.functions
+  newCtx.closures = parentCtx.closures
+  newCtx.closureEnvTypes = parentCtx.closureEnvTypes
+  newCtx.closureCounter = parentCtx.closureCounter
   newCtx.globals = parentCtx.globals
   newCtx.inFunction = true
   newCtx.returnLabel = '$return_' + name
 
+  // Find variables that need to be hoisted to environment (captured by nested closures)
+  const hoistedVars = findHoistedVars(bodyAst, params)
+  
+  // If this function has hoisted vars OR is itself a closure, we need env handling
+  let envParam = ''
+  let envInit = ''
+  
+  if (closureInfo) {
+    // This is a closure - receives env from caller
+    newCtx.currentEnv = closureInfo.envType
+    newCtx.capturedVars = {}
+    for (const field of closureInfo.envFields) {
+      newCtx.capturedVars[field.name] = field.index
+    }
+  }
+  
+  // If this function has hoisted vars, create OWN env for them
+  // This is separate from the received env (if any)
+  if (hoistedVars.size > 0) {
+    const envId = parentCtx.closureCounter++
+    newCtx.ownEnvType = `$env${envId}`
+    newCtx.ownEnvFields = [...hoistedVars].map((v, i) => ({ name: v, index: i }))
+    // Track which vars are in our own env (for read/write)
+    newCtx.hoistedVars = {}
+    for (const field of newCtx.ownEnvFields) {
+      newCtx.hoistedVars[field.name] = field.index
+    }
+    // Register env type
+    if (opts.gc) {
+      parentCtx.closureEnvTypes.push({ id: envId, fields: [...hoistedVars] })
+    }
+  }
+
   const prevCtx = setCtx(newCtx)
+
+  // Add env parameter for closures
+  if (closureInfo) {
+    if (opts.gc) {
+      envParam = `(param $__env (ref ${closureInfo.envType})) `
+      ctx.locals.__env = { idx: ctx.localCounter++, type: 'ref' }
+    } else {
+      envParam = `(param $__env f64) `
+      ctx.locals.__env = { idx: ctx.localCounter++, type: 'f64' }
+    }
+  }
+
+  // Initialize own env if needed
+  if (ctx.ownEnvType) {
+    if (opts.gc) {
+      // Add local with explicit env struct type
+      ctx.locals.__ownenv = { idx: ctx.localCounter++, type: 'envref' }
+      ctx.localDecls.push(`(local $__ownenv (ref null ${ctx.ownEnvType}))`)
+      // Initialize with zeros
+      const zeros = ctx.ownEnvFields.map(() => '(f64.const 0)').join(' ')
+      envInit = `(local.set $__ownenv (struct.new ${ctx.ownEnvType} ${zeros}))\n      `
+      // Copy captured params into env
+      for (const field of ctx.ownEnvFields) {
+        if (params.includes(field.name)) {
+          envInit += `(struct.set ${ctx.ownEnvType} ${field.index} (local.get $__ownenv) (local.get $${field.name}))\n      `
+        }
+      }
+    } else {
+      ctx.usedMemory = true
+      ctx.addLocal('__ownenv', 'f64')
+      const envSize = ctx.ownEnvFields.length * 8
+      envInit = `(local.set $__ownenv (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${ctx.ownEnvFields.length})))\n      `
+      // Copy captured params into env
+      for (const field of ctx.ownEnvFields) {
+        if (params.includes(field.name)) {
+          envInit += `(f64.store (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${field.index * 8})) (local.get $${field.name}))\n      `
+        }
+      }
+    }
+  }
+
   for (const p of params) ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
   const [, bodyWat] = asF64(gen(bodyAst))
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
+  // Export only if not a closure
+  const exportClause = closureInfo ? '' : ` (export "${name}")`
   // Wrap body in block to support early return
-  const wat = `(func $${name} (export "${name}") ${paramDecls} (result f64)${localDecls}\n    (block ${ctx.returnLabel} (result f64)\n      ${bodyWat}\n    )\n  )`
+  const wat = `(func $${name}${exportClause} ${envParam}${paramDecls} (result f64)${localDecls}\n    (block ${ctx.returnLabel} (result f64)\n      ${envInit}${bodyWat}\n    )\n  )`
+  
+  // Propagate usedMemory to parent context
+  if (ctx.usedMemory) parentCtx.usedMemory = true
+  
   setCtx(prevCtx)
   return wat
 }
 
 function generateFunctions() {
-  return Object.entries(ctx.functions).map(([name, def]) => generateFunction(name, def.params, def.body, ctx))
+  const generated = new Set()
+  const results = []
+
+  // Keep generating until no new functions are added
+  // This handles nested closures that get registered during generation
+  while (true) {
+    const toGenerate = Object.entries(ctx.functions).filter(([name]) => !generated.has(name))
+    if (toGenerate.length === 0) break
+
+    for (const [name, def] of toGenerate) {
+      generated.add(name)
+      const closureInfo = def.closure || null
+      results.push(generateFunction(name, def.params, def.body, ctx, closureInfo))
+    }
+  }
+  return results
 }
 
 // Module assembly
@@ -1254,7 +1659,12 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   if (opts.gc) {
     if (ctx.usedArrayType) wat += '  (type $f64array (array (mut f64)))\n'
     if (ctx.usedStringType) wat += '  (type $string (array (mut i16)))\n'
-    if (ctx.usedRefArrayType) wat += '  (type $refarray (array (mut (ref null $f64array))))\n'  // Simplified: refs to f64arrays
+    if (ctx.usedRefArrayType) wat += '  (type $refarray (array (mut (ref null $f64array))))\n'
+    // Closure environment types
+    for (const env of ctx.closureEnvTypes) {
+      const fields = env.fields.map(f => `(field $${f} (mut f64))`).join(' ')
+      wat += `  (type $env${env.id} (struct ${fields}))\n`
+    }
   }
 
   // Memory (required for gc:false mode)

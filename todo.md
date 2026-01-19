@@ -52,9 +52,13 @@
 * [x] `!==` strict inequality
 
 ### 3. Closures
-* [ ] closure capture - inner functions capture outer variables
-* [ ] closure lifting - hoist captured vars to shared scope/struct
-* [ ] nested function definitions
+* [x] closure capture - inner functions capture outer variables
+* [x] closure lifting - hoist captured vars to shared scope/struct
+* [x] nested function definitions
+* [x] closure mutation - inner function can modify outer vars, outer sees changes
+* [x] shared environment - multiple closures share same captured vars
+* [ ] first-class functions (currying) - return closure, call it later (needs funcref)
+* [ ] array capture in gc:true mode (needs polymorphic env structs)
 
 ### 4. Rest/Spread & Destructuring
 * [ ] rest params `(...args) => args.length`
@@ -91,6 +95,9 @@
 * [ ] auto-export mode (current behavior, opt-in)
 * [ ] internal functions not exported by default
 
+### 8. More
+* [ ] Find all modern cool JS proposals
+
 ## JS improvements
 
 * [ ] Identify obsolete parts we don't support
@@ -99,9 +106,25 @@
 
 ## Optimizations
 
-* [ ] v128
+* [ ] v128 - for calc
+  * [ ] v128 for pointers?
+  * [ ] v128 for something else?
 * [ ] multiple returns (for arrays return)
-* [ ]
+* [ ] any other wasm-features used for anything?
+
+## Comparisons
+
+* [ ] Comparison table with porf, js, assemblyscript, quickjs, anything else?
+  * [ ] Features
+  * [ ] Perf
+  * [ ] Memory
+  * [ ] GC
+
+## API
+* [ ] What else might be needed in options that we're missing? Memory size? Imports?
+* [ ] How to wrap outputs so that we have good JS integration?
+* [ ] WASM modules definitions?
+* [ ] Sourcemaps?
 
 ## Future
 
