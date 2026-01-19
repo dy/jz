@@ -20,9 +20,6 @@ export const CONSTANTS = `
 
 // Individual math function implementations - included on demand
 export const FUNCTIONS = {
-  fract: `(func $fract (param $x f64) (result f64)
-    (f64.sub (local.get $x) (f64.floor (local.get $x))))`,
-
   sign: `(func $sign (param $x f64) (result f64)
     (if (result f64) (f64.eq (local.get $x) (f64.const 0.0))
       (then (f64.const 0.0))
@@ -286,32 +283,6 @@ export const FUNCTIONS = {
     (local.set $s (i32.xor (local.get $s) (i32.shl (local.get $s) (i32.const 5))))
     (global.set $rng_state (local.get $s))
     (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`,
-
-  clamp: `(func $clamp (param $x f64) (param $lo f64) (param $hi f64) (result f64)
-    (f64.max (local.get $lo) (f64.min (local.get $x) (local.get $hi))))`,
-
-  lerp: `(func $lerp (param $a f64) (param $b f64) (param $t f64) (result f64)
-    (f64.add (local.get $a) (f64.mul (f64.sub (local.get $b) (local.get $a)) (local.get $t))))`,
-
-  mix: `(func $mix (param $a f64) (param $b f64) (param $t f64) (result f64)
-    (f64.add (local.get $a) (f64.mul (f64.sub (local.get $b) (local.get $a)) (local.get $t))))`,
-
-  smoothstep: `(func $smoothstep (param $edge0 f64) (param $edge1 f64) (param $x f64) (result f64)
-    (local $t f64)
-    (local.set $t (f64.max (f64.const 0.0) (f64.min (f64.const 1.0)
-      (f64.div (f64.sub (local.get $x) (local.get $edge0)) (f64.sub (local.get $edge1) (local.get $edge0))))))
-    (f64.mul (local.get $t) (f64.mul (local.get $t) (f64.sub (f64.const 3.0) (f64.mul (f64.const 2.0) (local.get $t))))))`,
-
-  mod: `(func $mod (param $x f64) (param $y f64) (result f64)
-    (local $r f64)
-    (local.set $r (f64.sub (local.get $x) (f64.mul (local.get $y) (f64.floor (f64.div (local.get $x) (local.get $y))))))
-    (local.get $r))`,
-
-  wrap: `(func $wrap (param $x f64) (param $lo f64) (param $hi f64) (result f64)
-    (local $range f64)
-    (local.set $range (f64.sub (local.get $hi) (local.get $lo)))
-    (f64.add (local.get $lo) (f64.sub (local.get $x) (f64.mul (local.get $range)
-      (f64.floor (f64.div (f64.sub (local.get $x) (local.get $lo)) (local.get $range)))))))`,
 
   // parseInt from char code (0-9, a-z, A-Z) - common floatbeat pattern
   // Input: char code (i32), radix (i32)

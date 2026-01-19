@@ -56,12 +56,12 @@ const stringMethods = {
   startsWith: string.startsWith, endsWith: string.endsWith, trim: string.trim,
   split: string.split, replace: string.replace
 }
-import { PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate, typeOf, watOf, isType, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isNumeric, bothI32, isHeapRef, isArrayLike, hasSchema } from './types.js'
+import { PTR_TYPE, tv, fmtNum, asF64, asI32, truthy, conciliate, typeOf, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, analyzeScope, findHoistedVars } from './analyze.js'
 import { f64, i32, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
-import { assemble } from './emit.js'
-import { nullRef, mkString, envGet, envSet, arrGet, arrGetTv, arrLen, objGet, strCharAt, mkArrayLiteralTv } from './gc.js'
+import { assemble } from './assemble.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrGetTv, arrLen, objGet, strCharAt, mkArrayLiteralTv, callClosure } from './gc.js'
 
 // Current compilation state (module-level for nested access)
 export let ctx = null
@@ -369,121 +369,22 @@ function resolveCall(namespace, name, args, receiver = null) {
 // =============================================================================
 
 // Call a closure value stored in a variable
-// gc:true: closure is (struct (field $fn funcref) (field $env anyref)), use call_ref
-// gc:false: closure is NaN-box with table index and env ptr, use call_indirect
 function genClosureCall(name, args) {
   const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
-  const numArgs = args.length
-
-  // Get the closure value from the variable
   const closureVal = genIdent(name)
-
-  if (opts.gc) {
-    ctx.usedClosureType = true
-    // Extract funcref and env from closure struct
-    // We need function type based on arity: (func (param anyref) (param f64)* (result f64))
-    const funcTypeName = `$fntype${numArgs}`
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(numArgs)
-    // call_ref the funcref with env + args
-    // Need to handle both (ref $closure) and (ref null $closure) inputs
-    const closureRef = isClosure(closureVal)
-      ? `(ref.as_non_null ${closureVal[1]})`  // Cast to non-null if nullable
-      : closureVal[1]
-    return tv('f64', `(call_ref ${funcTypeName}
-      (struct.get $closure $env ${closureRef})
-      ${argWats}
-      (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef})))`)
-  } else {
-    ctx.usedFuncTable = true
-    ctx.usedMemory = true
-    // gc:false: closure is NaN-encoded {table_idx:16, env_offset:32}
-    // Extract table index from bits 32-47 (shifted right by 32)
-    // Extract env offset from bits 0-31
-    const funcTypeName = `$fntype${numArgs}`
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(numArgs)
-    const id = ctx.loopCounter++
-    const tmpClosure = `$_clos_${id}`
-    const tmpI64 = `$_closi64_${id}`
-    ctx.addLocal(tmpClosure.slice(1), 'f64')
-    ctx.localDecls.push(`(local ${tmpI64} i64)`)
-    // Decode: reinterpret to i64, extract table idx (bits 32-47) and env (bits 0-31)
-    return tv('f64', `(block (result f64)
-      (local.set ${tmpClosure} ${closureVal[1]})
-      (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
-      (call_indirect (type ${funcTypeName})
-        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
-          (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
-          (i32.wrap_i64 (local.get ${tmpI64})))
-        ${argWats}
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`)
-  }
+  const isNullable = isClosure(closureVal) // nullable if typed as closure
+  return tv('f64', callClosure(ctx, opts.gc, closureVal[1], argWats, args.length, isNullable))
 }
 
 // Call a closure value from an expression (not a variable)
 // This handles cases like a(1)(2) where a(1) returns a closure
 function genClosureCallExpr(closureVal, args) {
   const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
-  const numArgs = args.length
-  // Check if we have closure depth info (stored as 3rd element for closure types)
   const remainingDepth = closureVal[2]?.closureDepth ?? 0
-
-  if (opts.gc) {
-    ctx.usedClosureType = true
-    // Determine return type based on remaining depth
-    const returnsClosure = remainingDepth > 0
-    const funcTypeName = returnsClosure ? `$clfntype${numArgs}` : `$fntype${numArgs}`
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(numArgs)
-    if (returnsClosure) {
-      if (!ctx.usedClFuncTypes) ctx.usedClFuncTypes = new Set()
-      ctx.usedClFuncTypes.add(numArgs)
-    }
-
-    // Store the closure in a temp local to avoid re-evaluation
-    const id = ctx.loopCounter++
-    const tmpClosure = `$_closexpr_${id}`
-    ctx.addLocal(tmpClosure.slice(1), 'closure')
-    const closureRef = `(ref.as_non_null (local.get ${tmpClosure}))`
-
-    if (returnsClosure) {
-      return tv('closure', `(block (result (ref null $closure))
-        (local.set ${tmpClosure} ${closureVal[1]})
-        (ref.cast (ref null $closure) (call_ref ${funcTypeName}
-          (struct.get $closure $env ${closureRef})
-          ${argWats}
-          (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef})))))`, { closureDepth: remainingDepth - 1 })
-    }
-    return tv('f64', `(block (result f64)
-      (local.set ${tmpClosure} ${closureVal[1]})
-      (call_ref ${funcTypeName}
-        (struct.get $closure $env ${closureRef})
-        ${argWats}
-        (ref.cast (ref ${funcTypeName}) (struct.get $closure $fn ${closureRef}))))`)
-  } else {
-    ctx.usedFuncTable = true
-    ctx.usedMemory = true
-    const funcTypeName = `$fntype${numArgs}`
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(numArgs)
-    const id = ctx.loopCounter++
-    const tmpClosure = `$_closexpr_${id}`
-    const tmpI64 = `$_closexpr_i64_${id}`
-    ctx.addLocal(tmpClosure.slice(1), 'f64')
-    ctx.localDecls.push(`(local ${tmpI64} i64)`)
-    const returnsClosure = remainingDepth > 0
-    const resultType = returnsClosure ? 'closure' : 'f64'
-    return tv(resultType, `(block (result f64)
-      (local.set ${tmpClosure} ${closureVal[1]})
-      (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
-      (call_indirect (type ${funcTypeName})
-        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
-          (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
-          (i32.wrap_i64 (local.get ${tmpI64})))
-        ${argWats}
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`, returnsClosure ? { closureDepth: remainingDepth - 1 } : undefined)
-  }
+  const returnsClosure = remainingDepth > 0
+  const resultType = returnsClosure ? 'closure' : 'f64'
+  const wat = callClosure(ctx, opts.gc, closureVal[1], argWats, args.length, true, returnsClosure)
+  return tv(resultType, wat, returnsClosure ? { closureDepth: remainingDepth - 1 } : undefined)
 }
 
 // =============================================================================

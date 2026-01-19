@@ -28,9 +28,6 @@ export const PTR_TYPE = {
   CLOSURE: 7      // Closure environment
 }
 
-/** Element sizes in bytes per pointer type */
-export const PTR_ELEM_SIZE = { 1: 8, 2: 4, 3: 2, 4: 1, 5: 8, 6: 8, 7: 8 }
-
 /**
  * Typed value constructor
  * @param {string} t - Type name
@@ -95,14 +92,8 @@ export const conciliate = (a, b) =>
 // === Type accessors ===
 /** @param {[string, string, *]} v */
 export const typeOf = v => v[0]
-/** @param {[string, string, *]} v */
-export const watOf = v => v[1]
-/** @param {[string, string, *]} v */
-export const schemaOf = v => v[2]
 
 // === Type predicates ===
-/** @param {[string, string]} v @param {string} t */
-export const isType = (v, t) => v[0] === t
 /** @param {[string, string]} v */
 export const isF64 = v => v[0] === 'f64'
 /** @param {[string, string]} v */
@@ -121,13 +112,9 @@ export const isRef = v => v[0] === 'ref'
 export const isRefArray = v => v[0] === 'refarray'
 
 // === Compound predicates ===
-/** @param {[string, string]} v */
-export const isNumeric = v => v[0] === 'f64' || v[0] === 'i32'
 /** @param {[string, string]} a @param {[string, string]} b */
 export const bothI32 = (a, b) => a[0] === 'i32' && b[0] === 'i32'
 /** @param {[string, string]} v */
 export const isHeapRef = v => v[0] === 'array' || v[0] === 'object' || v[0] === 'refarray' || v[0] === 'ref'
-/** @param {[string, string]} v */
-export const isArrayLike = v => v[0] === 'array' || v[0] === 'refarray'
 /** @param {[string, string, *]} v */
 export const hasSchema = v => v[2] !== undefined
