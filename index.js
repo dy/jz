@@ -1,9 +1,9 @@
 // jz - JS subset to WASM compiler
 import 'subscript/jessie'
 import { parse } from 'subscript/jessie'
-import { compile as watrCompile } from 'watr'
+import * as watr from 'watr'
 import normalize from './src/normalize.js'
-import { compile as compileAst, assembleRaw } from './src/compile.js'
+import { compile as compileAst, assemble } from './src/compile.js'
 
 // Options:
 // - gc: true (default) - WASM GC (Chrome 119+, Firefox 120+)
@@ -13,9 +13,9 @@ import { compile as compileAst, assembleRaw } from './src/compile.js'
 // Compile WAT string to WASM binary
 export function compileWat(wat) {
   try {
-    return watrCompile(wat)
+    return watr.compile(wat)
   } catch (error) {
-    throw new Error(`WAT compilation failed: ${error.message}\nWAT:\n${wat}`)
+    throw new Error(`WAT compilation failed: ${error.message}\nWAT:\n${wat}`, { cause: error })
   }
 }
 
@@ -42,4 +42,4 @@ export function compile(code, options = {}) {
   return text ? wat : compileWat(wat)
 }
 
-export { parse, normalize, compileAst, assembleRaw }
+export { parse, normalize, compileAst, assemble }

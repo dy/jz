@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile, instantiate, compileWat } from '../index.js'
 import { evaluate, evaluateWat, isGcTrue, isGcFalse } from './util.js'
-import { assembleRaw } from '../src/compile.js'
+import { assemble } from '../src/compile.js'
 
 // MVP Test Suite - Focused on what works with current implementation
 
@@ -35,7 +35,7 @@ test('Edge cases', async () => {
 })
 
 test('WebAssembly compilation', () => {
-  const wat = assembleRaw('(f64.add (f64.const 1) (f64.const 1))')
+  const wat = assemble('(f64.add (f64.const 1) (f64.const 1))')
   const wasm = compileWat(wat)
   ok(wasm instanceof Uint8Array)
   ok(wasm.byteLength > 0)
