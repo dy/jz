@@ -12,7 +12,7 @@
 
 // Global constants - identifiers that don't count as free variables
 const BUILTIN_IDENTS = new Set([
-  't', 'true', 'false', 'null', 'undefined',
+  'true', 'false', 'null', 'undefined',
   'Infinity', 'NaN', 'PI', 'E', 'SQRT2', 'SQRT1_2', 'LN2', 'LN10', 'LOG2E', 'LOG10E'
 ])
 

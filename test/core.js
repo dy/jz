@@ -290,8 +290,8 @@ test('object literals and property access', async () => {
   is(await evaluate('{x: 1 + 2, y: 3 * 4}.x'), 3)
   is(await evaluate('{x: 1 + 2, y: 3 * 4}.y'), 12)
 
-  // Object with t
-  is(await evaluate('{val: t * 2}.val', 5), 10)
+  // Object with variable
+  is(await evaluate('(t = 5, {val: t * 2}.val)'), 10)
 
   // Nested property expressions
   is(await evaluate('(o = {a: 1, b: 2}, o.a + o.b)'), 3)

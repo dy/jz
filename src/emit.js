@@ -168,7 +168,7 @@ export function assemble(bodyWat, ctx, extraFunctions = [], gc = true) {
       }
     }
 
-    wat += `\n  (func $main (export "main") (param $t f64) (result f64)${locals}\n    ${strInit}${bodyWat}\n  )`
+    wat += `\n  (func $main (export "main") (result f64)${locals}\n    ${strInit}${bodyWat}\n  )`
   }
 
   return wat + '\n)'
