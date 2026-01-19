@@ -7,14 +7,6 @@ import { evaluate, isGcTrue } from './util.js'
 // NOTE: All code here is PURE JS - runnable in any JS interpreter
 // Floatbeat wrapper would destructure Math globals for convenience
 
-test('floatbeat - t variable', async () => {
-  is(await evaluate('t', 0), 0)
-  is(await evaluate('t', 100), 100)
-  is(await evaluate('t + 1', 5), 6)
-  is(await evaluate('t * 2', 10), 20)
-  is(await evaluate('t / 4', 100), 25)
-})
-
 test('floatbeat - Math constants', async () => {
   const pi = await evaluate('Math.PI')
   ok(Math.abs(pi - Math.PI) < 0.0001, 'Math.PI should match')
@@ -117,35 +109,35 @@ test('floatbeat - variable bindings (comma expressions)', async () => {
   is(await evaluate('(a = 5, a)'), 5)
   is(await evaluate('(a = 3, b = 4, a + b)'), 7)
   is(await evaluate('(x = 2, y = 3, x * y)'), 6)
-  is(await evaluate('(tune = 1.5, t * tune)', 100), 150)
+  is(await evaluate('(t = 100, tune = 1.5, t * tune)'), 150)
 })
 
 test('floatbeat - arrays with WASM GC', async () => {
   is(await evaluate('[10, 20, 30][0]'), 10)
   is(await evaluate('[10, 20, 30][1]'), 20)
   is(await evaluate('[10, 20, 30][2]'), 30)
-  is(await evaluate('[5, 10, 15][t]', 1), 10)
-  is(await evaluate('[1, 2, 3, 4][t & 3]', 5), 2)
-  is(await evaluate('[1, 2, 3, 4][t >> 1 & 3]', 6), 4)
+  is(await evaluate('(t = 1, [5, 10, 15][t])'), 10)
+  is(await evaluate('(t = 5, [1, 2, 3, 4][t & 3])'), 2)
+  is(await evaluate('(t = 6, [1, 2, 3, 4][t >> 1 & 3])'), 4)
 })
 
 test('floatbeat - classic sierpinski', async () => {
-  is(await evaluate('t & (t >> 8)', 257), 1)
-  is(await evaluate('t & (t >> 8)', 515), 2)
-  is(await evaluate('t & (t >> 8)', 775), 3)
+  is(await evaluate('(t = 257, t & (t >> 8))'), 1)
+  is(await evaluate('(t = 515, t & (t >> 8))'), 2)
+  is(await evaluate('(t = 775, t & (t >> 8))'), 3)
 })
 
 test('floatbeat - simple sine wave', async () => {
-  const v64 = await evaluate('Math.sin(t * Math.PI / 128)', 64)
-  ok(Math.abs(v64 - 1) < 0.0001)
-
-  const v128 = await evaluate('Math.sin(t * Math.PI / 128)', 128)
-  ok(Math.abs(v128) < 0.0001)
+  const wasm = compile('wave = t => Math.sin(t * Math.PI / 128)')
+  const { wave } = await instantiate(wasm)
+  ok(Math.abs(wave(64) - 1) < 0.0001)
+  ok(Math.abs(wave(128)) < 0.0001)
 })
 
 test('floatbeat - FM synthesis pattern', async () => {
-  const fm = await evaluate('Math.sin(t * Math.PI / 128 + Math.sin(t * Math.PI / 256) * 2)', 64)
-  ok(typeof fm === 'number' && !isNaN(fm))
+  const wasm = compile('fm = t => Math.sin(t * Math.PI / 128 + Math.sin(t * Math.PI / 256) * 2)')
+  const { fm } = await instantiate(wasm)
+  ok(typeof fm(64) === 'number' && !isNaN(fm(64)))
 })
 
 test('floatbeat - pitch formula', async () => {
@@ -157,40 +149,40 @@ test('floatbeat - pitch formula', async () => {
 })
 
 test('floatbeat - sequencer pattern', async () => {
-  is(await evaluate('[0, 2, 4, 7][t >> 13 & 3]', 0), 0)
-  is(await evaluate('[0, 2, 4, 7][t >> 13 & 3]', 8192), 2)
-  is(await evaluate('[0, 2, 4, 7][t >> 13 & 3]', 16384), 4)
-  is(await evaluate('[0, 2, 4, 7][t >> 13 & 3]', 24576), 7)
+  const wasm = compile('seq = t => [0, 2, 4, 7][t >> 13 & 3]')
+  const { seq } = await instantiate(wasm)
+  is(seq(0), 0)
+  is(seq(8192), 2)
+  is(seq(16384), 4)
+  is(seq(24576), 7)
 })
 
 test('floatbeat - combined sequencer + pitch', async () => {
-  const result = await evaluate(
-    '(note = [0, 4, 7, 12][t >> 13 & 3], Math.sin(t * Math.pow(2, note / 12) * Math.PI / 256))',
-    8192
-  )
-  ok(typeof result === 'number' && !isNaN(result))
+  const wasm = compile('synth = t => (note = [0, 4, 7, 12][t >> 13 & 3], Math.sin(t * Math.pow(2, note / 12) * Math.PI / 256))')
+  const { synth } = await instantiate(wasm)
+  ok(typeof synth(8192) === 'number' && !isNaN(synth(8192)))
 })
 
 test('floatbeat - envelope pattern', async () => {
-  const env0 = await evaluate('1 - (t % 8192) / 8192', 0)
-  ok(Math.abs(env0 - 1) < 0.0001)
-
-  const env4096 = await evaluate('1 - (t % 8192) / 8192', 4096)
-  ok(Math.abs(env4096 - 0.5) < 0.0001)
+  const wasm = compile('env = t => 1 - (t % 8192) / 8192')
+  const { env } = await instantiate(wasm)
+  ok(Math.abs(env(0) - 1) < 0.0001)
+  ok(Math.abs(env(4096) - 0.5) < 0.0001)
 })
 
 test('floatbeat - real formula: simple chiptune', async () => {
-  const result = await evaluate('t * ((t >> 12 | t >> 8) & 63 & t >> 4)', 8000)
-  ok(typeof result === 'number' && !isNaN(result))
+  const wasm = compile('chip = t => t * ((t >> 12 | t >> 8) & 63 & t >> 4)')
+  const { chip } = await instantiate(wasm)
+  ok(typeof chip(8000) === 'number' && !isNaN(chip(8000)))
 })
 
 test('floatbeat - sustained instance for audio', async () => {
-  const wasm = compile('Math.sin(t * Math.PI / 128)')
-  const instance = await instantiate(wasm)
+  const wasm = compile('wave = t => Math.sin(t * Math.PI / 128)')
+  const { wave } = await instantiate(wasm)
 
   const samples = []
   for (let i = 0; i < 256; i++) {
-    samples.push(instance.run(i))
+    samples.push(wave(i))
   }
 
   ok(Math.abs(samples[0]) < 0.01, 'starts near 0')

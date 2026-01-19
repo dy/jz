@@ -353,7 +353,7 @@ export const reverse = (rw, args) => {
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${left}) (local.get ${right})))
       (local.set ${tmp} ${arrGet(gc, `(local.get ${arr})`, `(local.get ${left})`)})
-      ${arrSet(gc, `(local.get ${arr})`, `(local.get ${left})`, arrGet(gc, `(local.get ${arr})`, `(local.get ${right})`))} 
+      ${arrSet(gc, `(local.get ${arr})`, `(local.get ${left})`, arrGet(gc, `(local.get ${arr})`, `(local.get ${right})`))}
       ${arrSet(gc, `(local.get ${arr})`, `(local.get ${right})`, `(local.get ${tmp})`)}
       (local.set ${left} (i32.add (local.get ${left}) (i32.const 1)))
       (local.set ${right} (i32.sub (local.get ${right}) (i32.const 1)))
@@ -380,7 +380,7 @@ export const push = (rw, args) => {
     (local.set ${idx} (i32.const 0))
     (block $done_${id} (loop $loop_${id}
       (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`))} 
+      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr})`, `(local.get ${idx})`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
     ${arrSet(gc, `(local.get ${result})`, `(local.get ${len})`, asF64(val)[1])}
@@ -452,13 +452,13 @@ export const concat = (rw, args) => {
     (local.set ${idx} (i32.const 0))
     (block $done1_${id} (loop $loop1_${id}
       (br_if $done1_${id} (i32.ge_s (local.get ${idx}) (local.get ${len1})))
-      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr1})`, `(local.get ${idx})`))} 
+      ${arrSet(gc, `(local.get ${result})`, `(local.get ${idx})`, arrGet(gc, `(local.get ${arr1})`, `(local.get ${idx})`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop1_${id})))
     (local.set ${idx} (i32.const 0))
     (block $done2_${id} (loop $loop2_${id}
       (br_if $done2_${id} (i32.ge_s (local.get ${idx}) (local.get ${len2})))
-      ${arrSet(gc, `(local.get ${result})`, `(i32.add (local.get ${len1}) (local.get ${idx}))`, arrGet(gc, `(local.get ${arr2loc})`, `(local.get ${idx})`))} 
+      ${arrSet(gc, `(local.get ${result})`, `(i32.add (local.get ${len1}) (local.get ${idx}))`, arrGet(gc, `(local.get ${arr2loc})`, `(local.get ${idx})`))}
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop2_${id})))
     (local.get ${result})`)

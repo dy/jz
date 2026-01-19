@@ -25,7 +25,7 @@ export async function instantiate(wasm, imports = {}) {
     const module = await WebAssembly.compile(wasm)
     const instance = await WebAssembly.instantiate(module, imports)
     return {
-      run: (t = 0) => instance.exports.main?.(t),
+      run: () => instance.exports.main?.(),
       exports: instance.exports,
       ...instance.exports
     }

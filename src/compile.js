@@ -46,7 +46,6 @@ export function compile(ast, options = {}) {
   const { gc = true } = options
   const newOpts = { gc }
   const newCtx = createContext(gc)
-  newCtx.locals.t = { type: 'f64', idx: newCtx.localCounter++ }
   // Initialize shared state for method modules
   initState(newCtx, newOpts, _gen)
   const [, bodyWat] = asF64(_gen(ast))
@@ -1692,6 +1691,9 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
   if (ctx.usedMemory) parentCtx.usedMemory = true
   if (ctx.usedClosureType) parentCtx.usedClosureType = true
   if (ctx.usedFuncTable) parentCtx.usedFuncTable = true
+  if (ctx.usedArrayType) parentCtx.usedArrayType = true
+  if (ctx.usedStringType) parentCtx.usedStringType = true
+  if (ctx.usedRefArrayType) parentCtx.usedRefArrayType = true
   if (ctx.usedFuncTypes) {
     if (!parentCtx.usedFuncTypes) parentCtx.usedFuncTypes = new Set()
     for (const arity of ctx.usedFuncTypes) parentCtx.usedFuncTypes.add(arity)
