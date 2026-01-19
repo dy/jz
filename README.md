@@ -67,21 +67,25 @@ console.log(wasmInstance.exports.main()) // 3
 
 ### Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `gc` | `true` | Use WASM GC (Chrome 119+, Firefox 120+) |
-| `text` | `false` | Output WAT text instead of WASM binary |
+#### `text`
 
-**gc: true** (default) — GC mode:
+**false** (default)
+
+Output WAT text instead of WASM binary.
+
+#### `gc`
+
+**true** (default) — GC mode
 - Uses `struct`, `array`, `anyref`, `funcref` for JS-native types
 - Direct export to JavaScript — no decoding needed
 - Best for general use, prototyping, JS interop
 
-**gc: false** — Linear memory mode:
+**false** — Linear memory mode:
 - Uses `memory`, `i32.load/store`, `call_indirect` for manual management
 - Numeric pipelines: primitives in/out, arrays stay internal
 - Faster, deterministic, works on all WASM runtimes
 - Best for DSP, audio, embedded, maximum portability
+
 
 ### CLI
 
@@ -158,6 +162,7 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
 * _Seamless JS integration_ – export/import, same func signatures.
+* _No quirks_ – rectify known JS quirks.
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
@@ -167,9 +172,11 @@ Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays sma
 
 AssemblyScript is TypeScript-based. JZ stays pure JS.
 
+<!--
 ### Why not [piezo](https://github.com/dy/piezo)?
 
 Piezo offers extra features like groups, pipes, units, ranges and extra operators. JZ is a possible first step for it.
+-->
 
 ### Why _jz_?
 

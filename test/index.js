@@ -1,6 +1,6 @@
 import './core.js'
 import './esnext.js'
-import './test262.js'
+import './ieee754.js'
 import './floatbeat.js'
 import './features.js'
 import './early-return.js'

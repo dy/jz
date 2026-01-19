@@ -104,7 +104,7 @@
 * [ ] JS improvements
   * [ ] Identify obsolete parts we don't support
     * [ ] Compile them into modern parts, give warning
-  * [ ] Identify and document all divergencies (improvements) from JS
+  * [ ] Identify and document all divergencies (improvements) from JS (quirks)
 * [ ] Optimizations
   * [x] `funcref` - first-class functions, currying, closures
     * [x] Closure representation: struct { funcref fn, ref env }
