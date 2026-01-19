@@ -1,15 +1,13 @@
 // String method implementations
-import { ctx, opts, gen, tv, asF64, asI32, PTR_TYPE } from '../compile.js'
+import { ctx, opts, gen } from '../compile.js'
+import { PTR_TYPE, tv, asF64, asI32 } from '../types.js'
+import { strCharAt, strLen } from '../gc.js'
 
 export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null
   ctx.usedStringType = true
-  if (opts.gc) {
-    return tv('i32', `(array.get_u $string ${rw} ${asI32(gen(args[0]))[1]})`)
-  }
-  ctx.usedMemory = true
-  const iw = asI32(gen(args[0]))[1]
-  return tv('i32', `(i32.load16_u (i32.add (call $__ptr_offset ${rw}) (i32.shl ${iw} (i32.const 1))))`)
+  if (!opts.gc) ctx.usedMemory = true
+  return tv('i32', strCharAt(opts.gc, rw, asI32(gen(args[0]))[1]))
 }
 
 export const slice = (rw, args) => {

@@ -49,11 +49,11 @@ import { compile, instantiate } from 'jz'
 // Compile to WASM binary (default, uses GC)
 const wasm = compile('1 + 2')
 
-// Compile to different formats
-compile('1 + 2', { format: 'wasm' })      // WASM with GC (default)
-compile('1 + 2', { format: 'wasm-mvp' })  // WASM without GC (portable)
-compile('1 + 2', { format: 'wat' })       // WAT text with GC
-compile('1 + 2', { format: 'wat-mvp' })   // WAT text without GC
+// Options
+compile('1 + 2')                    // wasm binary, gc (default)
+compile('1 + 2', { gc: false })     // wasm binary, linear memory
+compile('1 + 2', { text: true })    // wat text, gc
+compile('1 + 2', { gc: false, text: true })  // wat text, linear
 
 // Instantiate and run
 const instance = await instantiate(wasm)
@@ -65,21 +65,19 @@ const wasmInstance = await WebAssembly.instantiate(module)
 console.log(wasmInstance.exports.main()) // 3
 ```
 
-### Formats
+### Options
 
-| Format | Description |
-|--------|-------------|
-| `wasm` | Modern WASM with GC — Chrome 119+, Firefox 120+ |
-| `wasm-mvp` | WASM MVP — works everywhere |
-| `wat` | WAT text with GC |
-| `wat-mvp` | WAT text without GC |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `gc` | `true` | Use WASM GC (Chrome 119+, Firefox 120+) |
+| `text` | `false` | Output WAT text instead of WASM binary |
 
-**wasm** (default) — WASM GC mode:
+**gc: true** (default) — GC mode:
 - Uses `struct`, `array`, `anyref`, `funcref` for JS-native types
 - Direct export to JavaScript — no decoding needed
 - Best for general use, prototyping, JS interop
 
-**wasm-mvp** — Linear memory mode:
+**gc: false** — Linear memory mode:
 - Uses `memory`, `i32.load/store`, `call_indirect` for manual management
 - Numeric pipelines: primitives in/out, arrays stay internal
 - Faster, deterministic, works on all WASM runtimes
@@ -100,7 +98,7 @@ jz compile program.jz -o program.wasm
 # Creates: program.wasm
 
 # Compile to WAT source text
-jz compile program.jz --format wat -o program.wat
+jz compile program.jz --text --gc -o program.wat
 # Creates: program.wat (copy with stdlib)
 
 # Run WAT files directly
