@@ -36,12 +36,12 @@
   * [ ] Remove var, function
 * [x] if/else, break/continue
 * [x] typeof, void
+* [x] switch statement
 * [x] array methods (filter, find, findIndex, indexOf, includes, every, some, slice, reverse)
 * [x] string ops (slice, indexOf)
 * [x] template literals (basic)
 * [ ] full closures (nested function variable capture)
 * [ ] destructuring func params, rest/spread
-* [ ] switch statement (not supported by jessie parser)
 * [ ] early return (requires function-level return handling)
 * [ ] metacircularity
 * [ ] test262
