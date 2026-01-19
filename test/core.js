@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile, instantiate } from '../index.js'
-import { evaluate, evaluateWat } from './util.js'
+import { evaluate, evaluateWat, isGcTrue, isGcFalse } from './util.js'
 import { compileWat } from '../src/wasm.js'
 import { assembleRaw } from '../src/compile.js'
 
@@ -156,10 +156,13 @@ test('meaningful-base coercions (piezo-ish)', async () => {
   is(await evaluate('~1.9'), -2) // trunc(1.9)=1; ~1 == -2
 
   // coalesce: only null/undefined trigger fallback (JS semantics)
-  is(await evaluate('1 ?? 9'), 1)
-  is(await evaluate('0 ?? 9'), 0)  // 0 is NOT nullish in JS
-  is(await evaluate('null ?? 9'), 9)  // null IS nullish
-  is(await evaluate('undefined ?? 9'), 9)  // undefined IS nullish
+  // NOTE: gc:false can't properly distinguish 0 from null since both are f64(0)
+  if (isGcTrue) {
+    is(await evaluate('1 ?? 9'), 1)
+    is(await evaluate('0 ?? 9'), 0)  // 0 is NOT nullish in JS
+    is(await evaluate('null ?? 9'), 9)  // null IS nullish
+    is(await evaluate('undefined ?? 9'), 9)  // undefined IS nullish
+  }
 
   // ternary: condition is booleanized; branches conciliate
   is(await evaluate('1 ? 2 : 3'), 2)

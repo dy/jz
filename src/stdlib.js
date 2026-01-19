@@ -362,6 +362,19 @@ export const FUNCTIONS = {
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $loop)))
     (local.get $arr))`,
+
+  // Memory-based arrayFill for gc:false mode
+  arrayFillMem: `(func $arrayFillMem (param $arr f64) (param $val f64) (result f64)
+    (local $i i32) (local $len i32)
+    (local.set $len (call $__ptr_len (local.get $arr)))
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+        (f64.store (i32.add (call $__ptr_offset (local.get $arr)) (i32.shl (local.get $i) (i32.const 3))) (local.get $val))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+    (local.get $arr))`,
 }
 
 // Dependencies - which functions call which other functions

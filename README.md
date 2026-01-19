@@ -7,41 +7,15 @@ Tiny _JavaScript to WASM compiler_, supporting modern minimal functional JS subs
 ```js
 import jz from 'jz'
 
-// Define and export functions
-const { add, mul } = await jz.instantiate(jz.compile(`
-  add = (a, b) => a + b,
-  mul = (x, y) => x * y
-`))
+const { add, mul } = await jz`
+  export const add = (a, b) => a + b;
+  export const mul = (x, y) => x * y;
+`
 
 add(2, 3)  // 5
 mul(4, 5)  // 20
 ```
 
-### Audio Synthesis
-
-```js
-const { synth } = await jz.instantiate(jz.compile(`
-  osc = (t, freq) => sin(t * freq * PI * 2),
-  env = (t, attack, decay) => t < attack ? t / attack : exp(-(t - attack) / decay),
-  synth = (t, freq, attack, decay) => osc(t, freq) * env(t, attack, decay)
-`))
-
-synth(0.1, 440, 0.01, 0.5)  // -0.000... (decaying sine)
-```
-
-### Math Utilities
-
-```js
-const { dist, lerp, clamp } = await jz.instantiate(jz.compile(`
-  dist = (x, y) => Math.sqrt(x*x + y*y),
-  lerp = (a, b, t) => a + (b - a) * t,
-  clamp = (x, lo, hi) => min(max(x, lo), hi)
-`))
-
-dist(3, 4)        // 5
-lerp(0, 100, 0.5) // 50
-clamp(150, 0, 100) // 100
-```
 
 ## Reference
 
@@ -69,9 +43,12 @@ Imported: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, 
 
 ### Planned
 
-* Control Flow: `if (a) {...} else {...}`, `for`, `while`
+* Declarations: `let`, `const`, block scope
+* Strict equality: `===`, `!==`
 * Closures: capture outer variables
-* Template literals: `` `template ${literals}` ``
+* Rest/spread: `...args`, `[...arr]`
+* Destructuring params: `({ x }) => x`
+* More array/string methods
 
 
 ## API

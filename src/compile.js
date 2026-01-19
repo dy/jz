@@ -1,40 +1,7 @@
 // AST to WAT compilation
 import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
-
-// Pointer type encoding for gc:false mode
-// Encoding: [type:4][length:28][offset:32] packed into i64, reinterpreted as f64
-const PTR_TYPE = { F64_ARRAY: 0, I32_ARRAY: 1, STRING: 2, I8_ARRAY: 3, OBJECT: 4 }
-const PTR_ELEM_SIZE = { 0: 8, 1: 4, 2: 2, 3: 1, 4: 8 }  // bytes per element
-
-// Typed value: [type, wat, schema?] - schema for objects to track property layout
-const tv = (t, wat, schema) => [t, wat, schema]
-
-// Type coercions
-const asF64 = ([t, w]) =>
-  t === 'f64' ? [t, w] :
-  t === 'ref' || t === 'object' ? ['f64', '(f64.const 0)'] :
-  ['f64', `(f64.convert_i32_s ${w})`]
-
-const asI32 = ([t, w]) =>
-  t === 'i32' ? [t, w] :
-  t === 'ref' || t === 'object' ? ['i32', '(i32.const 0)'] :
-  ['i32', `(i32.trunc_f64_s ${w})`]
-
-const truthy = ([t, w]) =>
-  t === 'ref' ? ['i32', `(i32.eqz (ref.is_null ${w}))`] :
-  t === 'i32' ? ['i32', `(i32.ne ${w} (i32.const 0))`] :
-  ['i32', `(f64.ne ${w} (f64.const 0))`]
-
-const conciliate = (a, b) =>
-  a[0] === 'i32' && b[0] === 'i32' ? [a, b] : [asF64(a), asF64(b)]
-
-// Number formatting for WAT
-const fmtNum = n =>
-  Object.is(n, -0) ? '-0' :
-  Number.isNaN(n) ? 'nan' :
-  n === Infinity ? 'inf' :
-  n === -Infinity ? '-inf' :
-  String(n)
+import { ctx, opts, initState, setCtx, tv, asF64, asI32, truthy, conciliate, fmtNum, PTR_TYPE, extractParams } from './compile/state.js'
+import { arrayMethods, stringMethods } from './compile/methods/index.js'
 
 // WAT binary ops generators
 const binOp = (resType, argType, op) => (a, b) => {
@@ -73,34 +40,62 @@ const MATH_OPS = {
 }
 const GLOBAL_CONSTANTS = { Infinity: Infinity, NaN: NaN }
 
-// Codegen context
-let ctx = null
-
-// Compile options
-let opts = { gc: true }
-
 const createContext = () => ({
   locals: new Map(), localDecls: [], globals: new Map(),
-  usedStdlib: new Set(), usedArrayType: false, usedStringType: false, usedMemory: false,
+  usedStdlib: new Set(), usedArrayType: false, usedStringType: false, usedRefArrayType: false, usedMemory: false,
   localCounter: 0, loopCounter: 0, functions: new Map(), inFunction: false,
   strings: new Map(), stringData: [], stringCounter: 0,
+  staticArrays: new Map(), arrayDataOffset: 0,
   objectCounter: 0, objectSchemas: new Map(), localSchemas: new Map(),
   // Memory allocation tracking for gc:false mode
   staticAllocs: [], staticOffset: 0,
+  // Scope tracking for let/const block scoping
+  scopeDepth: 0, scopes: [new Set()], constVars: new Set(),
 
-  addLocal(name, type = 'f64', schema) {
-    if (!this.locals.has(name)) {
-      this.locals.set(name, { idx: this.localCounter++, type })
+  // Add a local variable (for internal compiler temps and declared vars)
+  // If scopedName is provided, use it directly; otherwise apply scoping rules
+  addLocal(name, type = 'f64', schema, scopedName = null) {
+    // Use provided scoped name, or compute it
+    const finalName = scopedName || name
+    if (!this.locals.has(finalName)) {
+      this.locals.set(finalName, { idx: this.localCounter++, type, originalName: name })
       // In gc:false mode, arrays/objects are f64 (encoded pointers)
       const wasmType = opts.gc
         ? (type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)' : type === 'string' ? '(ref null $string)' : type)
         : (type === 'array' || type === 'ref' || type === 'object' || type === 'string' ? 'f64' : type)
-      this.localDecls.push(`(local $${name} ${wasmType})`)
+      this.localDecls.push(`(local $${finalName} ${wasmType})`)
     }
-    if (schema !== undefined) this.localSchemas.set(name, schema)
-    return this.locals.get(name)
+    if (schema !== undefined) this.localSchemas.set(finalName, schema)
+    return { ...this.locals.get(finalName), scopedName: finalName }
   },
-  getLocal(name) { return this.locals.get(name) },
+  getLocal(name) {
+    // Internal variables don't have scope
+    if (name.startsWith('_')) {
+      return this.locals.has(name) ? { ...this.locals.get(name), scopedName: name } : null
+    }
+    // Search from innermost scope outward
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const scopedName = i > 0 ? `${name}_s${i}` : name
+      if (this.locals.has(scopedName)) return { ...this.locals.get(scopedName), scopedName }
+    }
+    // Fallback: check unscoped name
+    if (this.locals.has(name)) return { ...this.locals.get(name), scopedName: name }
+    return null
+  },
+  pushScope() {
+    this.scopeDepth++
+    this.scopes.push(new Set())
+  },
+  popScope() {
+    this.scopes.pop()
+    this.scopeDepth--
+  },
+  declareVar(name, isConst = false) {
+    const scopedName = this.scopeDepth > 0 ? `${name}_s${this.scopeDepth}` : name
+    this.scopes[this.scopes.length - 1].add(name)
+    if (isConst) this.constVars.add(scopedName)
+    return scopedName
+  },
   addGlobal(name, type = 'f64', init = '(f64.const 0)') {
     if (!this.globals.has(name)) this.globals.set(name, { type, init })
     return this.globals.get(name)
@@ -128,9 +123,11 @@ const createContext = () => ({
 
 // Public API
 export function compile(ast, options = {}) {
-  opts = { gc: true, ...options }
-  ctx = createContext()
-  ctx.locals.set('t', { type: 'f64', idx: ctx.locals.size })
+  const newOpts = { gc: true, ...options }
+  const newCtx = createContext()
+  newCtx.locals.set('t', { type: 'f64', idx: newCtx.locals.size })
+  // Initialize shared state for method modules
+  initState(newCtx, newOpts, gen)
   const [, bodyWat] = asF64(gen(ast))
   return assemble(bodyWat, ctx, generateFunctions())
 }
@@ -139,8 +136,43 @@ export function assembleRaw(bodyWat) {
   return assemble(bodyWat, {
     usedArrayType: false, usedStringType: false, usedMemory: false, usedStdlib: new Set(),
     localDecls: [], functions: new Map(), globals: new Map(), strings: new Map(), stringData: [],
-    staticAllocs: [], staticOffset: 0
+    staticArrays: new Map(), arrayDataOffset: 0
   })
+}
+
+// Check if an AST node is a constant expression (can be computed at compile time)
+function isConstant(ast) {
+  if (ast == null) return true
+  if (Array.isArray(ast) && ast[0] === undefined) return typeof ast[1] === 'number'
+  if (typeof ast === 'string') return /^(true|false|null|undefined|Infinity|-Infinity|NaN)$/.test(ast) || !isNaN(Number(ast))
+  if (!Array.isArray(ast)) return false
+  const [op] = ast
+  // Only certain operations are safe to evaluate at compile time
+  if (op === '+' || op === '-' || op === '*' || op === '/' || op === '%') {
+    return ast.slice(1).every(isConstant)
+  }
+  return false
+}
+
+// Evaluate a constant expression at compile time
+function evalConstant(ast) {
+  if (ast == null) return 0
+  if (Array.isArray(ast) && ast[0] === undefined) return ast[1]
+  if (typeof ast === 'string') {
+    const val = parseFloat(ast)
+    return isNaN(val) ? (ast === 'true' ? 1 : 0) : val
+  }
+  if (!Array.isArray(ast)) return 0
+  const [op, ...args] = ast
+  const vals = args.map(evalConstant)
+  switch (op) {
+    case '+': return vals[0] + vals[1]
+    case '-': return vals.length === 1 ? -vals[0] : vals[0] - vals[1]
+    case '*': return vals.reduce((a, b) => a * b, 1)
+    case '/': return vals[0] / vals[1]
+    case '%': return vals[0] % vals[1]
+    default: return 0
+  }
 }
 
 // Core generator
@@ -185,17 +217,29 @@ function genIdent(name) {
   if (name === 'false') return tv('i32', '(i32.const 0)')
   if (name in GLOBAL_CONSTANTS) return tv('f64', `(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`)
   const loc = ctx.getLocal(name)
-  if (loc) return tv(loc.type, `(local.get $${name})`, ctx.localSchemas.get(name))
+  if (loc) return tv(loc.type, `(local.get $${loc.scopedName})`, ctx.localSchemas.get(loc.scopedName))
   const glob = ctx.getGlobal(name)
   if (glob) return tv(glob.type, `(global.get $${name})`)
   throw new Error(`Unknown identifier: ${name}`)
 }
 
-// Function call resolution
 function resolveCall(namespace, name, args, receiver = null) {
   // Method calls
   if (receiver !== null) {
     const [rt, rw] = receiver
+
+    // Dispatch to method modules (gradually migrating)
+    const isArrayType = rt === 'array' || (!opts.gc && rt === 'f64')
+    if (isArrayType && arrayMethods[name]) {
+      const result = arrayMethods[name](rw, args)
+      if (result) return result
+    }
+    if (rt === 'string' && stringMethods[name]) {
+      const result = stringMethods[name](rw, args)
+      if (result) return result
+    }
+
+    // Legacy inline implementations (being removed)
     if (rt === 'string' && name === 'charCodeAt' && args.length === 1) {
       ctx.usedStringType = true
       if (opts.gc) {
@@ -206,7 +250,8 @@ function resolveCall(namespace, name, args, receiver = null) {
         return tv('i32', `(i32.load16_u (i32.add (call $__ptr_offset ${rw}) (i32.shl ${iw} (i32.const 1))))`)
       }
     }
-    if (rt === 'array') {
+    // Array methods: rt is 'array' in gc:true, but 'f64' (pointer) in gc:false
+    if (isArrayType) {
       if (name === 'fill' && args.length >= 1) {
         ctx.usedArrayType = true
         if (opts.gc) {
@@ -215,7 +260,7 @@ function resolveCall(namespace, name, args, receiver = null) {
         } else {
           ctx.usedMemory = true
           ctx.usedStdlib.add('arrayFillMem')
-          return tv('array', `(call $arrayFillMem ${rw} ${asF64(gen(args[0]))[1]})`)
+          return tv('f64', `(call $arrayFillMem ${rw} ${asF64(gen(args[0]))[1]})`)
         }
       }
       if (name === 'map' && args.length === 1) {
@@ -226,8 +271,13 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_map_arr_${id}`, result = `$_map_result_${id}`, idx = `$_map_i_${id}`, len = `$_map_len_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
-        ctx.addLocal(result.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+          ctx.addLocal(result.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+          ctx.addLocal(result.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(paramName, 'f64')
@@ -245,7 +295,7 @@ function resolveCall(namespace, name, args, receiver = null) {
     (local.get ${result})`)
         } else {
           ctx.usedMemory = true
-          return tv('array', `(local.set ${arr} ${rw})
+          return tv('f64', `(local.set ${arr} ${rw})
     (local.set ${len} (call $__ptr_len (local.get ${arr})))
     (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (local.get ${len})))
     (local.set ${idx} (i32.const 0))
@@ -267,7 +317,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const accName = paramNames[0] || '_acc', curName = paramNames[1] || '_cur'
         const id = ctx.loopCounter++
         const arr = `$_reduce_arr_${id}`, acc = `$_reduce_acc_${id}`, idx = `$_reduce_i_${id}`, len = `$_reduce_len_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(acc.slice(1), 'f64')
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
@@ -315,8 +369,13 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_filter_arr_${id}`, result = `$_filter_result_${id}`, idx = `$_filter_i_${id}`, len = `$_filter_len_${id}`, outIdx = `$_filter_out_${id}`, val = `$_filter_val_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
-        ctx.addLocal(result.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+          ctx.addLocal(result.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+          ctx.addLocal(result.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(outIdx.slice(1), 'i32')
@@ -341,7 +400,7 @@ function resolveCall(namespace, name, args, receiver = null) {
     (local.get ${result})`)
         } else {
           ctx.usedMemory = true
-          return tv('array', `(local.set ${arr} ${rw})
+          return tv('f64', `(local.set ${arr} ${rw})
     (local.set ${len} (call $__ptr_len (local.get ${arr})))
     (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (local.get ${len})))
     (local.set ${idx} (i32.const 0))
@@ -368,7 +427,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_find_arr_${id}`, idx = `$_find_i_${id}`, len = `$_find_len_${id}`, val = `$_find_val_${id}`, found = `$_find_found_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(val.slice(1), 'f64')
@@ -418,7 +481,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_findi_arr_${id}`, idx = `$_findi_i_${id}`, len = `$_findi_len_${id}`, result = `$_findi_result_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(result.slice(1), 'i32')
@@ -461,7 +528,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         ctx.usedArrayType = true
         const id = ctx.loopCounter++
         const arr = `$_indexof_arr_${id}`, idx = `$_indexof_i_${id}`, len = `$_indexof_len_${id}`, result = `$_indexof_result_${id}`, target = `$_indexof_target_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(result.slice(1), 'i32')
@@ -505,7 +576,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         ctx.usedArrayType = true
         const id = ctx.loopCounter++
         const arr = `$_includes_arr_${id}`, idx = `$_includes_i_${id}`, len = `$_includes_len_${id}`, result = `$_includes_result_${id}`, target = `$_includes_target_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(result.slice(1), 'i32')
@@ -552,7 +627,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_every_arr_${id}`, idx = `$_every_i_${id}`, len = `$_every_len_${id}`, result = `$_every_result_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(result.slice(1), 'i32')
@@ -599,7 +678,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_some_arr_${id}`, idx = `$_some_i_${id}`, len = `$_some_len_${id}`, result = `$_some_result_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(result.slice(1), 'i32')
@@ -642,10 +725,18 @@ function resolveCall(namespace, name, args, receiver = null) {
         ctx.usedArrayType = true
         const id = ctx.loopCounter++
         const arr = `$_slice_arr_${id}`, idx = `$_slice_i_${id}`, len = `$_slice_len_${id}`, result = `$_slice_result_${id}`, start = `$_slice_start_${id}`, end = `$_slice_end_${id}`, newLen = `$_slice_newlen_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
-        ctx.addLocal(result.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(result.slice(1), 'array')
+        } else {
+          ctx.addLocal(result.slice(1), 'f64')
+        }
         ctx.addLocal(start.slice(1), 'i32')
         ctx.addLocal(end.slice(1), 'i32')
         ctx.addLocal(newLen.slice(1), 'i32')
@@ -678,7 +769,7 @@ function resolveCall(namespace, name, args, receiver = null) {
         } else {
           ctx.usedMemory = true
           const endArg = args.length >= 2 ? asI32(gen(args[1]))[1] : `(call $__ptr_len (local.get ${arr}))`
-          return tv('array', `(local.set ${arr} ${rw})
+          return tv('f64', `(local.set ${arr} ${rw})
     (local.set ${len} (call $__ptr_len (local.get ${arr})))
     (local.set ${start} ${startArg})
     (local.set ${end} ${endArg})
@@ -708,7 +799,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         ctx.usedArrayType = true
         const id = ctx.loopCounter++
         const arr = `$_rev_arr_${id}`, idx = `$_rev_i_${id}`, len = `$_rev_len_${id}`, tmp = `$_rev_tmp_${id}`, j = `$_rev_j_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(tmp.slice(1), 'f64')
@@ -728,7 +823,7 @@ function resolveCall(namespace, name, args, receiver = null) {
     (local.get ${arr})`)
         } else {
           ctx.usedMemory = true
-          return tv('array', `(local.set ${arr} ${rw})
+          return tv('f64', `(local.set ${arr} ${rw})
     (local.set ${len} (call $__ptr_len (local.get ${arr})))
     (local.set ${idx} (i32.const 0))
     (block $done_${id} (loop $loop_${id}
@@ -794,7 +889,11 @@ function resolveCall(namespace, name, args, receiver = null) {
         const paramName = extractParams(params)[0] || '_v'
         const id = ctx.loopCounter++
         const arr = `$_foreach_arr_${id}`, idx = `$_foreach_i_${id}`, len = `$_foreach_len_${id}`
-        ctx.addLocal(arr.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr.slice(1), 'f64')
+        }
         ctx.addLocal(idx.slice(1), 'i32')
         ctx.addLocal(len.slice(1), 'i32')
         ctx.addLocal(paramName, 'f64')
@@ -829,14 +928,20 @@ function resolveCall(namespace, name, args, receiver = null) {
         const id = ctx.loopCounter++
         const arr1 = `$_concat_arr1_${id}`, arr2 = `$_concat_arr2_${id}`, result = `$_concat_result_${id}`
         const len1 = `$_concat_len1_${id}`, len2 = `$_concat_len2_${id}`, idx = `$_concat_i_${id}`, totalLen = `$_concat_total_${id}`
-        ctx.addLocal(arr1.slice(1), 'array')
-        ctx.addLocal(arr2.slice(1), 'array')
-        ctx.addLocal(result.slice(1), 'array')
+        if (opts.gc) {
+          ctx.addLocal(arr1.slice(1), 'array')
+          ctx.addLocal(arr2.slice(1), 'array')
+          ctx.addLocal(result.slice(1), 'array')
+        } else {
+          ctx.addLocal(arr1.slice(1), 'f64')
+          ctx.addLocal(arr2.slice(1), 'f64')
+          ctx.addLocal(result.slice(1), 'f64')
+        }
         ctx.addLocal(len1.slice(1), 'i32')
         ctx.addLocal(len2.slice(1), 'i32')
         ctx.addLocal(totalLen.slice(1), 'i32')
         ctx.addLocal(idx.slice(1), 'i32')
-        
+
         const arg2 = gen(args[0])
         if (opts.gc) {
           return tv('array', `(local.set ${arr1} ${rw})
@@ -1345,7 +1450,7 @@ function resolveCall(namespace, name, args, receiver = null) {
           return tv('array', `(array.new $f64array (f64.const 0) (i32.const 0))`)
         } else {
           ctx.usedMemory = true
-          return tv('array', `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0))`)
+          return tv('f64', `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0))`)
         }
       }
       // String.replace - simplified to replace single char
@@ -1411,7 +1516,7 @@ function resolveCall(namespace, name, args, receiver = null) {
         return tv('array', `(array.new $f64array (f64.const 0) ${asI32(gen(args[0]))[1]})`)
       } else {
         ctx.usedMemory = true
-        return tv('array', `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${asI32(gen(args[0]))[1]})`)
+        return tv('f64', `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${asI32(gen(args[0]))[1]})`)
       }
     }
     if (name === 'parseInt') {
@@ -1465,24 +1570,67 @@ const operators = {
 
   '['(elements) {
     ctx.usedArrayType = true
-    const vals = elements.map(e => asF64(gen(e))[1])
+    const gens = elements.map(e => gen(e))
+    const elementTypes = gens.map(g => g[0])
+    const hasNestedTypes = elementTypes.some(t => t === 'array' || t === 'object' || t === 'string')
+
     if (opts.gc) {
+      // gc:true: convert everything to f64 (refs become placeholders)
+      const vals = gens.map(g => {
+        if (g[0] === 'array' || g[0] === 'string' || g[0] === 'object') {
+          return '(f64.const 0)'  // Can't store refs in f64 arrays
+        }
+        return asF64(g)[1]
+      })
       return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
     } else {
-      // gc:false - allocate on heap, return encoded pointer
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_arr_${id}`
-      ctx.addLocal(tmp.slice(1), 'f64')
-      // Build the stores as side effects, then return the pointer
-      let stores = ''
-      for (let i = 0; i < vals.length; i++) {
-        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+      // gc:false: all values are f64 (either normal floats or NaN-encoded pointers)
+      // Return as type 'f64' not 'array' since pointers are f64
+      const isStatic = elements.every(isConstant)
+      if (isStatic && !hasNestedTypes) {
+        // Static f64 array - store in data segment
+        ctx.usedMemory = true
+        const arrayId = ctx.staticArrays.size
+        const values = elements.map(evalConstant)
+        const offset = 4096 + (arrayId * 64)
+        ctx.staticArrays.set(arrayId, { offset, values })
+        return tv('f64', `(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, values.map(() => ({ type: 'f64' })))
+      } else if (hasNestedTypes) {
+        // Mixed-type array: store all values (numbers as f64, pointers as NaN-encoded)
+        // REF_ARRAY stores 8-byte slots, can hold both f64 values and pointer NaNs
+        ctx.usedMemory = true
+        const id = ctx.loopCounter++
+        const tmp = `$_arr_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        const elementSchema = []
+        for (let i = 0; i < gens.length; i++) {
+          const [type, w, schemaId] = gens[i]
+          // For nested arrays/objects, value is already a pointer (NaN-encoded)
+          // For scalars, convert to f64 but leave as normal IEEE 754 (not NaN)
+          const val = (type === 'array' || type === 'object' || type === 'string') ? w : asF64(gens[i])[1]
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${val})\n      `
+          if (type === 'object' && schemaId !== undefined) elementSchema.push({ type: 'object', id: schemaId })
+          else elementSchema.push({ type })
+        }
+        return tv('f64', `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (i32.const ${gens.length})))
+      ${stores}(local.get ${tmp}))`, elementSchema)
+      } else {
+        // Dynamic homogeneous f64 array
+        ctx.usedMemory = true
+        const id = ctx.loopCounter++
+        const tmp = `$_arr_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < gens.length; i++) {
+          const [, w] = asF64(gens[i])
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${w})\n      `
+        }
+        return tv('f64', `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${gens.length})))
+      ${stores}(local.get ${tmp}))`, gens.map(() => ({ type: 'f64' })))
       }
-      // Use block to sequence: alloc, stores, return pointer
-      return tv('array', `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${vals.length})))
-      ${stores}(local.get ${tmp}))`)
     }
   },
 
@@ -1525,6 +1673,21 @@ const operators = {
     } else {
       // gc:false - load from memory
       ctx.usedMemory = true
+      // If the array has a compile-time element schema and the index is a literal,
+      // propagate object schema for property access.
+      const schema = a[2]
+      let litIdx = null
+      if (isConstant(idx)) {
+        const v = evalConstant(idx)
+        // Ensure integer index
+        litIdx = Number.isFinite(v) ? (v | 0) : null
+      }
+      if (Array.isArray(schema) && litIdx !== null) {
+        const elem = schema[litIdx]
+        if (elem && elem.type === 'object' && elem.id !== undefined) {
+          return tv('object', `(f64.load (i32.add (call $__ptr_offset ${a[1]}) (i32.const ${litIdx * 8})))`, elem.id)
+        }
+      }
       if (a[0] === 'string') {
         return tv('i32', `(i32.load16_u (i32.add (call $__ptr_offset ${a[1]}) (i32.shl ${iw} (i32.const 1))))`)
       }
@@ -1548,16 +1711,22 @@ const operators = {
     if (obj === 'Math' && prop in MATH_OPS.constants)
       return tv('f64', `(f64.const ${fmtNum(MATH_OPS.constants[prop])})`)
     const o = gen(obj)
-    if (prop === 'length' && (o[0] === 'array' || o[0] === 'string')) {
-      if (opts.gc) {
-        if (o[0] === 'array') ctx.usedArrayType = true
-        else ctx.usedStringType = true
-        return tv('i32', `(array.len ${o[1]})`)
-      } else {
-        // gc:false - extract length from pointer encoding
+    // For length: gc:true arrays are type 'array', gc:false arrays are type 'f64' (pointers)
+    // Strings are type 'string' in gc:true but type 'f64' (pointers) in gc:false
+    if (prop === 'length') {
+      if (o[0] === 'array' || (o[0] === 'string' && opts.gc)) {
+        if (opts.gc) {
+          if (o[0] === 'array') ctx.usedArrayType = true
+          else ctx.usedStringType = true
+          return tv('i32', `(array.len ${o[1]})`)
+        }
+      } else if (o[0] === 'string' || o[0] === 'f64') {
+        // gc:false: either explicit string type or f64 pointer (could be string, array, or object)
+        // Try pointer extraction which works for all pointer types
         ctx.usedMemory = true
         return tv('i32', `(call $__ptr_len ${o[1]})`)
       }
+      throw new Error(`Cannot get length of ${o[0]}`)
     }
     if (o[0] === 'object' && o[2] !== undefined) {
       const schema = ctx.objectSchemas.get(o[2])
@@ -1579,13 +1748,18 @@ const operators = {
 
   '?.'([obj, prop]) {
     const o = gen(obj)
-    if ((o[0] === 'array' || o[0] === 'ref') && prop === 'length') {
+    if (prop === 'length') {
       if (opts.gc) {
-        ctx.usedArrayType = true
-        return tv('f64', `(if (result f64) (ref.is_null ${o[1]}) (then (f64.const 0)) (else (f64.convert_i32_s (array.len ${o[1]}))))`)
+        if (o[0] === 'array' || o[0] === 'ref') {
+          ctx.usedArrayType = true
+          return tv('f64', `(if (result f64) (ref.is_null ${o[1]}) (then (f64.const 0)) (else (f64.convert_i32_s (array.len ${o[1]}))))`)
+        }
       } else {
-        ctx.usedMemory = true
-        return tv('f64', `(if (result f64) (f64.eq ${o[1]} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o[1]}))))`)
+        // gc:false: arrays and strings are f64 pointers
+        if (o[0] === 'f64' || o[0] === 'string') {
+          ctx.usedMemory = true
+          return tv('f64', `(if (result f64) (f64.eq ${o[1]} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o[1]}))))`)
+        }
       }
     }
     return o
@@ -1642,9 +1816,80 @@ const operators = {
   '**'([a, b]) { ctx.usedStdlib.add('pow'); return ['f64', `(call $pow ${asF64(gen(a))[1]} ${asF64(gen(b))[1]})`] },
 
   // Comparisons
-  '=='([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.eq(va, vb) : f64.eq(va, vb) },
+  '=='([a, b]) {
+    // Special-case: typeof comparison with string literal
+    // typeof returns type code internally, compare with code directly
+    const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
+    const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
+    if (isTypeofA && isStringLiteralB) {
+      const s = b[1]
+      const code = s === 'undefined' ? 0 : s === 'number' ? 1 : s === 'string' ? 2 : s === 'boolean' ? 3 : s === 'object' ? 4 : s === 'function' ? 5 : null
+      if (code !== null) {
+        // Check for literal null/undefined first (before gen)
+        const typeofArg = a[1]
+        if (Array.isArray(typeofArg) && typeofArg[0] === undefined &&
+            (typeofArg[1] === null || typeofArg[1] === undefined)) {
+          // typeof null === "undefined" or typeof undefined === "undefined"
+          return tv('i32', `(i32.const ${code === 0 ? 1 : 0})`)
+        }
+        // Get type code without generating string
+        const val = gen(typeofArg)
+        let typeCode
+        if (!opts.gc && val[0] === 'f64') {
+          typeCode = `(select (i32.const 1) (i32.const 4) (f64.eq ${val[1]} ${val[1]}))`
+        } else if (val[0] === 'f64') typeCode = '(i32.const 1)'
+        else if (val[0] === 'i32') typeCode = '(i32.const 3)'
+        else if (val[0] === 'string') typeCode = '(i32.const 2)'
+        else if (val[0] === 'ref') typeCode = '(i32.const 0)'
+        else if (val[0] === 'array' || val[0] === 'object') typeCode = '(i32.const 4)'
+        else typeCode = '(i32.const 1)'
+        return tv('i32', `(i32.eq ${typeCode} (i32.const ${code}))`)
+      }
+    }
+    // Swap check: string literal on left
+    const isStringLiteralA = Array.isArray(a) && a[0] === undefined && typeof a[1] === 'string'
+    const isTypeofB = Array.isArray(b) && b[0] === 'typeof'
+    if (isStringLiteralA && isTypeofB) {
+      return operators['==']([b, a])  // Swap and recurse
+    }
+    const va = gen(a), vb = gen(b)
+    // String comparison: for interned strings, compare string IDs
+    if (va[0] === 'string' && vb[0] === 'string') {
+      // For now, string comparison returns false unless same literal
+      // TODO: implement proper string comparison
+      if (opts.gc) {
+        return tv('i32', `(ref.eq ${va[1]} ${vb[1]})`)
+      } else {
+        return tv('i32', `(i64.eq (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
+      }
+    }
+    return va[0] === 'i32' && vb[0] === 'i32' ? i32.eq(va, vb) : f64.eq(va, vb)
+  },
   '==='([a, b]) { return operators['==']([a, b]) },
-  '!='([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.ne(va, vb) : f64.ne(va, vb) },
+  '!='([a, b]) {
+    // Special-case typeof != string
+    const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
+    const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
+    if (isTypeofA && isStringLiteralB) {
+      const eq = operators['==']([a, b])
+      return tv('i32', `(i32.eqz ${eq[1]})`)
+    }
+    const isStringLiteralA = Array.isArray(a) && a[0] === undefined && typeof a[1] === 'string'
+    const isTypeofB = Array.isArray(b) && b[0] === 'typeof'
+    if (isStringLiteralA && isTypeofB) {
+      return operators['!=']([b, a])
+    }
+    const va = gen(a), vb = gen(b)
+    // String comparison
+    if (va[0] === 'string' && vb[0] === 'string') {
+      if (opts.gc) {
+        return tv('i32', `(i32.eqz (ref.eq ${va[1]} ${vb[1]}))`)
+      } else {
+        return tv('i32', `(i64.ne (i64.reinterpret_f64 ${va[1]}) (i64.reinterpret_f64 ${vb[1]}))`)
+      }
+    }
+    return va[0] === 'i32' && vb[0] === 'i32' ? i32.ne(va, vb) : f64.ne(va, vb)
+  },
   '!=='([a, b]) { return operators['!=']([a, b]) },
   '<'([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.lt_s(va, vb) : f64.lt(va, vb) },
   '<='([a, b]) { const va = gen(a), vb = gen(b); return va[0] === 'i32' && vb[0] === 'i32' ? i32.le_s(va, vb) : f64.le(va, vb) },
@@ -1673,8 +1918,21 @@ const operators = {
   // For loop
   'for'([init, cond, step, body]) {
     let code = ''
+    // For loop creates its own scope for let/const declarations
+    ctx.pushScope()
     if (init) {
       if (Array.isArray(init) && init[0] === '=') code += genLoopInit(init[1], init[2])
+      else if (Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')) {
+        // Handle let/const in for init - declare in loop scope
+        const [, assign] = init
+        const [, name, value] = assign
+        if (typeof name === 'string') {
+          const scopedName = ctx.declareVar(name, init[0] === 'const')
+          const val = gen(value)
+          ctx.addLocal(scopedName, val[0])
+          code += `(local.set $${scopedName} ${asF64(val)[1]})\n    `
+        }
+      }
       else code += `(drop ${gen(init)[1]})\n    `
     }
     const id = ctx.loopCounter++
@@ -1692,6 +1950,7 @@ const operators = {
       } else code += `(drop ${gen(step)[1]})\n      `
     }
     code += `(br $continue_${id})\n    ))\n    (local.get ${result})`
+    ctx.popScope()
     return tv('f64', code)
   },
 
@@ -1714,14 +1973,14 @@ const operators = {
     const discrim = `$_switch_discrim_${id}`
     ctx.addLocal(result.slice(1), 'f64')
     ctx.addLocal(discrim.slice(1), 'f64')
-    
+
     let code = `(local.set ${discrim} ${asF64(gen(discriminant))[1]})\n    `
     code += `(local.set ${result} (f64.const 0))\n    `
     code += `(block $break_${id}\n      `
-    
+
     // Store loop ID for break statements
     const switchId = id
-    
+
     // Process cases
     for (const caseNode of cases) {
       if (Array.isArray(caseNode) && caseNode[0] === 'case') {
@@ -1732,7 +1991,7 @@ const operators = {
         // Execute consequent - handle as statement sequence
         const saveId = ctx.loopCounter
         ctx.loopCounter = switchId + 1  // So break finds $break_{switchId}
-        
+
         // If consequent is a statement list (;), execute each statement
         if (Array.isArray(consequent) && consequent[0] === ';') {
           const stmts = consequent.slice(1).filter((s, i) => i === 0 || (s !== null && typeof s !== 'number'))
@@ -1750,7 +2009,7 @@ const operators = {
         } else {
           code += `(local.set ${result} ${asF64(gen(consequent))[1]})\n        `
         }
-        
+
         ctx.loopCounter = saveId  // Restore
         code += `)\n      `
       } else if (Array.isArray(caseNode) && caseNode[0] === 'default') {
@@ -1758,15 +2017,55 @@ const operators = {
         code += `(local.set ${result} ${asF64(gen(consequent))[1]})\n      `
       }
     }
-    
+
     code += `)\n    (local.get ${result})`
     return tv('f64', code)
   },
 
-  // Block
+  // Block with scope
   '{}'([body]) {
-    if (!Array.isArray(body) || body[0] !== ';') return gen(body)
-    return operators[';'](body.slice(1))
+    ctx.pushScope()
+    let result
+    if (!Array.isArray(body) || body[0] !== ';') {
+      result = gen(body)
+    } else {
+      result = operators[';'](body.slice(1))
+    }
+    ctx.popScope()
+    return result
+  },
+
+  // Declarations
+  'let'([assignment]) {
+    if (!Array.isArray(assignment) || assignment[0] !== '=') {
+      throw new Error('let requires assignment')
+    }
+    const [, name, value] = assignment
+    if (typeof name !== 'string') throw new Error('let requires simple identifier')
+    const scopedName = ctx.declareVar(name, false)
+    const val = gen(value)
+    ctx.addLocal(name, val[0], val[2], scopedName)
+    return tv(val[0], `(local.tee $${scopedName} ${val[1]})`, val[2])
+  },
+
+  'const'([assignment]) {
+    if (!Array.isArray(assignment) || assignment[0] !== '=') {
+      throw new Error('const requires assignment')
+    }
+    const [, name, value] = assignment
+    if (typeof name !== 'string') throw new Error('const requires simple identifier')
+    const scopedName = ctx.declareVar(name, true)
+    const val = gen(value)
+    ctx.addLocal(name, val[0], val[2], scopedName)
+    return tv(val[0], `(local.tee $${scopedName} ${val[1]})`, val[2])
+  },
+
+  'var'([name, value]) {
+    // var is function-scoped, use global scope (depth 0)
+    if (typeof name !== 'string') throw new Error('var requires simple identifier')
+    const val = gen(value)
+    ctx.addLocal(name, val[0], val[2], name)  // no scope prefix for var
+    return tv(val[0], `(local.tee $${name} ${val[1]})`, val[2])
   },
 
   // If statement
@@ -1797,17 +2096,39 @@ const operators = {
     return tv('f64', `(br $continue_${id}) (f64.const 0)`)
   },
 
-  // typeof and void
+  // typeof - returns string pointer for type name
   'typeof'([a]) {
-    // In WASM context, typeof returns type strings as encoded numbers
-    // 0: undefined, 1: number, 2: string, 3: boolean, 4: object, 5: function
+    ctx.usedStringType = true
     const val = gen(a)
-    if (val[0] === 'f64') return tv('i32', '(i32.const 1)')  // number
-    if (val[0] === 'i32') return tv('i32', '(i32.const 3)')  // boolean
-    if (val[0] === 'string') return tv('i32', '(i32.const 2)')  // string
-    if (val[0] === 'ref') return tv('i32', '(i32.const 0)')  // undefined (null ref)
-    if (val[0] === 'array' || val[0] === 'object') return tv('i32', '(i32.const 4)')  // object
-    return tv('i32', '(i32.const 1)')  // default to number
+    // Intern type name strings (they'll have stable IDs)
+    const typeStrings = {
+      undefined: ctx.internString('undefined'),
+      number: ctx.internString('number'),
+      string: ctx.internString('string'),
+      boolean: ctx.internString('boolean'),
+      object: ctx.internString('object'),
+      function: ctx.internString('function')
+    }
+    const mkStr = (name) => {
+      const { id, length } = typeStrings[name]
+      if (opts.gc) {
+        return `(array.new_data $string $str${id} (i32.const 0) (i32.const ${length}))`
+      } else {
+        ctx.usedMemory = true
+        return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`
+      }
+    }
+    if (!opts.gc && val[0] === 'f64') {
+      // gc:false: f64 can be number or NaN-encoded pointer
+      // NaN != NaN for pointers, number == number for regular floats
+      return tv('string', `(select ${mkStr('number')} ${mkStr('object')} (f64.eq ${val[1]} ${val[1]}))`)
+    }
+    if (val[0] === 'f64') return tv('string', mkStr('number'))
+    if (val[0] === 'i32') return tv('string', mkStr('boolean'))
+    if (val[0] === 'string') return tv('string', mkStr('string'))
+    if (val[0] === 'ref') return tv('string', mkStr('undefined'))
+    if (val[0] === 'array' || val[0] === 'object') return tv('string', mkStr('object'))
+    return tv('string', mkStr('number'))  // default
   },
 
   'void'([a]) {
@@ -1965,10 +2286,23 @@ function genAssign(target, value, returnValue) {
     const code = `(global.set $${target} ${asF64(val)[1]})`
     return returnValue ? tv(val[0], `${code} (global.get $${target})`) : code + '\n    '
   }
+  // Check if variable exists in scope
+  const existing = ctx.getLocal(target)
+  if (existing) {
+    // Check const
+    if (ctx.constVars.has(existing.scopedName)) {
+      throw new Error(`Assignment to constant variable: ${target}`)
+    }
+    return returnValue
+      ? tv(val[0], `(local.tee $${existing.scopedName} ${val[1]})`, val[2])
+      : `(local.set $${existing.scopedName} ${val[1]})\n    `
+  }
+  // New variable - add to current scope
   ctx.addLocal(target, val[0], val[2])
+  const loc = ctx.getLocal(target)
   return returnValue
-    ? tv(val[0], `(local.tee $${target} ${val[1]})`, val[2])
-    : `(local.set $${target} ${val[1]})\n    `
+    ? tv(val[0], `(local.tee $${loc.scopedName} ${val[1]})`, val[2])
+    : `(local.set $${loc.scopedName} ${val[1]})\n    `
 }
 
 function genLoopInit(target, value) {
@@ -1977,39 +2311,30 @@ function genLoopInit(target, value) {
   const glob = ctx.getGlobal(target)
   if (glob) return `(global.set $${target} ${asF64([t, w])[1]})\n    `
   const loc = ctx.getLocal(target)
-  if (loc) return `(local.set $${target} ${asF64([t, w])[1]})\n    `
+  if (loc) return `(local.set $${loc.scopedName} ${asF64([t, w])[1]})\n    `
   ctx.addLocal(target, t)
-  return `(local.set $${target} ${asF64([t, w])[1]})\n    `
-}
-
-function extractParams(rawParams) {
-  if (rawParams == null) return []
-  if (typeof rawParams === 'string') return [rawParams]
-  if (Array.isArray(rawParams)) {
-    if (rawParams[0] === '()' && rawParams.length === 2) return extractParams(rawParams[1])
-    if (rawParams[0] === ',') return rawParams.slice(1).flatMap(extractParams)
-  }
-  return []
+  const newLoc = ctx.getLocal(target)
+  return `(local.set $${newLoc.scopedName} ${asF64([t, w])[1]})\n    `
 }
 
 function generateFunction(name, params, bodyAst, parentCtx) {
-  const prevCtx = ctx
-  ctx = createContext()
-  ctx.usedStdlib = parentCtx.usedStdlib
-  ctx.usedArrayType = parentCtx.usedArrayType
-  ctx.usedStringType = parentCtx.usedStringType
-  ctx.functions = parentCtx.functions
-  ctx.globals = parentCtx.globals
-  ctx.inFunction = true
-  ctx.returnLabel = '$return_' + name
+  const newCtx = createContext()
+  newCtx.usedStdlib = parentCtx.usedStdlib
+  newCtx.usedArrayType = parentCtx.usedArrayType
+  newCtx.usedStringType = parentCtx.usedStringType
+  newCtx.functions = parentCtx.functions
+  newCtx.globals = parentCtx.globals
+  newCtx.inFunction = true
+  newCtx.returnLabel = '$return_' + name
 
+  const prevCtx = setCtx(newCtx)
   for (const p of params) ctx.locals.set(p, { idx: ctx.localCounter++, type: 'f64' })
   const [, bodyWat] = asF64(gen(bodyAst))
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
   // Wrap body in block to support early return
   const wat = `(func $${name} (export "${name}") ${paramDecls} (result f64)${localDecls}\n    (block ${ctx.returnLabel} (result f64)\n      ${bodyWat}\n    )\n  )`
-  ctx = prevCtx
+  setCtx(prevCtx)
   return wat
 }
 
@@ -2025,6 +2350,7 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   if (opts.gc) {
     if (ctx.usedArrayType) wat += '  (type $f64array (array (mut f64)))\n'
     if (ctx.usedStringType) wat += '  (type $string (array (mut i16)))\n'
+    if (ctx.usedRefArrayType) wat += '  (type $refarray (array (mut (ref null $f64array))))\n'  // Simplified: refs to f64arrays
   }
 
   // Memory (required for gc:false mode)
@@ -2048,52 +2374,85 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
     }
   }
 
+  // Static array data segments (gc:false mode)
+  if (!opts.gc && ctx.staticArrays.size > 0) {
+    for (const [, {offset, values}] of ctx.staticArrays) {
+      // Encode f64 values as 8 bytes each (little-endian IEEE 754)
+      let hex = ''
+      for (const val of values) {
+        const f64bytes = new Float64Array([val])
+        const bytes = new Uint8Array(f64bytes.buffer)
+        hex += Array.from(bytes).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
+      }
+      if (hex) wat += `  (data (i32.const ${offset}) "${hex}")\n`
+    }
+  }
+
   // Memory helper functions for gc:false mode
   if (ctx.usedMemory && !opts.gc) {
     wat += `
-  ;; Pointer encoding: [type:4][length:28][offset:32] in i64, reinterpreted as f64
-  ;; Allocate memory and return encoded pointer
+  ;; Pointer encoding: NaN-based with mantissa [type:4][length:28][offset:20]
+  ;; IEEE 754 f64: [sign:1][exponent:11][mantissa:52]
+  ;; We use NaN pattern (exponent=0x7FF) with mantissa=[type:4][length:28][offset:20]
+  ;; This makes pointers self-describing: numbers have exponent != 0x7FF
+  ;; Encoding: bits 51-48=type, bits 47-20=length, bits 19-0=offset
+
+  ;; Allocate memory and return NaN-encoded pointer
   (func $__alloc (param $type i32) (param $len i32) (result f64)
     (local $offset i32) (local $size i32)
-    ;; Calculate size based on type: 0=f64(8), 1=i32(4), 2=i16(2), 3=i8(1), 4=object(8)
+    ;; Calculate size based on type: 0=f64(8), 1=i32(4), 2=i16(2), 3=i8(1), 4=object(8), 5=refarray(8)
+    ;; Compute shift: 3 for types 0,4,5; 2 for type 1; 1 for type 2; 0 for type 3
     (local.set $size
       (i32.shl (local.get $len)
-        (select (select (select
-          (i32.const 3)  ;; f64/object: *8
-          (i32.const 2)  ;; i32: *4
-          (i32.lt_u (local.get $type) (i32.const 2)))
-          (i32.const 1)  ;; i16: *2
-          (i32.lt_u (local.get $type) (i32.const 3)))
-          (i32.const 0)  ;; i8: *1
-          (i32.lt_u (local.get $type) (i32.const 4)))))
+        (select (i32.const 3)
+          (select (i32.const 2)
+            (select (i32.const 1) (i32.const 0) (i32.eq (local.get $type) (i32.const 2)))
+            (i32.eq (local.get $type) (i32.const 1)))
+          (i32.or (i32.eq (local.get $type) (i32.const 0)) (i32.ge_u (local.get $type) (i32.const 4))))))
     ;; 8-byte align the size
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
     (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
     (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
 
-  ;; Create encoded pointer from type, length, offset
+  ;; Create NaN-encoded pointer
+  ;; Mantissa layout: [type:4 bits][length:28 bits][offset:20 bits]
+  ;; Bits 51-48=type, bits 47-20=length, bits 19-0=offset
   (func $__mkptr (param $type i32) (param $len i32) (param $offset i32) (result f64)
     (f64.reinterpret_i64
       (i64.or
+        (i64.const 0x7FF0000000000000)  ;; NaN exponent bits 52-62
         (i64.or
-          (i64.shl (i64.extend_i32_u (local.get $type)) (i64.const 60))
-          (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 32)))
-        (i64.extend_i32_u (local.get $offset)))))
+          (i64.or
+            (i64.shl (i64.extend_i32_u (i32.and (local.get $type) (i32.const 0x0F))) (i64.const 48))
+            (i64.shl (i64.extend_i32_u (i32.and (local.get $len) (i32.const 0x0FFFFFFF))) (i64.const 20)))
+          (i64.extend_i32_u (i32.and (local.get $offset) (i32.const 0x0FFFFF)))))))
 
-  ;; Extract offset from encoded pointer
+  ;; Check if f64 value is a pointer (is NaN with our encoding)
+  (func $__is_pointer (param $val f64) (result i32)
+    (i32.eq
+      (i32.and
+        (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $val)) (i64.const 52)))
+        (i32.const 0x7FF))
+      (i32.const 0x7FF)))
+
+  ;; Extract offset from pointer (bits 0-19)
   (func $__ptr_offset (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr))))
+    (i32.and
+      (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr)))
+      (i32.const 0x0FFFFF)))
 
-  ;; Extract length from encoded pointer
+  ;; Extract length from pointer (bits 20-47)
   (func $__ptr_len (param $ptr f64) (result i32)
     (i32.and
-      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 32)))
+      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 20)))
       (i32.const 0x0FFFFFFF)))
 
-  ;; Extract type from encoded pointer
+  ;; Extract type from pointer (bits 48-51)
   (func $__ptr_type (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 60))))
+    (i32.and
+      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 48)))
+      (i32.const 0x0F)))
 `
   }
 
