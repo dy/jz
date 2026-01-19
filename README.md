@@ -146,7 +146,7 @@ for (let t = 0; t < 8000; t++) {
 ## Why?
 
 JS grew complex with legacy (`var`, OOP) and niche features (generators, async).
-JZ is minimal modern subset that maps directly to WebAssembly.
+JZ is minimal modern subset that maps to WebAssembly.
 
 * No classes/prototypes – use functions & closures.
 * No old syntax – modern ES6+ only.

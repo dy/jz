@@ -54,7 +54,12 @@ export function assemble(bodyWat, ctx = {
     }
     // Closure environment struct types
     for (const env of ctx.closureEnvTypes) {
-      const fields = env.fields.map(f => `(field $${f} (mut f64))`).join(' ')
+      const fields = env.fields.map(f => {
+        // Use anyref for reference types (array, object, string, refarray, closure)
+        const isRef = f.type && (f.type === 'array' || f.type === 'object' || f.type === 'string' || f.type === 'refarray' || f.type === 'closure')
+        const fieldType = isRef ? 'anyref' : '(mut f64)'
+        return `(field $${f.name} ${fieldType})`
+      }).join(' ')
       wat += `  (type $env${env.id} (struct ${fields}))\n`
     }
     // Declare functions referenced via ref.func

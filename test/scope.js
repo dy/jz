@@ -76,3 +76,22 @@ test('let in for loop', async () => {
 test('const in block', async () => {
   is(await evaluate('let sum = 0; for (let i = 0; i < 2; i += 1) { const x = 10; sum += x }; sum'), 20)
 })
+
+// Closure captures
+test('closure - capture number', async () => {
+  is(await evaluate('x = 5; f = () => x; f()'), 5)
+  is(await evaluate('x = 1; y = 2; f = () => x + y; f()'), 3)
+})
+
+test('closure - capture array', async () => {
+  is(await evaluate('arr = [1, 2, 3]; sum = () => arr[0] + arr[1] + arr[2]; sum()'), 6)
+  is(await evaluate('arr = [10, 20]; f = () => arr[0]; f()'), 10)
+})
+
+test('closure - capture multiple arrays', async () => {
+  is(await evaluate('a = [1, 2]; b = [10, 20]; sum = () => a[0] + b[1]; sum()'), 21)
+})
+
+test('closure - mutate captured array', async () => {
+  is(await evaluate('arr = [1, 2, 3]; modify = () => (arr[0] = 100, arr[0]); modify()'), 100)
+})

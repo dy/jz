@@ -68,7 +68,7 @@
     * [x] closure mutation - inner function can modify outer vars, outer sees changes
     * [x] shared environment - multiple closures share same captured vars
     * [x] first-class functions (currying) - return closure, call it later (funcref/call_indirect)
-    * [ ] capture array/objects in gc:true mode (needs anyref env fields)
+    * [x] capture array/objects in gc:true mode (needs anyref env fields)
   * [ ]  Rest/Spread & Destructuring
     * [ ] rest params `(...args) => args.length`
     * [ ] spread in arrays `[...arr, x]`
