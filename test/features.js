@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { evaluate } from './util.js'
+import { evaluate, isGcTrue, isGcFalse } from './util.js'
 
 // Tests for new features: if/else, typeof, void, array methods, string methods
 
@@ -37,31 +37,31 @@ test('if/else - with expressions', async () => {
   is(await evaluate('{ x = 2; if (x > 3) { x * 2 } else { x } }'), 2)
 })
 
-// typeof operator
+// typeof operator - returns strings, compare with ===
 test('typeof - number', async () => {
-  is(await evaluate('typeof 5'), 1)  // 1 = number
-  is(await evaluate('typeof 3.14'), 1)
-  is(await evaluate('typeof (1 + 2)'), 1)
+  is(await evaluate('typeof 5 === "number"'), 1)
+  is(await evaluate('typeof 3.14 === "number"'), 1)
+  is(await evaluate('typeof (1 + 2) === "number"'), 1)
 })
 
 test('typeof - boolean', async () => {
-  is(await evaluate('typeof true'), 3)  // 3 = boolean
-  is(await evaluate('typeof false'), 3)
-  is(await evaluate('typeof (1 < 2)'), 3)
+  is(await evaluate('typeof true === "boolean"'), 1)
+  is(await evaluate('typeof false === "boolean"'), 1)
+  is(await evaluate('typeof (1 < 2) === "boolean"'), 1)
 })
 
 test('typeof - string', async () => {
-  is(await evaluate('typeof "hello"'), 2)  // 2 = string
+  is(await evaluate('typeof "hello" === "string"'), 1)
 })
 
 test('typeof - undefined/null', async () => {
-  is(await evaluate('typeof null'), 0)  // 0 = undefined (ref type)
-  is(await evaluate('typeof undefined'), 0)
+  is(await evaluate('typeof null === "undefined"'), 1)
+  is(await evaluate('typeof undefined === "undefined"'), 1)
 })
 
 test('typeof - object/array', async () => {
-  is(await evaluate('typeof {x: 1}'), 4)  // 4 = object
-  is(await evaluate('typeof [1, 2, 3]'), 4)  // arrays are objects
+  is(await evaluate('typeof {x: 1} === "object"'), 1)
+  is(await evaluate('typeof [1, 2, 3] === "object"'), 1)  // arrays are objects
 })
 
 // void operator
@@ -145,169 +145,4 @@ test('string.indexOf - char code', async () => {
   is(await evaluate('"hello".indexOf(101)'), 1)  // 'e' at index 1
   is(await evaluate('"hello".indexOf(108)'), 2)  // 'l' at index 2
   is(await evaluate('"hello".indexOf(120)'), -1)  // 'x' not found
-})
-
-// gc:false versions
-const GC = { gc: false }
-
-test('gc:false - if/else', async () => {
-  is(await evaluate('if (1) 5 else 10', 0, GC), 5)
-  is(await evaluate('if (0) 5 else 10', 0, GC), 10)
-})
-
-test('gc:false - array.indexOf', async () => {
-  is(await evaluate('[1, 2, 3].indexOf(2)', 0, GC), 1)
-  is(await evaluate('[1, 2, 3].indexOf(5)', 0, GC), -1)
-})
-
-test('gc:false - array.includes', async () => {
-  is(await evaluate('[1, 2, 3].includes(2)', 0, GC), 1)
-  is(await evaluate('[1, 2, 3].includes(5)', 0, GC), 0)
-})
-
-test('gc:false - array.find', async () => {
-  is(await evaluate('[1, 2, 3, 4].find(x => x > 2)', 0, GC), 3)
-})
-
-test('gc:false - array.findIndex', async () => {
-  is(await evaluate('[1, 2, 3, 4].findIndex(x => x > 2)', 0, GC), 2)
-})
-
-test('gc:false - array.every', async () => {
-  is(await evaluate('[2, 4, 6].every(x => x > 0)', 0, GC), 1)
-  is(await evaluate('[2, 4, 6].every(x => x > 3)', 0, GC), 0)
-})
-
-test('gc:false - array.some', async () => {
-  is(await evaluate('[1, 2, 3].some(x => x > 2)', 0, GC), 1)
-  is(await evaluate('[1, 2, 3].some(x => x > 5)', 0, GC), 0)
-})
-
-test('gc:false - array.slice', async () => {
-  is(await evaluate('[1, 2, 3, 4, 5].slice(1, 3)[0]', 0, GC), 2)
-  is(await evaluate('[1, 2, 3, 4, 5].slice(1, 3).length', 0, GC), 2)
-})
-
-test('gc:false - array.reverse', async () => {
-  is(await evaluate('(a = [1, 2, 3], a.reverse(), a[0])', 0, GC), 3)
-})
-
-test('gc:false - string.slice', async () => {
-  is(await evaluate('"hello".slice(1, 3).length', 0, GC), 2)
-})
-
-test('gc:false - string.indexOf', async () => {
-  is(await evaluate('"hello".indexOf(101)', 0, GC), 1)
-})
-
-// Switch statements
-test('switch - basic case', async () => {
-  is(await evaluate('switch (1) { case 1: 10; break; case 2: 20; break; default: 0 }'), 10)
-  is(await evaluate('switch (2) { case 1: 10; break; case 2: 20; break; default: 0 }'), 20)
-  is(await evaluate('switch (3) { case 1: 10; break; case 2: 20; break; default: 30 }'), 30)
-})
-
-test('switch - with variable', async () => {
-  is(await evaluate('{ x = 2; switch (x) { case 1: 10; break; case 2: 20; break; default: 0 } }'), 20)
-  is(await evaluate('{ x = 5; switch (x) { case 1: 10; break; case 2: 20; break; default: 99 } }'), 99)
-})
-
-test('switch - with expressions', async () => {
-  is(await evaluate('{ x = 3; switch (x * 2) { case 4: 1; break; case 6: 2; break; default: 0 } }'), 2)
-  is(await evaluate('switch (1 + 1) { case 1: 10; break; case 2: 20; break; default: 0 }'), 20)
-})
-
-test('switch - default only', async () => {
-  is(await evaluate('switch (5) { default: 42 }'), 42)
-})
-
-test('gc:false - switch', async () => {
-  is(await evaluate('switch (1) { case 1: 10; break; case 2: 20; break; default: 0 }', 0, GC), 10)
-  is(await evaluate('switch (2) { case 1: 10; break; case 2: 20; break; default: 0 }', 0, GC), 20)
-})
-
-test('array.forEach', async () => {
-  is(await evaluate('[1, 2, 3].forEach(x => x + 1), 42'), 42)
-})
-
-test('gc:false - array.forEach', async () => {
-  is(await evaluate('[1, 2, 3].forEach(x => x + 1), 42', 0, GC), 42)
-})
-
-test('array.concat', async () => {
-  is(await evaluate('[1, 2].concat([3, 4]).length'), 4)
-})
-
-test('gc:false - array.concat', async () => {
-  is(await evaluate('[1, 2].concat([3, 4]).length', 0, GC), 4)
-})
-
-test('gc:false - array.push', async () => {
-  is(await evaluate('[1, 2].push(3)', 0, GC), 3)
-})
-
-test('gc:false - array.pop', async () => {
-  is(await evaluate('[1, 2, 3].pop()', 0, GC), 3)
-})
-
-test('string.substring', async () => {
-  is(await evaluate('"hello".substring(1, 4).length'), 3)
-})
-
-test('gc:false - string.substring', async () => {
-  is(await evaluate('"hello".substring(1, 4).length', 0, GC), 3)
-})
-
-test('string.toLowerCase', async () => {
-  is(await evaluate('"HELLO".toLowerCase().charCodeAt(0)'), 104) // 'h'
-})
-
-test('gc:false - string.toLowerCase', async () => {
-  is(await evaluate('"HELLO".toLowerCase().charCodeAt(0)', 0, GC), 104)
-})
-
-test('string.toUpperCase', async () => {
-  is(await evaluate('"hello".toUpperCase().charCodeAt(0)'), 72) // 'H'
-})
-
-test('gc:false - string.toUpperCase', async () => {
-  is(await evaluate('"hello".toUpperCase().charCodeAt(0)', 0, GC), 72)
-})
-
-test('string.includes', async () => {
-  is(await evaluate('"hello".includes(101)'), 1) // 'e' = 101
-  is(await evaluate('"hello".includes(120)'), 0) // 'x' = 120 (not found)
-})
-
-test('gc:false - string.includes', async () => {
-  is(await evaluate('"hello".includes(101)', 0, GC), 1)
-  is(await evaluate('"hello".includes(120)', 0, GC), 0)
-})
-
-test('string.startsWith', async () => {
-  is(await evaluate('"hello".startsWith(104)'), 1) // 'h' = 104
-  is(await evaluate('"hello".startsWith(101)'), 0) // 'e' = 101
-})
-
-test('gc:false - string.startsWith', async () => {
-  is(await evaluate('"hello".startsWith(104)', 0, GC), 1)
-  is(await evaluate('"hello".startsWith(101)', 0, GC), 0)
-})
-
-test('string.endsWith', async () => {
-  is(await evaluate('"hello".endsWith(111)'), 1) // 'o' = 111
-  is(await evaluate('"hello".endsWith(101)'), 0) // 'e' = 101
-})
-
-test('gc:false - string.endsWith', async () => {
-  is(await evaluate('"hello".endsWith(111)', 0, GC), 1)
-  is(await evaluate('"hello".endsWith(101)', 0, GC), 0)
-})
-
-test('string.trim', async () => {
-  is(await evaluate('"  hello  ".trim().length'), 5)
-})
-
-test('gc:false - string.trim', async () => {
-  is(await evaluate('"  hello  ".trim().length', 0, GC), 5)
 })

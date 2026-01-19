@@ -115,9 +115,9 @@ const handlers = {
   '>>>'(op, [a, b], ctx) { return optimize('>>>', expr(a, ctx), expr(b, ctx)) },
 
   // Variable declarations
-  'let'(op, [init], ctx) { return handleDecl(init, ctx) },
-  'const'(op, [init], ctx) { return handleDecl(init, ctx) },
-  'var'(op, [init], ctx) { return handleDecl(init, ctx) },
+  'let'(op, [init], ctx) { return handleDecl('let', init, ctx) },
+  'const'(op, [init], ctx) { return handleDecl('const', init, ctx) },
+  'var'(op, [init], ctx) { return handleDecl('var', init, ctx) },
 
   // Function definition
   'function'(op, [name, params, body], ctx) {
@@ -343,14 +343,14 @@ function optimize(op, a, b) {
   return [op, a, b]
 }
 
-// Handle variable declaration init
-function handleDecl(init, ctx) {
+// Handle variable declaration init - preserve let/const/var wrapper
+function handleDecl(op, init, ctx) {
   if (Array.isArray(init) && init[0] === '=') {
     addVars(init[1], ctx)
-    return ['=', init[1], expr(init[2], ctx)]
+    return [op, ['=', init[1], expr(init[2], ctx)]]
   }
   if (typeof init === 'string') ctx.vars.add(init)
-  return init
+  return [op, init]
 }
 
 // Add variable names from target

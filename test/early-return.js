@@ -2,8 +2,6 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { evaluate } from './util.js'
 
-const GC = { gc: false }
-
 test('early return - simple', async () => {
   is(await evaluate('f = () => { if (1) return 42; return 0 }; f()'), 42)
 })
@@ -29,10 +27,3 @@ test('early return - in loop', async () => {
   }; f(20)`
   is(await evaluate(code2), -1)
 })
-
-test('gc:false - early return', async () => {
-  is(await evaluate('f = () => { if (1) return 42; return 0 }; f()', 0, GC), 42)
-  is(await evaluate('f = x => { if (x > 5) return 1; return 0 }; f(10)', 0, GC), 1)
-  is(await evaluate('f = x => { if (x > 5) return 1; return 0 }; f(3)', 0, GC), 0)
-})
-

@@ -30,21 +30,80 @@
   * [x] array.map, array.reduce
   * [x] optional chaining
   * [x] string literals and charCodeAt
-* [ ] Jessie-based
-  * [ ] Add validation
-  * [ ] Add optimizations
-  * [ ] Remove var, function
 * [x] if/else, break/continue
 * [x] typeof, void
 * [x] switch statement
 * [x] array methods (filter, find, findIndex, indexOf, includes, every, some, slice, reverse)
 * [x] string ops (slice, indexOf)
 * [x] template literals (basic)
+* [ ] simplify files structure
+
+## JS Compatibility (priority order)
+
+### 1. Declarations & Scoping
+* [ ] `let` declaration - block-scoped variable
+* [ ] `const` declaration - block-scoped constant
+* [ ] `var` declaration - function-scoped (deprecated, but support)
+* [ ] block scope `{ let x = 1 }` - scope tracking per block
+
+### 2. Type System
+* [ ] `typeof` returns strings - "number", "string", "boolean", "object", "undefined", "function"
+* [ ] `===` strict equality - same as `==` for primitives, ref equality for objects
+* [ ] `!==` strict inequality
+
+### 3. Closures
+* [ ] closure capture - inner functions capture outer variables
+* [ ] closure lifting - hoist captured vars to shared scope/struct
+* [ ] nested function definitions
+
+### 4. Rest/Spread & Destructuring
+* [ ] rest params `(...args) => args.length`
+* [ ] spread in arrays `[...arr, x]`
+* [ ] spread in calls `fn(...args)`
+* [ ] destructuring params `({ x, y }) => x + y`
+* [ ] destructuring params `([a, b]) => a + b`
+* [ ] default params `(x = 0) => x`
+
+### 5. Array Methods
+* [ ] `.push(x)` - add to end, return new length
+* [ ] `.pop()` - remove from end, return element
+* [ ] `.shift()` - remove from start
+* [ ] `.unshift(x)` - add to start
+* [ ] `.concat(arr)` - combine arrays
+* [ ] `.join(sep)` - array to string
+* [ ] `.flat(depth)` - flatten nested
+* [ ] `.flatMap(fn)` - map then flatten
+
+### 6. String Methods
+* [ ] `.substring(start, end)`
+* [ ] `.substr(start, len)` - deprecated but common
+* [ ] `.split(sep)`
+* [ ] `.trim()`, `.trimStart()`, `.trimEnd()`
+* [ ] `.padStart(len, str)`, `.padEnd(len, str)`
+* [ ] `.repeat(n)`
+* [ ] `.replace(str, str)`
+* [ ] `.toUpperCase()`, `.toLowerCase()`
+* [ ] `.startsWith(str)`, `.endsWith(str)`
+
+### 7. Export Model
+* [ ] `export const name = ...` - explicit export
+* [ ] `export { name }` - export existing
+* [ ] auto-export mode (current behavior, opt-in)
+* [ ] internal functions not exported by default
+
+## Optimizations
+
+* [ ] v128
+* [ ] multiple returns (for arrays return)
+* [ ]
+
+## Future
+
+* [ ] Jessie validation & optimizations
 * [ ] full closures (nested function variable capture)
-* [ ] destructuring func params, rest/spread
 * [ ] early return (requires function-level return handling)
 * [ ] metacircularity
-* [ ] test262
+* [ ] test262 full
 * [ ] WASM to C / ASM
 
 ## Floatbeat playground
