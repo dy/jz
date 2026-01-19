@@ -88,39 +88,48 @@
     * [ ] auto-export mode (current behavior, opt-in)
     * [ ] internal functions not exported by default
 * [ ] Find all modern cool JS proposals
-
-## JS improvements
-
-* [ ] Identify obsolete parts we don't support
-  * [ ] Compile them into modern parts, give warning
-* [ ] Identify and document all divergencies (improvements) from JS
-
-## Feature implementations
-
-* [ ] `funcref` - first-class functions, currying, closures
-  * [ ] Closure representation: struct { funcref fn, ref env }
-  * [ ] call_ref for indirect function calls
-  * [ ] Fallback to call_indirect + table when funcref disabled
-* [ ] `multivalue` - multiple return values
-  * [ ] Destructuring assignment via multi-value returns
-  * [ ] Error+value pattern (result i32 f64)
-  * [ ] Swap/rotate operations
-* [ ] `tailcall` - tail call optimization
-  * [ ] Enable stack-safe recursion
-  * [ ] State machine patterns
-* [ ] `simd` - v128 vector ops
-  * [ ] Array numeric operations (f64x2, f32x4)
-  * [ ] String operations (i16x8)
-  * [ ] Math/vector ops (RGBA, XYZW, quaternions)
-  * [ ] Batch comparisons
-
-### Future features (not in API yet)
-* [ ] i31ref (small integer refs)
-* [ ] Exception handling (try/catch/throw)
-* [ ] Threads & Atomics
-* [ ] Branch hinting (br_on_*)
-* [ ] Memory64 (64-bit addressing)
-* [ ] Relaxed SIMD
+* [ ] JS improvements
+  * [ ] Identify obsolete parts we don't support
+    * [ ] Compile them into modern parts, give warning
+  * [ ] Identify and document all divergencies (improvements) from JS
+* [ ] Optimizations
+  * [ ] `funcref` - first-class functions, currying, closures
+    * [ ] Closure representation: struct { funcref fn, ref env }
+    * [ ] call_ref for indirect function calls
+    * [ ] Fallback to call_indirect + table when funcref disabled
+  * [ ] `multivalue` - multiple return values
+    * [ ] Destructuring assignment via multi-value returns
+    * [ ] Error+value pattern (result i32 f64)
+    * [ ] Swap/rotate operations
+  * [ ] `tailcall` - tail call optimization
+    * [ ] Enable stack-safe recursion
+    * [ ] State machine patterns
+  * [ ] `simd` - v128 vector ops
+    * [ ] Array numeric operations (f64x2, f32x4)
+    * [ ] String operations (i16x8)
+    * [ ] Math/vector ops (RGBA, XYZW, quaternions)
+    * [ ] Batch comparisons
+* [ ] Future features (not in API yet)
+  * [ ] i31ref (small integer refs)
+  * [ ] Exception handling (try/catch/throw)
+  * [ ] Threads & Atomics
+  * [ ] Branch hinting (br_on_*)
+  * [ ] Memory64 (64-bit addressing)
+  * [ ] Relaxed SIMD
+* [ ] Options
+  * [ ] Memory size (features:'') - default 1 page (64KB), configurable
+  * [ ] Custom imports - user-provided functions
+  * [ ] Source maps
+  * [ ] WASM modules definitions?
+* [ ] Compile targets
+  * [ ] GLSL / WebGPU
+  * [ ] C
+* [ ] Jessie validation & optimizations
+* [ ] metacircularity
+* [ ] test262 full
+* [ ] CLI
+  * [ ] jz run
+  * [ ] jz compile
 
 ## Comparisons
 
@@ -130,26 +139,6 @@
   * [ ] Memory
   * [ ] GC
 
-
-### Other options
-* [ ] Memory size (features:'') - default 1 page (64KB), configurable
-* [ ] Custom imports - user-provided functions
-* [ ] Source maps
-
-### Integration
-* [ ] How to wrap outputs so that we have good JS integration?
-* [ ] WASM modules definitions?
-* [ ] Sourcemaps?
-
-## Future
-
-* [ ] Jessie validation & optimizations
-* [ ] full closures (nested function variable capture)
-* [ ] early return (requires function-level return handling)
-* [ ] metacircularity
-* [ ] test262 full
-* [ ] WASM to C / ASM
-
 ## Floatbeat playground
 
 * [ ] syntax highlighter
@@ -158,10 +147,6 @@
 * [ ] database + recipe book
 * [ ] samples collection
 
-## CLI
-
-* [ ] jz run
-* [ ] jz compile
 
 ## Applications
 
