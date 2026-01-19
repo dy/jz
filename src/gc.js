@@ -47,6 +47,16 @@ export const strCharAt = (gc, wat, idx) => gc
   ? `(array.get_u $string ${wat} ${idx})`
   : `(i32.load16_u (i32.add (call $__ptr_offset ${wat}) (i32.shl ${idx} (i32.const 1))))`
 
+/** Set char at index */
+export const strSetChar = (gc, wat, idx, val) => gc
+  ? `(array.set $string ${wat} ${idx} ${val})`
+  : `(i32.store16 (i32.add (call $__ptr_offset ${wat}) (i32.shl ${idx} (i32.const 1))) ${val})`
+
+/** Allocate dynamic-sized string (length from expression) */
+export const strNew = (gc, lenWat) => gc
+  ? `(array.new $string (i32.const 0) ${lenWat})`
+  : `(call $__alloc (i32.const ${PTR_TYPE.STRING}) ${lenWat})`
+
 // === Arrays ===
 
 /** Get array length */
@@ -63,6 +73,11 @@ export const arrGet = (gc, wat, idx) => gc
 export const arrSet = (gc, wat, idx, val) => gc
   ? `(array.set $f64array ${wat} ${idx} ${val})`
   : `(f64.store (i32.add (call $__ptr_offset ${wat}) (i32.shl ${idx} (i32.const 3))) ${val})`
+
+/** Allocate dynamic-sized f64 array (length from expression) */
+export const arrNew = (gc, lenWat) => gc
+  ? `(array.new $f64array (f64.const 0) ${lenWat})`
+  : `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${lenWat})`
 
 /** Create fixed-size f64 array from values */
 export function mkF64Array(gc, ctx, values) {
