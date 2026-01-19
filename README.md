@@ -54,9 +54,6 @@ console.log('WASM size:', wasm.byteLength, 'bytes')
 const wat = compile('1 + 2', { format: 'wat' })
 console.log('WAT source:', wat)
 
-// Compile with gc:false (memory-based arrays/objects)
-const wasmNoGc = compile('[1,2,3]', { gc: false })
-
 // Compile and instantiate separately
 const instance = await instantiate(wasm)
 const runResult = instance.run()
@@ -73,16 +70,18 @@ console.log(wasmInstance.exports.main()) // 3
 | Option | Default | Description |
 |--------|---------|-------------|
 | `format` | `'wasm'` | Output format: `'wasm'` (binary) or `'wat'` (text) |
-| `gc` | `true` | Use WASM GC arrays/objects. Set `false` for linear memory-based encoding |
+| `gc` | `true` | Use WASM GC — direct JS interop, managed memory |
 
-#### gc: false
+**gc: true** (default) — WASM GC mode:
+- Uses `struct`, `array`, `anyref`, `funcref` for JS-native types
+- Direct export to JavaScript — no decoding needed
+- Best for general use, prototyping, JS interop
 
-Encodes arrays/objects in linear memory with pointer format:
-- **Pointer encoding**: `[type:4][length:28][offset:32]` packed as f64
-- **Types**: F64_ARRAY=0, I32_ARRAY=1, STRING=2, I8_ARRAY=3, OBJECT=4
-- **Memory**: Bump allocator starting at offset 1024
-
-Useful for environments without WASM GC support or when exporting memory to JS.
+**gc: false** — Linear memory mode:
+- Uses `memory`, `i32.load/store`, `call_indirect` for manual management
+- Numeric pipelines: primitives in/out, arrays stay internal
+- Faster, deterministic, works on all WASM runtimes
+- Best for DSP, audio, embedded, maximum portability
 
 ### CLI
 

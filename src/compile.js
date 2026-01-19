@@ -226,7 +226,7 @@ function analyzeScope(ast, outerDefined = new Set(), inFunction = false) {
 function findHoistedVars(bodyAst, params) {
   const analysis = analyzeScope(bodyAst, new Set(params), true)
   const hoisted = new Set()
-  
+
   function collectCaptured(innerFunctions) {
     for (const fn of innerFunctions) {
       for (const v of fn.captured) hoisted.add(v)
@@ -264,8 +264,11 @@ const createContext = () => ({
       this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
       // In gc:false mode, arrays/objects are f64 (encoded pointers)
       const wasmType = opts.gc
-        ? (type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)' : type === 'string' ? '(ref null $string)' : type)
-        : (type === 'array' || type === 'ref' || type === 'object' || type === 'string' ? 'f64' : type)
+        ? (type === 'refarray' ? '(ref null $anyarray)'
+          : type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)'
+          : type === 'string' ? '(ref null $string)'
+          : type)
+        : (type === 'array' || type === 'ref' || type === 'refarray' || type === 'object' || type === 'string' ? 'f64' : type)
       this.localDecls.push(`(local $${finalName} ${wasmType})`)
     }
     if (schema !== undefined) this.localSchemas[finalName] = schema
@@ -326,7 +329,8 @@ const createContext = () => ({
 
 // Public API
 export function compile(ast, options = {}) {
-  const newOpts = { gc: true, ...options }
+  const { gc = true } = options
+  const newOpts = { gc }
   const newCtx = createContext()
   newCtx.locals.t = { type: 'f64', idx: newCtx.localCounter++ }
   // Initialize shared state for method modules
@@ -550,7 +554,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       const argWats = args.map(a => asF64(gen(a))[1]).join(' ')
 
       const { envFields, envType, usesOwnEnv } = fn.closure
-      
+
       // If the closure uses our own env, pass it directly
       if (usesOwnEnv && ctx.ownEnvType) {
         if (opts.gc) {
@@ -560,7 +564,7 @@ function resolveCall(namespace, name, args, receiver = null) {
           return tv('f64', `(call $${name} (local.get $__ownenv) ${argWats})`)
         }
       }
-      
+
       // Otherwise, build a new environment with captured variables
       if (opts.gc) {
         // GC mode: create struct with captured values
@@ -650,20 +654,36 @@ const operators = {
   },
 
   '['(elements) {
-    ctx.usedArrayType = true
     const gens = elements.map(e => gen(e))
     const elementTypes = gens.map(g => g[0])
-    const hasNestedTypes = elementTypes.some(t => t === 'array' || t === 'object' || t === 'string')
+    const hasRefTypes = elementTypes.some(t => t === 'array' || t === 'object' || t === 'string' || t === 'ref' || t === 'refarray')
+    const hasNestedTypes = hasRefTypes  // Alias for gc:false code
 
     if (opts.gc) {
-      // gc:true: convert everything to f64 (refs become placeholders)
-      const vals = gens.map(g => {
-        if (g[0] === 'array' || g[0] === 'string' || g[0] === 'object') {
-          return '(f64.const 0)'  // Can't store refs in f64 arrays
-        }
-        return asF64(g)[1]
-      })
-      return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
+      if (hasRefTypes) {
+        // gc:true with nested refs: use $anyarray (array of anyref) for maximum flexibility
+        ctx.usedArrayType = true
+        ctx.usedRefArrayType = true
+        const vals = gens.map(g => {
+          if (g[0] === 'array' || g[0] === 'object' || g[0] === 'refarray' || g[0] === 'ref') {
+            return g[1]  // Already a ref
+          } else if (g[0] === 'string') {
+            return g[1]  // String is also a ref
+          } else {
+            // Wrap scalar in single-element f64 array to make it a ref
+            ctx.usedArrayType = true
+            return `(array.new_fixed $f64array 1 ${asF64(g)[1]})`
+          }
+        })
+        // Track element types AND schemas for proper nested indexing
+        const elementSchemas = gens.map(g => ({ type: g[0], schema: g[2] }))
+        return tv('refarray', `(array.new_fixed $anyarray ${vals.length} ${vals.join(' ')})`, elementSchemas)
+      } else {
+        // gc:true: homogeneous f64 array
+        ctx.usedArrayType = true
+        const vals = gens.map(g => asF64(g)[1])
+        return tv('array', `(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`)
+      }
     } else {
       // gc:false: all values are f64 (either normal floats or NaN-encoded pointers)
       // Return as type 'f64' not 'array' since pointers are f64
@@ -748,6 +768,48 @@ const operators = {
       if (a[0] === 'string') {
         ctx.usedStringType = true
         return tv('i32', `(array.get_u $string ${a[1]} ${iw})`)
+      }
+      if (a[0] === 'refarray') {
+        // Indexing into anyarray - returns anyref, need to cast based on element type
+        ctx.usedRefArrayType = true
+        ctx.usedArrayType = true
+        // Try to determine element type from schema
+        const schema = a[2]  // Array of element types
+        let litIdx = null
+        if (isConstant(idx)) {
+          const v = evalConstant(idx)
+          litIdx = Number.isFinite(v) ? (v | 0) : null
+        }
+
+        // Get element info from schema - schema is array of {type, schema}
+        const elemInfo = (Array.isArray(schema) && litIdx !== null) ? schema[litIdx] : null
+        const elemType = elemInfo ? elemInfo.type : null
+        const elemSchema = elemInfo ? elemInfo.schema : null
+
+        // For dynamic index, check if all elements have same type
+        const uniformType = Array.isArray(schema) && schema.length > 0 && schema.every(e => e.type === schema[0].type) ? schema[0].type : null
+        const uniformSchema = uniformType && schema[0].schema
+        const effectiveType = elemType || uniformType
+        const effectiveSchema = elemSchema || uniformSchema
+
+        if (effectiveType === 'array') {
+          // Element is a plain f64 array
+          return tv('array', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
+        } else if (effectiveType === 'refarray') {
+          // Element is a nested refarray (anyarray) - pass along its schema
+          return tv('refarray', `(ref.cast (ref $anyarray) (array.get $anyarray ${a[1]} ${iw}))`, effectiveSchema)
+        } else if (effectiveType === 'object') {
+          return tv('object', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
+        } else if (effectiveType === 'string') {
+          ctx.usedStringType = true
+          return tv('string', `(ref.cast (ref $string) (array.get $anyarray ${a[1]} ${iw}))`)
+        } else if (effectiveType === 'f64' || effectiveType === 'i32') {
+          // Scalar wrapped in array - unwrap
+          return tv('f64', `(array.get $f64array (ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw})) (i32.const 0))`)
+        } else {
+          // Truly unknown - return as generic array ref (caller will need to handle)
+          return tv('array', `(ref.cast (ref $f64array) (array.get $anyarray ${a[1]} ${iw}))`)
+        }
       }
       ctx.usedArrayType = true
       return tv('f64', `(array.get $f64array ${a[1]} ${iw})`)
@@ -1335,7 +1397,7 @@ function genAssign(target, value, returnValue) {
       // Check if all captured vars are in our own hoisted env
       // If so, we can pass our __ownenv directly
       const allFromOwnEnv = ctx.hoistedVars && captured.every(v => v in ctx.hoistedVars)
-      
+
       let envType, envFields
       if (allFromOwnEnv) {
         // Reuse our own env type - the closure will receive our __ownenv
@@ -1457,13 +1519,13 @@ function genAssign(target, value, returnValue) {
   // Simple variable
   if (typeof target !== 'string') throw new Error('Invalid assignment target')
   const val = gen(value)
-  
+
   // Check if this is a hoisted variable (must be written to own env)
   if (ctx.hoistedVars && target in ctx.hoistedVars) {
     const fieldIdx = ctx.hoistedVars[target]
     if (opts.gc) {
       const code = `(struct.set ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv) ${asF64(val)[1]})`
-      return returnValue 
+      return returnValue
         ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.ownEnvType} ${fieldIdx} (local.get $__ownenv)))`)
         : code + '\n    '
     } else {
@@ -1474,13 +1536,13 @@ function genAssign(target, value, returnValue) {
         : code + '\n    '
     }
   }
-  
+
   // Check if this is a captured variable (must be written to received env)
   if (ctx.capturedVars && target in ctx.capturedVars) {
     const fieldIdx = ctx.capturedVars[target]
     if (opts.gc) {
       const code = `(struct.set ${ctx.currentEnv} ${fieldIdx} (local.get $__env) ${asF64(val)[1]})`
-      return returnValue 
+      return returnValue
         ? tv('f64', `(block (result f64) ${code} (struct.get ${ctx.currentEnv} ${fieldIdx} (local.get $__env)))`)
         : code + '\n    '
     } else {
@@ -1491,7 +1553,7 @@ function genAssign(target, value, returnValue) {
         : code + '\n    '
     }
   }
-  
+
   const glob = ctx.getGlobal(target)
   if (glob) {
     const code = `(global.set $${target} ${asF64(val)[1]})`
@@ -1543,11 +1605,11 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
 
   // Find variables that need to be hoisted to environment (captured by nested closures)
   const hoistedVars = findHoistedVars(bodyAst, params)
-  
+
   // If this function has hoisted vars OR is itself a closure, we need env handling
   let envParam = ''
   let envInit = ''
-  
+
   if (closureInfo) {
     // This is a closure - receives env from caller
     newCtx.currentEnv = closureInfo.envType
@@ -1556,7 +1618,7 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
       newCtx.capturedVars[field.name] = field.index
     }
   }
-  
+
   // If this function has hoisted vars, create OWN env for them
   // This is separate from the received env (if any)
   if (hoistedVars.size > 0) {
@@ -1624,10 +1686,10 @@ function generateFunction(name, params, bodyAst, parentCtx, closureInfo = null) 
   const exportClause = closureInfo ? '' : ` (export "${name}")`
   // Wrap body in block to support early return
   const wat = `(func $${name}${exportClause} ${envParam}${paramDecls} (result f64)${localDecls}\n    (block ${ctx.returnLabel} (result f64)\n      ${envInit}${bodyWat}\n    )\n  )`
-  
+
   // Propagate usedMemory to parent context
   if (ctx.usedMemory) parentCtx.usedMemory = true
-  
+
   setCtx(prevCtx)
   return wat
 }
@@ -1659,7 +1721,7 @@ function assemble(bodyWat, ctx, extraFunctions = []) {
   if (opts.gc) {
     if (ctx.usedArrayType) wat += '  (type $f64array (array (mut f64)))\n'
     if (ctx.usedStringType) wat += '  (type $string (array (mut i16)))\n'
-    if (ctx.usedRefArrayType) wat += '  (type $refarray (array (mut (ref null $f64array))))\n'
+    if (ctx.usedRefArrayType) wat += '  (type $anyarray (array (mut anyref)))\n'
     // Closure environment types
     for (const env of ctx.closureEnvTypes) {
       const fields = env.fields.map(f => `(field $${f} (mut f64))`).join(' ')
