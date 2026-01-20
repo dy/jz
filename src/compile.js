@@ -1365,25 +1365,100 @@ const operators = {
   // Template literals
   '\`'(parts) {
     // Template literal: [`parts] where parts alternate between strings and expressions
-    // For now, return concatenation length or the first string if simple
-    // Full string concatenation requires memory allocation
-    if (parts.length === 1) {
-      // Simple string without interpolation
-      if (Array.isArray(parts[0]) && parts[0][0] === null) {
-        return genLiteral(parts[0][1])
-      }
-    }
-    // For expressions, we'd need string concatenation - for now return first part or 0
-    // TODO: implement full string concatenation
+    // parts = [[null, "literal"], expr, [null, "literal2"], ...]
     ctx.usedStringType = true
-    let totalLen = 0
+    ctx.usedMemory = true
+
+    // Check if all parts are compile-time constant strings
+    // Note: subscript uses undefined (not null) as the literal marker
+    const allConstStrings = parts.every(part => 
+      Array.isArray(part) && part[0] === undefined && typeof part[1] === 'string'
+    )
+    
+    if (allConstStrings) {
+      // Concatenate at compile time
+      const fullString = parts.map(p => p[1]).join('')
+      return mkString(ctx, fullString)
+    }
+
+    // Dynamic template - need runtime concatenation
+    // Step 1: Collect all string parts and their lengths
+    const id = ctx.loopCounter++
+    const result = `$_tpl_result_${id}`
+    const totalLen = `$_tpl_len_${id}`
+    const offset = `$_tpl_off_${id}`
+    ctx.addLocal(result.slice(1), 'string')
+    ctx.addLocal(totalLen.slice(1), 'i32')
+    ctx.addLocal(offset.slice(1), 'i32')
+
+    // Generate code to calculate total length and generate string values
+    let lenCalc = '(i32.const 0)'
+    const genParts = []
     for (const part of parts) {
-      if (Array.isArray(part) && part[0] === null && typeof part[1] === 'string') {
-        totalLen += part[1].length
+      // Literal check: [undefined, "string"] (subscript parser uses undefined, not null)
+      if (Array.isArray(part) && part[0] === undefined && typeof part[1] === 'string') {
+        // String literal - add its length
+        lenCalc = `(i32.add ${lenCalc} (i32.const ${part[1].length}))`
+        genParts.push({ type: 'literal', value: part[1] })
+      } else {
+        // Expression - generate it and get length
+        const partId = ctx.loopCounter++
+        const partLocal = `$_tpl_part_${partId}`
+        ctx.addLocal(partLocal.slice(1), 'f64')  // Could be string or number
+        genParts.push({ type: 'expr', local: partLocal, ast: part })
       }
     }
-    // Return length as proxy for now
-    return wat(`(i32.const ${totalLen})`, 'i32')
+
+    // Build the concatenation code
+    let code = `(local.set ${totalLen} ${lenCalc})\n`
+    
+    // Evaluate expressions and accumulate their lengths
+    for (const part of genParts) {
+      if (part.type === 'expr') {
+        const val = gen(part.ast)
+        if (isString(val)) {
+          code += `(local.set ${part.local} ${val})\n`
+          code += `(local.set ${totalLen} (i32.add (local.get ${totalLen}) (call $__ptr_len (local.get ${part.local}))))\n`
+        } else {
+          // Non-string interpolation - for now just skip (will be 0 chars)
+          // TODO: implement number-to-string conversion
+          code += `(local.set ${part.local} (f64.const 0))\n`
+        }
+      }
+    }
+
+    // Allocate result string
+    code += `(local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${totalLen})))\n`
+    code += `(local.set ${offset} (i32.const 0))\n`
+
+    // Copy each part into result
+    for (const part of genParts) {
+      if (part.type === 'literal') {
+        // Copy literal string (interned) to result at offset
+        // internString returns {id, offset, length} where memory location is id * 256
+        const { id: stringId } = ctx.internString(part.value)
+        const partLen = part.value.length
+        if (partLen > 0) {
+          code += `(memory.copy 
+            (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
+            (i32.const ${stringId * 256})
+            (i32.const ${partLen * 2}))\n`
+          code += `(local.set ${offset} (i32.add (local.get ${offset}) (i32.const ${partLen})))\n`
+        }
+      } else {
+        // Copy expression result (if string) to result at offset
+        code += `(if (call $__is_pointer (local.get ${part.local}))
+          (then
+            (memory.copy
+              (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
+              (call $__ptr_offset (local.get ${part.local}))
+              (i32.shl (call $__ptr_len (local.get ${part.local})) (i32.const 1)))
+            (local.set ${offset} (i32.add (local.get ${offset}) (call $__ptr_len (local.get ${part.local}))))))\n`
+      }
+    }
+
+    code += `(local.get ${result})`
+    return wat(`(block (result f64) ${code})`, 'string')
   },
 
   // Export declaration
@@ -1634,8 +1709,8 @@ function genAssign(target, value, returnValue) {
   // Check if this is a hoisted variable (must be written to own env)
   if (ctx.hoistedVars && target in ctx.hoistedVars) {
     const { index, type } = ctx.hoistedVars[target]
-    const setCode = envSet( ctx.ownEnvType, '$__ownenv', index, f64(val))
-    const getCode = envGet( ctx.ownEnvType, '$__ownenv', index, type)
+    const setCode = envSet('$__ownenv', index, f64(val))
+    const getCode = envGet('$__ownenv', index)
     return returnValue
       ? wat(`(block (result f64) ${setCode} ${getCode})`, type)
       : setCode + '\n    '
@@ -1644,9 +1719,8 @@ function genAssign(target, value, returnValue) {
   // Check if this is a captured variable (must be written to received env)
   if (ctx.capturedVars && target in ctx.capturedVars) {
     const { index, type } = ctx.capturedVars[target]
-    const envVar = '$__env'
-    const setCode = envSet(ctx.currentEnv, envVar, index, f64(val))
-    const getCode = envGet(ctx.currentEnv, envVar, index, type)
+    const setCode = envSet('$__env', index, f64(val))
+    const getCode = envGet('$__env', index)
     return returnValue
       ? wat(`(block (result f64) ${setCode} ${getCode})`, type)
       : setCode + '\n    '

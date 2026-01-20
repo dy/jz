@@ -198,3 +198,51 @@ test('array.flatMap - scalar returns', async () => {
   is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[1]'), 4)
   is(await evaluate('[1, 2, 3].flatMap(x => x * 2).length'), 3)
 })
+// Template literals
+test('template literal - simple', async () => {
+  is(await evaluate('`hello`.length'), 5)
+  is(await evaluate('`hello`[0]'), 104) // 'h'
+})
+
+test('template literal - with string interpolation', async () => {
+  is(await evaluate('const s = `world`; `hello ${s}!`.length'), 12)
+})
+
+// Closure mutation (counter pattern)
+test('closure mutation - counter', async () => {
+  is(await evaluate(`
+    const make = () => { let n = 0; return () => { n += 1; return n } };
+    const counter = make();
+    counter() + counter() * 10 + counter() * 100
+  `), 321) // 1 + 20 + 300
+})
+
+test('closure mutation - multiple counters independent', async () => {
+  is(await evaluate(`
+    const make = () => { let n = 0; return () => { n += 1; return n } };
+    const a = make();
+    const b = make();
+    a(); a(); b();
+    a() + b() * 10
+  `), 23) // a=3, b=2
+})
+
+// ++/-- operators
+test('prefix increment', async () => {
+  is(await evaluate('let x = 5; ++x'), 6)
+  is(await evaluate('let x = 5; ++x; x'), 6)
+})
+
+test('postfix increment', async () => {
+  is(await evaluate('let x = 5; x++'), 5)
+  is(await evaluate('let x = 5; x++; x'), 6)
+})
+
+test('prefix decrement', async () => {
+  is(await evaluate('let x = 5; --x'), 4)
+})
+
+test('postfix decrement', async () => {
+  is(await evaluate('let x = 5; x--'), 5)
+  is(await evaluate('let x = 5; x--; x'), 4)
+})
