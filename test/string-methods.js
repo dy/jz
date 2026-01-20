@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { evaluate, gc } from './util.js'
+import { evaluate } from './util.js'
 
 // String method tests - use .length and .charCodeAt() to verify results
 

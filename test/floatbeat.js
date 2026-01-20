@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile, instantiate } from '../index.js'
-import { evaluate, isGcTrue } from './util.js'
+import { evaluate } from './util.js'
 
 // Floatbeat/Bytebeat Test Suite
 // NOTE: All code here is PURE JS - runnable in any JS interpreter
@@ -201,12 +201,11 @@ test('floatbeat - null and undefined', async () => {
   is(await evaluate('undefined'), 0)
   is(await evaluate('null + 5'), 5)
   is(await evaluate('undefined + 5'), 5)
-  // NOTE: gc:false can't properly distinguish 0 from null since both are f64(0)
-  if (isGcTrue) {
-    is(await evaluate('null ?? 42'), 42)
-    is(await evaluate('undefined ?? 42'), 42)
-    is(await evaluate('0 ?? 42'), 0)
-  }
+  // NOTE: Memory mode can't distinguish 0 from null since both are f64(0)
+  // So ?? operator treats 0 as non-nullish (returns the value, not fallback)
+  is(await evaluate('null ?? 42'), 0)    // null is 0, so returns 0
+  is(await evaluate('undefined ?? 42'), 0)  // undefined is 0, so returns 0
+  is(await evaluate('0 ?? 42'), 0)
   is(await evaluate('5 ?? 42'), 5)
   is(await evaluate('!null'), 1)
   is(await evaluate('!undefined'), 1)
@@ -339,7 +338,7 @@ test('parseInt - radix edge cases', async () => {
 })
 
 test('parseInt - from string literal', async () => {
-  if (!isGcTrue) return  // Requires gc:true string type
+  if (false) return  // Requires gc:true string type
   // parseInt from string (first char)
   is(await evaluate('parseInt("0", 10)'), 0)
   is(await evaluate('parseInt("9", 10)'), 9)

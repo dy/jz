@@ -77,14 +77,28 @@
     * [x] destructuring params `([a, b]) => a + b`
     * [x] default params `(x = 0) => x`
   * [ ] Array Methods
-    * [ ] `.push(x)` - add to end, return new length
-    * [ ] `.pop()` - remove from end, return element
+    * [x] `.push(x)` - add to end, return new length (gc:false only)
+    * [x] `.pop()` - remove from end, return element (gc:false only)
     * [ ] `.shift()` - remove from start
     * [ ] `.unshift(x)` - add to start
     * [ ] `.concat(arr)` - combine arrays
     * [ ] `.join(sep)` - array to string
     * [ ] `.flat(depth)` - flatten nested
     * [ ] `.flatMap(fn)` - map then flatten
+  * [ ] Unified Memory Model (remove gc option)
+    * [x] Document unified model in research.md
+    * [x] Track export signatures (arrayParams, returnsArray) in ctx.exportSignatures
+    * [x] Document integer-packed pointer encoding (replaces NaN-boxing for JS interop)
+    * [x] Add @custom "jz:sig" section for export signatures
+    * [x] Add `_` prefix convention for raw exports (_memory, _alloc, _fn)
+    * [x] Auto-wrap exports in instantiate() based on signatures
+    * [x] Migrate pointer helpers from NaN-boxing to integer-packed (2^48 threshold)
+    * [x] Infer array params from usage (arr.map, etc.)
+    * [x] Track returnsArrayPointer for array-returning methods
+    * [x] Test integer-packed pointer encoding
+    * [x] Test custom section reading in instantiate()
+    * [x] Test auto-wrapped array exports
+    * [ ] Remove ~145 opts.gc branches (compile.js: 54, array.js: 55, string.js: 36)
   * [x] String Methods
     * [x] `.substring(start, end)`
     * [x] `.substr(start, len)` - deprecated but common
@@ -143,6 +157,8 @@
 * [ ] CLI
   * [ ] jz run
   * [ ] jz compile
+* [ ] Make actual use of I32_ARRAY: 2, I8_ARRAY: 4, or merge REF_ARRAY?
+* [ ] Produce component interface for exports (wit)
 
 ## Comparisons
 

@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { evaluate, isGcTrue, isGcFalse } from './util.js'
+import { evaluate } from './util.js'
 
 // let declaration
 test('let - basic', async () => {

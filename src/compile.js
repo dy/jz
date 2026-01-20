@@ -64,9 +64,27 @@ import { createContext } from './context.js'
 import { assemble } from './assemble.js'
 import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, strCharAt, mkArrayLiteral, callClosure } from './gc.js'
 
+// Check if type is array-like (for aliasing warnings)
+const isArrayType = t => t === 'array' || t === 'refarray'
+
+// Check if AST node is an array literal or array-returning expression
+const isArrayExpr = node => {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  // Array literal: ['[', ...]
+  if (op === '[') return true
+  // Array constructor: ['()', ['.', 'Array', method], ...]
+  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Array') return true
+  // Array methods that return arrays: .map, .filter, .slice, .reverse, .concat
+  if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
+    const method = node[1][2]
+    if (['map', 'filter', 'slice', 'reverse', 'concat', 'fill'].includes(method)) return true
+  }
+  return false
+}
+
 // Current compilation state (module-level for nested access)
 export let ctx = null
-export let opts = { gc: true }
 export let gen = null
 
 export { assemble };
@@ -80,13 +98,11 @@ export function setCtx(context) {
 
 // Public API
 export function compile(ast, options = {}) {
-  const { gc = true } = options
   // Initialize shared state for method modules
-  opts = { gc }
-  setCtx(createContext(gc))
+  setCtx(createContext())
   gen = generate
   const bodyWat = String(f64(generate(ast)))
-  return assemble(bodyWat, ctx, generateFunctions(), gc)
+  return assemble(bodyWat, ctx, generateFunctions())
 }
 
 
@@ -102,7 +118,7 @@ export function compile(ast, options = {}) {
  */
 function isConstant(ast) {
   if (ast == null) return true
-  if (Array.isArray(ast) && ast[0] === undefined) return typeof ast[1] === 'number'
+  if (Array.isArray(ast) && ast[0] == null) return typeof ast[1] === 'number'
   if (typeof ast === 'string') return /^(true|false|null|undefined|Infinity|-Infinity|NaN)$/.test(ast) || !isNaN(Number(ast))
   if (!Array.isArray(ast)) return false
   const [op] = ast
@@ -125,7 +141,7 @@ function isConstant(ast) {
  */
 function evalConstant(ast) {
   if (ast == null) return 0
-  if (Array.isArray(ast) && ast[0] === undefined) return ast[1]
+  if (Array.isArray(ast) && ast[0] == null) return ast[1]
   if (typeof ast === 'string') {
     const val = parseFloat(ast)
     return isNaN(val) ? (ast === 'true' ? 1 : 0) : val
@@ -187,10 +203,10 @@ function closureDepth(body) {
  * @example genLiteral('hello') → {type:'string', wat:'(call $__strconst ...)'}
  */
 function genLiteral(v) {
-  if (v === null || v === undefined) return nullRef(opts.gc)
+  if (v === null || v === undefined) return nullRef()
   if (typeof v === 'number') return wat(`(f64.const ${fmtNum(v)})`, 'f64')
   if (typeof v === 'boolean') return wat(`(i32.const ${v ? 1 : 0})`, 'i32')
-  if (typeof v === 'string') return mkString(opts.gc, ctx, v)
+  if (typeof v === 'string') return mkString(ctx, v)
   throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
 }
 
@@ -207,26 +223,29 @@ function genLiteral(v) {
  * @example genIdent('x') → {type:'f64', wat:'(local.get $x)'}
  */
 function genIdent(name) {
-  if (name === 'null' || name === 'undefined') return nullRef(opts.gc)
+  if (name === 'null' || name === 'undefined') return nullRef()
   if (name === 'true') return wat('(i32.const 1)', 'i32')
   if (name === 'false') return wat('(i32.const 0)', 'i32')
   if (name in GLOBAL_CONSTANTS) return wat(`(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`, 'f64')
 
   // Check if this is a hoisted variable (in our own env, for nested closure access)
   if (ctx.hoistedVars && name in ctx.hoistedVars) {
-    const { index, type } = ctx.hoistedVars[name]
-    return wat(envGet(opts.gc, ctx.ownEnvType, '$__ownenv', index, type), type)
+    const { index } = ctx.hoistedVars[name]
+    return wat(envGet('$__ownenv', index), 'f64')
   }
 
   // Check if this is a captured variable (from closure environment passed to us)
   if (ctx.capturedVars && name in ctx.capturedVars) {
-    const { index, type } = ctx.capturedVars[name]
-    const envVar = opts.gc ? '$__envcast' : '$__env'
-    return wat(envGet(opts.gc, ctx.currentEnv, envVar, index, type), type)
+    const { index } = ctx.capturedVars[name]
+    return wat(envGet('$__env', index), 'f64')
   }
 
   const loc = ctx.getLocal(name)
-  if (loc) return wat(`(local.get $${loc.scopedName})`, loc.type, ctx.localSchemas[loc.scopedName])
+  if (loc) {
+    const result = wat(`(local.get $${loc.scopedName})`, loc.type, ctx.localSchemas[loc.scopedName])
+    result.paramName = name  // Track original name for array param inference
+    return result
+  }
   const glob = ctx.getGlobal(name)
   if (glob) return wat(`(global.get $${name})`, glob.type)
   throw new Error(`Unknown identifier: ${name}`)
@@ -250,9 +269,13 @@ function resolveCall(namespace, name, args, receiver = null) {
   if (receiver !== null) {
     const rt = receiver.type, rw = String(receiver)
 
-    // Dispatch to method modules
-    const isArrayType = rt === 'array' || (!opts.gc && rt === 'f64')
-    if (isArrayType && arrayMethods[name]) {
+    // Dispatch to method modules - f64 can be array pointer
+    const isArrayLike = rt === 'array' || rt === 'f64'
+    if (isArrayLike && arrayMethods[name]) {
+      // Track param usage for JS interop
+      if (receiver.paramName) {
+        ctx.inferredArrayParams.add(receiver.paramName)
+      }
       const result = arrayMethods[name](rw, args)
       if (result) return result
     }
@@ -314,12 +337,8 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (name === 'isNaN' || name === 'isFinite') return resolveCall('Number', name, args)
     if (name === 'Array' && args.length === 1) {
       ctx.usedArrayType = true
-      if (opts.gc) {
-        return wat(`(array.new $f64array (f64.const 0) ${i32(gen(args[0]))})`, 'array')
-      } else {
-        ctx.usedMemory = true
-        return wat(`(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${i32(gen(args[0]))})`, 'f64')
-      }
+      ctx.usedMemory = true
+      return wat(`(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${i32(gen(args[0]))})`, 'f64')
     }
     if (name === 'parseInt') {
       const val = gen(args[0])
@@ -368,7 +387,7 @@ function resolveCall(namespace, name, args, receiver = null) {
         // Normal args: fn(a, b, c) -> build array [b, c] for rest
         ctx.usedArrayType = true
         const restVals = restArgs.map(a => gen(a))
-        const restArrayWat = mkArrayLiteral(ctx, opts.gc, restVals, () => false, () => null, restArgs)
+        const restArrayWat = mkArrayLiteral(ctx, restVals, () => false, () => null, restArgs)
         return [...fixedWats, String(restArrayWat)].join(' ')
       }
     }
@@ -409,67 +428,42 @@ function resolveCall(namespace, name, args, receiver = null) {
 
       // If the closure uses our own env, pass it directly
       if (usesOwnEnv && ctx.ownEnvType) {
-        if (opts.gc) {
-          // Convert from (ref null) to (ref) for the call
-          return wat(`(call $${name} (ref.as_non_null (local.get $__ownenv)) ${argWats})`, 'f64')
-        } else {
-          return wat(`(call $${name} (local.get $__ownenv) ${argWats})`, 'f64')
-        }
+        return wat(`(call $${name} (local.get $__ownenv) ${argWats})`, 'f64')
       }
 
-      // Otherwise, build a new environment with captured variables
-      if (opts.gc) {
-        // GC mode: create struct with captured values
-        const envVals = envFields.map(f => {
-          // Check our own hoisted vars first
-          if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-            const { index } = ctx.hoistedVars[f.name]
-            return `(struct.get ${ctx.ownEnvType} ${index} (local.get $__ownenv))`
-          }
-          // Then check received env (capturedVars)
-          if (ctx.capturedVars && f.name in ctx.capturedVars) {
-            const { index } = ctx.capturedVars[f.name]
-            return `(struct.get ${ctx.currentEnv} ${index} (local.get $__env))`
-          }
+      // Build a new environment with captured variables (in memory)
+      ctx.usedMemory = true
+      const envSize = envFields.length * 8
+      const envVals = envFields.map((f, i) => {
+        let val
+        if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
+          const offset = ctx.hoistedVars[f.name].index * 8
+          val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
+        } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
+          const offset = ctx.capturedVars[f.name].index * 8
+          val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
+        } else {
           const loc = ctx.getLocal(f.name)
-          if (loc) return `(local.get $${loc.scopedName})`
-          const glob = ctx.getGlobal(f.name)
-          if (glob) return `(global.get $${f.name})`
-          throw new Error(`Cannot capture ${f.name}: not found`)
-        }).join(' ')
-        return wat(`(call $${name} (struct.new ${envType} ${envVals}) ${argWats})`, 'f64')
-      } else {
-        // gc:false mode: allocate env in memory
-        ctx.usedMemory = true
-        const envSize = envFields.length * 8
-        const envVals = envFields.map((f, i) => {
-          let val
-          if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-            const offset = ctx.hoistedVars[f.name].index * 8
-            val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
-          } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
-            const offset = ctx.capturedVars[f.name].index * 8
-            val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
-          } else {
-            const loc = ctx.getLocal(f.name)
-            if (loc) val = `(local.get $${loc.scopedName})`
-            else {
-              const glob = ctx.getGlobal(f.name)
-              if (glob) val = `(global.get $${f.name})`
-              else throw new Error(`Cannot capture ${f.name}: not found`)
-            }
+          if (loc) val = `(local.get $${loc.scopedName})`
+          else {
+            const glob = ctx.getGlobal(f.name)
+            if (glob) val = `(global.get $${f.name})`
+            else throw new Error(`Cannot capture ${f.name}: not found`)
           }
-          return `(f64.store (i32.add (global.get $__heap) (i32.const ${i * 8})) ${val})`
-        }).join('\n        ')
-        // Allocate env, store values, call function
-        return wat(`(block (result f64)
-          ${envVals}
-          (call $${name}
-            (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
-            ${argWats})
-          (global.set $__heap (i32.add (global.get $__heap) (i32.const ${envSize})))
-        )`, 'f64')
-      }
+        }
+        // Store at direct offset (no header)
+        return `(f64.store (i32.add (global.get $__heap) (i32.const ${i * 8})) ${val})`
+      }).join('\n        ')
+      // Calculate total env size (no header), aligned to 8 bytes
+      const alignedEnvSize = (envSize + 7) & ~7
+      // Allocate env, store values, call function
+      return wat(`(block (result f64)
+        ${envVals}
+        (call $${name}
+          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
+          ${argWats})
+        (global.set $__heap (i32.add (global.get $__heap) (i32.const ${alignedEnvSize})))
+      )`, 'f64')
     }
 
     // Regular function call
@@ -482,14 +476,8 @@ function resolveCall(namespace, name, args, receiver = null) {
     // Check if function returns a closure
     if (fn.returnsClosure) {
       const depth = (fn.closureDepth || 1) - 1
-      if (opts.gc) {
-        // Cast anyref result to (ref null $closure)
-        ctx.usedClosureType = true
-        return wat(`(ref.cast (ref null $closure) (call $${name} ${argWats}))`, 'closure', { closureDepth: depth })
-      } else {
-        // gc:false: closure is f64 NaN-boxed, but we track type for chained calls
-        return wat(`(call $${name} ${argWats})`, 'closure', { closureDepth: depth })
-      }
+      // Closure is f64 NaN-boxed, track type for chained calls
+      return wat(`(call $${name} ${argWats})`, 'closure', { closureDepth: depth })
     }
     return wat(`(call $${name} ${argWats})`, 'f64')
   }
@@ -514,7 +502,7 @@ function genClosureCall(name, args) {
   const argWats = args.map(a => String(f64(gen(a)))).join(' ')
   const closureVal = genIdent(name)
   const isNullable = isClosure(closureVal) // nullable if typed as closure
-  return wat(callClosure(ctx, opts.gc, String(closureVal), argWats, args.length, isNullable), 'f64')
+  return wat(callClosure(ctx, String(closureVal), argWats, args.length, isNullable), 'f64')
 }
 
 /**
@@ -533,7 +521,7 @@ function genClosureCallExpr(closureVal, args) {
   const remainingDepth = closureVal.schema?.closureDepth ?? 0
   const returnsClosure = remainingDepth > 0
   const resultType = returnsClosure ? 'closure' : 'f64'
-  const code = callClosure(ctx, opts.gc, String(closureVal), argWats, args.length, true, returnsClosure)
+  const code = callClosure(ctx, String(closureVal), argWats, args.length, true, returnsClosure)
   return wat(code, resultType, returnsClosure ? { closureDepth: remainingDepth - 1 } : undefined)
 }
 
@@ -555,108 +543,67 @@ function genClosureCallExpr(closureVal, args) {
  * @example genClosureValue('__anon0', '$env0', [{name:'x', index:0, type:'f64'}], false, 1)
  */
 function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
-  if (opts.gc) {
-    ctx.usedClosureType = true
-    // Track function type for funcref
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(arity)
+  // Memory-based closure: NaN-encode table index + env pointer
+  ctx.usedFuncTable = true
+  ctx.usedMemory = true
+  if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
+  ctx.usedFuncTypes.add(arity)
 
-    // Build environment
-    let envWat
-    if (!envType || envFields.length === 0) {
-      // No environment needed - use null anyref
-      envWat = '(ref.null none)'
-    } else if (usesOwnEnv && ctx.ownEnvType) {
-      // Pass our own env directly
-      envWat = '(local.get $__ownenv)'
-    } else {
-      // Build new env struct with captured values
-      const envVals = envFields.map(f => {
-        if (ctx.hoistedVars && f.name in ctx.hoistedVars) {
-          const { index } = ctx.hoistedVars[f.name]
-          return `(struct.get ${ctx.ownEnvType} ${index} (local.get $__ownenv))`
-        }
-        if (ctx.capturedVars && f.name in ctx.capturedVars) {
-          const { index } = ctx.capturedVars[f.name]
-          // Use $__envcast in gc:true mode
-          return `(struct.get ${ctx.currentEnv} ${index} (local.get $__envcast))`
-        }
-        const loc = ctx.getLocal(f.name)
-        if (loc) return `(local.get $${loc.scopedName})`
-        const glob = ctx.getGlobal(f.name)
-        if (glob) return `(global.get $${f.name})`
-        throw new Error(`Cannot capture ${f.name}: not found`)
-      }).join(' ')
-      envWat = `(struct.new ${envType} ${envVals})`
-    }
-
-    // Create closure struct: (struct.new $closure funcref env)
-    ctx.refFuncs.add(fnName) // Track for elem declare
-    return wat(`(struct.new $closure (ref.func $${fnName}) ${envWat})`, 'closure')
-  } else {
-    // gc:false: NaN-encode table index + env pointer
-    ctx.usedFuncTable = true
-    ctx.usedMemory = true
-    if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-    ctx.usedFuncTypes.add(arity)
-
-    // Add function to table and get its index
-    let tableIdx = ctx.funcTableEntries.indexOf(fnName)
-    if (tableIdx === -1) {
-      tableIdx = ctx.funcTableEntries.length
-      ctx.funcTableEntries.push(fnName)
-    }
-
-    // Build environment in memory
-    if (!envType || envFields.length === 0) {
-      // No env - encode just table index, env length=0
-      return wat(`(f64.reinterpret_i64 (i64.or
-        (i64.const 0x7FF0000000000000)
-        (i64.or
-          (i64.shl (i64.const ${tableIdx}) (i64.const 32))
-          (i64.const 0))))`, 'closure')
-    }
-
-    // Allocate env in memory
-    const id = ctx.loopCounter++
-    const tmpEnv = `$_closenv_${id}`
-    ctx.addLocal(tmpEnv.slice(1), 'f64')
-
-    // Store captured values in env
-    let stores = ''
-    for (let i = 0; i < envFields.length; i++) {
-      const f = envFields[i]
-      let val
-      if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
-        const offset = ctx.hoistedVars[f.name].index * 8
-        val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
-      } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
-        const offset = ctx.capturedVars[f.name].index * 8
-        val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
-      } else {
-        const loc = ctx.getLocal(f.name)
-        if (loc) val = `(local.get $${loc.scopedName})`
-        else {
-          const glob = ctx.getGlobal(f.name)
-          if (glob) val = `(global.get $${f.name})`
-          else throw new Error(`Cannot capture ${f.name}: not found`)
-        }
-      }
-      stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
-    }
-
-    // Create closure: NaN-box with [0x7FF][tableIdx:16][envLen:16][envOffset:20]
-    // Actually simpler: use lower 32 bits for env offset, bits 32-47 for table idx, bits 48-51 for env length
-    return wat(`(block (result f64)
-      (local.set ${tmpEnv} (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length})))
-      ${stores}(f64.reinterpret_i64 (i64.or
-        (i64.const 0x7FF0000000000000)
-        (i64.or
-          (i64.shl (i64.const ${tableIdx}) (i64.const 32))
-          (i64.or
-            (i64.shl (i64.extend_i32_u (call $__ptr_len (local.get ${tmpEnv}))) (i64.const 48))
-            (i64.extend_i32_u (call $__ptr_offset (local.get ${tmpEnv}))))))))`, 'closure')
+  // Add function to table and get its index
+  let tableIdx = ctx.funcTableEntries.indexOf(fnName)
+  if (tableIdx === -1) {
+    tableIdx = ctx.funcTableEntries.length
+    ctx.funcTableEntries.push(fnName)
   }
+
+  // Build environment in memory
+  if (!envType || envFields.length === 0) {
+    // No env - encode just table index, env length=0
+    return wat(`(f64.reinterpret_i64 (i64.or
+      (i64.const 0x7FF0000000000000)
+      (i64.or
+        (i64.shl (i64.const ${tableIdx}) (i64.const 32))
+        (i64.const 0))))`, 'closure')
+  }
+
+  // Allocate env in memory
+  const id = ctx.loopCounter++
+  const tmpEnv = `$_closenv_${id}`
+  ctx.addLocal(tmpEnv.slice(1), 'f64')
+
+  // Store captured values in env
+  let stores = ''
+  for (let i = 0; i < envFields.length; i++) {
+    const f = envFields[i]
+    let val
+    if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
+      const offset = ctx.hoistedVars[f.name].index * 8
+      val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
+    } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
+      const offset = ctx.capturedVars[f.name].index * 8
+      val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
+    } else {
+      const loc = ctx.getLocal(f.name)
+      if (loc) val = `(local.get $${loc.scopedName})`
+      else {
+        const glob = ctx.getGlobal(f.name)
+        if (glob) val = `(global.get $${f.name})`
+        else throw new Error(`Cannot capture ${f.name}: not found`)
+      }
+    }
+    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
+  }
+
+  // Create closure: NaN-box with [0x7FF][tableIdx:16][envLen:16][envOffset:20]
+  return wat(`(block (result f64)
+    (local.set ${tmpEnv} (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length})))
+    ${stores}(f64.reinterpret_i64 (i64.or
+      (i64.const 0x7FF0000000000000)
+      (i64.or
+        (i64.shl (i64.const ${tableIdx}) (i64.const 32))
+        (i64.or
+          (i64.shl (i64.extend_i32_u (call $__ptr_len (local.get ${tmpEnv}))) (i64.const 48))
+          (i64.extend_i32_u (call $__ptr_offset (local.get ${tmpEnv}))))))))`, 'closure')
 }
 
 // =============================================================================
@@ -730,79 +677,13 @@ const operators = {
     if (!hasSpread) {
       // No spread - use existing array literal codegen
       const gens = elements.map(e => gen(e))
-      return mkArrayLiteral(ctx, opts.gc, gens, isConstant, evalConstant, elements)
+      return mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements)
     }
 
     // Handle spread: [...arr1, x, ...arr2, y] -> concat arrays and elements
     ctx.usedArrayType = true
+    ctx.usedMemory = true
     const id = ctx.loopCounter++
-
-    if (opts.gc) {
-      // gc:true: build array dynamically
-      // First pass: calculate total length and collect values
-      const parts = []
-      for (const e of elements) {
-        if (Array.isArray(e) && e[0] === '...') {
-          parts.push({ spread: true, value: gen(e[1]) })
-        } else {
-          parts.push({ spread: false, value: gen(e) })
-        }
-      }
-
-      // Generate length calculation and array building
-      const tmpLen = `$_slen_${id}`
-      const tmpArr = `$_sarr_${id}`
-      const tmpIdx = `$_sidx_${id}`
-      ctx.addLocal(tmpLen.slice(1), 'i32')
-      ctx.addLocal(tmpIdx.slice(1), 'i32')
-      ctx.localDecls.push(`(local ${tmpArr} (ref null $f64array))`)
-      ctx.locals[tmpArr.slice(1)] = { idx: ctx.localCounter++, type: 'ref' }
-
-      // Calculate total length
-      let lenCode = '(i32.const 0)'
-      for (const p of parts) {
-        if (p.spread) {
-          lenCode = `(i32.add ${lenCode} (array.len ${p.value}))`
-        } else {
-          lenCode = `(i32.add ${lenCode} (i32.const 1))`
-        }
-      }
-
-      // Build the array
-      let code = `(local.set ${tmpLen} ${lenCode})
-      (local.set ${tmpArr} (array.new $f64array (f64.const 0) (local.get ${tmpLen})))
-      (local.set ${tmpIdx} (i32.const 0))\n      `
-
-      for (const p of parts) {
-        if (p.spread) {
-          // Copy spread array: loop and copy elements
-          const loopId = ctx.loopCounter++
-          const tmpSrc = `$_ssrc_${loopId}`
-          const tmpI = `$_si_${loopId}`
-          ctx.addLocal(tmpI.slice(1), 'i32')
-          ctx.localDecls.push(`(local ${tmpSrc} (ref null $f64array))`)
-          ctx.locals[tmpSrc.slice(1)] = { idx: ctx.localCounter++, type: 'ref' }
-          code += `(local.set ${tmpSrc} ${p.value})
-      (local.set ${tmpI} (i32.const 0))
-      (block $break_${loopId} (loop $loop_${loopId}
-        (br_if $break_${loopId} (i32.ge_u (local.get ${tmpI}) (array.len (local.get ${tmpSrc}))))
-        (array.set $f64array (local.get ${tmpArr}) (local.get ${tmpIdx}) (array.get $f64array (local.get ${tmpSrc}) (local.get ${tmpI})))
-        (local.set ${tmpIdx} (i32.add (local.get ${tmpIdx}) (i32.const 1)))
-        (local.set ${tmpI} (i32.add (local.get ${tmpI}) (i32.const 1)))
-        (br $loop_${loopId})
-      ))\n      `
-        } else {
-          // Single element
-          code += `(array.set $f64array (local.get ${tmpArr}) (local.get ${tmpIdx}) ${f64(p.value)})
-      (local.set ${tmpIdx} (i32.add (local.get ${tmpIdx}) (i32.const 1)))\n      `
-        }
-      }
-
-      return wat(`(block (result (ref null $f64array))
-      ${code}(local.get ${tmpArr}))`, 'array')
-    } else {
-      // gc:false: build array in linear memory
-      ctx.usedMemory = true
       const parts = []
       for (const e of elements) {
         if (Array.isArray(e) && e[0] === '...') {
@@ -864,115 +745,55 @@ const operators = {
 
       return wat(`(block (result f64)
       ${code}(local.get ${tmpArr}))`, 'array')
-    }
   },
 
   '{'(props) {
-    if (props.length === 0) return nullRef(opts.gc)
+    if (props.length === 0) return nullRef()
     ctx.usedArrayType = true
+    ctx.usedMemory = true
     const keys = props.map(p => p[0])
     const vals = props.map(p => String(f64(gen(p[1]))))
     const objId = ctx.objectCounter++
     ctx.objectSchemas[objId] = keys
-    if (opts.gc) {
-      return wat(`(array.new_fixed $f64array ${vals.length} ${vals.join(' ')})`, 'object', objId)
-    } else {
-      // gc:false - object is f64 array with schema tracking
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_obj_${id}`
-      ctx.addLocal(tmp.slice(1), 'f64')
-      let stores = ''
-      for (let i = 0; i < vals.length; i++) {
-        stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-      }
-      return wat(`(block (result f64)
+    const id = ctx.loopCounter++
+    const tmp = `$_obj_${id}`
+    ctx.addLocal(tmp.slice(1), 'f64')
+    let stores = ''
+    for (let i = 0; i < vals.length; i++) {
+      stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+    }
+    return wat(`(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
       ${stores}(local.get ${tmp}))`, 'object', objId)
-    }
   },
 
   '[]'([arr, idx]) {
     const a = gen(arr), iw = i32(gen(idx))
-    if (opts.gc) {
-      if (isString(a)) {
-        ctx.usedStringType = true
-        return wat(strCharAt(true, String(a), iw), 'i32')
-      }
-      if (isRefArray(a)) {
-        // Indexing into anyarray - returns anyref, need to cast based on element type
-        ctx.usedRefArrayType = true
-        ctx.usedArrayType = true
-        // Try to determine element type from schema
-        const schema = a.schema  // Array of element types
-        let litIdx = null
-        if (isConstant(idx)) {
-          const v = evalConstant(idx)
-          litIdx = Number.isFinite(v) ? (v | 0) : null
-        }
-
-        // Get element info from schema - schema is array of {type, schema} OR {uniformType: 'type'}
-        const elemInfo = (Array.isArray(schema) && litIdx !== null) ? schema[litIdx] : null
-        const elemType = elemInfo ? elemInfo.type : null
-        const elemSchema = elemInfo ? elemInfo.schema : null
-
-        // For dynamic index, check if all elements have same type (from array schema or uniformType marker)
-        let uniformType = schema && schema.uniformType ? schema.uniformType : null
-        if (!uniformType && Array.isArray(schema) && schema.length > 0 && schema.every(e => e.type === schema[0].type)) {
-          uniformType = schema[0].type
-        }
-        const uniformSchema = uniformType && Array.isArray(schema) && schema[0] ? schema[0].schema : null
-        const effectiveType = elemType || uniformType
-        const effectiveSchema = elemSchema || uniformSchema
-
-        if (effectiveType === 'array') {
-          return wat(`(ref.cast (ref $f64array) (array.get $anyarray ${a} ${iw}))`, 'array')
-        } else if (effectiveType === 'refarray') {
-          return wat(`(ref.cast (ref $anyarray) (array.get $anyarray ${a} ${iw}))`, 'refarray', effectiveSchema)
-        } else if (effectiveType === 'object') {
-          return wat(`(ref.cast (ref $f64array) (array.get $anyarray ${a} ${iw}))`, 'object')
-        } else if (effectiveType === 'string') {
-          ctx.usedStringType = true
-          return wat(`(ref.cast (ref $string) (array.get $anyarray ${a} ${iw}))`, 'string')
-        } else if (effectiveType === 'f64' || effectiveType === 'i32') {
-          return wat(`(array.get $f64array (ref.cast (ref $f64array) (array.get $anyarray ${a} ${iw})) (i32.const 0))`, 'f64')
-        } else {
-          return wat(`(ref.cast (ref $f64array) (array.get $anyarray ${a} ${iw}))`, 'array')
-        }
-      }
-      return arrGetTyped(ctx, true, String(a), iw)
-    } else {
-      // gc:false - load from memory
-      ctx.usedMemory = true
-      const schema = a.schema
-      let litIdx = null
-      if (isConstant(idx)) {
-        const v = evalConstant(idx)
-        litIdx = Number.isFinite(v) ? (v | 0) : null
-      }
-      if (Array.isArray(schema) && litIdx !== null) {
-        const elem = schema[litIdx]
-        if (elem && elem.type === 'object' && elem.id !== undefined) {
-          return wat(`(f64.load (i32.add (call $__ptr_offset ${a}) (i32.const ${litIdx * 8})))`, 'object', elem.id)
-        }
-      }
-      if (isString(a)) {
-        return wat(strCharAt(false, String(a), iw), 'i32')
-      }
-      return arrGetTyped(ctx, false, String(a), iw)
+    // Memory-based array access
+    ctx.usedMemory = true
+    const schema = a.schema
+    let litIdx = null
+    if (isConstant(idx)) {
+      const v = evalConstant(idx)
+      litIdx = Number.isFinite(v) ? (v | 0) : null
     }
+    if (Array.isArray(schema) && litIdx !== null) {
+      const elem = schema[litIdx]
+      if (elem && elem.type === 'object' && elem.id !== undefined) {
+        return wat(`(f64.load (i32.add (call $__ptr_offset ${a}) (i32.const ${litIdx * 8})))`, 'object', elem.id)
+      }
+    }
+    if (isString(a)) {
+      return wat(strCharAt(String(a), iw), 'i32')
+    }
+    return arrGetTyped(ctx, String(a), iw)
   },
 
   '?.[]'([arr, idx]) {
     const aw = gen(arr), iw = i32(gen(idx))
-    if (opts.gc) {
-      ctx.usedArrayType = true
-      return wat(`(if (result f64) (ref.is_null ${aw}) (then (f64.const 0)) (else (array.get $f64array ${aw} ${iw})))`, 'f64')
-    } else {
-      // gc:false - check if pointer is 0 (null)
-      ctx.usedMemory = true
-      return wat(`(if (result f64) (f64.eq ${aw} (f64.const 0)) (then (f64.const 0)) (else (f64.load (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))))))`, 'f64')
-    }
+    // Memory-based: check if pointer is 0 (null)
+    ctx.usedMemory = true
+    return wat(`(if (result f64) (f64.eq ${aw} (f64.const 0)) (then (f64.const 0)) (else (f64.load (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))))))`, 'f64')
   },
 
   '.'([obj, prop]) {
@@ -980,17 +801,9 @@ const operators = {
       return wat(`(f64.const ${fmtNum(MATH_OPS.constants[prop])})`, 'f64')
     const o = gen(obj)
     if (prop === 'length') {
-      if (isArray(o) || o.type === 'refarray' || (isString(o) && opts.gc)) {
-        if (isArray(o) || o.type === 'refarray') ctx.usedArrayType = true
-        else ctx.usedStringType = true
-        if (opts.gc && o.type === 'refarray') {
-          ctx.usedRefArrayType = true
-          return wat(`(array.len ${String(o)})`, 'i32')
-        }
-        return wat(arrLen(opts.gc, String(o)), 'i32')
-      } else if (isString(o) || isF64(o)) {
+      if (isArray(o) || isString(o) || isF64(o)) {
         ctx.usedMemory = true
-        return wat(arrLen(false, String(o)), 'i32')  // gc:false uses ptr_len
+        return wat(arrLen(String(o)), 'i32')
       }
       throw new Error(`Cannot get length of ${o.type}`)
     }
@@ -999,9 +812,8 @@ const operators = {
       if (schema) {
         const idx = schema.indexOf(prop)
         if (idx >= 0) {
-          if (opts.gc) ctx.usedArrayType = true
-          else ctx.usedMemory = true
-          return wat(objGet(opts.gc, String(o), idx), 'f64')
+          ctx.usedMemory = true
+          return wat(objGet(String(o), idx), 'f64')
         }
       }
     }
@@ -1011,17 +823,10 @@ const operators = {
   '?.'([obj, prop]) {
     const o = gen(obj)
     if (prop === 'length') {
-      if (opts.gc) {
-        if (isArray(o) || isRef(o)) {
-          ctx.usedArrayType = true
-          return wat(`(if (result f64) (ref.is_null ${o}) (then (f64.const 0)) (else (f64.convert_i32_s (array.len ${o}))))`, 'f64')
-        }
-      } else {
-        // gc:false: arrays and strings are f64 pointers
-        if (isF64(o) || isString(o)) {
-          ctx.usedMemory = true
-          return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o}))))`, 'f64')
-        }
+      // Memory-based: arrays and strings are f64 pointers
+      if (isF64(o) || isString(o) || isArray(o)) {
+        ctx.usedMemory = true
+        return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o}))))`, 'f64')
       }
     }
     return o
@@ -1101,9 +906,6 @@ const operators = {
       const envId = ctx.closureCounter++
       envType = `$env${envId}`
       envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v) }))
-      if (opts.gc) {
-        ctx.closureEnvTypes.push({ id: envId, fields: envFields })
-      }
     }
 
     // Register the lifted function
@@ -1170,19 +972,13 @@ const operators = {
         // Get type code without generating string
         const val = gen(typeofArg)
         let typeCode
-        if (!opts.gc && isF64(val)) {
-          // gc:false: f64 might be a regular number, the NaN number, or a NaN-boxed pointer
-          // Check using our pointer detection: type > 0 means pointer
-          // If f64.eq x x is true → regular number (type 1)
-          // If f64.eq x x is false → NaN pattern:
-          //   - type field = 0 → canonical NaN number (type 1)
-          //   - type field > 0 → pointer (type 4 = object)
+        if (isF64(val)) {
+          // f64 might be a regular number or an integer-packed pointer
+          // Pointer threshold: values >= 2^48 are pointers (arrays/objects)
+          // Check: if value >= threshold → pointer (type 4 = object), else number (type 1)
           ctx.usedMemory = true
-          typeCode = `(if (result i32) (f64.eq ${val} ${val})
-            (then (i32.const 1))
-            (else (select (i32.const 4) (i32.const 1) (call $__is_pointer ${val}))))`
-        } else if (isF64(val)) typeCode = '(i32.const 1)'
-        else if (isI32(val)) typeCode = '(i32.const 3)'
+          typeCode = `(select (i32.const 4) (i32.const 1) (call $__is_pointer ${val}))`
+        } else if (isI32(val)) typeCode = '(i32.const 3)'
         else if (isString(val)) typeCode = '(i32.const 2)'
         else if (isRef(val)) typeCode = '(i32.const 0)'
         else if (isArray(val) || isObject(val)) typeCode = '(i32.const 4)'
@@ -1197,24 +993,16 @@ const operators = {
       return operators['==']([b, a])  // Swap and recurse
     }
     const va = gen(a), vb = gen(b)
-    // String comparison: for interned strings, compare string IDs
+    // String comparison: use i64.eq on NaN-boxed pointers
     if (isString(va) && isString(vb)) {
-      if (opts.gc) {
-        return wat(`(ref.eq ${va} ${vb})`, 'i32')
-      } else {
-        return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
-      }
+      return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
-    // Array/object comparison: reference equality
+    // Array/object comparison: reference equality via i64
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      if (opts.gc) {
-        return wat(`(ref.eq ${va} ${vb})`, 'i32')
-      } else {
-        return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
-      }
+      return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
-    // gc:false f64 comparison: use i64.eq to handle NaN-boxed pointers correctly
-    if (!opts.gc && isF64(va) && isF64(vb)) {
+    // f64 comparison: use i64.eq to handle NaN-boxed pointers correctly
+    if (isF64(va) && isF64(vb)) {
       return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.eq(va, vb) : f64ops.eq(va, vb)
@@ -1234,24 +1022,16 @@ const operators = {
       return operators['!=']([b, a])
     }
     const va = gen(a), vb = gen(b)
-    // String comparison
+    // String comparison via i64
     if (isString(va) && isString(vb)) {
-      if (opts.gc) {
-        return wat(`(i32.eqz (ref.eq ${va} ${vb}))`, 'i32')
-      } else {
-        return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
-      }
+      return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
     // Array/object comparison: reference inequality
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      if (opts.gc) {
-        return wat(`(i32.eqz (ref.eq ${va} ${vb}))`, 'i32')
-      } else {
-        return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
-      }
+      return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
-    // gc:false f64 comparison: use i64.ne to handle NaN-boxed pointers correctly
-    if (!opts.gc && isF64(va) && isF64(vb)) {
+    // f64 comparison: use i64.ne to handle NaN-boxed pointers correctly
+    if (isF64(va) && isF64(vb)) {
       return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.ne(va, vb) : f64ops.ne(va, vb)
@@ -1410,6 +1190,15 @@ const operators = {
     if (typeof name !== 'string') throw new Error('let requires simple identifier')
     const scopedName = ctx.declareVar(name, false)
     const val = gen(value)
+    // Track array variables (type-based for gc:true, AST-based for gc:false)
+    const isArr = isArrayType(val.type) || isArrayExpr(value)
+    if (isArr) {
+      ctx.knownArrayVars.add(name)
+    }
+    // Warn on aliasing: b = a where a is known array
+    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
+      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+    }
     ctx.addLocal(name, val.type, val.schema, scopedName)
     return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
   },
@@ -1427,6 +1216,15 @@ const operators = {
     }
     const scopedName = ctx.declareVar(name, true)
     const val = gen(value)
+    // Track array variables (type-based for gc:true, AST-based for gc:false)
+    const isArr = isArrayType(val.type) || isArrayExpr(value)
+    if (isArr) {
+      ctx.knownArrayVars.add(name)
+    }
+    // Warn on aliasing
+    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
+      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+    }
     ctx.addLocal(name, val.type, val.schema, scopedName)
     return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
   },
@@ -1439,6 +1237,15 @@ const operators = {
     const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('var requires simple identifier')
     const val = gen(value)
+    // Track array variables (type-based for gc:true, AST-based for gc:false)
+    const isArr = isArrayType(val.type) || isArrayExpr(value)
+    if (isArr) {
+      ctx.knownArrayVars.add(name)
+    }
+    // Warn on aliasing
+    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
+      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+    }
     ctx.addLocal(name, val.type, val.schema, name)  // no scope prefix for var
     return wat(`(local.tee $${name} ${val})`, val.type, val.schema)
   },
@@ -1486,19 +1293,14 @@ const operators = {
     }
     const mkStr = (name) => {
       const { id, length } = typeStrings[name]
-      if (opts.gc) {
-        return `(array.new_data $string $str${id} (i32.const 0) (i32.const ${length}))`
-      } else {
-        ctx.usedMemory = true
-        return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`
-      }
+      ctx.usedMemory = true
+      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`
     }
-    if (!opts.gc && val.type === 'f64') {
-      // gc:false: f64 can be number or NaN-encoded pointer
+    if (val.type === 'f64') {
+      // f64 can be number or NaN-encoded pointer
       // NaN != NaN for pointers, number == number for regular floats
       return wat(`(select ${mkStr('number')} ${mkStr('object')} (f64.eq ${val} ${val}))`, 'string')
     }
-    if (val.type === 'f64') return wat(mkStr('number'), 'string')
     if (val.type === 'i32') return wat(mkStr('boolean'), 'string')
     if (val.type === 'string') return wat(mkStr('string'), 'string')
     if (val.type === 'ref') return wat(mkStr('undefined'), 'string')
@@ -1677,9 +1479,6 @@ function genAssign(target, value, returnValue) {
         const envId = ctx.closureCounter++
         envType = `$env${envId}`
         envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v) }))
-        if (opts.gc) {
-          ctx.closureEnvTypes.push({ id: envId, fields: envFields })
-        }
       }
 
       ctx.closures[target] = { envType, envFields, captured, params, body, usesOwnEnv: allFromOwnEnv }
@@ -1712,6 +1511,7 @@ function genAssign(target, value, returnValue) {
   if (Array.isArray(target) && target[0] === '[]' && Array.isArray(target[1]) && target[1][0] === ',') {
     const vars = target[1].slice(1)
     ctx.usedArrayType = true
+    ctx.usedMemory = true
     const id = ctx.loopCounter++
     const tmp = `$_destruct_${id}`
     ctx.addLocal(tmp.slice(1), 'array')
@@ -1720,12 +1520,7 @@ function genAssign(target, value, returnValue) {
     for (let i = 0; i < vars.length; i++) {
       if (typeof vars[i] === 'string') {
         ctx.addLocal(vars[i], 'f64')
-        if (opts.gc) {
-          code += `(local.set $${vars[i]} (array.get $f64array (local.get ${tmp}) (i32.const ${i})))\n    `
-        } else {
-          ctx.usedMemory = true
-          code += `(local.set $${vars[i]} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
-        }
+        code += `(local.set $${vars[i]} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
       }
     }
     const lastVar = vars[vars.length - 1]
@@ -1738,6 +1533,7 @@ function genAssign(target, value, returnValue) {
   if (Array.isArray(target) && target[0] === '{}' && Array.isArray(target[1]) && target[1][0] === ',') {
     const props = target[1].slice(1)
     ctx.usedArrayType = true
+    ctx.usedMemory = true
     const id = ctx.loopCounter++
     const tmp = `$_destruct_${id}`
     ctx.addLocal(tmp.slice(1), 'object')
@@ -1753,12 +1549,7 @@ function genAssign(target, value, returnValue) {
         const idx = schema.indexOf(varName)
         if (idx < 0) throw new Error(`Property ${varName} not found in object`)
         ctx.addLocal(varName, 'f64')
-        if (opts.gc) {
-          code += `(local.set $${varName} (array.get $f64array (local.get ${tmp}) (i32.const ${idx})))\n    `
-        } else {
-          ctx.usedMemory = true
-          code += `(local.set $${varName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
-        }
+        code += `(local.set $${varName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
         lastVar = varName
       }
     }
@@ -1771,14 +1562,9 @@ function genAssign(target, value, returnValue) {
   if (Array.isArray(target) && target[0] === '[]' && target.length === 3) {
     const aw = gen(target[1]), iw = i32(gen(target[2])), vw = f64(gen(value))
     ctx.usedArrayType = true
-    if (opts.gc) {
-      const code = `(array.set $f64array ${aw} ${iw} ${vw})`
-      return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
-    } else {
-      ctx.usedMemory = true
-      const code = `(f64.store (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))) ${vw})`
-      return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
-    }
+    ctx.usedMemory = true
+    const code = `(f64.store (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))) ${vw})`
+    return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
   }
 
   // Global constant optimization (only at top level, and only for new variables)
@@ -1800,8 +1586,8 @@ function genAssign(target, value, returnValue) {
   // Check if this is a hoisted variable (must be written to own env)
   if (ctx.hoistedVars && target in ctx.hoistedVars) {
     const { index, type } = ctx.hoistedVars[target]
-    const setCode = envSet(opts.gc, ctx.ownEnvType, '$__ownenv', index, f64(val))
-    const getCode = envGet(opts.gc, ctx.ownEnvType, '$__ownenv', index, type)
+    const setCode = envSet( ctx.ownEnvType, '$__ownenv', index, f64(val))
+    const getCode = envGet( ctx.ownEnvType, '$__ownenv', index, type)
     return returnValue
       ? wat(`(block (result f64) ${setCode} ${getCode})`, type)
       : setCode + '\n    '
@@ -1810,9 +1596,9 @@ function genAssign(target, value, returnValue) {
   // Check if this is a captured variable (must be written to received env)
   if (ctx.capturedVars && target in ctx.capturedVars) {
     const { index, type } = ctx.capturedVars[target]
-    const envVar = opts.gc ? '$__envcast' : '$__env'
-    const setCode = envSet(opts.gc, ctx.currentEnv, envVar, index, f64(val))
-    const getCode = envGet(opts.gc, ctx.currentEnv, envVar, index, type)
+    const envVar = '$__env'
+    const setCode = envSet(ctx.currentEnv, envVar, index, f64(val))
+    const getCode = envGet(ctx.currentEnv, envVar, index, type)
     return returnValue
       ? wat(`(block (result f64) ${setCode} ${getCode})`, type)
       : setCode + '\n    '
@@ -1894,6 +1680,10 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   newCtx.closureCounter = parentCtx.closureCounter
   newCtx.globals = parentCtx.globals
   newCtx.funcTableEntries = parentCtx.funcTableEntries  // Share table entries for correct indices
+  newCtx.staticArrays = parentCtx.staticArrays  // Share static arrays for data segments
+  newCtx.strings = parentCtx.strings  // Share string interning
+  newCtx.stringData = parentCtx.stringData  // Share string data
+  newCtx.stringOffset = parentCtx.stringOffset  // Share string offset counter
   newCtx.inFunction = true
   newCtx.returnLabel = '$return_' + name
 
@@ -1927,58 +1717,26 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     for (const field of newCtx.ownEnvFields) {
       newCtx.hoistedVars[field.name] = { index: field.index, type: field.type }
     }
-    // Register env type
-    if (opts.gc) {
-      parentCtx.closureEnvTypes.push({ id: envId, fields: newCtx.ownEnvFields })
-    }
   }
 
   const prevCtx = setCtx(newCtx)
 
-  // Add env parameter for closures
-  // For first-class functions, we use generic anyref/f64 and cast inside
+  // Add env parameter for closures (memory-based)
   if (closureInfo) {
-    if (opts.gc) {
-      // Use anyref for compatibility with $closure struct, cast to specific type inside
-      envParam = `(param $__env anyref) `
-      ctx.locals.__env = { idx: ctx.localCounter++, type: 'anyref' }
-      // Cast to specific env type for field access
-      if (closureInfo.envType) {
-        ctx.localDecls.push(`(local $__envcast (ref null ${closureInfo.envType}))`)
-        ctx.locals.__envcast = { idx: ctx.localCounter++, type: 'ref' }
-        envInit = `(local.set $__envcast (ref.cast (ref null ${closureInfo.envType}) (local.get $__env)))\n      `
-      }
-    } else {
-      envParam = `(param $__env f64) `
-      ctx.locals.__env = { idx: ctx.localCounter++, type: 'f64' }
-    }
+    envParam = `(param $__env f64) `
+    ctx.locals.__env = { idx: ctx.localCounter++, type: 'f64' }
   }
 
-  // Initialize own env if needed
+  // Initialize own env if needed (memory-based)
   if (ctx.ownEnvType) {
-    if (opts.gc) {
-      // Add local with explicit env struct type
-      ctx.locals.__ownenv = { idx: ctx.localCounter++, type: 'envref' }
-      ctx.localDecls.push(`(local $__ownenv (ref null ${ctx.ownEnvType}))`)
-      // Initialize with zeros
-      const zeros = ctx.ownEnvFields.map(() => '(f64.const 0)').join(' ')
-      envInit = `(local.set $__ownenv (struct.new ${ctx.ownEnvType} ${zeros}))\n      `
-      // Copy captured params into env
-      for (const field of ctx.ownEnvFields) {
-        if (params.includes(field.name)) {
-          envInit += `(struct.set ${ctx.ownEnvType} ${field.index} (local.get $__ownenv) (local.get $${field.name}))\n      `
-        }
-      }
-    } else {
-      ctx.usedMemory = true
-      ctx.addLocal('__ownenv', 'f64')
-      const envSize = ctx.ownEnvFields.length * 8
-      envInit = `(local.set $__ownenv (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${ctx.ownEnvFields.length})))\n      `
-      // Copy captured params into env
-      for (const field of ctx.ownEnvFields) {
-        if (params.includes(field.name)) {
-          envInit += `(f64.store (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${field.index * 8})) (local.get $${field.name}))\n      `
-        }
+    ctx.usedMemory = true
+    ctx.addLocal('__ownenv', 'f64')
+    const envSize = ctx.ownEnvFields.length * 8
+    envInit = `(local.set $__ownenv (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${ctx.ownEnvFields.length})))\n      `
+    // Copy captured params into env
+    for (const field of ctx.ownEnvFields) {
+      if (params.includes(field.name)) {
+        envInit += `(f64.store (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${field.index * 8})) (local.get $${field.name}))\n      `
       }
     }
   }
@@ -2031,61 +1789,54 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     }
   }
 
-  // Generate destructuring unpacking code
+  // Generate destructuring unpacking code (memory-based)
   for (const di of destructParams) {
     if (di.destruct === 'array') {
       // Array destructuring: extract elements by index
+      ctx.usedMemory = true
       di.names.forEach((name, idx) => {
-        if (opts.gc) {
-          paramInit += `(local.set $${name} (array.get $f64array (local.get $${di.name}) (i32.const ${idx})))\n      `
-        } else {
-          // gc:false: array is NaN-boxed pointer, need to read from memory
-          ctx.usedMemory = true
-          paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
-        }
+        paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
       })
     } else if (di.destruct === 'object') {
       // Object destructuring: extract by index (assumes property order matches)
-      // Note: objects are f64array with schema, keys accessed by index
+      ctx.usedMemory = true
       di.names.forEach((name, idx) => {
-        if (opts.gc) {
-          paramInit += `(local.set $${name} (array.get $f64array (local.get $${di.name}) (i32.const ${idx})))\n      `
-        } else {
-          ctx.usedMemory = true
-          paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
-        }
+        paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
       })
     }
   }
 
   const bodyResult = gen(bodyAst)
 
-  // Determine return type and final body
-  let returnType, bodyWat
-  if (opts.gc && bodyResult.type === 'closure') {
-    // Function returns a closure - use anyref return type
-    returnType = 'anyref'
-    bodyWat = String(bodyResult)
-  } else {
-    // Normal f64 return
-    returnType = 'f64'
-    bodyWat = f64(bodyResult)
+  // Determine return type and final body (always f64 in memory mode)
+  const returnType = 'f64'
+  const bodyWat = f64(bodyResult)
+
+  // Generate param declarations with correct types (all f64 in memory mode)
+  const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
+  const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
+
+  // Track export signature for JS wrapper generation
+  // JS wrapper in instantiate() uses this to know which params are arrays
+  if (exported && !closureInfo) {
+    const arrayParams = []
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i]
+      if (restParam && p === restParam.name) {
+        arrayParams.push(i)
+      } else if (destructParams.find(di => di.name === p)) {
+        arrayParams.push(i)
+      } else if (ctx.inferredArrayParams.has(p)) {
+        // Param was used with array methods (e.g., arr.map())
+        arrayParams.push(i)
+      }
+    }
+    const returnsArray = bodyResult.type === 'array' || bodyResult.type === 'refarray' || ctx.returnsArrayPointer
+    if (arrayParams.length > 0 || returnsArray) {
+      parentCtx.exportSignatures[name] = { arrayParams, returnsArray }
+    }
   }
 
-  // Generate param declarations with correct types
-  const paramDecls = params.map(p => {
-    if (restParam && p === restParam.name) {
-      // Rest param is array type
-      return opts.gc ? `(param $${p} (ref null $f64array))` : `(param $${p} f64)`
-    }
-    // Check if destructuring param - both array and object are f64array
-    const destructInfo = destructParams.find(di => di.name === p)
-    if (destructInfo) {
-      return opts.gc ? `(param $${p} (ref null $f64array))` : `(param $${p} f64)`
-    }
-    return `(param $${p} f64)`
-  }).join(' ')
-  const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
   // Export only if explicitly exported and not a closure
   const exportClause = (exported && !closureInfo) ? ` (export "${name}")` : ''
   // Wrap body in block to support early return

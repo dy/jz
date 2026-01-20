@@ -309,33 +309,22 @@ export const FUNCTIONS = {
     (f64.convert_i32_s (local.get $digit)))`,
 
   // parseInt from string (first char only for now)
-  // Input: string ref (i16 array), radix (i32)
+  // Input: string ptr (f64, packed as type+len+offset), radix (i32)
   // Returns: f64 value or NaN
-  parseInt: `(func $parseInt (param $str (ref $string)) (param $radix i32) (result f64)
-    (local $code i32) (local $len i32)
-    (local.set $len (array.len (local.get $str)))
+  // Memory layout: i16 code units at offset
+  parseInt: `(func $parseInt (param $str f64) (param $radix i32) (result f64)
+    (local $code i32) (local $len i32) (local $offset i32)
+    (local.set $len (call $__ptr_len (local.get $str)))
     (if (i32.eq (local.get $len) (i32.const 0))
       (then (return (f64.const nan))))
-    ;; Get first character code (UTF-16 code unit)
-    (local.set $code (i32.and (array.get_u $string (local.get $str) (i32.const 0)) (i32.const 0xFFFF)))
+    (local.set $offset (call $__ptr_offset (local.get $str)))
+    ;; Get first character code (i16 stored as 2-byte value)
+    (local.set $code (i32.load16_u (local.get $offset)))
     (call $parseIntFromCode (local.get $code) (local.get $radix)))`,
 
   // Array.fill - fill array with value, returns the array
-  // Uses WASM GC array.fill instruction
-  arrayFill: `(func $arrayFill (param $arr (ref $f64array)) (param $val f64) (result (ref $f64array))
-    (local $i i32) (local $len i32)
-    (local.set $len (array.len (local.get $arr)))
-    (local.set $i (i32.const 0))
-    (block $done
-      (loop $loop
-        (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-        (array.set $f64array (local.get $arr) (local.get $i) (local.get $val))
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (br $loop)))
-    (local.get $arr))`,
-
-  // Memory-based arrayFill for gc:false mode
-  arrayFillMem: `(func $arrayFillMem (param $arr f64) (param $val f64) (result f64)
+  // Memory-based: f64 array stored as sequential f64 values at pointer offset
+  arrayFill: `(func $arrayFill (param $arr f64) (param $val f64) (result f64)
     (local $i i32) (local $len i32)
     (local.set $len (call $__ptr_len (local.get $arr)))
     (local.set $i (i32.const 0))

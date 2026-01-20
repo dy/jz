@@ -8,9 +8,7 @@
     "jz": "cli.js"
   },
   "scripts": {
-    "test": "npm run test:gc-true && npm run test:gc-false",
-    "test:gc-true": "echo '\\n=== Running tests with GC=true ===' && GC=true node test/index.js",
-    "test:gc-false": "echo '\\n=== Running tests with GC=false ===' && GC=false node test/index.js",
+    "test": "node test/index.js",
     "test262": "node test/test262.js",
     "test262:runner": "node test/runner.js",
     "dev": "node cli.js",
