@@ -4,6 +4,7 @@ It should use API provided by subscript to define operators if needed.
 For all features write tests with gc:false and gc:true options.
 Document any deviations from standard JS behavior in research.md as appropriate.
 Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions.
+Any JZ code must be valid JS code as well. Try to fix JS quirks but don't introduce new ones.
 
 ## Project Structure (src/, ~4100 lines)
 
@@ -29,7 +30,6 @@ index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() �
 
 ## Key Patterns
 
-- **Typed values**: `[type, wat, schema?]` - all values carry type info
 - **gc branching**: gc.js abstracts differences between gc:true/gc:false modes
 - **Method modules**: array.js/string.js import `{ctx, opts, gen}` from compile.js
 - **Closures**: gc:true uses WASM GC structs, gc:false uses NaN-boxing + call_indirect
