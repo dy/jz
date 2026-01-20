@@ -85,16 +85,17 @@
     * [ ] `.join(sep)` - array to string
     * [ ] `.flat(depth)` - flatten nested
     * [ ] `.flatMap(fn)` - map then flatten
-  * [ ] String Methods
-    * [ ] `.substring(start, end)`
-    * [ ] `.substr(start, len)` - deprecated but common
-    * [ ] `.split(sep)`
-    * [ ] `.trim()`, `.trimStart()`, `.trimEnd()`
-    * [ ] `.padStart(len, str)`, `.padEnd(len, str)`
-    * [ ] `.repeat(n)`
-    * [ ] `.replace(str, str)`
-    * [ ] `.toUpperCase()`, `.toLowerCase()`
-    * [ ] `.startsWith(str)`, `.endsWith(str)`
+  * [x] String Methods
+    * [x] `.substring(start, end)`
+    * [x] `.substr(start, len)` - deprecated but common
+    * [x] `.split(sep)` - creates array of strings
+    * [x] `.trim()`, `.trimStart()`, `.trimEnd()`
+    * [x] `.padStart(len, str)`, `.padEnd(len, str)`
+    * [x] `.repeat(n)`
+    * [x] `.replace(search, replacement)` - first occurrence
+    * [x] `.toUpperCase()`, `.toLowerCase()`
+    * [x] `.startsWith(str)`, `.endsWith(str)`
+    * [x] `.includes(str)`, `.indexOf(str)`
   * [x]  Export Model
     * [x] `export const name = ...` - explicit export
     * [x] `export { name }` - export existing

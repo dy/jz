@@ -53,6 +53,8 @@ const stringMethods = {
   charCodeAt: string.charCodeAt, slice: string.slice, indexOf: string.indexOf, substring: string.substring,
   toLowerCase: string.toLowerCase, toUpperCase: string.toUpperCase, includes: string.includes,
   startsWith: string.startsWith, endsWith: string.endsWith, trim: string.trim,
+  trimStart: string.trimStart, trimEnd: string.trimEnd,
+  substr: string.substr, repeat: string.repeat, padStart: string.padStart, padEnd: string.padEnd,
   split: string.split, replace: string.replace
 }
 import { PTR_TYPE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, bothI32, isHeapRef, hasSchema } from './types.js'
@@ -909,14 +911,17 @@ const operators = {
           litIdx = Number.isFinite(v) ? (v | 0) : null
         }
 
-        // Get element info from schema - schema is array of {type, schema}
+        // Get element info from schema - schema is array of {type, schema} OR {uniformType: 'type'}
         const elemInfo = (Array.isArray(schema) && litIdx !== null) ? schema[litIdx] : null
         const elemType = elemInfo ? elemInfo.type : null
         const elemSchema = elemInfo ? elemInfo.schema : null
 
-        // For dynamic index, check if all elements have same type
-        const uniformType = Array.isArray(schema) && schema.length > 0 && schema.every(e => e.type === schema[0].type) ? schema[0].type : null
-        const uniformSchema = uniformType && schema[0].schema
+        // For dynamic index, check if all elements have same type (from array schema or uniformType marker)
+        let uniformType = schema && schema.uniformType ? schema.uniformType : null
+        if (!uniformType && Array.isArray(schema) && schema.length > 0 && schema.every(e => e.type === schema[0].type)) {
+          uniformType = schema[0].type
+        }
+        const uniformSchema = uniformType && Array.isArray(schema) && schema[0] ? schema[0].schema : null
         const effectiveType = elemType || uniformType
         const effectiveSchema = elemSchema || uniformSchema
 
@@ -975,9 +980,13 @@ const operators = {
       return wat(`(f64.const ${fmtNum(MATH_OPS.constants[prop])})`, 'f64')
     const o = gen(obj)
     if (prop === 'length') {
-      if (isArray(o) || (isString(o) && opts.gc)) {
-        if (isArray(o)) ctx.usedArrayType = true
+      if (isArray(o) || o.type === 'refarray' || (isString(o) && opts.gc)) {
+        if (isArray(o) || o.type === 'refarray') ctx.usedArrayType = true
         else ctx.usedStringType = true
+        if (opts.gc && o.type === 'refarray') {
+          ctx.usedRefArrayType = true
+          return wat(`(array.len ${String(o)})`, 'i32')
+        }
         return wat(arrLen(opts.gc, String(o)), 'i32')
       } else if (isString(o) || isF64(o)) {
         ctx.usedMemory = true
