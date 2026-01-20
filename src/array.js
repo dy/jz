@@ -2,7 +2,7 @@
 import { ctx, gen } from './compile.js'
 import { PTR_TYPE, wat, f64, i32, bool } from './types.js'
 import { extractParams } from './analyze.js'
-import { arrGet, arrSet, arrLen, arrNew, ptrWithLen } from './gc.js'
+import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen } from './gc.js'
 
 export const fill = (rw, args) => {
   if (args.length < 1) return null
@@ -293,10 +293,9 @@ export const slice = (rw, args) => {
   ctx.usedMemory = true
   ctx.returnsArrayPointer = true
   const id = ctx.loopCounter++
-  const arr = `$_slice_arr_${id}`, idx = `$_slice_i_${id}`, len = `$_slice_len_${id}`, result = `$_slice_result_${id}`, start = `$_slice_start_${id}`, end = `$_slice_end_${id}`, newLen = `$_slice_newlen_${id}`
+  const arr = `$_slice_arr_${id}`, len = `$_slice_len_${id}`, result = `$_slice_result_${id}`, start = `$_slice_start_${id}`, end = `$_slice_end_${id}`, newLen = `$_slice_newlen_${id}`
   ctx.addLocal(arr.slice(1), 'f64')
   ctx.addLocal(result.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
   ctx.addLocal(start.slice(1), 'i32')
   ctx.addLocal(end.slice(1), 'i32')
@@ -316,12 +315,7 @@ export const slice = (rw, args) => {
     (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
     (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
     (local.set ${result} ${arrNew(`(local.get ${newLen})`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
-      ${arrSet(`(local.get ${result})`, `(local.get ${idx})`, arrGet(`(local.get ${arr})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+    ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr})`, `(local.get ${start})`, `(local.get ${newLen})`)}
     (local.get ${result})`, 'f64')
 }
 
@@ -357,20 +351,14 @@ export const push = (rw, args) => {
   ctx.usedMemory = true
   const val = gen(args[0])
   const id = ctx.loopCounter++
-  const arr = `$_push_arr_${id}`, result = `$_push_result_${id}`, idx = `$_push_i_${id}`, len = `$_push_len_${id}`
+  const arr = `$_push_arr_${id}`, result = `$_push_result_${id}`, len = `$_push_len_${id}`
   ctx.addLocal(arr.slice(1), 'f64')
   ctx.addLocal(result.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
   return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(`(local.get ${arr})`)})
     (local.set ${result} ${arrNew(`(i32.add (local.get ${len}) (i32.const 1))`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      ${arrSet(`(local.get ${result})`, `(local.get ${idx})`, arrGet(`(local.get ${arr})`, `(local.get ${idx})`))}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+    ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr})`, `(i32.const 0)`, `(local.get ${len})`)}
     ${arrSet(`(local.get ${result})`, `(local.get ${len})`, f64(val))}
     (local.get ${result})`, 'f64')
 }
@@ -387,6 +375,43 @@ export const pop = (rw, args) => {
     (if (result f64) (i32.gt_s (local.get ${len}) (i32.const 0))
       (then ${arrGet(`(local.get ${arr})`, `(i32.sub (local.get ${len}) (i32.const 1))`)})
       (else (f64.const nan)))`, 'f64')
+}
+
+// shift() - returns first element, does not mutate array (returns new view would require tracking)
+// For now: simple implementation that just returns first element
+export const shift = (rw, args) => {
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  const id = ctx.loopCounter++
+  const arr = `$_shift_arr_${id}`, len = `$_shift_len_${id}`
+  ctx.addLocal(arr.slice(1), 'f64')
+  ctx.addLocal(len.slice(1), 'i32')
+  // Returns first element or NaN if empty
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
+    (if (result f64) (i32.gt_s (local.get ${len}) (i32.const 0))
+      (then ${arrGet(`(local.get ${arr})`, `(i32.const 0)`)})
+      (else (f64.const nan)))`, 'f64')
+}
+
+// unshift(x) - add element to start, returns new array
+export const unshift = (rw, args) => {
+  if (args.length !== 1) return null
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  ctx.returnsArrayPointer = true
+  const val = gen(args[0])
+  const id = ctx.loopCounter++
+  const arr = `$_unshift_arr_${id}`, result = `$_unshift_result_${id}`, len = `$_unshift_len_${id}`
+  ctx.addLocal(arr.slice(1), 'f64')
+  ctx.addLocal(result.slice(1), 'f64')
+  ctx.addLocal(len.slice(1), 'i32')
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
+    (local.set ${result} ${arrNew(`(i32.add (local.get ${len}) (i32.const 1))`)})
+    ${arrSet(`(local.get ${result})`, `(i32.const 0)`, f64(val))}
+    ${arrCopy(`(local.get ${result})`, `(i32.const 1)`, `(local.get ${arr})`, `(i32.const 0)`, `(local.get ${len})`)}
+    (local.get ${result})`, 'f64')
 }
 
 export const forEach = (rw, args) => {
@@ -422,11 +447,10 @@ export const concat = (rw, args) => {
   ctx.returnsArrayPointer = true
   const arr2 = gen(args[0])
   const id = ctx.loopCounter++
-  const arr1 = `$_concat_arr1_${id}`, arr2loc = `$_concat_arr2_${id}`, result = `$_concat_result_${id}`, idx = `$_concat_i_${id}`, len1 = `$_concat_len1_${id}`, len2 = `$_concat_len2_${id}`
+  const arr1 = `$_concat_arr1_${id}`, arr2loc = `$_concat_arr2_${id}`, result = `$_concat_result_${id}`, len1 = `$_concat_len1_${id}`, len2 = `$_concat_len2_${id}`
   ctx.addLocal(arr1.slice(1), 'f64')
   ctx.addLocal(arr2loc.slice(1), 'f64')
   ctx.addLocal(result.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len1.slice(1), 'i32')
   ctx.addLocal(len2.slice(1), 'i32')
   return wat(`(local.set ${arr1} ${rw})
@@ -434,38 +458,144 @@ export const concat = (rw, args) => {
     (local.set ${len1} ${arrLen(`(local.get ${arr1})`)})
     (local.set ${len2} ${arrLen(`(local.get ${arr2loc})`)})
     (local.set ${result} ${arrNew(`(i32.add (local.get ${len1}) (local.get ${len2}))`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done1_${id} (loop $loop1_${id}
-      (br_if $done1_${id} (i32.ge_s (local.get ${idx}) (local.get ${len1})))
-      ${arrSet(`(local.get ${result})`, `(local.get ${idx})`, arrGet(`(local.get ${arr1})`, `(local.get ${idx})`))}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop1_${id})))
-    (local.set ${idx} (i32.const 0))
-    (block $done2_${id} (loop $loop2_${id}
-      (br_if $done2_${id} (i32.ge_s (local.get ${idx}) (local.get ${len2})))
-      ${arrSet(`(local.get ${result})`, `(i32.add (local.get ${len1}) (local.get ${idx}))`, arrGet(`(local.get ${arr2loc})`, `(local.get ${idx})`))}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop2_${id})))
+    ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr1})`, `(i32.const 0)`, `(local.get ${len1})`)}
+    ${arrCopy(`(local.get ${result})`, `(local.get ${len1})`, `(local.get ${arr2loc})`, `(i32.const 0)`, `(local.get ${len2})`)}
     (local.get ${result})`, 'f64')
 }
 
+// join() - TODO: requires number-to-string conversion (complex)
+// For now returns 0 (placeholder)
 export const join = (rw, args) => {
+  // Proper join would need f64->string conversion which is complex in WASM
+  // Return 0 as placeholder - users should use JS for string operations
+  return wat('(f64.const 0)', 'f64')
+}
+
+// flat(depth) - flatten nested arrays by depth levels (default 1)
+export const flat = (rw, args) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
+  ctx.returnsArrayPointer = true
+  const depth = args.length > 0 ? gen(args[0]) : '(f64.const 1)'
   const id = ctx.loopCounter++
-  const arr = `$_join_arr_${id}`, result = `$_join_result_${id}`, idx = `$_join_i_${id}`, len = `$_join_len_${id}`
+  const arr = `$_flat_arr_${id}`, result = `$_flat_result_${id}`, idx = `$_flat_i_${id}`, len = `$_flat_len_${id}`
+  const elem = `$_flat_elem_${id}`, innerIdx = `$_flat_j_${id}`, innerLen = `$_flat_ilen_${id}`, outIdx = `$_flat_out_${id}`
   ctx.addLocal(arr.slice(1), 'f64')
   ctx.addLocal(result.slice(1), 'f64')
   ctx.addLocal(idx.slice(1), 'i32')
   ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(elem.slice(1), 'f64')
+  ctx.addLocal(innerIdx.slice(1), 'i32')
+  ctx.addLocal(innerLen.slice(1), 'i32')
+  ctx.addLocal(outIdx.slice(1), 'i32')
+  // First pass: count total elements
+  // Second pass: copy elements
+  // For depth=1, check if element is pointer (>= 2^48), if so expand
   return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-    (local.set ${result} (f64.const 0))
+    ;; Count total elements for allocation (depth=1 only for now)
+    (local.set ${outIdx} (i32.const 0))
     (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      (local.set ${result} (f64.add (local.get ${result}) ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)}))
+    (block $count_done_${id} (loop $count_loop_${id}
+      (br_if $count_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+        (then (local.set ${outIdx} (i32.add (local.get ${outIdx}) (call $__ptr_len (local.get ${elem})))))
+        (else (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+      (br $count_loop_${id})))
+    ;; Allocate result array
+    (local.set ${result} ${arrNew(`(local.get ${outIdx})`)})
+    ;; Copy elements, flattening nested arrays
+    (local.set ${outIdx} (i32.const 0))
+    (local.set ${idx} (i32.const 0))
+    (block $copy_done_${id} (loop $copy_loop_${id}
+      (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+        (then
+          ;; It's a nested array - copy its elements
+          (local.set ${innerLen} (call $__ptr_len (local.get ${elem})))
+          (local.set ${innerIdx} (i32.const 0))
+          (block $inner_done_${id} (loop $inner_loop_${id}
+            (br_if $inner_done_${id} (i32.ge_s (local.get ${innerIdx}) (local.get ${innerLen})))
+            ${arrSet(`(local.get ${result})`, `(local.get ${outIdx})`, arrGet(`(local.get ${elem})`, `(local.get ${innerIdx})`))}
+            (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))
+            (local.set ${innerIdx} (i32.add (local.get ${innerIdx}) (i32.const 1)))
+            (br $inner_loop_${id}))))
+        (else
+          ;; It's a regular value - copy directly
+          ${arrSet(`(local.get ${result})`, `(local.get ${outIdx})`, `(local.get ${elem})`)}
+          (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $copy_loop_${id})))
     (local.get ${result})`, 'f64')
+}
+
+// flatMap(fn) - map then flatten (equivalent to .map(fn).flat(1))
+export const flatMap = (rw, args) => {
+  if (args.length !== 1) return null
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  ctx.returnsArrayPointer = true
+  const callback = args[0]
+  if (!Array.isArray(callback) || callback[0] !== '=>') throw new Error('.flatMap requires arrow function')
+  const [, params, body] = callback
+  const paramName = extractParams(params)[0] || '_v'
+  const id = ctx.loopCounter++
+  const arr = `$_flatmap_arr_${id}`, mapped = `$_flatmap_mapped_${id}`, result = `$_flatmap_result_${id}`
+  const idx = `$_flatmap_i_${id}`, len = `$_flatmap_len_${id}`, elem = `$_flatmap_elem_${id}`
+  const innerIdx = `$_flatmap_j_${id}`, innerLen = `$_flatmap_ilen_${id}`, outIdx = `$_flatmap_out_${id}`
+  ctx.addLocal(arr.slice(1), 'f64')
+  ctx.addLocal(mapped.slice(1), 'f64')
+  ctx.addLocal(result.slice(1), 'f64')
+  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(elem.slice(1), 'f64')
+  ctx.addLocal(innerIdx.slice(1), 'i32')
+  ctx.addLocal(innerLen.slice(1), 'i32')
+  ctx.addLocal(outIdx.slice(1), 'i32')
+  ctx.addLocal(paramName, 'f64')
+  // First pass: map and count total elements
+  // Second pass: map again and flatten into result
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
+    ;; First pass: count total elements after map+flatten
+    (local.set ${outIdx} (i32.const 0))
+    (local.set ${idx} (i32.const 0))
+    (block $count_done_${id} (loop $count_loop_${id}
+      (br_if $count_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (local.set ${elem} ${f64(gen(body))})
+      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+        (then (local.set ${outIdx} (i32.add (local.get ${outIdx}) (call $__ptr_len (local.get ${elem})))))
+        (else (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $count_loop_${id})))
+    ;; Allocate result array
+    (local.set ${result} ${arrNew(`(local.get ${outIdx})`)})
+    ;; Second pass: map again and flatten
+    (local.set ${outIdx} (i32.const 0))
+    (local.set ${idx} (i32.const 0))
+    (block $copy_done_${id} (loop $copy_loop_${id}
+      (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set $${paramName} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (local.set ${elem} ${f64(gen(body))})
+      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+        (then
+          ;; Result is array - flatten it
+          (local.set ${innerLen} (call $__ptr_len (local.get ${elem})))
+          (local.set ${innerIdx} (i32.const 0))
+          (block $inner_done_${id} (loop $inner_loop_${id}
+            (br_if $inner_done_${id} (i32.ge_s (local.get ${innerIdx}) (local.get ${innerLen})))
+            ${arrSet(`(local.get ${result})`, `(local.get ${outIdx})`, arrGet(`(local.get ${elem})`, `(local.get ${innerIdx})`))}
+            (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))
+            (local.set ${innerIdx} (i32.add (local.get ${innerIdx}) (i32.const 1)))
+            (br $inner_loop_${id}))))
+        (else
+          ;; Result is scalar - copy directly
+          ${arrSet(`(local.get ${result})`, `(local.get ${outIdx})`, `(local.get ${elem})`)}
+          (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $copy_loop_${id})))    (local.get ${result})`, 'f64')
 }

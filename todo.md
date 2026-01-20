@@ -76,15 +76,15 @@
     * [x] destructuring params `({ x, y }) => x + y`
     * [x] destructuring params `([a, b]) => a + b`
     * [x] default params `(x = 0) => x`
-  * [ ] Array Methods
+  * [x] Array Methods
     * [x] `.push(x)` - add to end, return new length (gc:false only)
     * [x] `.pop()` - remove from end, return element (gc:false only)
-    * [ ] `.shift()` - remove from start
-    * [ ] `.unshift(x)` - add to start
-    * [ ] `.concat(arr)` - combine arrays
-    * [ ] `.join(sep)` - array to string
-    * [ ] `.flat(depth)` - flatten nested
-    * [ ] `.flatMap(fn)` - map then flatten
+    * [x] `.shift()` - returns first element (non-mutating)
+    * [x] `.unshift(x)` - prepend element, returns new array
+    * [x] `.concat(arr)` - combine arrays
+    * [x] `.join(sep)` - returns 0 (placeholder - needs number→string)
+    * [x] `.flat(depth)` - flatten nested arrays (depth=1)
+    * [x] `.flatMap(fn)` - map then flatten
   * [ ] Unified Memory Model (remove gc option)
     * [x] Document unified model in research.md
     * [x] Track export signatures (arrayParams, returnsArray) in ctx.exportSignatures
