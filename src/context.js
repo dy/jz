@@ -56,6 +56,9 @@ export function createContext(gc = true) {
     hoistedVars: null,       // name -> field index in own env
     ownEnvType: null,        // Own environment type name
 
+    // Exports
+    exports: new Set(),      // Names explicitly exported
+
     // Strings
     strings: {},             // str -> { id, offset, length }
     stringData: [],          // UTF-16 byte array

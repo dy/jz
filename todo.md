@@ -95,11 +95,10 @@
     * [ ] `.replace(str, str)`
     * [ ] `.toUpperCase()`, `.toLowerCase()`
     * [ ] `.startsWith(str)`, `.endsWith(str)`
-  * [ ]  Export Model
-    * [ ] `export const name = ...` - explicit export
-    * [ ] `export { name }` - export existing
-    * [ ] auto-export mode (current behavior, opt-in)
-    * [ ] internal functions not exported by default
+  * [x]  Export Model
+    * [x] `export const name = ...` - explicit export
+    * [x] `export { name }` - export existing
+    * [x] internal functions not exported by default
 * [ ] Find all modern cool JS proposals
 * [ ] JS improvements
   * [ ] Identify obsolete parts we don't support

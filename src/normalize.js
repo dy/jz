@@ -25,6 +25,7 @@ const ALLOWED = new Set([
   'typeof', 'void',
   '\`',           // template literals
   '...',          // spread/rest operator
+  'export',       // ES module exports
 ])
 
 // Allowed namespaces
@@ -288,6 +289,19 @@ const handlers = {
   // Template literals
   '\`'(op, parts) {
     return ['\`', ...parts.map(p => expr(p))]
+  },
+
+  // Export declaration: export const/let/function or export { names }
+  'export'(op, [decl]) {
+    // export { x } or export { x, y }
+    if (Array.isArray(decl) && decl[0] === '{}') {
+      const inner = decl[1]
+      if (typeof inner === 'string') return ['export', ['{', inner]]
+      if (Array.isArray(inner) && inner[0] === ',') return ['export', ['{', ...inner.slice(1)]]
+      return ['export', ['{', inner]]
+    }
+    // export const/let/var/function
+    return ['export', expr(decl)]
   },
 }
 
