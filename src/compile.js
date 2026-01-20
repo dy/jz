@@ -344,6 +344,10 @@ function resolveCall(namespace, name, args, receiver = null) {
     }
     if (name === 'parseInt') {
       const val = gen(args[0])
+      // Warn if no radix provided (JZ defaults to 10, but JS behavior varies)
+      if (args.length < 2) {
+        console.warn('jz: [parseInt] ' + `parseInt() without radix; JZ defaults to 10, consider explicit radix`)
+      }
       const radix = args.length >= 2 ? String(i32(gen(args[1]))) : '(i32.const 10)'
       if (isString(val)) {
         ctx.usedStdlib.push('parseInt')
@@ -933,13 +937,30 @@ const operators = {
   },
 
   // Unary
-  'u+'([a]) { return f64(gen(a)) },
+  'u+'([a]) {
+    // Error: +[] nonsense coercion
+    if (Array.isArray(a) && a[0] === '[') {
+      throw new Error('jz: +[] coercion is nonsense; arrays cannot be coerced to numbers')
+    }
+    return f64(gen(a))
+  },
   'u-'([a]) { const v = gen(a); return v.type === 'i32' ? wat(`(i32.sub (i32.const 0) ${v})`, 'i32') : wat(`(f64.neg ${f64(v)})`, 'f64') },
   '!'([a]) { return wat(`(i32.eqz ${bool(gen(a))})`, 'i32') },
   '~'([a]) { return wat(`(i32.xor ${i32(gen(a))} (i32.const -1))`, 'i32') },
 
   // Arithmetic
-  '+'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb) },
+  '+'([a, b]) {
+    // Error: [] + {} nonsense coercion
+    const isArrayA = Array.isArray(a) && a[0] === '['
+    const isArrayB = Array.isArray(b) && b[0] === '['
+    const isObjectA = Array.isArray(a) && a[0] === '{'
+    const isObjectB = Array.isArray(b) && b[0] === '{'
+    if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
+      throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
+    }
+    const va = gen(a), vb = gen(b)
+    return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb)
+  },
   '-'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.sub(va, vb) : f64ops.sub(va, vb) },
   '*'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.mul(va, vb) : f64ops.mul(va, vb) },
   '/'([a, b]) { return f64ops.div(gen(a), gen(b)) },
@@ -948,6 +969,20 @@ const operators = {
 
   // Comparisons
   '=='([a, b]) {
+    // Warn: NaN === NaN is always false (IEEE 754), suggest Number.isNaN
+    const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
+    const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
+    if (isNaN_a || isNaN_b) {
+      console.warn('jz: [NaN-compare] ' + `NaN comparison is always ${isNaN_a && isNaN_b ? 'false' : 'false for NaN'}; use Number.isNaN(x)`)
+    }
+    // Warn: x == null idiom (coercion doesn't work in JZ)
+    const isNull_a = a === 'null' || (Array.isArray(a) && a[0] === undefined && a[1] === null)
+    const isNull_b = b === 'null' || (Array.isArray(b) && b[0] === undefined && b[1] === null)
+    const isUndef_a = a === 'undefined' || (Array.isArray(a) && a[0] === undefined && a[1] === undefined)
+    const isUndef_b = b === 'undefined' || (Array.isArray(b) && b[0] === undefined && b[1] === undefined)
+    if ((isNull_a || isNull_b) && !(isNull_a && isNull_b) && !(isUndef_a || isUndef_b)) {
+      console.warn('jz: [null-compare] ' + `x == null idiom won\'t catch undefined; JZ has no type coercion`)
+    }
     // Special-case: typeof comparison with string literal
     // typeof returns type code internally, compare with code directly
     const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
@@ -958,10 +993,13 @@ const operators = {
       if (code !== null) {
         // Check for literal null/undefined first (before gen)
         const typeofArg = a[1]
-        if (Array.isArray(typeofArg) && typeofArg[0] === undefined &&
-            (typeofArg[1] === null || typeofArg[1] === undefined)) {
-          // typeof null === "undefined" or typeof undefined === "undefined"
+        if (Array.isArray(typeofArg) && typeofArg[0] === undefined && typeofArg[1] === undefined) {
+          // typeof undefined === "undefined"
           return wat(`(i32.const ${code === 0 ? 1 : 0})`, 'i32')
+        }
+        if (Array.isArray(typeofArg) && typeofArg[0] === undefined && typeofArg[1] === null) {
+          // typeof null === "object" (JS quirk preserved)
+          return wat(`(i32.const ${code === 4 ? 1 : 0})`, 'i32')
         }
         // Check for NaN/Infinity constants - parser represents them as [null, null]
         // In gc:false, these are always numbers (not pointers)
@@ -1011,6 +1049,12 @@ const operators = {
   },
   '==='([a, b]) { return operators['==']([a, b]) },
   '!='([a, b]) {
+    // Warn: NaN !== NaN is always true (IEEE 754), suggest Number.isNaN
+    const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
+    const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
+    if (isNaN_a || isNaN_b) {
+      console.warn('jz: [NaN-compare] ' + `NaN comparison is always ${isNaN_a && isNaN_b ? 'true' : 'true for NaN'}; use Number.isNaN(x)`)
+    }
     // Special-case typeof != string
     const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
     const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
@@ -1199,7 +1243,7 @@ const operators = {
     }
     // Warn on aliasing: b = a where a is known array
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     ctx.addLocal(name, val.type, val.schema, scopedName)
     return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
@@ -1225,7 +1269,7 @@ const operators = {
     }
     // Warn on aliasing
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     ctx.addLocal(name, val.type, val.schema, scopedName)
     return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
@@ -1238,6 +1282,8 @@ const operators = {
     }
     const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('var requires simple identifier')
+    // Warn: var hoisting surprises, suggest let/const
+    console.warn('jz: [var] ' + `'var ${name}' is function-scoped and hoisted; prefer 'let' or 'const'`)
     const val = gen(value)
     // Track array variables (type-based for gc:true, AST-based for gc:false)
     const isArr = isArrayType(val.type) || isArrayExpr(value)
@@ -1246,7 +1292,7 @@ const operators = {
     }
     // Warn on aliasing
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn?.(`jz: '${name} = ${value}' aliases array - push/pop return new arrays, mutations diverge`)
+      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     ctx.addLocal(name, val.type, val.schema, name)  // no scope prefix for var
     return wat(`(local.tee $${name} ${val})`, val.type, val.schema)

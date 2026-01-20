@@ -85,7 +85,7 @@
     * [x] `.join(sep)` - returns 0 (placeholder - needs number→string)
     * [x] `.flat(depth)` - flatten nested arrays (depth=1)
     * [x] `.flatMap(fn)` - map then flatten
-  * [ ] Unified Memory Model (remove gc option)
+  * [x] Unified Memory Model (remove gc option)
     * [x] Document unified model in research.md
     * [x] Track export signatures (arrayParams, returnsArray) in ctx.exportSignatures
     * [x] Document integer-packed pointer encoding (replaces NaN-boxing for JS interop)
@@ -98,7 +98,7 @@
     * [x] Test integer-packed pointer encoding
     * [x] Test custom section reading in instantiate()
     * [x] Test auto-wrapped array exports
-    * [ ] Remove ~145 opts.gc branches (compile.js: 54, array.js: 55, string.js: 36)
+    * [x] Remove ~145 opts.gc branches (compile.js: 54, array.js: 55, string.js: 36)
   * [x] String Methods
     * [x] `.substring(start, end)`
     * [x] `.substr(start, len)` - deprecated but common
@@ -115,10 +115,30 @@
     * [x] `export { name }` - export existing
     * [x] internal functions not exported by default
 * [ ] Find all modern cool JS proposals
-* [ ] JS improvements
-  * [ ] Identify obsolete parts we don't support
-    * [ ] Compile them into modern parts, give warning
-  * [ ] Identify and document all divergencies (improvements) from JS (quirks)
+  * [ ] Iterator helpers?
+  * [ ] using?
+  * [ ] Float16
+  * [ ] Promise.try
+  * [ ] Iterator.range
+* [ ] TypedArrays
+* [x] JS improvements (warn on quirks, document divergences)
+  * [x] Warning system (console.warn during compilation)
+  * [x] Warnings/errors implemented:
+    * [x] `var` → warn, suggest `let/const` (hoisting surprises)
+    * [x] `parseInt(x)` without radix → warn (default 10 in JZ)
+    * [x] `NaN === NaN` → warn, suggest `Number.isNaN(x)`
+    * [x] `let b = a` where a is array → warn (pointer copy, not deep clone)
+    * [x] Implicit globals → error (already throws on unknown identifier)
+    * [x] `+[]`, `[] + {}` nonsense coercion → error
+    * [x] `x == null` idiom → warn (coercion doesn't catch undefined in JZ)
+  * [x] Divergences from JS (unavoidable, documented in research.md)
+    * [x] `==` same as `===` (no type coercion in WASM)
+    * [x] Array assignment copies pointer (COW-like semantics)
+    * [x] `null`/`undefined` both → `0` at runtime (indistinguishable)
+  * [x] JS-compatible (quirks preserved)
+    * [x] `typeof null === "object"` (historical JS bug, kept for compat)
+    * [x] `NaN !== NaN` (IEEE 754)
+    * [x] `-0 === 0` (IEEE 754)
 * [ ] Optimizations
   * [x] `funcref` - first-class functions, currying, closures
     * [x] Closure representation: struct { funcref fn, ref env }

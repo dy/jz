@@ -46,14 +46,11 @@ mul(4, 5)  // 20
 ```js
 import { compile, instantiate } from 'jz'
 
-// Compile to WASM binary (default, uses GC)
+// Compile to WASM binary
 const wasm = compile('1 + 2')
 
-// Options
-compile('1 + 2')                    // wasm binary, gc (default)
-compile('1 + 2', { gc: false })     // wasm binary, linear memory
-compile('1 + 2', { text: true })    // wat text, gc
-compile('1 + 2', { gc: false, text: true })  // wat text, linear
+// Get WAT text instead
+const wat = compile('1 + 2', { text: true })
 
 // Instantiate and run
 const instance = await instantiate(wasm)
@@ -69,22 +66,8 @@ console.log(wasmInstance.exports.main()) // 3
 
 #### `text`
 
-**false** (default)
-
-Output WAT text instead of WASM binary.
-
-#### `gc`
-
-**true** (default) — GC mode
-- Uses `struct`, `array`, `anyref`, `funcref` for JS-native types
-- Direct export to JavaScript — no decoding needed
-- Best for general use, prototyping, JS interop
-
-**false** — Linear memory mode:
-- Uses `memory`, `i32.load/store`, `call_indirect` for manual management
-- Numeric pipelines: primitives in/out, arrays stay internal
-- Faster, deterministic, works on all WASM runtimes
-- Best for DSP, audio, embedded, maximum portability
+**false** (default) — Output WASM binary.
+**true** — Output WAT text.
 
 
 ### CLI
@@ -162,7 +145,18 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
 * _Seamless JS integration_ – export/import, same func signatures.
-* _No quirks_ – rectify known JS quirks.
+
+### JS Compatibility
+
+JZ preserves JS semantics where possible. Unavoidable differences:
+
+| Difference | Reason |
+|------------|--------|
+| `==` same as `===` | No type coercion in WASM |
+| `null` ≡ `undefined` ≡ `0` | WASM f64 has no null type |
+| Array `let b = a` copies pointer | Use `[...a]` for deep clone |
+
+JZ warns on problematic patterns (`var`, implicit globals, `+[]`). See [research.md](research.md#js-divergences).
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
