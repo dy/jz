@@ -278,3 +278,36 @@
   **Trade-offs:**
   - JS wrapper has copy overhead (but only at boundary)
   - Numbers > 2^48 reserved for pointers (extremely rare in practice)
+
+## JS Divergences
+
+  JZ compiles JS to WASM. Some JS behaviors cannot be preserved due to WASM limitations.
+  JZ warns on problematic patterns but does not silently change JS semantics.
+
+  ### Unavoidable Divergences
+
+  | JS Behavior | JZ Behavior | Cause |
+  |-------------|-------------|-------|
+  | `==` does type coercion | `==` same as `===` | No coercion in WASM |
+  | `null !== undefined` | Both are `0` | WASM f64 has no null type |
+  | Array assign shares reference | Pointer copy (COW-like) | WASM memory model |
+
+  ### JS-Compatible (Quirks Preserved)
+
+  | Pattern | Behavior | Note |
+  |---------|----------|------|
+  | `typeof null === "object"` | ✓ preserved | Historical JS bug, kept for compat |
+  | `NaN !== NaN` | ✓ preserved | IEEE 754 standard |
+  | `-0 === 0` | ✓ preserved | IEEE 754 standard |
+
+  ### Warnings Emitted
+
+  | Pattern | Warning | Fix |
+  |---------|---------|-----|
+  | `var x` | "Use let/const" | Hoisting surprises |
+  | `x = 1` (undeclared) | Error: implicit global | Declare with let/const |
+  | `parseInt(x)` | "Missing radix" | Use `parseInt(x, 10)` |
+  | `+[]`, `[] + {}` | Error: nonsense coercion | Don't do this |
+  | `x == null` | "Coercion idiom" | Use `x === null \|\| x === undefined` |
+  | `NaN === NaN` | "Always false" | Use `Number.isNaN(x)` |
+  | `let b = a` (array) | "Pointer copy" | Use `[...a]` for clone |

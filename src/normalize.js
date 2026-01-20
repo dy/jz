@@ -9,6 +9,7 @@ const ALLOWED = new Set([
   '&', '|', '^', '~', '<<', '>>', '>>>',
   '&&', '||', '!', '??',
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '>>>=',
+  '++', '--',     // increment/decrement
   '?',            // ternary
   'if',           // if/else statement
   'for', 'while',
@@ -145,6 +146,25 @@ const handlers = {
   '<<='(op, [a, b]) { return ['<<=', a, expr(b)] },
   '>>='(op, [a, b]) { return ['>>=', a, expr(b)] },
   '>>>='(op, [a, b]) { return ['>>>=', a, expr(b)] },
+
+  // Increment/decrement: i++ → (i += 1) - 1, ++i → (i += 1)
+  '++'(op, [a, post]) {
+    // post is null for postfix (i++), undefined for prefix (++i)
+    if (post === null) {
+      // Postfix: return old value (i++ → (i += 1) - 1)
+      return ['-', ['+=', a, [, 1]], [, 1]]
+    }
+    // Prefix: return new value (++i → i += 1)
+    return ['+=', a, [, 1]]
+  },
+  '--'(op, [a, post]) {
+    if (post === null) {
+      // Postfix: i-- → (i -= 1) + 1
+      return ['+', ['-=', a, [, 1]], [, 1]]
+    }
+    // Prefix: --i → i -= 1
+    return ['-=', a, [, 1]]
+  },
 
   // Function call
   '()'(op, args) {

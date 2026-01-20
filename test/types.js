@@ -23,7 +23,7 @@ test('typeof - string', async () => {
 
 test('typeof - undefined/null', async () => {
   is(await evaluate('typeof undefined === "undefined"'), 1)
-  is(await evaluate('typeof null === "undefined"'), 1)  // JS quirk: typeof null is "object", but we use "undefined"
+  is(await evaluate('typeof null === "object"'), 1)  // JS quirk preserved for compatibility
 })
 
 test('typeof - object', async () => {
