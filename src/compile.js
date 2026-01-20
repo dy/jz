@@ -64,7 +64,7 @@ import { extractParams, extractParamInfo, analyzeScope, findHoistedVars } from '
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
-import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, strCharAt, mkArrayLiteral, callClosure } from './gc.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, strCharAt, mkArrayLiteral, callClosure } from './memory.js'
 
 // Check if type is array-like (for aliasing warnings)
 const isArrayType = t => t === 'array' || t === 'refarray'
