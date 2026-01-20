@@ -46,7 +46,9 @@ const arrayMethods = {
   fill: array.fill, map: array.map, reduce: array.reduce, filter: array.filter,
   find: array.find, findIndex: array.findIndex, indexOf: array.indexOf, includes: array.includes,
   every: array.every, some: array.some, slice: array.slice, reverse: array.reverse,
-  push: array.push, pop: array.pop, forEach: array.forEach, concat: array.concat, join: array.join
+  push: array.push, pop: array.pop, shift: array.shift, unshift: array.unshift,
+  forEach: array.forEach, concat: array.concat, join: array.join,
+  flat: array.flat, flatMap: array.flatMap
 }
 
 const stringMethods = {

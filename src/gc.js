@@ -62,6 +62,10 @@ export const arrNew = (lenWat) =>
 export const ptrWithLen = (ptrWat, newLenWat) =>
   `(call $__ptr_with_len ${ptrWat} ${newLenWat})`
 
+/** Copy array elements using memory.copy (count is element count, not bytes) */
+export const arrCopy = (dstPtr, dstIdx, srcPtr, srcIdx, count) =>
+  `(memory.copy (i32.add (call $__ptr_offset ${dstPtr}) (i32.shl ${dstIdx} (i32.const 3))) (i32.add (call $__ptr_offset ${srcPtr}) (i32.shl ${srcIdx} (i32.const 3))) (i32.shl ${count} (i32.const 3)))`
+
 /** Get array element with typed value return - auto-sets ctx flags */
 export function arrGetTyped(ctx, arrWat, idxWat) {
   ctx.usedMemory = true

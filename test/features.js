@@ -147,3 +147,54 @@ test('string.indexOf - char code', async () => {
   is(await evaluate('"hello".indexOf(108)'), 2)  // 'l' at index 2
   is(await evaluate('"hello".indexOf(120)'), -1)  // 'x' not found
 })
+
+// shift - returns first element (non-mutating for now)
+test('array.shift - basic', async () => {
+  is(await evaluate('[1, 2, 3].shift()'), 1)
+  is(await evaluate('[10, 20, 30].shift()'), 10)
+  is(await evaluate('[5].shift()'), 5)
+})
+
+test('array.shift - empty returns NaN', async () => {
+  ok(Number.isNaN(await evaluate('[].shift()')))
+})
+
+// unshift - prepends element, returns new array
+test('array.unshift - basic', async () => {
+  is(await evaluate('[2, 3].unshift(1)[0]'), 1)
+  is(await evaluate('[2, 3].unshift(1)[1]'), 2)
+  is(await evaluate('[2, 3].unshift(1).length'), 3)
+})
+
+test('array.unshift - empty array', async () => {
+  is(await evaluate('[].unshift(5)[0]'), 5)
+  is(await evaluate('[].unshift(5).length'), 1)
+})
+
+// flat - flattens nested arrays
+test('array.flat - basic', async () => {
+  is(await evaluate('[[1, 2], [3, 4]].flat()[0]'), 1)
+  is(await evaluate('[[1, 2], [3, 4]].flat()[2]'), 3)
+  is(await evaluate('[[1, 2], [3, 4]].flat().length'), 4)
+})
+
+test('array.flat - mixed scalar and array', async () => {
+  is(await evaluate('[1, [2, 3], 4].flat()[0]'), 1)
+  is(await evaluate('[1, [2, 3], 4].flat()[1]'), 2)
+  is(await evaluate('[1, [2, 3], 4].flat()[3]'), 4)
+  is(await evaluate('[1, [2, 3], 4].flat().length'), 4)
+})
+
+// flatMap - map then flatten
+test('array.flatMap - basic', async () => {
+  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[0]'), 1)
+  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[1]'), 2)
+  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[2]'), 2)
+  is(await evaluate('[1, 2].flatMap(x => [x, x * 2]).length'), 4)
+})
+
+test('array.flatMap - scalar returns', async () => {
+  is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[0]'), 2)
+  is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[1]'), 4)
+  is(await evaluate('[1, 2, 3].flatMap(x => x * 2).length'), 3)
+})
