@@ -2,7 +2,7 @@
 import { ctx, gen } from './compile.js'
 import { PTR_TYPE, wat, f64, i32, bool } from './types.js'
 import { extractParams } from './analyze.js'
-import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen } from './gc.js'
+import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen } from './memory.js'
 
 export const fill = (rw, args) => {
   if (args.length < 1) return null
