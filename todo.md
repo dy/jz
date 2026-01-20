@@ -121,6 +121,8 @@
   * [ ] Promise.try
   * [ ] Iterator.range
 * [ ] TypedArrays
+* [ ] All Math funcs
+* [ ] color-space converter
 * [x] JS improvements (warn on quirks, document divergences)
   * [x] Warning system (console.warn during compilation)
   * [x] Warnings/errors implemented:

@@ -157,8 +157,29 @@ export function analyzeScope(ast, outerDefined = new Set(), inFunction = false) 
     // Declarations: let x, const x = y, var x
     if (op === 'let' || op === 'const' || op === 'var') {
       if (Array.isArray(args[0]) && args[0][0] === '=') {
-        walk(args[0][1], inFunc)
-        defined.add(args[0][0])
+        const declName = args[0][1]
+        const declValue = args[0][2]
+        // Check if value is a function (closure definition)
+        if (Array.isArray(declValue) && declValue[0] === '=>') {
+          const fnParams = extractParams(declValue[1])
+          const fnBody = declValue[2]
+          // Analyze inner function - outer defined vars available for capture
+          const allDefined = new Set([...defined, ...outerDefined])
+          const analysis = analyzeScope(fnBody, new Set(fnParams), true)
+          // Captured = free vars that are defined in outer scope
+          const captured = [...analysis.free].filter(v => allDefined.has(v))
+          innerFunctions.push({
+            name: declName,
+            params: fnParams,
+            body: fnBody,
+            captured,
+            innerFunctions: analysis.innerFunctions
+          })
+          defined.add(declName)
+          return
+        }
+        walk(declValue, inFunc)
+        defined.add(declName)
       } else if (typeof args[0] === 'string') {
         defined.add(args[0])
       }
@@ -177,9 +198,24 @@ export function analyzeScope(ast, outerDefined = new Set(), inFunction = false) 
     }
 
     // Arrow function: (params) => body
+    // This handles anonymous closures like `return () => n + 1`
     if (op === '=>') {
       const fnParams = extractParams(args[0])
-      const analysis = analyzeScope(args[1], new Set(fnParams), true)
+      const fnBody = args[1]
+      const allDefined = new Set([...defined, ...outerDefined])
+      const analysis = analyzeScope(fnBody, new Set(fnParams), true)
+      // Captured = free vars that are defined in outer scope
+      const captured = [...analysis.free].filter(v => allDefined.has(v))
+      // Register as inner function (anonymous) for closure analysis
+      if (captured.length > 0 || analysis.innerFunctions.length > 0) {
+        innerFunctions.push({
+          name: null, // anonymous
+          params: fnParams,
+          body: fnBody,
+          captured,
+          innerFunctions: analysis.innerFunctions
+        })
+      }
       // Pass through free vars that come from outer scopes
       for (const v of analysis.free) {
         if (!fnParams.includes(v)) free.add(v)
