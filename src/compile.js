@@ -1037,7 +1037,7 @@ const operators = {
   '='([target, value]) { return genAssign(target, value, true) },
 
   'function'([name, params, body]) {
-    ctx.functions[name] = { params: extractParams(params), paramInfo: extractParamInfo(params), body, exported: true }
+    ctx.functions[name] = { params: extractParams(params), paramInfo: extractParamInfo(params), body, exported: ctx.exports.has(name) }
     return wat('(f64.const 0)', 'f64')
   },
 
@@ -1411,6 +1411,11 @@ const operators = {
     }
     const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('const requires simple identifier')
+    // Arrow function: delegate to genAssign which handles function registration properly
+    if (Array.isArray(value) && value[0] === '=>') {
+      ctx.declareVar(name, true)
+      return genAssign(name, value, true)
+    }
     const scopedName = ctx.declareVar(name, true)
     const val = gen(value)
     ctx.addLocal(name, val.type, val.schema, scopedName)
@@ -1522,10 +1527,58 @@ const operators = {
     return wat(`(i32.const ${totalLen})`, 'i32')
   },
 
+  // Export declaration
+  'export'([decl]) {
+    // export { name } or export { name1, name2 }
+    if (Array.isArray(decl) && decl[0] === '{') {
+      for (let i = 1; i < decl.length; i++) {
+        const name = decl[i]
+        if (typeof name === 'string') ctx.exports.add(name)
+      }
+      return wat('(f64.const 0)', 'f64')
+    }
+    // export const/let/var name = value
+    if (Array.isArray(decl) && (decl[0] === 'const' || decl[0] === 'let' || decl[0] === 'var')) {
+      const inner = decl[1]
+      if (Array.isArray(inner) && inner[0] === '=') {
+        const name = inner[1]
+        if (typeof name === 'string') ctx.exports.add(name)
+      }
+      return gen(decl)
+    }
+    // export function name() {}
+    if (Array.isArray(decl) && decl[0] === 'function') {
+      const name = decl[1]
+      if (typeof name === 'string') ctx.exports.add(name)
+      return gen(decl)
+    }
+    return gen(decl)
+  },
+
   // Statements
   ';'(stmts) {
     // Filter out trailing line number metadata
     stmts = stmts.filter((s, i) => i === 0 || (s !== null && typeof s !== 'number'))
+
+    // Pre-scan for export { name } declarations to collect export names first
+    // This handles both direct exports and nested statement blocks
+    const collectExports = (stmt) => {
+      if (!Array.isArray(stmt)) return
+      if (stmt[0] === 'export') {
+        const decl = stmt[1]
+        // export { name } or export { name1, name2 }
+        if (Array.isArray(decl) && decl[0] === '{') {
+          for (let i = 1; i < decl.length; i++) {
+            if (typeof decl[i] === 'string') ctx.exports.add(decl[i])
+          }
+        }
+      } else if (stmt[0] === ';') {
+        // Nested statement block
+        for (let i = 1; i < stmt.length; i++) collectExports(stmt[i])
+      }
+    }
+    for (const stmt of stmts) collectExports(stmt)
+
     let code = ''
     for (let i = 0; i < stmts.length - 1; i++) {
       const stmt = stmts[i]
@@ -1641,8 +1694,8 @@ function genAssign(target, value, returnValue) {
     const returnsClosure = Array.isArray(body) && body[0] === '=>'
     const depth = closureDepth(body)
 
-    // Regular function (no captures)
-    ctx.functions[target] = { params, paramInfo, body, exported: true, returnsClosure, closureDepth: depth }
+    // Regular function (no captures) - export only if explicitly exported
+    ctx.functions[target] = { params, paramInfo, body, exported: ctx.exports.has(target), returnsClosure, closureDepth: depth }
     return returnValue ? wat('(f64.const 0)', 'f64') : ''
   }
 
@@ -1816,11 +1869,12 @@ function genLoopInit(target, value) {
  * @param {any} bodyAst - Function body AST
  * @param {object} parentCtx - Parent compilation context
  * @param {object|null} closureInfo - Closure metadata: {envType, envFields, usesOwnEnv}, or null
+ * @param {boolean} exported - Whether function should be exported
  * @returns {string} Complete WAT function definition
- * @example generateFunction('add', ['a', 'b'], [...], ['+', 'a', 'b'], ctx, null)
+ * @example generateFunction('add', ['a', 'b'], [...], ['+', 'a', 'b'], ctx, null, true)
  *          → '(func $add (export "add") (param $a f64) (param $b f64) (result f64) ...)'
  */
-function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = null) {
+function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = null, exported = false) {
   const newCtx = createContext()
   newCtx.usedStdlib = parentCtx.usedStdlib
   newCtx.usedArrayType = parentCtx.usedArrayType
@@ -2023,8 +2077,8 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     return `(param $${p} f64)`
   }).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
-  // Export only if not a closure
-  const exportClause = closureInfo ? '' : ` (export "${name}")`
+  // Export only if explicitly exported and not a closure
+  const exportClause = (exported && !closureInfo) ? ` (export "${name}")` : ''
   // Wrap body in block to support early return
   const watCode = `(func $${name}${exportClause} ${envParam}${paramDecls} (result ${returnType})${localDecls}\n    (block ${ctx.returnLabel} (result ${returnType})\n      ${envInit}${paramInit}${bodyWat}\n    )\n  )`
 
@@ -2080,7 +2134,7 @@ function generateFunctions() {
     for (const [name, def] of toGenerate) {
       generated.add(name)
       const closureInfo = def.closure || null
-      results.push(generateFunction(name, def.params, def.paramInfo, def.body, ctx, closureInfo))
+      results.push(generateFunction(name, def.params, def.paramInfo, def.body, ctx, closureInfo, def.exported))
     }
   }
   return results
