@@ -13,19 +13,29 @@
  */
 
 /**
- * Pointer types for gc:false NaN-boxing mode
- * Layout: f64 quiet NaN with mantissa [type:4][length:28][offset:20]
+ * Pointer types for NaN-boxing mode
+ * Layout: f64 quiet NaN with mantissa [type:4][len:16][offset:32]
+ * - type: pointer type (1-7)
+ * - len: current length (65535 max elements)
+ * - offset: memory offset to data (full 32-bit range)
+ *
+ * Memory at offset: [data...] - pure data, no header
+ * Capacity is implicit from length tier: nextPow2(max(len, 4))
+ *
+ * COW-like semantics: assignment copies pointer, mutations to
+ * elements are shared, but length changes (push/pop) diverge.
+ *
  * Types 1-7 are pointers, 8-15 reserved for canonical NaN
  * @enum {number}
  */
 export const PTR_TYPE = {
-  F64_ARRAY: 1,   // Float64 array (8 bytes/element)
-  I32_ARRAY: 2,   // Int32 array (4 bytes/element)
-  STRING: 3,      // UTF-16 string (2 bytes/char)
-  I8_ARRAY: 4,    // Int8 array (1 byte/element)
-  OBJECT: 5,      // Object (f64 array + schema)
-  REF_ARRAY: 6,   // Mixed-type array (f64 + type info)
-  CLOSURE: 7      // Closure environment
+  F64_ARRAY: 1,   // Float64 array (8 bytes/element), pure data
+  I32_ARRAY: 2,   // Int32 array (4 bytes/element), pure data
+  STRING: 3,      // UTF-16 string (2 bytes/char), immutable
+  I8_ARRAY: 4,    // Int8 array (1 byte/element), pure data
+  OBJECT: 5,      // Object (f64 array + schema), pure data
+  REF_ARRAY: 6,   // Mixed-type array (f64 + type info), pure data
+  CLOSURE: 7      // Closure environment, pure data
 }
 
 /**

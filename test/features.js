@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { evaluate, isGcTrue, isGcFalse } from './util.js'
+import { evaluate } from './util.js'
 
 // Tests for new features: if/else, typeof, void, array methods, string methods
 
@@ -103,7 +103,8 @@ test('array.findIndex', async () => {
 test('array.filter', async () => {
   is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3)[0]'), 4)
   is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3)[1]'), 5)
-  is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3).length'), 5)  // Note: filter may return full-size array with trailing zeros
+  // Memory mode returns proper length
+  is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3).length'), 2)
 })
 
 test('array.every', async () => {

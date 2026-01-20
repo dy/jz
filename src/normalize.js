@@ -95,15 +95,21 @@ const handlers = {
 
   // Variable declarations
   'let'(op, [init]) {
-    if (Array.isArray(init) && init[0] === '=') return ['let', ['=', init[1], expr(init[2])]]
+    if (Array.isArray(init) && init[0] === '=') {
+      return ['let', ['=', init[1], expr(init[2])]]
+    }
     return ['let', init]
   },
   'const'(op, [init]) {
-    if (Array.isArray(init) && init[0] === '=') return ['const', ['=', init[1], expr(init[2])]]
+    if (Array.isArray(init) && init[0] === '=') {
+      return ['const', ['=', init[1], expr(init[2])]]
+    }
     return ['const', init]
   },
   'var'(op, [init]) {
-    if (Array.isArray(init) && init[0] === '=') return ['var', ['=', init[1], expr(init[2])]]
+    if (Array.isArray(init) && init[0] === '=') {
+      return ['var', ['=', init[1], expr(init[2])]]
+    }
     return ['var', init]
   },
 

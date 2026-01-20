@@ -2,15 +2,9 @@
 import { compile, instantiate, compileWat } from '../index.js'
 import { assemble } from '../src/compile.js'
 
-// GC mode from environment
-export const gc = process.env.GC !== 'false'
-export const isGcTrue = gc
-export const isGcFalse = !gc
-
 // Evaluate JS expression
 export async function evaluate(code, options = {}) {
-  const useGc = 'gc' in options ? options.gc : gc
-  const wasm = compile(code, { gc: useGc })
+  const wasm = compile(code)
   const instance = await instantiate(wasm)
   return instance.run()
 }

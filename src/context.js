@@ -11,10 +11,9 @@
 
 /**
  * Create a fresh compilation context
- * @param {boolean} gc - Whether GC mode is enabled
  * @returns {Object} - New compilation context
  */
-export function createContext(gc = true) {
+export function createContext() {
   return {
     // Variables
     locals: {},           // name -> { idx, type, originalName }
@@ -35,21 +34,16 @@ export function createContext(gc = true) {
     // Types used
     usedArrayType: false,
     usedStringType: false,
-    usedRefArrayType: false,
     usedMemory: false,
-    usedClosureType: false,  // funcref-based closures (gc:true)
-    usedFuncTable: false,    // call_indirect closures (gc:false)
+    usedFuncTable: false,    // call_indirect closures
     usedFuncTypes: null,     // Set of arities for fntype
-    usedClFuncTypes: null,   // Set of arities for closure-returning fntype
 
     // Stdlib tracking
     usedStdlib: [],
 
-    // Closures
-    funcTableEntries: [],    // Functions in table (gc:false)
-    refFuncs: new Set(),     // Functions needing elem declare (gc:true)
+    // Closures (memory-based)
+    funcTableEntries: [],    // Functions in table
     closures: {},            // name -> { envType, envFields, captured }
-    closureEnvTypes: [],     // Struct type definitions
     closureCounter: 0,
     currentEnv: null,        // Current environment type name
     capturedVars: {},        // name -> field index in env
@@ -58,14 +52,21 @@ export function createContext(gc = true) {
 
     // Exports
     exports: new Set(),      // Names explicitly exported
+    exportSignatures: {},    // name -> { arrayParams: number[], returnsArray: boolean }
+
+    // Type inference for params (JS interop)
+    inferredArrayParams: new Set(),  // param names used with array methods
+    returnsArrayPointer: false,      // set true when function returns array pointer
+
+    // Array aliasing warnings
+    knownArrayVars: new Set(),  // variable names known to hold arrays
 
     // Strings
     strings: {},             // str -> { id, offset, length }
     stringData: [],          // UTF-16 byte array
     stringCounter: 0,
-    internedStringGlobals: {}, // id -> { length }
 
-    // Arrays (gc:false static allocation)
+    // Arrays (static allocation)
     staticArrays: {},
     arrayDataOffset: 0,
 
@@ -73,7 +74,7 @@ export function createContext(gc = true) {
     objectCounter: 0,
     objectSchemas: {},
 
-    // Memory (gc:false)
+    // Memory
     staticAllocs: [],
     staticOffset: 0,
 
@@ -93,15 +94,9 @@ export function createContext(gc = true) {
       const finalName = scopedName || name
       if (!(finalName in this.locals)) {
         this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
-        // WAT type depends on gc mode
-        const wasmType = gc
-          ? (type === 'refarray' ? '(ref null $anyarray)'
-            : type === 'array' || type === 'ref' || type === 'object' ? '(ref null $f64array)'
-            : type === 'string' ? '(ref null $string)'
-            : type === 'closure' ? '(ref null $closure)'
-            : type)
-          : (type === 'array' || type === 'ref' || type === 'refarray' ||
-             type === 'object' || type === 'string' || type === 'closure' ? 'f64' : type)
+        // Memory-based: all reference types are f64 pointers
+        const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
+           type === 'object' || type === 'string' || type === 'closure') ? 'f64' : type
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }
       if (schema !== undefined) this.localSchemas[finalName] = schema
