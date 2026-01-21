@@ -240,6 +240,13 @@ export function analyzeScope(ast, outerDefined = new Set(), inFunction = false) 
       return
     }
 
+    // Property access: obj.prop - only walk object, not property name string
+    if (op === '.' || op === '?.') {
+      walk(args[0], inFunc)  // object expression
+      // args[1] is the property name string - don't walk it
+      return
+    }
+
     // Recurse into all children
     for (const arg of args) walk(arg, inFunc)
   }

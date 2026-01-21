@@ -125,6 +125,10 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
 export const objGet = (w, idx) =>
   `(f64.load (i32.add (call $__ptr_offset ${w}) (i32.const ${idx * 8})))`
 
+/** Set object property by index */
+export const objSet = (w, idx, val) =>
+  `(f64.store (i32.add (call $__ptr_offset ${w}) (i32.const ${idx * 8})) ${val})`
+
 // === Environment (closures) ===
 
 /** Read from environment memory at field index */

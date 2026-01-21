@@ -29,3 +29,10 @@ index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() �
 ## Key Patterns
 
 - **Method modules**: array.js/string.js import `{ctx, opts, gen}` from compile.js
+
+## Design Principles
+
+- **No-overhead primitives**: Prefer compile-time solutions over runtime indirection. Static analysis enables direct calls, inline code, zero allocation.
+- **Meaningful limitations**: Accept constraints that enable performance. Document them clearly. Example: static namespace pattern requires compile-time known schema.
+- **Don't overcomplicate**: Simple working solution > complex generic solution. Add complexity only when concrete use case demands it.
+- **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
