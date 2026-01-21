@@ -246,3 +246,59 @@ test('postfix decrement', async () => {
   is(await evaluate('let x = 5; x--'), 5)
   is(await evaluate('let x = 5; x--; x'), 4)
 })
+
+// Object property assignment
+test('object property assignment - basic', async () => {
+  is(await evaluate('let obj = {x: 1}; obj.x = 5; obj.x'), 5)
+  is(await evaluate('let obj = {a: 1, b: 2}; obj.a = 10; obj.b = 20; obj.a + obj.b'), 30)
+})
+
+test('object property assignment - returns value', async () => {
+  is(await evaluate('let obj = {x: 0}; (obj.x = 42)'), 42)
+})
+
+// Object method calls
+test('object method call - simple', async () => {
+  is(await evaluate('let obj = { add: (a, b) => a + b }; obj.add(2, 3)'), 5)
+  is(await evaluate('let obj = { mul: (x, y) => x * y }; obj.mul(4, 5)'), 20)
+})
+
+test('object method call - multiple methods', async () => {
+  is(await evaluate(`
+    let math = { add: (a, b) => a + b, mul: (a, b) => a * b };
+    math.add(2, 3) + math.mul(4, 5)
+  `), 25)
+})
+
+test('object method call - assign function to property', async () => {
+  is(await evaluate('let obj = {fn: 0}; obj.fn = (x) => x * 2; obj.fn(5)'), 10)
+})
+
+test('object method call - color-space pattern', async () => {
+  const result = await evaluate(`
+    let rgb = {
+      gray: (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b
+    };
+    rgb.gray(100, 150, 200)
+  `)
+  is(Math.round(result * 100), 14298) // ~142.98
+})
+
+// Static namespace - compile-time function grouping (no memory overhead)
+test('static namespace - direct calls', async () => {
+  // Namespace methods become direct function calls (call $ns_method)
+  is(await evaluate(`
+    let math = { add: (a, b) => a + b, sub: (a, b) => a - b };
+    math.add(10, 5) + math.sub(10, 5)
+  `), 20) // 15 + 5
+})
+
+test('static namespace - used in exports', async () => {
+  // Namespace can be used in exported functions without capture overhead
+  const { compile } = await import('./util.js')
+  const instance = await compile(`
+    let rgb = { gray: (r, g, b) => (r + g + b) / 3 };
+    export let toGray = (r, g, b) => rgb.gray(r, g, b)
+  `)
+  is(instance.toGray(30, 60, 90), 60)
+})

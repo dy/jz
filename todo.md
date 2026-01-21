@@ -120,9 +120,18 @@
   * [ ] Float16
   * [ ] Promise.try
   * [ ] Iterator.range
+* [ ] Detect unsupported JS features, throw error (detected, unsupported)
+  * [ ] Make sure there's no undetected JS features
+* [ ] Which parts of jessie are defective? Port & improve them
 * [ ] TypedArrays
-* [ ] All Math funcs
+* [ ] Math full
+* [ ] Boxed String, Number, Boolean funcs
+* [ ] Regex
+* [ ] Important globals
 * [ ] color-space converter
+* [ ] Import model
+  * [ ] Bundle before compile
+  * [ ] Resolve imports by the compiler, not runtime (static-time)
 * [x] JS improvements (warn on quirks, document divergences)
   * [x] Warning system (console.warn during compilation)
   * [x] Warnings/errors implemented:
@@ -146,7 +155,11 @@
     * [x] Closure representation: struct { funcref fn, ref env }
     * [x] call_ref for indirect function calls
     * [x] Fallback to call_indirect + table for wasm-mvp
-  * [ ] `multivalue` - multiple return values
+  * [x] `multivalue` - multiple return values for fixed-size arrays
+    * [x] Export functions returning `[a, b, c]` use `(result f64 f64 f64)`
+    * [x] Implicit return: `(h, s, l) => [h*255, s*255, l*255]`
+    * [x] Explicit return: `{ ...; return [r, g, b] }`
+    * [x] Track `multiReturn: N` in jz:sig custom section
     * [ ] Destructuring assignment via multi-value returns
     * [ ] Error+value pattern (result i32 f64)
     * [ ] Swap/rotate operations

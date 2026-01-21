@@ -111,9 +111,19 @@ export function assemble(bodyWat, ctx = {
   }
 
   // === Main function ===
-
+  // Skip main wrapper if 'main' was already generated as a function (e.g., export arrow with closure)
+  const mainDef = ctx.functions?.['main']
+  const mainAlreadyGenerated = mainDef !== undefined
   const hasMainBody = bodyWat?.trim() && bodyWat.trim() !== '(f64.const 0)'
-  if (hasMainBody || extraFunctions.length === 0) {
+
+  if (mainAlreadyGenerated && mainDef.closure) {
+    // Main is a closure - generate wrapper that passes stored env
+    // The bodyWat should have stored env in __main_env global
+    const mainParams = mainDef.params || []
+    const paramDecls = mainParams.map(p => `(param $${p} f64)`).join(' ')
+    const paramPasses = mainParams.map(p => `(local.get $${p})`).join(' ')
+    wat += `\n  (func $main_export (export "main") ${paramDecls} (result f64)\n    (call $main (global.get $__main_env) ${paramPasses})\n  )`
+  } else if (!mainAlreadyGenerated && (hasMainBody || extraFunctions.length === 0)) {
     const locals = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
     wat += `\n  (func $main (export "main") (result f64)${locals}\n    ${bodyWat}\n  )`
   }

@@ -64,7 +64,7 @@ import { extractParams, extractParamInfo, analyzeScope, findHoistedVars } from '
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
-import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, strCharAt, mkArrayLiteral, callClosure } from './memory.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure } from './memory.js'
 
 // Check if type is array-like (for aliasing warnings)
 const isArrayType = t => t === 'array' || t === 'refarray'
@@ -129,6 +129,58 @@ function isConstant(ast) {
     return ast.slice(1).every(isConstant)
   }
   return false
+}
+
+/**
+ * Detect if AST is a fixed-size array literal eligible for multi-value return.
+ * Must be 2-8 elements, no spread, all numeric expressions.
+ * @param {any} ast - AST node to check
+ * @returns {number|false} Element count if eligible, false otherwise
+ */
+function isFixedArrayLiteral(ast) {
+  if (!Array.isArray(ast) || ast[0] !== '[') return false
+  const elems = ast.slice(1)
+  // 2-8 elements, no spread
+  if (elems.length < 2 || elems.length > 8) return false
+  for (const e of elems) {
+    // Spread disqualifies
+    if (Array.isArray(e) && e[0] === '...') return false
+  }
+  return elems.length
+}
+
+/**
+ * Pre-scan function body to detect if all return statements use same-size fixed array literal.
+ * Also handles implicit return (arrow function expression body that is array literal).
+ * Returns the count if all returns match, 0 otherwise.
+ * @param {any} ast - Function body AST
+ * @returns {number} Multi-value count (2-8) or 0 if not eligible
+ */
+function detectMultiReturn(ast) {
+  // Direct array literal body (implicit return): () => [a, b, c]
+  const directN = isFixedArrayLiteral(ast)
+  if (directN) return directN
+
+  let count = 0
+  function scan(node) {
+    if (!Array.isArray(node)) return true
+    const [op, ...args] = node
+    if (op === 'return') {
+      const n = isFixedArrayLiteral(args[0])
+      if (!n) return false  // Non-array return disqualifies
+      if (count === 0) count = n
+      else if (count !== n) return false  // Inconsistent sizes
+      return true
+    }
+    // Skip nested function definitions
+    if (op === '=>' || op === 'function') return true
+    // Recurse into children
+    for (const arg of args) {
+      if (!scan(arg)) return false
+    }
+    return true
+  }
+  return scan(ast) ? count : 0
 }
 
 /**
@@ -238,8 +290,8 @@ function genIdent(name) {
 
   // Check if this is a captured variable (from closure environment passed to us)
   if (ctx.capturedVars && name in ctx.capturedVars) {
-    const { index } = ctx.capturedVars[name]
-    return wat(envGet('$__env', index), 'f64')
+    const { index, type, schema } = ctx.capturedVars[name]
+    return wat(envGet('$__env', index), type || 'f64', schema)
   }
 
   const loc = ctx.getLocal(name)
@@ -284,6 +336,16 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (rt === 'string' && stringMethods[name]) {
       const result = stringMethods[name](rw, args)
       if (result) return result
+    }
+
+    // Check if receiver is a closure/function property from an object
+    if (receiver.type === 'closure' && receiver.objWat) {
+      // Object method call: obj.method(args)
+      ctx.usedMemory = true
+      const argWats = args.map(a => f64(gen(a))).join(' ')
+      const closureWat = receiver.toString()
+      const result = wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
+      return result
     }
 
     throw new Error(`Unknown method: .${name}`)
@@ -645,8 +707,31 @@ const operators = {
       if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array')) {
         namespace = obj
         name = method
+      } else if (typeof obj === 'string' && ctx.namespaces[obj]) {
+        // Static namespace method call: ns.method(args) → call $ns_method
+        const ns = ctx.namespaces[obj]
+        if (ns[method]) {
+          const funcName = ns[method].funcName
+          const argWats = args.map(a => f64(gen(a))).join(' ')
+          return wat(`(call $${funcName} ${argWats})`, 'f64')
+        }
+        throw new Error(`Unknown method '${method}' in namespace '${obj}'`)
       } else {
-        receiver = gen(obj)
+        // Check if this is an object method call (closure property)
+        const objVal = gen(obj)
+        if (isObject(objVal) && hasSchema(objVal)) {
+          const schema = ctx.objectSchemas[objVal.schema]
+          const propTypes = ctx.objectPropTypes?.[objVal.schema]
+          const idx = schema?.indexOf(method)
+          if (idx >= 0 && propTypes?.[method] === 'closure') {
+            // This is an object method call - load closure and call it
+            ctx.usedMemory = true
+            const closureWat = objGet(String(objVal), idx)
+            const argWats = args.map(a => f64(gen(a))).join(' ')
+            return wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
+          }
+        }
+        receiver = objVal
         name = method
       }
     } else if (Array.isArray(fn)) {
@@ -758,9 +843,20 @@ const operators = {
     ctx.usedArrayType = true
     ctx.usedMemory = true
     const keys = props.map(p => p[0])
-    const vals = props.map(p => String(f64(gen(p[1]))))
     const objId = ctx.objectCounter++
     ctx.objectSchemas[objId] = keys
+    // Track closure properties for method call support
+    if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+    ctx.objectPropTypes[objId] = {}
+    const vals = []
+    for (let i = 0; i < props.length; i++) {
+      const [key, valueAst] = props[i]
+      const g = gen(valueAst)
+      vals.push(String(f64(g)))
+      if (g.type === 'closure' || (Array.isArray(valueAst) && valueAst[0] === '=>')) {
+        ctx.objectPropTypes[objId][key] = 'closure'
+      }
+    }
     const id = ctx.loopCounter++
     const tmp = `$_obj_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
@@ -819,7 +915,14 @@ const operators = {
         const idx = schema.indexOf(prop)
         if (idx >= 0) {
           ctx.usedMemory = true
-          return wat(objGet(String(o), idx), 'f64')
+          const propType = ctx.objectPropTypes?.[o.schema]?.[prop] || 'f64'
+          const result = wat(objGet(String(o), idx), propType)
+          // Preserve schema and property info for method calls
+          result.objSchema = o.schema
+          result.propName = prop
+          result.propIdx = idx
+          result.objWat = String(o)
+          return result
         }
       }
     }
@@ -894,6 +997,14 @@ const operators = {
       return 'f64'  // default
     }
 
+    // Helper to get variable schema for captured var (for objects)
+    const getVarSchema = (v) => {
+      const loc = ctx.getLocal(v)
+      if (loc) return ctx.localSchemas[loc.scopedName]
+      if (ctx.capturedVars?.[v]?.schema !== undefined) return ctx.capturedVars[v].schema
+      return undefined
+    }
+
     // Generate unique name for anonymous closure
     const closureName = `__anon${ctx.closureCounter++}`
 
@@ -911,16 +1022,17 @@ const operators = {
     } else {
       const envId = ctx.closureCounter++
       envType = `$env${envId}`
-      envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v) }))
+      envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v), schema: getVarSchema(v) }))
     }
 
     // Register the lifted function
+    // Always mark as closure (needs __env param) since it will be called via call_indirect
     ctx.functions[closureName] = {
       params: fnParams,
       paramInfo: fnParamInfo,
       body,
       exported: false,
-      closure: captured.length > 0 ? { envType, envFields, captured, usesOwnEnv: allFromOwnEnv } : null
+      closure: { envType, envFields, captured, usesOwnEnv: allFromOwnEnv }
     }
 
     // Return closure value
@@ -928,6 +1040,18 @@ const operators = {
   },
 
   'return'([value]) {
+    // Multi-value return: if enabled and returning fixed array literal
+    // Only works when multiReturnCount was pre-detected in generateFunction
+    if (ctx.multiReturnCount && value) {
+      const n = isFixedArrayLiteral(value)
+      if (n === ctx.multiReturnCount) {
+        const elems = value.slice(1).map(e => f64(gen(e))).join(' ')
+        if (ctx.returnLabel) {
+          return wat(`(br ${ctx.returnLabel} ${elems})`, 'multi')
+        }
+        return wat(elems, 'multi')
+      }
+    }
     const retVal = value !== undefined ? f64(gen(value)) : wat('(f64.const 0)', 'f64')
     // If inside a function with a return label, use br to exit early
     if (ctx.returnLabel) {
@@ -1234,6 +1358,59 @@ const operators = {
     }
     const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('let requires simple identifier')
+
+    // Special case: exported arrow function without captures -> direct function registration
+    // This enables multi-value returns for: export let rgb = (h, s, l) => [h * 255, ...]
+    if (Array.isArray(value) && value[0] === '=>' && ctx.exports.has(name) && !ctx.inFunction) {
+      const [, params, body] = value
+      const fnParams = extractParams(params)
+      const fnParamInfo = extractParamInfo(params)
+      // Check if captures anything (exclude namespace refs - they're compile-time only)
+      const analysis = analyzeScope(body, new Set(fnParams), true)
+      const localNames = Object.keys(ctx.locals)
+      const captured = [...analysis.free].filter(v =>
+        localNames.includes(v) && !fnParams.includes(v) && !ctx.namespaces[v]
+      )
+      if (captured.length === 0) {
+        // No captures - register as direct exported function
+        ctx.functions[name] = { params: fnParams, paramInfo: fnParamInfo, body, exported: true }
+        return wat('(f64.const 0)', 'f64')
+      }
+    }
+
+    // Static namespace pattern: let ns = { fn1: (x) => ..., fn2: (a,b) => ... }
+    // All properties must be arrow functions without captures
+    if (Array.isArray(value) && value[0] === '{') {
+      const props = value.slice(1)
+      const isNamespace = props.length > 0 && props.every(([key, val]) =>
+        Array.isArray(val) && val[0] === '=>'
+      )
+      if (isNamespace) {
+        const localNames = Object.keys(ctx.locals)
+        let hasCaptures = false
+        for (const [key, [, params, body]] of props) {
+          const fnParams = extractParams(params)
+          const analysis = analyzeScope(body, new Set(fnParams), true)
+          const captured = [...analysis.free].filter(v => localNames.includes(v) && !fnParams.includes(v))
+          if (captured.length > 0) { hasCaptures = true; break }
+        }
+        if (!hasCaptures) {
+          // Register as static namespace - direct function calls, no memory
+          ctx.namespaces[name] = {}
+          for (const [key, [, params, body]] of props) {
+            const fnParams = extractParams(params)
+            const fnParamInfo = extractParamInfo(params)
+            const funcName = `${name}_${key}`
+            ctx.namespaces[name][key] = { params: fnParams, body, funcName }
+            ctx.functions[funcName] = { params: fnParams, paramInfo: fnParamInfo, body, exported: false }
+          }
+          ctx.declareVar(name, false)
+          ctx.addLocal(name, 'namespace')
+          return wat('(f64.const 0)', 'f64')
+        }
+      }
+    }
+
     const scopedName = ctx.declareVar(name, false)
     const val = gen(value)
     // Track array variables (type-based for gc:true, AST-based for gc:false)
@@ -1371,10 +1548,10 @@ const operators = {
 
     // Check if all parts are compile-time constant strings
     // Note: subscript uses undefined (not null) as the literal marker
-    const allConstStrings = parts.every(part => 
+    const allConstStrings = parts.every(part =>
       Array.isArray(part) && part[0] === undefined && typeof part[1] === 'string'
     )
-    
+
     if (allConstStrings) {
       // Concatenate at compile time
       const fullString = parts.map(p => p[1]).join('')
@@ -1411,7 +1588,7 @@ const operators = {
 
     // Build the concatenation code
     let code = `(local.set ${totalLen} ${lenCalc})\n`
-    
+
     // Evaluate expressions and accumulate their lengths
     for (const part of genParts) {
       if (part.type === 'expr') {
@@ -1439,7 +1616,7 @@ const operators = {
         const { id: stringId } = ctx.internString(part.value)
         const partLen = part.value.length
         if (partLen > 0) {
-          code += `(memory.copy 
+          code += `(memory.copy
             (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
             (i32.const ${stringId * 256})
             (i32.const ${partLen * 2}))\n`
@@ -1485,6 +1662,48 @@ const operators = {
       const name = decl[1]
       if (typeof name === 'string') ctx.exports.add(name)
       return gen(decl)
+    }
+    // export (params) => body  - register as 'main' with parameters
+    if (Array.isArray(decl) && decl[0] === '=>') {
+      const [, params, body] = decl
+      const fnParams = extractParams(params)
+      const fnParamInfo = extractParamInfo(params)
+      // Analyze for captures (exclude namespace variables - they're compile-time only)
+      const localNames = Object.keys(ctx.locals)
+      const analysis = analyzeScope(body, new Set(fnParams), true)
+      const captured = [...analysis.free].filter(v =>
+        localNames.includes(v) && !fnParams.includes(v) && !ctx.namespaces[v]
+      )
+
+      // Helper to get variable type and schema for captured var
+      const getVarType = (v) => {
+        const loc = ctx.getLocal(v)
+        if (loc) return loc.type
+        return 'f64'
+      }
+      const getVarSchema = (v) => {
+        const loc = ctx.getLocal(v)
+        if (loc) return ctx.localSchemas[loc.scopedName]
+        return undefined
+      }
+
+      if (captured.length > 0) {
+        // Has captures - register as closure with env (not added to table, just receives env)
+        const envId = ctx.closureCounter++
+        const envType = `$env${envId}`
+        const envFields = captured.map((v, i) => ({ name: v, index: i, type: getVarType(v), schema: getVarSchema(v) }))
+        ctx.functions['main'] = {
+          params: fnParams,
+          paramInfo: fnParamInfo,
+          body,
+          exported: true,
+          closure: { envType, envFields, captured, usesOwnEnv: false }
+        }
+      } else {
+        // No captures - simple exported function
+        ctx.functions['main'] = { params: fnParams, paramInfo: fnParamInfo, body, exported: true }
+      }
+      return wat('(f64.const 0)', 'f64')
     }
     return gen(decl)
   },
@@ -1550,7 +1769,33 @@ for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
  * @example genAssign('x', [null, 42], false) → '(local.set $x (f64.const 42))\n    '
  */
 function genAssign(target, value, returnValue) {
-  // Function/closure definition
+  // Arrow function assigned to object property: obj.fn = (x) => x * 2
+  if (Array.isArray(value) && value[0] === '=>' && Array.isArray(target) && target[0] === '.' && target.length === 3) {
+    const [, objAst, prop] = target
+    const o = gen(objAst)
+    if (!isObject(o) || !hasSchema(o)) {
+      throw new Error(`Cannot assign property on non-object`)
+    }
+    const schema = ctx.objectSchemas[o.schema]
+    const idx = schema.indexOf(prop)
+    if (idx < 0) {
+      throw new Error(`Property '${prop}' not found in object schema`)
+    }
+    ctx.usedMemory = true
+
+    // Generate closure value using the '=>' operator logic
+    const closureVal = gen(value)
+
+    // Track as closure property
+    if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+    if (!ctx.objectPropTypes[o.schema]) ctx.objectPropTypes[o.schema] = {}
+    ctx.objectPropTypes[o.schema][prop] = 'closure'
+
+    const code = objSet(String(o), idx, String(closureVal))
+    return returnValue ? wat(`(block (result f64) ${code} ${closureVal})`, 'f64') : code + '\n    '
+  }
+
+  // Function/closure definition to named variable
   if (Array.isArray(value) && value[0] === '=>') {
     if (typeof target !== 'string') throw new Error('Function must have name')
     const params = extractParams(value[1])
@@ -1583,8 +1828,9 @@ function genAssign(target, value, returnValue) {
     const analysis = analyzeScope(body, new Set(params), true)
 
     // Captured = free vars in the inner function that exist in our current scope
+    // Exclude namespace variables - they're compile-time only, no runtime capture needed
     const captured = [...analysis.free].filter(v =>
-      outerDefined.has(v) && !params.includes(v)
+      outerDefined.has(v) && !params.includes(v) && !ctx.namespaces[v]
     )
 
     if (captured.length > 0) {
@@ -1681,6 +1927,30 @@ function genAssign(target, value, returnValue) {
       : returnValue ? wat(code + '(f64.const 0)', 'f64') : code
   }
 
+  // Object property assignment: obj.prop = x
+  if (Array.isArray(target) && target[0] === '.' && target.length === 3) {
+    const [, objAst, prop] = target
+    const o = gen(objAst)
+    if (!isObject(o) || !hasSchema(o)) {
+      throw new Error(`Cannot assign property on non-object`)
+    }
+    const schema = ctx.objectSchemas[o.schema]
+    const idx = schema.indexOf(prop)
+    if (idx < 0) {
+      throw new Error(`Property '${prop}' not found in object schema`)
+    }
+    ctx.usedMemory = true
+    const vw = f64(gen(value))
+    // Track closure type if assigning a function
+    if (Array.isArray(value) && value[0] === '=>') {
+      if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+      if (!ctx.objectPropTypes[o.schema]) ctx.objectPropTypes[o.schema] = {}
+      ctx.objectPropTypes[o.schema][prop] = 'closure'
+    }
+    const code = objSet(String(o), idx, vw)
+    return returnValue ? wat(`(block (result f64) ${code} ${vw})`, 'f64') : code + '\n    '
+  }
+
   // Array element assignment: arr[i] = x
   if (Array.isArray(target) && target[0] === '[]' && target.length === 3) {
     const aw = gen(target[1]), iw = i32(gen(target[2])), vw = f64(gen(value))
@@ -1699,6 +1969,43 @@ function genAssign(target, value, returnValue) {
     if (Array.isArray(value) && value[0] === '.' && value[1] === 'Math' && value[2] in MATH_OPS.constants) {
       ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(MATH_OPS.constants[value[2]])})`)
       return ''
+    }
+  }
+
+  // Static namespace: let ns = { fn1: (x) => ..., fn2: (a,b) => ... }
+  // All properties must be arrow functions without captures for namespace optimization
+  if (typeof target === 'string' && Array.isArray(value) && value[0] === '{') {
+    const props = value.slice(1)  // [['name', valueAst], ...]
+    const isNamespace = props.length > 0 && props.every(([key, val]) =>
+      Array.isArray(val) && val[0] === '=>'
+    )
+    if (isNamespace) {
+      // Check for captures - if any function has captures, can't use namespace optimization
+      const localNames = Object.keys(ctx.locals)
+      let hasCaptures = false
+      for (const [key, [, params, body]] of props) {
+        const fnParams = extractParams(params)
+        const analysis = analyzeScope(body, new Set(fnParams), true)
+        const captured = [...analysis.free].filter(v => localNames.includes(v) && !fnParams.includes(v))
+        if (captured.length > 0) {
+          hasCaptures = true
+          break
+        }
+      }
+      if (!hasCaptures) {
+        // Register as static namespace - direct function calls, no memory
+        ctx.namespaces[target] = {}
+        for (const [key, [, params, body]] of props) {
+          const fnParams = extractParams(params)
+          const fnParamInfo = extractParamInfo(params)
+          const funcName = `${target}_${key}`
+          ctx.namespaces[target][key] = { params: fnParams, body, funcName }
+          ctx.functions[funcName] = { params: fnParams, paramInfo: fnParamInfo, body, exported: false }
+        }
+        // Variable holds nothing meaningful - just a marker
+        ctx.addLocal(target, 'namespace')
+        return returnValue ? wat('(f64.const 0)', 'f64') : ''
+      }
     }
   }
 
@@ -1806,8 +2113,13 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   newCtx.strings = parentCtx.strings  // Share string interning
   newCtx.stringData = parentCtx.stringData  // Share string data
   newCtx.stringOffset = parentCtx.stringOffset  // Share string offset counter
+  newCtx.objectSchemas = parentCtx.objectSchemas  // Share object schemas for method calls
+  newCtx.objectPropTypes = parentCtx.objectPropTypes  // Share property types for closure detection
+  newCtx.namespaces = parentCtx.namespaces  // Share namespaces for direct method calls
   newCtx.inFunction = true
   newCtx.returnLabel = '$return_' + name
+  // Enable multi-value return detection for exported functions (not closures)
+  newCtx.allowMultiReturn = exported && !closureInfo
 
   // Find variables that need to be hoisted to environment (captured by nested closures)
   const hoistedVars = findHoistedVars(bodyAst, params)
@@ -1822,7 +2134,7 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     newCtx.capturedVars = {}
     newCtx.closureInfo = closureInfo  // Store for getVarType helper
     for (const field of closureInfo.envFields) {
-      newCtx.capturedVars[field.name] = { index: field.index, type: field.type || 'f64' }
+      newCtx.capturedVars[field.name] = { index: field.index, type: field.type || 'f64', schema: field.schema }
     }
   }
 
@@ -1928,11 +2240,26 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     }
   }
 
-  const bodyResult = gen(bodyAst)
+  // Pre-detect multi-value return for exported non-closure functions
+  if (ctx.allowMultiReturn) {
+    const multiCount = detectMultiReturn(bodyAst)
+    if (multiCount) ctx.multiReturnCount = multiCount
+  }
 
-  // Determine return type and final body (always f64 in memory mode)
-  const returnType = 'f64'
-  const bodyWat = f64(bodyResult)
+  // Generate body - handle implicit multi-value return (direct array literal body)
+  let bodyResult
+  if (ctx.multiReturnCount && isFixedArrayLiteral(bodyAst) === ctx.multiReturnCount) {
+    // Direct array body: () => [a, b, c] - generate multi-value directly
+    const elems = bodyAst.slice(1).map(e => f64(gen(e))).join(' ')
+    bodyResult = wat(elems, 'multi')
+  } else {
+    bodyResult = gen(bodyAst)
+  }
+
+  // Determine return type: multi-value if detected, otherwise f64
+  const multiCount = ctx.multiReturnCount
+  const returnType = multiCount ? Array(multiCount).fill('f64').join(' ') : 'f64'
+  const bodyWat = multiCount ? bodyResult.toString() : f64(bodyResult)
 
   // Generate param declarations with correct types (all f64 in memory mode)
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
@@ -1954,8 +2281,9 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
       }
     }
     const returnsArray = bodyResult.type === 'array' || bodyResult.type === 'refarray' || ctx.returnsArrayPointer
-    if (arrayParams.length > 0 || returnsArray) {
-      parentCtx.exportSignatures[name] = { arrayParams, returnsArray }
+    // Track multi-value return count for JS interop (WebAssembly.Function returns array)
+    if (arrayParams.length > 0 || returnsArray || multiCount) {
+      parentCtx.exportSignatures[name] = { arrayParams, returnsArray, multiReturn: multiCount || 0 }
     }
   }
 

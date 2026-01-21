@@ -74,6 +74,10 @@ export function createContext() {
     objectCounter: 0,
     objectSchemas: {},
 
+    // Static namespaces (objects with only function properties, known at compile-time)
+    // name -> { method: { params, body, funcName } }
+    namespaces: {},
+
     // Memory
     staticAllocs: [],
     staticOffset: 0,
@@ -86,7 +90,7 @@ export function createContext() {
     /**
      * Add a local variable
      * @param {string} name - Variable name
-     * @param {string} type - Type: 'f64', 'i32', 'array', 'string', etc.
+     * @param {string} type - Type: 'f64', 'i32', 'array', 'string', 'namespace', etc.
      * @param {Object} schema - Optional object schema
      * @param {string} scopedName - Optional explicit scoped name
      */
@@ -94,6 +98,8 @@ export function createContext() {
       const finalName = scopedName || name
       if (!(finalName in this.locals)) {
         this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
+        // Namespace type is compile-time only - no WASM local needed
+        if (type === 'namespace') return { ...this.locals[finalName], scopedName: finalName }
         // Memory-based: all reference types are f64 pointers
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure') ? 'f64' : type

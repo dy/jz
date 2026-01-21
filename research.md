@@ -233,9 +233,9 @@
 
   **Naming convention:**
   - `fn(arr)` - wrapped, accepts/returns JS arrays
-  - `_fn(ptr)` - raw, accepts/returns packed f64 pointers
-  - `_memory` - WebAssembly.Memory for direct access
-  - `_alloc(len)` - allocate array, returns packed pointer
+  - `wasm.fn(ptr)` - raw, accepts/returns packed f64 pointers
+  - `wasm.memory` - WebAssembly.Memory for direct access
+  - `wasm.alloc(len)` - allocate array, returns packed pointer
 
   **Custom section for signatures:**
   ```wat
@@ -265,7 +265,7 @@
   // Usage
   const mod = await jz.instantiate(wasm)
   mod.process([1, 2, 3])     // → [2, 4, 6] (auto-wrapped)
-  mod._process(ptr)          // → packed f64 (raw)
+  mod.wasm.process(ptr)          // → packed f64 (raw)
   ```
 
   **Benefits:**
@@ -278,6 +278,35 @@
   **Trade-offs:**
   - JS wrapper has copy overhead (but only at boundary)
   - Numbers > 2^48 reserved for pointers (extremely rare in practice)
+
+## Static Namespaces
+
+  Object literals containing only arrow functions are compiled as **static namespaces** -
+  direct function calls with zero runtime overhead.
+
+  ```js
+  let rgb = {
+    gray: (r, g, b) => 0.2126*r + 0.7152*g + 0.0722*b,
+    invert: (r, g, b) => [255-r, 255-g, 255-b]
+  }
+  rgb.gray(100, 150, 200)  // → (call $rgb_gray ...)
+  ```
+
+  **Compiles to:**
+  - `$rgb_gray` function (direct call, no indirection)
+  - `$rgb_invert` function (direct call)
+  - No memory allocation for the object
+  - No closure overhead
+
+  **Requirements for namespace optimization:**
+  - All properties must be arrow functions
+  - Functions must not capture outer variables (except other namespaces)
+  - Object must be assigned at declaration (`let ns = {...}`)
+
+  **When namespace optimization doesn't apply:**
+  - Dynamic property assignment: `ns.fn = newFn` (uses memory-based objects)
+  - Non-function properties: `{x: 5, fn: () => x}` (uses memory-based objects)
+  - Captured outer variables: `let y = 1; let ns = {fn: () => y}` (uses closures)
 
 ## JS Divergences
 
