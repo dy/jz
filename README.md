@@ -29,6 +29,7 @@ mul(4, 5)  // 20
 * Logic: `!a`, `a && b`, `a || b`, `a ?? b`, `a ? b : c`
 * Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`
 * Arrays: `[a, b]`, `arr[i]`, `arr[i] = x`, `arr.length`
+* TypedArrays: `new Float32Array(n)`, `buf[i]`, `buf.length`, `buf.byteLength`
 * Objects: `{a: b}`, `{a, b}`, `obj.prop`
 * Boxed primitives: `Object.assign(42, {prop})`, `Object.assign("str", {prop})`, `Object.assign([arr], {prop})`
 * Functions: `(a, b) => c`, `a => b`, `() => c`

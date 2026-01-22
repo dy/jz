@@ -130,7 +130,7 @@
   * [x] Missing: `{ foo() {} }` method shorthand - use `{ foo: () => {} }`
   * [x] All JZ-critical features work (arrows, spread, destruct, optional chain, etc.)
 * [~] TypedArrays (basic: new, [], .length, .byteLength; missing: methods, ArrayBuffer)
-* [ ] Math full
+* [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
 * [ ] Regex
 * [ ] Important globals
@@ -228,7 +228,7 @@
   * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
   * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
 
-## Comparisons
+## Comparisons / bench
 
 * [ ] Comparison table with porf, js, assemblyscript, quickjs, anything else?
   * [ ] Features

@@ -73,7 +73,7 @@ export const MATH_OPS = {
     'sin', 'cos', 'tan', 'asin', 'acos', 'atan',
     'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
     'exp', 'expm1', 'log', 'log2', 'log10', 'log1p',
-    'cbrt', 'sign', 'fround'
+    'cbrt', 'sign', 'fround', 'f16round'
   ],
   stdlib_binary: ['pow', 'atan2', 'hypot', 'imul'],
   // Math constants
