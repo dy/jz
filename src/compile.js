@@ -61,7 +61,7 @@ const stringMethods = {
   split: string.split, replace: string.replace, search: string.search, match: string.match
 }
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
@@ -360,15 +360,15 @@ function allocateBoxed(boxedType, schemaPrefix, target, props, tmpPrefix) {
   const tmp = `$_${tmpPrefix}_${id}`
   ctx.addLocal(tmp.slice(1), 'f64')
 
-  let stores = ''
-  for (let i = 0; i < propVals.length; i++) {
-    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
-  }
+  const stores = propVals.map((v, i) =>
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
 
-  return wat(`(block (result f64)
+  return wat(wt`
+    (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`, boxedType, schemaId)
+      ${stores}
+      (local.get ${tmp}))`, boxedType, schemaId)
 }
 
 /**
@@ -439,16 +439,16 @@ function genBoxedInferredDecl(name, value, inferred, isConst) {
   const id = ctx.uniqueId++
   const tmp = `$_bx_${id}`
   ctx.addLocal(tmp.slice(1), 'f64')
-  let stores = ''
-  for (let i = 0; i < vals.length; i++) {
-    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-  }
+  const stores = vals.map((v, i) =>
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
   const scopedName = ctx.declareVar(name, isConst)
   ctx.addLocal(name, boxedType, schemaId, scopedName)
-  const objWat = `(block (result f64)
+  const objWat = wt`
+    (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
+      ${stores}
+      (local.get ${tmp}))`
   return wat(`(local.tee $${scopedName} ${objWat})`, boxedType, schemaId)
 }
 
@@ -499,17 +499,17 @@ function genObjectInferredDecl(name, value, inferred, isConst) {
   const id = ctx.uniqueId++
   const tmp = `$_obj_${id}`
   ctx.addLocal(tmp.slice(1), 'f64')
-  let stores = ''
-  for (let i = 0; i < vals.length; i++) {
-    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-  }
+  const stores = vals.map((v, i) =>
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
 
   const scopedName = ctx.declareVar(name, isConst)
   ctx.addLocal(name, 'object', schemaId, scopedName)
-  const objWat = `(block (result f64)
+  const objWat = wt`
+    (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
+      ${stores}
+      (local.get ${tmp}))`
   return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
 }
 
@@ -675,19 +675,18 @@ function resolveCall(namespace, name, args, receiver = null) {
         ctx.addLocal(tmp.slice(1), 'f64')
         ctx.addLocal(tmpLen.slice(1), 'i32')
         ctx.addLocal(tmpInstId.slice(1), 'i32')
-        // Get source array length, allocate space for elements + props
-        let stores = ''
-        for (let i = 0; i < propVals.length; i++) {
-          // Props stored AFTER array elements: offset + len*8 + i*8
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.add (i32.shl (local.get ${tmpLen}) (i32.const 3)) (i32.const ${i * 8}))) ${propVals[i]})\n      `
-        }
+        // Props stored AFTER array elements: offset + len*8 + i*8
+        const stores = propVals.map((v, i) =>
+          `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.add (i32.shl (local.get ${tmpLen}) (i32.const 3)) (i32.const ${i * 8}))) ${v})`)
         // Allocate with ARRAY_PROPS type using instance table
         // Instance table: [len:u16, schemaId:u16]
-        return wat(`(block (result f64)
-      (local.set ${tmpLen} (call $__ptr_len ${target}))
-      (local.set ${tmp} (call $__alloc_array_props (local.get ${tmpLen}) (i32.const ${propVals.length}) (i32.const ${schemaId})))
-      (memory.copy (call $__ptr_offset (local.get ${tmp})) (call $__ptr_offset ${target}) (i32.shl (local.get ${tmpLen}) (i32.const 3)))
-      ${stores}(local.get ${tmp}))`, 'array_props', schemaId)
+        return wat(wt`
+          (block (result f64)
+            (local.set ${tmpLen} (call $__ptr_len ${target}))
+            (local.set ${tmp} (call $__alloc_array_props (local.get ${tmpLen}) (i32.const ${propVals.length}) (i32.const ${schemaId})))
+            (memory.copy (call $__ptr_offset (local.get ${tmp})) (call $__ptr_offset ${target}) (i32.shl (local.get ${tmpLen}) (i32.const 3)))
+            ${stores}
+            (local.get ${tmp}))`, 'array_props', schemaId)
       }
 
       // Check for boolean literal in AST (true/false identifiers or boolean values)
@@ -1136,16 +1135,16 @@ const operators = {
     const id = ctx.uniqueId++
     const tmp = `$_obj_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
-    let stores = ''
-    for (let i = 0; i < vals.length; i++) {
-      stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-    }
+    const stores = vals.map((v, i) =>
+      `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
     // NaN boxing: OBJECT type with schemaId as id field
     // mkptr(OBJECT, schemaId, offset)
-    return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`, 'object', schemaId)
+    return wat(wt`
+      (block (result f64)
+        (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
+        (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+        ${stores}
+        (local.get ${tmp}))`, 'object', schemaId)
   },
 
   '[]'([arr, idx]) {

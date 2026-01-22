@@ -93,6 +93,31 @@ export const wat = (code, type = 'f64', schema) =>
   Object.assign(new String(code), { type, schema })
 
 /**
+ * WAT template tag - clean multiline WAT with interpolation
+ * Strips leading indent, trims lines, joins arrays with space.
+ *
+ * @example
+ * wt`(func $name (param $x f64)
+ *      ${locals.map(l => `(local $${l} f64)`)}
+ *      ${body})`
+ *
+ * @param {TemplateStringsArray} strings - Template literal strings
+ * @param {...*} values - Interpolated values (strings, numbers, or arrays)
+ * @returns {string} Clean WAT string
+ */
+export function wt(strings, ...values) {
+  // Join template parts with interpolated values
+  let result = strings[0]
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    result += Array.isArray(v) ? v.join(' ') : String(v ?? '')
+    result += strings[i + 1]
+  }
+  // Strip leading/trailing whitespace per line, collapse blank lines
+  return result.split('\n').map(l => l.trim()).filter(l => l).join('\n')
+}
+
+/**
  * Format number for WAT output (handles special values)
  * @param {number} n - Number to format
  * @returns {string} WAT-compatible number string
