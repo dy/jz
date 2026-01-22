@@ -87,3 +87,30 @@ test('i32 preservation - type promotion to f64', () => {
   ok(wat.includes('(local $sum'), 'should have sum local')
   ok(wat.includes('(local $sum_s1 f64)'), 'sum should be promoted to f64')
 })
+
+test('i32 preservation - function returns i32', () => {
+  // Function that only returns i32 values should have i32 return type
+  const wat = getWat(`
+    export const isPositive = (x) => x > 0 ? 1 : 0
+  `)
+  ok(wat.includes('(result i32)'), 'function should return i32')
+  // Return values 1 and 0 should be i32.const, not f64.const
+  ok(wat.includes('(i32.const 1)'), 'return 1 should be i32')
+  ok(wat.includes('(i32.const 0)'), 'return 0 should be i32')
+})
+
+test('i32 preservation - function returns f64 when needed', () => {
+  // Function that returns float should have f64 return type
+  const wat = getWat(`
+    export const half = (x) => x / 2
+  `)
+  ok(wat.includes('(result f64)'), 'function should return f64')
+})
+
+test('i32 preservation - comparison function returns i32', () => {
+  // Function with comparison return should be i32
+  const wat = getWat(`
+    export const equals = (a, b) => a === b
+  `)
+  ok(wat.includes('(result i32)'), 'comparison function should return i32')
+})

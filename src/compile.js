@@ -60,7 +60,7 @@ const stringMethods = {
   split: string.split, replace: string.replace
 }
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, bothI32, isHeapRef, hasSchema } from './types.js'
-import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars } from './analyze.js'
+import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
@@ -104,6 +104,8 @@ export function compile(ast, options = {}) {
   setCtx(createContext())
   // Pre-analyze for type promotion (which vars need f64)
   ctx.f64Vars = findF64Vars(ast)
+  // Pre-analyze function return types (which funcs can return i32)
+  ctx.funcReturnTypes = findFuncReturnTypes(ast)
   gen = generate
   const bodyWat = String(f64(generate(ast)))
   return assemble(bodyWat, ctx, generateFunctions())
@@ -714,7 +716,9 @@ function resolveCall(namespace, name, args, receiver = null) {
       // Closure is f64 NaN-boxed, track type for chained calls
       return wat(`(call $${name} ${argWats})`, 'closure', { closureDepth: depth })
     }
-    return wat(`(call $${name} ${argWats})`, 'f64')
+    // Use pre-analyzed return type if available (i32 or f64)
+    const retType = ctx.funcReturnTypes?.get(name) || 'f64'
+    return wat(`(call $${name} ${argWats})`, retType)
   }
 
   throw new Error(`Unknown function: ${namespace ? namespace + '.' : ''}${name}`)
@@ -2637,12 +2641,24 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     bodyResult = gen(bodyAst)
   }
 
-  // Determine return type: multi-value or f64
-  // Note: i32 preservation works for locals/variables, but function returns stay f64
-  // for JS interop simplicity (JS number ↔ f64 is natural, i32 needs coercion)
+  // Determine return type: multi-value, i32, or f64
+  // Use pre-analyzed return types if available (enables i32 function returns)
   const multiCount = ctx.multiReturnCount
-  const returnType = multiCount ? Array(multiCount).fill('f64').join(' ') : 'f64'
-  const bodyWat = multiCount ? bodyResult.toString() : f64(bodyResult)
+  let returnType, bodyWat
+  if (multiCount) {
+    returnType = Array(multiCount).fill('f64').join(' ')
+    bodyWat = bodyResult.toString()
+  } else {
+    // Check if this function was analyzed as returning i32
+    const analyzedType = parentCtx.funcReturnTypes?.get(name)
+    if (analyzedType === 'i32' && !closureInfo) {
+      returnType = 'i32'
+      bodyWat = isI32(bodyResult) ? bodyResult.toString() : i32(bodyResult)
+    } else {
+      returnType = 'f64'
+      bodyWat = f64(bodyResult)
+    }
+  }
 
   // Generate param declarations (all f64 for JS interop)
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
