@@ -610,11 +610,62 @@ export function findFuncReturnTypes(ast) {
  * @returns {Map<string, {props: string[], closures: Set<string>}>} varName -> schema info
  */
 export function inferObjectSchemas(ast) {
-  const schemas = new Map()  // varName -> { props: string[], closures: Set<string> }
+  const schemas = new Map()  // varName -> { props: string[], closures: Set<string>, isBoxed: boolean, boxedType: string|null }
 
   // Track which variables are declared as objects (literal or empty)
+  // Multi-prop: ['{', [k1,v1], [k2,v2]] or single-prop: ['{}', [':', k, v]]
   function isObjectLiteral(node) {
-    return Array.isArray(node) && node[0] === '{'
+    return Array.isArray(node) && (node[0] === '{' || node[0] === '{}')
+  }
+
+  // Extract props from object literal (handles both { and {} formats)
+  function extractProps(node) {
+    if (!isObjectLiteral(node)) return []
+    if (node[0] === '{}') {
+      // Single prop: ['{}', [':', key, value]]
+      const pair = node[1]
+      if (Array.isArray(pair) && pair[0] === ':') {
+        return [[pair[1], pair[2]]]
+      }
+      return []
+    }
+    // Multi-prop: ['{', [k1,v1], [k2,v2], ...]
+    return node.slice(1).map(p => {
+      if (Array.isArray(p) && p[0] === ':') return [p[1], p[2]]
+      return p  // [key, value]
+    })
+  }
+
+  // Check if node is Object.assign call: ['()', ['.', 'Object', 'assign'], [',', target, source]]
+  function isObjectAssign(node) {
+    return Array.isArray(node) && node[0] === '()' &&
+      Array.isArray(node[1]) && node[1][0] === '.' &&
+      node[1][1] === 'Object' && node[1][2] === 'assign' &&
+      Array.isArray(node[2]) && node[2][0] === ','
+  }
+
+  // Get boxed type from primitive AST node
+  // String literal: [undefined, "value"] (sparse array) or [null, "value"]
+  function getBoxedType(node) {
+    if (Array.isArray(node) && node.length === 2) {
+      // Literal: [undefined/null, value]
+      if (typeof node[1] === 'string') return 'string'
+      if (typeof node[1] === 'number') return 'number'
+      if (typeof node[1] === 'boolean') return 'boolean'
+    }
+    if (node === 'true' || node === 'false') return 'boolean'
+    if (typeof node === 'number') return 'number'
+    if (Array.isArray(node) && node[0] === '[') return 'array'
+    return null
+  }
+
+  // Extract target and source from Object.assign args: [',', target, source]
+  function getAssignArgs(node) {
+    if (isObjectAssign(node)) {
+      const argsNode = node[2]  // [',', target, source]
+      return { target: argsNode[1], source: argsNode[2] }
+    }
+    return null
   }
 
   function walk(node, scope = new Set()) {
@@ -626,18 +677,37 @@ export function inferObjectSchemas(ast) {
     // Variable declaration: let a = {} or let a = {x: 1}
     if ((op === 'let' || op === 'const' || op === 'var') && Array.isArray(args[0]) && args[0][0] === '=') {
       const [, name, value] = args[0]
-      if (typeof name === 'string' && isObjectLiteral(value)) {
-        // Extract props from literal (may be empty)
-        const literalProps = value.slice(1).map(p => p[0])
-        const closures = new Set()
-        // Track which props are closures
-        for (const prop of value.slice(1)) {
-          if (Array.isArray(prop[1]) && prop[1][0] === '=>') {
-            closures.add(prop[0])
+      if (typeof name === 'string') {
+        if (isObjectLiteral(value)) {
+          // Extract props from literal (may be empty)
+          const props = extractProps(value)
+          const literalKeys = props.map(p => p[0])
+          const closures = new Set()
+          // Track which props are closures
+          for (const [key, val] of props) {
+            if (Array.isArray(val) && val[0] === '=>') {
+              closures.add(key)
+            }
+          }
+          schemas.set(name, { props: literalKeys, closures, isBoxed: false, boxedType: null })
+          scope.add(name)
+        } else if (isObjectAssign(value)) {
+          // let a = Object.assign(target, {props})
+          const { target, source } = getAssignArgs(value)
+          const boxedType = getBoxedType(target)
+          if (isObjectLiteral(source)) {
+            const props = extractProps(source)
+            const literalKeys = props.map(p => p[0])
+            const closures = new Set()
+            for (const [key, val] of props) {
+              if (Array.isArray(val) && val[0] === '=>') {
+                closures.add(key)
+              }
+            }
+            schemas.set(name, { props: literalKeys, closures, isBoxed: !!boxedType, boxedType })
+            scope.add(name)
           }
         }
-        schemas.set(name, { props: literalProps, closures })
-        scope.add(name)
       }
       walk(value, scope)
       return
@@ -657,6 +727,31 @@ export function inferObjectSchemas(ast) {
         }
       }
       walk(args[1], scope)
+      return
+    }
+
+    // Object.assign(existingVar, {props}) as statement or expression
+    if (isObjectAssign(node)) {
+      const { target, source } = getAssignArgs(node)
+      // If target is a variable in scope and source is object literal
+      if (typeof target === 'string' && scope.has(target) && isObjectLiteral(source)) {
+        const info = schemas.get(target)
+        if (info) {
+          // Add new props from source
+          const props = extractProps(source)
+          for (const [propName, propVal] of props) {
+            if (!info.props.includes(propName)) {
+              info.props.push(propName)
+            }
+            if (Array.isArray(propVal) && propVal[0] === '=>') {
+              info.closures.add(propName)
+            }
+          }
+        }
+      }
+      // Recurse into the arguments
+      walk(target, scope)
+      walk(source, scope)
       return
     }
 

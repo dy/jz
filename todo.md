@@ -166,6 +166,11 @@
   * [-] Symbol (not meaningful without runtime)
   * [-] Intl.* (too complex)
   * [-] RegExp (need regex engine)
+* [ ] prohibit arguments and other implicit constants
+  * [ ] warn about using null or undefined (either or)
+* [ ] incorporate best sane eslint practices with warning
+* [ ] Object
+* [ ] Array
 * [ ] color-space converter
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [ ] Warn/error on hitting memory limitations: objects, arrays
