@@ -409,7 +409,7 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (name === 'Array' && args.length === 1) {
       ctx.usedArrayType = true
       ctx.usedMemory = true
-      return wat(`(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${i32(gen(args[0]))})`, 'f64')
+      return wat(`(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) ${i32(gen(args[0]))})`, 'f64')
     }
     if (name === 'parseInt') {
       const val = gen(args[0])
@@ -532,10 +532,11 @@ function resolveCall(namespace, name, args, receiver = null) {
       // Calculate total env size (no header), aligned to 8 bytes
       const alignedEnvSize = (envSize + 7) & ~7
       // Allocate env, store values, call function
+      // NaN boxing: mkptr(type, id, offset) - for closure, id = envFields.length
       return wat(`(block (result f64)
         ${envVals}
         (call $${name}
-          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const 0) (i32.const ${envFields.length}) (global.get $__heap))
+          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
           ${argWats})
         (global.set $__heap (i32.add (global.get $__heap) (i32.const ${alignedEnvSize})))
       )`, 'f64')
@@ -669,7 +670,9 @@ function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
     stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
   }
 
-  // Create closure: NaN-box with [0x7FF][tableIdx:16][envLen:16][envOffset:20]
+  // Create closure: NaN-box with [0x7FF0][envLen:16][tableIdx:16][envOffset:32]
+  // This custom closure encoding stores envLen and tableIdx in upper bits for call_indirect
+  // Note: This doesn't use unified __mkptr since closures need special decoding in callClosure
   return wat(`(block (result f64)
     (local.set ${tmpEnv} (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length})))
     ${stores}(f64.reinterpret_i64 (i64.or
@@ -677,7 +680,7 @@ function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
       (i64.or
         (i64.shl (i64.const ${tableIdx}) (i64.const 32))
         (i64.or
-          (i64.shl (i64.extend_i32_u (call $__ptr_len (local.get ${tmpEnv}))) (i64.const 48))
+          (i64.shl (i64.extend_i32_u (call $__ptr_id (local.get ${tmpEnv}))) (i64.const 48))
           (i64.extend_i32_u (call $__ptr_offset (local.get ${tmpEnv}))))))))`, 'closure')
 }
 
@@ -810,7 +813,7 @@ const operators = {
 
       // Allocate and fill
       let code = `(local.set ${tmpLen} ${lenCode})
-      (local.set ${tmpArr} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (local.get ${tmpLen})))
+      (local.set ${tmpArr} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${tmpLen})))
       (local.set ${tmpIdx} (i32.const 0))\n      `
 
       for (const p of parts) {
@@ -880,11 +883,11 @@ const operators = {
     for (let i = 0; i < vals.length; i++) {
       stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
     }
-    // Strategy B: F64_ARRAY with schemaId encoded in pointer
-    // Allocate array, then set schemaId via __ptr_set_schema
+    // NaN boxing: OBJECT type with schemaId as id field
+    // mkptr(OBJECT, schemaId, offset)
     return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_set_schema (local.get ${tmp}) (i32.const ${schemaId})))
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
       ${stores}(local.get ${tmp}))`, 'object', schemaId)
   },
 
@@ -1203,19 +1206,21 @@ const operators = {
       return operators['==']([b, a])  // Swap and recurse
     }
     const va = gen(a), vb = gen(b)
-    // String comparison: f64.eq works for integer-packed pointers
+    // String comparison: use __ptr_eq for NaN-boxed pointers (f64.eq fails on NaN)
     if (isString(va) && isString(vb)) {
-      return wat(`(f64.eq ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
-    // Array/object comparison: reference equality via f64.eq
+    // Array/object comparison: reference equality via __ptr_eq
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      return wat(`(f64.eq ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
-    // f64 comparison with pointer handling
-    // Pointers use integer-packed encoding, so f64.eq works correctly
-    // Regular numbers: f64.eq handles NaN correctly (NaN != NaN)
+    // f64 comparison: use __f64_eq to handle both numbers and NaN-boxed pointers
+    // f64.eq fails on NaN (including NaN-boxed pointers with identical bits)
     if (isF64(va) && isF64(vb)) {
-      return wat(`(f64.eq ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(call $__f64_eq ${va} ${vb})`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.eq(va, vb) : f64ops.eq(va, vb)
   },
@@ -1240,17 +1245,20 @@ const operators = {
       return operators['!=']([b, a])
     }
     const va = gen(a), vb = gen(b)
-    // String comparison: f64.ne works for integer-packed pointers
+    // String comparison: use __ptr_eq for NaN-boxed pointers
     if (isString(va) && isString(vb)) {
-      return wat(`(f64.ne ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
     }
-    // Array/object comparison: reference inequality via f64.ne
+    // Array/object comparison: reference inequality via __ptr_eq
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      return wat(`(f64.ne ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
     }
-    // f64 comparison: f64.ne for IEEE 754 compliance (NaN != NaN = true)
+    // f64 comparison: use __f64_ne to handle both numbers and NaN-boxed pointers
     if (isF64(va) && isF64(vb)) {
-      return wat(`(f64.ne ${va} ${vb})`, 'i32')
+      ctx.usedMemory = true
+      return wat(`(call $__f64_ne ${va} ${vb})`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.ne(va, vb) : f64ops.ne(va, vb)
   },
@@ -1581,7 +1589,9 @@ const operators = {
     const mkStr = (name) => {
       const { id, length } = typeStrings[name]
       ctx.usedMemory = true
-      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${length}) (i32.const ${id}))`
+      // NaN boxing: mkptr(type, id, offset) - for string, id = length, offset = memOffset
+      const memOffset = 65536 + id * 256  // after instance table
+      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${memOffset}))`
     }
     if (val.type === 'f64') {
       // f64 can be number or NaN-encoded pointer

@@ -215,18 +215,16 @@ Use `[...a]` to clone arrays explicitly.
 ### Objects
 - Properties can store any JSON type: numbers, strings, bools, arrays, nested objects
 - Schema (property names/order) fixed at compile time
-- Max 16 distinct object schemas per module
+- Max 64K distinct object schemas per module
 - Nested object access works: `x.inner.val`
 - No dynamic property addition
 - No computed property names
 
 ### Numbers
 - All numbers are `f64` (double precision)
+- Full numeric range available (no reserved values)
 - Integer literals use i32 internally for efficiency
 - Division always promotes to f64
-- Numbers ≥ 2^48 (~281 trillion) reserved for internal pointers
-  - This is extremely rare in practice
-  - Workaround: scale large values (divide by constant)
 
 ### Not Supported
 - `var` (use `let`/`const`)

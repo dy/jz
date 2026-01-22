@@ -66,9 +66,9 @@ test('ESNext Nullish Coalescing (conceptual)', async () => {
 
 test('ESNext BigInt (conceptual)', async () => {
   // Test large number handling
-  // Note: BigInt not yet implemented
-  // Note: Values >= 2^48 are reserved for pointer encoding, so testing smaller large values
-  is(await evaluate('(f64.const 281474976710655)'), 281474976710655) // 2^48 - 1 (max non-pointer)
+  // Note: BigInt not yet implemented, but full f64 range works with NaN boxing
+  is(await evaluate('(f64.const 281474976710655)'), 281474976710655)
+  is(await evaluate('(f64.const 9007199254740991)'), 9007199254740991) // MAX_SAFE_INTEGER
 })
 
 test('ESNext Modules (conceptual)', async () => {

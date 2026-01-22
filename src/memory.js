@@ -1,11 +1,15 @@
 /**
  * Memory abstraction layer for jz compiler
  *
- * All operations use linear memory with integer-packed pointers.
- * Pointer format: type * 2^48 + len * 2^32 + offset
+ * All operations use linear memory with NaN-boxed pointers.
+ * Pointer format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
+ * Payload: [type:4][id:16][offset:31]
  */
 
 import { PTR_TYPE, wat, f64, isHeapRef, isString, isObject } from './types.js'
+
+// Instance table starts at offset 0, 64KB reserved (16K instances * 4 bytes)
+const INSTANCE_TABLE_END = 65536
 
 // === Null/undefined ===
 
@@ -14,13 +18,14 @@ export const nullRef = () => wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
-/** Create string from interned data. Strings are stored at id*256 in memory. */
+/** Create string from interned data. Strings are stored at instanceTableEnd + id*256 */
 export function mkString(ctx, str) {
   ctx.usedStringType = true
   ctx.usedMemory = true
   const { id, length } = ctx.internString(str)
-  const offset = id * 256  // Each string slot is 256 bytes apart
-  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${length}) (i32.const ${offset}))`, 'string')
+  const offset = INSTANCE_TABLE_END + id * 256  // After instance table
+  // NaN boxing: mkptr(type, id, offset) - for string, id = length
+  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${offset}))`, 'string')
 }
 
 /** Get string length */
@@ -57,7 +62,7 @@ export const arrSet = (w, idx, val) =>
 
 /** Allocate dynamic-sized f64 array */
 export const arrNew = (lenWat) =>
-  `(call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) ${lenWat})`
+  `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) ${lenWat})`
 
 /** Create pointer with modified length - for push/pop */
 export const ptrWithLen = (ptrWat, newLenWat) =>
@@ -82,14 +87,15 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
 
   const isStatic = elements.every(isConstant)
   if (isStatic && !hasRefTypes) {
-    // Static f64 array - store in data segment
+    // Static f64 array - store in data segment (after instance table)
     const arrayId = Object.keys(ctx.staticArrays).length
     const values = elements.map(evalConstant)
-    const offset = 4096 + (arrayId * 64)
+    const offset = INSTANCE_TABLE_END + 4096 + (arrayId * 64)
     ctx.staticArrays[arrayId] = { offset, values }
-    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0) (i32.const ${values.length}) (i32.const ${offset}))`, 'f64', values.map(() => ({ type: 'f64' })))
+    // NaN boxing: mkptr(type, id, offset) - for array, id = length
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, 'f64', values.map(() => ({ type: 'f64' })))
   } else if (hasRefTypes) {
-    // Mixed-type array: REF_ARRAY
+    // Mixed-type array: still use ARRAY type but track schema for element types
     const id = ctx.loopCounter++
     const tmp = `$_arr_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
@@ -103,7 +109,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
       else elementSchema.push({ type: g.type })
     }
     return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (i32.const ${gens.length})))
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${gens.length})))
       ${stores}(local.get ${tmp}))`, 'f64', elementSchema)
   } else {
     // Dynamic homogeneous f64 array
@@ -115,7 +121,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
       stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${f64(gens[i])})\n      `
     }
     return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${gens.length})))
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${gens.length})))
       ${stores}(local.get ${tmp}))`, 'f64', gens.map(() => ({ type: 'f64' })))
   }
 }
@@ -159,17 +165,19 @@ export function callClosure(ctx, closureWat, argWats, numArgs) {
   ctx.addLocal(tmpClosure.slice(1), 'f64')
   ctx.localDecls.push(`(local ${tmpI64} i64)`)
 
-  // Extract from NaN-boxed closure:
-  // - envLen: bits 48-51 (shifted by 48, masked to 0xF)
-  // - tableIdx: bits 32-47 (shifted by 32, masked to 0xFFFF)
-  // - envOffset: bits 0-31
+  // Extract from NaN-boxed closure (new v5 format):
+  // Payload: [type:4][id:16][offset:31]
+  // For closure: id = envLen (stored in compile.js), but we need funcIdx separately
+  // Actually, closure is stored as: NaN-box with [0x7FF0][tableIdx:16][envLen:16][envOffset:20]
+  // This encoding is done in genClosureValue() - let's match that
+  // bits 32-47: tableIdx, bits 48-63: envLen (within 0x7FF0), bits 0-31: envOffset
   const argSection = argWats ? `\n        ${argWats}` : ''
   return `(block (result f64)
       (local.set ${tmpClosure} ${closureWat})
       (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
       (call_indirect (type $fntype${numArgs})
-        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const 0)
-          (i32.and (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48))) (i32.const 0xF))
+        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
+          (i32.and (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48))) (i32.const 0xFFFF))
           (i32.wrap_i64 (local.get ${tmpI64})))${argSection}
         (i32.and (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 32))) (i32.const 0xFFFF))))`
 }

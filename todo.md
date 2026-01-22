@@ -208,19 +208,20 @@
   * [ ] Bitwise ops always i32
   * [ ] Loop counters stay i32
   * [ ] Function params/returns can be i32
-* [ ] Object Strategy B (Tagged Schema)
+* [x] Object Strategy B (Tagged Schema)
   * [x] Remove OBJECT pointer type, use F64_ARRAY
-  * [x] Encode schema ID in pointer: [type:4][schemaId:4][len:16][offset:32]
+  * [x] Encode schema ID in pointer: [type:4][schemaId:16][offset:31]
   * [x] Schema registry: ctx.schemas[id] = ['prop1', 'prop2']
   * [x] Property access: compile-time index lookup
   * [x] Schema survives function boundaries
   * [x] Emit schemas in jz:sig custom section
   * [x] JS wrapper: object ↔ array conversion
-  * [ ] Max 256 schemas (8 bits) → currently 16 (4 bits)
+  * [x] Max 64K schemas (16 bits) via NaN boxing
   * [x] Objects store strings, numbers, bools, arrays, nested objects (all JSON types)
   * [x] Nested object access with schema propagation
-  * [ ] Arrays with properties (special schema?)
-  * [ ] Boxed strings, numbers (special schema?)
+  * [x] NaN boxing pointer format (full f64 range preserved)
+  * [~] Arrays with properties (deferred - edge case, design in research.md)
+  * [~] Boxed strings, numbers (deferred - edge case, design in research.md)
 
 ## Comparisons
 
