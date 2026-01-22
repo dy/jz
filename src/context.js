@@ -101,9 +101,10 @@ export function createContext() {
     addLocal(name, type = 'f64', schema, scopedName = null) {
       const finalName = scopedName || name
       if (!(finalName in this.locals)) {
-        this.locals[finalName] = { idx: this.localCounter++, type, originalName: name }
+        // Store scopedName directly to avoid spread at lookup time
+        this.locals[finalName] = { idx: this.localCounter++, type, originalName: name, scopedName: finalName }
         // Namespace type is compile-time only - no WASM local needed
-        if (type === 'namespace') return { ...this.locals[finalName], scopedName: finalName }
+        if (type === 'namespace') return this.locals[finalName]
         // Memory-based: all reference types are f64 pointers
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||
@@ -112,7 +113,7 @@ export function createContext() {
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }
       if (schema !== undefined) this.localSchemas[finalName] = schema
-      return { ...this.locals[finalName], scopedName: finalName }
+      return this.locals[finalName]
     },
 
     /**
@@ -121,16 +122,15 @@ export function createContext() {
     getLocal(name) {
       // Internal variables (_prefix) don't have scope
       if (name.startsWith('_')) {
-        return name in this.locals ? { ...this.locals[name], scopedName: name } : null
+        return this.locals[name] || null
       }
       // Search from innermost scope outward
       for (let i = this.scopes.length - 1; i >= 0; i--) {
         const scopedName = i > 0 ? `${name}_s${i}` : name
-        if (scopedName in this.locals) return { ...this.locals[scopedName], scopedName }
+        if (scopedName in this.locals) return this.locals[scopedName]
       }
       // Fallback: check unscoped name
-      if (name in this.locals) return { ...this.locals[name], scopedName: name }
-      return null
+      return this.locals[name] || null
     },
 
     pushScope() {
@@ -164,6 +164,24 @@ export function createContext() {
     },
 
     /**
+     * Emit a compile-time warning
+     * @param {string} code - Warning code (e.g. 'array-alias', 'var')
+     * @param {string} msg - Warning message
+     */
+    warn(code, msg) {
+      console.warn(`jz: [${code}] ${msg}`)
+    },
+
+    /**
+     * Throw a compile-time error
+     * @param {string} code - Error code (e.g. 'unknown-id', 'type-error')
+     * @param {string} msg - Error message
+     */
+    error(code, msg) {
+      throw new Error(`jz: [${code}] ${msg}`)
+    },
+
+    /**
      * Intern a string literal, returning id and metadata
      */
     internString(str) {
@@ -186,6 +204,38 @@ export function createContext() {
       const offset = this.staticOffset
       this.staticOffset += size
       return offset
+    },
+
+    /**
+     * Create a child context for function compilation.
+     * Shares parent's:
+     *  - usedStdlib, functions, closures, globals, funcTableEntries
+     *  - staticArrays, strings, stringData, objectSchemas, objectPropTypes, namespaces
+     * Fresh for child:
+     *  - locals, localDecls, localCounter, scopes, constVars, localSchemas
+     *  - inFunction, uniqueId
+     */
+    fork() {
+      const child = createContext()
+      // Shared state (mutated by child, visible to parent)
+      child.usedStdlib = this.usedStdlib
+      child.usedArrayType = this.usedArrayType
+      child.usedStringType = this.usedStringType
+      child.functions = this.functions
+      child.closures = this.closures
+      child.closureEnvTypes = this.closureEnvTypes
+      child.closureCounter = this.closureCounter
+      child.globals = this.globals
+      child.funcTableEntries = this.funcTableEntries
+      child.staticArrays = this.staticArrays
+      child.strings = this.strings
+      child.stringData = this.stringData
+      child.stringOffset = this.stringOffset
+      child.objectSchemas = this.objectSchemas
+      child.objectPropTypes = this.objectPropTypes
+      child.namespaces = this.namespaces
+      child.inFunction = true
+      return child
     }
   }
 }

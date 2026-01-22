@@ -279,6 +279,308 @@ export function findHoistedVars(bodyAst, params) {
 }
 
 /**
+ * Unified pre-analysis pass: walks AST once to collect all compile-time info.
+ * Combines findF64Vars, findFuncReturnTypes, and inferObjectSchemas into single walk.
+ *
+ * @param {any} ast - AST to analyze
+ * @returns {{f64Vars: Set<string>, funcReturnTypes: Map<string, string>, inferredSchemas: Map<string, object>}}
+ */
+export function preanalyze(ast) {
+  const f64Vars = new Set()
+  const funcs = new Map()       // name → { params, body }
+  const funcReturnTypes = new Map() // name → 'i32' | 'f64'
+  const inferredSchemas = new Map() // varName -> { props, closures, isBoxed, boxedType }
+
+  // ===== F64 detection helpers =====
+  const F64_OPS = new Set(['/', '**'])
+  const MIXED_OPS = new Set(['+', '-', '*', '%'])
+
+  function couldBeF64(expr) {
+    if (expr == null) return false
+    if (Array.isArray(expr) && (expr[0] === null || expr[0] === undefined)) {
+      const v = expr[1]
+      return typeof v === 'number' && !Number.isInteger(v)
+    }
+    if (Array.isArray(expr) && F64_OPS.has(expr[0])) return true
+    if (Array.isArray(expr) && expr[0] === '[]') return true
+    if (Array.isArray(expr) && expr[0] === '(') return true
+    if (Array.isArray(expr) && expr[0] === '.') return true
+    if (typeof expr === 'string' && f64Vars.has(expr)) return true
+    if (Array.isArray(expr) && MIXED_OPS.has(expr[0])) {
+      return couldBeF64(expr[1]) || couldBeF64(expr[2])
+    }
+    if (Array.isArray(expr) && expr[0] === '?') {
+      return couldBeF64(expr[2]) || couldBeF64(expr[3])
+    }
+    return false
+  }
+
+  // ===== Object schema helpers =====
+  function isObjectLiteral(node) {
+    return Array.isArray(node) && (node[0] === '{' || node[0] === '{}')
+  }
+
+  function extractProps(node) {
+    if (!isObjectLiteral(node)) return []
+    if (node[0] === '{}') {
+      const pair = node[1]
+      if (Array.isArray(pair) && pair[0] === ':') return [[pair[1], pair[2]]]
+      return []
+    }
+    return node.slice(1).map(p => Array.isArray(p) && p[0] === ':' ? [p[1], p[2]] : p)
+  }
+
+  function isObjectAssign(node) {
+    return Array.isArray(node) && node[0] === '()' &&
+      Array.isArray(node[1]) && node[1][0] === '.' &&
+      node[1][1] === 'Object' && node[1][2] === 'assign' &&
+      Array.isArray(node[2]) && node[2][0] === ','
+  }
+
+  function getBoxedType(node) {
+    if (Array.isArray(node) && node.length === 2) {
+      if (typeof node[1] === 'string') return 'string'
+      if (typeof node[1] === 'number') return 'number'
+      if (typeof node[1] === 'boolean') return 'boolean'
+    }
+    if (node === 'true' || node === 'false') return 'boolean'
+    if (typeof node === 'number') return 'number'
+    if (Array.isArray(node) && node[0] === '[') return 'array'
+    return null
+  }
+
+  function getAssignArgs(node) {
+    if (isObjectAssign(node)) {
+      const argsNode = node[2]
+      return { target: argsNode[1], source: argsNode[2] }
+    }
+    return null
+  }
+
+  // ===== Unified walk =====
+  function walk(node, objScope = new Set()) {
+    if (!node || typeof node !== 'object') return
+    if (!Array.isArray(node)) return
+
+    const [op, ...args] = node
+
+    // ----- Collect functions for return type analysis -----
+    if (op === 'export' && Array.isArray(args[0]) && args[0][0] === 'const') {
+      const decl = args[0][1]
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
+        const [, name, value] = decl
+        if (Array.isArray(value) && value[0] === '=>') {
+          funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+        }
+      }
+    }
+    if ((op === 'const' || op === 'let') && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
+        funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+      }
+    }
+
+    // ----- F64 vars: variable declarations -----
+    if ((op === 'let' || op === 'const' || op === 'var') && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && couldBeF64(value)) {
+        f64Vars.add(name)
+      }
+      // ----- Object schemas: declarations -----
+      if (typeof name === 'string') {
+        if (isObjectLiteral(value)) {
+          const props = extractProps(value)
+          const literalKeys = props.map(p => p[0])
+          const closures = new Set()
+          for (const [key, val] of props) {
+            if (Array.isArray(val) && val[0] === '=>') closures.add(key)
+          }
+          inferredSchemas.set(name, { props: literalKeys, closures, isBoxed: false, boxedType: null })
+          objScope.add(name)
+        } else if (isObjectAssign(value)) {
+          const { target, source } = getAssignArgs(value)
+          const boxedType = getBoxedType(target)
+          if (isObjectLiteral(source)) {
+            const props = extractProps(source)
+            const literalKeys = props.map(p => p[0])
+            const closures = new Set()
+            for (const [key, val] of props) {
+              if (Array.isArray(val) && val[0] === '=>') closures.add(key)
+            }
+            inferredSchemas.set(name, { props: literalKeys, closures, isBoxed: !!boxedType, boxedType })
+            objScope.add(name)
+          }
+        }
+      }
+      walk(value, objScope)
+      return
+    }
+
+    // ----- F64 vars: assignments -----
+    if (op === '=' && typeof args[0] === 'string') {
+      if (couldBeF64(args[1])) f64Vars.add(args[0])
+      walk(args[1], objScope)
+      return
+    }
+    if ((op === '+=' || op === '-=' || op === '*=' || op === '/=') && typeof args[0] === 'string') {
+      if (op === '/=' || couldBeF64(args[1])) f64Vars.add(args[0])
+      walk(args[1], objScope)
+      return
+    }
+
+    // ----- Object schemas: property assignments -----
+    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && args[0].length === 3) {
+      const [, objName, propName] = args[0]
+      if (typeof objName === 'string' && typeof propName === 'string' && objScope.has(objName)) {
+        const info = inferredSchemas.get(objName)
+        if (info && !info.props.includes(propName)) info.props.push(propName)
+        if (info && Array.isArray(args[1]) && args[1][0] === '=>') info.closures.add(propName)
+      }
+      walk(args[1], objScope)
+      return
+    }
+
+    // ----- Object schemas: Object.assign calls -----
+    if (isObjectAssign(node)) {
+      const { target, source } = getAssignArgs(node)
+      if (typeof target === 'string' && objScope.has(target) && isObjectLiteral(source)) {
+        const info = inferredSchemas.get(target)
+        if (info) {
+          const props = extractProps(source)
+          for (const [propName, propVal] of props) {
+            if (!info.props.includes(propName)) info.props.push(propName)
+            if (Array.isArray(propVal) && propVal[0] === '=>') info.closures.add(propName)
+          }
+        }
+      }
+      walk(target, objScope)
+      walk(source, objScope)
+      return
+    }
+
+    // ----- For loops -----
+    if (op === 'for') {
+      for (const arg of args) walk(arg, objScope)
+      return
+    }
+
+    // ----- Block/sequence: new scope for objects -----
+    if (op === '{}' || op === ';') {
+      const blockScope = new Set(objScope)
+      for (const stmt of args) walk(stmt, blockScope)
+      return
+    }
+
+    // ----- Function body: fresh object scope -----
+    if (op === '=>') {
+      walk(args[1], new Set())
+      return
+    }
+
+    // Recurse
+    for (const arg of args) walk(arg, objScope)
+  }
+
+  // Walk the AST once
+  walk(ast, new Set())
+
+  // ===== Analyze function return types (needs funcs collected first) =====
+  const PRESERVING_OPS = new Set(['+', '-', '*', '%', '&', '|', '^', '<<', '>>', '>>>'])
+  const CMP_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+
+  function exprType(expr, localI32 = new Set()) {
+    if (expr == null) return 'i32'
+    if (Array.isArray(expr) && (expr[0] === null || expr[0] === undefined)) {
+      const v = expr[1]
+      if (typeof v === 'number') return Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? 'i32' : 'f64'
+      if (typeof v === 'boolean') return 'i32'
+      return 'f64'
+    }
+    if (expr === 'true' || expr === 'false') return 'i32'
+    if (typeof expr === 'string') return localI32.has(expr) ? 'i32' : 'f64'
+    if (!Array.isArray(expr)) return 'f64'
+
+    const [op, ...eArgs] = expr
+    if (F64_OPS.has(op)) return 'f64'
+    if (CMP_OPS.has(op)) return 'i32'
+    if (op === '~') return 'i32'
+    if (PRESERVING_OPS.has(op)) {
+      return (exprType(eArgs[0], localI32) === 'i32' && exprType(eArgs[1], localI32) === 'i32') ? 'i32' : 'f64'
+    }
+    if (op === '-' && eArgs.length === 1) return exprType(eArgs[0], localI32)
+    if (op === '?') return (exprType(eArgs[1], localI32) === 'i32' && exprType(eArgs[2], localI32) === 'i32') ? 'i32' : 'f64'
+    if (op === '()' && typeof eArgs[0] === 'string' && funcReturnTypes.has(eArgs[0])) return funcReturnTypes.get(eArgs[0])
+    if (op === '!' || op === '&&' || op === '||') return 'i32'
+    return 'f64'
+  }
+
+  function findReturns(body) {
+    const returns = []
+    function walkRet(node) {
+      if (!node || typeof node !== 'object') return
+      if (!Array.isArray(node)) return
+      const [rop, ...rArgs] = node
+      if (rop === 'return') { returns.push(rArgs[0]); return }
+      if (rop === '=>') return
+      for (const arg of rArgs) walkRet(arg)
+    }
+    walkRet(body)
+    return returns
+  }
+
+  function implicitReturn(body) {
+    if (!Array.isArray(body)) return body
+    const [op, ...args] = body
+    if (op === ';' && args.length > 0) return implicitReturn(args[args.length - 1])
+    if (op !== '{' && op !== 'let' && op !== 'const' && op !== 'var' &&
+        op !== 'if' && op !== 'for' && op !== 'while' && op !== 'return') return body
+    return null
+  }
+
+  function analyzeFunc(name, params, body) {
+    const localI32 = new Set()
+    const bodyF64 = findF64Vars(body) // Reuse existing for per-function
+
+    function scanLocals(node) {
+      if (!node || typeof node !== 'object') return
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if ((op === 'let' || op === 'const') && Array.isArray(args[0]) && args[0][0] === '=') {
+        const [, varName, value] = args[0]
+        if (typeof varName === 'string' && !bodyF64.has(varName)) {
+          if (exprType(value, localI32) === 'i32') localI32.add(varName)
+        }
+      }
+      if (op === 'for' && Array.isArray(args[0])) {
+        const init = args[0]
+        if ((init[0] === 'let' || init[0] === 'const') && Array.isArray(init[1]) && init[1][0] === '=') {
+          const varName = init[1][1]
+          if (typeof varName === 'string') localI32.add(varName)
+        }
+      }
+      for (const arg of args) scanLocals(arg)
+    }
+    scanLocals(body)
+
+    const returns = findReturns(body)
+    const implicit = implicitReturn(body)
+    if (returns.length === 0 && implicit) return exprType(implicit, localI32)
+    for (const ret of returns) {
+      if (exprType(ret, localI32) !== 'i32') return 'f64'
+    }
+    if (implicit && exprType(implicit, localI32) !== 'i32') return 'f64'
+    return returns.length > 0 ? 'i32' : 'f64'
+  }
+
+  for (const [name, { params, body }] of funcs) {
+    funcReturnTypes.set(name, analyzeFunc(name, params, body))
+  }
+
+  return { f64Vars, funcReturnTypes, inferredSchemas }
+}
+
+/**
  * Analyze all assignments to variables to determine which need f64 type.
  * A variable needs f64 if ANY assignment to it could produce f64.
  *
