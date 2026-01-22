@@ -202,11 +202,11 @@
   * [x] `[a, b] = [b, a]` - swap pattern (optimized, no alloc)
   * [x] `[a, b, c] = [c, a, b]` - rotate pattern (optimized)
   * [x] `([a, b]) => a + b` - param destructuring
-  * [ ] `let [a, [b, c]] = [1, [2, 3]]` - nested array (PARSER)
-  * [ ] `let [a = 10] = []` - default value (PARSER)
-  * [ ] `let [a, ...rest] = [1, 2, 3]` - rest in array (PARSER)
-  * [ ] `let {a, b = 5} = {a: 1}` - object default (PARSER)
-  * [ ] `let {a, ...rest} = {a: 1, b: 2}` - object rest (PARSER)
+  * [x] `let [a, [b, c]] = [1, [2, 3]]` - nested array
+  * [x] `let [a = 10] = []` - default value
+  * [x] `let [a, ...rest] = [1, 2, 3]` - rest in array
+  * [x] `let {a, b = 5} = {a: 1}` - object default
+  * [x] `let {a, ...rest} = {a: 1, b: 2}` - object rest
 * [ ] Optimizations
   * [x] `funcref` - first-class functions, currying, closures
     * [x] Closure representation: struct { funcref fn, ref env }
