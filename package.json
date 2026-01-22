@@ -18,7 +18,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.1.0",
+    "subscript": "^10.1.1",
     "watr": "^4.2.1"
   },
   "keywords": [

@@ -1795,83 +1795,12 @@ const operators = {
 
     // Array destructuring in declaration: let [a, b] = [1, 2]
     if (Array.isArray(name) && name[0] === '[]') {
-      const elems = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
-      const vars = elems.filter(v => typeof v === 'string')
-      if (vars.length < 1 || vars.length > 8) {
-        throw new Error('Destructuring requires 1-8 variables')
-      }
-
-      // Declare all variables first
-      for (const v of vars) {
-        ctx.declareVar(v, false)
-        ctx.addLocal(v, 'f64')
-      }
-
-      // Use multi-value if RHS is fixed array literal
-      const rhsCount = isFixedArrayLiteral(value)
-      if (rhsCount === vars.length) {
-        // Direct multi-value: generate RHS elements, assign to vars
-        const rhsElems = value[0] === '[' ? value.slice(1) :
-          (Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]])
-        let code = ''
-        for (let i = 0; i < vars.length; i++) {
-          const info = ctx.getLocal(vars[i])
-          code += `(local.set $${info.scopedName} ${f64(gen(rhsElems[i]))})\n    `
-        }
-        const lastInfo = ctx.getLocal(vars[vars.length - 1])
-        return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
-      }
-
-      // Standard path: evaluate RHS, load elements
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_destruct_${id}`
-      ctx.addLocal(tmp.slice(1), 'array')
-      const aw = gen(value)
-      let code = `(local.set ${tmp} ${aw})\n    `
-      for (let i = 0; i < vars.length; i++) {
-        const info = ctx.getLocal(vars[i])
-        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
-      }
-      const lastInfo = ctx.getLocal(vars[vars.length - 1])
-      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      return genArrayDestructDecl(name, value, false)
     }
 
     // Object destructuring in declaration: let {a, b} = {a: 1, b: 2}
     if (Array.isArray(name) && name[0] === '{}') {
-      const props = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
-      const vars = props.map(p => typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)).filter(Boolean)
-
-      // Declare all variables
-      for (const v of vars) {
-        ctx.declareVar(v, false)
-        ctx.addLocal(v, 'f64')
-      }
-
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_destruct_${id}`
-      ctx.addLocal(tmp.slice(1), 'object')
-      const obj = gen(value)
-      if (obj.type !== 'object' || obj.schema === undefined) {
-        throw new Error('Object destructuring requires object literal on RHS')
-      }
-      const schema = ctx.objectSchemas[obj.schema]
-      let code = `(local.set ${tmp} ${obj})\n    `
-      for (const p of props) {
-        const propName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[1] : null)
-        const varName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)
-        if (propName && varName) {
-          const idx = schema.indexOf(propName)
-          if (idx < 0) throw new Error(`Property ${propName} not found in object`)
-          const info = ctx.getLocal(varName)
-          code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
-        }
-      }
-      const lastInfo = ctx.getLocal(vars[vars.length - 1])
-      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      return genObjectDestructDecl(name, value, false)
     }
 
     if (typeof name !== 'string') throw new Error('let requires simple identifier or destructuring pattern')
@@ -2105,81 +2034,12 @@ const operators = {
 
     // Array destructuring in const declaration: const [a, b] = [1, 2]
     if (Array.isArray(name) && name[0] === '[]') {
-      const elems = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
-      const vars = elems.filter(v => typeof v === 'string')
-      if (vars.length < 1 || vars.length > 8) {
-        throw new Error('Destructuring requires 1-8 variables')
-      }
-
-      // Declare all variables as const
-      for (const v of vars) {
-        ctx.declareVar(v, true)
-        ctx.addLocal(v, 'f64')
-      }
-
-      // Use multi-value if RHS is fixed array literal
-      const rhsCount = isFixedArrayLiteral(value)
-      if (rhsCount === vars.length) {
-        const rhsElems = value[0] === '[' ? value.slice(1) :
-          (Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]])
-        let code = ''
-        for (let i = 0; i < vars.length; i++) {
-          const info = ctx.getLocal(vars[i])
-          code += `(local.set $${info.scopedName} ${f64(gen(rhsElems[i]))})\n    `
-        }
-        const lastInfo = ctx.getLocal(vars[vars.length - 1])
-        return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
-      }
-
-      // Standard path
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_destruct_${id}`
-      ctx.addLocal(tmp.slice(1), 'array')
-      const aw = gen(value)
-      let code = `(local.set ${tmp} ${aw})\n    `
-      for (let i = 0; i < vars.length; i++) {
-        const info = ctx.getLocal(vars[i])
-        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
-      }
-      const lastInfo = ctx.getLocal(vars[vars.length - 1])
-      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      return genArrayDestructDecl(name, value, true)
     }
 
     // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
     if (Array.isArray(name) && name[0] === '{}') {
-      const props = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
-      const vars = props.map(p => typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)).filter(Boolean)
-
-      for (const v of vars) {
-        ctx.declareVar(v, true)
-        ctx.addLocal(v, 'f64')
-      }
-
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      const id = ctx.loopCounter++
-      const tmp = `$_destruct_${id}`
-      ctx.addLocal(tmp.slice(1), 'object')
-      const obj = gen(value)
-      if (obj.type !== 'object' || obj.schema === undefined) {
-        throw new Error('Object destructuring requires object literal on RHS')
-      }
-      const schema = ctx.objectSchemas[obj.schema]
-      let code = `(local.set ${tmp} ${obj})\n    `
-      for (const p of props) {
-        const propName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[1] : null)
-        const varName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)
-        if (propName && varName) {
-          const idx = schema.indexOf(propName)
-          if (idx < 0) throw new Error(`Property ${propName} not found in object`)
-          const info = ctx.getLocal(varName)
-          code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
-        }
-      }
-      const lastInfo = ctx.getLocal(vars[vars.length - 1])
-      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      return genObjectDestructDecl(name, value, true)
     }
 
     if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
@@ -2669,6 +2529,262 @@ const operators = {
 // Generate compound assignment operators
 for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
   operators[op + '='] = ([a, b]) => operators['=']([a, [op, a, b]])
+}
+
+/**
+ * Generate array destructuring for declarations (let/const).
+ * Handles: simple [a, b], nested [a, [b, c]], defaults [a = 10], rest [a, ...rest]
+ */
+function genArrayDestructDecl(pattern, valueAst, isConst, srcLocal = null, isNested = false) {
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+
+  const elems = Array.isArray(pattern[1]) && pattern[1][0] === ','
+    ? pattern[1].slice(1)
+    : (pattern[1] != null ? [pattern[1]] : [])
+
+  // Parse each element: { name, default, isRest, isNested, nestedPattern }
+  const parsed = []
+  let restVar = null
+  for (let i = 0; i < elems.length; i++) {
+    const e = elems[i]
+    if (e == null) continue
+
+    if (Array.isArray(e) && e[0] === '...') {
+      // Rest element: [...rest]
+      restVar = { name: e[1], idx: i }
+      ctx.declareVar(e[1], isConst)
+      ctx.addLocal(e[1], 'array')
+    } else if (Array.isArray(e) && e[0] === '=') {
+      // Default value: [a = 10]
+      const varName = e[1]
+      const defaultVal = e[2]
+      ctx.declareVar(varName, isConst)
+      ctx.addLocal(varName, 'f64')
+      parsed.push({ name: varName, default: defaultVal, idx: i })
+    } else if (Array.isArray(e) && e[0] === '[]') {
+      // Nested pattern: [[a, b]]
+      parsed.push({ isNestedPattern: true, nestedPattern: e, idx: i })
+    } else if (typeof e === 'string') {
+      // Simple variable
+      ctx.declareVar(e, isConst)
+      ctx.addLocal(e, 'f64')
+      parsed.push({ name: e, idx: i })
+    }
+  }
+
+  const id = ctx.loopCounter++
+  const tmp = `$_destruct_${id}`
+  ctx.addLocal(tmp.slice(1), 'array')
+
+  let code = ''
+  if (srcLocal) {
+    // Source already loaded in srcLocal
+    code += `(local.set ${tmp} (local.get ${srcLocal}))\n    `
+  } else {
+    // Evaluate RHS array
+    const aw = gen(valueAst)
+    code += `(local.set ${tmp} ${aw})\n    `
+  }
+
+  // Store array length for rest/defaults
+  const lenTmp = `$_dlen_${id}`
+  ctx.addLocal(lenTmp.slice(1), 'i32')
+  code += `(local.set ${lenTmp} (call $__ptr_len (local.get ${tmp})))\n    `
+
+  // Track last assigned variable for return value
+  let lastAssigned = null
+
+  // Generate assignments for each element
+  for (const p of parsed) {
+    if (p.isNestedPattern) {
+      // Load nested array into a temp, then recurse
+      const nestedTmp = `$_nested_${id}_${p.idx}`
+      ctx.addLocal(nestedTmp.slice(1), 'array')
+      code += `(local.set ${nestedTmp} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8}))))\n    `
+      // Recursively destructure - pass isNested=true to suppress return value
+      const nestedResult = genArrayDestructDecl(p.nestedPattern, null, isConst, nestedTmp, true)
+      code += nestedResult.code + '\n    '
+      lastAssigned = nestedResult.lastVar
+    } else {
+      const info = ctx.getLocal(p.name)
+      if (p.default) {
+        // Has default: check if index < length, then load, else use default
+        const defaultWat = f64(gen(p.default))
+        code += `(local.set $${info.scopedName} (if (result f64) (i32.gt_s (local.get ${lenTmp}) (i32.const ${p.idx})) (then (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8})))) (else ${defaultWat})))\n    `
+      } else {
+        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8}))))\n    `
+      }
+      lastAssigned = p.name
+    }
+  }
+
+  // Handle rest element
+  if (restVar) {
+    const info = ctx.getLocal(restVar.name)
+    // Create new array with remaining elements
+    const restLenTmp = `$_rlen_${id}`
+    ctx.addLocal(restLenTmp.slice(1), 'i32')
+    code += `(local.set ${restLenTmp} (i32.sub (local.get ${lenTmp}) (i32.const ${restVar.idx})))\n    `
+    code += `(local.set ${restLenTmp} (select (local.get ${restLenTmp}) (i32.const 0) (i32.gt_s (local.get ${restLenTmp}) (i32.const 0))))\n    ` // max(0, restLen)
+    code += `(local.set $${info.scopedName} (call $__alloc (i32.const 1) (local.get ${restLenTmp})))\n    `
+    // Copy elements
+    const iVar = `$_ri_${id}`
+    ctx.addLocal(iVar.slice(1), 'i32')
+    code += `(local.set ${iVar} (i32.const 0))
+    (block $rest_done (loop $rest_loop
+      (br_if $rest_done (i32.ge_s (local.get ${iVar}) (local.get ${restLenTmp})))
+      (f64.store
+        (i32.add (call $__ptr_offset (local.get $${info.scopedName})) (i32.shl (local.get ${iVar}) (i32.const 3)))
+        (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.shl (i32.add (local.get ${iVar}) (i32.const ${restVar.idx})) (i32.const 3)))))
+      (local.set ${iVar} (i32.add (local.get ${iVar}) (i32.const 1)))
+      (br $rest_loop)))
+    `
+    lastAssigned = restVar.name
+  }
+
+  // Determine actual last variable (for return or nested tracking)
+  const lastVar = lastAssigned || (restVar ? restVar.name : (parsed.length > 0 ? (parsed[parsed.length - 1].name || null) : null))
+
+  // For nested calls, return code and lastVar info (no trailing return value)
+  if (isNested) {
+    return { code, lastVar }
+  }
+
+  // Top-level: return WAT with trailing value
+  if (lastVar) {
+    const lastInfo = ctx.getLocal(lastVar)
+    return wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type || 'f64')
+  }
+  return wat(code + '(f64.const 0)', 'f64')
+}
+
+/**
+ * Generate object destructuring for declarations (let/const).
+ * Handles: simple {a, b}, defaults {a, b = 5}, rename {a: x}, rest {a, ...rest}
+ */
+function genObjectDestructDecl(pattern, valueAst, isConst) {
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+
+  const props = Array.isArray(pattern[1]) && pattern[1][0] === ','
+    ? pattern[1].slice(1)
+    : (pattern[1] != null ? [pattern[1]] : [])
+
+  // Parse each property
+  const parsed = []
+  let restVar = null
+  const usedProps = new Set()
+
+  for (const p of props) {
+    if (p == null) continue
+
+    if (Array.isArray(p) && p[0] === '...') {
+      // Rest: {...rest}
+      restVar = p[1]
+      ctx.declareVar(restVar, isConst)
+      ctx.addLocal(restVar, 'object')
+    } else if (Array.isArray(p) && p[0] === '=') {
+      // Default: {a = 5}
+      const varName = p[1]
+      ctx.declareVar(varName, isConst)
+      ctx.addLocal(varName, 'f64')
+      parsed.push({ propName: varName, varName, default: p[2] })
+      usedProps.add(varName)
+    } else if (Array.isArray(p) && p[0] === ':') {
+      // Rename: {a: x}
+      const propName = p[1]
+      const varName = p[2]
+      ctx.declareVar(varName, isConst)
+      ctx.addLocal(varName, 'f64')
+      parsed.push({ propName, varName })
+      usedProps.add(propName)
+    } else if (typeof p === 'string') {
+      // Simple: {a}
+      ctx.declareVar(p, isConst)
+      ctx.addLocal(p, 'f64')
+      parsed.push({ propName: p, varName: p })
+      usedProps.add(p)
+    }
+  }
+
+  // Evaluate RHS object
+  const id = ctx.loopCounter++
+  const tmp = `$_destruct_${id}`
+  ctx.addLocal(tmp.slice(1), 'object')
+  const obj = gen(valueAst)
+
+  // For empty object {}, schema may be undefined
+  const schema = (obj.type === 'object' && obj.schema !== undefined)
+    ? ctx.objectSchemas[obj.schema]
+    : []
+
+  let code = `(local.set ${tmp} ${obj})\n    `
+
+  // Generate assignments
+  for (const p of parsed) {
+    const info = ctx.getLocal(p.varName)
+    const idx = schema.indexOf(p.propName)
+
+    if (p.default) {
+      // Has default: check if property exists (idx >= 0 and value != 0)
+      if (idx >= 0) {
+        const defaultWat = f64(gen(p.default))
+        // Load and check for "undefined" (we use 0 as undefined)
+        const loadExpr = `(f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8})))`
+        // If value is 0 (our undefined), use default
+        code += `(local.set $${info.scopedName} (if (result f64) (f64.eq ${loadExpr} (f64.const 0)) (then ${defaultWat}) (else ${loadExpr})))\n    `
+      } else {
+        // Property not in schema - use default
+        const defaultWat = f64(gen(p.default))
+        code += `(local.set $${info.scopedName} ${defaultWat})\n    `
+      }
+    } else {
+      if (idx >= 0) {
+        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
+      } else {
+        // Property not in schema - set to 0
+        code += `(local.set $${info.scopedName} (f64.const 0))\n    `
+      }
+    }
+  }
+
+  // Handle rest (create new object with remaining props)
+  if (restVar) {
+    const restProps = schema.filter(k => !usedProps.has(k))
+    if (restProps.length > 0) {
+      // Create new schema for rest object
+      const restSchemaId = ctx.objectCounter + 1
+      ctx.objectCounter++
+      ctx.objectSchemas[restSchemaId] = restProps
+
+      const info = ctx.getLocal(restVar)
+      code += `(local.set $${info.scopedName} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${restProps.length})))\n    `
+      code += `(local.set $${info.scopedName} (call $__ptr_with_id (local.get $${info.scopedName}) (i32.const ${restSchemaId})))\n    `
+
+      // Copy properties
+      for (let i = 0; i < restProps.length; i++) {
+        const srcIdx = schema.indexOf(restProps[i])
+        code += `(f64.store (i32.add (call $__ptr_offset (local.get $${info.scopedName})) (i32.const ${i * 8})) (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${srcIdx * 8}))))\n    `
+      }
+    } else {
+      // Empty rest object
+      const info = ctx.getLocal(restVar)
+      const restSchemaId = ctx.objectCounter + 1
+      ctx.objectCounter++
+      ctx.objectSchemas[restSchemaId] = []
+      code += `(local.set $${info.scopedName} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const 0)))\n    `
+      code += `(local.set $${info.scopedName} (call $__ptr_with_id (local.get $${info.scopedName}) (i32.const ${restSchemaId})))\n    `
+    }
+  }
+
+  // Return last variable
+  const lastVar = restVar || (parsed.length > 0 ? parsed[parsed.length - 1].varName : null)
+  if (lastVar) {
+    const lastInfo = ctx.getLocal(lastVar)
+    return wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type || 'f64')
+  }
+  return wat(code + '(f64.const 0)', 'f64')
 }
 
 /**
