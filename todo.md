@@ -129,9 +129,9 @@
   * [x] Missing: `1_000_000` numeric separators - write without
   * [x] Missing: `{ foo() {} }` method shorthand - use `{ foo: () => {} }`
   * [x] All JZ-critical features work (arrows, spread, destruct, optional chain, etc.)
-* [ ] TypedArrays
+* [~] TypedArrays (basic: new, [], .length, .byteLength; missing: methods, ArrayBuffer)
 * [ ] Math full
-* [ ] Boxed String, Number, Boolean funcs
+* [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
 * [ ] Regex
 * [ ] Important globals
 * [ ] color-space converter
@@ -199,15 +199,18 @@
   * [ ] jz run
   * [ ] jz compile
 * [ ] Produce component interface for exports (wit)
-* [ ] i32 Type Preservation
-  * [ ] Integer literals (42, 0, -1) → i32.const
-  * [ ] Track variable types in ctx (i32 vs f64)
-  * [ ] i32 + i32 → i32.add (preserve)
-  * [ ] i32 + f64 → f64.add (promote)
-  * [ ] Array indices always i32
-  * [ ] Bitwise ops always i32
-  * [ ] Loop counters stay i32
-  * [ ] Function params/returns can be i32
+* [x] i32 Type Preservation
+  * [x] Integer literals (42, 0, -1) → i32.const
+  * [x] Track variable types in ctx (i32 vs f64)
+  * [x] i32 + i32 → i32.add (preserve)
+  * [x] i32 + f64 → f64.add (promote)
+  * [x] Array indices always i32
+  * [x] Bitwise ops always i32
+  * [x] Loop counters stay i32
+  * [ ] Function params/returns i32 - deferred: requires two-pass compilation or explicit annotations
+    * Complexity: call sites need return type before function is generated
+    * JS interop: f64 ↔ number is natural; i32 needs manual coercion
+    * Current approach: i32 preserved within functions, f64 at boundaries
 * [x] Object Strategy B (Tagged Schema)
   * [x] Remove OBJECT pointer type, use F64_ARRAY
   * [x] Encode schema ID in pointer: [type:4][schemaId:16][offset:31]
@@ -220,8 +223,8 @@
   * [x] Objects store strings, numbers, bools, arrays, nested objects (all JSON types)
   * [x] Nested object access with schema propagation
   * [x] NaN boxing pointer format (full f64 range preserved)
-  * [~] Arrays with properties (deferred - edge case, design in research.md)
-  * [~] Boxed strings, numbers (deferred - edge case, design in research.md)
+  * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
+  * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
 
 ## Comparisons
 

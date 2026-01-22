@@ -8,6 +8,7 @@
  * - Free variables: referenced but not defined in current scope
  * - Captured variables: free vars that exist in outer scope
  * - Hoisted variables: vars captured by ANY nested closure (need env struct)
+ * - Type promotion: variables assigned f64 anywhere are promoted to f64
  */
 
 // Global constants - identifiers that don't count as free variables
@@ -275,4 +276,104 @@ export function findHoistedVars(bodyAst, params) {
   }
   collectCaptured(analysis.innerFunctions)
   return hoisted
+}
+
+/**
+ * Analyze all assignments to variables to determine which need f64 type.
+ * A variable needs f64 if ANY assignment to it could produce f64.
+ *
+ * @param {any} ast - AST to analyze (function body or statement list)
+ * @returns {Set<string>} - Variable names that should be f64
+ */
+export function findF64Vars(ast) {
+  const f64Vars = new Set()
+
+  // Operators that always produce f64
+  const F64_OPS = new Set(['/', '**'])
+  // Operators that produce f64 if either operand is f64
+  const MIXED_OPS = new Set(['+', '-', '*', '%'])
+
+  // Check if expression could produce f64
+  function couldBeF64(expr) {
+    if (expr == null) return false
+    // Literal: check if float
+    if (Array.isArray(expr) && (expr[0] === null || expr[0] === undefined)) {
+      const v = expr[1]
+      return typeof v === 'number' && !Number.isInteger(v)
+    }
+    // Division and power always f64
+    if (Array.isArray(expr) && F64_OPS.has(expr[0])) return true
+    // Array/TypedArray element access - could be f64
+    if (Array.isArray(expr) && expr[0] === '[]') return true
+    // Function call - assume f64 (conservative)
+    if (Array.isArray(expr) && expr[0] === '(') return true
+    // Property access (e.g., Math.PI) - could be f64
+    if (Array.isArray(expr) && expr[0] === '.') return true
+    // Known f64 variable
+    if (typeof expr === 'string' && f64Vars.has(expr)) return true
+    // Binary op with f64 operand
+    if (Array.isArray(expr) && MIXED_OPS.has(expr[0])) {
+      return couldBeF64(expr[1]) || couldBeF64(expr[2])
+    }
+    // Ternary - either branch could be f64
+    if (Array.isArray(expr) && expr[0] === '?') {
+      return couldBeF64(expr[2]) || couldBeF64(expr[3])
+    }
+    return false
+  }
+
+  // Walk AST looking for assignments
+  function walk(node) {
+    if (!node || typeof node !== 'object') return
+    if (!Array.isArray(node)) return
+
+    const [op, ...args] = node
+
+    // Variable declaration: let x = expr, const x = expr
+    if ((op === 'let' || op === 'const' || op === 'var') && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && couldBeF64(value)) {
+        f64Vars.add(name)
+      }
+      walk(value)
+      return
+    }
+
+    // Assignment: x = expr
+    if (op === '=' && typeof args[0] === 'string') {
+      const name = args[0]
+      if (couldBeF64(args[1])) {
+        f64Vars.add(name)
+      }
+      walk(args[1])
+      return
+    }
+
+    // Compound assignment: x += expr, etc
+    if ((op === '+=' || op === '-=' || op === '*=' || op === '/=') && typeof args[0] === 'string') {
+      const name = args[0]
+      // Division always f64, others if operand is f64
+      if (op === '/=' || couldBeF64(args[1])) {
+        f64Vars.add(name)
+      }
+      walk(args[1])
+      return
+    }
+
+    // For loop init
+    if (op === 'for') {
+      const [init, cond, update, body] = args
+      walk(init)
+      walk(cond)
+      walk(update)
+      walk(body)
+      return
+    }
+
+    // Recurse
+    for (const arg of args) walk(arg)
+  }
+
+  walk(ast)
+  return f64Vars
 }

@@ -30,6 +30,7 @@ mul(4, 5)  // 20
 * Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`
 * Arrays: `[a, b]`, `arr[i]`, `arr[i] = x`, `arr.length`
 * Objects: `{a: b}`, `{a, b}`, `obj.prop`
+* Boxed primitives: `Object.assign(42, {prop})`, `Object.assign("str", {prop})`, `Object.assign([arr], {prop})`
 * Functions: `(a, b) => c`, `a => b`, `() => c`
 * Currying: `add = x => y => x + y; add(5)(3)`
 * Comments: `// foo`, `/* bar */`

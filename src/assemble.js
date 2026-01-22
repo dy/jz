@@ -47,7 +47,11 @@ export function assemble(bodyWat, ctx = {
 
   wat += '  (memory (export "_memory") 2)\n'
   const instanceTableEnd = 65536  // 64KB reserved for instance table
-  const heapStart = Math.max(ctx.staticOffset || instanceTableEnd, instanceTableEnd)
+  // Calculate where strings end: each string gets 256 bytes
+  const stringCount = Object.keys(ctx.strings).length
+  const stringsEnd = instanceTableEnd + stringCount * 256
+  // Heap starts after strings and static arrays
+  const heapStart = Math.max(stringsEnd, ctx.staticOffset || instanceTableEnd, instanceTableEnd)
   wat += `  (global $__heap (mut i32) (i32.const ${heapStart}))\n`
 
   // === Data segments ===
@@ -80,6 +84,18 @@ export function assemble(bodyWat, ctx = {
   if (ctx.usedMemory) {
     wat += emitMemoryHelpers()
     wat += '  (export "_alloc" (func $__alloc))\n'
+  }
+
+  // TypedArray arena initialization (after heap)
+  if (ctx.usedTypedArrays) {
+    // TypedArray arena starts 1MB after heap start (leaving room for regular heap)
+    const typedArenaStart = heapStart + 1048576  // 1MB after heap
+    wat += `  ;; TypedArray arena initialization\n`
+    wat += `  (func $__init_typed_arena\n`
+    wat += `    (global.set $__typed_arena_start (i32.const ${typedArenaStart}))\n`
+    wat += `    (global.set $__typed_bump (i32.const ${typedArenaStart})))\n`
+    wat += `  (start $__init_typed_arena)\n`
+    wat += '  (export "_resetTypedArrays" (func $__reset_typed_arrays))\n'
   }
 
   // === Stdlib functions ===
@@ -224,6 +240,23 @@ function emitMemoryHelpers() {
     (i32.store16 (i32.shl (local.get $id) (i32.const 2)) (local.get $len))
     (call $__mkptr (i32.const 2) (local.get $id) (local.get $offset)))
 
+  ;; Allocate array with properties (uses ARRAY_MUT type=2 with schemaId > 0)
+  ;; Instance table entry: [len:u16, schemaId:u16]
+  (func $__alloc_array_props (param $elemLen i32) (param $propCount i32) (param $schemaId i32) (result f64)
+    (local $offset i32) (local $size i32) (local $cap i32) (local $id i32) (local $totalLen i32)
+    (local.set $totalLen (i32.add (local.get $elemLen) (local.get $propCount)))
+    (local.set $cap (call $__cap_for_len (local.get $totalLen)))
+    (local.set $size (i32.shl (local.get $cap) (i32.const 3)))
+    (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
+    (local.set $offset (global.get $__heap))
+    (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
+    ;; Create instance entry: len in lower 16 bits, schemaId in upper 16 bits
+    (local.set $id (global.get $__next_instance))
+    (global.set $__next_instance (i32.add (local.get $id) (i32.const 1)))
+    (i32.store16 (i32.shl (local.get $id) (i32.const 2)) (local.get $elemLen))
+    (i32.store16 (i32.add (i32.shl (local.get $id) (i32.const 2)) (i32.const 2)) (local.get $schemaId))
+    (call $__mkptr (i32.const 2) (local.get $id) (local.get $offset)))
+
   ;; NaN box base: 0x7FF8_0000_0000_0000 (quiet NaN)
   ;; Create NaN-boxed pointer: type * 2^47 + id * 2^31 + offset
   (func $__mkptr (param $type i32) (param $id i32) (param $offset i32) (result f64)
@@ -337,6 +370,76 @@ function emitMemoryHelpers() {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $copy)))
     (local.get $newPtr))
+
+  ;; === TypedArray support ===
+  ;; Different pointer layout: [type:4][elemType:3][len:22][offset:22]
+  ;; Bump allocator in separate region (grows from end of heap area)
+
+  ;; Stride lookup table: [1, 1, 2, 2, 4, 4, 4, 8] for elem types 0-7
+  (global $__typed_bump (mut i32) (i32.const 0))  ;; initialized to heap end later
+
+  ;; Allocate TypedArray: bump allocator, returns NaN-boxed pointer
+  (func $__alloc_typed (param $elemType i32) (param $len i32) (result f64)
+    (local $stride i32) (local $size i32) (local $offset i32)
+    ;; stride = [1,1,2,2,4,4,4,8][elemType]
+    (local.set $stride
+      (i32.load8_u offset=0
+        (i32.add (i32.const 0) (local.get $elemType))))  ;; stride table at offset 0
+    ;; Fallback if table not initialized: compute stride
+    (if (i32.eqz (local.get $stride))
+      (then
+        (local.set $stride
+          (select (i32.const 8)
+            (select (i32.const 4)
+              (select (i32.const 2)
+                (i32.const 1)
+                (i32.ge_u (local.get $elemType) (i32.const 2)))
+              (i32.ge_u (local.get $elemType) (i32.const 4)))
+            (i32.eq (local.get $elemType) (i32.const 7))))))
+    (local.set $size (i32.mul (local.get $len) (local.get $stride)))
+    ;; Align to 8 bytes
+    (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
+    ;; Bump allocate
+    (local.set $offset (global.get $__typed_bump))
+    (global.set $__typed_bump (i32.add (local.get $offset) (local.get $size)))
+    ;; Create pointer: type=5, pack elemType/len/offset
+    (call $__mkptr_typed (local.get $elemType) (local.get $len) (local.get $offset)))
+
+  ;; Create TypedArray pointer: [type:4][elemType:3][len:22][offset:22]
+  ;; Total 51 bits in NaN payload
+  (func $__mkptr_typed (param $elemType i32) (param $len i32) (param $offset i32) (result f64)
+    (f64.reinterpret_i64
+      (i64.or (i64.const 0x7FF8000000000000)
+        (i64.or
+          (i64.shl (i64.const 5) (i64.const 47))  ;; type = TYPED_ARRAY = 5
+          (i64.or
+            (i64.shl (i64.extend_i32_u (local.get $elemType)) (i64.const 44))
+            (i64.or
+              (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 22))
+              (i64.extend_i32_u (local.get $offset))))))))
+
+  ;; Extract elemType (bits 44-46)
+  (func $__typed_elemtype (param $ptr f64) (result i32)
+    (i32.and
+      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 44)))
+      (i32.const 0x7)))
+
+  ;; Extract len (bits 22-43)
+  (func $__typed_len (param $ptr f64) (result i32)
+    (i32.and
+      (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 22)))
+      (i32.const 0x3FFFFF)))
+
+  ;; Extract offset (bits 0-21)
+  (func $__typed_offset (param $ptr f64) (result i32)
+    (i32.and
+      (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr)))
+      (i32.const 0x3FFFFF)))
+
+  ;; Reset typed array arena (call between frames/batches)
+  (func $__reset_typed_arrays
+    (global.set $__typed_bump (global.get $__typed_arena_start)))
+  (global $__typed_arena_start (mut i32) (i32.const 0))
 `
 }
 

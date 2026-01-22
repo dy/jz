@@ -2,7 +2,7 @@ Parser is based on subscript/jessie.
 If something is not supported by jessie, it needs to be fixed there, not worked around.
 It should use API provided by subscript to define operators if needed.
 Document any deviations from standard JS behavior in docs.md as appropriate.
-Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions.
+Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions. Any implemented features should have thorough tests in the test/ folder. For tests we use tst package.
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
@@ -21,11 +21,8 @@ For any file structure changes, update project structure section below.
 | string.js | 296 | String method codegen (slice, indexOf, etc.) |
 | compile.js | 1616 | Core compiler: AST → WAT, operators, closures |
 
-## Data Flow
+Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 
-```
-index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
-```
 
 ## Design Principles
 

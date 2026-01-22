@@ -21,6 +21,8 @@
  * - id: type-specific (len for immutable, instanceId for mutable, schemaId for objects)
  * - offset: memory byte offset (2GB addressable)
  *
+ * TypedArray uses different layout: [type:4][elemType:3][len:22][offset:22]
+ *
  * Memory at offset: [data...] - pure data, no header
  *
  * Instance table (for mutable types): InstanceTable[id] = { len: u16, schemaId: u16 }
@@ -30,13 +32,48 @@
  */
 export const PTR_TYPE = {
   ARRAY: 1,        // Immutable f64 array, len in pointer
-  ARRAY_MUT: 2,    // Mutable f64 array, len in instance table
+  ARRAY_MUT: 2,    // Mutable array (schemaId=0) or array+props (schemaId>0)
   STRING: 3,       // UTF-16 string, len in pointer, immutable
-  OBJECT: 4,       // Object, schemaId in pointer
-  BOXED_STRING: 5, // String with properties (schemaId, first slot = string ptr)
-  ARRAY_PROPS: 6,  // Array with named properties
+  OBJECT: 4,       // Object (or boxed string if schema[0]==='__string__')
+  TYPED_ARRAY: 5,  // TypedArray: [type:4][elemType:3][len:22][offset:22]
+  // Note: BOXED_STRING merged into OBJECT (schema[0]==='__string__')
+  // Note: ARRAY_PROPS merged into ARRAY_MUT (schemaId > 0)
   CLOSURE: 7       // Closure, funcIdx + env offset
 }
+
+/**
+ * Element types for TypedArrays
+ * Stride: [1, 1, 2, 2, 4, 4, 4, 8][elemType]
+ * @enum {number}
+ */
+export const ELEM_TYPE = {
+  I8: 0,   // Int8Array,    stride 1
+  U8: 1,   // Uint8Array,   stride 1
+  I16: 2,  // Int16Array,   stride 2
+  U16: 3,  // Uint16Array,  stride 2
+  I32: 4,  // Int32Array,   stride 4
+  U32: 5,  // Uint32Array,  stride 4
+  F32: 6,  // Float32Array, stride 4
+  F64: 7   // Float64Array, stride 8
+}
+
+/** Stride in bytes for each ELEM_TYPE */
+export const ELEM_STRIDE = [1, 1, 2, 2, 4, 4, 4, 8]
+
+/** TypedArray constructor name → ELEM_TYPE */
+export const TYPED_ARRAY_CTORS = {
+  Int8Array: ELEM_TYPE.I8,
+  Uint8Array: ELEM_TYPE.U8,
+  Int16Array: ELEM_TYPE.I16,
+  Uint16Array: ELEM_TYPE.U16,
+  Int32Array: ELEM_TYPE.I32,
+  Uint32Array: ELEM_TYPE.U32,
+  Float32Array: ELEM_TYPE.F32,
+  Float64Array: ELEM_TYPE.F64
+}
+
+/** Check if value is a TypedArray pointer */
+export const isTypedArray = (v) => v?.type === 'typedarray'
 
 /**
  * WAT value constructor - creates boxed string with type metadata
@@ -68,7 +105,9 @@ export const fmtNum = n =>
 export const f64 = op => {
   const t = op.type
   // Object is f64 pointer (Strategy B), not GC ref
-  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object') return op
+  // boxed types and array_props are also f64 pointers
+  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object' ||
+      t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props') return op
   if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }
@@ -123,6 +162,14 @@ export const isClosure = v => v.type === 'closure'
 export const isRef = v => v.type === 'ref'
 /** @param {String & {type: string}} v */
 export const isRefArray = v => v.type === 'refarray'
+/** @param {String & {type: string}} v - Boxed string (OBJECT + schema[0]==='__string__') */
+export const isBoxedString = v => v.type === 'boxed_string'
+/** @param {String & {type: string}} v - Boxed number (OBJECT + schema[0]==='__number__') */
+export const isBoxedNumber = v => v.type === 'boxed_number'
+/** @param {String & {type: string}} v - Boxed boolean (OBJECT + schema[0]==='__boolean__') */
+export const isBoxedBoolean = v => v.type === 'boxed_boolean'
+/** @param {String & {type: string}} v - Array with named properties (ARRAY_MUT + schemaId > 0) */
+export const isArrayProps = v => v.type === 'array_props'
 
 // === Compound predicates ===
 /** @param {String & {type: string}} a @param {String & {type: string}} b */

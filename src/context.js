@@ -102,7 +102,9 @@ export function createContext() {
         if (type === 'namespace') return { ...this.locals[finalName], scopedName: finalName }
         // Memory-based: all reference types are f64 pointers
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
-           type === 'object' || type === 'string' || type === 'closure') ? 'f64' : type
+           type === 'object' || type === 'string' || type === 'closure' ||
+           type === 'boxed_string' || type === 'boxed_number' || type === 'boxed_boolean' ||
+           type === 'array_props' || type === 'typedarray') ? 'f64' : type
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }
       if (schema !== undefined) this.localSchemas[finalName] = schema

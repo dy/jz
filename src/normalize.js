@@ -27,6 +27,7 @@ const ALLOWED = new Set([
   '\`',           // template literals
   '...',          // spread/rest operator
   'export',       // ES module exports
+  'new',          // constructor calls (TypedArrays)
 ])
 
 // Allowed namespaces

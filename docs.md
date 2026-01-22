@@ -102,6 +102,37 @@ let data = {
 data.nested.a  // 1
 ```
 
+### Boxed Primitives
+
+Add properties to primitives via `Object.assign`:
+
+```js
+// Boxed string with properties
+let token = Object.assign("hello", { type: 1, pos: 5 })
+token.type    // 1 (property access)
+token.length  // 5 (string length)
+token[0]      // 104 (charCode at index 0)
+
+// Boxed number with properties
+let value = Object.assign(255, { r: 1, g: 0.5, b: 0 })
+value.r       // 1 (property access)
+
+// Boxed boolean with properties
+let result = Object.assign(true, { code: 200 })
+result.code   // 200 (property access)
+
+// Array with properties
+let items = Object.assign([1, 2, 3], { sum: 6, name: "nums" })
+items.sum     // 6 (property access)
+items.length  // 3 (array length)
+items[0]      // 1 (array element)
+```
+
+**Limitations:**
+- Properties fixed at creation (no dynamic addition)
+- Source must be object literal
+- Target must be primitive or array
+
 ### Destructuring
 
 ```js
@@ -220,11 +251,27 @@ Use `[...a]` to clone arrays explicitly.
 - No dynamic property addition
 - No computed property names
 
-### Numbers
-- All numbers are `f64` (double precision)
+### Numbers & i32 Type Preservation
+- All numbers are `f64` (double precision) at JS level
 - Full numeric range available (no reserved values)
-- Integer literals use i32 internally for efficiency
+- Integer literals (42, 0, -1) use `i32.const` internally
+- i32 + i32 arithmetic preserves i32 type
+- i32 + f64 promotes to f64
 - Division always promotes to f64
+- Bitwise operations always use i32
+- Array indices are i32
+- Loop counters stay i32 when initialized with integers
+
+```js
+// i32 preserved:
+let i = 0; i + 1        // i32.add
+let x = 5; x & 3        // i32.and
+let y = 1; y << 2       // i32.shl
+
+// Promotes to f64:
+let a = 1; a + 0.5      // f64.add
+let b = 4; b / 2        // f64.div
+```
 
 ### Not Supported
 - `var` (use `let`/`const`)
