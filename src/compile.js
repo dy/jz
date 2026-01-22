@@ -41,6 +41,7 @@
 
 import * as array from './array.js'
 import * as string from './string.js'
+import { parseRegex, compileRegex } from './regex.js'
 
 const arrayMethods = {
   fill: array.fill, map: array.map, reduce: array.reduce, filter: array.filter,
@@ -59,7 +60,40 @@ const stringMethods = {
   substr: string.substr, repeat: string.repeat, padStart: string.padStart, padEnd: string.padEnd,
   split: string.split, replace: string.replace
 }
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, bothI32, isHeapRef, hasSchema } from './types.js'
+
+// Regex method handlers
+const REGEX_METHODS = {
+  // regex.test(str) - returns i32 (1 if match found, 0 if not)
+  test(receiver, args, ctx) {
+    if (args.length !== 1) throw new Error('regex.test(str) requires 1 argument')
+    const regexId = receiver.schema
+    const strVal = gen(args[0])
+    if (!isString(strVal)) throw new Error('regex.test() argument must be string')
+    // Search loop: try at each start position until match or end
+    const id = ctx.loopCounter++
+    const strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
+    ctx.addLocal(strOff.slice(1), 'i32')
+    ctx.addLocal(strLen.slice(1), 'i32')
+    ctx.addLocal(searchPos.slice(1), 'i32')
+    ctx.addLocal(matchResult.slice(1), 'i32')
+    return wat(`(block (result i32)
+      (local.set ${strOff} (call $__ptr_offset ${strVal}))
+      (local.set ${strLen} (call $__ptr_len ${strVal}))
+      (local.set ${searchPos} (i32.const 0))
+      (block $found_${id}
+        (loop $search_${id}
+          (br_if $found_${id} (i32.gt_s (local.get ${searchPos}) (local.get ${strLen})))
+          (local.set ${matchResult} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${strLen}) (local.get ${searchPos})))
+          (br_if $found_${id} (i32.ge_s (local.get ${matchResult}) (i32.const 0)))
+          (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))
+          (br $search_${id})))
+      (i32.ge_s (local.get ${matchResult}) (i32.const 0)))`, 'i32')
+  }
+
+  // TODO: regex.exec(str) - returns match array with capture groups
+  // Requires: array creation, substring extraction, group tracking
+}
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
@@ -358,6 +392,12 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (rt === 'string' && stringMethods[name]) {
       const result = stringMethods[name](rw, args)
       if (result) return result
+    }
+
+    // Regex methods
+    if (isRegex(receiver) && REGEX_METHODS[name]) {
+      ctx.usedMemory = true
+      return REGEX_METHODS[name](receiver, args, ctx)
     }
 
     // Check if receiver is a closure/function property from an object
@@ -2149,6 +2189,32 @@ const operators = {
 
     code += `(local.get ${result})`
     return wat(`(block (result f64) ${code})`, 'string')
+  },
+
+  // Regex literal: ['//', pattern, flags]
+  '//'([pattern, flags]) {
+    // Parse and compile regex at compile time
+    const ast = parseRegex(pattern, flags)
+    const regexId = ctx.regexCounter++
+    const funcName = `$__regex_${regexId}`
+
+    // Compile regex to WASM matcher function
+    const watFunc = compileRegex(ast, funcName.slice(1))
+
+    // Store compiled regex function
+    if (!ctx.regexFunctions) ctx.regexFunctions = []
+    ctx.regexFunctions.push(watFunc)
+
+    // Return a regex "pointer" - NaN-boxed with REGEX type
+    // We store: type=REGEX(6), id=regexId, offset=flags_encoded
+    ctx.usedMemory = true
+
+    // Encode: type 6 (REGEX), id = regexId, flags encoded in offset
+    const flagBits = (flags.includes('g') ? 1 : 0) |
+                     (flags.includes('i') ? 2 : 0) |
+                     (flags.includes('m') ? 4 : 0) |
+                     (flags.includes('s') ? 8 : 0)
+    return wat(`(call $__mkptr (i32.const 6) (i32.const ${regexId}) (i32.const ${flagBits}))`, 'regex', regexId)
   },
 
   // Export declaration

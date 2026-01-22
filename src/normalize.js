@@ -4,6 +4,7 @@
 // Allowed operations for JZ subset
 const ALLOWED = new Set([
   undefined,      // literal [, value]
+  null,           // literal [null, value] (v10.1.0)
   '+', '-', '*', '/', '%', '**',
   '<', '<=', '>', '>=', '==', '!=', '===', '!==',
   '&', '|', '^', '~', '<<', '>>', '>>>',
@@ -28,6 +29,7 @@ const ALLOWED = new Set([
   '...',          // spread/rest operator
   'export',       // ES module exports
   'new',          // constructor calls (TypedArrays)
+  '//',           // regex literal (v10.1.0)
 ])
 
 // Allowed namespaces
@@ -55,12 +57,15 @@ function expr(node) {
 
   const [op, ...args] = node
 
-  // Literal [, value] - sparse array with undefined at index 0
-  if (op === undefined) {
+  // Empty array [] means undefined (v10.1.0)
+  if (node.length === 0) return [, undefined]
+
+  // Literal [, value] or [null, value] - sparse array with undefined/null at index 0
+  if (op === undefined || op === null) {
     const v = args[0]
     if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string' && v !== null && v !== undefined)
       throw new Error(`Unsupported literal: ${typeof v}`)
-    return node
+    return [, v]  // normalize to [, value] form
   }
 
   if (!ALLOWED.has(op)) throw new Error(`Unsupported: ${op}`)
@@ -333,6 +338,13 @@ const handlers = {
     }
     // export const/let/var/function
     return ['export', expr(decl)]
+  },
+
+  // Regex literal: ['//', pattern, flags] -> ['//', pattern, flags]
+  '//'(op, [pattern, flags]) {
+    if (typeof pattern !== 'string') throw new Error('Regex pattern must be string')
+    if (flags && typeof flags !== 'string') throw new Error('Regex flags must be string')
+    return ['//', pattern, flags || '']
   },
 }
 

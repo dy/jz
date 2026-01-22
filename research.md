@@ -53,9 +53,9 @@ offset = memory offset (2GB addressable)
 | 2 | ARRAY_MUT | instanceId | ✓ Mutable array or array+props (via schemaId in instance table) |
 | 3 | STRING | len | ✓ Immutable string |
 | 4 | OBJECT | schemaId | ✓ Object (or boxed string if schema[0]==='__string__') |
+| 5 | TYPED_ARRAY | [elemType:3][len:22] | ✓ TypedArray with custom layout |
+| 6 | REGEX | regexId | ✓ Compiled regex, flags in offset |
 | 7 | CLOSURE | funcIdx | ✓ Closure |
-
-Note: Types 5-6 reserved (merged into OBJECT and ARRAY_MUT).
 
 ### Instance Table (for mutable types)
 

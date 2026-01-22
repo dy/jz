@@ -154,6 +154,34 @@ let [a, b] = [1, 2]
 let getX = ({ x }) => x
 ```
 
+### Regex
+
+Regex literals compile to native WASM matching code at compile time:
+
+```js
+let isNum = /^\d+$/
+isNum.test("123")        // 1 (true)
+isNum.test("abc")        // 0 (false)
+
+// Inline usage
+/abc/.test("xabcy")      // 1
+/xyz/.test("abc")        // 0
+```
+
+**Supported:**
+- Literals, character classes `[abc]`, ranges `[a-z]`, negated `[^abc]`
+- Quantifiers `*`, `+`, `?`, `{n,m}`, non-greedy `*?`, `+?`
+- Anchors `^`, `$`, word boundary `\b`
+- Escapes `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, `\n`, `\t`
+- Groups `()`, non-capturing `(?:)`, backrefs `\1`
+- Lookahead `(?=)`, `(?!)`, lookbehind `(?<=)`, `(?<!)`
+- Alternation `a|b`
+
+**Limitations:**
+- Pattern must be literal (no runtime regex construction)
+- Only `test()` method available
+- `exec()`, `str.match()`, `str.replace()`, `str.split()` not yet implemented
+
 ### Control Flow
 ```js
 // Conditionals via ternary
@@ -289,7 +317,6 @@ let b = 4; b / 2        // f64.div
 - `class`, `new`, `this`
 - `async`/`await`, generators
 - `try`/`catch`
-- Regular expressions
 - Template literals with expressions
 
 ## Performance Tips

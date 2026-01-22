@@ -40,6 +40,7 @@ mul(4, 5)  // 20
 * Closures: capture outer variables
 * Rest/spread: `...args`, `[...arr]`
 * Destructuring params: `({ x }) => x`
+* Regex: `/pattern/.test(str)` - compile-time regex, native WASM matching
 * More array/string methods
 
 
