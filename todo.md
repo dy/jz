@@ -223,9 +223,10 @@
     * [x] **Inconsistent naming**:
       * [x] `loopCounter` used for loop IDs but also array/temp IDs
       * [x] Rename to `uniqueId` (done)
-    * [ ] **Large inline WAT strings** - template literals with 50+ lines:
-      * [ ] Hard to read, no syntax highlighting
-      * [ ] Consider wat template helper or external wat files for stdlib
+    * [x] **Large inline WAT strings** - template literals with 50+ lines:
+      * [x] Hard to read, no syntax highlighting
+      * [x] Added `wt` tagged template helper in types.js (trims indent, joins arrays)
+      * [x] Refactored allocateBoxed, genBoxedInferredDecl, genObjectInferredDecl, object literal
 * [ ] prohibit arguments and other implicit constants
   * [ ] warn about using null or undefined (either or)
 * [ ] incorporate best sane eslint practices with warning

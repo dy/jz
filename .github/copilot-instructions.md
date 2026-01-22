@@ -6,11 +6,11 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~10100 lines)
+## Project Structure (src/, ~10150 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| types.js | 190 | Type system, type predicates, memory constants |
+| types.js | 215 | Type system, type predicates, memory constants, `wt` template |
 | ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS, GLOBAL_CONSTANTS |
 | analyze.js | 783 | Scope analysis: extractParams(), analyzeScope(), inferObjectSchemas() |
 | context.js | 191 | Compilation state factory: createContext() - locals, globals, scopes |
@@ -24,7 +24,7 @@ For any file structure changes, update project structure section below.
 | typedarray.js | 891 | TypedArray method codegen (Float32Array, Int32Array, etc.) |
 | closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |
 | destruct.js | 253 | Destructuring codegen: genArrayDestructDecl, genObjectDestructDecl |
-| compile.js | 3057 | Core compiler: AST → WAT, operators |
+| compile.js | 3056 | Core compiler: AST → WAT, operators |
 
 Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 
