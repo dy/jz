@@ -377,3 +377,221 @@ export function findF64Vars(ast) {
   walk(ast)
   return f64Vars
 }
+
+/**
+ * Analyze function return types to enable i32 returns at function boundaries.
+ * Returns 'i32' if ALL return paths definitely produce i32 values.
+ *
+ * @param {any} ast - Module-level AST
+ * @returns {Map<string, string>} - Function name → 'i32' | 'f64'
+ */
+export function findFuncReturnTypes(ast) {
+  const funcs = new Map()       // name → { params, body }
+  const returnTypes = new Map() // name → 'i32' | 'f64'
+
+  // Ops that always produce f64
+  const F64_OPS = new Set(['/', '**'])
+  // Ops that preserve i32 if both operands are i32
+  const PRESERVING_OPS = new Set(['+', '-', '*', '%', '&', '|', '^', '<<', '>>', '>>>'])
+  // Comparison ops always produce i32 (boolean)
+  const CMP_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+
+  // Collect all exported/defined functions
+  function collectFuncs(node) {
+    if (!node || typeof node !== 'object') return
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+
+    // export const name = (params) => body
+    if (op === 'export' && Array.isArray(args[0]) && args[0][0] === 'const') {
+      const decl = args[0][1]
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
+        const [, name, value] = decl
+        if (Array.isArray(value) && value[0] === '=>') {
+          funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+        }
+      }
+      return
+    }
+
+    // const name = (params) => body (top-level)
+    if (op === 'const' && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
+        funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+      }
+      return
+    }
+
+    // let name = (params) => body
+    if (op === 'let' && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
+        funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+      }
+      return
+    }
+
+    // Recurse into statement sequences
+    if (op === ';') {
+      for (const arg of args) collectFuncs(arg)
+    }
+  }
+
+  // Determine expression type (i32, f64, or unknown)
+  function exprType(expr, localI32 = new Set()) {
+    if (expr == null) return 'i32' // null/undefined → 0
+    // Literal
+    if (Array.isArray(expr) && (expr[0] === null || expr[0] === undefined)) {
+      const v = expr[1]
+      if (typeof v === 'number') {
+        return Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? 'i32' : 'f64'
+      }
+      if (typeof v === 'boolean') return 'i32'
+      return 'f64' // strings, etc → pointer
+    }
+    // Boolean literals
+    if (expr === 'true' || expr === 'false') return 'i32'
+    // Variable
+    if (typeof expr === 'string') {
+      if (localI32.has(expr)) return 'i32'
+      return 'f64' // conservative - params are f64
+    }
+    if (!Array.isArray(expr)) return 'f64'
+
+    const [op, ...args] = expr
+
+    // Division/power always f64
+    if (F64_OPS.has(op)) return 'f64'
+    // Comparisons always i32
+    if (CMP_OPS.has(op)) return 'i32'
+    // Bitwise always i32
+    if (op === '~') return 'i32'
+    // Preserving binary ops
+    if (PRESERVING_OPS.has(op)) {
+      const lt = exprType(args[0], localI32)
+      const rt = exprType(args[1], localI32)
+      return (lt === 'i32' && rt === 'i32') ? 'i32' : 'f64'
+    }
+    // Unary minus
+    if (op === '-' && args.length === 1) {
+      return exprType(args[0], localI32)
+    }
+    // Ternary
+    if (op === '?') {
+      const tt = exprType(args[1], localI32)
+      const ft = exprType(args[2], localI32)
+      return (tt === 'i32' && ft === 'i32') ? 'i32' : 'f64'
+    }
+    // Function call - check if we know return type
+    if (op === '()') {
+      const callee = args[0]
+      if (typeof callee === 'string' && returnTypes.has(callee)) {
+        return returnTypes.get(callee)
+      }
+      return 'f64' // unknown → conservative
+    }
+    // Logical ops produce i32 (truthy/falsy)
+    if (op === '!' || op === '&&' || op === '||') return 'i32'
+
+    return 'f64' // conservative default
+  }
+
+  // Find all return expressions in a function body
+  function findReturns(body) {
+    const returns = []
+    function walk(node) {
+      if (!node || typeof node !== 'object') return
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === 'return') {
+        returns.push(args[0])
+        return
+      }
+      // Don't descend into nested functions
+      if (op === '=>') return
+      for (const arg of args) walk(arg)
+    }
+    walk(body)
+    return returns
+  }
+
+  // Get implicit return expression (last expr in body or body itself for expression arrows)
+  function implicitReturn(body) {
+    if (!Array.isArray(body)) return body
+    const [op, ...args] = body
+    // Block with statements - last statement
+    if (op === ';' && args.length > 0) {
+      return implicitReturn(args[args.length - 1])
+    }
+    // If the body is not a block, it's the return value
+    if (op !== '{' && op !== 'let' && op !== 'const' && op !== 'var' &&
+        op !== 'if' && op !== 'for' && op !== 'while' && op !== 'return') {
+      return body
+    }
+    return null
+  }
+
+  // Analyze a single function's return type
+  function analyzeFunc(name, params, body) {
+    // Build set of i32 locals (loop counters, integer inits)
+    const localI32 = new Set()
+    const f64Vars = findF64Vars(body)
+
+    function scanLocals(node) {
+      if (!node || typeof node !== 'object') return
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if ((op === 'let' || op === 'const') && Array.isArray(args[0]) && args[0][0] === '=') {
+        const [, varName, value] = args[0]
+        if (typeof varName === 'string' && !f64Vars.has(varName)) {
+          // Check if init is i32
+          if (exprType(value, localI32) === 'i32') {
+            localI32.add(varName)
+          }
+        }
+      }
+      if (op === 'for' && Array.isArray(args[0])) {
+        const init = args[0]
+        if ((init[0] === 'let' || init[0] === 'const') && Array.isArray(init[1]) && init[1][0] === '=') {
+          const varName = init[1][1]
+          if (typeof varName === 'string') localI32.add(varName) // loop vars usually i32
+        }
+      }
+      for (const arg of args) scanLocals(arg)
+    }
+    scanLocals(body)
+
+    // Find explicit returns
+    const returns = findReturns(body)
+
+    // Check implicit return (for expression-bodied arrows)
+    const implicit = implicitReturn(body)
+
+    // If no explicit returns, use implicit
+    if (returns.length === 0 && implicit) {
+      return exprType(implicit, localI32)
+    }
+
+    // All explicit returns must be i32
+    for (const ret of returns) {
+      if (exprType(ret, localI32) !== 'i32') return 'f64'
+    }
+
+    // If there's also an implicit return path (no return in some branch), check it
+    if (implicit && exprType(implicit, localI32) !== 'i32') return 'f64'
+
+    return returns.length > 0 ? 'i32' : 'f64'
+  }
+
+  // Collect all functions
+  collectFuncs(ast)
+
+  // Simple analysis (no mutual recursion handling - default to f64 for unknown calls)
+  // Process in definition order (good enough for most cases)
+  for (const [name, { params, body }] of funcs) {
+    returnTypes.set(name, analyzeFunc(name, params, body))
+  }
+
+  return returnTypes
+}

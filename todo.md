@@ -207,10 +207,12 @@
   * [x] Array indices always i32
   * [x] Bitwise ops always i32
   * [x] Loop counters stay i32
-  * [ ] Function params/returns i32 - deferred: requires two-pass compilation or explicit annotations
-    * Complexity: call sites need return type before function is generated
-    * JS interop: f64 ↔ number is natural; i32 needs manual coercion
-    * Current approach: i32 preserved within functions, f64 at boundaries
+  * [x] Variable type promotion via pre-pass analysis (findF64Vars)
+  * [x] Function return types via pre-pass analysis (findFuncReturnTypes)
+    * [x] Comparisons → i32
+    * [x] Division/power → f64
+    * [x] Preserve i32 through ternary, arithmetic
+    * [x] JS interop works naturally (JS number handles both)
 * [x] Object Strategy B (Tagged Schema)
   * [x] Remove OBJECT pointer type, use F64_ARRAY
   * [x] Encode schema ID in pointer: [type:4][schemaId:16][offset:31]
