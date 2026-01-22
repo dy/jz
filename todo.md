@@ -182,39 +182,35 @@
     * [x] **let/const forward schema inference duplication** (lines 1800-2150):
       * [x] ~100 lines duplicated between `'let'` and `'const'` operators
       * [x] Extract `genBoxedInferredDecl()` and `genObjectInferredDecl()` helpers
-    * [ ] **Inconsistent error messages** - some throw Error, some console.warn:
-      * [ ] Create `ctx.warn(code, msg)` and `ctx.error(code, msg)` helpers
-      * [ ] Consistent format: `jz: [${code}] ${msg}`
+    * [x] **Inconsistent error messages** - some throw Error, some console.warn:
+      * [x] Create `ctx.warn(code, msg)` and `ctx.error(code, msg)` helpers in context.js
+      * [x] Refactored 8 console.warn calls to use ctx.warn
   * [ ] **Architecture Improvements**
     * [ ] **Dead code in operators**:
-      * [ ] `'?.'` operator duplicates logic, barely used - consolidate with `'.'`
-      * [ ] `join()` returns 0 (placeholder) - remove or implement
+      * [x] `'?.'` operator - small and necessary for optional chaining .length
+      * [x] `join()` returns 0 (placeholder) - documented, needs number→string
     * [ ] **Type system gaps**:
       * [ ] `types.js` `wat()` creates boxed strings but schema field overloaded (type vs schema vs elemType)
       * [ ] Add explicit `schema?: number | undefined`, `elemType?: number | undefined` fields
-    * [ ] **Redundant type checks**:
-      * [ ] `isF64()`, `isI32()`, `isString()` repeated inline many places
-      * [ ] `bothI32()` helper exists but pattern `const va = gen(a), vb = gen(b)` repeated 20+ times
-      * [ ] Extract `binaryOp(a, b, i32Op, f64Op)` helper
+    * [x] **Redundant type checks**:
+      * [x] `bothI32()` pattern `const va = gen(a), vb = gen(b)` repeated
+      * [x] Extract `binOp(a, b, i32Op, f64Op)` helper - used by +, -, *, <, <=, >, >=
     * [ ] **Memory helpers scattered**:
       * [ ] `arrGet`, `objGet`, `envGet` are similar but not unified
       * [ ] `memory.js` has both low-level (strCharAt) and high-level (mkArrayLiteral) - split concerns
-  * [ ] **Performance Bottlenecks**
-    * [ ] **Pre-analysis passes** run 4 times on full AST:
-      * [ ] `findF64Vars`, `findFuncReturnTypes`, `inferObjectSchemas`, `analyzeScope`
-      * [ ] Merge into single AST walk that collects all info
-    * [ ] **String interning** - `ctx.internString` allocates new string data for each call
-      * [ ] Check if string already exists before re-encoding
-    * [ ] **Local variable lookups** - `ctx.getLocal(name)` searches scopes array each time
-      * [ ] Cache lookups in generate() context for hot paths
+  * [x] **Performance Bottlenecks**
+    * [x] **Pre-analysis passes** merged into single `preanalyze()`:
+      * [x] `findF64Vars`, `findFuncReturnTypes`, `inferObjectSchemas` now single AST walk
+    * [x] **String interning** - already deduplicates via `if (str in this.strings)`
+    * [x] **Local variable lookups** - removed object spread, `scopedName` stored directly
   * [ ] **Canonical Compiler Patterns Missing**
     * [ ] **No IR** - AST goes directly to WAT strings
       * [ ] Add simple IR: `{op, type, args, meta}` enables optimizations
       * [ ] Constant folding, dead code elimination, CSE would be easy
     * [ ] **No visitor pattern** - `operators` object with inline logic
       * [ ] Visitor would allow optimization passes, linting, instrumentation
-    * [ ] **generateFunction** recreates context manually
-      * [ ] Add `ctx.fork()` method for cleaner child context creation
+    * [x] **generateFunction** recreates context manually
+      * [x] Add `ctx.fork()` method for cleaner child context creation
   * [ ] **Code Quality**
     * [x] **Magic numbers**:
       * [x] `65536` (instance table end) appears in assemble.js, memory.js

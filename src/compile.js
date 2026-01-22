@@ -62,7 +62,7 @@ const stringMethods = {
 }
 
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
-import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
+import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
@@ -107,12 +107,11 @@ export function setCtx(context) {
 export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   setCtx(createContext())
-  // Pre-analyze for type promotion (which vars need f64)
-  ctx.f64Vars = findF64Vars(ast)
-  // Pre-analyze function return types (which funcs can return i32)
-  ctx.funcReturnTypes = findFuncReturnTypes(ast)
-  // Pre-analyze object schemas from declarations + assignments
-  ctx.inferredSchemas = inferObjectSchemas(ast)
+  // Single pre-analysis pass: f64 vars, func return types, object schemas
+  const { f64Vars, funcReturnTypes, inferredSchemas } = preanalyze(ast)
+  ctx.f64Vars = f64Vars
+  ctx.funcReturnTypes = funcReturnTypes
+  ctx.inferredSchemas = inferredSchemas
   gen = generate
   const bodyWat = String(f64(generate(ast)))
   return assemble(bodyWat, ctx, generateFunctions())
@@ -759,7 +758,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       const val = gen(args[0])
       // Warn if no radix provided (JZ defaults to 10, but JS behavior varies)
       if (args.length < 2) {
-        console.warn('jz: [parseInt] ' + `parseInt() without radix; JZ defaults to 10, consider explicit radix`)
+        ctx.warn('parseInt', 'parseInt() without radix; JZ defaults to 10, consider explicit radix')
       }
       const radix = args.length >= 2 ? String(i32(gen(args[1]))) : '(i32.const 10)'
       if (isString(val)) {
@@ -915,6 +914,18 @@ const _genClosureCall = (name, args) => genClosureCall(ctx, gen, genIdent, name,
 const _genClosureCallExpr = (closureVal, args) => genClosureCallExpr(ctx, gen, closureVal, args)
 const _genClosureValue = (fnName, envType, envFields, usesOwnEnv, arity) =>
   genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, arity)
+
+/**
+ * Binary operation with automatic type selection (i32 vs f64)
+ * @param {any} a - Left operand AST
+ * @param {any} b - Right operand AST
+ * @param {function} i32Op - i32ops method
+ * @param {function} f64Op - f64ops method
+ */
+const binOp = (a, b, i32Op, f64Op) => {
+  const va = gen(a), vb = gen(b)
+  return bothI32(va, vb) ? i32Op(va, vb) : f64Op(va, vb)
+}
 
 // =============================================================================
 // OPERATORS
@@ -1483,11 +1494,10 @@ const operators = {
     if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
       throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
     }
-    const va = gen(a), vb = gen(b)
-    return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb)
+    return binOp(a, b, i32ops.add, f64ops.add)
   },
-  '-'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.sub(va, vb) : f64ops.sub(va, vb) },
-  '*'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.mul(va, vb) : f64ops.mul(va, vb) },
+  '-'([a, b]) { return binOp(a, b, i32ops.sub, f64ops.sub) },
+  '*'([a, b]) { return binOp(a, b, i32ops.mul, f64ops.mul) },
   '/'([a, b]) { return f64ops.div(gen(a), gen(b)) },
   '%'([a, b]) { return wat(`(call $f64.rem ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
   '**'([a, b]) { ctx.usedStdlib.push('pow'); return wat(`(call $pow ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
@@ -1498,7 +1508,7 @@ const operators = {
     const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
     const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
     if (isNaN_a || isNaN_b) {
-      console.warn('jz: [NaN-compare] ' + `NaN comparison is always ${isNaN_a && isNaN_b ? 'false' : 'false for NaN'}; use Number.isNaN(x)`)
+      ctx.warn('NaN-compare', `NaN comparison is always ${isNaN_a && isNaN_b ? 'false' : 'false for NaN'}; use Number.isNaN(x)`)
     }
     // Warn: x == null idiom (coercion doesn't work in JZ)
     const isNull_a = a === 'null' || (Array.isArray(a) && a[0] === undefined && a[1] === null)
@@ -1506,7 +1516,7 @@ const operators = {
     const isUndef_a = a === 'undefined' || (Array.isArray(a) && a[0] === undefined && a[1] === undefined)
     const isUndef_b = b === 'undefined' || (Array.isArray(b) && b[0] === undefined && b[1] === undefined)
     if ((isNull_a || isNull_b) && !(isNull_a && isNull_b) && !(isUndef_a || isUndef_b)) {
-      console.warn('jz: [null-compare] ' + `x == null idiom won\'t catch undefined; JZ has no type coercion`)
+      ctx.warn('null-compare', "x == null idiom won't catch undefined; JZ has no type coercion")
     }
     // Special-case: typeof comparison with string literal
     // typeof returns type code internally, compare with code directly
@@ -1594,7 +1604,7 @@ const operators = {
     const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
     const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
     if (isNaN_a || isNaN_b) {
-      console.warn('jz: [NaN-compare] ' + `NaN comparison is always ${isNaN_a && isNaN_b ? 'true' : 'true for NaN'}; use Number.isNaN(x)`)
+      ctx.warn('NaN-compare', `NaN comparison is always ${isNaN_a && isNaN_b ? 'true' : 'true for NaN'}; use Number.isNaN(x)`)
     }
     // Special-case typeof != string
     const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
@@ -1627,10 +1637,10 @@ const operators = {
     return bothI32(va, vb) ? i32ops.ne(va, vb) : f64ops.ne(va, vb)
   },
   '!=='([a, b]) { return operators['!=']([a, b]) },
-  '<'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.lt_s(va, vb) : f64ops.lt(va, vb) },
-  '<='([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.le_s(va, vb) : f64ops.le(va, vb) },
-  '>'([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.gt_s(va, vb) : f64ops.gt(va, vb) },
-  '>='([a, b]) { const va = gen(a), vb = gen(b); return bothI32(va, vb) ? i32ops.ge_s(va, vb) : f64ops.ge(va, vb) },
+  '<'([a, b]) { return binOp(a, b, i32ops.lt_s, f64ops.lt) },
+  '<='([a, b]) { return binOp(a, b, i32ops.le_s, f64ops.le) },
+  '>'([a, b]) { return binOp(a, b, i32ops.gt_s, f64ops.gt) },
+  '>='([a, b]) { return binOp(a, b, i32ops.ge_s, f64ops.ge) },
 
   // Bitwise
   '&'([a, b]) { return i32ops.and(gen(a), gen(b)) },
@@ -1879,7 +1889,7 @@ const operators = {
     }
     // Warn on aliasing: b = a where a is known array
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
+      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     // Type promotion: if var is assigned f64 anywhere, use f64
     let varType = val.type
@@ -1941,7 +1951,7 @@ const operators = {
     }
     // Warn on aliasing
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
+      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     ctx.addLocal(name, val.type, val.schema, scopedName)
     return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
@@ -1955,7 +1965,7 @@ const operators = {
     const [, name, value] = assignment
     if (typeof name !== 'string') throw new Error('var requires simple identifier')
     // Warn: var hoisting surprises, suggest let/const
-    console.warn('jz: [var] ' + `'var ${name}' is function-scoped and hoisted; prefer 'let' or 'const'`)
+    ctx.warn('var', `'var ${name}' is function-scoped and hoisted; prefer 'let' or 'const'`)
     const val = gen(value)
     // Track array variables (type-based for gc:true, AST-based for gc:false)
     const isArr = isArrayType(val.type) || isArrayExpr(value)
@@ -1964,7 +1974,7 @@ const operators = {
     }
     // Warn on aliasing
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
+      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
     ctx.addLocal(name, val.type, val.schema, name)  // no scope prefix for var
     return wat(`(local.tee $${name} ${val})`, val.type, val.schema)
@@ -2784,24 +2794,8 @@ function genLoopInit(target, value) {
  *          → '(func $add (export "add") (param $a f64) (param $b f64) (result f64) ...)'
  */
 function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = null, exported = false) {
-  const newCtx = createContext()
-  newCtx.usedStdlib = parentCtx.usedStdlib
-  newCtx.usedArrayType = parentCtx.usedArrayType
-  newCtx.usedStringType = parentCtx.usedStringType
-  newCtx.functions = parentCtx.functions
-  newCtx.closures = parentCtx.closures
-  newCtx.closureEnvTypes = parentCtx.closureEnvTypes
+  const newCtx = parentCtx.fork()
   newCtx.closureCounter = parentCtx.closureCounter
-  newCtx.globals = parentCtx.globals
-  newCtx.funcTableEntries = parentCtx.funcTableEntries  // Share table entries for correct indices
-  newCtx.staticArrays = parentCtx.staticArrays  // Share static arrays for data segments
-  newCtx.strings = parentCtx.strings  // Share string interning
-  newCtx.stringData = parentCtx.stringData  // Share string data
-  newCtx.stringOffset = parentCtx.stringOffset  // Share string offset counter
-  newCtx.objectSchemas = parentCtx.objectSchemas  // Share object schemas for method calls
-  newCtx.objectPropTypes = parentCtx.objectPropTypes  // Share property types for closure detection
-  newCtx.namespaces = parentCtx.namespaces  // Share namespaces for direct method calls
-  newCtx.inFunction = true
   newCtx.returnLabel = '$return_' + name
   // Enable multi-value return detection for exported functions (not closures)
   newCtx.allowMultiReturn = exported && !closureInfo
@@ -2875,19 +2869,19 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   for (const p of params) {
     if (restParam && p === restParam.name) {
       // Rest param is typed as array
-      ctx.locals[p] = { idx: ctx.localCounter++, type: 'array' }
+      ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
       ctx.usedArrayType = true
     } else {
       // Check if destructuring param
       const destructInfo = destructParams.find(di => di.name === p)
       if (destructInfo) {
         // Destructuring param - both array and object are typed as f64array
-        ctx.locals[p] = { idx: ctx.localCounter++, type: 'array' }
+        ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
         ctx.usedArrayType = true
       } else {
         // Default to f64 for params (safe for JS interop - undefined→NaN detectable)
         // TODO: Future - infer i32 from usage analysis or type annotations
-        ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
+        ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64', scopedName: p }
       }
     }
   }
