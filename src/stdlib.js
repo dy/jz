@@ -29,7 +29,10 @@ export const FUNCTIONS = {
 
   round: `(func $round (param $x f64) (result f64) (f64.nearest (local.get $x)))`,
 
-  fround: `(func $fround (param $x f64) (result f64) (local.get $x))`,
+  fround: `(func $fround (param $x f64) (result f64) (f64.promote_f32 (f32.demote_f64 (local.get $x))))`,
+
+  // f16round: no native f16 in WASM yet, approximate via f32 (loses some precision)
+  f16round: `(func $f16round (param $x f64) (result f64) (f64.promote_f32 (f32.demote_f64 (local.get $x))))`,
 
   pow: `(func $pow (param $x f64) (param $y f64) (result f64)
     (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)

@@ -382,6 +382,48 @@ buf.byteLength     // len * stride
 
 ---
 
+## i32 Type Preservation
+
+**Status: Implemented.** Pre-pass analysis enables optimal integer handling.
+
+### Variable Type Promotion
+
+Variables are analyzed before compilation to determine correct type:
+
+```js
+let sum = 0       // i32 initially
+sum = sum + 0.5   // assigned f64 → promoted to f64 at declaration
+```
+
+`findF64Vars(ast)` scans all assignments to detect variables needing f64:
+- Division `/` or power `**` always produces f64
+- Array/TypedArray element access may produce f64
+- Function calls with unknown return type assumed f64
+
+### Function Return Type Analysis
+
+Functions are analyzed to enable i32 returns at WASM level:
+
+```js
+export const isPositive = (x) => x > 0 ? 1 : 0   // returns i32
+export const equals = (a, b) => a === b          // returns i32
+export const half = (x) => x / 2                 // returns f64
+```
+
+`findFuncReturnTypes(ast)` determines return types:
+- Comparisons (`<`, `>`, `===`, etc.) → i32
+- Boolean literals, bitwise ops → i32
+- Division, power, float literals → f64
+- Ternary preserves type if both branches match
+
+### Benefits
+
+- Smaller WASM output (i32 ops vs f64 conversions)
+- Better performance for predicates, comparisons, counters
+- JS interop unchanged (JS number handles both i32 and f64)
+
+---
+
 ## Previous: Integer-Packed Encoding (v4)
 
 *Superseded by NaN boxing. Had 2^48 number limit and only 16 schemas.*
