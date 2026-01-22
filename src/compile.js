@@ -41,7 +41,7 @@
 
 import * as array from './array.js'
 import * as string from './string.js'
-import { parseRegex, compileRegex } from './regex.js'
+import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
 
 const arrayMethods = {
   fill: array.fill, map: array.map, reduce: array.reduce, filter: array.filter,
@@ -58,41 +58,9 @@ const stringMethods = {
   startsWith: string.startsWith, endsWith: string.endsWith, trim: string.trim,
   trimStart: string.trimStart, trimEnd: string.trimEnd,
   substr: string.substr, repeat: string.repeat, padStart: string.padStart, padEnd: string.padEnd,
-  split: string.split, replace: string.replace
+  split: string.split, replace: string.replace, search: string.search, match: string.match
 }
 
-// Regex method handlers
-const REGEX_METHODS = {
-  // regex.test(str) - returns i32 (1 if match found, 0 if not)
-  test(receiver, args, ctx) {
-    if (args.length !== 1) throw new Error('regex.test(str) requires 1 argument')
-    const regexId = receiver.schema
-    const strVal = gen(args[0])
-    if (!isString(strVal)) throw new Error('regex.test() argument must be string')
-    // Search loop: try at each start position until match or end
-    const id = ctx.loopCounter++
-    const strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(strLen.slice(1), 'i32')
-    ctx.addLocal(searchPos.slice(1), 'i32')
-    ctx.addLocal(matchResult.slice(1), 'i32')
-    return wat(`(block (result i32)
-      (local.set ${strOff} (call $__ptr_offset ${strVal}))
-      (local.set ${strLen} (call $__ptr_len ${strVal}))
-      (local.set ${searchPos} (i32.const 0))
-      (block $found_${id}
-        (loop $search_${id}
-          (br_if $found_${id} (i32.gt_s (local.get ${searchPos}) (local.get ${strLen})))
-          (local.set ${matchResult} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${strLen}) (local.get ${searchPos})))
-          (br_if $found_${id} (i32.ge_s (local.get ${matchResult}) (i32.const 0)))
-          (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))
-          (br $search_${id})))
-      (i32.ge_s (local.get ${matchResult}) (i32.const 0)))`, 'i32')
-  }
-
-  // TODO: regex.exec(str) - returns match array with capture groups
-  // Requires: array creation, substring extraction, group tracking
-}
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
@@ -2197,24 +2165,32 @@ const operators = {
     const ast = parseRegex(pattern, flags)
     const regexId = ctx.regexCounter++
     const funcName = `$__regex_${regexId}`
+    const groupCount = ast.groups || 0
 
-    // Compile regex to WASM matcher function
+    // Compile regex to WASM matcher function (also generates _exec variant)
     const watFunc = compileRegex(ast, funcName.slice(1))
 
     // Store compiled regex function
     if (!ctx.regexFunctions) ctx.regexFunctions = []
     ctx.regexFunctions.push(watFunc)
 
+    // Store group count and flags for method calls
+    if (!ctx.regexGroups) ctx.regexGroups = {}
+    if (!ctx.regexFlags) ctx.regexFlags = {}
+    ctx.regexGroups[regexId] = groupCount
+    ctx.regexFlags[regexId] = flags
+
     // Return a regex "pointer" - NaN-boxed with REGEX type
-    // We store: type=REGEX(6), id=regexId, offset=flags_encoded
+    // We store: type=REGEX(6), id=regexId, offset=flags(4bits)|groups(8bits)
     ctx.usedMemory = true
 
-    // Encode: type 6 (REGEX), id = regexId, flags encoded in offset
+    // Encode: type 6 (REGEX), id = regexId, offset = flags(4bits) | groups(8bits shifted)
     const flagBits = (flags.includes('g') ? 1 : 0) |
                      (flags.includes('i') ? 2 : 0) |
                      (flags.includes('m') ? 4 : 0) |
                      (flags.includes('s') ? 8 : 0)
-    return wat(`(call $__mkptr (i32.const 6) (i32.const ${regexId}) (i32.const ${flagBits}))`, 'regex', regexId)
+    const offsetBits = flagBits | (groupCount << 4)  // groups in upper bits
+    return wat(`(call $__mkptr (i32.const 6) (i32.const ${regexId}) (i32.const ${offsetBits}))`, 'regex', regexId)
   },
 
   // Export declaration

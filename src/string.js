@@ -7,7 +7,15 @@ export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null
   ctx.usedStringType = true
   ctx.usedMemory = true
-  return wat(strCharAt( rw, i32(gen(args[0]))), 'i32')
+  // For simple receivers, use directly
+  // For complex receivers (multi-statement blocks), store in local first
+  const id = ctx.loopCounter++
+  const str = `$_charat_str_${id}`
+  ctx.addLocal(str.slice(1), 'string')
+  // Store receiver, then compute charCodeAt, return i32
+  return wat(`(block (result i32)
+    (local.set ${str} ${rw})
+    ${strCharAt(`(local.get ${str})`, i32(gen(args[0])))})`, 'i32')
 }
 
 export const slice = (rw, args) => {
@@ -115,6 +123,187 @@ export const indexOf = (rw, args) => {
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
     (local.get ${result})`, 'i32')
+}
+
+// str.search(regex) - returns index of first match or -1
+export const search = (rw, args) => {
+  if (args.length !== 1) return null
+  const searchVal = gen(args[0])
+  const id = ctx.loopCounter++
+
+  // Regex argument
+  if (searchVal.type === 'regex') {
+    ctx.usedStringType = true
+    ctx.usedMemory = true
+    const regexId = searchVal.schema
+    const strOff = `$_search_off_${id}`, strLen_ = `$_search_len_${id}`, searchPos = `$_search_pos_${id}`, matchResult = `$_search_res_${id}`
+    ctx.addLocal(strOff.slice(1), 'i32')
+    ctx.addLocal(strLen_.slice(1), 'i32')
+    ctx.addLocal(searchPos.slice(1), 'i32')
+    ctx.addLocal(matchResult.slice(1), 'i32')
+
+    // Search loop: try at each position until match or end
+    return wat(`(local.set ${strOff} (call $__ptr_offset ${rw}))
+      (local.set ${strLen_} (call $__ptr_len ${rw}))
+      (local.set ${searchPos} (i32.const 0))
+      (local.set ${matchResult} (i32.const -1))
+      (block $found_${id}
+        (loop $search_${id}
+          (br_if $found_${id} (i32.gt_s (local.get ${searchPos}) (local.get ${strLen_})))
+          (if (i32.ge_s (call $__regex_${regexId} (local.get ${strOff}) (local.get ${strLen_}) (local.get ${searchPos})) (i32.const 0))
+            (then
+              (local.set ${matchResult} (local.get ${searchPos}))
+              (br $found_${id})))
+          (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))
+          (br $search_${id})))
+      (local.get ${matchResult})`, 'i32')
+  }
+
+  // For non-regex, fall back to indexOf behavior
+  return indexOf(rw, args)
+}
+
+// str.match(regex) - returns array [fullMatch, group1, ...] or null
+// With /g flag: returns array of all matches (no groups per JS spec)
+export const match = (rw, args) => {
+  if (args.length !== 1) return null
+  const searchVal = gen(args[0])
+
+  // Only regex argument supported
+  if (searchVal.type !== 'regex') return null
+
+  ctx.usedStringType = true
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  const regexId = searchVal.schema
+  const groupCount = ctx.regexGroups?.[regexId] || 0
+  const isGlobal = ctx.regexFlags?.[regexId]?.includes('g')
+  const id = ctx.loopCounter++
+
+  // Locals for search and result building
+  const strPtr = `$_match_str_${id}`, strOff = `$_match_off_${id}`, strLen_ = `$_match_len_${id}`
+  const searchPos = `$_match_srch_${id}`, matchEnd = `$_match_end_${id}`
+  const result = `$_match_res_${id}`, groupBuf = `$_match_grp_${id}`
+  const part = `$_match_part_${id}`, partLen = `$_match_plen_${id}`
+  const k = `$_match_k_${id}`
+  const gStart = `$_match_gs_${id}`, gEnd = `$_match_ge_${id}`
+  const matchCount = `$_match_cnt_${id}`, arrIdx = `$_match_ai_${id}`
+
+  ctx.addLocal(strPtr.slice(1), 'f64')
+  ctx.addLocal(strOff.slice(1), 'i32')
+  ctx.addLocal(strLen_.slice(1), 'i32')
+  ctx.addLocal(searchPos.slice(1), 'i32')
+  ctx.addLocal(matchEnd.slice(1), 'i32')
+  ctx.addLocal(result.slice(1), 'f64')
+  ctx.addLocal(groupBuf.slice(1), 'i32')
+  ctx.addLocal(part.slice(1), 'f64')
+  ctx.addLocal(partLen.slice(1), 'i32')
+  ctx.addLocal(k.slice(1), 'i32')
+  ctx.addLocal(gStart.slice(1), 'i32')
+  ctx.addLocal(gEnd.slice(1), 'i32')
+  if (isGlobal) {
+    ctx.addLocal(matchCount.slice(1), 'i32')
+    ctx.addLocal(arrIdx.slice(1), 'i32')
+  }
+
+  // Helper to copy substring
+  const copySubstr = (startLocal, endLocal, destLocal) => `
+    (local.set ${partLen} (i32.sub (local.get ${endLocal}) (local.get ${startLocal})))
+    (local.set ${destLocal} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${partLen})))
+    (local.set ${k} (i32.const 0))
+    (block $cpy_done_${id} (loop $cpy_loop_${id}
+      (br_if $cpy_done_${id} (i32.ge_s (local.get ${k}) (local.get ${partLen})))
+      (i32.store16 (i32.add (call $__ptr_offset (local.get ${destLocal})) (i32.shl (local.get ${k}) (i32.const 1)))
+        (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (i32.add (local.get ${startLocal}) (local.get ${k})) (i32.const 1)))))
+      (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+      (br $cpy_loop_${id})))
+  `
+
+  if (isGlobal) {
+    // Global match: return array of all match strings (no groups per JS spec)
+    return wat(`(block (result f64)
+      (local.set ${strPtr} ${rw})
+      (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
+      (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
+      ;; First pass: count matches
+      (local.set ${matchCount} (i32.const 0))
+      (local.set ${searchPos} (i32.const 0))
+      (block $cnt_done_${id} (loop $cnt_loop_${id}
+        (br_if $cnt_done_${id} (i32.gt_s (local.get ${searchPos}) (local.get ${strLen_})))
+        (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${strLen_}) (local.get ${searchPos})))
+        (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+          (then
+            (local.set ${matchCount} (i32.add (local.get ${matchCount}) (i32.const 1)))
+            (local.set ${searchPos} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+              (i32.eq (local.get ${matchEnd}) (local.get ${searchPos})))))
+          (else (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))))
+        (br $cnt_loop_${id})))
+      ;; If no matches, return null
+      (if (result f64) (i32.eqz (local.get ${matchCount}))
+        (then (f64.const 0))
+        (else
+          ;; Allocate result array
+          (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${matchCount})))
+          (local.set ${groupBuf} (global.get $__heap))
+          ;; Second pass: extract matches
+          (local.set ${arrIdx} (i32.const 0))
+          (local.set ${searchPos} (i32.const 0))
+          (block $ext_done_${id} (loop $ext_loop_${id}
+            (br_if $ext_done_${id} (i32.ge_s (local.get ${arrIdx}) (local.get ${matchCount})))
+            (local.set ${matchEnd} (call $__regex_${regexId}_exec (local.get ${strOff}) (local.get ${strLen_}) (local.get ${searchPos}) (local.get ${groupBuf})))
+            (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+              (then
+                ;; Extract match string (group 0)
+                (local.set ${gStart} (i32.load (local.get ${groupBuf})))
+                (local.set ${gEnd} (i32.load (i32.add (local.get ${groupBuf}) (i32.const 4))))
+                ${copySubstr(gStart, gEnd, part)}
+                (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))
+                (local.set ${arrIdx} (i32.add (local.get ${arrIdx}) (i32.const 1)))
+                (local.set ${searchPos} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+                  (i32.eq (local.get ${matchEnd}) (local.get ${searchPos})))))
+              (else (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))))
+            (br $ext_loop_${id})))
+          (local.get ${result}))))`, 'f64')
+  }
+
+  // Non-global: result array has groupCount + 1 elements (full match + groups)
+  const resultLen = groupCount + 1
+  const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${resultLen}))`
+
+  return wat(`(block (result f64)
+    (local.set ${strPtr} ${rw})
+    (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
+    (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
+    (local.set ${searchPos} (i32.const 0))
+    (local.set ${matchEnd} (i32.const -1))
+    ;; Allocate temp buffer for group positions
+    (local.set ${groupBuf} (global.get $__heap))
+    ;; Search loop
+    (block $found_${id}
+      (loop $search_${id}
+        (br_if $found_${id} (i32.gt_s (local.get ${searchPos}) (local.get ${strLen_})))
+        (local.set ${matchEnd} (call $__regex_${regexId}_exec (local.get ${strOff}) (local.get ${strLen_}) (local.get ${searchPos}) (local.get ${groupBuf})))
+        (br_if $found_${id} (i32.ge_s (local.get ${matchEnd}) (i32.const 0)))
+        (local.set ${searchPos} (i32.add (local.get ${searchPos}) (i32.const 1)))
+        (br $search_${id})))
+    ;; Check if found
+    (if (result f64) (i32.lt_s (local.get ${matchEnd}) (i32.const 0))
+      (then (f64.const 0))  ;; null
+      (else
+        ;; Build result array
+        (local.set ${result} ${arrNew})
+        ;; Extract full match (group 0)
+        (local.set ${gStart} (i32.load (local.get ${groupBuf})))
+        (local.set ${gEnd} (i32.load (i32.add (local.get ${groupBuf}) (i32.const 4))))
+        ${copySubstr(gStart, gEnd, part)}
+        (f64.store (call $__ptr_offset (local.get ${result})) (local.get ${part}))
+        ;; Extract capture groups
+        ${Array.from({length: groupCount}, (_, i) => `
+        (local.set ${gStart} (i32.load (i32.add (local.get ${groupBuf}) (i32.const ${(i + 1) * 8}))))
+        (local.set ${gEnd} (i32.load (i32.add (local.get ${groupBuf}) (i32.const ${(i + 1) * 8 + 4}))))
+        ${copySubstr(gStart, gEnd, part)}
+        (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${(i + 1) * 8})) (local.get ${part}))`).join('\n')}
+        (local.get ${result}))))`, 'f64')
 }
 
 export const substring = (rw, args) => {
@@ -455,7 +644,7 @@ export const split = (rw, args) => {
     ctx.addLocal(k.slice(1), 'i32')
     ctx.addLocal(arrIdx.slice(1), 'i32')
 
-    const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (local.get ${count}))`
+    const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
     const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
 
     return wat(`(local.set ${str} ${rw})
@@ -561,7 +750,7 @@ export const split = (rw, args) => {
     ctx.addLocal(k.slice(1), 'i32')
     ctx.addLocal(arrIdx.slice(1), 'i32')
 
-    const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.REF_ARRAY}) (local.get ${count}))`
+    const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
     const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
 
     return wat(`(local.set ${str} ${rw})
@@ -607,6 +796,86 @@ export const split = (rw, args) => {
         ${strSetChar( `(local.get ${part})`, `(local.get ${k})`, strCharAt( `(local.get ${str})`, `(i32.add (local.get ${start}) (local.get ${k}))`))}
         (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
         (br $last_loop_${id})))
+      ${arrSet}
+      (local.get ${result})`, 'f64', { uniformType: 'string' })
+  }
+
+  // Regex separator
+  if (sepVal.type === 'regex') {
+    const regexId = sepVal.schema
+    const str = `$_split_str_${id}`, strOff = `$_split_off_${id}`, len = `$_split_len_${id}`
+    const idx = `$_split_i_${id}`, count = `$_split_count_${id}`, start = `$_split_start_${id}`, result = `$_split_result_${id}`
+    const part = `$_split_part_${id}`, partLen = `$_split_plen_${id}`, k = `$_split_k_${id}`, arrIdx = `$_split_arri_${id}`
+    const matchEnd = `$_split_mend_${id}`
+    ctx.addLocal(str.slice(1), 'f64')
+    ctx.addLocal(strOff.slice(1), 'i32')
+    ctx.addLocal(len.slice(1), 'i32')
+    ctx.addLocal(idx.slice(1), 'i32')
+    ctx.addLocal(count.slice(1), 'i32')
+    ctx.addLocal(start.slice(1), 'i32')
+    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(part.slice(1), 'f64')
+    ctx.addLocal(partLen.slice(1), 'i32')
+    ctx.addLocal(k.slice(1), 'i32')
+    ctx.addLocal(arrIdx.slice(1), 'i32')
+    ctx.addLocal(matchEnd.slice(1), 'i32')
+
+    const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
+    const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
+
+    // Helper to copy substring
+    const copySubstr = (startExpr, lenExpr, destLocal) => `
+      (local.set ${destLocal} (call $__alloc (i32.const ${PTR_TYPE.STRING}) ${lenExpr}))
+      (local.set ${k} (i32.const 0))
+      (block $cpy_done2_${id} (loop $cpy_loop2_${id}
+        (br_if $cpy_done2_${id} (i32.ge_s (local.get ${k}) ${lenExpr}))
+        (i32.store16 (i32.add (call $__ptr_offset (local.get ${destLocal})) (i32.shl (local.get ${k}) (i32.const 1)))
+          (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (i32.add ${startExpr} (local.get ${k})) (i32.const 1)))))
+        (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+        (br $cpy_loop2_${id})))
+    `
+
+    return wat(`(local.set ${str} ${rw})
+      (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
+      (local.set ${len} (call $__ptr_len (local.get ${str})))
+      ;; Count parts first
+      (local.set ${count} (i32.const 1))
+      (local.set ${idx} (i32.const 0))
+      (block $cnt_done_${id} (loop $cnt_loop_${id}
+        (br_if $cnt_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+        (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${len}) (local.get ${idx})))
+        (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+          (then
+            (local.set ${count} (i32.add (local.get ${count}) (i32.const 1)))
+            ;; Skip to end of match (avoid infinite loop on zero-width match)
+            (local.set ${idx} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+              (i32.eq (local.get ${matchEnd}) (local.get ${idx})))))
+          (else (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))))
+        (br $cnt_loop_${id})))
+      ;; Create and fill array
+      (local.set ${result} ${arrNew})
+      (local.set ${start} (i32.const 0))
+      (local.set ${arrIdx} (i32.const 0))
+      (local.set ${idx} (i32.const 0))
+      (block $fill_done_${id} (loop $fill_loop_${id}
+        (br_if $fill_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+        (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${len}) (local.get ${idx})))
+        (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+          (then
+            ;; Extract part before match
+            (local.set ${partLen} (i32.sub (local.get ${idx}) (local.get ${start})))
+            ${copySubstr(`(local.get ${start})`, `(local.get ${partLen})`, part)}
+            ${arrSet}
+            (local.set ${arrIdx} (i32.add (local.get ${arrIdx}) (i32.const 1)))
+            (local.set ${start} (local.get ${matchEnd}))
+            ;; Advance past match
+            (local.set ${idx} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+              (i32.eq (local.get ${matchEnd}) (local.get ${idx})))))
+          (else (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))))
+        (br $fill_loop_${id})))
+      ;; Last part
+      (local.set ${partLen} (i32.sub (local.get ${len}) (local.get ${start})))
+      ${copySubstr(`(local.get ${start})`, `(local.get ${partLen})`, part)}
       ${arrSet}
       (local.get ${result})`, 'f64', { uniformType: 'string' })
   }
@@ -761,6 +1030,165 @@ export const replace = (rw, args) => {
             (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
             (br $a_loop_${id})))))
       (local.get ${result})`, 'string')
+  }
+
+  // Regex search, string replacement
+  if (searchVal.type === 'regex' && replaceVal.type === 'string') {
+    const regexId = searchVal.schema
+    const isGlobal = ctx.regexFlags?.[regexId]?.includes('g')
+
+    const str = `$_repl_str_${id}`, strOff = `$_repl_off_${id}`, repl = `$_repl_repl_${id}`
+    const len = `$_repl_len_${id}`, replLen = `$_repl_rlen_${id}`
+    const idx = `$_repl_i_${id}`, result = `$_repl_result_${id}`, newLen = `$_repl_newlen_${id}`, k = `$_repl_k_${id}`
+    const foundIdx = `$_repl_found_${id}`, matchEnd = `$_repl_mend_${id}`, matchLen = `$_repl_mlen_${id}`
+    const totalMatchLen = `$_repl_tml_${id}`, matchCount = `$_repl_mc_${id}`, writePos = `$_repl_wp_${id}`, lastEnd = `$_repl_le_${id}`
+    ctx.addLocal(str.slice(1), 'f64')
+    ctx.addLocal(strOff.slice(1), 'i32')
+    ctx.addLocal(repl.slice(1), 'f64')
+    ctx.addLocal(len.slice(1), 'i32')
+    ctx.addLocal(replLen.slice(1), 'i32')
+    ctx.addLocal(idx.slice(1), 'i32')
+    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(newLen.slice(1), 'i32')
+    ctx.addLocal(k.slice(1), 'i32')
+    ctx.addLocal(foundIdx.slice(1), 'i32')
+    ctx.addLocal(matchEnd.slice(1), 'i32')
+    ctx.addLocal(matchLen.slice(1), 'i32')
+    if (isGlobal) {
+      ctx.addLocal(totalMatchLen.slice(1), 'i32')
+      ctx.addLocal(matchCount.slice(1), 'i32')
+      ctx.addLocal(writePos.slice(1), 'i32')
+      ctx.addLocal(lastEnd.slice(1), 'i32')
+    }
+
+    if (isGlobal) {
+      // Global replace: replace ALL matches
+      // Wrap in block so the whole thing is a valid expression
+      return wat(`(block (result f64)
+        (local.set ${str} ${rw})
+        (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
+        (local.set ${repl} ${replaceVal})
+        (local.set ${len} (call $__ptr_len (local.get ${str})))
+        (local.set ${replLen} (call $__ptr_len (local.get ${repl})))
+        ;; First pass: count matches and total match length
+        (local.set ${totalMatchLen} (i32.const 0))
+        (local.set ${matchCount} (i32.const 0))
+        (local.set ${idx} (i32.const 0))
+        (block $cnt_done_${id} (loop $cnt_loop_${id}
+          (br_if $cnt_done_${id} (i32.gt_s (local.get ${idx}) (local.get ${len})))
+          (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${len}) (local.get ${idx})))
+          (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+            (then
+              (local.set ${matchCount} (i32.add (local.get ${matchCount}) (i32.const 1)))
+              (local.set ${totalMatchLen} (i32.add (local.get ${totalMatchLen}) (i32.sub (local.get ${matchEnd}) (local.get ${idx}))))
+              (local.set ${idx} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+                (i32.eq (local.get ${matchEnd}) (local.get ${idx})))))
+            (else (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))))
+          (br $cnt_loop_${id})))
+        ;; If no matches, return original
+        (if (result f64) (i32.eqz (local.get ${matchCount}))
+          (then (local.get ${str}))
+          (else
+            ;; Allocate result: original - matchedChars + (matchCount * replLen)
+            (local.set ${newLen} (i32.add (i32.sub (local.get ${len}) (local.get ${totalMatchLen})) (i32.mul (local.get ${matchCount}) (local.get ${replLen}))))
+            (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${newLen})))
+            ;; Second pass: build result
+            (local.set ${writePos} (i32.const 0))
+            (local.set ${lastEnd} (i32.const 0))
+            (local.set ${idx} (i32.const 0))
+            (block $bld_done_${id} (loop $bld_loop_${id}
+              (br_if $bld_done_${id} (i32.gt_s (local.get ${idx}) (local.get ${len})))
+              (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${len}) (local.get ${idx})))
+              (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+                (then
+                  ;; Copy text before match (from lastEnd to idx)
+                  (local.set ${k} (local.get ${lastEnd}))
+                  (block $cp1_done_${id} (loop $cp1_loop_${id}
+                    (br_if $cp1_done_${id} (i32.ge_s (local.get ${k}) (local.get ${idx})))
+                    (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${writePos}) (i32.const 1)))
+                      (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (local.get ${k}) (i32.const 1)))))
+                    (local.set ${writePos} (i32.add (local.get ${writePos}) (i32.const 1)))
+                    (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+                    (br $cp1_loop_${id})))
+                  ;; Copy replacement
+                  (local.set ${k} (i32.const 0))
+                  (block $cpr_done_${id} (loop $cpr_loop_${id}
+                    (br_if $cpr_done_${id} (i32.ge_s (local.get ${k}) (local.get ${replLen})))
+                    (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${writePos}) (i32.const 1)))
+                      (i32.load16_u (i32.add (call $__ptr_offset (local.get ${repl})) (i32.shl (local.get ${k}) (i32.const 1)))))
+                    (local.set ${writePos} (i32.add (local.get ${writePos}) (i32.const 1)))
+                    (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+                    (br $cpr_loop_${id})))
+                  (local.set ${lastEnd} (local.get ${matchEnd}))
+                  (local.set ${idx} (select (i32.add (local.get ${matchEnd}) (i32.const 1)) (local.get ${matchEnd})
+                    (i32.eq (local.get ${matchEnd}) (local.get ${idx})))))
+                (else (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))))
+              (br $bld_loop_${id})))
+            ;; Copy remaining text after last match
+            (local.set ${k} (local.get ${lastEnd}))
+            (block $cpf_done_${id} (loop $cpf_loop_${id}
+              (br_if $cpf_done_${id} (i32.ge_s (local.get ${k}) (local.get ${len})))
+              (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${writePos}) (i32.const 1)))
+                (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (local.get ${k}) (i32.const 1)))))
+              (local.set ${writePos} (i32.add (local.get ${writePos}) (i32.const 1)))
+              (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+              (br $cpf_loop_${id})))
+            (local.get ${result}))))`, 'string')
+    }
+
+    // Non-global: replace first match only
+    // Wrap in block so multi-statement is valid expression
+    return wat(`(block (result f64)
+      (local.set ${str} ${rw})
+      (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
+      (local.set ${repl} ${replaceVal})
+      (local.set ${len} (call $__ptr_len (local.get ${str})))
+      (local.set ${replLen} (call $__ptr_len (local.get ${repl})))
+      (local.set ${foundIdx} (i32.const -1))
+      (local.set ${matchEnd} (i32.const -1))
+      ;; Search for first match
+      (local.set ${idx} (i32.const 0))
+      (block $find_done_${id} (loop $find_loop_${id}
+        (br_if $find_done_${id} (i32.gt_s (local.get ${idx}) (local.get ${len})))
+        (local.set ${matchEnd} (call $__regex_${regexId} (local.get ${strOff}) (local.get ${len}) (local.get ${idx})))
+        (if (i32.ge_s (local.get ${matchEnd}) (i32.const 0))
+          (then (local.set ${foundIdx} (local.get ${idx})) (br $find_done_${id})))
+        (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+        (br $find_loop_${id})))
+      ;; Build result
+      (if (result f64) (i32.lt_s (local.get ${foundIdx}) (i32.const 0))
+        (then (local.get ${str}))
+        (else
+          (local.set ${matchLen} (i32.sub (local.get ${matchEnd}) (local.get ${foundIdx})))
+          (local.set ${newLen} (i32.add (i32.sub (local.get ${len}) (local.get ${matchLen})) (local.get ${replLen})))
+          (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${newLen})))
+          ;; Copy before match
+          (local.set ${k} (i32.const 0))
+          (block $b_done_${id} (loop $b_loop_${id}
+            (br_if $b_done_${id} (i32.ge_s (local.get ${k}) (local.get ${foundIdx})))
+            (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${k}) (i32.const 1)))
+              (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (local.get ${k}) (i32.const 1)))))
+            (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+            (br $b_loop_${id})))
+          ;; Copy replacement
+          (local.set ${k} (i32.const 0))
+          (block $r_done_${id} (loop $r_loop_${id}
+            (br_if $r_done_${id} (i32.ge_s (local.get ${k}) (local.get ${replLen})))
+            (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (i32.add (local.get ${foundIdx}) (local.get ${k})) (i32.const 1)))
+              (i32.load16_u (i32.add (call $__ptr_offset (local.get ${repl})) (i32.shl (local.get ${k}) (i32.const 1)))))
+            (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+            (br $r_loop_${id})))
+          ;; Copy after match
+          (local.set ${idx} (local.get ${matchEnd}))
+          (local.set ${k} (i32.const 0))
+          (block $a_done_${id} (loop $a_loop_${id}
+            (br_if $a_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+            (i32.store16 (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (i32.add (i32.add (local.get ${foundIdx}) (local.get ${replLen})) (local.get ${k})) (i32.const 1)))
+              (i32.load16_u (i32.add (local.get ${strOff}) (i32.shl (local.get ${idx}) (i32.const 1)))))
+            (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+            (local.set ${k} (i32.add (local.get ${k}) (i32.const 1)))
+            (br $a_loop_${id})))
+          (local.get ${result}))))`, 'string')
   }
 
   return wat(rw, 'string')

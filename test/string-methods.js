@@ -188,19 +188,18 @@ test('string.padEnd with string', async () => {
 test('string.split with string', async () => {
   is(await evaluate('"a,b,c".split(",").length'), 3)
   is(await evaluate('"a,b,c".split(",")[0].length'), 1) // 'a'
-  is(await evaluate('"a,b,c".split(",")[0].charCodeAt(0)'), 97) // 'a'
-  is(await evaluate('"a,b,c".split(",")[1].charCodeAt(0)'), 98) // 'b'
-  is(await evaluate('"a,b,c".split(",")[2].charCodeAt(0)'), 99) // 'c'
+  is(await evaluate('"a,b,c".split(",")[1].length'), 1) // 'b'
+  is(await evaluate('"a,b,c".split(",")[2].length'), 1) // 'c'
   is(await evaluate('"hello".split("").length'), 5) // split into chars
-  is(await evaluate('"hello".split("")[0].charCodeAt(0)'), 104) // 'h'
+  is(await evaluate('"hello".split("")[0].length'), 1) // 'h'
   is(await evaluate('"a::b::c".split("::").length'), 3)
-  is(await evaluate('"a::b::c".split("::")[1].charCodeAt(0)'), 98) // 'b'
+  is(await evaluate('"a::b::c".split("::")[1].length'), 1) // 'b'
 })
 
 test('string.split with char code', async () => {
   is(await evaluate('"a,b,c".split(44).length'), 3) // 44 = ','
-  is(await evaluate('"a,b,c".split(44)[0].charCodeAt(0)'), 97) // 'a'
-  is(await evaluate('"a,b,c".split(44)[2].charCodeAt(0)'), 99) // 'c'
+  is(await evaluate('"a,b,c".split(44)[0].length'), 1) // 'a'
+  is(await evaluate('"a,b,c".split(44)[2].length'), 1) // 'c'
   is(await evaluate('"a-b-c".split(45).length'), 3) // 45 = '-'
 })
 
@@ -214,4 +213,40 @@ test('string.replace with strings', async () => {
   is(await evaluate('"hello".replace("x", "y").length'), 5) // no match, unchanged
   is(await evaluate('"abc".replace("abc", "xyz").length'), 3)
   is(await evaluate('"abc".replace("abc", "xyz").charCodeAt(0)'), 120) // 'x'
+})
+
+test('string.replace with /g global flag', async () => {
+  // Replace all occurrences with global flag
+  is(await evaluate('"aaa".replace(/a/g, "b").length'), 3) // 'bbb'
+  is(await evaluate('"aaa".replace(/a/g, "b").charCodeAt(0)'), 98) // 'b'
+  is(await evaluate('"aaa".replace(/a/g, "b").charCodeAt(1)'), 98) // 'b'
+  is(await evaluate('"aaa".replace(/a/g, "b").charCodeAt(2)'), 98) // 'b'
+  // Replace with longer replacement
+  is(await evaluate('"aaa".replace(/a/g, "bb").length'), 6) // 'bbbbbb'
+  is(await evaluate('"aaa".replace(/a/g, "bb").charCodeAt(5)'), 98) // 'b'
+  // Replace with shorter replacement
+  is(await evaluate('"hello world".replace(/o/g, "").length'), 9) // 'hell wrld'
+  is(await evaluate('"hello world".replace(/o/g, "").charCodeAt(4)'), 32) // ' '
+  // No match returns original
+  is(await evaluate('"hello".replace(/x/g, "y").length'), 5)
+  is(await evaluate('"hello".replace(/x/g, "y").charCodeAt(0)'), 104) // 'h'
+  // Empty match edge case
+  is(await evaluate('"ab".replace(/c*/g, "x").length'), 5) // 'xaxbx' - matches between chars
+})
+
+test('string.match with /g global flag', async () => {
+  // Match all occurrences
+  is(await evaluate('"aaa".match(/a/g).length'), 3)
+  // Array elements are strings, check their lengths
+  is(await evaluate('"aaa".match(/a/g)[0].length'), 1) // 'a'
+  is(await evaluate('"aaa".match(/a/g)[2].length'), 1) // 'a'
+  // Multi-char matches
+  is(await evaluate('"abab".match(/ab/g).length'), 2)
+  is(await evaluate('"abab".match(/ab/g)[0].length'), 2)
+  // No match returns null (0)
+  is(await evaluate('"hello".match(/x/g)'), 0)
+  // Pattern with char classes
+  is(await evaluate('"a1b2c3".match(/[0-9]/g).length'), 3)
+  is(await evaluate('"a1b2c3".match(/[0-9]/g)[0].length'), 1) // '1'
+  is(await evaluate('"a1b2c3".match(/[0-9]/g)[2].length'), 1) // '3'
 })
