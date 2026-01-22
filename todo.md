@@ -51,7 +51,7 @@
   * [x] refactor methods/string.js to use gc.js helpers (strLen, strCharAt, strNew, strSetChar) - reduced 450→296 lines
   * [x] add JSDoc to types
   * [x] add comments for difficult parts (section headers in compile.js)
-* [ ] JS Compatibility (priority order)
+* [x] JS Compatibility (priority order)
   * [x] Declarations & Scoping
     * [x] `let` declaration - block-scoped variable
     * [x] `const` declaration - block-scoped constant
@@ -129,11 +129,21 @@
   * [x] Missing: `1_000_000` numeric separators - write without
   * [x] Missing: `{ foo() {} }` method shorthand - use `{ foo: () => {} }`
   * [x] All JZ-critical features work (arrows, spread, destruct, optional chain, etc.)
-* [~] TypedArrays (basic: new, [], .length, .byteLength; missing: methods, ArrayBuffer)
+* [x] TypedArrays (Int8/16/32, Uint8/16/32, Float32/64)
+  * [x] Basic: new, [], .length, .byteLength, .byteOffset, BYTES_PER_ELEMENT
+  * [x] Methods: fill, at, indexOf, lastIndexOf, includes
+  * [x] Methods: slice, subarray, reverse, copyWithin, set
+  * [x] Methods: every, some, find, findIndex
+  * [x] Methods: forEach, map, filter, reduce, reduceRight
+  * [ ] Missing: sort, toReversed, toSorted, with (ES2023)
+  * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
 * [ ] Regex
 * [ ] Important globals
+  * [ ] JSON.parse/stringify
+  * [ ] Set, Map, WeakSet, WeakMap
+  * [ ]
 * [ ] color-space converter
 * [ ] Import model
   * [ ] Bundle before compile

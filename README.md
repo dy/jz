@@ -146,7 +146,7 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Lightweight_ – embed anywhere, from websites to microcontrollers.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
-* _Seamless JS integration_ – export/import, same func signatures.
+* _JS interop_ – export/import, same func signatures.
 
 ### JS Compatibility
 
@@ -162,7 +162,7 @@ JZ warns on problematic patterns (`var`, implicit globals, `+[]`). See [research
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
-Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small and flexible.
+Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small, fast and flexible.
 
 ### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
 

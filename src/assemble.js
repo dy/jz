@@ -436,6 +436,10 @@ function emitMemoryHelpers() {
       (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr)))
       (i32.const 0x3FFFFF)))
 
+  ;; Create TypedArray pointer without allocation (for subarray/filter views)
+  (func $__mk_typed_ptr (param $elemType i32) (param $len i32) (param $offset i32) (result f64)
+    (call $__mkptr_typed (local.get $elemType) (local.get $len) (local.get $offset)))
+
   ;; Reset typed array arena (call between frames/batches)
   (func $__reset_typed_arrays
     (global.set $__typed_bump (global.get $__typed_arena_start)))
