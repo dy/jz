@@ -323,13 +323,13 @@ test('string literals', async () => {
 })
 
 test('destructuring', async () => {
-  // Array destructuring
+  // Array destructuring assignment
   is(await evaluate('([a, b] = [1, 2], a)'), 1)
   is(await evaluate('([a, b] = [1, 2], b)'), 2)
   is(await evaluate('([a, b] = [1, 2], a + b)'), 3)
   is(await evaluate('([x, y, z] = [10, 20, 30], x + y + z)'), 60)
 
-  // Object destructuring
+  // Object destructuring assignment
   is(await evaluate('({a, b} = {a: 5, b: 10}, a)'), 5)
   is(await evaluate('({a, b} = {a: 5, b: 10}, b)'), 10)
   is(await evaluate('({a, b} = {a: 5, b: 10}, a + b)'), 15)
@@ -338,6 +338,45 @@ test('destructuring', async () => {
   // Destructure from variable
   is(await evaluate('(arr = [7, 8], [a, b] = arr, a * b)'), 56)
   is(await evaluate('(obj = {a: 3, b: 4}, {a, b} = obj, a + b)'), 7)
+})
+
+// Destructuring in declarations (let/const)
+test('destructuring declarations', async () => {
+  // let array destructuring
+  is(await evaluate('let [a, b] = [1, 2]; a + b'), 3)
+  is(await evaluate('let [x, y, z] = [10, 20, 30]; x + y + z'), 60)
+
+  // const array destructuring
+  is(await evaluate('const [a, b] = [5, 6]; a * b'), 30)
+
+  // let object destructuring
+  is(await evaluate('let {a, b} = {a: 3, b: 4}; a + b'), 7)
+
+  // const object destructuring
+  is(await evaluate('const {x, y} = {x: 2, y: 3}; x * y'), 6)
+
+  // Object destructuring with rename
+  is(await evaluate('let {a: x, b: y} = {a: 5, b: 10}; x + y'), 15)
+
+  // Multi-value optimization: let [a, b] = [expr, expr] uses no allocation
+  is(await evaluate('let [a, b] = [1 + 2, 3 + 4]; a * 10 + b'), 37)
+})
+
+// Swap and rotate patterns - optimized via temporaries, no array allocation
+test('swap pattern', async () => {
+  // Basic swap: [a, b] = [b, a]
+  is(await evaluate('(a = 1, b = 2, [a, b] = [b, a], a * 10 + b)'), 21)
+  // Swap with f64
+  is(await evaluate('(a = 1.5, b = 2.5, [a, b] = [b, a], a + b)'), 4)
+  // Swap with let
+  is(await evaluate('let a = 1; let b = 2; [a, b] = [b, a]; a * 10 + b'), 21)
+})
+
+test('rotate pattern', async () => {
+  // Rotate right: [a, b, c] = [c, a, b]
+  is(await evaluate('(a = 1, b = 2, c = 3, [a, b, c] = [c, a, b], a * 100 + b * 10 + c)'), 312)
+  // Rotate left: [a, b, c] = [b, c, a]
+  is(await evaluate('(a = 1, b = 2, c = 3, [a, b, c] = [b, c, a], a * 100 + b * 10 + c)'), 231)
 })
 
 // JS COMPATIBILITY TESTS
