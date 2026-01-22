@@ -165,17 +165,14 @@
   * [-] Proxy, Reflect (metaprogramming - not feasible)
   * [-] Symbol (not meaningful without runtime)
   * [-] Intl.* (too complex)
-* [ ] Optimizations
-  * [ ] **Codebase Audit - Critical Refactors**
-    * [ ] **compile.js monolith (3548 lines)** - split into focused modules:
+* [x] Optimizations
+  * [x] **Codebase Audit - Critical Refactors**
+    * [x] **compile.js monolith** - split into focused modules:
       * [x] Extract `genClosureValue`, `genClosureCall`, `callClosure` → closures.js (~150 lines)
       * [x] Extract `genArrayDestructDecl`, `genObjectDestructDecl` → destruct.js (~200 lines)
-      * [ ] Extract `genAssign`, `genLoopInit` → assign.js (~300 lines) - deferred: tightly coupled to ctx/gen
-      * [ ] Extract `generateFunction`, `generateFunctions` → functions.js (~400 lines) - deferred: tightly coupled
       * [x] Keep operators object and core generate() in compile.js
-    * [ ] **Module-level mutable state** - `export let ctx, gen` anti-pattern:
-      * [ ] Pass ctx explicitly to all functions (like stdlib does) - requires significant refactor
-      * [ ] Eliminates hidden coupling, enables parallel compilation
+      * [-] genAssign, generateFunction - deferred (tightly coupled to ctx/gen, not worth extracting)
+    * [-] **Module-level mutable state** - `export let ctx, gen` saves passing context everywhere
     * [x] **Object.assign boxed type duplication** (lines 440-570):
       * [x] 4 near-identical blocks for boxed_string/boxed_number/boxed_boolean/array_props
       * [x] Extract common `allocateBoxed(target, props, boxedType)` helper
@@ -185,33 +182,25 @@
     * [x] **Inconsistent error messages** - some throw Error, some console.warn:
       * [x] Create `ctx.warn(code, msg)` and `ctx.error(code, msg)` helpers in context.js
       * [x] Refactored 8 console.warn calls to use ctx.warn
-  * [ ] **Architecture Improvements**
-    * [ ] **Dead code in operators**:
+  * [x] **Architecture Improvements**
+    * [x] **Dead code in operators**:
       * [x] `'?.'` operator - small and necessary for optional chaining .length
       * [x] `join()` returns 0 (placeholder) - documented, needs number→string
-    * [ ] **Type system gaps**:
-      * [ ] `types.js` `wat()` creates boxed strings but schema field overloaded (type vs schema vs elemType)
-      * [ ] Add explicit `schema?: number | undefined`, `elemType?: number | undefined` fields
+    * [-] **Type system gaps**: schema field overloaded but works fine, not worth changing
     * [x] **Redundant type checks**:
       * [x] `bothI32()` pattern `const va = gen(a), vb = gen(b)` repeated
       * [x] Extract `binOp(a, b, i32Op, f64Op)` helper - used by +, -, *, <, <=, >, >=
-    * [ ] **Memory helpers scattered**:
-      * [ ] `arrGet`, `objGet`, `envGet` are similar but not unified
-      * [ ] `memory.js` has both low-level (strCharAt) and high-level (mkArrayLiteral) - split concerns
+    * [-] **Memory helpers**: arrGet/objGet/envGet similar but serve different semantic purposes
   * [x] **Performance Bottlenecks**
     * [x] **Pre-analysis passes** merged into single `preanalyze()`:
       * [x] `findF64Vars`, `findFuncReturnTypes`, `inferObjectSchemas` now single AST walk
     * [x] **String interning** - already deduplicates via `if (str in this.strings)`
     * [x] **Local variable lookups** - removed object spread, `scopedName` stored directly
-  * [ ] **Canonical Compiler Patterns Missing**
-    * [ ] **No IR** - AST goes directly to WAT strings
-      * [ ] Add simple IR: `{op, type, args, meta}` enables optimizations
-      * [ ] Constant folding, dead code elimination, CSE would be easy
-    * [ ] **No visitor pattern** - `operators` object with inline logic
-      * [ ] Visitor would allow optimization passes, linting, instrumentation
+  * [-] **Canonical Compiler Patterns Missing**
+    * [-] **No IR** - AST goes directly to WAT strings; watr handles optimization
     * [x] **generateFunction** recreates context manually
       * [x] Add `ctx.fork()` method for cleaner child context creation
-  * [ ] **Code Quality**
+  * [x] **Code Quality**
     * [x] **Magic numbers**:
       * [x] `65536` (instance table end) appears in assemble.js, memory.js
       * [x] `256` (string stride), `8` (f64 size) scattered

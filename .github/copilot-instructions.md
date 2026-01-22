@@ -12,8 +12,8 @@ For any file structure changes, update project structure section below.
 |------|-------|---------|
 | types.js | 215 | Type system, type predicates, memory constants, `wt` template |
 | ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS, GLOBAL_CONSTANTS |
-| analyze.js | 783 | Scope analysis: extractParams(), analyzeScope(), inferObjectSchemas() |
-| context.js | 241 | Compilation state factory: createContext(), fork(), warn(), error() |
+| analyze.js | 1086 | Scope analysis: preanalyze(), extractParams(), analyzeScope() |
+| context.js | 240 | Compilation state factory: createContext(), fork(), warn(), error() |
 | assemble.js | 461 | WAT assembly: assemble() - combines sections into final WAT module |
 | stdlib.js | 367 | Pure WASM math functions (sin, cos, pow, etc.) |
 | normalize.js | 384 | AST preprocessing from parser |
@@ -37,3 +37,4 @@ Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → a
 - **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
 
 When implementing features, rely on watr ability to polyfill modern WASM features – you can use funcrefs, multiple values, tail calls. Also watr can optimize wat (tree-shake etc), so no need to prematurely optimize instructions in jz.
+Don't add demo code that is not used.
