@@ -1792,7 +1792,89 @@ const operators = {
       throw new Error('let requires assignment')
     }
     const [, name, value] = assignment
-    if (typeof name !== 'string') throw new Error('let requires simple identifier')
+
+    // Array destructuring in declaration: let [a, b] = [1, 2]
+    if (Array.isArray(name) && name[0] === '[]') {
+      const elems = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
+      const vars = elems.filter(v => typeof v === 'string')
+      if (vars.length < 1 || vars.length > 8) {
+        throw new Error('Destructuring requires 1-8 variables')
+      }
+
+      // Declare all variables first
+      for (const v of vars) {
+        ctx.declareVar(v, false)
+        ctx.addLocal(v, 'f64')
+      }
+
+      // Use multi-value if RHS is fixed array literal
+      const rhsCount = isFixedArrayLiteral(value)
+      if (rhsCount === vars.length) {
+        // Direct multi-value: generate RHS elements, assign to vars
+        const rhsElems = value[0] === '[' ? value.slice(1) :
+          (Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]])
+        let code = ''
+        for (let i = 0; i < vars.length; i++) {
+          const info = ctx.getLocal(vars[i])
+          code += `(local.set $${info.scopedName} ${f64(gen(rhsElems[i]))})\n    `
+        }
+        const lastInfo = ctx.getLocal(vars[vars.length - 1])
+        return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      }
+
+      // Standard path: evaluate RHS, load elements
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_destruct_${id}`
+      ctx.addLocal(tmp.slice(1), 'array')
+      const aw = gen(value)
+      let code = `(local.set ${tmp} ${aw})\n    `
+      for (let i = 0; i < vars.length; i++) {
+        const info = ctx.getLocal(vars[i])
+        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
+      }
+      const lastInfo = ctx.getLocal(vars[vars.length - 1])
+      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+    }
+
+    // Object destructuring in declaration: let {a, b} = {a: 1, b: 2}
+    if (Array.isArray(name) && name[0] === '{}') {
+      const props = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
+      const vars = props.map(p => typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)).filter(Boolean)
+
+      // Declare all variables
+      for (const v of vars) {
+        ctx.declareVar(v, false)
+        ctx.addLocal(v, 'f64')
+      }
+
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_destruct_${id}`
+      ctx.addLocal(tmp.slice(1), 'object')
+      const obj = gen(value)
+      if (obj.type !== 'object' || obj.schema === undefined) {
+        throw new Error('Object destructuring requires object literal on RHS')
+      }
+      const schema = ctx.objectSchemas[obj.schema]
+      let code = `(local.set ${tmp} ${obj})\n    `
+      for (const p of props) {
+        const propName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[1] : null)
+        const varName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)
+        if (propName && varName) {
+          const idx = schema.indexOf(propName)
+          if (idx < 0) throw new Error(`Property ${propName} not found in object`)
+          const info = ctx.getLocal(varName)
+          code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
+        }
+      }
+      const lastInfo = ctx.getLocal(vars[vars.length - 1])
+      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+    }
+
+    if (typeof name !== 'string') throw new Error('let requires simple identifier or destructuring pattern')
 
     // Special case: exported arrow function without captures -> direct function registration
     // This enables multi-value returns for: export let rgb = (h, s, l) => [h * 255, ...]
@@ -2020,7 +2102,87 @@ const operators = {
       throw new Error('const requires assignment')
     }
     const [, name, value] = assignment
-    if (typeof name !== 'string') throw new Error('const requires simple identifier')
+
+    // Array destructuring in const declaration: const [a, b] = [1, 2]
+    if (Array.isArray(name) && name[0] === '[]') {
+      const elems = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
+      const vars = elems.filter(v => typeof v === 'string')
+      if (vars.length < 1 || vars.length > 8) {
+        throw new Error('Destructuring requires 1-8 variables')
+      }
+
+      // Declare all variables as const
+      for (const v of vars) {
+        ctx.declareVar(v, true)
+        ctx.addLocal(v, 'f64')
+      }
+
+      // Use multi-value if RHS is fixed array literal
+      const rhsCount = isFixedArrayLiteral(value)
+      if (rhsCount === vars.length) {
+        const rhsElems = value[0] === '[' ? value.slice(1) :
+          (Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]])
+        let code = ''
+        for (let i = 0; i < vars.length; i++) {
+          const info = ctx.getLocal(vars[i])
+          code += `(local.set $${info.scopedName} ${f64(gen(rhsElems[i]))})\n    `
+        }
+        const lastInfo = ctx.getLocal(vars[vars.length - 1])
+        return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+      }
+
+      // Standard path
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_destruct_${id}`
+      ctx.addLocal(tmp.slice(1), 'array')
+      const aw = gen(value)
+      let code = `(local.set ${tmp} ${aw})\n    `
+      for (let i = 0; i < vars.length; i++) {
+        const info = ctx.getLocal(vars[i])
+        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
+      }
+      const lastInfo = ctx.getLocal(vars[vars.length - 1])
+      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+    }
+
+    // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
+    if (Array.isArray(name) && name[0] === '{}') {
+      const props = Array.isArray(name[1]) && name[1][0] === ',' ? name[1].slice(1) : [name[1]]
+      const vars = props.map(p => typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)).filter(Boolean)
+
+      for (const v of vars) {
+        ctx.declareVar(v, true)
+        ctx.addLocal(v, 'f64')
+      }
+
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      const id = ctx.loopCounter++
+      const tmp = `$_destruct_${id}`
+      ctx.addLocal(tmp.slice(1), 'object')
+      const obj = gen(value)
+      if (obj.type !== 'object' || obj.schema === undefined) {
+        throw new Error('Object destructuring requires object literal on RHS')
+      }
+      const schema = ctx.objectSchemas[obj.schema]
+      let code = `(local.set ${tmp} ${obj})\n    `
+      for (const p of props) {
+        const propName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[1] : null)
+        const varName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[2] : null)
+        if (propName && varName) {
+          const idx = schema.indexOf(propName)
+          if (idx < 0) throw new Error(`Property ${propName} not found in object`)
+          const info = ctx.getLocal(varName)
+          code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
+        }
+      }
+      const lastInfo = ctx.getLocal(vars[vars.length - 1])
+      return wat(code + `(local.get $${lastInfo.scopedName})`, 'f64')
+    }
+
+    if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
     // Arrow function: delegate to genAssign which handles function registration properly
     if (Array.isArray(value) && value[0] === '=>') {
       ctx.declareVar(name, true)
@@ -2628,9 +2790,121 @@ function genAssign(target, value, returnValue) {
     return returnValue ? wat('(f64.const 0)', 'f64') : ''
   }
 
-  // Array destructuring: [a, b] = [1, 2]
+  // Array destructuring: [a, b] = [1, 2] or [a, b] = [b, a] (swap) or [x, y] = fn() (multi-return)
   if (Array.isArray(target) && target[0] === '[]' && Array.isArray(target[1]) && target[1][0] === ',') {
-    const vars = target[1].slice(1)
+    const vars = target[1].slice(1).filter(v => typeof v === 'string')
+    if (vars.length < 2 || vars.length > 8) {
+      throw new Error('Destructuring requires 2-8 variables')
+    }
+
+    // Helper to get variable info (local or global)
+    const getVarInfo = (name) => {
+      const loc = ctx.getLocal(name)
+      if (loc) return { name, scopedName: loc.scopedName, type: loc.type || 'f64', isGlobal: false }
+      const glob = ctx.getGlobal(name)
+      if (glob) return { name, scopedName: name, type: glob.type || 'f64', isGlobal: true }
+      return null
+    }
+
+    // Check for swap/rotate pattern: [a, b, ...] = [b, a, ...] where RHS is permutation of LHS vars
+    // RHS AST for [b, a]: ['[]', [',', 'b', 'a']] or ['[', 'b', 'a']
+    const isRhsArrayLiteral = Array.isArray(value) && (value[0] === '[' || value[0] === '[]')
+    if (isRhsArrayLiteral) {
+      // Extract RHS elements from either format
+      let rhsElems
+      if (value[0] === '[') {
+        rhsElems = value.slice(1)
+      } else {
+        // ['[]', [',', 'a', 'b']] format
+        rhsElems = Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]]
+      }
+
+      if (rhsElems.length === vars.length && rhsElems.every(e => typeof e === 'string')) {
+        // Check if RHS is a permutation of LHS (all same variables)
+        const lhsSet = new Set(vars)
+        const rhsVars = rhsElems
+        if (rhsVars.every(v => lhsSet.has(v)) && new Set(rhsVars).size === vars.length) {
+          // Verify all vars are already declared and get their types
+          const varInfo = vars.map(v => {
+            const info = getVarInfo(v)
+            if (!info) throw new Error(`Variable '${v}' not declared for swap/rotate`)
+            return info
+          })
+
+          // This is a swap/rotate pattern - use temporaries, no allocation
+          const id = ctx.loopCounter++
+          let code = ''
+
+          // Generate temps for all current values (using actual variable types)
+          const temps = varInfo.map((info, i) => {
+            const tmp = `$_swap_${id}_${i}`
+            ctx.addLocal(tmp.slice(1), info.type)
+            const getInstr = info.isGlobal ? 'global.get' : 'local.get'
+            code += `(local.set ${tmp} (${getInstr} $${info.scopedName}))\n    `
+            return tmp
+          })
+
+          // Now assign from temps based on RHS order
+          for (let i = 0; i < vars.length; i++) {
+            const rhsVar = rhsVars[i]
+            const srcIdx = vars.indexOf(rhsVar)
+            const setInstr = varInfo[i].isGlobal ? 'global.set' : 'local.set'
+            code += `(${setInstr} $${varInfo[i].scopedName} (local.get ${temps[srcIdx]}))\n    `
+          }
+
+          // Return type should match the last variable's type
+          const lastInfo = varInfo[varInfo.length - 1]
+          const getInstr = lastInfo.isGlobal ? 'global.get' : 'local.get'
+          return returnValue
+            ? wat(code + `(${getInstr} $${lastInfo.scopedName})`, lastInfo.type)
+            : code
+        }
+      }
+    }
+
+    // Check for multi-value function call: [x, y] = fn() where fn returns multi-value
+    if (Array.isArray(value) && value[0] === '()') {
+      const fnAst = value[1]
+      const fnName = typeof fnAst === 'string' ? fnAst : null
+      const fnInfo = fnName && ctx.functions[fnName]
+
+      // Check if function is known to return multi-value
+      // Also check parent context for exported functions
+      const parentFnInfo = fnName && ctx.parent?.functions?.[fnName]
+      const exportSig = fnName && (ctx.exportSignatures?.[fnName] || ctx.parent?.exportSignatures?.[fnName])
+
+      const multiCount = fnInfo?.multiReturnCount || exportSig?.multiReturn || 0
+
+      if (multiCount === vars.length) {
+        // Multi-value function call - destructure directly without array allocation
+        const argsAst = value[2]
+        const args = argsAst ? (argsAst[0] === ',' ? argsAst.slice(1) : [argsAst]) : []
+        const argWats = args.map(a => f64(gen(a))).join(' ')
+
+        // Generate call and destructure via block with multi-value
+        const id = ctx.loopCounter++
+        let code = ''
+
+        // Use a block with multi-value result and local.set for each variable
+        // WASM stack order: first result is deepest, last is on top
+        // So we need to set variables in reverse order
+        for (let i = vars.length - 1; i >= 0; i--) {
+          ctx.addLocal(vars[i], 'f64')
+        }
+
+        // Call returns (v0 v1 v2 ...) on stack, set in reverse
+        code = `(call $${fnName} ${argWats})\n    `
+        for (let i = vars.length - 1; i >= 0; i--) {
+          code += `(local.set $${vars[i]})\n    `
+        }
+
+        return returnValue
+          ? wat(code + `(local.get $${vars[vars.length - 1]})`, 'f64')
+          : code
+      }
+    }
+
+    // Standard destructuring: create temp array, load elements
     ctx.usedArrayType = true
     ctx.usedMemory = true
     const id = ctx.loopCounter++
@@ -2638,15 +2912,26 @@ function genAssign(target, value, returnValue) {
     ctx.addLocal(tmp.slice(1), 'array')
     const aw = gen(value)
     let code = `(local.set ${tmp} ${aw})\n    `
+
+    // Track variable info for proper naming and types
+    const varInfos = vars.map(v => {
+      const existing = ctx.getLocal(v)
+      if (existing) return existing
+      // New variable - add as f64
+      return ctx.addLocal(v, 'f64')
+    })
+
     for (let i = 0; i < vars.length; i++) {
-      if (typeof vars[i] === 'string') {
-        ctx.addLocal(vars[i], 'f64')
-        code += `(local.set $${vars[i]} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8}))))\n    `
-      }
+      const info = varInfos[i]
+      const loadExpr = `(f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})))`
+      // Coerce f64 to i32 if needed
+      const valueExpr = info.type === 'i32' ? `(i32.trunc_f64_s ${loadExpr})` : loadExpr
+      code += `(local.set $${info.scopedName} ${valueExpr})\n    `
     }
-    const lastVar = vars[vars.length - 1]
-    return returnValue && typeof lastVar === 'string'
-      ? wat(code + `(local.get $${lastVar})`, 'f64')
+
+    const lastInfo = varInfos[varInfos.length - 1]
+    return returnValue && typeof lastInfo.scopedName === 'string'
+      ? wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type)
       : returnValue ? wat(code + '(f64.const 0)', 'f64') : code
   }
 

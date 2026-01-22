@@ -32,4 +32,4 @@ Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → a
 - **Don't overcomplicate**: Simple working solution > complex generic solution. Add complexity only when concrete use case demands it.
 - **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
 
-When implementing features, rely on watr ability to polyfill modern WASM features (no need to go unnecessarily low-level here), as well as optimize (tree-shake etc), so no need to over-optimize instructions here.
+When implementing features, rely on watr ability to polyfill modern WASM features – you can use funcrefs, multiple values, tail calls. Also watr can optimize wat (tree-shake etc), so no need to prematurely optimize instructions in jz.

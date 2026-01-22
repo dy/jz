@@ -169,11 +169,9 @@
 * [ ] prohibit arguments and other implicit constants
   * [ ] warn about using null or undefined (either or)
 * [ ] incorporate best sane eslint practices with warning
-* [ ] Object
-* [ ] Array
 * [ ] color-space converter
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
-* [ ] Warn/error on hitting memory limitations: objects, arrays
+* [ ] Warn/error on hitting memory limits: objects, arrays
 * [ ] Import model
   * [ ] Bundle before compile
   * [ ] Resolve imports by the compiler, not runtime (static-time)
@@ -195,6 +193,20 @@
     * [x] `typeof null === "object"` (historical JS bug, kept for compat)
     * [x] `NaN !== NaN` (IEEE 754)
     * [x] `-0 === 0` (IEEE 754)
+* [x] All destructuring patterns
+  * [x] `let [a, b] = [1, 2]` - declaration array destructuring
+  * [x] `const [a, b] = [1, 2]` - const array destructuring
+  * [x] `let {a, b} = {a: 1, b: 2}` - declaration object destructuring
+  * [x] `let {a: x} = {a: 1}` - rename pattern
+  * [x] `[a, b] = [1, 2]` - assignment destructuring
+  * [x] `[a, b] = [b, a]` - swap pattern (optimized, no alloc)
+  * [x] `[a, b, c] = [c, a, b]` - rotate pattern (optimized)
+  * [x] `([a, b]) => a + b` - param destructuring
+  * [ ] `let [a, [b, c]] = [1, [2, 3]]` - nested array (PARSER)
+  * [ ] `let [a = 10] = []` - default value (PARSER)
+  * [ ] `let [a, ...rest] = [1, 2, 3]` - rest in array (PARSER)
+  * [ ] `let {a, b = 5} = {a: 1}` - object default (PARSER)
+  * [ ] `let {a, ...rest} = {a: 1, b: 2}` - object rest (PARSER)
 * [ ] Optimizations
   * [x] `funcref` - first-class functions, currying, closures
     * [x] Closure representation: struct { funcref fn, ref env }
@@ -205,9 +217,9 @@
     * [x] Implicit return: `(h, s, l) => [h*255, s*255, l*255]`
     * [x] Explicit return: `{ ...; return [r, g, b] }`
     * [x] Track `multiReturn: N` in jz:sig custom section
-    * [ ] Destructuring assignment via multi-value returns
+    * [x] Destructuring assignment via multi-value returns
+    * [x] Swap/rotate operations
     * [ ] Error+value pattern (result i32 f64)
-    * [ ] Swap/rotate operations
   * [ ] `tailcall` - tail call optimization
     * [ ] Enable stack-safe recursion
     * [ ] State machine patterns
