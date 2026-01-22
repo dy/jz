@@ -49,18 +49,13 @@ offset = memory offset (2GB addressable)
 
 | Type | Name | id field | Status |
 |------|------|----------|--------|
-| 1 | ARRAY | len | ✓ Implemented |
-| 2 | ARRAY_MUT | instanceId | ✓ Implemented |
-| 3 | STRING | len | ✓ Implemented |
-| 4 | OBJECT | schemaId | ✓ Implemented |
-| 7 | CLOSURE | funcIdx | ✓ Implemented |
+| 1 | ARRAY | len | ✓ Immutable array |
+| 2 | ARRAY_MUT | instanceId | ✓ Mutable array or array+props (via schemaId in instance table) |
+| 3 | STRING | len | ✓ Immutable string |
+| 4 | OBJECT | schemaId | ✓ Object (or boxed string if schema[0]==='__string__') |
+| 7 | CLOSURE | funcIdx | ✓ Closure |
 
-### Pointer Types (Reserved for future)
-
-| Type | Name | id field | Notes |
-|------|------|----------|-------|
-| 5 | BOXED_STRING | schemaId | String with properties |
-| 6 | ARRAY_PROPS | instanceId | Array with named properties |
+Note: Types 5-6 reserved (merged into OBJECT and ARRAY_MUT).
 
 ### Instance Table (for mutable types)
 
@@ -68,9 +63,15 @@ First 64KB of memory reserved for instance table (16K instances × 4 bytes):
 
 ```
 InstanceTable[instanceId] = {
-  len: u16,        // current length
-  schemaId: u16    // 0 = plain array, >0 = has schema (reserved)
+  len: u16,        // current length (array elements only, not props)
+  schemaId: u16    // 0 = plain mutable array, >0 = array with named properties
 }
+```
+
+When schemaId > 0, properties are stored after array elements:
+```
+Memory: [elem0, elem1, ..., prop0, prop1, ...]
+        ├─── len elements ───┤├── schema props ──┤
 ```
 
 ### Schema Registry (compile-time)
@@ -106,36 +107,50 @@ buf.push(1)               // ARRAY_MUT (length changes)
 
 ---
 
-## Future: Boxed String
+## Boxed Primitives
 
-Design for `Object.assign(new String('abc'), {type: 'f64'})`:
+All use OBJECT type (4) with reserved first schema key:
+
+| Boxed Type | Schema[0] | Memory[0] |
+|------------|-----------|-----------|
+| String | `__string__` | string pointer |
+| Number | `__number__` | f64 value |
+| Boolean | `__boolean__` | 0 or 1 as f64 |
+
+Created via `Object.assign(primitive, {props...})`:
+
+```js
+let token = Object.assign("hello", { type: 1 })
+let value = Object.assign(42, { scale: 2 })
+let flag = Object.assign(true, { code: 200 })
+
+// Property access works
+token.type   // 1
+value.scale  // 2
+flag.code    // 200
+
+// String-specific access still works
+token.length // 5
+token[0]     // 104 ('h')
+```
+
+## Array with Properties
+
+Created via `Object.assign([arr], {props...})`:
 
 ```
-Type: BOXED_STRING (5)
-Schema: ['__string__', 'type']
-Memory: [stringPtr, typeValue]
-
-Access:
-  boxed[i], boxed.charAt(i)  → delegate to stringPtr
-  boxed.type                 → schema lookup → memory[1]
-  boxed.length               → string length
-```
-
-## Future: Array with Properties
-
-Design for arrays with named properties:
-
-```
-Type: ARRAY_PROPS (6)
+Type: ARRAY_MUT (2) with schemaId > 0
 Instance: { len: 3, schemaId: 5 }
 Schema[5]: ['loc']
-Memory: [1, 2, 3, 4]
+Memory: [1, 2, 3, loc_value]
 
 Access:
   arr[i]      → memory[i] (i < len)
   arr.length  → instance.len
   arr.loc     → memory[len + schema.indexOf('loc')]
 ```
+
+Note: Uses same pointer type as mutable arrays - distinguished by schemaId.
 
 ### WAT Implementation
 
@@ -233,6 +248,137 @@ JS wrapper (`instantiate()`) detects NaN-boxed pointers and converts:
 - Arrays → JS arrays (recursive)
 - Objects → JS objects with schema keys
 - Strings → JS strings
+
+---
+
+## TypedArrays
+
+**Status: Design complete.**
+
+### Pointer Format
+
+Different layout from regular pointers to maximize capacity:
+
+```
+Regular:    [type:4][id:16][offset:31]     = 51 bits
+TypedArray: [type:4][elemType:3][len:22][offset:22] = 51 bits
+```
+
+| Field | Bits | Range | Notes |
+|-------|------|-------|-------|
+| type | 4 | 5 | PTR_TYPE.TYPED_ARRAY |
+| elemType | 3 | 0-7 | i8, u8, i16, u16, i32, u32, f32, f64 |
+| len | 22 | 0-4M | Element count |
+| offset | 22 | 0-4MB | Byte offset in typed array region |
+
+### Element Types
+
+```js
+const ELEM_TYPE = {
+  I8: 0,   // Int8Array,    stride 1
+  U8: 1,   // Uint8Array,   stride 1
+  I16: 2,  // Int16Array,   stride 2
+  U16: 3,  // Uint16Array,  stride 2
+  I32: 4,  // Int32Array,   stride 4
+  U32: 5,  // Uint32Array,  stride 4
+  F32: 6,  // Float32Array, stride 4
+  F64: 7   // Float64Array, stride 8
+}
+```
+
+Stride: `[1, 1, 2, 2, 4, 4, 4, 8][elemType]`
+
+### Memory Management
+
+**Arena/bump allocator** - optimized for "few large buffers" pattern:
+
+```
+Memory layout:
+[instance table 64KB][regular heap...][typed array region →]
+
+TypedArray region: bump pointer, grows upward
+```
+
+**Allocation:**
+```js
+let buf = new Float32Array(1024)
+// bump += 1024 * 4 (stride)
+// pointer = mkTypedPtr(F32, 1024, oldBump)
+```
+
+**Deallocation strategies:**
+
+1. **Scope-local (automatic):** Compiler tracks high-water mark per scope. If buffer doesn't escape, rewind bump on scope exit. LIFO discipline avoids fragmentation.
+
+2. **Arena reset (manual):** Export `_resetTypedArrays()` rewinds bump to start. User calls between frames/batches.
+
+3. **No individual free:** Avoids fragmentation complexity.
+
+### Escape Analysis
+
+Compiler determines if TypedArray escapes function scope:
+
+```js
+// Doesn't escape - auto-freed on return
+(n) => {
+  let temp = new Float32Array(n)
+  let sum = 0
+  for (let i = 0; i < n; i++) sum += temp[i]
+  return sum
+}
+
+// Escapes - persists until arena reset
+(n) => {
+  let buf = new Float32Array(n)
+  return buf  // returned = escaped
+}
+```
+
+Escape conditions: returned, stored in outer scope, captured by closure, passed to external function.
+
+### JS Interop
+
+TypedArray pointers in `jz:sig`:
+```json
+{
+  "process": {
+    "typedArrayParams": [{ "index": 0, "elemType": 6 }],
+    "returnsTypedArray": { "elemType": 6 }
+  }
+}
+```
+
+JS wrapper converts:
+- JS TypedArray → copy to WASM memory, return pointer
+- WASM pointer → wrap as TypedArray view (zero-copy if possible)
+
+### Limits
+
+| Resource | Limit | Notes |
+|----------|-------|-------|
+| Elements per array | 4M | 22-bit len |
+| Total typed memory | 4MB | 22-bit offset (single region) |
+| Element types | 8 | 3-bit elemType |
+
+Typical usage: few buffers × ~100K elements = well within limits.
+
+### Syntax
+
+```js
+// Construction
+let buf = new Float32Array(1024)
+let data = new Uint8Array(256)
+
+// Access (returns appropriate type)
+buf[0] = 1.5       // f32 store
+let x = buf[0]     // f32 load → f64
+
+// Properties
+buf.length         // from pointer (22 bits)
+buf.byteLength     // len * stride
+
+// No methods initially (add as needed)
+```
 
 ---
 

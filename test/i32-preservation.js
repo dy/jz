@@ -74,3 +74,16 @@ test('i32 preservation - division always f64', () => {
   const wat = getWat('let a = 4; a / 2')
   ok(wat.includes('f64.div'), 'division should use f64.div')
 })
+
+test('i32 preservation - type promotion to f64', () => {
+  // If a variable is assigned f64 later, it should be f64 from start
+  const wat = getWat(`
+    export const test = () => {
+      let sum = 0
+      sum = sum + 0.5
+      return sum
+    }
+  `)
+  ok(wat.includes('(local $sum'), 'should have sum local')
+  ok(wat.includes('(local $sum_s1 f64)'), 'sum should be promoted to f64')
+})

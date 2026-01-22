@@ -59,12 +59,12 @@ const stringMethods = {
   substr: string.substr, repeat: string.repeat, padStart: string.padStart, padEnd: string.padEnd,
   split: string.split, replace: string.replace
 }
-import { PTR_TYPE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, bothI32, isHeapRef, hasSchema } from './types.js'
-import { extractParams, extractParamInfo, analyzeScope, findHoistedVars } from './analyze.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, bothI32, isHeapRef, hasSchema } from './types.js'
+import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
-import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure } from './memory.js'
+import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
 
 // Check if type is array-like (for aliasing warnings)
 const isArrayType = t => t === 'array' || t === 'refarray'
@@ -102,6 +102,8 @@ export function setCtx(context) {
 export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   setCtx(createContext())
+  // Pre-analyze for type promotion (which vars need f64)
+  ctx.f64Vars = findF64Vars(ast)
   gen = generate
   const bodyWat = String(f64(generate(ast)))
   return assemble(bodyWat, ctx, generateFunctions())
@@ -403,6 +405,163 @@ function resolveCall(namespace, name, args, receiver = null) {
     throw new Error(`Unknown Number.${name}`)
   }
 
+  // Object namespace
+  if (namespace === 'Object') {
+    if (name === 'assign' && args.length >= 2) {
+      // Object.assign(target, source) - create boxed string or array with properties
+      const targetAst = args[0], sourceAst = args[1]
+      const target = gen(targetAst), source = gen(sourceAst)
+
+      // Extract props from source (must be object literal at compile time)
+      if (!Array.isArray(sourceAst) || sourceAst[0] !== '{') {
+        throw new Error('Object.assign source must be object literal')
+      }
+      const props = sourceAst.slice(1)
+      const propKeys = props.map(p => p[0])
+
+      if (isString(target)) {
+        // BOXED_STRING: Schema = ['__string__', ...props], Memory = [stringPtr, ...propVals]
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = ['__string__', ...propKeys]
+        // Track property types
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = { __string__: { type: 'string' } }
+        const propVals = [String(target)]  // First slot = string pointer
+        for (let i = 0; i < props.length; i++) {
+          const g = gen(props[i][1])
+          propVals.push(String(f64(g)))
+          // Track prop type
+          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
+          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
+          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+        }
+        const id = ctx.loopCounter++
+        const tmp = `$_bstr_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < propVals.length; i++) {
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
+        }
+        // Allocate as OBJECT with __string__ as first schema key
+        return wat(`(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`, 'boxed_string', schemaId)
+      }
+
+      if (isArray(target)) {
+        // ARRAY_PROPS: Memory = [elements..., propVals...]
+        // Use instance table to store both len and schemaId
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = propKeys
+        // Track property types
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = {}
+        const propVals = []
+        for (let i = 0; i < props.length; i++) {
+          const g = gen(props[i][1])
+          propVals.push(String(f64(g)))
+          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
+          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
+          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+        }
+        const id = ctx.loopCounter++
+        const tmp = `$_aprp_${id}`, tmpLen = `$_alen_${id}`, tmpInstId = `$_ainst_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        ctx.addLocal(tmpLen.slice(1), 'i32')
+        ctx.addLocal(tmpInstId.slice(1), 'i32')
+        // Get source array length, allocate space for elements + props
+        let stores = ''
+        for (let i = 0; i < propVals.length; i++) {
+          // Props stored AFTER array elements: offset + len*8 + i*8
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.add (i32.shl (local.get ${tmpLen}) (i32.const 3)) (i32.const ${i * 8}))) ${propVals[i]})\n      `
+        }
+        // Allocate with ARRAY_PROPS type using instance table
+        // Instance table: [len:u16, schemaId:u16]
+        return wat(`(block (result f64)
+      (local.set ${tmpLen} (call $__ptr_len ${target}))
+      (local.set ${tmp} (call $__alloc_array_props (local.get ${tmpLen}) (i32.const ${propVals.length}) (i32.const ${schemaId})))
+      (memory.copy (call $__ptr_offset (local.get ${tmp})) (call $__ptr_offset ${target}) (i32.shl (local.get ${tmpLen}) (i32.const 3)))
+      ${stores}(local.get ${tmp}))`, 'array_props', schemaId)
+      }
+
+      // Check for boolean literal in AST (true/false identifiers or boolean values)
+      const isBoolTarget = targetAst === 'true' || targetAst === 'false' ||
+        (Array.isArray(targetAst) && targetAst[0] === undefined && typeof targetAst[1] === 'boolean')
+      // Check for number literal in AST
+      const isNumTarget = (isI32(target) || isF64(target)) && !isBoolTarget
+
+      if (isBoolTarget) {
+        // BOXED_BOOLEAN: Schema = ['__boolean__', ...props], Memory = [boolValue, ...propVals]
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = ['__boolean__', ...propKeys]
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = { __boolean__: { type: 'boolean' } }
+        const propVals = [String(f64(target))]  // First slot = boolean as f64
+        for (let i = 0; i < props.length; i++) {
+          const g = gen(props[i][1])
+          propVals.push(String(f64(g)))
+          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
+          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
+          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+        }
+        const id = ctx.loopCounter++
+        const tmp = `$_bbool_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < propVals.length; i++) {
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
+        }
+        return wat(`(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`, 'boxed_boolean', schemaId)
+      }
+
+      if (isNumTarget) {
+        // BOXED_NUMBER: Schema = ['__number__', ...props], Memory = [numValue, ...propVals]
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = ['__number__', ...propKeys]
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = { __number__: { type: 'number' } }
+        const propVals = [String(f64(target))]  // First slot = number as f64
+        for (let i = 0; i < props.length; i++) {
+          const g = gen(props[i][1])
+          propVals.push(String(f64(g)))
+          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
+          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
+          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+        }
+        const id = ctx.loopCounter++
+        const tmp = `$_bnum_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < propVals.length; i++) {
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
+        }
+        return wat(`(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`, 'boxed_number', schemaId)
+      }
+
+      throw new Error('Object.assign target must be string, number, boolean, or array')
+    }
+    throw new Error(`Unknown Object.${name}`)
+  }
+
   // Global functions
   if (namespace === null) {
     if (name === 'isNaN' || name === 'isFinite') return resolveCall('Number', name, args)
@@ -699,6 +858,30 @@ const operators = {
     return val
   },
 
+  // Constructor calls: new TypedArray(len)
+  'new'([ctorCall]) {
+    // ctorCall is ['()', ctor, ...args]
+    if (!Array.isArray(ctorCall) || ctorCall[0] !== '()') {
+      throw new Error(`Invalid new expression: ${JSON.stringify(ctorCall)}`)
+    }
+    const [, ctor, ...args] = ctorCall
+    const ctorName = typeof ctor === 'string' ? ctor : null
+
+    // TypedArray constructors
+    if (ctorName && ctorName in TYPED_ARRAY_CTORS) {
+      if (args.length !== 1) {
+        throw new Error(`${ctorName}(len) requires exactly 1 argument`)
+      }
+      ctx.usedTypedArrays = true
+      ctx.usedMemory = true
+      const elemType = TYPED_ARRAY_CTORS[ctorName]
+      const lenVal = gen(args[0])
+      return wat(typedArrNew(elemType, i32(lenVal)), 'typedarray', elemType)
+    }
+
+    throw new Error(`Unsupported constructor: ${ctorName || JSON.stringify(ctor)}`)
+  },
+
   // --- Calls and Access ---
   '()'([fn, ...args]) {
     // Parenthesized expression: (expr) parsed as ['()', expr]
@@ -714,7 +897,7 @@ const operators = {
     if (typeof fn === 'string') name = fn
     else if (Array.isArray(fn) && fn[0] === '.') {
       const [, obj, method] = fn
-      if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array')) {
+      if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array' || obj === 'Object')) {
         namespace = obj
         name = method
       } else if (typeof obj === 'string' && ctx.namespaces[obj]) {
@@ -895,6 +1078,13 @@ const operators = {
     const a = gen(arr), iw = i32(gen(idx))
     // Memory-based array access
     ctx.usedMemory = true
+
+    // TypedArray access
+    if (isTypedArray(a)) {
+      const elemType = a.schema  // elemType stored in schema field
+      return wat(typedArrGet(elemType, String(a), iw), 'f64')
+    }
+
     const schema = a.schema
     let litIdx = null
     if (isConstant(idx)) {
@@ -909,6 +1099,14 @@ const operators = {
     }
     if (isString(a)) {
       return wat(strCharAt(String(a), iw), 'i32')
+    }
+    // Boxed string: delegate indexing to inner string pointer
+    if (isBoxedString(a)) {
+      return wat(`(i32.load16_u (i32.add (call $__ptr_offset (f64.load (call $__ptr_offset ${a}))) (i32.shl ${iw} (i32.const 1))))`, 'i32')
+    }
+    // Array with props: index into elements (same as regular array)
+    if (isArrayProps(a)) {
+      return wat(`(f64.load (i32.add (call $__ptr_offset ${a}) (i32.shl ${iw} (i32.const 3))))`, 'f64')
     }
     return arrGetTyped(ctx, String(a), iw)
   },
@@ -925,12 +1123,87 @@ const operators = {
       return wat(`(f64.const ${fmtNum(MATH_OPS.constants[prop])})`, 'f64')
     const o = gen(obj)
     if (prop === 'length') {
-      if (isArray(o) || isString(o) || isF64(o)) {
+      if (isTypedArray(o)) {
+        ctx.usedMemory = true
+        return wat(typedArrLen(String(o)), 'i32')
+      }
+      if (isArray(o) || isString(o) || isF64(o) || isArrayProps(o)) {
         ctx.usedMemory = true
         return wat(arrLen(String(o)), 'i32')
       }
+      if (isBoxedString(o) && hasSchema(o)) {
+        // Boxed string length: get inner string pointer, then its length
+        ctx.usedMemory = true
+        return wat(`(call $__ptr_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
+      }
       throw new Error(`Cannot get length of ${o.type}`)
     }
+    if (prop === 'byteLength' && isTypedArray(o)) {
+      // byteLength = length * stride
+      ctx.usedMemory = true
+      const elemType = o.schema
+      const stride = ELEM_STRIDE[elemType]
+      return wat(`(i32.mul ${typedArrLen(String(o))} (i32.const ${stride}))`, 'i32')
+    }
+
+    // Boxed string property access
+    if (isBoxedString(o) && hasSchema(o)) {
+      const schema = ctx.objectSchemas[o.schema]
+      if (schema) {
+        const idx = schema.indexOf(prop)
+        if (idx >= 0) {
+          ctx.usedMemory = true
+          const propInfo = ctx.objectPropTypes?.[o.schema]?.[prop]
+          let resultType = 'f64', resultSchema
+          if (propInfo) {
+            if (propInfo.type === 'object' && propInfo.schema) { resultType = 'object'; resultSchema = propInfo.schema }
+            else if (propInfo.type === 'string') resultType = 'string'
+            else if (propInfo.type === 'array') resultType = 'array'
+          }
+          return wat(objGet(String(o), idx), resultType, resultSchema)
+        }
+      }
+    }
+
+    // Boxed number/boolean property access
+    if ((isBoxedNumber(o) || isBoxedBoolean(o)) && hasSchema(o)) {
+      const schema = ctx.objectSchemas[o.schema]
+      if (schema) {
+        const idx = schema.indexOf(prop)
+        if (idx >= 0) {
+          ctx.usedMemory = true
+          const propInfo = ctx.objectPropTypes?.[o.schema]?.[prop]
+          let resultType = 'f64', resultSchema
+          if (propInfo) {
+            if (propInfo.type === 'object' && propInfo.schema) { resultType = 'object'; resultSchema = propInfo.schema }
+            else if (propInfo.type === 'string') resultType = 'string'
+            else if (propInfo.type === 'array') resultType = 'array'
+          }
+          return wat(objGet(String(o), idx), resultType, resultSchema)
+        }
+      }
+    }
+
+    // Array with props property access
+    if (isArrayProps(o) && hasSchema(o)) {
+      const schema = ctx.objectSchemas[o.schema]
+      if (schema) {
+        const idx = schema.indexOf(prop)
+        if (idx >= 0) {
+          ctx.usedMemory = true
+          const propInfo = ctx.objectPropTypes?.[o.schema]?.[prop]
+          let resultType = 'f64', resultSchema
+          if (propInfo) {
+            if (propInfo.type === 'object' && propInfo.schema) { resultType = 'object'; resultSchema = propInfo.schema }
+            else if (propInfo.type === 'string') resultType = 'string'
+            else if (propInfo.type === 'array') resultType = 'array'
+          }
+          // Props are stored AFTER array elements: offset + len*8 + idx*8
+          return wat(`(f64.load (i32.add (call $__ptr_offset ${o}) (i32.add (i32.shl (call $__ptr_len ${o}) (i32.const 3)) (i32.const ${idx * 8}))))`, resultType, resultSchema)
+        }
+      }
+    }
+
     if (isObject(o) && hasSchema(o)) {
       const schema = ctx.objectSchemas[o.schema]
       if (schema) {
@@ -1207,12 +1480,12 @@ const operators = {
     }
     const va = gen(a), vb = gen(b)
     // String comparison: use __ptr_eq for NaN-boxed pointers (f64.eq fails on NaN)
-    if (isString(va) && isString(vb)) {
+    if ((isString(va) || isBoxedString(va)) && (isString(vb) || isBoxedString(vb))) {
       ctx.usedMemory = true
       return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
     // Array/object comparison: reference equality via __ptr_eq
-    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
+    if ((isArray(va) || isObject(va) || isArrayProps(va)) && (isArray(vb) || isObject(vb) || isArrayProps(vb))) {
       ctx.usedMemory = true
       return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
@@ -1246,12 +1519,12 @@ const operators = {
     }
     const va = gen(a), vb = gen(b)
     // String comparison: use __ptr_eq for NaN-boxed pointers
-    if (isString(va) && isString(vb)) {
+    if ((isString(va) || isBoxedString(va)) && (isString(vb) || isBoxedString(vb))) {
       ctx.usedMemory = true
       return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
     }
     // Array/object comparison: reference inequality via __ptr_eq
-    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
+    if ((isArray(va) || isObject(va) || isArrayProps(va)) && (isArray(vb) || isObject(vb) || isArrayProps(vb))) {
       ctx.usedMemory = true
       return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
     }
@@ -1492,8 +1765,17 @@ const operators = {
     if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
       console.warn('jz: [array-alias] ' + `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
     }
-    ctx.addLocal(name, val.type, val.schema, scopedName)
-    return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
+    // Type promotion: if var is assigned f64 anywhere, use f64
+    let varType = val.type
+    if (varType === 'i32' && ctx.f64Vars && ctx.f64Vars.has(name)) {
+      varType = 'f64'
+    }
+    ctx.addLocal(name, varType, val.schema, scopedName)
+    // Convert init value to declared type
+    const coercedVal = varType === 'f64' && val.type === 'i32'
+      ? wat(`(f64.convert_i32_s ${val})`, 'f64')
+      : val
+    return wat(`(local.tee $${scopedName} ${coercedVal})`, varType, val.schema)
   },
 
   'const'([assignment]) {
@@ -2026,8 +2308,16 @@ function genAssign(target, value, returnValue) {
   // Array element assignment: arr[i] = x
   if (Array.isArray(target) && target[0] === '[]' && target.length === 3) {
     const aw = gen(target[1]), iw = i32(gen(target[2])), vw = f64(gen(value))
-    ctx.usedArrayType = true
     ctx.usedMemory = true
+
+    // TypedArray element assignment
+    if (isTypedArray(aw)) {
+      const elemType = aw.schema
+      const code = typedArrSet(elemType, String(aw), iw, vw)
+      return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
+    }
+
+    ctx.usedArrayType = true
     const code = `(f64.store (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))) ${vw})`
     return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
   }
@@ -2117,9 +2407,15 @@ function genAssign(target, value, returnValue) {
     if (existing.scopedName in ctx.constVars) {
       throw new Error(`Assignment to constant variable: ${target}`)
     }
+    // Coerce value to match variable's declared type
+    let coercedVal = val
+    if (existing.type === 'f64' && val.type === 'i32') {
+      coercedVal = wat(`(f64.convert_i32_s ${val})`, 'f64')
+    }
+    // Note: i32 truncation case removed - type promotion should handle it
     return returnValue
-      ? wat(`(local.tee $${existing.scopedName} ${val})`, val.type, val.schema)
-      : `(local.set $${existing.scopedName} ${val})\n    `
+      ? wat(`(local.tee $${existing.scopedName} ${coercedVal})`, existing.type, existing.schema || val.schema)
+      : `(local.set $${existing.scopedName} ${coercedVal})\n    `
   }
   // New variable - add to current scope
   ctx.addLocal(target, val.type, val.schema)
@@ -2201,6 +2497,8 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   newCtx.returnLabel = '$return_' + name
   // Enable multi-value return detection for exported functions (not closures)
   newCtx.allowMultiReturn = exported && !closureInfo
+  // Analyze for type promotion within this function body
+  newCtx.f64Vars = findF64Vars(bodyAst)
 
   // Find variables that need to be hoisted to environment (captured by nested closures)
   const hoistedVars = findHoistedVars(bodyAst, params)
@@ -2271,14 +2569,16 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
       ctx.usedArrayType = true
     } else {
       // Check if destructuring param
-    const destructInfo = destructParams.find(di => di.name === p)
-    if (destructInfo) {
-      // Destructuring param - both array and object are typed as f64array
-      ctx.locals[p] = { idx: ctx.localCounter++, type: 'array' }
-      ctx.usedArrayType = true
-    } else {
-      ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
-    }
+      const destructInfo = destructParams.find(di => di.name === p)
+      if (destructInfo) {
+        // Destructuring param - both array and object are typed as f64array
+        ctx.locals[p] = { idx: ctx.localCounter++, type: 'array' }
+        ctx.usedArrayType = true
+      } else {
+        // Default to f64 for params (safe for JS interop - undefined→NaN detectable)
+        // TODO: Future - infer i32 from usage analysis or type annotations
+        ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64' }
+      }
     }
   }
 
@@ -2337,12 +2637,14 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
     bodyResult = gen(bodyAst)
   }
 
-  // Determine return type: multi-value if detected, otherwise f64
+  // Determine return type: multi-value or f64
+  // Note: i32 preservation works for locals/variables, but function returns stay f64
+  // for JS interop simplicity (JS number ↔ f64 is natural, i32 needs coercion)
   const multiCount = ctx.multiReturnCount
   const returnType = multiCount ? Array(multiCount).fill('f64').join(' ') : 'f64'
   const bodyWat = multiCount ? bodyResult.toString() : f64(bodyResult)
 
-  // Generate param declarations with correct types (all f64 in memory mode)
+  // Generate param declarations (all f64 for JS interop)
   const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
 
