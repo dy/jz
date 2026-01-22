@@ -128,9 +128,14 @@ export function assemble(bodyWat, ctx = {
     wat += `\n  (func $main (export "main") (result f64)${locals}\n    ${bodyWat}\n  )`
   }
 
-  // Emit custom section with export signatures for JS interop
-  if (ctx.exportSignatures && Object.keys(ctx.exportSignatures).length > 0) {
-    const sigJson = JSON.stringify(ctx.exportSignatures)
+  // Emit custom section with signatures and schemas for JS interop
+  const sigData = { ...ctx.exportSignatures }
+  // Add object schemas (Strategy B)
+  if (ctx.objectSchemas && Object.keys(ctx.objectSchemas).length > 0) {
+    sigData.schemas = ctx.objectSchemas
+  }
+  if (Object.keys(sigData).length > 0) {
+    const sigJson = JSON.stringify(sigData)
     const escaped = sigJson.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
     wat += `\n  (@custom "jz:sig" "${escaped}")`
   }
@@ -139,24 +144,29 @@ export function assemble(bodyWat, ctx = {
 }
 
 /**
- * Emit integer-packed pointer helper functions for gc:false mode
+ * Emit integer-packed pointer helper functions
  *
  * Headerless array layout:
- * - Pointer: type * 2^48 + len * 2^32 + offset (pure integer, no NaN)
+ * - Pointer: type * 2^56 + schemaId * 2^48 + len * 2^32 + offset
  * - Memory: pure data at offset, no header
  * - Capacity: implicit from length tier (nextPow2)
  * - Threshold: values >= 2^48 are pointers, below are regular numbers
+ *
+ * schemaId: 0 = plain array, 1-255 = object schema (Strategy B)
+ * Objects are F64_ARRAY with schemaId > 0, lookup via ctx.objectSchemas
  *
  * NOTE: All helpers emitted together. DCE (watr) removes unused functions.
  */
 function emitMemoryHelpers() {
   return `
-  ;; Integer-packed pointer encoding (headerless v3)
-  ;; Format: ptr = type * 2^48 + len * 2^32 + offset
-  ;; Layout: [type:16][len:16][offset:32] = 64 bits as f64 integer
+  ;; Integer-packed pointer encoding (v4 - Strategy B)
+  ;; Format: ptr = type * 2^52 + schemaId * 2^48 + len * 2^32 + offset
+  ;; Layout: [type:4][schemaId:4][len:16][offset:32] = 56 bits, within f64 precision
   ;; Memory layout: [data...] - pure data, no header
   ;; Capacity is implicit: nextPow2(max(len, 4))
-  ;; Threshold: 2^48 - values above are pointers, below are numbers
+  ;; Threshold: 2^48 - values >= threshold are pointers
+  ;; Type codes: 1=F64_ARRAY, 2=I32_ARRAY, 3=STRING, 6=REF_ARRAY, 7=CLOSURE
+  ;; schemaId: 0 = array, 1-15 = object schema (16 schemas max)
 
   ;; Compute capacity tier for given length: nextPow2(max(len, 4))
   (func $__cap_for_len (param $len i32) (result i32)
@@ -172,6 +182,7 @@ function emitMemoryHelpers() {
     (i32.add (local.get $cap) (i32.const 1)))
 
   ;; Allocate memory for given length, using capacity tier
+  ;; Returns pointer with schemaId=0 (plain array)
   (func $__alloc (param $type i32) (param $len i32) (result f64)
     (local $offset i32) (local $size i32) (local $cap i32)
     ;; Get capacity tier
@@ -179,28 +190,33 @@ function emitMemoryHelpers() {
     ;; Calculate data size based on type and capacity
     (local.set $size
       (i32.shl (local.get $cap)
-        (select (i32.const 3)  ;; 8 bytes for f64 arrays, objects, ref arrays, closures
+        (select (i32.const 3)  ;; 8 bytes for f64 arrays, ref arrays, closures
           (select (i32.const 2)  ;; 4 bytes for i32 arrays, 2 for strings
             (i32.const 0)  ;; 1 byte for i8 arrays
             (i32.or (i32.eq (local.get $type) (i32.const 2)) (i32.eq (local.get $type) (i32.const 3))))
-          (i32.or (i32.eq (local.get $type) (i32.const 1)) (i32.ge_u (local.get $type) (i32.const 5))))))
+          (i32.or (i32.eq (local.get $type) (i32.const 1)) (i32.ge_u (local.get $type) (i32.const 6))))))
     ;; Align to 8 bytes
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
     (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
-    (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
+    (call $__mkptr (local.get $type) (i32.const 0) (local.get $len) (local.get $offset)))
 
-  ;; Create integer-packed pointer: type * 2^48 + len * 2^32 + offset
-  (func $__mkptr (param $type i32) (param $len i32) (param $offset i32) (result f64)
+  ;; Integer-packed pointer: type * 2^52 + schemaId * 2^48 + len * 2^32 + offset
+  ;; Total max ~2^52, within f64 precision (53 bits mantissa)
+  ;; Uses f64.convert (not reinterpret) - pointer IS the numeric value
+  (func $__mkptr (param $type i32) (param $schemaId i32) (param $len i32) (param $offset i32) (result f64)
     (f64.convert_i64_u
       (i64.or
         (i64.or
-          (i64.shl (i64.extend_i32_u (local.get $type)) (i64.const 48))
+          (i64.or
+            (i64.shl (i64.extend_i32_u (local.get $type)) (i64.const 52))
+            (i64.shl (i64.extend_i32_u (local.get $schemaId)) (i64.const 48)))
           (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 32)))
         (i64.extend_i32_u (local.get $offset)))))
 
   ;; Check if value is a pointer (>= 2^48 threshold AND finite)
-  ;; Must exclude Infinity/-Infinity which are >= threshold but not pointers
+  ;; Pointers have type >= 1 in bits 52-55, so value >= 2^52
+  ;; But we use 2^48 threshold for safety margin
   (func $__is_pointer (param $val f64) (result i32)
     (i32.and
       (f64.ge (local.get $val) (f64.const 281474976710656))
@@ -216,19 +232,41 @@ function emitMemoryHelpers() {
       (i32.wrap_i64 (i64.shr_u (i64.trunc_f64_u (local.get $ptr)) (i64.const 32)))
       (i32.const 0xFFFF)))
 
-  ;; Create new pointer with updated length (same type and offset)
+  ;; Create new pointer with updated length (same type, schemaId, offset)
   (func $__ptr_with_len (param $ptr f64) (param $len i32) (result f64)
-    (call $__mkptr (call $__ptr_type (local.get $ptr)) (local.get $len) (call $__ptr_offset (local.get $ptr))))
+    (call $__mkptr (call $__ptr_type (local.get $ptr)) (call $__ptr_schema (local.get $ptr)) (local.get $len) (call $__ptr_offset (local.get $ptr))))
 
-  ;; Extract type from pointer (bits 48-63)
+  ;; Extract type from pointer (bits 52-55, 4 bits)
   (func $__ptr_type (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.shr_u (i64.trunc_f64_u (local.get $ptr)) (i64.const 48))))
+    (i32.and
+      (i32.wrap_i64 (i64.shr_u (i64.trunc_f64_u (local.get $ptr)) (i64.const 52)))
+      (i32.const 0xF)))
+
+  ;; Extract schemaId from pointer (bits 48-51, 4 bits)
+  (func $__ptr_schema (param $ptr f64) (result i32)
+    (i32.and
+      (i32.wrap_i64 (i64.shr_u (i64.trunc_f64_u (local.get $ptr)) (i64.const 48)))
+      (i32.const 0xF)))
+
+  ;; Set schemaId in pointer (returns new pointer with updated schemaId)
+  (func $__ptr_set_schema (param $ptr f64) (param $schemaId i32) (result f64)
+    (call $__mkptr (call $__ptr_type (local.get $ptr)) (local.get $schemaId) (call $__ptr_len (local.get $ptr)) (call $__ptr_offset (local.get $ptr))))
 
   ;; Reallocate array to new capacity tier, copy data, return new pointer
+  ;; Preserves type and schemaId from original pointer
   (func $__realloc (param $ptr f64) (param $newLen i32) (result f64)
-    (local $oldLen i32) (local $newPtr f64) (local $i i32) (local $oldOff i32) (local $newOff i32)
+    (local $oldLen i32) (local $newPtr f64) (local $i i32) (local $oldOff i32) (local $newOff i32) (local $schema i32)
     (local.set $oldLen (call $__ptr_len (local.get $ptr)))
+    (local.set $schema (call $__ptr_schema (local.get $ptr)))
+    ;; Allocate and set schemaId
     (local.set $newPtr (call $__alloc (call $__ptr_type (local.get $ptr)) (local.get $newLen)))
+    ;; Re-encode with schemaId if present
+    (if (local.get $schema)
+      (then (local.set $newPtr (call $__mkptr
+        (call $__ptr_type (local.get $ptr))
+        (local.get $schema)
+        (local.get $newLen)
+        (call $__ptr_offset (local.get $newPtr))))))
     (local.set $oldOff (call $__ptr_offset (local.get $ptr)))
     (local.set $newOff (call $__ptr_offset (local.get $newPtr)))
     ;; Copy old data (assuming f64 array for now)

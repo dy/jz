@@ -252,13 +252,20 @@ function closureDepth(body) {
  *
  * @param {any} v - Literal value: number, boolean, string, null, or undefined
  * @returns {object} Typed WAT value
- * @example genLiteral(42) → {type:'f64', wat:'(f64.const 42)'}
+ * @example genLiteral(42) → {type:'i32', wat:'(i32.const 42)'}
+ * @example genLiteral(3.14) → {type:'f64', wat:'(f64.const 3.14)'}
  * @example genLiteral(true) → {type:'i32', wat:'(i32.const 1)'}
  * @example genLiteral('hello') → {type:'string', wat:'(call $__strconst ...)'}
  */
 function genLiteral(v) {
   if (v === null || v === undefined) return nullRef()
-  if (typeof v === 'number') return wat(`(f64.const ${fmtNum(v)})`, 'f64')
+  if (typeof v === 'number') {
+    // Integer literals stay i32, float literals become f64
+    if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
+      return wat(`(i32.const ${v})`, 'i32')
+    }
+    return wat(`(f64.const ${fmtNum(v)})`, 'f64')
+  }
   if (typeof v === 'boolean') return wat(`(i32.const ${v ? 1 : 0})`, 'i32')
   if (typeof v === 'string') return mkString(ctx, v)
   throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
@@ -528,7 +535,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       return wat(`(block (result f64)
         ${envVals}
         (call $${name}
-          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
+          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const 0) (i32.const ${envFields.length}) (global.get $__heap))
           ${argWats})
         (global.set $__heap (i32.add (global.get $__heap) (i32.const ${alignedEnvSize})))
       )`, 'f64')
@@ -843,18 +850,27 @@ const operators = {
     ctx.usedArrayType = true
     ctx.usedMemory = true
     const keys = props.map(p => p[0])
-    const objId = ctx.objectCounter++
-    ctx.objectSchemas[objId] = keys
-    // Track closure properties for method call support
+    // Schema IDs start at 1 (0 = plain array)
+    const schemaId = ctx.objectCounter + 1
+    ctx.objectCounter++
+    ctx.objectSchemas[schemaId] = keys
+    // Track property types for method call support and nested object access
     if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-    ctx.objectPropTypes[objId] = {}
+    ctx.objectPropTypes[schemaId] = {}
     const vals = []
     for (let i = 0; i < props.length; i++) {
       const [key, valueAst] = props[i]
       const g = gen(valueAst)
       vals.push(String(f64(g)))
+      // Track property type info for nested access
       if (g.type === 'closure' || (Array.isArray(valueAst) && valueAst[0] === '=>')) {
-        ctx.objectPropTypes[objId][key] = 'closure'
+        ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+      } else if (g.type === 'object' && g.schema) {
+        ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+      } else if (g.type === 'array') {
+        ctx.objectPropTypes[schemaId][key] = { type: 'array' }
+      } else if (g.type === 'string') {
+        ctx.objectPropTypes[schemaId][key] = { type: 'string' }
       }
     }
     const id = ctx.loopCounter++
@@ -864,9 +880,12 @@ const operators = {
     for (let i = 0; i < vals.length; i++) {
       stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
     }
+    // Strategy B: F64_ARRAY with schemaId encoded in pointer
+    // Allocate array, then set schemaId via __ptr_set_schema
     return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      ${stores}(local.get ${tmp}))`, 'object', objId)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${vals.length})))
+      (local.set ${tmp} (call $__ptr_set_schema (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`, 'object', schemaId)
   },
 
   '[]'([arr, idx]) {
@@ -915,8 +934,23 @@ const operators = {
         const idx = schema.indexOf(prop)
         if (idx >= 0) {
           ctx.usedMemory = true
-          const propType = ctx.objectPropTypes?.[o.schema]?.[prop] || 'f64'
-          const result = wat(objGet(String(o), idx), propType)
+          const propInfo = ctx.objectPropTypes?.[o.schema]?.[prop]
+          // Determine result type and schema from property info
+          let resultType = 'f64'
+          let resultSchema = undefined
+          if (propInfo) {
+            if (propInfo.type === 'object' && propInfo.schema) {
+              resultType = 'object'
+              resultSchema = propInfo.schema
+            } else if (propInfo.type === 'closure') {
+              resultType = 'closure'
+            } else if (propInfo.type === 'array') {
+              resultType = 'array'
+            } else if (propInfo.type === 'string') {
+              resultType = 'string'
+            }
+          }
+          const result = wat(objGet(String(o), idx), resultType, resultSchema)
           // Preserve schema and property info for method calls
           result.objSchema = o.schema
           result.propName = prop
@@ -1136,13 +1170,25 @@ const operators = {
         // Get type code without generating string
         const val = gen(typeofArg)
         let typeCode
+        // Check AST for boolean-producing expressions
+        // Unwrap parentheses: ['()', expr] → expr
+        let innerArg = typeofArg
+        while (Array.isArray(innerArg) && innerArg[0] === '()' && innerArg.length === 2) {
+          innerArg = innerArg[1]
+        }
+        const isBoolExpr = (typeof innerArg === 'string' && (innerArg === 'true' || innerArg === 'false')) ||
+          (Array.isArray(innerArg) && innerArg[0] === undefined && typeof innerArg[1] === 'boolean') ||
+          (Array.isArray(innerArg) && ['<', '<=', '>', '>=', '==', '===', '!=', '!==', '!'].includes(innerArg[0]))
         if (isF64(val)) {
           // f64 might be a regular number or an integer-packed pointer
           // Pointer threshold: values >= 2^48 are pointers (arrays/objects)
           // Check: if value >= threshold → pointer (type 4 = object), else number (type 1)
           ctx.usedMemory = true
           typeCode = `(select (i32.const 4) (i32.const 1) (call $__is_pointer ${val}))`
-        } else if (isI32(val)) typeCode = '(i32.const 3)'
+        } else if (isI32(val)) {
+          // i32 can be boolean result or integer number - check AST
+          typeCode = isBoolExpr ? '(i32.const 3)' : '(i32.const 1)'
+        }
         else if (isString(val)) typeCode = '(i32.const 2)'
         else if (isRef(val)) typeCode = '(i32.const 0)'
         else if (isArray(val) || isObject(val)) typeCode = '(i32.const 4)'
@@ -1157,17 +1203,19 @@ const operators = {
       return operators['==']([b, a])  // Swap and recurse
     }
     const va = gen(a), vb = gen(b)
-    // String comparison: use i64.eq on NaN-boxed pointers
+    // String comparison: f64.eq works for integer-packed pointers
     if (isString(va) && isString(vb)) {
-      return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.eq ${va} ${vb})`, 'i32')
     }
-    // Array/object comparison: reference equality via i64
+    // Array/object comparison: reference equality via f64.eq
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.eq ${va} ${vb})`, 'i32')
     }
-    // f64 comparison: use i64.eq to handle NaN-boxed pointers correctly
+    // f64 comparison with pointer handling
+    // Pointers use integer-packed encoding, so f64.eq works correctly
+    // Regular numbers: f64.eq handles NaN correctly (NaN != NaN)
     if (isF64(va) && isF64(vb)) {
-      return wat(`(i64.eq (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.eq ${va} ${vb})`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.eq(va, vb) : f64ops.eq(va, vb)
   },
@@ -1192,17 +1240,17 @@ const operators = {
       return operators['!=']([b, a])
     }
     const va = gen(a), vb = gen(b)
-    // String comparison via i64
+    // String comparison: f64.ne works for integer-packed pointers
     if (isString(va) && isString(vb)) {
-      return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.ne ${va} ${vb})`, 'i32')
     }
-    // Array/object comparison: reference inequality
+    // Array/object comparison: reference inequality via f64.ne
     if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.ne ${va} ${vb})`, 'i32')
     }
-    // f64 comparison: use i64.ne to handle NaN-boxed pointers correctly
+    // f64 comparison: f64.ne for IEEE 754 compliance (NaN != NaN = true)
     if (isF64(va) && isF64(vb)) {
-      return wat(`(i64.ne (i64.reinterpret_f64 ${va}) (i64.reinterpret_f64 ${vb}))`, 'i32')
+      return wat(`(f64.ne ${va} ${vb})`, 'i32')
     }
     return bothI32(va, vb) ? i32ops.ne(va, vb) : f64ops.ne(va, vb)
   },
@@ -1246,7 +1294,8 @@ const operators = {
           const scopedName = ctx.declareVar(name, init[0] === 'const')
           const val = gen(value)
           ctx.addLocal(scopedName, val.type)
-          code += `(local.set $${scopedName} ${f64(val)})\n    `
+          // Preserve type (i32 stays i32 for loop counters)
+          code += `(local.set $${scopedName} ${val})\n    `
         }
       }
       else code += `(drop ${gen(init)})\n    `
@@ -1338,8 +1387,21 @@ const operators = {
     return wat(code, 'f64')
   },
 
-  // Block with scope
+  // Block with scope OR object literal
+  // Parser outputs: block = ["{}", [";", ...]], object = ["{}", [":", k, v]] or ["{}", [",", ...]]
   '{}'([body]) {
+    // Empty object
+    if (body === null) return operators['{']([] )
+    // Object literal: single property [":", key, val]
+    if (Array.isArray(body) && body[0] === ':') {
+      return operators['{']([[body[1], body[2]]])
+    }
+    // Object literal: multiple properties [",", [":", k1, v1], [":", k2, v2], ...]
+    if (Array.isArray(body) && body[0] === ',') {
+      const props = body.slice(1).map(p => [p[1], p[2]])
+      return operators['{'](props)
+    }
+    // Block scope
     ctx.pushScope()
     let result
     if (!Array.isArray(body) || body[0] !== ';') {
@@ -1519,7 +1581,7 @@ const operators = {
     const mkStr = (name) => {
       const { id, length } = typeStrings[name]
       ctx.usedMemory = true
-      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`
+      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${length}) (i32.const ${id}))`
     }
     if (val.type === 'f64') {
       // f64 can be number or NaN-encoded pointer
@@ -2064,18 +2126,27 @@ function genAssign(target, value, returnValue) {
  * @param {string} target - Variable name to initialize
  * @param {any} value - AST node for initial value
  * @returns {string} WAT code for the initialization
- * @example genLoopInit('i', [null, 0]) → '(local.set $i (f64.const 0))\n    '
+ * @example genLoopInit('i', [null, 0]) → '(local.set $i (i32.const 0))\n    '
  */
 function genLoopInit(target, value) {
   if (typeof target !== 'string') throw new Error('Loop init must assign to variable')
   const v = gen(value)
   const glob = ctx.getGlobal(target)
-  if (glob) return `(global.set $${target} ${f64(v)})\n    `
+  if (glob) {
+    // Globals are f64
+    return `(global.set $${target} ${f64(v)})\n    `
+  }
   const loc = ctx.getLocal(target)
-  if (loc) return `(local.set $${loc.scopedName} ${f64(v)})\n    `
+  if (loc) {
+    // Respect existing local type
+    const locType = loc.type
+    const val = locType === 'i32' ? (isI32(v) ? v : i32(v)) : f64(v)
+    return `(local.set $${loc.scopedName} ${val})\n    `
+  }
+  // New local - use value's type
   ctx.addLocal(target, v.type)
   const newLoc = ctx.getLocal(target)
-  return `(local.set $${newLoc.scopedName} ${f64(v)})\n    `
+  return `(local.set $${newLoc.scopedName} ${v})\n    `
 }
 
 // =============================================================================
