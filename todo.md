@@ -159,7 +159,8 @@
   * [-] Intl.* (too complex)
   * [-] RegExp (need regex engine)
 * [ ] color-space converter
-  * [ ] infer object schema by lookahead scans
+  * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
+* [ ] Warn/error on hitting memory limitations: objects, arrays
 * [ ] Import model
   * [ ] Bundle before compile
   * [ ] Resolve imports by the compiler, not runtime (static-time)

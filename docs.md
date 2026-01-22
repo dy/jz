@@ -102,6 +102,17 @@ let data = {
 data.nested.a  // 1
 ```
 
+**Forward schema inference**: Objects can be built incrementally:
+
+```js
+let a = {}       // Empty object
+a.x = 1          // Add property
+a.fn = (n) => n * 2  // Add method
+a.fn(a.x)        // 2
+```
+
+The compiler scans ahead to find all property assignments and builds the complete schema before compilation.
+
 ### Boxed Primitives
 
 Add properties to primitives via `Object.assign`:

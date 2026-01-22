@@ -60,7 +60,7 @@ const stringMethods = {
   split: string.split, replace: string.replace
 }
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, bothI32, isHeapRef, hasSchema } from './types.js'
-import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes } from './analyze.js'
+import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
@@ -107,6 +107,8 @@ export function compile(ast, options = {}) {
   ctx.f64Vars = findF64Vars(ast)
   // Pre-analyze function return types (which funcs can return i32)
   ctx.funcReturnTypes = findFuncReturnTypes(ast)
+  // Pre-analyze object schemas from declarations + assignments
+  ctx.inferredSchemas = inferObjectSchemas(ast)
   gen = generate
   const bodyWat = String(f64(generate(ast)))
   return assemble(bodyWat, ctx, generateFunctions())
@@ -1799,6 +1801,64 @@ const operators = {
       }
     }
 
+    // Forward schema inference: check if we have inferred props for this variable
+    // This handles: let a = {}; a.x = 1; a.y = 2; → schema ['x', 'y']
+    if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
+      const inferred = ctx.inferredSchemas.get(name)
+      const literalProps = value.slice(1)
+      const literalKeys = literalProps.map(p => p[0])
+      // Merge literal props with inferred props (inferred may add more)
+      const allKeys = [...new Set([...literalKeys, ...inferred.props])]
+
+      if (allKeys.length > 0) {
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = allKeys
+        // Track closures
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = {}
+        for (const key of inferred.closures) {
+          ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+        }
+
+        // Generate values for literal props, zeros for inferred-only props
+        const vals = []
+        for (const key of allKeys) {
+          const literalProp = literalProps.find(p => p[0] === key)
+          if (literalProp) {
+            const g = gen(literalProp[1])
+            vals.push(String(f64(g)))
+            // Track prop types from literal
+            if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
+              ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+            } else if (g.type === 'object' && g.schema) {
+              ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+            }
+          } else {
+            vals.push('(f64.const 0)')  // Placeholder for inferred-only props
+          }
+        }
+
+        const id = ctx.loopCounter++
+        const tmp = `$_obj_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < vals.length; i++) {
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+        }
+
+        const scopedName = ctx.declareVar(name, false)
+        ctx.addLocal(name, 'object', schemaId, scopedName)
+        const objWat = `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`
+        return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
+      }
+    }
+
     const scopedName = ctx.declareVar(name, false)
     const val = gen(value)
     // Track array variables (type-based for gc:true, AST-based for gc:false)
@@ -1834,6 +1894,60 @@ const operators = {
       ctx.declareVar(name, true)
       return genAssign(name, value, true)
     }
+
+    // Forward schema inference for const objects
+    if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
+      const inferred = ctx.inferredSchemas.get(name)
+      const literalProps = value.slice(1)
+      const literalKeys = literalProps.map(p => p[0])
+      const allKeys = [...new Set([...literalKeys, ...inferred.props])]
+
+      if (allKeys.length > 0) {
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = allKeys
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = {}
+        for (const key of inferred.closures) {
+          ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+        }
+
+        const vals = []
+        for (const key of allKeys) {
+          const literalProp = literalProps.find(p => p[0] === key)
+          if (literalProp) {
+            const g = gen(literalProp[1])
+            vals.push(String(f64(g)))
+            if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
+              ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+            } else if (g.type === 'object' && g.schema) {
+              ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+            }
+          } else {
+            vals.push('(f64.const 0)')
+          }
+        }
+
+        const id = ctx.loopCounter++
+        const tmp = `$_obj_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+        let stores = ''
+        for (let i = 0; i < vals.length; i++) {
+          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+        }
+
+        const scopedName = ctx.declareVar(name, true)
+        ctx.addLocal(name, 'object', schemaId, scopedName)
+        const objWat = `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`
+        return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
+      }
+    }
+
     const scopedName = ctx.declareVar(name, true)
     const val = gen(value)
     // Track array variables (type-based for gc:true, AST-based for gc:false)
@@ -2544,6 +2658,8 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   newCtx.allowMultiReturn = exported && !closureInfo
   // Analyze for type promotion within this function body
   newCtx.f64Vars = findF64Vars(bodyAst)
+  // Analyze for forward object schema inference within this function body
+  newCtx.inferredSchemas = inferObjectSchemas(bodyAst)
 
   // Find variables that need to be hoisted to environment (captured by nested closures)
   const hoistedVars = findHoistedVars(bodyAst, params)
