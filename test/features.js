@@ -247,6 +247,39 @@ test('postfix decrement', async () => {
   is(await evaluate('let x = 5; x--; x'), 4)
 })
 
+// Object schema inference from dynamic assignments ("forward schema inference" / "flow typing")
+test('object schema inference - empty object with assignments', async () => {
+  is(await evaluate('let a = {}; a.x = 1; a.x'), 1)
+  is(await evaluate('let a = {}; a.x = 5; a.y = 10; a.x + a.y'), 15)
+})
+
+test('object schema inference - partial literal with additional props', async () => {
+  is(await evaluate('let a = {x: 1}; a.y = 2; a.x + a.y'), 3)
+  is(await evaluate('let a = {x: 1, y: 2}; a.z = 3; a.x + a.y + a.z'), 6)
+})
+
+test('object schema inference - function assignment', async () => {
+  is(await evaluate('let a = {}; a.fn = (x) => x * 2; a.fn(5)'), 10)
+  is(await evaluate('let a = {}; a.x = 1; a.double = (n) => n * 2; a.double(a.x)'), 2)
+})
+
+test('object schema inference - nested block scope', async () => {
+  is(await evaluate('{ let a = {}; a.x = 5; a.x }'), 5)
+})
+
+test('object schema inference - multiple objects', async () => {
+  is(await evaluate('let a = {}; let b = {}; a.x = 1; b.y = 2; a.x + b.y'), 3)
+})
+
+test('object schema inference - in function body', async () => {
+  is(await evaluate('let f = () => { let a = {}; a.x = 5; return a.x; }; f()'), 5)
+})
+
+test('object schema inference - const declaration', async () => {
+  is(await evaluate('const a = {}; a.x = 1; a.x'), 1)
+  is(await evaluate('const a = {x: 1}; a.y = 2; a.x + a.y'), 3)
+})
+
 // Object property assignment
 test('object property assignment - basic', async () => {
   is(await evaluate('let obj = {x: 1}; obj.x = 5; obj.x'), 5)

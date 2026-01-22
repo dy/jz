@@ -595,3 +595,94 @@ export function findFuncReturnTypes(ast) {
 
   return returnTypes
 }
+
+/**
+ * Forward schema inference: Find object schemas from declarations + assignments
+ *
+ * Scans ahead to find all property assignments to object variables,
+ * building complete schemas even when objects are built incrementally:
+ *   let a = {};      // empty object
+ *   a.x = 1;         // adds 'x' to schema
+ *   a.fn = () => {}; // adds 'fn' to schema
+ * Result: a has schema ['x', 'fn']
+ *
+ * @param {any} ast - AST to analyze (function body or statement list)
+ * @returns {Map<string, {props: string[], closures: Set<string>}>} varName -> schema info
+ */
+export function inferObjectSchemas(ast) {
+  const schemas = new Map()  // varName -> { props: string[], closures: Set<string> }
+
+  // Track which variables are declared as objects (literal or empty)
+  function isObjectLiteral(node) {
+    return Array.isArray(node) && node[0] === '{'
+  }
+
+  function walk(node, scope = new Set()) {
+    if (!node || typeof node !== 'object') return
+    if (!Array.isArray(node)) return
+
+    const [op, ...args] = node
+
+    // Variable declaration: let a = {} or let a = {x: 1}
+    if ((op === 'let' || op === 'const' || op === 'var') && Array.isArray(args[0]) && args[0][0] === '=') {
+      const [, name, value] = args[0]
+      if (typeof name === 'string' && isObjectLiteral(value)) {
+        // Extract props from literal (may be empty)
+        const literalProps = value.slice(1).map(p => p[0])
+        const closures = new Set()
+        // Track which props are closures
+        for (const prop of value.slice(1)) {
+          if (Array.isArray(prop[1]) && prop[1][0] === '=>') {
+            closures.add(prop[0])
+          }
+        }
+        schemas.set(name, { props: literalProps, closures })
+        scope.add(name)
+      }
+      walk(value, scope)
+      return
+    }
+
+    // Assignment to object property: a.x = expr
+    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && args[0].length === 3) {
+      const [, objName, propName] = args[0]
+      if (typeof objName === 'string' && typeof propName === 'string' && scope.has(objName)) {
+        const info = schemas.get(objName)
+        if (info && !info.props.includes(propName)) {
+          info.props.push(propName)
+        }
+        // Track if this is a closure assignment
+        if (info && Array.isArray(args[1]) && args[1][0] === '=>') {
+          info.closures.add(propName)
+        }
+      }
+      walk(args[1], scope)
+      return
+    }
+
+    // Block scope: new scope for let/const
+    if (op === '{}' || op === ';') {
+      const blockScope = new Set(scope)
+      for (const stmt of args) {
+        walk(stmt, blockScope)
+      }
+      return
+    }
+
+    // Function body: new scope
+    if (op === '=>') {
+      const [params, body] = args
+      const funcScope = new Set()  // Fresh scope inside function
+      walk(body, funcScope)
+      return
+    }
+
+    // Recurse into all children
+    for (const arg of args) {
+      walk(arg, scope)
+    }
+  }
+
+  walk(ast, new Set())
+  return schemas
+}
