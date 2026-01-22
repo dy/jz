@@ -12,10 +12,10 @@ test('i32 preservation - integer literals', () => {
   // Integer literals should use i32.const
   const wat = getWat('0')
   ok(wat.includes('i32.const 0'), 'integer 0 should be i32')
-  
+
   const wat2 = getWat('42')
   ok(wat2.includes('i32.const 42'), 'integer 42 should be i32')
-  
+
   const wat3 = getWat('-1')
   ok(wat3.includes('i32.const'), 'integer -1 should be i32')
 })
@@ -24,7 +24,7 @@ test('i32 preservation - float literals use f64', () => {
   // Float literals should use f64.const
   const wat = getWat('3.14')
   ok(wat.includes('f64.const 3.14'), 'float 3.14 should be f64')
-  
+
   const wat2 = getWat('0.5')
   ok(wat2.includes('f64.const 0.5'), 'float 0.5 should be f64')
 })
@@ -34,10 +34,10 @@ test('i32 preservation - integer arithmetic with variables', () => {
   const wat = getWat('let a = 1; a + 2')
   ok(wat.includes('i32.add'), 'i32 + i32 should use i32.add')
   ok(wat.includes('(local $a i32)'), 'variable should be i32')
-  
+
   const wat2 = getWat('let x = 5; x - 3')
   ok(wat2.includes('i32.sub'), 'i32 - i32 should use i32.sub')
-  
+
   const wat3 = getWat('let y = 2; y * 3')
   ok(wat3.includes('i32.mul'), 'i32 * i32 should use i32.mul')
 })
@@ -46,7 +46,7 @@ test('i32 preservation - mixed arithmetic promotes to f64', () => {
   // i32 + f64 should promote to f64
   const wat = getWat('let a = 1; a + 0.5')
   ok(wat.includes('f64.add'), 'i32 + f64 should use f64.add')
-  
+
   const wat2 = getWat('let x = 1.5; x + 2')
   ok(wat2.includes('f64.add'), 'f64 + i32 should use f64.add')
 })
@@ -55,7 +55,7 @@ test('i32 preservation - comparisons produce i32', () => {
   // Comparisons should produce i32 result
   const wat = getWat('let a = 1; a < 2')
   ok(wat.includes('i32.lt_s'), 'i32 < i32 should use i32.lt_s')
-  
+
   const wat2 = getWat('let x = 5; x >= 3')
   ok(wat2.includes('i32.ge_s'), 'i32 >= i32 should use i32.ge_s')
 })
@@ -64,7 +64,7 @@ test('i32 preservation - bitwise always i32', () => {
   // Bitwise ops always work with i32
   const wat = getWat('let a = 5; a & 3')
   ok(wat.includes('i32.and'), 'bitwise & should use i32.and')
-  
+
   const wat2 = getWat('let x = 1; x << 2')
   ok(wat2.includes('i32.shl'), 'left shift should use i32.shl')
 })

@@ -65,16 +65,54 @@ test('pointer encoding - values below threshold pass through', async () => {
   is(mod.identity(1e10), 1e10)
 })
 
-test('pointer encoding - large values (above 2^48) are pointers', async () => {
-  // This tests that the threshold is working
-  const threshold = 2 ** 48
+test('NaN boxing - full f64 range preserved', async () => {
+  // NaN boxing uses quiet NaN for pointers, so ALL regular numbers work
+  const wasm = compile(`
+    export const identity = (x) => x
+  `)
+  const mod = await instantiate(wasm)
 
-  // A value just below threshold is a number
-  const belowThreshold = threshold - 1
-  ok(belowThreshold < threshold, 'test value below threshold')
+  // Large numbers that would have been pointers in old 2^48 system
+  const largeVal = 2 ** 48
+  is(mod.identity(largeVal), largeVal)
+  is(mod.identity(2 ** 52), 2 ** 52)
+  is(mod.identity(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER)
 
-  // A value at/above threshold would be treated as pointer
-  // (though creating such values in user code is unlikely)
+  // Special values
+  ok(Number.isNaN(mod.identity(NaN)), 'NaN preserved')
+  is(mod.identity(Infinity), Infinity)
+  is(mod.identity(-Infinity), -Infinity)
+})
+
+test('NaN boxing - NaN equality semantics', async () => {
+  // NaN should not equal itself (IEEE 754 preserved)
+  const wasm = compile(`
+    export const nanEq = () => NaN === NaN
+    export const nanNeq = () => NaN !== NaN
+    export const isNaN = (x) => x !== x
+  `)
+  const mod = await instantiate(wasm)
+
+  is(mod.nanEq(), 0, 'NaN === NaN should be false')
+  is(mod.nanNeq(), 1, 'NaN !== NaN should be true')
+  is(mod.isNaN(NaN), 1, 'x !== x pattern detects NaN')
+  is(mod.isNaN(5), 0, 'x !== x is false for numbers')
+})
+
+test('NaN boxing - pointer reference equality', async () => {
+  // Same pointer should equal itself
+  const wasm = compile(`
+    export const arrSelfEq = () => { let a = [1,2]; return a === a }
+    export const arrDiffEq = () => [1,2] === [1,2]
+    export const strSelfEq = () => { let s = "abc"; return s === s }
+    export const strSameEq = () => "abc" === "abc"
+  `)
+  const mod = await instantiate(wasm)
+
+  is(mod.arrSelfEq(), 1, 'same array ref should equal itself')
+  is(mod.arrDiffEq(), 0, 'different arrays not equal')
+  is(mod.strSelfEq(), 1, 'same string ref should equal itself')
+  is(mod.strSameEq(), 1, 'interned strings should equal')
 })
 
 test('backward compatibility - exports spread to top level', async () => {
@@ -136,17 +174,29 @@ test('raw access via wasm namespace for arrays', async () => {
   const rawMemory = mod.wasm._memory
 
   const ptr = rawAlloc(1, 3) // type 1 = F64_ARRAY, len 3
-  const offset = ptr % (2**32)
+
+  // NaN-boxed pointers: extract offset from bits (lower 31 bits)
+  const buf = new ArrayBuffer(8)
+  const f64View = new Float64Array(buf)
+  const u64View = new BigUint64Array(buf)
+  f64View[0] = ptr
+  const ptrBits = u64View[0]
+  const offset = Number(ptrBits & 0x7FFFFFFFn)
+
   const view = new Float64Array(rawMemory.buffer, offset, 3)
   view.set([10, 20, 30])
 
   // Call raw function with pointer
   const resultPtr = rawProcess(ptr)
 
-  // Decode result pointer
-  ok(resultPtr >= 2**48, 'result should be a pointer')
-  const resultOffset = resultPtr % (2**32)
-  const resultLen = Math.floor(resultPtr / 2**32) & 0xFFFF
+  // Decode result pointer (NaN-boxed format)
+  f64View[0] = resultPtr
+  const resultBits = u64View[0]
+  const NAN_BOX_MASK = 0x7FF8000000000000n
+  ok((resultBits & NAN_BOX_MASK) === NAN_BOX_MASK && resultBits !== NAN_BOX_MASK, 'result should be a pointer')
+
+  const resultOffset = Number(resultBits & 0x7FFFFFFFn)
+  const resultLen = Number((resultBits >> 31n) & 0xFFFFn)
   is(resultLen, 3, 'result length should be 3')
 
   const resultView = new Float64Array(rawMemory.buffer, resultOffset, resultLen)

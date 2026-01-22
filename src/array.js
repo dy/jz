@@ -490,7 +490,7 @@ export const flat = (rw, args) => {
   ctx.addLocal(outIdx.slice(1), 'i32')
   // First pass: count total elements
   // Second pass: copy elements
-  // For depth=1, check if element is pointer (>= 2^48), if so expand
+  // For depth=1, check if element is pointer (NaN-boxed), if so expand
   return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(`(local.get ${arr})`)})
     ;; Count total elements for allocation (depth=1 only for now)
@@ -499,7 +499,7 @@ export const flat = (rw, args) => {
     (block $count_done_${id} (loop $count_loop_${id}
       (br_if $count_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
-      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+      (if (call $__is_pointer (local.get ${elem}))
         (then (local.set ${outIdx} (i32.add (local.get ${outIdx}) (call $__ptr_len (local.get ${elem})))))
         (else (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
@@ -512,7 +512,7 @@ export const flat = (rw, args) => {
     (block $copy_done_${id} (loop $copy_loop_${id}
       (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
-      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+      (if (call $__is_pointer (local.get ${elem}))
         (then
           ;; It's a nested array - copy its elements
           (local.set ${innerLen} (call $__ptr_len (local.get ${elem})))
@@ -567,7 +567,7 @@ export const flatMap = (rw, args) => {
       (br_if $count_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
       (local.set ${elem} ${f64(gen(body))})
-      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+      (if (call $__is_pointer (local.get ${elem}))
         (then (local.set ${outIdx} (i32.add (local.get ${outIdx}) (call $__ptr_len (local.get ${elem})))))
         (else (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
@@ -581,7 +581,7 @@ export const flatMap = (rw, args) => {
       (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
       (local.set $${paramName} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
       (local.set ${elem} ${f64(gen(body))})
-      (if (f64.ge (local.get ${elem}) (f64.const 281474976710656))
+      (if (call $__is_pointer (local.get ${elem}))
         (then
           ;; Result is array - flatten it
           (local.set ${innerLen} (call $__ptr_len (local.get ${elem})))

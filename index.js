@@ -5,27 +5,47 @@ import * as watr from 'watr'
 import normalize from './src/normalize.js'
 import { compile as compileAst, assemble } from './src/compile.js'
 
-// Pointer encoding (Strategy B - Integer-Packed)
-// Format: type * 2^52 + schemaId * 2^48 + len * 2^32 + offset
-// Layout: [type:4][schemaId:4][len:16][offset:32] = 56 bits, fits in f64 precision
-// Type codes: 1=F64_ARRAY, 2=I32_ARRAY, 3=STRING, 6=REF_ARRAY, 7=CLOSURE
-// SchemaId: 0 = plain array, 1-15 = object schema (16 schemas max)
-const PTR_THRESHOLD = 2 ** 48
+// NaN-boxing pointer encoding (v5)
+// Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
+// Payload: [type:4][id:16][offset:31]
+// Type codes: 1=ARRAY, 2=ARRAY_MUT, 3=STRING, 4=OBJECT, 7=CLOSURE
+// id: len (immutable array/string), instanceId (mutable), schemaId (object)
+// Canonical NaN (0x7FF8000000000000) is NOT a pointer - payload must be non-zero
 
-// Check if f64 is a pointer (>= threshold)
-const isPtr = (v) => typeof v === 'number' && v >= PTR_THRESHOLD && v < Infinity
+const NAN_BOX_MASK = 0x7FF8000000000000n
+const CANONICAL_NAN = 0x7FF8000000000000n
+const buf = new ArrayBuffer(8)
+const f64View = new Float64Array(buf)
+const u64View = new BigUint64Array(buf)
 
-// Decode f64 pointer to { type, schemaId, len, offset }
-const decodePtr = (ptr) => ({
-  type: Math.floor(ptr / 2 ** 52) & 0xF,
-  schemaId: Math.floor(ptr / 2 ** 48) & 0xF,
-  len: Math.floor(ptr / 2 ** 32) & 0xFFFF,
-  offset: ptr % (2 ** 32) | 0
-})
+// Check if f64 is a NaN-boxed pointer (not canonical NaN)
+const isPtr = (v) => {
+  if (typeof v !== 'number') return false
+  f64View[0] = v
+  const bits = u64View[0]
+  // Must match NaN box pattern AND have non-zero payload
+  return (bits & NAN_BOX_MASK) === NAN_BOX_MASK && bits !== CANONICAL_NAN
+}
 
-// Encode { type, schemaId, len, offset } to f64 pointer
-const encodePtr = (type, schemaId, len, offset) =>
-  type * 2 ** 52 + schemaId * 2 ** 48 + len * 2 ** 32 + (offset >>> 0)
+// Decode NaN-boxed pointer to { type, id, offset }
+const decodePtr = (ptr) => {
+  f64View[0] = ptr
+  const bits = u64View[0]
+  return {
+    type: Number((bits >> 47n) & 0xFn),
+    id: Number((bits >> 31n) & 0xFFFFn),
+    offset: Number(bits & 0x7FFFFFFFn)
+  }
+}
+
+// Encode { type, id, offset } to NaN-boxed pointer
+const encodePtr = (type, id, offset) => {
+  u64View[0] = NAN_BOX_MASK |
+    (BigInt(type) << 47n) |
+    (BigInt(id) << 31n) |
+    BigInt(offset >>> 0)
+  return f64View[0]
+}
 
 // Compile WAT string to WASM binary
 export function compileWat(wat) {
@@ -46,28 +66,37 @@ function readCustomSection(module, name) {
 // Create JS value from memory pointer (handles arrays, objects, and strings)
 function ptrToValue(memory, ptr, schemas) {
   if (!isPtr(ptr)) return ptr // not a pointer, return as-is
-  const { type, schemaId, len, offset } = decodePtr(ptr)
+  const { type, id, offset } = decodePtr(ptr)
 
-  // Type 3 = STRING: read UTF-16 data
+  // Type 3 = STRING: read UTF-16 data (id = length)
   if (type === 3) {
-    const view = new Uint16Array(memory.buffer, offset, len)
+    const view = new Uint16Array(memory.buffer, offset, id)
     return String.fromCharCode(...view)
   }
 
-  // Type 1,6 = arrays or objects: read f64 data
-  const view = new Float64Array(memory.buffer, offset, len)
-  const arr = Array.from(view).map(v => ptrToValue(memory, v, schemas))
-
-  // If schemaId > 0, convert to object using schema
-  if (schemaId > 0 && schemas && schemas[schemaId]) {
-    const keys = schemas[schemaId]
+  // Type 4 = OBJECT: id = schemaId
+  if (type === 4 && schemas && schemas[id]) {
+    const keys = schemas[id]
+    const view = new Float64Array(memory.buffer, offset, keys.length)
     const obj = {}
     for (let i = 0; i < keys.length; i++) {
-      obj[keys[i]] = arr[i]
+      obj[keys[i]] = ptrToValue(memory, view[i], schemas)
     }
     return obj
   }
-  return arr
+
+  // Type 1 = ARRAY (immutable): id = length
+  // Type 2 = ARRAY_MUT: would need instance table lookup (not implemented in JS yet)
+  if (type === 1 || type === 2) {
+    // For ARRAY_MUT, we'd need to read instance table, but for now assume id = len
+    const len = type === 1 ? id : id // TODO: instance table lookup for type 2
+    const view = new Float64Array(memory.buffer, offset, len)
+    return Array.from(view).map(v => ptrToValue(memory, v, schemas))
+  }
+
+  // Unknown type, try to read as f64 array with id as length
+  const view = new Float64Array(memory.buffer, offset, id)
+  return Array.from(view).map(v => ptrToValue(memory, v, schemas))
 }
 
 // Create memory pointer from JS value (array or object)
@@ -89,20 +118,20 @@ function valueToPtr(exports, val, schemas) {
     }
     // Convert object to array
     const arr = keys.map(k => val[k])
-    const ptr = exports._alloc(1, arr.length) // type 1 = F64_ARRAY
+    const ptr = exports._alloc(4, arr.length) // type 4 = OBJECT
     const { offset } = decodePtr(ptr)
     const view = new Float64Array(exports._memory.buffer, offset, arr.length)
     view.set(arr)
-    // Re-encode with schemaId if found
+    // Re-encode with schemaId
     if (schemaId > 0) {
-      return encodePtr(1, schemaId, arr.length, offset)
+      return encodePtr(4, schemaId, offset)
     }
     return ptr
   }
 
   // Handle arrays
   if (!Array.isArray(val)) return val // not an array/object, pass through
-  const ptr = exports._alloc(1, val.length) // type 1 = F64_ARRAY
+  const ptr = exports._alloc(1, val.length) // type 1 = ARRAY
   const { offset } = decodePtr(ptr)
   const view = new Float64Array(exports._memory.buffer, offset, val.length)
   view.set(val)

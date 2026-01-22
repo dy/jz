@@ -13,32 +13,29 @@
  */
 
 /**
- * Pointer types for integer-packed mode
- * Layout: [type:8][schemaId:8][len:16][offset:32] = 64 bits
- * - type: pointer type (1-7)
- * - schemaId: object schema (0 = plain array, 1-255 = named schemas)
- * - len: current length (65535 max elements)
- * - offset: memory offset to data (full 32-bit range)
+ * Pointer types for NaN-boxing mode
+ *
+ * NaN box: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
+ * Payload: [type:4][id:16][offset:31]
+ * - type: pointer type (1-15)
+ * - id: type-specific (len for immutable, instanceId for mutable, schemaId for objects)
+ * - offset: memory byte offset (2GB addressable)
  *
  * Memory at offset: [data...] - pure data, no header
- * Capacity is implicit from length tier: nextPow2(max(len, 4))
  *
- * Objects are F64_ARRAY with schemaId > 0 (Strategy B).
- * Schema registry maps schemaId → property names.
- *
- * COW-like semantics: assignment copies pointer, mutations to
- * elements are shared, but length changes (push/pop) diverge.
+ * Instance table (for mutable types): InstanceTable[id] = { len: u16, schemaId: u16 }
+ * Schema registry: schemas[id] = ['prop1', 'prop2', ...] (compile-time)
  *
  * @enum {number}
  */
 export const PTR_TYPE = {
-  F64_ARRAY: 1,   // Float64 array (8 bytes/element), or object with schema
-  I32_ARRAY: 2,   // Int32 array (4 bytes/element), pure data
-  STRING: 3,      // UTF-16 string (2 bytes/char), immutable
-  I8_ARRAY: 4,    // Int8 array (1 byte/element), pure data
-  // 5 removed: objects are F64_ARRAY with schemaId > 0
-  REF_ARRAY: 6,   // Mixed-type array (f64 + type info), pure data
-  CLOSURE: 7      // Closure environment, pure data
+  ARRAY: 1,        // Immutable f64 array, len in pointer
+  ARRAY_MUT: 2,    // Mutable f64 array, len in instance table
+  STRING: 3,       // UTF-16 string, len in pointer, immutable
+  OBJECT: 4,       // Object, schemaId in pointer
+  BOXED_STRING: 5, // String with properties (schemaId, first slot = string ptr)
+  ARRAY_PROPS: 6,  // Array with named properties
+  CLOSURE: 7       // Closure, funcIdx + env offset
 }
 
 /**
