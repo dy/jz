@@ -165,7 +165,67 @@
   * [-] Proxy, Reflect (metaprogramming - not feasible)
   * [-] Symbol (not meaningful without runtime)
   * [-] Intl.* (too complex)
-  * [-] RegExp (need regex engine)
+* [ ] Optimizations
+  * [ ] **Codebase Audit - Critical Refactors**
+    * [ ] **compile.js monolith (3548 lines)** - split into focused modules:
+      * [x] Extract `genClosureValue`, `genClosureCall`, `callClosure` → closures.js (~150 lines)
+      * [x] Extract `genArrayDestructDecl`, `genObjectDestructDecl` → destruct.js (~200 lines)
+      * [ ] Extract `genAssign`, `genLoopInit` → assign.js (~300 lines) - deferred: tightly coupled to ctx/gen
+      * [ ] Extract `generateFunction`, `generateFunctions` → functions.js (~400 lines) - deferred: tightly coupled
+      * [x] Keep operators object and core generate() in compile.js
+    * [ ] **Module-level mutable state** - `export let ctx, gen` anti-pattern:
+      * [ ] Pass ctx explicitly to all functions (like stdlib does) - requires significant refactor
+      * [ ] Eliminates hidden coupling, enables parallel compilation
+    * [x] **Object.assign boxed type duplication** (lines 440-570):
+      * [x] 4 near-identical blocks for boxed_string/boxed_number/boxed_boolean/array_props
+      * [x] Extract common `allocateBoxed(target, props, boxedType)` helper
+    * [x] **let/const forward schema inference duplication** (lines 1800-2150):
+      * [x] ~100 lines duplicated between `'let'` and `'const'` operators
+      * [x] Extract `genBoxedInferredDecl()` and `genObjectInferredDecl()` helpers
+    * [ ] **Inconsistent error messages** - some throw Error, some console.warn:
+      * [ ] Create `ctx.warn(code, msg)` and `ctx.error(code, msg)` helpers
+      * [ ] Consistent format: `jz: [${code}] ${msg}`
+  * [ ] **Architecture Improvements**
+    * [ ] **Dead code in operators**:
+      * [ ] `'?.'` operator duplicates logic, barely used - consolidate with `'.'`
+      * [ ] `join()` returns 0 (placeholder) - remove or implement
+    * [ ] **Type system gaps**:
+      * [ ] `types.js` `wat()` creates boxed strings but schema field overloaded (type vs schema vs elemType)
+      * [ ] Add explicit `schema?: number | undefined`, `elemType?: number | undefined` fields
+    * [ ] **Redundant type checks**:
+      * [ ] `isF64()`, `isI32()`, `isString()` repeated inline many places
+      * [ ] `bothI32()` helper exists but pattern `const va = gen(a), vb = gen(b)` repeated 20+ times
+      * [ ] Extract `binaryOp(a, b, i32Op, f64Op)` helper
+    * [ ] **Memory helpers scattered**:
+      * [ ] `arrGet`, `objGet`, `envGet` are similar but not unified
+      * [ ] `memory.js` has both low-level (strCharAt) and high-level (mkArrayLiteral) - split concerns
+  * [ ] **Performance Bottlenecks**
+    * [ ] **Pre-analysis passes** run 4 times on full AST:
+      * [ ] `findF64Vars`, `findFuncReturnTypes`, `inferObjectSchemas`, `analyzeScope`
+      * [ ] Merge into single AST walk that collects all info
+    * [ ] **String interning** - `ctx.internString` allocates new string data for each call
+      * [ ] Check if string already exists before re-encoding
+    * [ ] **Local variable lookups** - `ctx.getLocal(name)` searches scopes array each time
+      * [ ] Cache lookups in generate() context for hot paths
+  * [ ] **Canonical Compiler Patterns Missing**
+    * [ ] **No IR** - AST goes directly to WAT strings
+      * [ ] Add simple IR: `{op, type, args, meta}` enables optimizations
+      * [ ] Constant folding, dead code elimination, CSE would be easy
+    * [ ] **No visitor pattern** - `operators` object with inline logic
+      * [ ] Visitor would allow optimization passes, linting, instrumentation
+    * [ ] **generateFunction** recreates context manually
+      * [ ] Add `ctx.fork()` method for cleaner child context creation
+  * [ ] **Code Quality**
+    * [x] **Magic numbers**:
+      * [x] `65536` (instance table end) appears in assemble.js, memory.js
+      * [x] `256` (string stride), `8` (f64 size) scattered
+      * [x] Extract to constants in types.js (INSTANCE_TABLE_END, STRING_STRIDE, F64_SIZE)
+    * [x] **Inconsistent naming**:
+      * [x] `loopCounter` used for loop IDs but also array/temp IDs
+      * [x] Rename to `uniqueId` (done)
+    * [ ] **Large inline WAT strings** - template literals with 50+ lines:
+      * [ ] Hard to read, no syntax highlighting
+      * [ ] Consider wat template helper or external wat files for stdlib
 * [ ] prohibit arguments and other implicit constants
   * [ ] warn about using null or undefined (either or)
 * [ ] incorporate best sane eslint practices with warning
@@ -220,6 +280,14 @@
     * [x] Destructuring assignment via multi-value returns
     * [x] Swap/rotate operations
     * [ ] Error+value pattern (result i32 f64)
+  * [ ] **Unify loop code generation** (array.js + string.js):
+    * [ ] 15 nearly identical loop patterns (map, filter, find, every, some, etc.)
+    * [ ] Extract `genIterLoop(arr, callback, {init, test, update, result})` helper
+    * [ ] Would reduce array.js ~600→~200 lines, string.js ~400→~150 lines
+  * [ ] **Static array optimization underutilized**:
+    * [ ] `isConstant()` only used for array literals
+    * [ ] Extend to object literals `{a: 1, b: 2}` → static data segment
+    * [ ] String concatenation of constants → single static string
   * [ ] `tailcall` - tail call optimization
     * [ ] Enable stack-safe recursion
     * [ ] State machine patterns

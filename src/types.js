@@ -40,6 +40,14 @@ export const PTR_TYPE = {
   CLOSURE: 7,      // Closure, funcIdx + env offset
 }
 
+// === Memory layout constants ===
+/** Instance table size: 16K instances * 4 bytes = 64KB, starts at offset 0 */
+export const INSTANCE_TABLE_END = 65536
+/** String interning stride: max string length * 2 (UTF-16) */
+export const STRING_STRIDE = 256
+/** F64 element size in bytes */
+export const F64_SIZE = 8
+
 /**
  * Element types for TypedArrays
  * Stride: [1, 1, 2, 2, 4, 4, 4, 8][elemType]

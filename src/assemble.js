@@ -6,6 +6,7 @@
  */
 
 import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
+import { INSTANCE_TABLE_END, STRING_STRIDE } from './types.js'
 
 /**
  * Assemble a complete WAT module
@@ -42,16 +43,15 @@ export function assemble(bodyWat, ctx = {
 
   // === Memory ===
   // First 64KB reserved for instance table (16K instances * 4 bytes)
-  // Static data starts at 65536, heap after static data
+  // Static data starts at INSTANCE_TABLE_END, heap after static data
   // 2 pages minimum (128KB) to fit instance table + static data
 
   wat += '  (memory (export "_memory") 2)\n'
-  const instanceTableEnd = 65536  // 64KB reserved for instance table
-  // Calculate where strings end: each string gets 256 bytes
+  // Calculate where strings end: each string gets STRING_STRIDE bytes
   const stringCount = Object.keys(ctx.strings).length
-  const stringsEnd = instanceTableEnd + stringCount * 256
+  const stringsEnd = INSTANCE_TABLE_END + stringCount * STRING_STRIDE
   // Heap starts after strings and static arrays
-  const heapStart = Math.max(stringsEnd, ctx.staticOffset || instanceTableEnd, instanceTableEnd)
+  const heapStart = Math.max(stringsEnd, ctx.staticOffset || INSTANCE_TABLE_END, INSTANCE_TABLE_END)
   wat += `  (global $__heap (mut i32) (i32.const ${heapStart}))\n`
 
   // === Data segments ===
@@ -63,7 +63,7 @@ export function assemble(bodyWat, ctx = {
     const endByte = startByte + info.length * 2
     const hex = ctx.stringData.slice(startByte, endByte)
       .map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
-    const memOffset = instanceTableEnd + info.id * 256
+    const memOffset = INSTANCE_TABLE_END + info.id * STRING_STRIDE
     wat += `  (data (i32.const ${memOffset}) "${hex}")\n`
   }
 

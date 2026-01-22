@@ -61,13 +61,15 @@ const stringMethods = {
   split: string.split, replace: string.replace, search: string.search, match: string.match
 }
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, wat, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, findF64Vars, findFuncReturnTypes, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
 import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
 import { TYPED_ARRAY_METHODS } from './typedarray.js'
+import { genClosureCall, genClosureCallExpr, genClosureValue } from './closures.js'
+import { genArrayDestructDecl, genObjectDestructDecl } from './destruct.js'
 
 // Check if type is array-like (for aliasing warnings)
 const isArrayType = t => t === 'array' || t === 'refarray'
@@ -321,6 +323,196 @@ function genIdent(name) {
   throw new Error(`Unknown identifier: ${name}`)
 }
 
+/**
+ * Create a boxed primitive or array with properties (Object.assign implementation).
+ * Unified handler for boxed_string, boxed_number, boxed_boolean types.
+ *
+ * @param {string} boxedType - Result type: 'boxed_string', 'boxed_number', 'boxed_boolean'
+ * @param {string} schemaPrefix - Schema marker: '__string__', '__number__', '__boolean__'
+ * @param {object} target - The primitive value (string/number/boolean)
+ * @param {any[]} props - Array of [propName, propValue] pairs from source object
+ * @param {string} tmpPrefix - Prefix for temp variables
+ * @returns {object} Typed WAT value
+ */
+function allocateBoxed(boxedType, schemaPrefix, target, props, tmpPrefix) {
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+
+  const propKeys = props.map(p => p[0])
+  const schemaId = ctx.objectCounter + 1
+  ctx.objectCounter++
+  ctx.objectSchemas[schemaId] = [schemaPrefix, ...propKeys]
+
+  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+  ctx.objectPropTypes[schemaId] = { [schemaPrefix]: { type: schemaPrefix.slice(2, -2) } }
+
+  const propVals = [String(f64(target))]  // First slot = primitive value
+  for (let i = 0; i < props.length; i++) {
+    const g = gen(props[i][1])
+    propVals.push(String(f64(g)))
+    // Track property types
+    if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
+    else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
+    else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+  }
+
+  const id = ctx.uniqueId++
+  const tmp = `$_${tmpPrefix}_${id}`
+  ctx.addLocal(tmp.slice(1), 'f64')
+
+  let stores = ''
+  for (let i = 0; i < propVals.length; i++) {
+    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
+  }
+
+  return wat(`(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`, boxedType, schemaId)
+}
+
+/**
+ * Generate declaration with forward-inferred schema for Object.assign on primitives.
+ * Handles: let s = Object.assign('hello', {type: 1}) where later Object.assign adds more props
+ *
+ * @param {string} name - Variable name
+ * @param {any[]} value - Object.assign call AST node
+ * @param {object} inferred - Inferred schema info from ctx.inferredSchemas
+ * @param {boolean} isConst - true for const, false for let
+ * @returns {object|null} Typed WAT value or null if not applicable
+ */
+function genBoxedInferredDecl(name, value, inferred, isConst) {
+  if (!inferred.isBoxed) return null
+
+  const argsNode = value[2]
+  const targetAst = argsNode[1], sourceAst = argsNode[2]
+
+  if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
+    throw new Error('Object.assign source must be object literal')
+  }
+  const litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
+    sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
+  const literalKeys = litProps.map(p => p[0])
+  const allKeys = [...new Set([...literalKeys, ...inferred.props])]
+
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  const schemaId = ctx.objectCounter + 1
+  ctx.objectCounter++
+  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+  ctx.objectPropTypes[schemaId] = {}
+
+  const target = gen(targetAst)
+  let prefix, boxedType
+  if (isString(target)) {
+    prefix = '__string__'
+    boxedType = 'boxed_string'
+    ctx.objectPropTypes[schemaId].__string__ = { type: 'string' }
+  } else if (targetAst === 'true' || targetAst === 'false') {
+    prefix = '__boolean__'
+    boxedType = 'boxed_boolean'
+    ctx.objectPropTypes[schemaId].__boolean__ = { type: 'boolean' }
+  } else if (isI32(target) || isF64(target)) {
+    prefix = '__number__'
+    boxedType = 'boxed_number'
+    ctx.objectPropTypes[schemaId].__number__ = { type: 'number' }
+  } else if (isArray(target)) {
+    return null  // array_props handled by different path
+  } else {
+    return null
+  }
+
+  ctx.objectSchemas[schemaId] = [prefix, ...allKeys]
+  const vals = [String(f64(target))]
+  for (const key of allKeys) {
+    const litProp = litProps.find(p => p[0] === key)
+    if (litProp) {
+      const g = gen(litProp[1])
+      vals.push(String(f64(g)))
+      if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+      else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
+    } else {
+      vals.push('(f64.const 0)')  // Placeholder for inferred-only props
+    }
+  }
+
+  const id = ctx.uniqueId++
+  const tmp = `$_bx_${id}`
+  ctx.addLocal(tmp.slice(1), 'f64')
+  let stores = ''
+  for (let i = 0; i < vals.length; i++) {
+    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+  }
+  const scopedName = ctx.declareVar(name, isConst)
+  ctx.addLocal(name, boxedType, schemaId, scopedName)
+  const objWat = `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`
+  return wat(`(local.tee $${scopedName} ${objWat})`, boxedType, schemaId)
+}
+
+/**
+ * Generate declaration with forward-inferred schema for object literals.
+ * Handles: let a = {} where a.x = 1; a.y = 2; adds properties later
+ *
+ * @param {string} name - Variable name
+ * @param {any[]} value - Object literal AST node
+ * @param {object} inferred - Inferred schema info from ctx.inferredSchemas
+ * @param {boolean} isConst - true for const, false for let
+ * @returns {object|null} Typed WAT value or null if not applicable
+ */
+function genObjectInferredDecl(name, value, inferred, isConst) {
+  const literalProps = value.slice(1)
+  const literalKeys = literalProps.map(p => p[0])
+  const allKeys = [...new Set([...literalKeys, ...inferred.props])]
+
+  if (allKeys.length === 0) return null
+
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+  const schemaId = ctx.objectCounter + 1
+  ctx.objectCounter++
+  ctx.objectSchemas[schemaId] = allKeys
+  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+  ctx.objectPropTypes[schemaId] = {}
+  for (const key of inferred.closures) {
+    ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+  }
+
+  const vals = []
+  for (const key of allKeys) {
+    const literalProp = literalProps.find(p => p[0] === key)
+    if (literalProp) {
+      const g = gen(literalProp[1])
+      vals.push(String(f64(g)))
+      if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
+        ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
+      } else if (g.type === 'object' && g.schema) {
+        ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+      }
+    } else {
+      vals.push('(f64.const 0)')  // Placeholder for inferred-only props
+    }
+  }
+
+  const id = ctx.uniqueId++
+  const tmp = `$_obj_${id}`
+  ctx.addLocal(tmp.slice(1), 'f64')
+  let stores = ''
+  for (let i = 0; i < vals.length; i++) {
+    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
+  }
+
+  const scopedName = ctx.declareVar(name, isConst)
+  ctx.addLocal(name, 'object', schemaId, scopedName)
+  const objWat = `(block (result f64)
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
+      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
+      ${stores}(local.get ${tmp}))`
+  return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
+}
+
 
 /**
  * Resolve a function/method call to WAT code.
@@ -455,36 +647,8 @@ function resolveCall(namespace, name, args, receiver = null) {
       const propKeys = props.map(p => p[0])
 
       if (isString(target)) {
-        // BOXED_STRING: Schema = ['__string__', ...props], Memory = [stringPtr, ...propVals]
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = ['__string__', ...propKeys]
-        // Track property types
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = { __string__: { type: 'string' } }
-        const propVals = [String(target)]  // First slot = string pointer
-        for (let i = 0; i < props.length; i++) {
-          const g = gen(props[i][1])
-          propVals.push(String(f64(g)))
-          // Track prop type
-          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
-          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
-          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
-        }
-        const id = ctx.loopCounter++
-        const tmp = `$_bstr_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < propVals.length; i++) {
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
-        }
-        // Allocate as OBJECT with __string__ as first schema key
-        return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`, 'boxed_string', schemaId)
+        // BOXED_STRING: Schema = ['__string__', ...props]
+        return allocateBoxed('boxed_string', '__string__', target, props, 'bstr')
       }
 
       if (isArray(target)) {
@@ -506,7 +670,7 @@ function resolveCall(namespace, name, args, receiver = null) {
           else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
           else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
         }
-        const id = ctx.loopCounter++
+        const id = ctx.uniqueId++
         const tmp = `$_aprp_${id}`, tmpLen = `$_alen_${id}`, tmpInstId = `$_ainst_${id}`
         ctx.addLocal(tmp.slice(1), 'f64')
         ctx.addLocal(tmpLen.slice(1), 'i32')
@@ -533,63 +697,13 @@ function resolveCall(namespace, name, args, receiver = null) {
       const isNumTarget = (isI32(target) || isF64(target)) && !isBoolTarget
 
       if (isBoolTarget) {
-        // BOXED_BOOLEAN: Schema = ['__boolean__', ...props], Memory = [boolValue, ...propVals]
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = ['__boolean__', ...propKeys]
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = { __boolean__: { type: 'boolean' } }
-        const propVals = [String(f64(target))]  // First slot = boolean as f64
-        for (let i = 0; i < props.length; i++) {
-          const g = gen(props[i][1])
-          propVals.push(String(f64(g)))
-          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
-          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
-          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
-        }
-        const id = ctx.loopCounter++
-        const tmp = `$_bbool_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < propVals.length; i++) {
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
-        }
-        return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`, 'boxed_boolean', schemaId)
+        // BOXED_BOOLEAN: Schema = ['__boolean__', ...props]
+        return allocateBoxed('boxed_boolean', '__boolean__', target, props, 'bbool')
       }
 
       if (isNumTarget) {
-        // BOXED_NUMBER: Schema = ['__number__', ...props], Memory = [numValue, ...propVals]
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = ['__number__', ...propKeys]
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = { __number__: { type: 'number' } }
-        const propVals = [String(f64(target))]  // First slot = number as f64
-        for (let i = 0; i < props.length; i++) {
-          const g = gen(props[i][1])
-          propVals.push(String(f64(g)))
-          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
-          else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
-          else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
-        }
-        const id = ctx.loopCounter++
-        const tmp = `$_bnum_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < propVals.length; i++) {
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${propVals[i]})\n      `
-        }
-        return wat(`(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`, 'boxed_number', schemaId)
+        // BOXED_NUMBER: Schema = ['__number__', ...props]
+        return allocateBoxed('boxed_number', '__number__', target, props, 'bnum')
       }
 
       // Object.assign on existing object/boxed variable: extend with new properties
@@ -795,127 +909,13 @@ function resolveCall(namespace, name, args, receiver = null) {
 }
 
 // =============================================================================
-// CLOSURE CALLS
-// =============================================================================
-
-/**
- * Generate WAT for calling a closure stored in a variable.
- * Handles both gc:true (struct-based closures) and gc:false (NaN-boxed closures).
- *
- * @param {string} name - Variable name containing the closure
- * @param {any[]} args - Array of AST argument nodes
- * @returns {object} Typed WAT value for the call result
- * @example genClosureCall('add', [[null, 1], [null, 2]]) → call to closure in $add with args 1, 2
- */
-function genClosureCall(name, args) {
-  const argWats = args.map(a => String(f64(gen(a)))).join(' ')
-  const closureVal = genIdent(name)
-  const isNullable = isClosure(closureVal) // nullable if typed as closure
-  return wat(callClosure(ctx, String(closureVal), argWats, args.length, isNullable), 'f64')
-}
-
-/**
- * Generate WAT for calling a closure from an expression result.
- * Handles curried calls like a(1)(2) where a(1) returns a closure.
- *
- * @param {object} closureVal - Typed WAT value containing closure (from previous call)
- * @param {any[]} args - Array of AST argument nodes
- * @returns {object} Typed WAT value for the call result
- * @example // For code: add(1)(2) where add = x => y => x + y
- *          // First call: genClosureCall('add', [[null,1]]) returns closure
- *          // Second call: genClosureCallExpr(closure, [[null,2]]) returns f64
- */
-function genClosureCallExpr(closureVal, args) {
-  const argWats = args.map(a => String(f64(gen(a)))).join(' ')
-  const remainingDepth = closureVal.schema?.closureDepth ?? 0
-  const returnsClosure = remainingDepth > 0
-  const resultType = returnsClosure ? 'closure' : 'f64'
-  const code = callClosure(ctx, String(closureVal), argWats, args.length, true, returnsClosure)
-  return wat(code, resultType, returnsClosure ? { closureDepth: remainingDepth - 1 } : undefined)
-}
-
-// =============================================================================
-// CLOSURE CREATION
-// =============================================================================
-
-/**
- * Create a closure value: funcref + environment.
- * gc:true: struct { funcref fn, anyref env }
- * gc:false: NaN-boxed with table index + env pointer
- *
- * @param {string} fnName - Name of the generated function
- * @param {string} envType - WASM type name for environment struct (e.g. '$env0')
- * @param {object[]} envFields - Array of {name, index, type} for captured variables
- * @param {boolean} usesOwnEnv - True if closure uses parent's own env directly
- * @param {number} arity - Number of parameters (for functype)
- * @returns {object} Typed WAT value with type 'closure'
- * @example genClosureValue('__anon0', '$env0', [{name:'x', index:0, type:'f64'}], false, 1)
- */
-function genClosureValue(fnName, envType, envFields, usesOwnEnv, arity) {
-  // Memory-based closure: NaN-encode table index + env pointer
-  ctx.usedFuncTable = true
-  ctx.usedMemory = true
-  if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
-  ctx.usedFuncTypes.add(arity)
-
-  // Add function to table and get its index
-  let tableIdx = ctx.funcTableEntries.indexOf(fnName)
-  if (tableIdx === -1) {
-    tableIdx = ctx.funcTableEntries.length
-    ctx.funcTableEntries.push(fnName)
-  }
-
-  // Build environment in memory
-  if (!envType || envFields.length === 0) {
-    // No env - encode just table index, env length=0
-    return wat(`(f64.reinterpret_i64 (i64.or
-      (i64.const 0x7FF0000000000000)
-      (i64.or
-        (i64.shl (i64.const ${tableIdx}) (i64.const 32))
-        (i64.const 0))))`, 'closure')
-  }
-
-  // Allocate env in memory
-  const id = ctx.loopCounter++
-  const tmpEnv = `$_closenv_${id}`
-  ctx.addLocal(tmpEnv.slice(1), 'f64')
-
-  // Store captured values in env
-  let stores = ''
-  for (let i = 0; i < envFields.length; i++) {
-    const f = envFields[i]
-    let val
-    if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
-      const offset = ctx.hoistedVars[f.name].index * 8
-      val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
-    } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
-      const offset = ctx.capturedVars[f.name].index * 8
-      val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
-    } else {
-      const loc = ctx.getLocal(f.name)
-      if (loc) val = `(local.get $${loc.scopedName})`
-      else {
-        const glob = ctx.getGlobal(f.name)
-        if (glob) val = `(global.get $${f.name})`
-        else throw new Error(`Cannot capture ${f.name}: not found`)
-      }
-    }
-    stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
-  }
-
-  // Create closure: NaN-box with [0x7FF0][envLen:16][tableIdx:16][envOffset:32]
-  // This custom closure encoding stores envLen and tableIdx in upper bits for call_indirect
-  // Note: This doesn't use unified __mkptr since closures need special decoding in callClosure
-  return wat(`(block (result f64)
-    (local.set ${tmpEnv} (call $__alloc (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length})))
-    ${stores}(f64.reinterpret_i64 (i64.or
-      (i64.const 0x7FF0000000000000)
-      (i64.or
-        (i64.shl (i64.const ${tableIdx}) (i64.const 32))
-        (i64.or
-          (i64.shl (i64.extend_i32_u (call $__ptr_id (local.get ${tmpEnv}))) (i64.const 48))
-          (i64.extend_i32_u (call $__ptr_offset (local.get ${tmpEnv}))))))))`, 'closure')
-}
+// Closure functions imported from ./closures.js:
+// genClosureCall, genClosureCallExpr, genClosureValue
+// Wrappers to use module-level ctx and gen
+const _genClosureCall = (name, args) => genClosureCall(ctx, gen, genIdent, name, args)
+const _genClosureCallExpr = (closureVal, args) => genClosureCallExpr(ctx, gen, closureVal, args)
+const _genClosureValue = (fnName, envType, envFields, usesOwnEnv, arity) =>
+  genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, arity)
 
 // =============================================================================
 // OPERATORS
@@ -1007,7 +1007,7 @@ const operators = {
       const callee = gen(fn)
       if (isClosure(callee)) {
         // Call the closure value from the expression
-        return genClosureCallExpr(callee, args)
+        return _genClosureCallExpr(callee, args)
       }
       throw new Error(`Cannot call non-closure expression: ${JSON.stringify(fn)}`)
     }
@@ -1021,7 +1021,7 @@ const operators = {
       const hoisted = ctx.hoistedVars && name in ctx.hoistedVars
       if (loc || captured || hoisted) {
         // This is calling a closure value stored in a variable
-        return genClosureCall(name, args)
+        return _genClosureCall(name, args)
       }
     }
 
@@ -1041,7 +1041,7 @@ const operators = {
     // Handle spread: [...arr1, x, ...arr2, y] -> concat arrays and elements
     ctx.usedArrayType = true
     ctx.usedMemory = true
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
       const parts = []
       for (const e of elements) {
         if (Array.isArray(e) && e[0] === '...') {
@@ -1076,7 +1076,7 @@ const operators = {
       for (const p of parts) {
         if (p.spread) {
           // Copy spread array
-          const loopId = ctx.loopCounter++
+          const loopId = ctx.uniqueId++
           const tmpSrc = `$_ssrc_${loopId}`
           const tmpI = `$_si_${loopId}`
           ctx.addLocal(tmpSrc.slice(1), 'f64')
@@ -1133,7 +1133,7 @@ const operators = {
         ctx.objectPropTypes[schemaId][key] = { type: 'string' }
       }
     }
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const tmp = `$_obj_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
     let stores = ''
@@ -1438,7 +1438,7 @@ const operators = {
     }
 
     // Return closure value
-    return genClosureValue(closureName, envType, envFields, allFromOwnEnv, fnParams.length)
+    return _genClosureValue(closureName, envType, envFields, allFromOwnEnv, fnParams.length)
   },
 
   'return'([value]) {
@@ -1673,7 +1673,7 @@ const operators = {
       }
       else code += `(drop ${gen(init)})\n    `
     }
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const result = `$_for_result_${id}`
     ctx.addLocal(result.slice(1), 'f64')
 
@@ -1694,7 +1694,7 @@ const operators = {
 
   // While loop
   'while'([cond, body]) {
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const result = `$_while_result_${id}`
     ctx.addLocal(result.slice(1), 'f64')
     return wat(`(block $break_${id} (loop $continue_${id}
@@ -1706,7 +1706,7 @@ const operators = {
 
   // Switch statement
   'switch'([discriminant, ...cases]) {
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const result = `$_switch_result_${id}`
     const discrim = `$_switch_discrim_${id}`
     ctx.addLocal(result.slice(1), 'f64')
@@ -1723,12 +1723,12 @@ const operators = {
     for (const caseNode of cases) {
       if (Array.isArray(caseNode) && caseNode[0] === 'case') {
         const [, test, consequent] = caseNode
-        const caseId = ctx.loopCounter++
+        const caseId = ctx.uniqueId++
         code += `(block $case_${caseId}\n        `
         code += `(br_if $case_${caseId} ${f64ops.ne(wat(`(local.get ${discrim})`, 'f64'), gen(test))})\n        `
         // Execute consequent - handle as statement sequence
-        const saveId = ctx.loopCounter
-        ctx.loopCounter = switchId + 1  // So break finds $break_{switchId}
+        const saveId = ctx.uniqueId
+        ctx.uniqueId = switchId + 1  // So break finds $break_{switchId}
 
         // If consequent is a statement list (;), execute each statement
         if (Array.isArray(consequent) && consequent[0] === ';') {
@@ -1748,7 +1748,7 @@ const operators = {
           code += `(local.set ${result} ${f64(gen(consequent))})\n        `
         }
 
-        ctx.loopCounter = saveId  // Restore
+        ctx.uniqueId = saveId  // Restore
         code += `)\n      `
       } else if (Array.isArray(caseNode) && caseNode[0] === 'default') {
         const [, consequent] = caseNode
@@ -1795,12 +1795,12 @@ const operators = {
 
     // Array destructuring in declaration: let [a, b] = [1, 2]
     if (Array.isArray(name) && name[0] === '[]') {
-      return genArrayDestructDecl(name, value, false)
+      return _genArrayDestructDecl(name, value, false)
     }
 
     // Object destructuring in declaration: let {a, b} = {a: 1, b: 2}
     if (Array.isArray(name) && name[0] === '{}') {
-      return genObjectDestructDecl(name, value, false)
+      return _genObjectDestructDecl(name, value, false)
     }
 
     if (typeof name !== 'string') throw new Error('let requires simple identifier or destructuring pattern')
@@ -1825,94 +1825,15 @@ const operators = {
     }
 
     // Forward schema inference for Object.assign on primitives
-    // This handles: let s = Object.assign('hello', {type: 1}); Object.assign(s, {extra: 2})
-    // Forward inference knows all props that will be added, so allocate space for all
     const isObjAssign = Array.isArray(value) && value[0] === '()' &&
       Array.isArray(value[1]) && value[1][0] === '.' &&
       value[1][1] === 'Object' && value[1][2] === 'assign'
     if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-      const inferred = ctx.inferredSchemas.get(name)
-      if (inferred.isBoxed) {
-        // Extract target and source from: ['()', ['.', 'Object', 'assign'], [',', target, source]]
-        const argsNode = value[2]
-        const targetAst = argsNode[1], sourceAst = argsNode[2]
-
-        // Source must be object literal
-        if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
-          throw new Error('Object.assign source must be object literal')
-        }
-        const litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
-          sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
-        const literalKeys = litProps.map(p => p[0])
-
-        // All keys: literal props + inferred props (from later Object.assign calls)
-        const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = {}
-
-        // Determine boxed type prefix
-        const target = gen(targetAst)
-        let prefix, boxedType
-        if (isString(target)) {
-          prefix = '__string__'
-          boxedType = 'boxed_string'
-          ctx.objectPropTypes[schemaId].__string__ = { type: 'string' }
-        } else if (targetAst === 'true' || targetAst === 'false') {
-          prefix = '__boolean__'
-          boxedType = 'boxed_boolean'
-          ctx.objectPropTypes[schemaId].__boolean__ = { type: 'boolean' }
-        } else if (isI32(target) || isF64(target)) {
-          prefix = '__number__'
-          boxedType = 'boxed_number'
-          ctx.objectPropTypes[schemaId].__number__ = { type: 'number' }
-        } else if (isArray(target)) {
-          prefix = null  // array_props uses different schema format
-          boxedType = 'array_props'
-        }
-
-        if (prefix) {
-          // Schema: [prefix, ...allKeys]
-          ctx.objectSchemas[schemaId] = [prefix, ...allKeys]
-          // Generate values: first slot = primitive, then props (zero for inferred-only)
-          const vals = [String(f64(target))]
-          for (const key of allKeys) {
-            const litProp = litProps.find(p => p[0] === key)
-            if (litProp) {
-              const g = gen(litProp[1])
-              vals.push(String(f64(g)))
-              if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-              else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-            } else {
-              vals.push('(f64.const 0)')  // Placeholder for inferred-only props
-            }
-          }
-
-          const id = ctx.loopCounter++
-          const tmp = `$_bx_${id}`
-          ctx.addLocal(tmp.slice(1), 'f64')
-          let stores = ''
-          for (let i = 0; i < vals.length; i++) {
-            stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-          }
-          const scopedName = ctx.declareVar(name, false)
-          ctx.addLocal(name, boxedType, schemaId, scopedName)
-          const objWat = `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
-          return wat(`(local.tee $${scopedName} ${objWat})`, boxedType, schemaId)
-        }
-        // array_props handled below by normal Object.assign path
-      }
+      const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
+      if (result) return result
     }
 
     // Static namespace pattern: let ns = { fn1: (x) => ..., fn2: (a,b) => ... }
-    // All properties must be arrow functions without captures
     if (Array.isArray(value) && value[0] === '{') {
       const props = value.slice(1)
       const isNamespace = props.length > 0 && props.every(([key, val]) =>
@@ -1944,62 +1865,10 @@ const operators = {
       }
     }
 
-    // Forward schema inference: check if we have inferred props for this variable
-    // This handles: let a = {}; a.x = 1; a.y = 2; → schema ['x', 'y']
+    // Forward schema inference for object literals
     if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-      const inferred = ctx.inferredSchemas.get(name)
-      const literalProps = value.slice(1)
-      const literalKeys = literalProps.map(p => p[0])
-      // Merge literal props with inferred props (inferred may add more)
-      const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-      if (allKeys.length > 0) {
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = allKeys
-        // Track closures
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = {}
-        for (const key of inferred.closures) {
-          ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-        }
-
-        // Generate values for literal props, zeros for inferred-only props
-        const vals = []
-        for (const key of allKeys) {
-          const literalProp = literalProps.find(p => p[0] === key)
-          if (literalProp) {
-            const g = gen(literalProp[1])
-            vals.push(String(f64(g)))
-            // Track prop types from literal
-            if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
-              ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-            } else if (g.type === 'object' && g.schema) {
-              ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-            }
-          } else {
-            vals.push('(f64.const 0)')  // Placeholder for inferred-only props
-          }
-        }
-
-        const id = ctx.loopCounter++
-        const tmp = `$_obj_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < vals.length; i++) {
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-        }
-
-        const scopedName = ctx.declareVar(name, false)
-        ctx.addLocal(name, 'object', schemaId, scopedName)
-        const objWat = `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
-        return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
-      }
+      const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
+      if (result) return result
     }
 
     const scopedName = ctx.declareVar(name, false)
@@ -2034,12 +1903,12 @@ const operators = {
 
     // Array destructuring in const declaration: const [a, b] = [1, 2]
     if (Array.isArray(name) && name[0] === '[]') {
-      return genArrayDestructDecl(name, value, true)
+      return _genArrayDestructDecl(name, value, true)
     }
 
     // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
     if (Array.isArray(name) && name[0] === '{}') {
-      return genObjectDestructDecl(name, value, true)
+      return _genObjectDestructDecl(name, value, true)
     }
 
     if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
@@ -2049,130 +1918,19 @@ const operators = {
       return genAssign(name, value, true)
     }
 
-    // Forward schema inference for Object.assign on primitives (same as 'let')
+    // Forward schema inference for Object.assign on primitives
     const isObjAssign = Array.isArray(value) && value[0] === '()' &&
       Array.isArray(value[1]) && value[1][0] === '.' &&
       value[1][1] === 'Object' && value[1][2] === 'assign'
     if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-      const inferred = ctx.inferredSchemas.get(name)
-      if (inferred.isBoxed) {
-        const argsNode = value[2]
-        const targetAst = argsNode[1], sourceAst = argsNode[2]
-        if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
-          throw new Error('Object.assign source must be object literal')
-        }
-        const litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
-          sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
-        const literalKeys = litProps.map(p => p[0])
-        const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = {}
-
-        const target = gen(targetAst)
-        let prefix, boxedType
-        if (isString(target)) {
-          prefix = '__string__'
-          boxedType = 'boxed_string'
-          ctx.objectPropTypes[schemaId].__string__ = { type: 'string' }
-        } else if (targetAst === 'true' || targetAst === 'false') {
-          prefix = '__boolean__'
-          boxedType = 'boxed_boolean'
-          ctx.objectPropTypes[schemaId].__boolean__ = { type: 'boolean' }
-        } else if (isI32(target) || isF64(target)) {
-          prefix = '__number__'
-          boxedType = 'boxed_number'
-          ctx.objectPropTypes[schemaId].__number__ = { type: 'number' }
-        }
-
-        if (prefix) {
-          ctx.objectSchemas[schemaId] = [prefix, ...allKeys]
-          const vals = [String(f64(target))]
-          for (const key of allKeys) {
-            const litProp = litProps.find(p => p[0] === key)
-            if (litProp) {
-              const g = gen(litProp[1])
-              vals.push(String(f64(g)))
-              if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-              else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-            } else {
-              vals.push('(f64.const 0)')
-            }
-          }
-
-          const id = ctx.loopCounter++
-          const tmp = `$_bx_${id}`
-          ctx.addLocal(tmp.slice(1), 'f64')
-          let stores = ''
-          for (let i = 0; i < vals.length; i++) {
-            stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-          }
-          const scopedName = ctx.declareVar(name, true)
-          ctx.addLocal(name, boxedType, schemaId, scopedName)
-          const objWat = `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
-          return wat(`(local.tee $${scopedName} ${objWat})`, boxedType, schemaId)
-        }
-      }
+      const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+      if (result) return result
     }
 
     // Forward schema inference for const objects
     if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-      const inferred = ctx.inferredSchemas.get(name)
-      const literalProps = value.slice(1)
-      const literalKeys = literalProps.map(p => p[0])
-      const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-      if (allKeys.length > 0) {
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = allKeys
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = {}
-        for (const key of inferred.closures) {
-          ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-        }
-
-        const vals = []
-        for (const key of allKeys) {
-          const literalProp = literalProps.find(p => p[0] === key)
-          if (literalProp) {
-            const g = gen(literalProp[1])
-            vals.push(String(f64(g)))
-            if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
-              ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-            } else if (g.type === 'object' && g.schema) {
-              ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-            }
-          } else {
-            vals.push('(f64.const 0)')
-          }
-        }
-
-        const id = ctx.loopCounter++
-        const tmp = `$_obj_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        let stores = ''
-        for (let i = 0; i < vals.length; i++) {
-          stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${vals[i]})\n      `
-        }
-
-        const scopedName = ctx.declareVar(name, true)
-        ctx.addLocal(name, 'object', schemaId, scopedName)
-        const objWat = `(block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}(local.get ${tmp}))`
-        return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
-      }
+      const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+      if (result) return result
     }
 
     const scopedName = ctx.declareVar(name, true)
@@ -2229,14 +1987,14 @@ const operators = {
   // Break and continue
   'break'([label]) {
     // Find the innermost breakable block (loop or switch)
-    const id = ctx.loopCounter - 1
+    const id = ctx.uniqueId - 1
     if (id < 0) throw new Error('break outside of loop/switch')
     return wat(`(br $break_${id}) (f64.const 0)`, 'f64')
   },
 
   'continue'([label]) {
     // Find the innermost loop's continue label
-    const id = ctx.loopCounter - 1
+    const id = ctx.uniqueId - 1
     if (id < 0) throw new Error('continue outside of loop')
     return wat(`(br $continue_${id}) (f64.const 0)`, 'f64')
   },
@@ -2258,7 +2016,7 @@ const operators = {
       const { id, length } = typeStrings[name]
       ctx.usedMemory = true
       // NaN boxing: mkptr(type, id, offset) - for string, id = length, offset = memOffset
-      const memOffset = 65536 + id * 256  // after instance table
+      const memOffset = INSTANCE_TABLE_END + id * STRING_STRIDE
       return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${memOffset}))`
     }
     if (val.type === 'f64') {
@@ -2300,7 +2058,7 @@ const operators = {
 
     // Dynamic template - need runtime concatenation
     // Step 1: Collect all string parts and their lengths
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const result = `$_tpl_result_${id}`
     const totalLen = `$_tpl_len_${id}`
     const offset = `$_tpl_off_${id}`
@@ -2319,7 +2077,7 @@ const operators = {
         genParts.push({ type: 'literal', value: part[1] })
       } else {
         // Expression - generate it and get length
-        const partId = ctx.loopCounter++
+        const partId = ctx.uniqueId++
         const partLocal = `$_tpl_part_${partId}`
         ctx.addLocal(partLocal.slice(1), 'f64')  // Could be string or number
         genParts.push({ type: 'expr', local: partLocal, ast: part })
@@ -2352,13 +2110,13 @@ const operators = {
     for (const part of genParts) {
       if (part.type === 'literal') {
         // Copy literal string (interned) to result at offset
-        // internString returns {id, offset, length} where memory location is id * 256
+        // internString returns {id, offset, length} where memory location is INSTANCE_TABLE_END + id * STRING_STRIDE
         const { id: stringId } = ctx.internString(part.value)
         const partLen = part.value.length
         if (partLen > 0) {
           code += `(memory.copy
             (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
-            (i32.const ${stringId * 256})
+            (i32.const ${INSTANCE_TABLE_END + stringId * STRING_STRIDE})
             (i32.const ${partLen * 2}))\n`
           code += `(local.set ${offset} (i32.add (local.get ${offset}) (i32.const ${partLen})))\n`
         }
@@ -2531,261 +2289,13 @@ for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
   operators[op + '='] = ([a, b]) => operators['=']([a, [op, a, b]])
 }
 
-/**
- * Generate array destructuring for declarations (let/const).
- * Handles: simple [a, b], nested [a, [b, c]], defaults [a = 10], rest [a, ...rest]
- */
-function genArrayDestructDecl(pattern, valueAst, isConst, srcLocal = null, isNested = false) {
-  ctx.usedArrayType = true
-  ctx.usedMemory = true
-
-  const elems = Array.isArray(pattern[1]) && pattern[1][0] === ','
-    ? pattern[1].slice(1)
-    : (pattern[1] != null ? [pattern[1]] : [])
-
-  // Parse each element: { name, default, isRest, isNested, nestedPattern }
-  const parsed = []
-  let restVar = null
-  for (let i = 0; i < elems.length; i++) {
-    const e = elems[i]
-    if (e == null) continue
-
-    if (Array.isArray(e) && e[0] === '...') {
-      // Rest element: [...rest]
-      restVar = { name: e[1], idx: i }
-      ctx.declareVar(e[1], isConst)
-      ctx.addLocal(e[1], 'array')
-    } else if (Array.isArray(e) && e[0] === '=') {
-      // Default value: [a = 10]
-      const varName = e[1]
-      const defaultVal = e[2]
-      ctx.declareVar(varName, isConst)
-      ctx.addLocal(varName, 'f64')
-      parsed.push({ name: varName, default: defaultVal, idx: i })
-    } else if (Array.isArray(e) && e[0] === '[]') {
-      // Nested pattern: [[a, b]]
-      parsed.push({ isNestedPattern: true, nestedPattern: e, idx: i })
-    } else if (typeof e === 'string') {
-      // Simple variable
-      ctx.declareVar(e, isConst)
-      ctx.addLocal(e, 'f64')
-      parsed.push({ name: e, idx: i })
-    }
-  }
-
-  const id = ctx.loopCounter++
-  const tmp = `$_destruct_${id}`
-  ctx.addLocal(tmp.slice(1), 'array')
-
-  let code = ''
-  if (srcLocal) {
-    // Source already loaded in srcLocal
-    code += `(local.set ${tmp} (local.get ${srcLocal}))\n    `
-  } else {
-    // Evaluate RHS array
-    const aw = gen(valueAst)
-    code += `(local.set ${tmp} ${aw})\n    `
-  }
-
-  // Store array length for rest/defaults
-  const lenTmp = `$_dlen_${id}`
-  ctx.addLocal(lenTmp.slice(1), 'i32')
-  code += `(local.set ${lenTmp} (call $__ptr_len (local.get ${tmp})))\n    `
-
-  // Track last assigned variable for return value
-  let lastAssigned = null
-
-  // Generate assignments for each element
-  for (const p of parsed) {
-    if (p.isNestedPattern) {
-      // Load nested array into a temp, then recurse
-      const nestedTmp = `$_nested_${id}_${p.idx}`
-      ctx.addLocal(nestedTmp.slice(1), 'array')
-      code += `(local.set ${nestedTmp} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8}))))\n    `
-      // Recursively destructure - pass isNested=true to suppress return value
-      const nestedResult = genArrayDestructDecl(p.nestedPattern, null, isConst, nestedTmp, true)
-      code += nestedResult.code + '\n    '
-      lastAssigned = nestedResult.lastVar
-    } else {
-      const info = ctx.getLocal(p.name)
-      if (p.default) {
-        // Has default: check if index < length, then load, else use default
-        const defaultWat = f64(gen(p.default))
-        code += `(local.set $${info.scopedName} (if (result f64) (i32.gt_s (local.get ${lenTmp}) (i32.const ${p.idx})) (then (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8})))) (else ${defaultWat})))\n    `
-      } else {
-        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8}))))\n    `
-      }
-      lastAssigned = p.name
-    }
-  }
-
-  // Handle rest element
-  if (restVar) {
-    const info = ctx.getLocal(restVar.name)
-    // Create new array with remaining elements
-    const restLenTmp = `$_rlen_${id}`
-    ctx.addLocal(restLenTmp.slice(1), 'i32')
-    code += `(local.set ${restLenTmp} (i32.sub (local.get ${lenTmp}) (i32.const ${restVar.idx})))\n    `
-    code += `(local.set ${restLenTmp} (select (local.get ${restLenTmp}) (i32.const 0) (i32.gt_s (local.get ${restLenTmp}) (i32.const 0))))\n    ` // max(0, restLen)
-    code += `(local.set $${info.scopedName} (call $__alloc (i32.const 1) (local.get ${restLenTmp})))\n    `
-    // Copy elements
-    const iVar = `$_ri_${id}`
-    ctx.addLocal(iVar.slice(1), 'i32')
-    code += `(local.set ${iVar} (i32.const 0))
-    (block $rest_done (loop $rest_loop
-      (br_if $rest_done (i32.ge_s (local.get ${iVar}) (local.get ${restLenTmp})))
-      (f64.store
-        (i32.add (call $__ptr_offset (local.get $${info.scopedName})) (i32.shl (local.get ${iVar}) (i32.const 3)))
-        (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.shl (i32.add (local.get ${iVar}) (i32.const ${restVar.idx})) (i32.const 3)))))
-      (local.set ${iVar} (i32.add (local.get ${iVar}) (i32.const 1)))
-      (br $rest_loop)))
-    `
-    lastAssigned = restVar.name
-  }
-
-  // Determine actual last variable (for return or nested tracking)
-  const lastVar = lastAssigned || (restVar ? restVar.name : (parsed.length > 0 ? (parsed[parsed.length - 1].name || null) : null))
-
-  // For nested calls, return code and lastVar info (no trailing return value)
-  if (isNested) {
-    return { code, lastVar }
-  }
-
-  // Top-level: return WAT with trailing value
-  if (lastVar) {
-    const lastInfo = ctx.getLocal(lastVar)
-    return wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type || 'f64')
-  }
-  return wat(code + '(f64.const 0)', 'f64')
-}
-
-/**
- * Generate object destructuring for declarations (let/const).
- * Handles: simple {a, b}, defaults {a, b = 5}, rename {a: x}, rest {a, ...rest}
- */
-function genObjectDestructDecl(pattern, valueAst, isConst) {
-  ctx.usedArrayType = true
-  ctx.usedMemory = true
-
-  const props = Array.isArray(pattern[1]) && pattern[1][0] === ','
-    ? pattern[1].slice(1)
-    : (pattern[1] != null ? [pattern[1]] : [])
-
-  // Parse each property
-  const parsed = []
-  let restVar = null
-  const usedProps = new Set()
-
-  for (const p of props) {
-    if (p == null) continue
-
-    if (Array.isArray(p) && p[0] === '...') {
-      // Rest: {...rest}
-      restVar = p[1]
-      ctx.declareVar(restVar, isConst)
-      ctx.addLocal(restVar, 'object')
-    } else if (Array.isArray(p) && p[0] === '=') {
-      // Default: {a = 5}
-      const varName = p[1]
-      ctx.declareVar(varName, isConst)
-      ctx.addLocal(varName, 'f64')
-      parsed.push({ propName: varName, varName, default: p[2] })
-      usedProps.add(varName)
-    } else if (Array.isArray(p) && p[0] === ':') {
-      // Rename: {a: x}
-      const propName = p[1]
-      const varName = p[2]
-      ctx.declareVar(varName, isConst)
-      ctx.addLocal(varName, 'f64')
-      parsed.push({ propName, varName })
-      usedProps.add(propName)
-    } else if (typeof p === 'string') {
-      // Simple: {a}
-      ctx.declareVar(p, isConst)
-      ctx.addLocal(p, 'f64')
-      parsed.push({ propName: p, varName: p })
-      usedProps.add(p)
-    }
-  }
-
-  // Evaluate RHS object
-  const id = ctx.loopCounter++
-  const tmp = `$_destruct_${id}`
-  ctx.addLocal(tmp.slice(1), 'object')
-  const obj = gen(valueAst)
-
-  // For empty object {}, schema may be undefined
-  const schema = (obj.type === 'object' && obj.schema !== undefined)
-    ? ctx.objectSchemas[obj.schema]
-    : []
-
-  let code = `(local.set ${tmp} ${obj})\n    `
-
-  // Generate assignments
-  for (const p of parsed) {
-    const info = ctx.getLocal(p.varName)
-    const idx = schema.indexOf(p.propName)
-
-    if (p.default) {
-      // Has default: check if property exists (idx >= 0 and value != 0)
-      if (idx >= 0) {
-        const defaultWat = f64(gen(p.default))
-        // Load and check for "undefined" (we use 0 as undefined)
-        const loadExpr = `(f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8})))`
-        // If value is 0 (our undefined), use default
-        code += `(local.set $${info.scopedName} (if (result f64) (f64.eq ${loadExpr} (f64.const 0)) (then ${defaultWat}) (else ${loadExpr})))\n    `
-      } else {
-        // Property not in schema - use default
-        const defaultWat = f64(gen(p.default))
-        code += `(local.set $${info.scopedName} ${defaultWat})\n    `
-      }
-    } else {
-      if (idx >= 0) {
-        code += `(local.set $${info.scopedName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
-      } else {
-        // Property not in schema - set to 0
-        code += `(local.set $${info.scopedName} (f64.const 0))\n    `
-      }
-    }
-  }
-
-  // Handle rest (create new object with remaining props)
-  if (restVar) {
-    const restProps = schema.filter(k => !usedProps.has(k))
-    if (restProps.length > 0) {
-      // Create new schema for rest object
-      const restSchemaId = ctx.objectCounter + 1
-      ctx.objectCounter++
-      ctx.objectSchemas[restSchemaId] = restProps
-
-      const info = ctx.getLocal(restVar)
-      code += `(local.set $${info.scopedName} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${restProps.length})))\n    `
-      code += `(local.set $${info.scopedName} (call $__ptr_with_id (local.get $${info.scopedName}) (i32.const ${restSchemaId})))\n    `
-
-      // Copy properties
-      for (let i = 0; i < restProps.length; i++) {
-        const srcIdx = schema.indexOf(restProps[i])
-        code += `(f64.store (i32.add (call $__ptr_offset (local.get $${info.scopedName})) (i32.const ${i * 8})) (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${srcIdx * 8}))))\n    `
-      }
-    } else {
-      // Empty rest object
-      const info = ctx.getLocal(restVar)
-      const restSchemaId = ctx.objectCounter + 1
-      ctx.objectCounter++
-      ctx.objectSchemas[restSchemaId] = []
-      code += `(local.set $${info.scopedName} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const 0)))\n    `
-      code += `(local.set $${info.scopedName} (call $__ptr_with_id (local.get $${info.scopedName}) (i32.const ${restSchemaId})))\n    `
-    }
-  }
-
-  // Return last variable
-  const lastVar = restVar || (parsed.length > 0 ? parsed[parsed.length - 1].varName : null)
-  if (lastVar) {
-    const lastInfo = ctx.getLocal(lastVar)
-    return wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type || 'f64')
-  }
-  return wat(code + '(f64.const 0)', 'f64')
-}
+// Destructuring functions imported from ./destruct.js:
+// genArrayDestructDecl, genObjectDestructDecl
+// Wrapper to use module-level ctx and gen
+const _genArrayDestructDecl = (pattern, valueAst, isConst, srcLocal, isNested) =>
+  genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLocal, isNested)
+const _genObjectDestructDecl = (pattern, valueAst, isConst) =>
+  genObjectDestructDecl(ctx, gen, pattern, valueAst, isConst)
 
 /**
  * Handle all assignment operations: variables, arrays, objects, closures, destructuring.
@@ -2948,7 +2458,7 @@ function genAssign(target, value, returnValue) {
           })
 
           // This is a swap/rotate pattern - use temporaries, no allocation
-          const id = ctx.loopCounter++
+          const id = ctx.uniqueId++
           let code = ''
 
           // Generate temps for all current values (using actual variable types)
@@ -2998,7 +2508,7 @@ function genAssign(target, value, returnValue) {
         const argWats = args.map(a => f64(gen(a))).join(' ')
 
         // Generate call and destructure via block with multi-value
-        const id = ctx.loopCounter++
+        const id = ctx.uniqueId++
         let code = ''
 
         // Use a block with multi-value result and local.set for each variable
@@ -3023,7 +2533,7 @@ function genAssign(target, value, returnValue) {
     // Standard destructuring: create temp array, load elements
     ctx.usedArrayType = true
     ctx.usedMemory = true
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const tmp = `$_destruct_${id}`
     ctx.addLocal(tmp.slice(1), 'array')
     const aw = gen(value)
@@ -3056,7 +2566,7 @@ function genAssign(target, value, returnValue) {
     const props = target[1].slice(1)
     ctx.usedArrayType = true
     ctx.usedMemory = true
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const tmp = `$_destruct_${id}`
     ctx.addLocal(tmp.slice(1), 'object')
     const obj = gen(value)

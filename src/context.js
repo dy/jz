@@ -87,7 +87,7 @@ export function createContext() {
     staticOffset: 0,
 
     // Loop tracking
-    loopCounter: 0,
+    uniqueId: 0,
 
     // Methods
 
