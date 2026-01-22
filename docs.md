@@ -139,8 +139,18 @@ items.length  // 3 (array length)
 items[0]      // 1 (array element)
 ```
 
+**Extension via Object.assign:**
+
+Properties can be added later via `Object.assign` (forward inference detects all props at compile time):
+
+```js
+let s = Object.assign("hi", { type: 1 })
+Object.assign(s, { extra: 100 })  // extend with more props
+s.type + s.extra                  // 101
+```
+
 **Limitations:**
-- Properties fixed at creation (no dynamic addition)
+- All property names must be known at compile time
 - Source must be object literal
 - Target must be primitive or array
 
