@@ -6,21 +6,25 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~4600 lines)
+## Project Structure (src/, ~10100 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| types.js | 120 | Type system, type predicates |
+| types.js | 190 | Type system, type predicates, memory constants |
 | ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS, GLOBAL_CONSTANTS |
-| analyze.js | 165 | Scope analysis: extractParams(), analyzeScope(), findHoistedVars() |
-| context.js | 181 | Compilation state factory: createContext() - locals, globals, scopes |
-| assemble.js | 231 | WAT assembly: assemble() - combines sections into final WAT module |
-| stdlib.js | 400 | Pure WASM math functions (sin, cos, pow, etc.) |
-| normalize.js | 326 | AST preprocessing from parser |
-| array.js | 488 | Array method codegen (map, filter, reduce, etc.) |
-| string.js | 1350 | String method codegen (slice, indexOf, search, match, replace, split) |
-| regex.js | 450 | Regex parser and WASM codegen (parseRegex, compileRegex) |
-| compile.js | 1700 | Core compiler: AST → WAT, operators, closures, regex methods |
+| analyze.js | 783 | Scope analysis: extractParams(), analyzeScope(), inferObjectSchemas() |
+| context.js | 191 | Compilation state factory: createContext() - locals, globals, scopes |
+| assemble.js | 461 | WAT assembly: assemble() - combines sections into final WAT module |
+| stdlib.js | 367 | Pure WASM math functions (sin, cos, pow, etc.) |
+| normalize.js | 384 | AST preprocessing from parser |
+| memory.js | 229 | Memory operations: mkString, arrGet, objGet, envGet/Set |
+| array.js | 601 | Array method codegen (map, filter, reduce, etc.) |
+| string.js | 1515 | String method codegen (slice, indexOf, search, match, replace, split) |
+| regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex) |
+| typedarray.js | 891 | TypedArray method codegen (Float32Array, Int32Array, etc.) |
+| closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |
+| destruct.js | 253 | Destructuring codegen: genArrayDestructDecl, genObjectDestructDecl |
+| compile.js | 3057 | Core compiler: AST → WAT, operators |
 
 Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 

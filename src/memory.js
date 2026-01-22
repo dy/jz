@@ -6,10 +6,7 @@
  * Payload: [type:4][id:16][offset:31]
  */
 
-import { PTR_TYPE, ELEM_TYPE, ELEM_STRIDE, wat, f64, isHeapRef, isString, isObject } from './types.js'
-
-// Instance table starts at offset 0, 64KB reserved (16K instances * 4 bytes)
-const INSTANCE_TABLE_END = 65536
+import { PTR_TYPE, ELEM_TYPE, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, F64_SIZE, wat, f64, isHeapRef, isString, isObject } from './types.js'
 
 // === Null/undefined ===
 
@@ -18,12 +15,12 @@ export const nullRef = () => wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
-/** Create string from interned data. Strings are stored at instanceTableEnd + id*256 */
+/** Create string from interned data. Strings are stored at instanceTableEnd + id*STRING_STRIDE */
 export function mkString(ctx, str) {
   ctx.usedStringType = true
   ctx.usedMemory = true
   const { id, length } = ctx.internString(str)
-  const offset = INSTANCE_TABLE_END + id * 256  // After instance table
+  const offset = INSTANCE_TABLE_END + id * STRING_STRIDE  // After instance table
   // NaN boxing: mkptr(type, id, offset) - for string, id = length
   return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${offset}))`, 'string')
 }
@@ -145,7 +142,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, 'array', values.map(() => ({ type: 'f64' })))
   } else if (hasRefTypes) {
     // Mixed-type array: still use ARRAY type but track schema for element types
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const tmp = `$_arr_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
     let stores = ''
@@ -162,7 +159,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
       ${stores}(local.get ${tmp}))`, 'array', elementSchema)
   } else {
     // Dynamic homogeneous f64 array
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const tmp = `$_arr_${id}`
     ctx.addLocal(tmp.slice(1), 'f64')
     let stores = ''
@@ -208,7 +205,7 @@ export function callClosure(ctx, closureWat, argWats, numArgs) {
   ctx.usedFuncTable = true
   ctx.usedMemory = true
 
-  const id = ctx.loopCounter++
+  const id = ctx.uniqueId++
   const tmpClosure = `$_clos_${id}`
   const tmpI64 = `$_closi64_${id}`
   ctx.addLocal(tmpClosure.slice(1), 'f64')

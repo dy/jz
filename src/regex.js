@@ -878,7 +878,7 @@ export const REGEX_METHODS = {
     const strVal = gen(args[0])
     if (!isString(strVal)) throw new Error('regex.test() argument must be string')
     // Search loop: try at each start position until match or end
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
     const strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
     ctx.addLocal(strOff.slice(1), 'i32')
     ctx.addLocal(strLen.slice(1), 'i32')
@@ -908,7 +908,7 @@ export const REGEX_METHODS = {
 
     ctx.usedStringType = true
     ctx.usedArrayType = true
-    const id = ctx.loopCounter++
+    const id = ctx.uniqueId++
 
     // Locals for search and result building
     const strPtr = `$_exec_str_${id}`, strOff = `$_exec_off_${id}`, strLen = `$_exec_len_${id}`
