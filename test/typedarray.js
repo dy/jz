@@ -210,3 +210,313 @@ test('TypedArray - all constructors compile', async () => {
   `, { text: true })
   ok(wat.includes('__alloc_typed'))
 })
+
+// ========== TypedArray Methods ==========
+
+test('TypedArray - fill method', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float32Array(5)
+      buf.fill(42)
+      return buf[0] + buf[4]
+    }
+  `)
+  is(test(), 84)
+})
+
+test('TypedArray - fill with start/end', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf.fill(0)
+      buf.fill(7, 1, 4)
+      return buf[0] + buf[1] + buf[2] + buf[3] + buf[4]
+    }
+  `)
+  is(test(), 21)  // 0 + 7 + 7 + 7 + 0
+})
+
+test('TypedArray - at method (positive)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float32Array(3)
+      buf[0] = 10; buf[1] = 20; buf[2] = 30
+      return buf.at(1)
+    }
+  `)
+  is(test(), 20)
+})
+
+test('TypedArray - at method (negative)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float32Array(3)
+      buf[0] = 10; buf[1] = 20; buf[2] = 30
+      return buf.at(-1)
+    }
+  `)
+  is(test(), 30)
+})
+
+test('TypedArray - indexOf', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 2; buf[4] = 1
+      return buf.indexOf(2)
+    }
+  `)
+  is(test(), 1)
+})
+
+test('TypedArray - indexOf (not found)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      return buf.indexOf(99)
+    }
+  `)
+  is(test(), -1)
+})
+
+test('TypedArray - lastIndexOf', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 2; buf[4] = 1
+      return buf.lastIndexOf(2)
+    }
+  `)
+  is(test(), 3)
+})
+
+test('TypedArray - includes', async () => {
+  const { testYes, testNo } = await run(`
+    export const testYes = () => {
+      let buf = new Float32Array(3)
+      buf[0] = 1.5; buf[1] = 2.5; buf[2] = 3.5
+      return buf.includes(2.5)
+    }
+    export const testNo = () => {
+      let buf = new Float32Array(3)
+      buf[0] = 1.5; buf[1] = 2.5; buf[2] = 3.5
+      return buf.includes(99)
+    }
+  `)
+  is(testYes(), 1)
+  is(testNo(), 0)
+})
+
+test('TypedArray - slice', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      let s = buf.slice(1, 4)
+      return s.length * 100 + s[0] + s[1] + s[2]
+    }
+  `)
+  is(test(), 309)  // length=3, sum=2+3+4=9
+})
+
+test('TypedArray - slice negative indices', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      let s = buf.slice(-3, -1)
+      return s.length * 100 + s[0] + s[1]
+    }
+  `)
+  is(test(), 207)  // length=2, [3,4]
+})
+
+test('TypedArray - reverse', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      buf.reverse()
+      return buf[0] * 1000 + buf[1] * 100 + buf[2] * 10 + buf[3]
+    }
+  `)
+  is(test(), 4321)
+})
+
+test('TypedArray - copyWithin', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      buf.copyWithin(0, 3)  // copy [4,5] to start
+      return buf[0] * 10000 + buf[1] * 1000 + buf[2] * 100 + buf[3] * 10 + buf[4]
+    }
+  `)
+  is(test(), 45345)
+})
+
+test('TypedArray - every (pass)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 2; buf[1] = 4; buf[2] = 6; buf[3] = 8
+      return buf.every(x => x % 2 === 0)
+    }
+  `)
+  is(test(), 1)
+})
+
+test('TypedArray - every (fail)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 2; buf[1] = 4; buf[2] = 5; buf[3] = 8
+      return buf.every(x => x % 2 === 0)
+    }
+  `)
+  is(test(), 0)
+})
+
+test('TypedArray - some (pass)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 3; buf[2] = 4; buf[3] = 7
+      return buf.some(x => x % 2 === 0)
+    }
+  `)
+  is(test(), 1)
+})
+
+test('TypedArray - some (fail)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 3; buf[2] = 5; buf[3] = 7
+      return buf.some(x => x % 2 === 0)
+    }
+  `)
+  is(test(), 0)
+})
+
+test('TypedArray - find', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 3; buf[2] = 4; buf[3] = 7
+      return buf.find(x => x > 2)
+    }
+  `)
+  is(test(), 3)
+})
+
+test('TypedArray - findIndex', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 3; buf[2] = 4; buf[3] = 7
+      return buf.findIndex(x => x > 2)
+    }
+  `)
+  is(test(), 1)
+})
+
+test('TypedArray - map', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float32Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let doubled = buf.map(x => x * 2)
+      return doubled[0] + doubled[1] + doubled[2]
+    }
+  `)
+  is(test(), 12)
+})
+
+test('TypedArray - filter', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      let evens = buf.filter(x => x % 2 === 0)
+      return evens.length * 100 + evens[0] + evens[1]
+    }
+  `)
+  is(test(), 206)  // length=2, [2,4]
+})
+
+test('TypedArray - reduce', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float32Array(4)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      return buf.reduce((acc, x) => acc + x, 0)
+    }
+  `)
+  is(test(), 10)
+})
+
+test('TypedArray - reduceRight', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      return buf.reduceRight((acc, x) => acc * 10 + x, 0)
+    }
+  `)
+  is(test(), 321)  // ((0*10+3)*10+2)*10+1 = 321
+})
+
+test('TypedArray - forEach', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let sum = 0
+      buf.forEach(x => { sum = sum + x })
+      return sum
+    }
+  `)
+  is(test(), 6)
+})
+
+test('TypedArray - set', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let src = new Int32Array(3)
+      src[0] = 10; src[1] = 20; src[2] = 30
+      let dst = new Int32Array(5)
+      dst.set(src, 1)
+      return dst[0] + dst[1] + dst[2] + dst[3] + dst[4]
+    }
+  `)
+  is(test(), 60)  // 0 + 10 + 20 + 30 + 0
+})
+
+test('TypedArray - subarray', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      let sub = buf.subarray(1, 4)
+      return sub.length + sub[0] + sub[1] + sub[2]
+    }
+  `)
+  is(test(), 12)  // 3 + 2 + 3 + 4
+})
+
+test('TypedArray - BYTES_PER_ELEMENT', async () => {
+  const { test32, test64 } = await run(`
+    export const test32 = () => {
+      let buf = new Float32Array(1)
+      return buf.BYTES_PER_ELEMENT
+    }
+    export const test64 = () => {
+      let buf = new Float64Array(1)
+      return buf.BYTES_PER_ELEMENT
+    }
+  `)
+  is(test32(), 4)
+  is(test64(), 8)
+})

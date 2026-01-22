@@ -105,9 +105,10 @@ export const fmtNum = n =>
 export const f64 = op => {
   const t = op.type
   // Object is f64 pointer (Strategy B), not GC ref
-  // boxed types and array_props are also f64 pointers
+  // boxed types, array_props, and typedarray are also f64 pointers
   if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object' ||
-      t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props') return op
+      t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props' ||
+      t === 'typedarray') return op
   if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }

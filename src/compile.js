@@ -65,6 +65,7 @@ import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
 import { nullRef, mkString, envGet, envSet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
+import { TYPED_ARRAY_METHODS } from './typedarray.js'
 
 // Check if type is array-like (for aliasing warnings)
 const isArrayType = t => t === 'array' || t === 'refarray'
@@ -333,6 +334,14 @@ function resolveCall(namespace, name, args, receiver = null) {
   // Method calls
   if (receiver !== null) {
     const rt = receiver.type, rw = String(receiver)
+
+    // TypedArray methods - dispatch with compile-time elemType
+    if (isTypedArray(receiver) && TYPED_ARRAY_METHODS[name]) {
+      ctx.usedTypedArrays = true
+      ctx.usedMemory = true
+      const elemType = receiver.schema  // elemType stored in schema field
+      return TYPED_ARRAY_METHODS[name](elemType, rw, args)
+    }
 
     // Dispatch to method modules - f64 can be array pointer
     const isArrayLike = rt === 'array' || rt === 'f64'
@@ -1148,6 +1157,15 @@ const operators = {
       const elemType = o.schema
       const stride = ELEM_STRIDE[elemType]
       return wat(`(i32.mul ${typedArrLen(String(o))} (i32.const ${stride}))`, 'i32')
+    }
+    if (prop === 'BYTES_PER_ELEMENT' && isTypedArray(o)) {
+      const elemType = o.schema
+      const stride = ELEM_STRIDE[elemType]
+      return wat(`(i32.const ${stride})`, 'i32')
+    }
+    if (prop === 'byteOffset' && isTypedArray(o)) {
+      // byteOffset - always 0 for our TypedArrays (no ArrayBuffer backing)
+      return wat('(i32.const 0)', 'i32')
     }
 
     // Boxed string property access
