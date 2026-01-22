@@ -36,9 +36,8 @@ export const PTR_TYPE = {
   STRING: 3,       // UTF-16 string, len in pointer, immutable
   OBJECT: 4,       // Object (or boxed string if schema[0]==='__string__')
   TYPED_ARRAY: 5,  // TypedArray: [type:4][elemType:3][len:22][offset:22]
-  // Note: BOXED_STRING merged into OBJECT (schema[0]==='__string__')
-  // Note: ARRAY_PROPS merged into ARRAY_MUT (schemaId > 0)
-  CLOSURE: 7       // Closure, funcIdx + env offset
+  REGEX: 6,        // Regex pattern, id = regexId, offset = flags
+  CLOSURE: 7,      // Closure, funcIdx + env offset
 }
 
 /**
@@ -171,6 +170,8 @@ export const isBoxedNumber = v => v.type === 'boxed_number'
 export const isBoxedBoolean = v => v.type === 'boxed_boolean'
 /** @param {String & {type: string}} v - Array with named properties (ARRAY_MUT + schemaId > 0) */
 export const isArrayProps = v => v.type === 'array_props'
+/** @param {String & {type: string}} v - Regex pattern */
+export const isRegex = v => v.type === 'regex'
 
 // === Compound predicates ===
 /** @param {String & {type: string}} a @param {String & {type: string}} b */

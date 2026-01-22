@@ -124,6 +124,11 @@ export function assemble(bodyWat, ctx = {
   wat += `  (func $f64.rem (param f64 f64) (result f64)\n`
   wat += `    (f64.sub (local.get 0) (f64.mul (f64.trunc (f64.div (local.get 0) (local.get 1))) (local.get 1))))\n`
 
+  // === Regex functions ===
+  if (ctx.regexFunctions?.length) {
+    for (const fn of ctx.regexFunctions) wat += `  ${fn}\n`
+  }
+
   // === User functions ===
 
   for (const fn of extraFunctions) {
