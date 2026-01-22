@@ -1,6 +1,6 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-Tiny _JavaScript to WASM compiler_, supporting modern minimal functional JS subset.
+_JavaScript to WASM compiler_, supporting modern minimal functional JS subset.
 
 ## Usage
 

@@ -207,15 +207,16 @@ let clamp = (x, lo, hi) => {
 
 ## Math Functions
 
-All standard math available:
+All standard math available via `Math` object:
 ```js
-sin(x), cos(x), tan(x)
-asin(x), acos(x), atan(x), atan2(y, x)
-sinh(x), cosh(x), tanh(x)
-exp(x), log(x), log2(x), log10(x)
-sqrt(x), cbrt(x), pow(x, y)
-abs(x), sign(x), floor(x), ceil(x), round(x), trunc(x)
-min(a, b), max(a, b), clamp(x, lo, hi)
+Math.sin(x), Math.cos(x), Math.tan(x)
+Math.asin(x), Math.acos(x), Math.atan(x), Math.atan2(y, x)
+Math.sinh(x), Math.cosh(x), Math.tanh(x)
+Math.exp(x), Math.log(x), Math.log2(x), Math.log10(x)
+Math.sqrt(x), Math.cbrt(x), Math.pow(x, y)
+Math.abs(x), Math.sign(x), Math.floor(x), Math.ceil(x), Math.round(x), Math.trunc(x)
+Math.min(a, b), Math.max(a, b), Math.clamp(x, lo, hi)
+Math.PI, Math.E
 ```
 
 ## API
@@ -333,6 +334,5 @@ let b = 4; b / 2        // f64.div
 
 1. **Integer arithmetic** is faster - use integer literals for counters
 2. **Prefer array methods** over manual iteration
-3. **Static namespaces** for zero-overhead function grouping
-4. **Clone explicitly** with `[...arr]` when shallow copy needed
-5. **Avoid unnecessary f64 conversions** in hot loops
+3. **Clone explicitly** with `[...arr]` when shallow copy needed
+4. **Avoid unnecessary f64 conversions** in hot loops
