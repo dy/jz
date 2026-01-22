@@ -36,7 +36,11 @@ const NAMESPACES = { Math: new Set([
   'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
   'exp', 'expm1', 'log', 'log2', 'log10', 'log1p', 'cbrt', 'hypot', 'imul', 'random',
   'PI', 'E', 'SQRT2', 'SQRT1_2', 'LN2', 'LN10', 'LOG2E', 'LOG10E',
-]), Number: new Set(['isNaN', 'isFinite', 'isInteger']) }
+]), Number: new Set([
+  'isNaN', 'isFinite', 'isInteger',
+  'MAX_VALUE', 'MIN_VALUE', 'EPSILON', 'MAX_SAFE_INTEGER', 'MIN_SAFE_INTEGER',
+  'POSITIVE_INFINITY', 'NEGATIVE_INFINITY', 'NaN'
+]), Array: new Set(['isArray']) }
 
 // Main entry
 export default function normalize(node) {

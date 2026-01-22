@@ -146,19 +146,8 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Lightweight_ – embed anywhere, from websites to microcontrollers.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
-* _JS interop_ – export/import, same func signatures.
-
-### JS Compatibility
-
-JZ preserves JS semantics where possible. Unavoidable differences:
-
-| Difference | Reason |
-|------------|--------|
-| `==` same as `===` | No type coercion in WASM |
-| `null` ≡ `undefined` ≡ `0` | WASM f64 has no null type |
-| Array `let b = a` copies pointer | Use `[...a]` for deep clone |
-
-JZ warns on problematic patterns (`var`, implicit globals, `+[]`). See [research.md](research.md#js-divergences).
+* _JS Interop_ – export/import, preserve func signatures at WASM boundary.
+* _JS Compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 

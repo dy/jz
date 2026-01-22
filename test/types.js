@@ -79,3 +79,49 @@ test('!== objects - reference inequality', async () => {
   is(await evaluate('{x: 1} !== {x: 1}'), 1)  // different refs
   is(await evaluate('o = {x: 1}; o !== o'), 0)  // same ref
 })
+
+// Number namespace
+test('Number.isNaN', async () => {
+  is(await evaluate('Number.isNaN(NaN)'), 1)
+  is(await evaluate('Number.isNaN(5)'), 0)
+  is(await evaluate('Number.isNaN(Infinity)'), 0)
+  // Note: strings coerce to NaN in our system, so isNaN("NaN") returns 1
+  is(await evaluate('Number.isNaN("NaN")'), 1)
+})
+
+test('Number.isFinite', async () => {
+  is(await evaluate('Number.isFinite(5)'), 1)
+  is(await evaluate('Number.isFinite(3.14)'), 1)
+  is(await evaluate('Number.isFinite(Infinity)'), 0)
+  is(await evaluate('Number.isFinite(-Infinity)'), 0)
+  is(await evaluate('Number.isFinite(NaN)'), 0)
+})
+
+test('Number.isInteger', async () => {
+  is(await evaluate('Number.isInteger(5)'), 1)
+  is(await evaluate('Number.isInteger(5.0)'), 1)
+  is(await evaluate('Number.isInteger(5.5)'), 0)
+  is(await evaluate('Number.isInteger(Infinity)'), 0)
+  is(await evaluate('Number.isInteger(NaN)'), 0)
+})
+
+test('Number constants', async () => {
+  is(await evaluate('Number.MAX_VALUE'), 1.7976931348623157e+308)
+  is(await evaluate('Number.MIN_VALUE'), 5e-324)
+  is(await evaluate('Number.EPSILON'), 2.220446049250313e-16)
+  is(await evaluate('Number.MAX_SAFE_INTEGER'), 9007199254740991)
+  is(await evaluate('Number.MIN_SAFE_INTEGER'), -9007199254740991)
+  is(await evaluate('Number.POSITIVE_INFINITY'), Infinity)
+  is(await evaluate('Number.NEGATIVE_INFINITY'), -Infinity)
+  // Note: Number.NaN conflicts with global NaN keyword, just use NaN directly
+})
+
+// Array namespace
+test('Array.isArray', async () => {
+  is(await evaluate('Array.isArray([1, 2, 3])'), 1)
+  is(await evaluate('Array.isArray([])'), 1)
+  is(await evaluate('Array.isArray(5)'), 0)
+  is(await evaluate('Array.isArray("hello")'), 0)
+  is(await evaluate('Array.isArray({x: 1})'), 0)
+  is(await evaluate('a = [1]; Array.isArray(a)'), 1)
+})
