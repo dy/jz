@@ -100,11 +100,11 @@ test('regex: complex patterns', () => {
   const email = parseRegex('\\w+@\\w+\\.\\w+')
   is(email[0], 'seq')
   is(email[1], ['+', ['\\w']])
-  
+
   // Number: -?\d+\.?\d*
   const num = parseRegex('-?\\d+\\.?\\d*')
   is(num[0], 'seq')
-  
+
   // Hex color: #[0-9a-fA-F]{6}
   const hex = parseRegex('#[0-9a-fA-F]{6}')
   is(hex[0], 'seq')
@@ -121,7 +121,7 @@ test('regex: flags stored', () => {
 test('regex: group count', () => {
   const ast = parseRegex('(a)(b)(c)')
   is(ast.groups, 3)
-  
+
   const ast2 = parseRegex('(?:a)(b)')
   is(ast2.groups, 1)
 })
@@ -256,4 +256,42 @@ test('regex integration: escape sequences', async () => {
 test('regex integration: stored in variable', async () => {
   is(await evaluate('let r = /abc/; r.test("xabcy")'), 1)
   is(await evaluate('let r = /xyz/; r.test("abc")'), 0)
+})
+
+// str.search(regex) tests
+test('regex integration: str.search()', async () => {
+  is(await evaluate('"hello world".search(/world/)'), 6)
+  is(await evaluate('"hello world".search(/xyz/)'), -1)
+  is(await evaluate('"abc123def".search(/\\d+/)'), 3)
+  is(await evaluate('"test".search(/^test$/)'), 0)
+})
+
+// str.split(regex) tests
+test('regex integration: str.split(regex)', async () => {
+  is(await evaluate('"a1b2c3".split(/\\d/).length'), 4)  // ["a", "b", "c", ""]
+  is(await evaluate('"one  two   three".split(/\\s+/).length'), 3)
+  is(await evaluate('"a,b;c".split(/[,;]/).length'), 3)
+})
+
+// str.replace(regex, str) tests
+test('regex integration: str.replace(regex, str)', async () => {
+  is(await evaluate('"hello world".replace(/world/, "there")'), 'hello there')
+  is(await evaluate('"abc123".replace(/\\d+/, "NUM")'), 'abcNUM')
+  is(await evaluate('"foo bar".replace(/o/, "0")'), 'f0o bar')  // only first match
+})
+
+// regex.exec(str) tests
+test('regex integration: regex.exec()', async () => {
+  // Basic match returns array with full match
+  is(await evaluate('/abc/.exec("xabcy")[0]'), 'abc')
+  // No match returns null (0)
+  is(await evaluate('/xyz/.exec("abc")'), 0)
+})
+
+// str.match(regex) tests
+test('regex integration: str.match(regex)', async () => {
+  // Basic match
+  is(await evaluate('"hello world".match(/world/)[0]'), 'world')
+  // No match returns null
+  is(await evaluate('"hello".match(/xyz/)'), 0)
 })

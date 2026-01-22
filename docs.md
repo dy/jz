@@ -166,6 +166,15 @@ isNum.test("abc")        // 0 (false)
 // Inline usage
 /abc/.test("xabcy")      // 1
 /xyz/.test("abc")        // 0
+
+// String methods with regex
+"hello world".search(/world/)       // 6
+"hello world".match(/world/)[0]     // "world"
+"a1b2c".split(/\d/)                 // ["a", "b", "c", ""]
+"foo bar".replace(/bar/, "baz")     // "foo baz"
+
+// Capture groups with exec()
+/(\d+)-(\d+)/.exec("2024-12-25")    // ["2024-12-25", "2024", "12"]
 ```
 
 **Supported:**
@@ -176,11 +185,12 @@ isNum.test("abc")        // 0 (false)
 - Groups `()`, non-capturing `(?:)`, backrefs `\1`
 - Lookahead `(?=)`, `(?!)`, lookbehind `(?<=)`, `(?<!)`
 - Alternation `a|b`
+- Global flag `g` for `replace()` and `match()` methods
+- Methods: `regex.test()`, `regex.exec()`, `str.search()`, `str.match()`, `str.replace()`, `str.split()`
 
 **Limitations:**
 - Pattern must be literal (no runtime regex construction)
-- Only `test()` method available
-- `exec()`, `str.match()`, `str.replace()`, `str.split()` not yet implemented
+- No named capture groups
 
 ### Control Flow
 ```js

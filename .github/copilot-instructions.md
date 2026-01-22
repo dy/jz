@@ -6,7 +6,7 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~4100 lines)
+## Project Structure (src/, ~4600 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -18,8 +18,9 @@ For any file structure changes, update project structure section below.
 | stdlib.js | 400 | Pure WASM math functions (sin, cos, pow, etc.) |
 | normalize.js | 326 | AST preprocessing from parser |
 | array.js | 488 | Array method codegen (map, filter, reduce, etc.) |
-| string.js | 296 | String method codegen (slice, indexOf, etc.) |
-| compile.js | 1616 | Core compiler: AST → WAT, operators, closures |
+| string.js | 1350 | String method codegen (slice, indexOf, search, match, replace, split) |
+| regex.js | 450 | Regex parser and WASM codegen (parseRegex, compileRegex) |
+| compile.js | 1700 | Core compiler: AST → WAT, operators, closures, regex methods |
 
 Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 

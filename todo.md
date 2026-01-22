@@ -139,15 +139,15 @@
   * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
-* [~] Regex
+* [x] Regex
   * [x] Parser (parseRegex)
   * [x] Codegen (compileRegex → WASM matcher)
   * [x] `regex.test(str)` → i32
-  * [ ] `regex.exec(str)` → array|null (needs capture group extraction)
-  * [ ] `str.search(regex)` → i32 index
-  * [ ] `str.match(regex)` → array|null
-  * [ ] `str.replace(regex, repl)` → string
-  * [ ] `str.split(regex)` → array
+  * [x] `regex.exec(str)` → array|null
+  * [x] `str.search(regex)` → i32 index
+  * [x] `str.match(regex)` → array|null
+  * [x] `str.replace(regex, repl)` → string
+  * [x] `str.split(regex)` → array
 * [x] Important globals (partial)
   * [x] Number.isNaN, Number.isFinite, Number.isInteger (IEEE 754 checks)
   * [x] Number.MAX_VALUE, MIN_VALUE, EPSILON, MAX_SAFE_INTEGER (constants)

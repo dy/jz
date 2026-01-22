@@ -147,8 +147,8 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Lightweight_ – embed anywhere, from websites to microcontrollers.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
-* _JS Interop_ – export/import, preserve func signatures at WASM boundary.
-* _JS Compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
+* _JS interop_ – export/import, preserve func signatures at WASM boundary.
+* _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
