@@ -416,6 +416,20 @@ function resolveCall(namespace, name, args, receiver = null) {
     throw new Error(`Unknown Number.${name}`)
   }
 
+  // Array namespace
+  if (namespace === 'Array') {
+    if (name === 'isArray' && args.length === 1) {
+      const w = gen(args[0])
+      // Check: 1) is NaN (pointer), 2) type is ARRAY (1) or ARRAY_PROPS (8)
+      // Type is in bits 47-50 (4 bits)
+      const v = f64(w)
+      const isNaN = `(f64.ne ${v} ${v})`
+      const typeVal = `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const 47))) (i32.const 15))`
+      return wat(`(i32.and ${isNaN} (i32.or (i32.eq ${typeVal} (i32.const 1)) (i32.eq ${typeVal} (i32.const 8))))`, 'i32')
+    }
+    throw new Error(`Unknown Array.${name}`)
+  }
+
   // Object namespace
   if (namespace === 'Object') {
     if (name === 'assign' && args.length >= 2) {
@@ -1134,6 +1148,15 @@ const operators = {
   '.'([obj, prop]) {
     if (obj === 'Math' && prop in MATH_OPS.constants)
       return wat(`(f64.const ${fmtNum(MATH_OPS.constants[prop])})`, 'f64')
+    // Number constants
+    if (obj === 'Number') {
+      const NUM_CONSTS = {
+        MAX_VALUE: 1.7976931348623157e+308, MIN_VALUE: 5e-324, EPSILON: 2.220446049250313e-16,
+        MAX_SAFE_INTEGER: 9007199254740991, MIN_SAFE_INTEGER: -9007199254740991,
+        POSITIVE_INFINITY: Infinity, NEGATIVE_INFINITY: -Infinity, NaN: NaN
+      }
+      if (prop in NUM_CONSTS) return wat(`(f64.const ${fmtNum(NUM_CONSTS[prop])})`, 'f64')
+    }
     const o = gen(obj)
     if (prop === 'length') {
       if (isTypedArray(o)) {

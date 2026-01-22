@@ -275,7 +275,11 @@ export const FUNCTIONS = {
       (then (f64.const 1.0)) (else (f64.const 0.0))))`,
 
   isInteger: `(func $isInteger (param $x f64) (result f64)
-    (if (result f64) (f64.eq (f64.trunc (local.get $x)) (local.get $x))
+    (if (result f64) (i32.and
+        (f64.eq (local.get $x) (local.get $x))  ;; not NaN
+        (i32.and
+          (f64.ne (f64.abs (local.get $x)) (f64.const inf))  ;; finite
+          (f64.eq (f64.trunc (local.get $x)) (local.get $x))))  ;; integer
       (then (f64.const 1.0)) (else (f64.const 0.0))))`,
 
   random: `(func $random (result f64)

@@ -432,7 +432,7 @@ export const set = (elemType, ptrWat, args) => {
   const dstOffset = shift === 0
     ? `(i32.add (local.get ${dstBase}) (i32.add (local.get ${offset}) (local.get ${idx})))`
     : `(i32.add (local.get ${dstBase}) (i32.shl (i32.add (local.get ${offset}) (local.get ${idx})) (i32.const ${shift})))`
-  
+
   // Load from source - handle both regular array (f64) and TypedArray
   let srcLoadExpr
   let srcOffsetFn, srcLenFn

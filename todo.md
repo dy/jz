@@ -140,11 +140,26 @@
 * [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
 * [ ] Regex
-* [ ] Important globals
-  * [ ] JSON.parse/stringify
-  * [ ] Set, Map, WeakSet, WeakMap
-  * [ ]
+* [x] Important globals (partial)
+  * [x] Number.isNaN, Number.isFinite, Number.isInteger (IEEE 754 checks)
+  * [x] Number.MAX_VALUE, MIN_VALUE, EPSILON, MAX_SAFE_INTEGER (constants)
+  * [x] Array.isArray (pointer type check)
+  * [ ] Array.from (copy array)
+  * [ ] Object.keys, Object.values, Object.entries (schema lookup)
+  * [ ] console.log/warn/error (import stubs)
+  * [ ] Date.now, performance.now (host imports)
+  * [ ] JSON.stringify (needs number→string)
+  * [ ] JSON.parse (full parser - very hard)
+  * [ ] Set, Map (hash table implementation)
+  * [ ] structuredClone (deep copy)
+  * [-] WeakSet, WeakMap (need GC hooks - not feasible)
+  * [-] Promise, async/await (not feasible in sync WASM)
+  * [-] Proxy, Reflect (metaprogramming - not feasible)
+  * [-] Symbol (not meaningful without runtime)
+  * [-] Intl.* (too complex)
+  * [-] RegExp (need regex engine)
 * [ ] color-space converter
+  * [ ] infer object schema by lookahead scans
 * [ ] Import model
   * [ ] Bundle before compile
   * [ ] Resolve imports by the compiler, not runtime (static-time)
