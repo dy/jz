@@ -1,9 +1,10 @@
 Parser is based on subscript/jessie.
-If something is not supported by jessie, please let me know - we need to add it there first.
+If something is not supported by jessie, it needs to be fixed there, not worked around.
 It should use API provided by subscript to define operators if needed.
-Document any deviations from standard JS behavior in research.md as appropriate.
+Document any deviations from standard JS behavior in docs.md as appropriate.
 Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions.
-Any JZ code must be valid JS code as well. Try to fix JS quirks but don't introduce new ones.
+Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
+For any file structure changes, update project structure section below.
 
 ## Project Structure (src/, ~4100 lines)
 
@@ -26,13 +27,11 @@ Any JZ code must be valid JS code as well. Try to fix JS quirks but don't introd
 index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 ```
 
-## Key Patterns
-
-- **Method modules**: array.js/string.js import `{ctx, opts, gen}` from compile.js
-
 ## Design Principles
 
 - **No-overhead primitives**: Prefer compile-time solutions over runtime indirection. Static analysis enables direct calls, inline code, zero allocation.
 - **Meaningful limitations**: Accept constraints that enable performance. Document them clearly. Example: static namespace pattern requires compile-time known schema.
 - **Don't overcomplicate**: Simple working solution > complex generic solution. Add complexity only when concrete use case demands it.
 - **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
+
+When implementing features, rely on watr ability to polyfill modern WASM features (no need to go unnecessarily low-level here), as well as optimize (tree-shake etc), so no need to over-optimize instructions here.

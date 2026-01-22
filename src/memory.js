@@ -14,12 +14,13 @@ export const nullRef = () => wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
-/** Create string from interned data */
+/** Create string from interned data. Strings are stored at id*256 in memory. */
 export function mkString(ctx, str) {
   ctx.usedStringType = true
   ctx.usedMemory = true
   const { id, length } = ctx.internString(str)
-  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${id}))`, 'string')
+  const offset = id * 256  // Each string slot is 256 bytes apart
+  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${length}) (i32.const ${offset}))`, 'string')
 }
 
 /** Get string length */
@@ -86,7 +87,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     const values = elements.map(evalConstant)
     const offset = 4096 + (arrayId * 64)
     ctx.staticArrays[arrayId] = { offset, values }
-    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, 'f64', values.map(() => ({ type: 'f64' })))
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.F64_ARRAY}) (i32.const 0) (i32.const ${values.length}) (i32.const ${offset}))`, 'f64', values.map(() => ({ type: 'f64' })))
   } else if (hasRefTypes) {
     // Mixed-type array: REF_ARRAY
     const id = ctx.loopCounter++
@@ -142,7 +143,9 @@ export const envSet = (envVar, fieldIdx, val) =>
 // === Closures ===
 
 /**
- * Generate complete closure call with setup
+ * Generate complete closure call with setup.
+ * Closure encoding: NaN-box with [0x7FF][envLen:4][tableIdx:16][envOffset:32]
+ * Extract envLen and offset to create env pointer for the call.
  */
 export function callClosure(ctx, closureWat, argWats, numArgs) {
   if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
@@ -156,13 +159,17 @@ export function callClosure(ctx, closureWat, argWats, numArgs) {
   ctx.addLocal(tmpClosure.slice(1), 'f64')
   ctx.localDecls.push(`(local ${tmpI64} i64)`)
 
+  // Extract from NaN-boxed closure:
+  // - envLen: bits 48-51 (shifted by 48, masked to 0xF)
+  // - tableIdx: bits 32-47 (shifted by 32, masked to 0xFFFF)
+  // - envOffset: bits 0-31
+  const argSection = argWats ? `\n        ${argWats}` : ''
   return `(block (result f64)
       (local.set ${tmpClosure} ${closureWat})
       (local.set ${tmpI64} (i64.reinterpret_f64 (local.get ${tmpClosure})))
       (call_indirect (type $fntype${numArgs})
-        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE})
-          (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48)))
-          (i32.wrap_i64 (local.get ${tmpI64})))
-        ${argWats}
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get ${tmpI64}) (i64.const 32)) (i64.const 0xFFFF)))))`
+        (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const 0)
+          (i32.and (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 48))) (i32.const 0xF))
+          (i32.wrap_i64 (local.get ${tmpI64})))${argSection}
+        (i32.and (i32.wrap_i64 (i64.shr_u (local.get ${tmpI64}) (i64.const 32))) (i32.const 0xFFFF))))`
 }

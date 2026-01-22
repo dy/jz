@@ -13,27 +13,30 @@
  */
 
 /**
- * Pointer types for NaN-boxing mode
- * Layout: f64 quiet NaN with mantissa [type:4][len:16][offset:32]
+ * Pointer types for integer-packed mode
+ * Layout: [type:8][schemaId:8][len:16][offset:32] = 64 bits
  * - type: pointer type (1-7)
+ * - schemaId: object schema (0 = plain array, 1-255 = named schemas)
  * - len: current length (65535 max elements)
  * - offset: memory offset to data (full 32-bit range)
  *
  * Memory at offset: [data...] - pure data, no header
  * Capacity is implicit from length tier: nextPow2(max(len, 4))
  *
+ * Objects are F64_ARRAY with schemaId > 0 (Strategy B).
+ * Schema registry maps schemaId → property names.
+ *
  * COW-like semantics: assignment copies pointer, mutations to
  * elements are shared, but length changes (push/pop) diverge.
  *
- * Types 1-7 are pointers, 8-15 reserved for canonical NaN
  * @enum {number}
  */
 export const PTR_TYPE = {
-  F64_ARRAY: 1,   // Float64 array (8 bytes/element), pure data
+  F64_ARRAY: 1,   // Float64 array (8 bytes/element), or object with schema
   I32_ARRAY: 2,   // Int32 array (4 bytes/element), pure data
   STRING: 3,      // UTF-16 string (2 bytes/char), immutable
   I8_ARRAY: 4,    // Int8 array (1 byte/element), pure data
-  OBJECT: 5,      // Object (f64 array + schema), pure data
+  // 5 removed: objects are F64_ARRAY with schemaId > 0
   REF_ARRAY: 6,   // Mixed-type array (f64 + type info), pure data
   CLOSURE: 7      // Closure environment, pure data
 }
@@ -67,8 +70,9 @@ export const fmtNum = n =>
  */
 export const f64 = op => {
   const t = op.type
-  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure') return op
-  if (t === 'ref' || t === 'object') return wat('(f64.const 0)', 'f64')
+  // Object is f64 pointer (Strategy B), not GC ref
+  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object') return op
+  if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }
 

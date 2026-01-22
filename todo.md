@@ -122,7 +122,13 @@
   * [ ] Iterator.range
 * [ ] Detect unsupported JS features, throw error (detected, unsupported)
   * [ ] Make sure there's no undetected JS features
-* [ ] Which parts of jessie are defective? Port & improve them
+* [x] Which parts of jessie are defective? Port & improve them
+  * [x] Tested: 52 features supported, 4 missing
+  * [x] Missing: `class extends` - use composition instead
+  * [x] Missing: `function*` generators - use iteration
+  * [x] Missing: `1_000_000` numeric separators - write without
+  * [x] Missing: `{ foo() {} }` method shorthand - use `{ foo: () => {} }`
+  * [x] All JZ-critical features work (arrows, spread, destruct, optional chain, etc.)
 * [ ] TypedArrays
 * [ ] Math full
 * [ ] Boxed String, Number, Boolean funcs
@@ -192,8 +198,29 @@
 * [ ] CLI
   * [ ] jz run
   * [ ] jz compile
-* [ ] Make actual use of I32_ARRAY: 2, I8_ARRAY: 4, or merge REF_ARRAY?
 * [ ] Produce component interface for exports (wit)
+* [ ] i32 Type Preservation
+  * [ ] Integer literals (42, 0, -1) → i32.const
+  * [ ] Track variable types in ctx (i32 vs f64)
+  * [ ] i32 + i32 → i32.add (preserve)
+  * [ ] i32 + f64 → f64.add (promote)
+  * [ ] Array indices always i32
+  * [ ] Bitwise ops always i32
+  * [ ] Loop counters stay i32
+  * [ ] Function params/returns can be i32
+* [ ] Object Strategy B (Tagged Schema)
+  * [x] Remove OBJECT pointer type, use F64_ARRAY
+  * [x] Encode schema ID in pointer: [type:4][schemaId:4][len:16][offset:32]
+  * [x] Schema registry: ctx.schemas[id] = ['prop1', 'prop2']
+  * [x] Property access: compile-time index lookup
+  * [x] Schema survives function boundaries
+  * [x] Emit schemas in jz:sig custom section
+  * [x] JS wrapper: object ↔ array conversion
+  * [ ] Max 256 schemas (8 bits) → currently 16 (4 bits)
+  * [x] Objects store strings, numbers, bools, arrays, nested objects (all JSON types)
+  * [x] Nested object access with schema propagation
+  * [ ] Arrays with properties (special schema?)
+  * [ ] Boxed strings, numbers (special schema?)
 
 ## Comparisons
 

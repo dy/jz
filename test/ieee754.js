@@ -56,16 +56,14 @@ test('IEEE 754: NaN propagation', async () => {
   ok(isNaN(await evaluate('1 + NaN')))
   ok(isNaN(await evaluate('NaN + NaN')))
 
-  // NaN comparisons - in memory mode, f64.eq/f64.ne compare bits
-  // WASM f64.eq returns 0 for NaN == NaN (IEEE 754 compliant)
-  // But our == operator may use different logic
-  // Note: Memory mode uses bit pattern comparison for consistency
-  is(await evaluate('NaN == NaN'), 1)  // Memory mode: same bit pattern
+  // NaN comparisons - IEEE 754 compliant
+  // NaN is not equal to anything, including itself
+  is(await evaluate('NaN == NaN'), 0)  // IEEE 754: NaN != NaN
   is(await evaluate('NaN < 1'), 0)
   is(await evaluate('NaN > 1'), 0)
   is(await evaluate('NaN <= 1'), 0)
   is(await evaluate('NaN >= 1'), 0)
-  is(await evaluate('NaN != NaN'), 0)  // Memory mode: same bit pattern
+  is(await evaluate('NaN != NaN'), 1)  // IEEE 754: NaN != NaN
 })
 
 // ============================================================

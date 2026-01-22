@@ -18,8 +18,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.0.3",
-    "watr": "^4.0.0"
+    "subscript": "^10.0.4",
+    "watr": "^4.2.1"
   },
   "keywords": [
     "javascript",
