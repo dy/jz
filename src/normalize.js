@@ -42,7 +42,8 @@ const NAMESPACES = { Math: new Set([
   'isNaN', 'isFinite', 'isInteger',
   'MAX_VALUE', 'MIN_VALUE', 'EPSILON', 'MAX_SAFE_INTEGER', 'MIN_SAFE_INTEGER',
   'POSITIVE_INFINITY', 'NEGATIVE_INFINITY', 'NaN'
-]), Array: new Set(['isArray']) }
+]), Array: new Set(['isArray', 'from']),
+Object: new Set(['assign', 'keys', 'values', 'entries']) }
 
 // Main entry
 export default function normalize(node) {
