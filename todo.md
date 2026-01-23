@@ -82,7 +82,7 @@
     * [x] `.shift()` - returns first element (non-mutating)
     * [x] `.unshift(x)` - prepend element, returns new array
     * [x] `.concat(arr)` - combine arrays
-    * [x] `.join(sep)` - returns 0 (placeholder - needs number→string)
+    * [x] `.join(sep)` - join array of strings with separator
     * [x] `.flat(depth)` - flatten nested arrays (depth=1)
     * [x] `.flatMap(fn)` - map then flatten
   * [x] Unified Memory Model (remove gc option)
@@ -266,27 +266,21 @@
     * [x] Destructuring assignment via multi-value returns
     * [x] Swap/rotate operations
     * [ ] Error+value pattern (result i32 f64)
-  * [ ] **Unify loop code generation** (array.js + string.js + typedarray.js):
+  * [x] **Unify loop code generation** (array.js + string.js + typedarray.js):
     * [x] 30+ nearly identical loop patterns across 3 files
     * [x] Extract `genIterLoop(ctx, config)` helper with standardized structure
     * [x] array.js reduced from 602→529 lines (12% reduction so far)
-    * [ ] Further reductions possible with string.js/typedarray.js refactoring
   * [x] **Static array optimization underutilized**:
     * [x] `isConstant()` only used for array literals
     * [x] Extend to object literals `{a: 1, b: 2}` → static data segment
     * [x] String concatenation of constants → single static string
-
-### Potential Bugs
-
-* [x] **flatMap executes callback twice** (array.js:580)
-  * First pass counts, second pass maps - callback side effects run twice
-  * **Fixed**: Cache mapped values in temp array, callback runs once
-
-* [x] **Template literal non-string interpolation** silently drops values
-  * Code says `// TODO: implement number-to-string conversion`
-  * Non-string interpolations become empty strings
-  * **Fixed**: Throws error for non-string interpolation
-
+  * [x] **flatMap executes callback twice** (array.js:580)
+    * First pass counts, second pass maps - callback side effects run twice
+    * **Fixed**: Cache mapped values in temp array, callback runs once
+  * [x] **Template literal non-string interpolation** silently drops values
+    * Code says `// TODO: implement number-to-string conversion`
+    * Non-string interpolations become empty strings
+    * **Fixed**: Throws error for non-string interpolation
   * [ ] `tailcall` - tail call optimization
     * [ ] Enable stack-safe recursion
     * [ ] State machine patterns

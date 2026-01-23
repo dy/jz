@@ -62,10 +62,10 @@ export function genPrefixMatch(ctx, strWat, searchWat, offset = 0) {
   ctx.addLocal(len, 'i32')
   ctx.addLocal(searchLen, 'i32')
   if (offset !== 0) ctx.addLocal(off, 'i32')
-  
+
   const strIdx = offset === 0 ? `(local.get ${idx})` : `(i32.add (local.get ${off}) (local.get ${idx}))`
   const offsetInit = offset === 0 ? '' : `(local.set ${off} (i32.sub (local.get ${len}) (local.get ${searchLen})))\n      `
-  
+
   return `(local.set ${str} ${strWat})
     (local.set ${search} ${searchWat})
     (local.set ${len} ${strLen(`(local.get ${str})`)})
@@ -88,7 +88,7 @@ export function genPrefixMatch(ctx, strWat, searchWat, offset = 0) {
 /**
  * Generate substring search loop - used by indexOf, includes, lastIndexOf
  * @param {Object} ctx - Compilation context
- * @param {string} strWat - String pointer expression  
+ * @param {string} strWat - String pointer expression
  * @param {string} searchWat - Search string pointer expression
  * @param {string} resultFound - Expression for when found (e.g. '{idx}' or '(i32.const 1)')
  * @param {string} resultNotFound - Expression for not found (e.g. '(i32.const -1)' or '(i32.const 0)')
@@ -106,9 +106,9 @@ export function genSubstringSearch(ctx, strWat, searchWat, resultFound, resultNo
   ctx.addLocal(searchLen, 'i32')
   ctx.addLocal(j, 'i32')
   ctx.addLocal(match, 'i32')
-  
+
   const resolvedFound = resultFound.replace(/\{idx\}/g, `(local.get ${idx})`)
-  
+
   return `(local.set ${str} ${strWat})
     (local.set ${search} ${searchWat})
     (local.set ${len} ${strLen(`(local.get ${str})`)})
