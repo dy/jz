@@ -342,6 +342,178 @@ export const FUNCTIONS = {
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $loop)))
     (local.get $arr))`,
+
+  // numToString - convert f64 to string pointer
+  // Handles: integers, decimals, NaN, Infinity, negative numbers
+  // Max 24 chars output (enough for any f64)
+  numToString: `(func $numToString (param $x f64) (result f64)
+    (local $str f64) (local $offset i32) (local $len i32)
+    (local $neg i32) (local $intPart i64) (local $fracPart f64)
+    (local $digit i32) (local $i i32) (local $j i32) (local $k i32)
+    (local $temp i32) (local $buf i32) (local $hasDecimal i32)
+    (local $intLen i32) (local $fracLen i32) (local $totalLen i32)
+    (local $abs f64)
+    ;; Handle NaN
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 3) (global.get $__strNaN)))))
+    ;; Handle Infinity
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 8) (global.get $__strInf)))))
+    (if (f64.eq (local.get $x) (f64.const -inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 9) (global.get $__strNegInf)))))
+    ;; Handle negative
+    (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
+    (local.set $abs (f64.abs (local.get $x)))
+    ;; Get integer and fractional parts
+    (local.set $intPart (i64.trunc_f64_s (f64.floor (local.get $abs))))
+    (local.set $fracPart (f64.sub (local.get $abs) (f64.floor (local.get $abs))))
+    ;; Use fixed temp buffer at end of instance table area for digit extraction
+    ;; 48 bytes at offset 65480-65528 (before string interning at 65536)
+    (local.set $buf (i32.const 65480))
+    ;; Extract integer digits (reversed)
+    (local.set $intLen (i32.const 0))
+    (if (i64.eqz (local.get $intPart))
+      (then
+        (i32.store8 (local.get $buf) (i32.const 48))
+        (local.set $intLen (i32.const 1)))
+      (else
+        (loop $int_loop
+          (if (i64.gt_u (local.get $intPart) (i64.const 0))
+            (then
+              (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $intPart) (i64.const 10))))
+              (i32.store8 (i32.add (local.get $buf) (local.get $intLen)) (i32.add (i32.const 48) (local.get $digit)))
+              (local.set $intLen (i32.add (local.get $intLen) (i32.const 1)))
+              (local.set $intPart (i64.div_u (local.get $intPart) (i64.const 10)))
+              (br $int_loop))))))
+    ;; Extract fractional digits (max 15 to avoid floating point noise)
+    (local.set $fracLen (i32.const 0))
+    (local.set $hasDecimal (i32.const 0))
+    (if (f64.gt (local.get $fracPart) (f64.const 0))
+      (then
+        (local.set $hasDecimal (i32.const 1))
+        (local.set $k (i32.const 0))
+        (block $frac_done
+          (loop $frac_loop
+            (br_if $frac_done (i32.ge_s (local.get $k) (i32.const 15)))
+            (local.set $fracPart (f64.mul (local.get $fracPart) (f64.const 10)))
+            (local.set $digit (i32.trunc_f64_s (f64.floor (local.get $fracPart))))
+            (local.set $fracPart (f64.sub (local.get $fracPart) (f64.floor (local.get $fracPart))))
+            (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 32)) (local.get $fracLen)) (i32.add (i32.const 48) (local.get $digit)))
+            (local.set $fracLen (i32.add (local.get $fracLen) (i32.const 1)))
+            (local.set $k (i32.add (local.get $k) (i32.const 1)))
+            (br_if $frac_done (f64.lt (local.get $fracPart) (f64.const 1e-15)))
+            (br $frac_loop)))))
+    ;; Trim trailing zeros from fraction
+    (block $trim_done
+      (loop $trim_loop
+        (br_if $trim_done (i32.le_s (local.get $fracLen) (i32.const 0)))
+        (br_if $trim_done (i32.ne (i32.load8_u (i32.add (i32.add (local.get $buf) (i32.const 32)) (i32.sub (local.get $fracLen) (i32.const 1)))) (i32.const 48)))
+        (local.set $fracLen (i32.sub (local.get $fracLen) (i32.const 1)))
+        (br $trim_loop)))
+    (if (i32.eqz (local.get $fracLen))
+      (then (local.set $hasDecimal (i32.const 0))))
+    ;; Calculate total length
+    (local.set $totalLen (local.get $intLen))
+    (if (local.get $neg)
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+    (if (local.get $hasDecimal)
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $fracLen))))))
+    ;; Allocate result string
+    (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+    (local.set $offset (call $__ptr_offset (local.get $str)))
+    (local.set $i (i32.const 0))
+    ;; Write minus sign
+    (if (local.get $neg)
+      (then
+        (i32.store16 (local.get $offset) (i32.const 45))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; Write integer digits (reverse order)
+    (local.set $j (i32.sub (local.get $intLen) (i32.const 1)))
+    (block $write_int_done
+      (loop $write_int
+        (br_if $write_int_done (i32.lt_s (local.get $j) (i32.const 0)))
+        (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+        (br $write_int)))
+    ;; Write decimal point and fraction
+    (if (local.get $hasDecimal)
+      (then
+        (i32.store16 (local.get $offset) (i32.const 46))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $j (i32.const 0))
+        (block $write_frac_done
+          (loop $write_frac
+            (br_if $write_frac_done (i32.ge_s (local.get $j) (local.get $fracLen)))
+            (i32.store16 (local.get $offset) (i32.load8_u (i32.add (i32.add (local.get $buf) (i32.const 32)) (local.get $j))))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $write_frac)))))
+    (local.get $str))`,
+
+  // escapeJsonString - escape special characters for JSON
+  escapeJsonString: `(func $escapeJsonString (param $str f64) (result f64)
+    (local $srcOff i32) (local $srcLen i32) (local $i i32) (local $ch i32)
+    (local $escCount i32) (local $result f64) (local $dstOff i32)
+    (local.set $srcOff (call $__ptr_offset (local.get $str)))
+    (local.set $srcLen (call $__ptr_len (local.get $str)))
+    ;; Count chars needing escape
+    (local.set $escCount (i32.const 0))
+    (local.set $i (i32.const 0))
+    (block $cnt_done (loop $cnt_loop
+      (br_if $cnt_done (i32.ge_s (local.get $i) (local.get $srcLen)))
+      (local.set $ch (i32.load16_u (i32.add (local.get $srcOff) (i32.shl (local.get $i) (i32.const 1)))))
+      (if (i32.or (i32.or (i32.eq (local.get $ch) (i32.const 34))   ;; double quote
+                         (i32.eq (local.get $ch) (i32.const 92)))  ;; backslash
+              (i32.or (i32.eq (local.get $ch) (i32.const 10))      ;; newline
+                      (i32.or (i32.eq (local.get $ch) (i32.const 13))  ;; carriage return
+                              (i32.eq (local.get $ch) (i32.const 9))))) ;; tab
+        (then (local.set $escCount (i32.add (local.get $escCount) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cnt_loop)))
+    ;; If no escapes needed, return original
+    (if (i32.eqz (local.get $escCount))
+      (then (return (local.get $str))))
+    ;; Allocate new string with extra space
+    (local.set $result (call $__alloc (i32.const 3) (i32.add (local.get $srcLen) (local.get $escCount))))
+    (local.set $dstOff (call $__ptr_offset (local.get $result)))
+    ;; Copy with escaping
+    (local.set $i (i32.const 0))
+    (block $cpy_done (loop $cpy_loop
+      (br_if $cpy_done (i32.ge_s (local.get $i) (local.get $srcLen)))
+      (local.set $ch (i32.load16_u (i32.add (local.get $srcOff) (i32.shl (local.get $i) (i32.const 1)))))
+      (if (i32.eq (local.get $ch) (i32.const 34))
+        (then
+          (i32.store16 (local.get $dstOff) (i32.const 92))
+          (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+          (i32.store16 (local.get $dstOff) (i32.const 34)))
+        (else (if (i32.eq (local.get $ch) (i32.const 92))
+          (then
+            (i32.store16 (local.get $dstOff) (i32.const 92))
+            (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+            (i32.store16 (local.get $dstOff) (i32.const 92)))
+          (else (if (i32.eq (local.get $ch) (i32.const 10))
+            (then
+              (i32.store16 (local.get $dstOff) (i32.const 92))
+              (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+              (i32.store16 (local.get $dstOff) (i32.const 110)))
+            (else (if (i32.eq (local.get $ch) (i32.const 13))
+              (then
+                (i32.store16 (local.get $dstOff) (i32.const 92))
+                (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+                (i32.store16 (local.get $dstOff) (i32.const 114)))
+              (else (if (i32.eq (local.get $ch) (i32.const 9))
+                (then
+                  (i32.store16 (local.get $dstOff) (i32.const 92))
+                  (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+                  (i32.store16 (local.get $dstOff) (i32.const 116)))
+                (else
+                  (i32.store16 (local.get $dstOff) (local.get $ch))))))))))))
+      (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cpy_loop)))
+    (local.get $result))`,
 }
 
 // Dependencies - which functions call which other functions

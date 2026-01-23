@@ -124,6 +124,23 @@ export function assemble(bodyWat, ctx = {
     for (const name of ctx.usedStdlib) include(name)
   }
 
+  // === numToString static strings ===
+  // Add globals and data for special number string representations
+  if (ctx.usedStdlib.includes('numToString')) {
+    // These are placed at fixed offsets after heap start for simplicity
+    // NaN: 4 chars, Infinity: 8 chars, -Infinity: 9 chars
+    const nanOffset = heapStart
+    const infOffset = heapStart + 16  // 4*2 bytes + padding
+    const negInfOffset = heapStart + 40  // 8*2 bytes + padding
+    // UTF-16 encoded strings
+    wat += `  (data (i32.const ${nanOffset}) "N\\00a\\00N\\00\\00\\00")\n`  // "NaN"
+    wat += `  (data (i32.const ${infOffset}) "I\\00n\\00f\\00i\\00n\\00i\\00t\\00y\\00")\n`  // "Infinity"
+    wat += `  (data (i32.const ${negInfOffset}) "-\\00I\\00n\\00f\\00i\\00n\\00i\\00t\\00y\\00")\n`  // "-Infinity"
+    wat += `  (global $__strNaN i32 (i32.const ${nanOffset}))\n`
+    wat += `  (global $__strInf i32 (i32.const ${infOffset}))\n`
+    wat += `  (global $__strNegInf i32 (i32.const ${negInfOffset}))\n`
+  }
+
   // === Globals ===
 
   for (const name in ctx.globals) {
@@ -365,6 +382,45 @@ function emitMemoryHelpers() {
   ;; Alias for schema (objects use id as schemaId)
   (func $__ptr_schema (param $ptr f64) (result i32)
     (call $__ptr_id (local.get $ptr)))
+
+  ;; Concatenate two strings
+  (func $__strcat (param $a f64) (param $b f64) (result f64)
+    (local $lenA i32) (local $lenB i32) (local $result f64) (local $offR i32)
+    (local.set $lenA (call $__ptr_len (local.get $a)))
+    (local.set $lenB (call $__ptr_len (local.get $b)))
+    (local.set $result (call $__alloc (i32.const 3) (i32.add (local.get $lenA) (local.get $lenB))))
+    (local.set $offR (call $__ptr_offset (local.get $result)))
+    ;; Copy first string
+    (memory.copy (local.get $offR)
+      (call $__ptr_offset (local.get $a))
+      (i32.shl (local.get $lenA) (i32.const 1)))
+    ;; Copy second string
+    (memory.copy (i32.add (local.get $offR) (i32.shl (local.get $lenA) (i32.const 1)))
+      (call $__ptr_offset (local.get $b))
+      (i32.shl (local.get $lenB) (i32.const 1)))
+    (local.get $result))
+
+  ;; Concatenate three strings
+  (func $__strcat3 (param $a f64) (param $b f64) (param $c f64) (result f64)
+    (local $lenA i32) (local $lenB i32) (local $lenC i32) (local $result f64) (local $offR i32)
+    (local.set $lenA (call $__ptr_len (local.get $a)))
+    (local.set $lenB (call $__ptr_len (local.get $b)))
+    (local.set $lenC (call $__ptr_len (local.get $c)))
+    (local.set $result (call $__alloc (i32.const 3) (i32.add (i32.add (local.get $lenA) (local.get $lenB)) (local.get $lenC))))
+    (local.set $offR (call $__ptr_offset (local.get $result)))
+    ;; Copy first string
+    (memory.copy (local.get $offR)
+      (call $__ptr_offset (local.get $a))
+      (i32.shl (local.get $lenA) (i32.const 1)))
+    ;; Copy second string
+    (memory.copy (i32.add (local.get $offR) (i32.shl (local.get $lenA) (i32.const 1)))
+      (call $__ptr_offset (local.get $b))
+      (i32.shl (local.get $lenB) (i32.const 1)))
+    ;; Copy third string
+    (memory.copy (i32.add (local.get $offR) (i32.shl (i32.add (local.get $lenA) (local.get $lenB)) (i32.const 1)))
+      (call $__ptr_offset (local.get $c))
+      (i32.shl (local.get $lenC) (i32.const 1)))
+    (local.get $result))
 
   ;; Reallocate array to new capacity tier, copy data, return new pointer
   (func $__realloc (param $ptr f64) (param $newLen i32) (result f64)

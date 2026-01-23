@@ -156,8 +156,8 @@
   * [x] Object.keys, Object.values, Object.entries (schema lookup)
   * [ ] console.log/warn/error (import stubs)
   * [ ] Date.now, performance.now (host imports)
-  * [ ] JSON.stringify (needs number→string)
-  * [ ] JSON.parse (full parser - very hard)
+  * [x] JSON.stringify (numbers, strings, arrays, objects)
+  * [-] JSON.parse (full parser - very hard)
   * [ ] Set, Map (hash table implementation)
   * [ ] structuredClone (deep copy)
   * [-] WeakSet, WeakMap (need GC hooks - not feasible)
@@ -212,6 +212,7 @@
       * [x] Hard to read, no syntax highlighting
       * [x] Added `wt` tagged template helper in types.js (trims indent, joins arrays)
       * [x] Refactored allocateBoxed, genBoxedInferredDecl, genObjectInferredDecl, object literal
+
 * [ ] prohibit arguments and other implicit constants
   * [ ] warn about using null or undefined (either or)
 * [ ] incorporate best sane eslint practices with warning
@@ -219,7 +220,7 @@
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [ ] Warn/error on hitting memory limits: objects, arrays
 * [ ] Import model
-  * [ ] Bundle before compile
+  * [ ] Bundle/resolve static-time
   * [ ] Resolve imports by the compiler, not runtime (static-time)
 * [x] JS improvements (warn on quirks, document divergences)
   * [x] Warning system (console.warn during compilation)
