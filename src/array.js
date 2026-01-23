@@ -2,7 +2,7 @@
 import { ctx, gen } from './compile.js'
 import { PTR_TYPE, wat, f64, i32, bool } from './types.js'
 import { extractParams } from './analyze.js'
-import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen } from './memory.js'
+import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, strLen, strNew, strCharAt, strSetChar, strCopy } from './memory.js'
 import { genLoop, genEarlyExitLoop } from './loop.js'
 
 export const fill = (rw, args) => {
@@ -391,12 +391,75 @@ export const concat = (rw, args) => {
     (local.get ${result})`, 'f64')
 }
 
-// join() - TODO: requires number-to-string conversion (complex)
-// For now returns 0 (placeholder)
+// join(separator) - join array of strings with separator
+// Returns a string. Array elements must be strings.
 export const join = (rw, args) => {
-  // Proper join would need f64->string conversion which is complex in WASM
-  // Return 0 as placeholder - users should use JS for string operations
-  return wat('(f64.const 0)', 'f64')
+  ctx.usedStringType = true
+  ctx.usedArrayType = true
+  ctx.usedMemory = true
+
+  const id = ctx.loopCounter++
+  const arr = `$_join_arr_${id}`, sep = `$_join_sep_${id}`, len = `$_join_len_${id}`
+  const idx = `$_join_i_${id}`, totalLen = `$_join_tlen_${id}`, sepLen = `$_join_slen_${id}`
+  const result = `$_join_result_${id}`, offset = `$_join_off_${id}`, elem = `$_join_elem_${id}`, elemLen = `$_join_elen_${id}`
+
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(sep, 'string')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(totalLen, 'i32')
+  ctx.addLocal(sepLen, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(offset, 'i32')
+  ctx.addLocal(elem, 'string')
+  ctx.addLocal(elemLen, 'i32')
+
+  // Default separator is ","
+  const sepVal = args.length > 0 ? gen(args[0]) : '(call $__mkptr (i32.const 3) (i32.const 1) (i32.const 65280))'
+  // Note: 65280 is a placeholder offset for "," - we need to intern it
+  const actualSep = args.length > 0 ? sepVal : (() => {
+    ctx.usedStringType = true
+    const { id: strId, length } = ctx.internString(',')
+    const strOffset = 65536 + strId * 256
+    return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${strOffset}))`
+  })()
+
+  return wat(`(local.set ${arr} ${rw})
+    (local.set ${sep} ${actualSep})
+    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
+    (local.set ${sepLen} ${strLen(`(local.get ${sep})`)})
+    ;; Pass 1: calculate total length
+    (local.set ${totalLen} (i32.const 0))
+    (local.set ${idx} (i32.const 0))
+    (block $len_done_${id} (loop $len_loop_${id}
+      (br_if $len_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (local.set ${totalLen} (i32.add (local.get ${totalLen}) ${strLen(`(local.get ${elem})`)}))
+      ;; Add separator length (except for last element)
+      (if (i32.lt_s (local.get ${idx}) (i32.sub (local.get ${len}) (i32.const 1)))
+        (then (local.set ${totalLen} (i32.add (local.get ${totalLen}) (local.get ${sepLen})))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $len_loop_${id})))
+    ;; Allocate result string
+    (local.set ${result} ${strNew(`(local.get ${totalLen})`)})
+    ;; Pass 2: copy strings and separators
+    (local.set ${offset} (i32.const 0))
+    (local.set ${idx} (i32.const 0))
+    (block $copy_done_${id} (loop $copy_loop_${id}
+      (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+      (local.set ${elemLen} ${strLen(`(local.get ${elem})`)})
+      ;; Copy element string
+      ${strCopy(`(local.get ${result})`, `(local.get ${offset})`, `(local.get ${elem})`, '(i32.const 0)', `(local.get ${elemLen})`)}
+      (local.set ${offset} (i32.add (local.get ${offset}) (local.get ${elemLen})))
+      ;; Copy separator (except after last element)
+      (if (i32.lt_s (local.get ${idx}) (i32.sub (local.get ${len}) (i32.const 1)))
+        (then
+          ${strCopy(`(local.get ${result})`, `(local.get ${offset})`, `(local.get ${sep})`, '(i32.const 0)', `(local.get ${sepLen})`)}
+          (local.set ${offset} (i32.add (local.get ${offset}) (local.get ${sepLen})))))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $copy_loop_${id})))
+    (local.get ${result})`, 'string')
 }
 
 // flat(depth) - flatten nested arrays by depth levels (default 1)

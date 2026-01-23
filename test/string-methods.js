@@ -250,3 +250,24 @@ test('string.match with /g global flag', async () => {
   is(await evaluate('"a1b2c3".match(/[0-9]/g)[0].length'), 1) // '1'
   is(await evaluate('"a1b2c3".match(/[0-9]/g)[2].length'), 1) // '3'
 })
+
+test('array.join - string arrays', async () => {
+  // Join with separator
+  is(await evaluate('["a", "b", "c"].join("-").length'), 5) // 'a-b-c'
+  is(await evaluate('["a", "b", "c"].join("-").charCodeAt(0)'), 97) // 'a'
+  is(await evaluate('["a", "b", "c"].join("-").charCodeAt(1)'), 45) // '-'
+  is(await evaluate('["a", "b", "c"].join("-").charCodeAt(2)'), 98) // 'b'
+  // Join with default separator (comma)
+  is(await evaluate('["x", "y"].join().length'), 3) // 'x,y'
+  is(await evaluate('["x", "y"].join().charCodeAt(1)'), 44) // ','
+  // Join with empty separator
+  is(await evaluate('["a", "b", "c"].join("").length'), 3) // 'abc'
+  is(await evaluate('["a", "b", "c"].join("").charCodeAt(2)'), 99) // 'c'
+  // Join multi-char strings
+  is(await evaluate('["hello", "world"].join(" ").length'), 11) // 'hello world'
+  is(await evaluate('["hello", "world"].join(" ").charCodeAt(5)'), 32) // ' '
+  // Single element - no separator
+  is(await evaluate('["solo"].join("-").length'), 4)
+  // Empty array
+  is(await evaluate('[].join("-").length'), 0)
+})
