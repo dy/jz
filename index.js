@@ -158,8 +158,8 @@ function wrapExport(exports, name, sig, schemas) {
 
     const result = rawFn.apply(null, convertedArgs)
 
-    // Convert pointer result to array/object
-    if (returnsArray && isPtr(result)) {
+    // Convert pointer result to JS value (array, object, or string)
+    if (isPtr(result)) {
       return ptrToValue(exports._memory, result, schemas)
     }
     return result

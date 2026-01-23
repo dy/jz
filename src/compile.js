@@ -903,6 +903,129 @@ function resolveCall(namespace, name, args, receiver = null) {
     throw new Error(`Unknown Object.${name}`)
   }
 
+  // JSON namespace
+  if (namespace === 'JSON') {
+    if (name === 'stringify' && args.length >= 1) {
+      ctx.usedStringType = true
+      ctx.usedMemory = true
+      ctx.usedStdlib.push('numToString')
+      ctx.usedStdlib.push('escapeJsonString')
+
+      const val = gen(args[0])
+      const id = ctx.uniqueId++
+
+      // Static string helpers
+      const strTrue = mkString(ctx, 'true')
+      const strFalse = mkString(ctx, 'false')
+      const strNull = mkString(ctx, 'null')
+      const strQuote = mkString(ctx, '"')
+      const strColon = mkString(ctx, ':')
+      const strComma = mkString(ctx, ',')
+      const strLBrace = mkString(ctx, '{')
+      const strRBrace = mkString(ctx, '}')
+      const strLBracket = mkString(ctx, '[')
+      const strRBracket = mkString(ctx, ']')
+
+      // Generate stringifier for a value with known type info
+      const genStringify = (valExpr, type, schema) => {
+        const v = `$_jsv_${ctx.uniqueId++}`
+        const r = `$_jsr_${ctx.uniqueId++}`
+        ctx.addLocal(v, 'f64')
+        ctx.addLocal(r, 'f64')
+
+        // String type - wrap in quotes, escape special chars
+        if (type === 'string') {
+          return wt`(local.set ${v} ${valExpr})
+            (local.set ${r} (call $__strcat3 ${strQuote} (call $escapeJsonString (local.get ${v})) ${strQuote}))
+            (local.get ${r})`
+        }
+
+        // Number type - convert to string
+        if (type === 'f64' || type === 'i32') {
+          return `(call $numToString ${f64(valExpr)})`
+        }
+
+        // Boolean
+        if (type === 'bool') {
+          return wt`(select ${strTrue} ${strFalse} ${i32(valExpr)})`
+        }
+
+        // Object with known schema - unroll properties
+        if (type === 'object' && schema && ctx.objectSchemas[schema]) {
+          const schemaKeys = ctx.objectSchemas[schema].filter(k => !k.startsWith('__'))
+          const obj = `$_jso_${ctx.uniqueId++}`
+          ctx.addLocal(obj, 'f64')
+
+          let code = wt`(local.set ${obj} ${valExpr})\n`
+          code += `(local.set ${r} ${strLBrace})\n`
+
+          schemaKeys.forEach((key, i) => {
+            const keyStr = mkString(ctx, `"${key}":`)
+            const propIdx = ctx.objectSchemas[schema].indexOf(key)
+            const propVal = objGet(`(local.get ${obj})`, propIdx)
+            // Recursively stringify - for simplicity, assume number values
+            // TODO: detect property types for proper recursion
+            // Note: objGet returns f64 (f64.load), so no conversion needed
+            const propStr = `(call $numToString ${propVal})`
+            code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${keyStr}))\n`
+            code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${propStr}))\n`
+            if (i < schemaKeys.length - 1) {
+              code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))\n`
+            }
+          })
+
+          code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${strRBrace}))\n`
+          code += `(local.get ${r})`
+          return code
+        }
+
+        // Array - generate loop
+        if (type === 'array') {
+          const arr = `$_jsa_${ctx.uniqueId++}`
+          const idx = `$_jsai_${ctx.uniqueId++}`
+          const len = `$_jsal_${ctx.uniqueId++}`
+          const elem = `$_jsae_${ctx.uniqueId++}`
+          ctx.addLocal(arr, 'f64')
+          ctx.addLocal(idx, 'i32')
+          ctx.addLocal(len, 'i32')
+          ctx.addLocal(elem, 'f64')
+
+          return wt`(local.set ${arr} ${valExpr})
+            (local.set ${len} ${arrLen(`(local.get ${arr})`)})
+            (local.set ${r} ${strLBracket})
+            (local.set ${idx} (i32.const 0))
+            (block $jsa_done_${id} (loop $jsa_loop_${id}
+              (br_if $jsa_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+              (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
+              ;; For each element, convert to string (assume number for now)
+              (local.set ${r} (call $__strcat (local.get ${r}) (call $numToString (local.get ${elem}))))
+              ;; Add comma if not last
+              (if (i32.lt_s (local.get ${idx}) (i32.sub (local.get ${len}) (i32.const 1)))
+                (then (local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))))
+              (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+              (br $jsa_loop_${id})))
+            (local.set ${r} (call $__strcat (local.get ${r}) ${strRBracket}))
+            (local.get ${r})`
+        }
+
+        // Default - try to detect type at runtime
+        return wt`(local.set ${v} ${valExpr})
+          (if (result f64) (call $__is_pointer (local.get ${v}))
+            (then
+              (if (result f64) (i32.eq (call $__ptr_type (local.get ${v})) (i32.const ${PTR_TYPE.STRING}))
+                (then (call $__strcat3 ${strQuote} (call $escapeJsonString (local.get ${v})) ${strQuote}))
+                (else (call $numToString (local.get ${v})))))
+            (else (call $numToString (local.get ${v}))))`
+      }
+
+      // Ensure strcat functions are available
+      ctx.needsStrcat = true
+
+      return wat(genStringify(val, val.type, val.schema), 'string')
+    }
+    throw new Error(`Unknown JSON.${name}`)
+  }
+
   // Global functions
   if (namespace === null) {
     if (name === 'isNaN' || name === 'isFinite') return resolveCall('Number', name, args)
@@ -1138,7 +1261,7 @@ const operators = {
     if (typeof fn === 'string') name = fn
     else if (Array.isArray(fn) && fn[0] === '.') {
       const [, obj, method] = fn
-      if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array' || obj === 'Object')) {
+      if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array' || obj === 'Object' || obj === 'JSON')) {
         namespace = obj
         name = method
       } else if (typeof obj === 'string' && ctx.namespaces[obj]) {
@@ -1637,10 +1760,12 @@ const operators = {
         return wat(elems, 'multi')
       }
     }
-    const retVal = value !== undefined ? f64(gen(value)) : wat('(f64.const 0)', 'f64')
+    // Preserve type for NaN-boxed pointers (strings, arrays, objects)
+    const genVal = value !== undefined ? gen(value) : wat('(f64.const 0)', 'f64')
+    const retVal = isString(genVal) || isArray(genVal) || isObject(genVal) ? genVal : f64(genVal)
     // If inside a function with a return label, use br to exit early
     if (ctx.returnLabel) {
-      return wat(`(br ${ctx.returnLabel} ${retVal})`, 'f64')
+      return wat(`(br ${ctx.returnLabel} ${retVal})`, retVal.type)
     }
     return retVal
   },
@@ -3158,9 +3283,11 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
       }
     }
     const returnsArray = bodyResult.type === 'array' || bodyResult.type === 'refarray' || ctx.returnsArrayPointer
+    const returnsString = bodyResult.type === 'string'
+    const returnsPointer = returnsArray || returnsString
     // Track multi-value return count for JS interop (WebAssembly.Function returns array)
-    if (arrayParams.length > 0 || returnsArray || multiCount) {
-      parentCtx.exportSignatures[name] = { arrayParams, returnsArray, multiReturn: multiCount || 0 }
+    if (arrayParams.length > 0 || returnsPointer || multiCount) {
+      parentCtx.exportSignatures[name] = { arrayParams, returnsArray: returnsPointer, multiReturn: multiCount || 0 }
     }
   }
 
