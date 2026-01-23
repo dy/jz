@@ -954,8 +954,9 @@ export const REGEX_METHODS = {
       (local.set ${strLen} (call $__ptr_len (local.get ${strPtr})))
       (local.set ${searchPos} (i32.const 0))
       (local.set ${matchEnd} (i32.const -1))
-      ;; Allocate temp buffer for group positions on stack area (use bump allocator space)
+      ;; Allocate temp buffer for group positions (8 bytes per group: start+end as i32s)
       (local.set ${groupBuf} (global.get $__heap))
+      (global.set $__heap (i32.add (global.get $__heap) (i32.const ${(groupCount + 1) * 8})))
       ;; Search loop
       (block $found_${id}
         (loop $search_${id}

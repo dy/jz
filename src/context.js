@@ -114,7 +114,8 @@ export function createContext() {
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||
            type === 'boxed_string' || type === 'boxed_number' || type === 'boxed_boolean' ||
-           type === 'array_props' || type === 'typedarray' || type === 'regex') ? 'f64' : type
+           type === 'array_props' || type === 'typedarray' || type === 'regex' ||
+           type === 'set' || type === 'map') ? 'f64' : type
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }
       if (schema !== undefined) this.localSchemas[finalName] = schema

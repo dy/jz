@@ -15,34 +15,85 @@
 /**
  * Pointer types for NaN-boxing mode
  *
- * NaN box: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
- * Payload: [type:4][id:16][offset:31]
- * - type: pointer type (1-15)
- * - id: type-specific (len for immutable, instanceId for mutable, schemaId for objects)
- * - offset: memory byte offset (2GB addressable)
+ * NaN box format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
+ * Default payload: [type:4][id:16][offset:31]
  *
- * TypedArray uses different layout: [type:4][elemType:3][len:22][offset:22]
- *
- * Memory at offset: [data...] - pure data, no header
- *
- * Instance table (for mutable types): InstanceTable[id] = { len: u16, schemaId: u16 }
  * Schema registry: schemas[id] = ['prop1', 'prop2', ...] (compile-time)
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * POINTER LAYOUTS
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * ARRAY (type=1) - Mutable f64 array with C-style header
+ *   Pointer: [type:4=0001][schemaId:16][offset:31]
+ *   Memory:  offset-8 → [length:f64]
+ *            offset   → [elem0:f64, elem1:f64, ...]
+ *   schemaId: 0=pure array, >0=array with named props at schema offsets
+ *   O(1) push/pop via length in memory, O(n) shift/unshift
+ *
+ * (type=2) - Reserved for future use
+ *
+ * STRING (type=3) - Immutable UTF-16 string
+ *   Pointer: [type:4=0011][len:16][offset:31]
+ *   Memory:  offset → [char0:u16, char1:u16, ...]
+ *
+ * OBJECT (type=4) - Static object (compile-time known shape)
+ *   Pointer: [type:4=0100][schemaId:16][offset:31]
+ *   Memory:  offset → [prop0:f64, prop1:f64, ...]
+ *   Schema:  schemas[schemaId] = ['propName0', 'propName1', ...]
+ *
+ * TYPED_ARRAY (type=5) - TypedArray (different bit layout!)
+ *   Pointer: [type:4=0101][elemType:3][len:22][offset:22]
+ *   Memory:  offset → raw bytes (stride depends on elemType)
+ *   elemType: 0=i8, 1=u8, 2=i16, 3=u16, 4=i32, 5=u32, 6=f32, 7=f64
+ *
+ * REGEX (type=6) - Compiled regex pattern
+ *   Pointer: [type:4=0110][regexId:16][flags:31]
+ *   Memory:  compiled regex in regexFunctions array
+ *   flags: i=1, g=2, m=4, etc.
+ *
+ * CLOSURE (type=7) - Function closure with captured environment
+ *   Pointer: [type:4=0111][funcIdx:16][offset:31]
+ *   Memory:  offset → [captured0:f64, captured1:f64, ...]
+ *
+ * SET (type=8) - Hash set (open addressing)
+ *   Pointer: [type:4=1000][schemaId:16][offset:31]
+ *   Memory:  offset-16 → [capacity:f64][size:f64]
+ *            offset   → [hash0:f64, key0:f64, hash1:f64, key1:f64, ...]
+ *   Entry: 16 bytes (hash + key), hash=0 empty, hash=1 deleted
+ *   schemaId: 0=pure Set, >0=hybrid with static props at schema offsets
+ *
+ * MAP (type=9) - Hash map (open addressing)
+ *   Pointer: [type:4=1001][schemaId:16][offset:31]
+ *   Memory:  offset-16 → [capacity:f64][size:f64]
+ *            offset   → [hash0:f64, key0:f64, val0:f64, ...]
+ *   Entry: 24 bytes (hash + key + val), hash=0 empty, hash=1 deleted
+ *   schemaId: 0=pure Map, >0=hybrid with static props at schema offsets
+ *
+ * DYN_OBJECT (type=10) - Dynamic object (runtime property names)
+ *   Pointer: [type:4=1010][schemaId:16][offset:31]
+ *   Memory:  same as MAP (hash table for string keys → values)
+ *   schemaId: 0=pure dynamic, >0=hybrid (static base + dynamic overflow)
+ *   Syntax: obj.prop and obj[key] both use hash lookup
  *
  * @enum {number}
  */
 export const PTR_TYPE = {
-  ARRAY: 1,        // Immutable f64 array, len in pointer
-  ARRAY_MUT: 2,    // Mutable array (schemaId=0) or array+props (schemaId>0)
-  STRING: 3,       // UTF-16 string, len in pointer, immutable
-  OBJECT: 4,       // Object (or boxed string if schema[0]==='__string__')
-  TYPED_ARRAY: 5,  // TypedArray: [type:4][elemType:3][len:22][offset:22]
-  REGEX: 6,        // Regex pattern, id = regexId, offset = flags
-  CLOSURE: 7,      // Closure, funcIdx + env offset
+  ARRAY: 1,        // [type:4][schemaId:16][offset:31] → [-8:len][elem0, elem1, ...]
+  // 2 reserved for future use
+  STRING: 3,       // [type:4][len:16][offset:31] → [char0:u16, char1:u16, ...]
+  OBJECT: 4,       // [type:4][schemaId:16][offset:31] → [prop0, prop1, ...]
+  TYPED_ARRAY: 5,  // [type:4][elemType:3][len:22][offset:22] → raw bytes
+  REGEX: 6,        // [type:4][regexId:16][flags:31] → compiled in regexFunctions
+  CLOSURE: 7,      // [type:4][funcIdx:16][offset:31] → [captured0, captured1, ...]
+  SET: 8,          // [type:4][schemaId:16][offset:31] → [-16:cap][-8:size][entries...]
+  MAP: 9,          // [type:4][schemaId:16][offset:31] → [-16:cap][-8:size][entries...]
+  DYN_OBJECT: 10,  // [type:4][schemaId:16][offset:31] → same as MAP, .prop syntax
 }
 
 // === Memory layout constants ===
-/** Instance table size: 16K instances * 4 bytes = 64KB, starts at offset 0 */
-export const INSTANCE_TABLE_END = 65536
+/** Heap start offset (no more instance table) */
+export const HEAP_START = 0
 /** String interning stride: max string length * 2 (UTF-16) */
 export const STRING_STRIDE = 256
 /** F64 element size in bytes */
@@ -137,10 +188,10 @@ export const fmtNum = n =>
 export const f64 = op => {
   const t = op.type
   // Object is f64 pointer (Strategy B), not GC ref
-  // boxed types, array_props, and typedarray are also f64 pointers
+  // boxed types, array_props, typedarray, set, map, dyn_object are also f64 pointers
   if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object' ||
       t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props' ||
-      t === 'typedarray') return op
+      t === 'typedarray' || t === 'set' || t === 'map' || t === 'dyn_object') return op
   if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }
@@ -205,6 +256,12 @@ export const isBoxedBoolean = v => v.type === 'boxed_boolean'
 export const isArrayProps = v => v.type === 'array_props'
 /** @param {String & {type: string}} v - Regex pattern */
 export const isRegex = v => v.type === 'regex'
+/** @param {String & {type: string}} v - Set collection */
+export const isSet = v => v.type === 'set'
+/** @param {String & {type: string}} v - Map collection */
+export const isMap = v => v.type === 'map'
+/** @param {String & {type: string}} v - Dynamic object (hash table, runtime props) */
+export const isDynObject = v => v.type === 'dyn_object'
 
 // === Compound predicates ===
 /** @param {String & {type: string}} a @param {String & {type: string}} b */

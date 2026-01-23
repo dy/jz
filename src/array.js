@@ -1,8 +1,8 @@
 // Array method implementations
 import { ctx, gen } from './compile.js'
-import { PTR_TYPE, wat, f64, i32, bool } from './types.js'
+import { PTR_TYPE, wat, f64, i32, bool, HEAP_START, STRING_STRIDE } from './types.js'
 import { extractParams } from './analyze.js'
-import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, strLen, strNew, strCharAt, strSetChar, strCopy } from './memory.js'
+import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, ptrSetLen, strLen, strNew, strCharAt, strSetChar, strCopy } from './memory.js'
 import { genLoop, genEarlyExitLoop } from './loop.js'
 
 export const fill = (rw, args) => {
@@ -79,7 +79,8 @@ export const filter = (rw, args) => {
   ctx.addLocal(len, 'i32')
   ctx.addLocal(count, 'i32')
   ctx.addLocal(paramName, 'f64')
-  const finalResult = ptrWithLen(`(local.get ${result})`, `(local.get ${count})`)
+  // After loop, set actual length and return pointer
+  const setLen = ptrSetLen(`(local.get ${result})`, `(local.get ${count})`)
   return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(`(local.get ${arr})`)})
     (local.set ${result} ${arrNew(`(local.get ${len})`)})
@@ -94,7 +95,8 @@ export const filter = (rw, args) => {
           (local.set ${count} (i32.add (local.get ${count}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    ${finalResult}`, 'f64')
+    ${setLen}
+    (local.get ${result})`, 'f64')
 }
 
 export const find = (rw, args) => {
@@ -415,12 +417,10 @@ export const join = (rw, args) => {
   ctx.addLocal(elemLen, 'i32')
 
   // Default separator is ","
-  const sepVal = args.length > 0 ? gen(args[0]) : '(call $__mkptr (i32.const 3) (i32.const 1) (i32.const 65280))'
-  // Note: 65280 is a placeholder offset for "," - we need to intern it
-  const actualSep = args.length > 0 ? sepVal : (() => {
+  const actualSep = args.length > 0 ? gen(args[0]) : (() => {
     ctx.usedStringType = true
     const { id: strId, length } = ctx.internString(',')
-    const strOffset = 65536 + strId * 256
+    const strOffset = HEAP_START + strId * STRING_STRIDE
     return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${strOffset}))`
   })()
 

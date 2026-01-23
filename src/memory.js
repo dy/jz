@@ -6,7 +6,7 @@
  * Payload: [type:4][id:16][offset:31]
  */
 
-import { PTR_TYPE, ELEM_TYPE, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, F64_SIZE, wat, f64, isHeapRef, isString, isObject } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, ELEM_STRIDE, HEAP_START, STRING_STRIDE, F64_SIZE, wat, f64, isHeapRef, isString, isObject } from './types.js'
 
 // === Null/undefined ===
 
@@ -15,12 +15,12 @@ export const nullRef = () => wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
-/** Create string from interned data. Strings are stored at instanceTableEnd + id*STRING_STRIDE */
+/** Create string from interned data. Strings are stored at HEAP_START + id*STRING_STRIDE */
 export function mkString(ctx, str) {
   ctx.usedStringType = true
   ctx.usedMemory = true
   const { id, length } = ctx.internString(str)
-  const offset = INSTANCE_TABLE_END + id * STRING_STRIDE  // After instance table
+  const offset = HEAP_START + id * STRING_STRIDE
   // NaN boxing: mkptr(type, id, offset) - for string, id = length
   return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${offset}))`, 'string')
 }
@@ -158,7 +158,11 @@ export const arrSet = (w, idx, val) =>
 export const arrNew = (lenWat) =>
   `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) ${lenWat})`
 
-/** Create pointer with modified length - for push/pop */
+/** Update array length in memory header - for filter/splice where actual < allocated */
+export const ptrSetLen = (ptrWat, newLenWat) =>
+  `(call $__ptr_set_len ${ptrWat} ${newLenWat})`
+
+/** Create pointer with modified length - DEPRECATED, use ptrSetLen for arrays */
 export const ptrWithLen = (ptrWat, newLenWat) =>
   `(call $__ptr_with_len ${ptrWat} ${newLenWat})`
 
@@ -230,13 +234,15 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
 
   const isStatic = elements.every(isConstant)
   if (isStatic && !hasRefTypes) {
-    // Static f64 array - store in data segment (after instance table)
+    // Static f64 array - store in data segment with C-style header
     const arrayId = Object.keys(ctx.staticArrays).length
     const values = elements.map(evalConstant)
-    const offset = INSTANCE_TABLE_END + 4096 + (arrayId * 64)
-    ctx.staticArrays[arrayId] = { offset, values }
-    // NaN boxing: mkptr(type, id, offset) - for array, id = length
-    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${values.length}) (i32.const ${offset}))`, 'array', values.map(() => ({ type: 'f64' })))
+    // Layout: [length:f64][elem0, elem1, ...], pointer points to elem0
+    const headerOffset = HEAP_START + 4096 + (arrayId * 72)  // 8 byte header + 64 bytes data
+    const dataOffset = headerOffset + 8
+    ctx.staticArrays[arrayId] = { offset: headerOffset, values, headerSize: 8 }
+    // NaN boxing: mkptr(type, schemaId=0, offset to data)
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const 0) (i32.const ${dataOffset}))`, 'array', values.map(() => ({ type: 'f64' })))
   } else if (hasRefTypes) {
     // Mixed-type array: still use ARRAY type but track schema for element types
     const id = ctx.uniqueId++

@@ -514,6 +514,373 @@ export const FUNCTIONS = {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cpy_loop)))
     (local.get $result))`,
+
+  // ============================================================================
+  // HASH TABLE CORE
+  // ============================================================================
+  // Memory layout (C-style headers - capacity/size BEFORE offset):
+  //   offset-16: capacity (f64)
+  //   offset-8:  size (f64)
+  //   offset:    entries start
+  //
+  // Entry layouts by stride:
+  //   Set (stride=16):       [hash:f64][key:f64]
+  //   Map/DynObj (stride=24): [hash:f64][key:f64][value:f64]
+  //
+  // Entry states: hash=0 (EMPTY), hash=1 (TOMBSTONE), hash>=2 (occupied)
+  // Pointer layout: [type:4][schemaId:16][offset:31] - schemaId=0 for pure Set/Map
+  // ============================================================================
+
+  // Hash function for f64 keys - handles strings by content, others by bits
+  // To detect string pointers, we check for NaN-boxed format: hi & 0xFFF80000 == 0x7FF80000
+  __hash: `(func $__hash (param $key f64) (result i32)
+    (local $h i32) (local $lo i32) (local $hi i32) (local $offset i32) (local $len i32) (local $i i32) (local $c i32)
+    (local.set $lo (i32.wrap_i64 (i64.reinterpret_f64 (local.get $key))))
+    (local.set $hi (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $key)) (i64.const 32))))
+    ;; Check if string pointer: must be NaN-boxed (hi & 0xFFF80000 == 0x7FF80000) AND type=3
+    (if (i32.and
+          (i32.eq (i32.and (local.get $hi) (i32.const 0xFFF80000)) (i32.const 0x7FF80000))
+          (i32.eq (i32.and (i32.shr_u (local.get $hi) (i32.const 15)) (i32.const 0xF)) (i32.const 3)))
+      (then
+        ;; String: FNV-1a hash of characters
+        (local.set $offset (i32.and (local.get $lo) (i32.const 0x7FFFFFFF)))
+        ;; Extract length from id field (bits 31-46): use full 64-bit shift
+        (local.set $len (i32.and
+          (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $key)) (i64.const 31)))
+          (i32.const 0xFFFF)))
+        (local.set $h (i32.const 0x811c9dc5))
+        (local.set $i (i32.const 0))
+        (block $done (loop $loop
+          (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (i32.load16_u (i32.add (local.get $offset) (i32.shl (local.get $i) (i32.const 1)))))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (local.get $c)) (i32.const 0x01000193)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $loop))))
+      (else
+        ;; Non-string: MurmurHash3-style bit mixing
+        (local.set $h (i32.xor (local.get $lo) (local.get $hi)))
+        (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 16))) (i32.const 0x85ebca6b)))
+        (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))) (i32.const 0xc2b2ae35)))
+        (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 16))))))
+    ;; Ensure hash >= 2 (0=empty, 1=tombstone)
+    (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+      (then (i32.add (local.get $h) (i32.const 2)))
+      (else (local.get $h))))`,
+
+  // Key equality: strings by content, others by bits
+  // To detect string pointers, we check for NaN-boxed format: hi & 0xFFF80000 == 0x7FF80000
+  __key_eq: `(func $__key_eq (param $a f64) (param $b f64) (result i32)
+    (local $hi_a i32) (local $hi_b i32) (local $off_a i32) (local $off_b i32) (local $len i32) (local $i i32)
+    ;; Fast path: bitwise equal
+    (if (i64.eq (i64.reinterpret_f64 (local.get $a)) (i64.reinterpret_f64 (local.get $b)))
+      (then (return (i32.const 1))))
+    ;; Check if both are string pointers (NaN-boxed with type=3)
+    (local.set $hi_a (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $a)) (i64.const 32))))
+    (local.set $hi_b (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $b)) (i64.const 32))))
+    (if (i32.and
+          ;; Check $a is NaN-boxed string
+          (i32.and
+            (i32.eq (i32.and (local.get $hi_a) (i32.const 0xFFF80000)) (i32.const 0x7FF80000))
+            (i32.eq (i32.and (i32.shr_u (local.get $hi_a) (i32.const 15)) (i32.const 0xF)) (i32.const 3)))
+          ;; Check $b is NaN-boxed string
+          (i32.and
+            (i32.eq (i32.and (local.get $hi_b) (i32.const 0xFFF80000)) (i32.const 0x7FF80000))
+            (i32.eq (i32.and (i32.shr_u (local.get $hi_b) (i32.const 15)) (i32.const 0xF)) (i32.const 3))))
+      (then
+        ;; Both strings: compare lengths first (extract using 64-bit shift)
+        (local.set $len (i32.and
+          (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $a)) (i64.const 31)))
+          (i32.const 0xFFFF)))
+        (if (i32.ne (local.get $len) (i32.and
+              (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $b)) (i64.const 31)))
+              (i32.const 0xFFFF)))
+          (then (return (i32.const 0))))
+        ;; Compare characters
+        (local.set $off_a (i32.and (i32.wrap_i64 (i64.reinterpret_f64 (local.get $a))) (i32.const 0x7FFFFFFF)))
+        (local.set $off_b (i32.and (i32.wrap_i64 (i64.reinterpret_f64 (local.get $b))) (i32.const 0x7FFFFFFF)))
+        (local.set $i (i32.const 0))
+        (block $ne (loop $loop
+          (br_if 2 (i32.ge_s (local.get $i) (local.get $len)))
+          (br_if $ne (i32.ne
+            (i32.load16_u (i32.add (local.get $off_a) (i32.shl (local.get $i) (i32.const 1))))
+            (i32.load16_u (i32.add (local.get $off_b) (i32.shl (local.get $i) (i32.const 1))))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $loop)))
+        (return (i32.const 0))))
+    (i32.const 0))`,
+
+  // Allocate Set with C-style headers (capacity/size before entries)
+  // Layout: [... | cap:f64 | size:f64 | entry0... ] where offset points to entries
+  __set_new: `(func $__set_new (param $cap i32) (result f64)
+    (local $offset i32) (local $bytes i32)
+    (if (i32.lt_s (local.get $cap) (i32.const 16))
+      (then (local.set $cap (i32.const 16))))
+    ;; Allocate: 16 bytes header + cap * 16 bytes entries
+    (local.set $bytes (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 4))))
+    (local.set $offset (i32.add (global.get $__heap) (i32.const 16))) ;; offset points past header
+    (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
+    (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
+    (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
+    ;; schemaId=0 for pure Set
+    (call $__mkptr (i32.const 8) (i32.const 0) (local.get $offset)))`,
+
+  // Allocate Map with C-style headers
+  __map_new: `(func $__map_new (param $cap i32) (result f64)
+    (local $offset i32) (local $bytes i32)
+    (if (i32.lt_s (local.get $cap) (i32.const 16))
+      (then (local.set $cap (i32.const 16))))
+    ;; Allocate: 16 bytes header + cap * 24 bytes entries
+    (local.set $bytes (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const 24))))
+    (local.set $offset (i32.add (global.get $__heap) (i32.const 16)))
+    (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
+    (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
+    (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
+    (call $__mkptr (i32.const 9) (i32.const 0) (local.get $offset)))`,
+
+  // Set.has(key) - returns 1 if found, 0 if not
+  __set_has: `(func $__set_has (param $set f64) (param $key f64) (result i32)
+    (local $offset i32) (local $cap i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32)
+    (local.set $offset (call $__ptr_offset (local.get $set)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (block $found (block $not_found
+      (loop $probe
+        (br_if $not_found (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.shl (local.get $idx) (i32.const 4))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $not_found (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (return (i32.const 0)))
+    (i32.const 1))`,
+
+  // Set.add(key) - adds key, returns the Set (for chaining)
+  __set_add: `(func $__set_add (param $set f64) (param $key f64) (result f64)
+    (local $offset i32) (local $cap i32) (local $size i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32) (local $firstDeleted i32)
+    (local.set $offset (call $__ptr_offset (local.get $set)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $size (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 8)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (local.set $firstDeleted (i32.const -1))
+    (block $found (block $insert
+      (loop $probe
+        (br_if $insert (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.shl (local.get $idx) (i32.const 4))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $insert (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.eq (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (local.get $firstDeleted) (i32.const -1))
+              (then (local.set $firstDeleted (local.get $entryOff))))))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (if (i32.ne (local.get $firstDeleted) (i32.const -1))
+        (then (local.set $entryOff (local.get $firstDeleted)))
+        (else (local.set $entryOff (i32.add (local.get $offset) (i32.shl (local.get $idx) (i32.const 4))))))
+      (f64.store (local.get $entryOff) (f64.convert_i32_s (local.get $h)))
+      (f64.store (i32.add (local.get $entryOff) (i32.const 8)) (local.get $key))
+      (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.convert_i32_s (i32.add (local.get $size) (i32.const 1)))))
+    (local.get $set))`,
+
+  // Set.delete(key) - removes key, returns 1 if existed, 0 if not
+  __set_delete: `(func $__set_delete (param $set f64) (param $key f64) (result i32)
+    (local $offset i32) (local $cap i32) (local $size i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32)
+    (local.set $offset (call $__ptr_offset (local.get $set)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $size (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 8)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (block $found (block $not_found
+      (loop $probe
+        (br_if $not_found (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.shl (local.get $idx) (i32.const 4))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $not_found (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (return (i32.const 0)))
+    (f64.store (local.get $entryOff) (f64.const 1))
+    (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.convert_i32_s (i32.sub (local.get $size) (i32.const 1))))
+    (i32.const 1))`,
+
+  // Set.size getter
+  __set_size: `(func $__set_size (param $set f64) (result i32)
+    (i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset (local.get $set)) (i32.const 8)))))`,
+
+  // Map.has(key)
+  __map_has: `(func $__map_has (param $map f64) (param $key f64) (result i32)
+    (local $offset i32) (local $cap i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32)
+    (local.set $offset (call $__ptr_offset (local.get $map)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (block $found (block $not_found
+      (loop $probe
+        (br_if $not_found (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.mul (local.get $idx) (i32.const 24))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $not_found (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (return (i32.const 0)))
+    (i32.const 1))`,
+
+  // Map.get(key) - returns value or undefined (0)
+  __map_get: `(func $__map_get (param $map f64) (param $key f64) (result f64)
+    (local $offset i32) (local $cap i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32)
+    (local.set $offset (call $__ptr_offset (local.get $map)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (block $found (result f64) (block $not_found
+      (loop $probe
+        (br_if $not_found (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.mul (local.get $idx) (i32.const 24))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $not_found (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found (f64.load (i32.add (local.get $entryOff) (i32.const 16))))))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (f64.const 0)))`,
+
+  // Map.set(key, val) - sets value, returns the Map (for chaining)
+  __map_set: `(func $__map_set (param $map f64) (param $key f64) (param $val f64) (result f64)
+    (local $offset i32) (local $cap i32) (local $size i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32) (local $firstDeleted i32)
+    (local.set $offset (call $__ptr_offset (local.get $map)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $size (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 8)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (local.set $firstDeleted (i32.const -1))
+    (block $found (block $insert
+      (loop $probe
+        (br_if $insert (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.mul (local.get $idx) (i32.const 24))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $insert (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.eq (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (local.get $firstDeleted) (i32.const -1))
+              (then (local.set $firstDeleted (local.get $entryOff))))))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (if (i32.ne (local.get $firstDeleted) (i32.const -1))
+        (then (local.set $entryOff (local.get $firstDeleted)))
+        (else (local.set $entryOff (i32.add (local.get $offset) (i32.mul (local.get $idx) (i32.const 24))))))
+      (f64.store (local.get $entryOff) (f64.convert_i32_s (local.get $h)))
+      (f64.store (i32.add (local.get $entryOff) (i32.const 8)) (local.get $key))
+      (f64.store (i32.add (local.get $entryOff) (i32.const 16)) (local.get $val))
+      (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.convert_i32_s (i32.add (local.get $size) (i32.const 1))))
+      (return (local.get $map)))
+    (f64.store (i32.add (local.get $entryOff) (i32.const 16)) (local.get $val))
+    (local.get $map))`,
+
+  // Map.delete(key)
+  __map_delete: `(func $__map_delete (param $map f64) (param $key f64) (result i32)
+    (local $offset i32) (local $cap i32) (local $size i32) (local $h i32) (local $idx i32)
+    (local $entryOff i32) (local $entryHash f64) (local $probes i32)
+    (local.set $offset (call $__ptr_offset (local.get $map)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (local.set $size (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 8)))))
+    (local.set $h (call $__hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (local.set $probes (i32.const 0))
+    (block $found (block $not_found
+      (loop $probe
+        (br_if $not_found (i32.ge_s (local.get $probes) (local.get $cap)))
+        (local.set $entryOff (i32.add (local.get $offset) (i32.mul (local.get $idx) (i32.const 24))))
+        (local.set $entryHash (f64.load (local.get $entryOff)))
+        (br_if $not_found (f64.eq (local.get $entryHash) (f64.const 0)))
+        (if (f64.ne (local.get $entryHash) (f64.const 1))
+          (then
+            (if (i32.eq (i32.trunc_f64_s (local.get $entryHash)) (local.get $h))
+              (then
+                (if (call $__key_eq (f64.load (i32.add (local.get $entryOff) (i32.const 8))) (local.get $key))
+                  (then (br $found)))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+        (local.set $probes (i32.add (local.get $probes) (i32.const 1)))
+        (br $probe)))
+      (return (i32.const 0)))
+    (f64.store (local.get $entryOff) (f64.const 1))
+    (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.convert_i32_s (i32.sub (local.get $size) (i32.const 1))))
+    (i32.const 1))`,
+
+  // Map.size getter
+  __map_size: `(func $__map_size (param $map f64) (result i32)
+    (i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset (local.get $map)) (i32.const 8)))))`,
+
+  // Set.clear() - reset to empty
+  __set_clear: `(func $__set_clear (param $set f64) (result f64)
+    (local $offset i32) (local $cap i32)
+    (local.set $offset (call $__ptr_offset (local.get $set)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (memory.fill (local.get $offset) (i32.const 0) (i32.shl (local.get $cap) (i32.const 4)))
+    (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.const 0))
+    (local.get $set))`,
+
+  // Map.clear()
+  __map_clear: `(func $__map_clear (param $map f64) (result f64)
+    (local $offset i32) (local $cap i32)
+    (local.set $offset (call $__ptr_offset (local.get $map)))
+    (local.set $cap (i32.trunc_f64_s (f64.load (i32.sub (local.get $offset) (i32.const 16)))))
+    (memory.fill (local.get $offset) (i32.const 0) (i32.mul (local.get $cap) (i32.const 24)))
+    (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.const 0))
+    (local.get $map))`,
 }
 
 // Dependencies - which functions call which other functions
@@ -536,4 +903,12 @@ export const DEPS = {
   expm1: ['exp'],
   log1p: ['log'],
   parseInt: ['parseIntFromCode'],
+  // Set/Map dependencies
+  __set_has: ['__hash', '__key_eq'],
+  __set_add: ['__hash', '__key_eq'],
+  __set_delete: ['__hash', '__key_eq'],
+  __map_has: ['__hash', '__key_eq'],
+  __map_get: ['__hash', '__key_eq'],
+  __map_set: ['__hash', '__key_eq'],
+  __map_delete: ['__hash', '__key_eq'],
 }
