@@ -880,10 +880,10 @@ export const REGEX_METHODS = {
     // Search loop: try at each start position until match or end
     const id = ctx.uniqueId++
     const strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(strLen.slice(1), 'i32')
-    ctx.addLocal(searchPos.slice(1), 'i32')
-    ctx.addLocal(matchResult.slice(1), 'i32')
+    ctx.addLocal(strOff, 'i32')
+    ctx.addLocal(strLen, 'i32')
+    ctx.addLocal(searchPos, 'i32')
+    ctx.addLocal(matchResult, 'i32')
     return wat(`(block (result i32)
       (local.set ${strOff} (call $__ptr_offset ${strVal}))
       (local.set ${strLen} (call $__ptr_len ${strVal}))
@@ -918,18 +918,18 @@ export const REGEX_METHODS = {
     const k = `$_exec_k_${id}`
     const gStart = `$_exec_gs_${id}`, gEnd = `$_exec_ge_${id}`
 
-    ctx.addLocal(strPtr.slice(1), 'f64')
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(strLen.slice(1), 'i32')
-    ctx.addLocal(searchPos.slice(1), 'i32')
-    ctx.addLocal(matchEnd.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(groupBuf.slice(1), 'i32')
-    ctx.addLocal(part.slice(1), 'f64')
-    ctx.addLocal(partLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(gStart.slice(1), 'i32')
-    ctx.addLocal(gEnd.slice(1), 'i32')
+    ctx.addLocal(strPtr, 'f64')
+    ctx.addLocal(strOff, 'i32')
+    ctx.addLocal(strLen, 'i32')
+    ctx.addLocal(searchPos, 'i32')
+    ctx.addLocal(matchEnd, 'i32')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(groupBuf, 'i32')
+    ctx.addLocal(part, 'f64')
+    ctx.addLocal(partLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(gStart, 'i32')
+    ctx.addLocal(gEnd, 'i32')
 
     // Result array has groupCount + 1 elements (full match + groups)
     const resultLen = groupCount + 1

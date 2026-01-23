@@ -42,11 +42,11 @@ export const fill = (elemType, ptrWat, args) => {
   const arr = `$_fill_arr_${id}`, base = `$_fill_base_${id}`
   const idx = `$_fill_i_${id}`, end = `$_fill_end_${id}`, val = `$_fill_val_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(val.slice(1), elemType === ELEM_TYPE.F64 ? 'f64' : elemType === ELEM_TYPE.F32 ? 'f32' : 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(val, elemType === ELEM_TYPE.F64 ? 'f64' : elemType === ELEM_TYPE.F32 ? 'f32' : 'i32')
 
   const store = TYPED_STORE[elemType]
   const shift = TYPED_SHIFT[elemType]
@@ -79,9 +79,9 @@ export const at = (elemType, ptrWat, args) => {
   const id = ctx.loopCounter++
   const arr = `$_at_arr_${id}`, idx = `$_at_idx_${id}`, len = `$_at_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
 
   const load = TYPED_LOAD[elemType]
   const shift = TYPED_SHIFT[elemType]
@@ -107,11 +107,11 @@ export const indexOf = (elemType, ptrWat, args) => {
   const arr = `$_idx_arr_${id}`, base = `$_idx_base_${id}`
   const idx = `$_idx_i_${id}`, len = `$_idx_len_${id}`, val = `$_idx_val_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(val.slice(1), 'f64')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(val, 'f64')
 
   const load = TYPED_LOAD[elemType]
   const shift = TYPED_SHIFT[elemType]
@@ -146,10 +146,10 @@ export const lastIndexOf = (elemType, ptrWat, args) => {
   const arr = `$_lidx_arr_${id}`, base = `$_lidx_base_${id}`
   const idx = `$_lidx_i_${id}`, val = `$_lidx_val_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(val.slice(1), 'f64')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(val, 'f64')
 
   const load = TYPED_LOAD[elemType]
   const shift = TYPED_SHIFT[elemType]
@@ -185,11 +185,11 @@ export const includes = (elemType, ptrWat, args) => {
   const arr = `$_inc_arr_${id}`, base = `$_inc_base_${id}`
   const idx = `$_inc_i_${id}`, len = `$_inc_len_${id}`, val = `$_inc_val_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(val.slice(1), 'f64')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(val, 'f64')
 
   const load = TYPED_LOAD[elemType]
   const shift = TYPED_SHIFT[elemType]
@@ -225,14 +225,14 @@ export const slice = (elemType, ptrWat, args) => {
   const srcBase = `$_sl_srcb_${id}`, dstBase = `$_sl_dstb_${id}`
   const idx = `$_sl_i_${id}`, begin = `$_sl_begin_${id}`, end = `$_sl_end_${id}`, len = `$_sl_len_${id}`
 
-  ctx.addLocal(src.slice(1), 'f64')
-  ctx.addLocal(dst.slice(1), 'f64')
-  ctx.addLocal(srcBase.slice(1), 'i32')
-  ctx.addLocal(dstBase.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(begin.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(begin, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(len, 'i32')
 
   const load = TYPED_LOAD[elemType]
   const store = TYPED_STORE[elemType]
@@ -278,11 +278,11 @@ export const subarray = (elemType, ptrWat, args) => {
   const src = `$_sub_src_${id}`
   const begin = `$_sub_begin_${id}`, end = `$_sub_end_${id}`, len = `$_sub_len_${id}`, srcLen = `$_sub_srclen_${id}`
 
-  ctx.addLocal(src.slice(1), 'f64')
-  ctx.addLocal(begin.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(srcLen.slice(1), 'i32')
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(begin, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(srcLen, 'i32')
 
   const stride = ELEM_STRIDE[elemType]
   const beginInit = beginArg ? i32(gen(beginArg)) : '(i32.const 0)'
@@ -318,12 +318,12 @@ export const reverse = (elemType, ptrWat, args) => {
   const left = `$_rev_l_${id}`, right = `$_rev_r_${id}`
   const tmp = `$_rev_tmp_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(left.slice(1), 'i32')
-  ctx.addLocal(right.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(left, 'i32')
+  ctx.addLocal(right, 'i32')
   const tmpType = elemType === ELEM_TYPE.F64 ? 'f64' : elemType === ELEM_TYPE.F32 ? 'f32' : 'i32'
-  ctx.addLocal(tmp.slice(1), tmpType)
+  ctx.addLocal(tmp, tmpType)
 
   const load = TYPED_LOAD[elemType]
   const store = TYPED_STORE[elemType]
@@ -360,14 +360,14 @@ export const copyWithin = (elemType, ptrWat, args) => {
   const target = `$_cw_tgt_${id}`, start = `$_cw_start_${id}`, end = `$_cw_end_${id}`
   const len = `$_cw_len_${id}`, count = `$_cw_count_${id}`, idx = `$_cw_i_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(target.slice(1), 'i32')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(count.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(target, 'i32')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(count, 'i32')
+  ctx.addLocal(idx, 'i32')
 
   const load = TYPED_LOAD[elemType]
   const store = TYPED_STORE[elemType]
@@ -415,13 +415,13 @@ export const set = (elemType, ptrWat, args) => {
   const dstBase = `$_set_dstb_${id}`, srcBase = `$_set_srcb_${id}`
   const offset = `$_set_off_${id}`, srcLen = `$_set_srclen_${id}`, idx = `$_set_i_${id}`
 
-  ctx.addLocal(dst.slice(1), 'f64')
-  ctx.addLocal(src.slice(1), 'f64')
-  ctx.addLocal(dstBase.slice(1), 'i32')
-  ctx.addLocal(srcBase.slice(1), 'i32')
-  ctx.addLocal(offset.slice(1), 'i32')
-  ctx.addLocal(srcLen.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(offset, 'i32')
+  ctx.addLocal(srcLen, 'i32')
+  ctx.addLocal(idx, 'i32')
 
   const srcVal = gen(srcArg)
   const srcIsTypedArray = srcVal.type === 'typedarray'
@@ -483,10 +483,10 @@ export const every = (elemType, ptrWat, args) => {
   const arr = `$_ev_arr_${id}`, base = `$_ev_base_${id}`
   const idx = `$_ev_i_${id}`, len = `$_ev_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
 
   const load = TYPED_LOAD[elemType]
@@ -525,10 +525,10 @@ export const some = (elemType, ptrWat, args) => {
   const arr = `$_sm_arr_${id}`, base = `$_sm_base_${id}`
   const idx = `$_sm_i_${id}`, len = `$_sm_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
 
   const load = TYPED_LOAD[elemType]
@@ -567,10 +567,10 @@ export const find = (elemType, ptrWat, args) => {
   const arr = `$_fd_arr_${id}`, base = `$_fd_base_${id}`
   const idx = `$_fd_i_${id}`, len = `$_fd_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
 
   const load = TYPED_LOAD[elemType]
@@ -609,10 +609,10 @@ export const findIndex = (elemType, ptrWat, args) => {
   const arr = `$_fi_arr_${id}`, base = `$_fi_base_${id}`
   const idx = `$_fi_i_${id}`, len = `$_fi_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
 
   const load = TYPED_LOAD[elemType]
@@ -653,10 +653,10 @@ export const forEach = (elemType, ptrWat, args) => {
   const arr = `$_fe_arr_${id}`, base = `$_fe_base_${id}`
   const idx = `$_fe_i_${id}`, len = `$_fe_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
   if (idxName) ctx.addLocal(idxName, 'i32')
 
@@ -701,12 +701,12 @@ export const map = (elemType, ptrWat, args) => {
   const srcBase = `$_mp_srcb_${id}`, dstBase = `$_mp_dstb_${id}`
   const idx = `$_mp_i_${id}`, len = `$_mp_len_${id}`
 
-  ctx.addLocal(src.slice(1), 'f64')
-  ctx.addLocal(dst.slice(1), 'f64')
-  ctx.addLocal(srcBase.slice(1), 'i32')
-  ctx.addLocal(dstBase.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(paramName, 'f64')
   if (idxName) ctx.addLocal(idxName, 'i32')
 
@@ -753,13 +753,13 @@ export const filter = (elemType, ptrWat, args) => {
   const srcBase = `$_fl_srcb_${id}`, dstBase = `$_fl_dstb_${id}`
   const idx = `$_fl_i_${id}`, len = `$_fl_len_${id}`, count = `$_fl_count_${id}`
 
-  ctx.addLocal(src.slice(1), 'f64')
-  ctx.addLocal(dst.slice(1), 'f64')
-  ctx.addLocal(srcBase.slice(1), 'i32')
-  ctx.addLocal(dstBase.slice(1), 'i32')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(count.slice(1), 'i32')
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(count, 'i32')
   ctx.addLocal(paramName, 'f64')
 
   const load = TYPED_LOAD[elemType]
@@ -808,11 +808,11 @@ export const reduce = (elemType, ptrWat, args) => {
   const arr = `$_rd_arr_${id}`, base = `$_rd_base_${id}`
   const acc = `$_rd_acc_${id}`, idx = `$_rd_i_${id}`, len = `$_rd_len_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(acc.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(acc, 'f64')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
   ctx.addLocal(accName, 'f64')
   ctx.addLocal(curName, 'f64')
 
@@ -853,10 +853,10 @@ export const reduceRight = (elemType, ptrWat, args) => {
   const arr = `$_rr_arr_${id}`, base = `$_rr_base_${id}`
   const acc = `$_rr_acc_${id}`, idx = `$_rr_i_${id}`
 
-  ctx.addLocal(arr.slice(1), 'f64')
-  ctx.addLocal(base.slice(1), 'i32')
-  ctx.addLocal(acc.slice(1), 'f64')
-  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(acc, 'f64')
+  ctx.addLocal(idx, 'i32')
   ctx.addLocal(accName, 'f64')
   ctx.addLocal(curName, 'f64')
 

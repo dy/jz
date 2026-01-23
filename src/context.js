@@ -73,6 +73,7 @@ export function createContext() {
     // Objects
     objectCounter: 0,
     objectSchemas: {},
+    staticObjects: {},       // static object data segments
 
     // Regex
     regexCounter: 0,
@@ -93,13 +94,15 @@ export function createContext() {
 
     /**
      * Add a local variable
-     * @param {string} name - Variable name
+     * @param {string} name - Variable name (with or without $ prefix)
      * @param {string} type - Type: 'f64', 'i32', 'array', 'string', 'namespace', etc.
      * @param {Object} schema - Optional object schema
      * @param {string} scopedName - Optional explicit scoped name
      */
     addLocal(name, type = 'f64', schema, scopedName = null) {
-      const finalName = scopedName || name
+      // Strip $ prefix if present - allows passing $varname directly
+      const cleanName = name.startsWith('$') ? name.slice(1) : name
+      const finalName = scopedName || cleanName
       if (!(finalName in this.locals)) {
         // Store scopedName directly to avoid spread at lookup time
         this.locals[finalName] = { idx: this.localCounter++, type, originalName: name, scopedName: finalName }
@@ -228,6 +231,7 @@ export function createContext() {
       child.globals = this.globals
       child.funcTableEntries = this.funcTableEntries
       child.staticArrays = this.staticArrays
+      child.staticObjects = this.staticObjects
       child.strings = this.strings
       child.stringData = this.stringData
       child.stringOffset = this.stringOffset

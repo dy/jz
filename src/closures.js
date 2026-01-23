@@ -88,7 +88,7 @@ export function genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, ari
   // Allocate env in memory
   const id = ctx.uniqueId++
   const tmpEnv = `$_closenv_${id}`
-  ctx.addLocal(tmpEnv.slice(1), 'f64')
+  ctx.addLocal(tmpEnv, 'f64')
 
   // Store captured values in env
   let stores = ''

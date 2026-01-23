@@ -198,6 +198,17 @@ test('array.flatMap - scalar returns', async () => {
   is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[1]'), 4)
   is(await evaluate('[1, 2, 3].flatMap(x => x * 2).length'), 3)
 })
+
+// flatMap callback should execute only once per element (not twice for count+copy)
+test('array.flatMap - callback executes once', async () => {
+  // If callback ran twice, counter would be 6 instead of 3
+  is(await evaluate(`
+    let counter = 0
+    const arr = [1, 2, 3]
+    const result = arr.flatMap(x => { counter = counter + 1; return [x] })
+    counter
+  `), 3)
+})
 // Template literals
 test('template literal - simple', async () => {
   is(await evaluate('`hello`.length'), 5)
@@ -206,6 +217,15 @@ test('template literal - simple', async () => {
 
 test('template literal - with string interpolation', async () => {
   is(await evaluate('const s = `world`; `hello ${s}!`.length'), 12)
+})
+
+test('template literal - non-string interpolation throws', async () => {
+  try {
+    await evaluate('const n = 42; `value: ${n}`')
+    is(false, true, 'should have thrown')
+  } catch (e) {
+    is(e.message.includes('Number-to-string'), true)
+  }
 })
 
 // Closure mutation (counter pattern)

@@ -59,7 +59,7 @@ export function genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLo
 
   const id = ctx.uniqueId++
   const tmp = `$_destruct_${id}`
-  ctx.addLocal(tmp.slice(1), 'array')
+  ctx.addLocal(tmp, 'array')
 
   let code = ''
   if (srcLocal) {
@@ -70,7 +70,7 @@ export function genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLo
   }
 
   const lenTmp = `$_dlen_${id}`
-  ctx.addLocal(lenTmp.slice(1), 'i32')
+  ctx.addLocal(lenTmp, 'i32')
   code += `(local.set ${lenTmp} (call $__ptr_len (local.get ${tmp})))\n    `
 
   let lastAssigned = null
@@ -78,7 +78,7 @@ export function genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLo
   for (const p of parsed) {
     if (p.isNestedPattern) {
       const nestedTmp = `$_nested_${id}_${p.idx}`
-      ctx.addLocal(nestedTmp.slice(1), 'array')
+      ctx.addLocal(nestedTmp, 'array')
       code += `(local.set ${nestedTmp} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${p.idx * 8}))))\n    `
       const nestedResult = genArrayDestructDecl(ctx, gen, p.nestedPattern, null, isConst, nestedTmp, true)
       code += nestedResult.code + '\n    '
@@ -99,12 +99,12 @@ export function genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLo
   if (restVar) {
     const info = ctx.getLocal(restVar.name)
     const restLenTmp = `$_rlen_${id}`
-    ctx.addLocal(restLenTmp.slice(1), 'i32')
+    ctx.addLocal(restLenTmp, 'i32')
     code += `(local.set ${restLenTmp} (i32.sub (local.get ${lenTmp}) (i32.const ${restVar.idx})))\n    `
     code += `(local.set ${restLenTmp} (select (local.get ${restLenTmp}) (i32.const 0) (i32.gt_s (local.get ${restLenTmp}) (i32.const 0))))\n    `
     code += `(local.set $${info.scopedName} (call $__alloc (i32.const 1) (local.get ${restLenTmp})))\n    `
     const iVar = `$_ri_${id}`
-    ctx.addLocal(iVar.slice(1), 'i32')
+    ctx.addLocal(iVar, 'i32')
     code += `(local.set ${iVar} (i32.const 0))
     (block $rest_done (loop $rest_loop
       (br_if $rest_done (i32.ge_s (local.get ${iVar}) (local.get ${restLenTmp})))
@@ -183,7 +183,7 @@ export function genObjectDestructDecl(ctx, gen, pattern, valueAst, isConst) {
 
   const id = ctx.uniqueId++
   const tmp = `$_destruct_${id}`
-  ctx.addLocal(tmp.slice(1), 'object')
+  ctx.addLocal(tmp, 'object')
   const obj = gen(valueAst)
 
   const schema = (obj.type === 'object' && obj.schema !== undefined)
