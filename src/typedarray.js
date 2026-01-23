@@ -882,10 +882,244 @@ export const reduceRight = (elemType, ptrWat, args) => {
     (local.get ${acc})`, 'f64')
 }
 
+/**
+ * sort(compareFn?) - sort in place (numeric ascending by default)
+ * Uses insertion sort for simplicity (O(n²) but good for small arrays)
+ */
+export const sort = (elemType, ptrWat, args) => {
+  const id = ctx.loopCounter++
+  const arr = `$_sort_arr_${id}`, base = `$_sort_base_${id}`, len = `$_sort_len_${id}`
+  const i = `$_sort_i_${id}`, j = `$_sort_j_${id}`
+  const key = `$_sort_key_${id}`, curr = `$_sort_curr_${id}`
+
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(i, 'i32')
+  ctx.addLocal(j, 'i32')
+  const valType = elemType === ELEM_TYPE.F64 ? 'f64' : elemType === ELEM_TYPE.F32 ? 'f32' : 'i32'
+  ctx.addLocal(key, valType)
+  ctx.addLocal(curr, valType)
+
+  const load = TYPED_LOAD[elemType]
+  const store = TYPED_STORE[elemType]
+  const shift = TYPED_SHIFT[elemType]
+  const iOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (local.get ${i}))`
+    : `(i32.add (local.get ${base}) (i32.shl (local.get ${i}) (i32.const ${shift})))`
+  const jOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (local.get ${j}))`
+    : `(i32.add (local.get ${base}) (i32.shl (local.get ${j}) (i32.const ${shift})))`
+  const jPlusOneOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (i32.add (local.get ${j}) (i32.const 1)))`
+    : `(i32.add (local.get ${base}) (i32.shl (i32.add (local.get ${j}) (i32.const 1)) (i32.const ${shift})))`
+
+  // Comparison based on element type
+  const cmpGt = elemType === ELEM_TYPE.F64 ? 'f64.gt' :
+                elemType === ELEM_TYPE.F32 ? 'f32.gt' : 'i32.gt_s'
+
+  // Insertion sort: simple, in-place, stable
+  return wat(`(local.set ${arr} ${ptrWat})
+    (local.set ${base} (call $__typed_offset (local.get ${arr})))
+    (local.set ${len} (call $__typed_len (local.get ${arr})))
+    (local.set ${i} (i32.const 1))
+    (block $outer_done_${id} (loop $outer_${id}
+      (br_if $outer_done_${id} (i32.ge_s (local.get ${i}) (local.get ${len})))
+      (local.set ${key} (${load} ${iOffset}))
+      (local.set ${j} (i32.sub (local.get ${i}) (i32.const 1)))
+      (block $inner_done_${id} (loop $inner_${id}
+        (br_if $inner_done_${id} (i32.lt_s (local.get ${j}) (i32.const 0)))
+        (local.set ${curr} (${load} ${jOffset}))
+        (br_if $inner_done_${id} (i32.eqz (${cmpGt} (local.get ${curr}) (local.get ${key}))))
+        (${store} ${jPlusOneOffset} (local.get ${curr}))
+        (local.set ${j} (i32.sub (local.get ${j}) (i32.const 1)))
+        (br $inner_${id})))
+      (${store} ${jPlusOneOffset} (local.get ${key}))
+      (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
+      (br $outer_${id})))
+    (local.get ${arr})`, 'typedarray', elemType)
+}
+
+/**
+ * toReversed() - return new reversed copy (ES2023)
+ */
+export const toReversed = (elemType, ptrWat, args) => {
+  const id = ctx.loopCounter++
+  const arr = `$_trev_arr_${id}`, base = `$_trev_base_${id}`, len = `$_trev_len_${id}`
+  const result = `$_trev_result_${id}`, resultBase = `$_trev_rbase_${id}`
+  const idx = `$_trev_i_${id}`
+
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'f64')
+  ctx.addLocal(resultBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+
+  ctx.usedTypedArrays = true
+  const load = TYPED_LOAD[elemType]
+  const store = TYPED_STORE[elemType]
+  const shift = TYPED_SHIFT[elemType]
+
+  const srcOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (local.get ${idx}))`
+    : `(i32.add (local.get ${base}) (i32.shl (local.get ${idx}) (i32.const ${shift})))`
+  const dstOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (i32.sub (i32.sub (local.get ${len}) (i32.const 1)) (local.get ${idx})))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (i32.sub (i32.sub (local.get ${len}) (i32.const 1)) (local.get ${idx})) (i32.const ${shift})))`
+
+  return wat(`(local.set ${arr} ${ptrWat})
+    (local.set ${base} (call $__typed_offset (local.get ${arr})))
+    (local.set ${len} (call $__typed_len (local.get ${arr})))
+    (local.set ${result} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
+    (local.set ${resultBase} (call $__typed_offset (local.get ${result})))
+    (local.set ${idx} (i32.const 0))
+    (block $done_${id} (loop $loop_${id}
+      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (${store} ${dstOffset} (${load} ${srcOffset}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $loop_${id})))
+    (local.get ${result})`, 'typedarray', elemType)
+}
+
+/**
+ * toSorted(compareFn?) - return new sorted copy (ES2023)
+ */
+export const toSorted = (elemType, ptrWat, args) => {
+  const id = ctx.loopCounter++
+  const arr = `$_tsort_arr_${id}`, base = `$_tsort_base_${id}`, len = `$_tsort_len_${id}`
+  const result = `$_tsort_result_${id}`, resultBase = `$_tsort_rbase_${id}`
+  const idx = `$_tsort_idx_${id}`
+  const i = `$_tsort_i_${id}`, j = `$_tsort_j_${id}`
+  const key = `$_tsort_key_${id}`, curr = `$_tsort_curr_${id}`
+
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'f64')
+  ctx.addLocal(resultBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(i, 'i32')
+  ctx.addLocal(j, 'i32')
+  const valType = elemType === ELEM_TYPE.F64 ? 'f64' : elemType === ELEM_TYPE.F32 ? 'f32' : 'i32'
+  ctx.addLocal(key, valType)
+  ctx.addLocal(curr, valType)
+
+  ctx.usedTypedArrays = true
+  const load = TYPED_LOAD[elemType]
+  const store = TYPED_STORE[elemType]
+  const shift = TYPED_SHIFT[elemType]
+
+  const srcOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (local.get ${idx}))`
+    : `(i32.add (local.get ${base}) (i32.shl (local.get ${idx}) (i32.const ${shift})))`
+  const dstOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (local.get ${idx}))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (local.get ${idx}) (i32.const ${shift})))`
+  const iOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (local.get ${i}))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (local.get ${i}) (i32.const ${shift})))`
+  const jOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (local.get ${j}))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (local.get ${j}) (i32.const ${shift})))`
+  const jPlusOneOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (i32.add (local.get ${j}) (i32.const 1)))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (i32.add (local.get ${j}) (i32.const 1)) (i32.const ${shift})))`
+
+  const cmpGt = elemType === ELEM_TYPE.F64 ? 'f64.gt' :
+                elemType === ELEM_TYPE.F32 ? 'f32.gt' : 'i32.gt_s'
+
+  // Copy then insertion sort
+  return wat(`(local.set ${arr} ${ptrWat})
+    (local.set ${base} (call $__typed_offset (local.get ${arr})))
+    (local.set ${len} (call $__typed_len (local.get ${arr})))
+    (local.set ${result} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
+    (local.set ${resultBase} (call $__typed_offset (local.get ${result})))
+    ;; Copy source to result
+    (local.set ${idx} (i32.const 0))
+    (block $copy_done_${id} (loop $copy_${id}
+      (br_if $copy_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (${store} ${dstOffset} (${load} ${srcOffset}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $copy_${id})))
+    ;; Insertion sort on result
+    (local.set ${i} (i32.const 1))
+    (block $outer_done_${id} (loop $outer_${id}
+      (br_if $outer_done_${id} (i32.ge_s (local.get ${i}) (local.get ${len})))
+      (local.set ${key} (${load} ${iOffset}))
+      (local.set ${j} (i32.sub (local.get ${i}) (i32.const 1)))
+      (block $inner_done_${id} (loop $inner_${id}
+        (br_if $inner_done_${id} (i32.lt_s (local.get ${j}) (i32.const 0)))
+        (local.set ${curr} (${load} ${jOffset}))
+        (br_if $inner_done_${id} (i32.eqz (${cmpGt} (local.get ${curr}) (local.get ${key}))))
+        (${store} ${jPlusOneOffset} (local.get ${curr}))
+        (local.set ${j} (i32.sub (local.get ${j}) (i32.const 1)))
+        (br $inner_${id})))
+      (${store} ${jPlusOneOffset} (local.get ${key}))
+      (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
+      (br $outer_${id})))
+    (local.get ${result})`, 'typedarray', elemType)
+}
+
+/**
+ * with(index, value) - return new copy with element replaced (ES2023)
+ */
+export const withAt = (elemType, ptrWat, args) => {
+  if (args.length < 2) throw new Error('TypedArray.with requires index and value')
+  const idxArg = args[0], valArg = args[1]
+  const id = ctx.loopCounter++
+  const arr = `$_with_arr_${id}`, base = `$_with_base_${id}`, len = `$_with_len_${id}`
+  const result = `$_with_result_${id}`, resultBase = `$_with_rbase_${id}`
+  const idx = `$_with_i_${id}`, targetIdx = `$_with_tgt_${id}`
+
+  ctx.addLocal(arr, 'f64')
+  ctx.addLocal(base, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'f64')
+  ctx.addLocal(resultBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(targetIdx, 'i32')
+
+  ctx.usedTypedArrays = true
+  const load = TYPED_LOAD[elemType]
+  const store = TYPED_STORE[elemType]
+  const shift = TYPED_SHIFT[elemType]
+  const stride = ELEM_STRIDE[elemType]
+
+  const srcOffset = shift === 0
+    ? `(i32.add (local.get ${base}) (local.get ${idx}))`
+    : `(i32.add (local.get ${base}) (i32.shl (local.get ${idx}) (i32.const ${shift})))`
+  const dstOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (local.get ${idx}))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (local.get ${idx}) (i32.const ${shift})))`
+  const targetOffset = shift === 0
+    ? `(i32.add (local.get ${resultBase}) (local.get ${targetIdx}))`
+    : `(i32.add (local.get ${resultBase}) (i32.shl (local.get ${targetIdx}) (i32.const ${shift})))`
+
+  const valInit = toElemType(elemType, f64(gen(valArg)))
+
+  // Handle negative index
+  return wat(`(local.set ${arr} ${ptrWat})
+    (local.set ${base} (call $__typed_offset (local.get ${arr})))
+    (local.set ${len} (call $__typed_len (local.get ${arr})))
+    (local.set ${targetIdx} ${i32(gen(idxArg))})
+    ;; Handle negative index
+    (if (i32.lt_s (local.get ${targetIdx}) (i32.const 0))
+      (then (local.set ${targetIdx} (i32.add (local.get ${len}) (local.get ${targetIdx})))))
+    ;; Allocate and copy
+    (local.set ${result} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
+    (local.set ${resultBase} (call $__typed_offset (local.get ${result})))
+    (memory.copy (local.get ${resultBase}) (local.get ${base}) (i32.mul (local.get ${len}) (i32.const ${stride})))
+    ;; Set the new value
+    (${store} ${targetOffset} ${valInit})
+    (local.get ${result})`, 'typedarray', elemType)
+}
+
 /** Method dispatch table */
 export const TYPED_ARRAY_METHODS = {
   fill, at, indexOf, lastIndexOf, includes,
   slice, subarray, reverse, copyWithin, set,
   every, some, find, findIndex, forEach,
-  map, filter, reduce, reduceRight
+  map, filter, reduce, reduceRight,
+  sort, toReversed, toSorted, with: withAt
 }

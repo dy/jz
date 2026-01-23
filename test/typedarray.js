@@ -520,3 +520,98 @@ test('TypedArray - BYTES_PER_ELEMENT', async () => {
   is(test32(), 4)
   is(test64(), 8)
 })
+
+// ES2023 methods
+
+test('TypedArray - sort', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(5)
+      buf[0] = 3; buf[1] = 1; buf[2] = 4; buf[3] = 1; buf[4] = 5
+      buf.sort()
+      return buf[0] * 10000 + buf[1] * 1000 + buf[2] * 100 + buf[3] * 10 + buf[4]
+    }
+  `)
+  is(test(), 11345)  // [1,1,3,4,5]
+})
+
+test('TypedArray - sort Int32Array', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 9; buf[1] = -5; buf[2] = 3; buf[3] = 0
+      buf.sort()
+      return buf[0] * 1000 + buf[1] * 100 + buf[2] * 10 + buf[3]
+    }
+  `)
+  is(test(), -5000 + 0 + 30 + 9)  // [-5,0,3,9]
+})
+
+test('TypedArray - toReversed', async () => {
+  const { original, reversed } = await run(`
+    export const original = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let rev = buf.toReversed()
+      return buf[0]  // original unchanged
+    }
+    export const reversed = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let rev = buf.toReversed()
+      return rev[0] * 100 + rev[1] * 10 + rev[2]
+    }
+  `)
+  is(original(), 1)   // original unchanged
+  is(reversed(), 321) // reversed copy
+})
+
+test('TypedArray - toSorted', async () => {
+  const { original, sorted } = await run(`
+    export const original = () => {
+      let buf = new Float64Array(4)
+      buf[0] = 4; buf[1] = 2; buf[2] = 3; buf[3] = 1
+      let s = buf.toSorted()
+      return buf[0]  // original unchanged
+    }
+    export const sorted = () => {
+      let buf = new Float64Array(4)
+      buf[0] = 4; buf[1] = 2; buf[2] = 3; buf[3] = 1
+      let s = buf.toSorted()
+      return s[0] * 1000 + s[1] * 100 + s[2] * 10 + s[3]
+    }
+  `)
+  is(original(), 4)    // original unchanged
+  is(sorted(), 1234)   // sorted copy
+})
+
+test('TypedArray - with', async () => {
+  const { original, modified } = await run(`
+    export const original = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let w = buf.with(1, 99)
+      return buf[1]  // original unchanged
+    }
+    export const modified = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let w = buf.with(1, 99)
+      return w[0] * 100 + w[1] + w[2]
+    }
+  `)
+  is(original(), 2)   // original unchanged
+  is(modified(), 202) // 1*100 + 99 + 3
+})
+
+test('TypedArray - with negative index', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(3)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3
+      let w = buf.with(-1, 99)  // last element
+      return w[0] * 100 + w[1] * 10 + w[2]
+    }
+  `)
+  is(test(), 219)  // 1*100 + 2*10 + 99
+})

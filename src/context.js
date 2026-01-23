@@ -87,8 +87,10 @@ export function createContext() {
     staticAllocs: [],
     staticOffset: 0,
 
-    // Loop tracking
+    // Loop tracking (loopCounter is alias for uniqueId for backwards compat)
     uniqueId: 0,
+    get loopCounter() { return this.uniqueId },
+    set loopCounter(v) { this.uniqueId = v },
 
     // Methods
 
