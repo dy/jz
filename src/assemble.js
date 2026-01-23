@@ -6,7 +6,7 @@
  */
 
 import { CONSTANTS, FUNCTIONS, DEPS } from './stdlib.js'
-import { INSTANCE_TABLE_END, STRING_STRIDE } from './types.js'
+import { HEAP_START, STRING_STRIDE } from './types.js'
 
 /**
  * Assemble a complete WAT module
@@ -42,35 +42,41 @@ export function assemble(bodyWat, ctx = {
   }
 
   // === Memory ===
-  // First 64KB reserved for instance table (16K instances * 4 bytes)
-  // Static data starts at INSTANCE_TABLE_END, heap after static data
-  // 2 pages minimum (128KB) to fit instance table + static data
-
-  wat += '  (memory (export "_memory") 2)\n'
+  // Static data starts at HEAP_START (0), heap after static data
+  // Use more memory when TypedArrays are used (arena at 1MB)
+  const memPages = ctx.usedTypedArrays ? 32 : 2  // 2MB or 128KB
+  wat += `  (memory (export "_memory") ${memPages})\n`
   // Calculate where strings end: each string gets STRING_STRIDE bytes
   const stringCount = Object.keys(ctx.strings).length
-  const stringsEnd = INSTANCE_TABLE_END + stringCount * STRING_STRIDE
+  const stringsEnd = HEAP_START + stringCount * STRING_STRIDE
   // Heap starts after strings and static arrays
-  const heapStart = Math.max(stringsEnd, ctx.staticOffset || INSTANCE_TABLE_END, INSTANCE_TABLE_END)
+  const heapStart = Math.max(stringsEnd, ctx.staticOffset || HEAP_START, HEAP_START)
   wat += `  (global $__heap (mut i32) (i32.const ${heapStart}))\n`
 
   // === Data segments ===
 
-  // String data (placed after instance table)
+  // String data (placed at HEAP_START)
   for (const str in ctx.strings) {
     const info = ctx.strings[str]
     const startByte = info.offset * 2
     const endByte = startByte + info.length * 2
     const hex = ctx.stringData.slice(startByte, endByte)
       .map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
-    const memOffset = INSTANCE_TABLE_END + info.id * STRING_STRIDE
+    const memOffset = HEAP_START + info.id * STRING_STRIDE
     wat += `  (data (i32.const ${memOffset}) "${hex}")\n`
   }
 
-  // Static array data - pure data, no header
+  // Static array data - with C-style header [length:f64][elements...]
   for (const key in ctx.staticArrays) {
-    const { offset, values } = ctx.staticArrays[key]
+    const { offset, values, headerSize } = ctx.staticArrays[key]
     let hex = ''
+    // First write length as f64 (header)
+    if (headerSize) {
+      const lenBytes = new Float64Array([values.length])
+      const bytes = new Uint8Array(lenBytes.buffer)
+      hex += Array.from(bytes).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
+    }
+    // Then write element data
     for (const val of values) {
       const f64bytes = new Float64Array([val])
       const bytes = new Uint8Array(f64bytes.buffer)
@@ -205,32 +211,26 @@ export function assemble(bodyWat, ctx = {
  * - Payload: [type:4][id:16][offset:31] = 51 bits
  *
  * Type meanings:
- * - ARRAY (1): immutable f64 array, id=length
- * - ARRAY_MUT (2): mutable f64 array, id=instanceId (length in instance table)
+ * - ARRAY (1): mutable f64 array, id=schemaId, length at offset-8
  * - STRING (3): UTF-16 string, id=length
  * - OBJECT (4): object, id=schemaId
  * - CLOSURE (7): closure, id=funcIdx
  *
  * Benefits:
  * - Full f64 range preserved (any non-NaN value is a number)
- * - 64K schemas, 64K instances, 2GB memory
+ * - 64K schemas, 2GB memory
+ * - O(1) push/pop via length in memory
  *
  * NOTE: All helpers emitted together. DCE (watr) removes unused functions.
  */
 function emitMemoryHelpers() {
   return `
-  ;; NaN-boxing pointer encoding (v5)
+  ;; NaN-boxing pointer encoding (v6 - unified arrays)
   ;; Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
   ;; Payload: [type:4][id:16][offset:31]
   ;; - type: pointer type (1-15)
-  ;; - id: len (immutable), instanceId (mutable), schemaId (object), funcIdx (closure)
+  ;; - id: schemaId (array/object), len (string), funcIdx (closure)
   ;; - offset: memory byte offset (2GB addressable)
-
-  ;; Instance table for mutable arrays: 4 bytes per entry at fixed offset
-  ;; Layout: [len:u16][schemaId:u16]
-  ;; Reserved: first 64KB of memory (16K instances * 4 bytes)
-  (global $__instance_table_start i32 (i32.const 0))
-  (global $__next_instance (mut i32) (i32.const 1))  ;; instance 0 reserved
 
   ;; Compute capacity tier for given length: nextPow2(max(len, 4))
   (func $__cap_for_len (param $len i32) (result i32)
@@ -244,9 +244,10 @@ function emitMemoryHelpers() {
     (local.set $cap (i32.or (local.get $cap) (i32.shr_u (local.get $cap) (i32.const 16))))
     (i32.add (local.get $cap) (i32.const 1)))
 
-  ;; Allocate immutable array (type=1, len in pointer)
+  ;; Allocate array with C-style header (type=1, length at offset-8)
+  ;; Returns pointer with offset pointing to element storage (after header)
   (func $__alloc (param $type i32) (param $len i32) (result f64)
-    (local $offset i32) (local $size i32) (local $cap i32)
+    (local $offset i32) (local $size i32) (local $cap i32) (local $dataOffset i32)
     (local.set $cap (call $__cap_for_len (local.get $len)))
     ;; Size based on type: 8 bytes for f64/object/closure, 2 for string
     (local.set $size
@@ -256,40 +257,34 @@ function emitMemoryHelpers() {
           (i32.ne (local.get $type) (i32.const 3)))))
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
+    ;; For arrays (type=1), add 8 bytes for length header
+    (if (i32.eq (local.get $type) (i32.const 1))
+      (then
+        ;; Layout: [length:f64][elem0, elem1, ...]
+        (local.set $dataOffset (i32.add (local.get $offset) (i32.const 8)))
+        (global.set $__heap (i32.add (local.get $offset) (i32.add (local.get $size) (i32.const 8))))
+        ;; Store length at offset (before data)
+        (f64.store (local.get $offset) (f64.convert_i32_s (local.get $len)))
+        (return (call $__mkptr (local.get $type) (i32.const 0) (local.get $dataOffset)))))
+    ;; For other types (string, etc), no header
     (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
     (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
 
-  ;; Allocate mutable array (type=2, instanceId in pointer, len in table)
-  (func $__alloc_mut (param $len i32) (result f64)
-    (local $offset i32) (local $size i32) (local $cap i32) (local $id i32)
-    (local.set $cap (call $__cap_for_len (local.get $len)))
-    (local.set $size (i32.shl (local.get $cap) (i32.const 3)))
-    (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
-    (local.set $offset (global.get $__heap))
-    (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
-    ;; Create instance entry
-    (local.set $id (global.get $__next_instance))
-    (global.set $__next_instance (i32.add (local.get $id) (i32.const 1)))
-    ;; Store length in instance table (4 bytes per instance)
-    (i32.store16 (i32.shl (local.get $id) (i32.const 2)) (local.get $len))
-    (call $__mkptr (i32.const 2) (local.get $id) (local.get $offset)))
-
-  ;; Allocate array with properties (uses ARRAY_MUT type=2 with schemaId > 0)
-  ;; Instance table entry: [len:u16, schemaId:u16]
+  ;; Allocate array with properties (uses ARRAY type=1 with schemaId > 0)
+  ;; Memory layout: [length:f64][elem0, ..., elemN, prop0, ..., propM]
   (func $__alloc_array_props (param $elemLen i32) (param $propCount i32) (param $schemaId i32) (result f64)
-    (local $offset i32) (local $size i32) (local $cap i32) (local $id i32) (local $totalLen i32)
+    (local $offset i32) (local $size i32) (local $cap i32) (local $totalLen i32) (local $dataOffset i32)
     (local.set $totalLen (i32.add (local.get $elemLen) (local.get $propCount)))
     (local.set $cap (call $__cap_for_len (local.get $totalLen)))
     (local.set $size (i32.shl (local.get $cap) (i32.const 3)))
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
-    (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
-    ;; Create instance entry: len in lower 16 bits, schemaId in upper 16 bits
-    (local.set $id (global.get $__next_instance))
-    (global.set $__next_instance (i32.add (local.get $id) (i32.const 1)))
-    (i32.store16 (i32.shl (local.get $id) (i32.const 2)) (local.get $elemLen))
-    (i32.store16 (i32.add (i32.shl (local.get $id) (i32.const 2)) (i32.const 2)) (local.get $schemaId))
-    (call $__mkptr (i32.const 2) (local.get $id) (local.get $offset)))
+    ;; Layout: [length:f64][elements...][props...]
+    (local.set $dataOffset (i32.add (local.get $offset) (i32.const 8)))
+    (global.set $__heap (i32.add (local.get $offset) (i32.add (local.get $size) (i32.const 8))))
+    ;; Store element count (not total) in header
+    (f64.store (local.get $offset) (f64.convert_i32_s (local.get $elemLen)))
+    (call $__mkptr (i32.const 1) (local.get $schemaId) (local.get $dataOffset)))
 
   ;; NaN box base: 0x7FF8_0000_0000_0000 (quiet NaN)
   ;; Create NaN-boxed pointer: type * 2^47 + id * 2^31 + offset
@@ -357,19 +352,19 @@ function emitMemoryHelpers() {
       (i32.wrap_i64 (i64.reinterpret_f64 (local.get $ptr)))
       (i32.const 0x7FFFFFFF)))
 
-  ;; Get length (type-aware): for immutable types, id IS length; for mutable, lookup table
+  ;; Get length (type-aware): arrays read from memory, strings from pointer
   (func $__ptr_len (param $ptr f64) (result i32)
     (if (result i32)
-      (i32.or
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const 1))   ;; ARRAY (immutable)
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const 3)))  ;; STRING (immutable)
-      (then (call $__ptr_id (local.get $ptr)))  ;; len in pointer
-      (else  ;; ARRAY_MUT: len in instance table
-        (i32.load16_u (i32.shl (call $__ptr_id (local.get $ptr)) (i32.const 2))))))
+      (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const 3))  ;; STRING: len in pointer
+      (then (call $__ptr_id (local.get $ptr)))
+      (else  ;; ARRAY: len at offset-8
+        (i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)))))))
 
-  ;; Set length in instance table (for mutable arrays only)
+  ;; Set length in memory (for mutable arrays)
   (func $__ptr_set_len (param $ptr f64) (param $len i32)
-    (i32.store16 (i32.shl (call $__ptr_id (local.get $ptr)) (i32.const 2)) (local.get $len)))
+    (f64.store
+      (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))
+      (f64.convert_i32_s (local.get $len))))
 
   ;; Create new pointer with updated id (for creating new ptr with different len)
   (func $__ptr_with_id (param $ptr f64) (param $id i32) (result f64)
@@ -427,10 +422,8 @@ function emitMemoryHelpers() {
     (local $oldLen i32) (local $newPtr f64) (local $i i32) (local $oldOff i32) (local $newOff i32) (local $ptrType i32)
     (local.set $oldLen (call $__ptr_len (local.get $ptr)))
     (local.set $ptrType (call $__ptr_type (local.get $ptr)))
-    ;; Allocate based on type
-    (if (i32.eq (local.get $ptrType) (i32.const 2))
-      (then (local.set $newPtr (call $__alloc_mut (local.get $newLen))))
-      (else (local.set $newPtr (call $__alloc (local.get $ptrType) (local.get $newLen)))))
+    ;; Allocate new array (all arrays now use $__alloc)
+    (local.set $newPtr (call $__alloc (local.get $ptrType) (local.get $newLen)))
     (local.set $oldOff (call $__ptr_offset (local.get $ptr)))
     (local.set $newOff (call $__ptr_offset (local.get $newPtr)))
     ;; Copy old data (f64 array)

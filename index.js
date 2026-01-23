@@ -5,11 +5,11 @@ import * as watr from 'watr'
 import normalize from './src/normalize.js'
 import { compile as compileAst, assemble } from './src/compile.js'
 
-// NaN-boxing pointer encoding (v5)
+// NaN-boxing pointer encoding (v6 - unified arrays)
 // Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
 // Payload: [type:4][id:16][offset:31]
-// Type codes: 1=ARRAY, 2=ARRAY_MUT, 3=STRING, 4=OBJECT, 7=CLOSURE
-// id: len (immutable array/string), instanceId (mutable), schemaId (object)
+// Type codes: 1=ARRAY (length at offset-8), 3=STRING, 4=OBJECT, 7=CLOSURE
+// id: schemaId (array/object), len (string), funcIdx (closure)
 // Canonical NaN (0x7FF8000000000000) is NOT a pointer - payload must be non-zero
 
 const NAN_BOX_MASK = 0x7FF8000000000000n
@@ -85,11 +85,11 @@ function ptrToValue(memory, ptr, schemas) {
     return obj
   }
 
-  // Type 1 = ARRAY (immutable): id = length
-  // Type 2 = ARRAY_MUT: would need instance table lookup (not implemented in JS yet)
-  if (type === 1 || type === 2) {
-    // For ARRAY_MUT, we'd need to read instance table, but for now assume id = len
-    const len = type === 1 ? id : id // TODO: instance table lookup for type 2
+  // Type 1 = ARRAY: unified array with length at offset-8
+  if (type === 1) {
+    // Read length from memory at offset-8
+    const lenView = new Float64Array(memory.buffer, offset - 8, 1)
+    const len = Math.floor(lenView[0])
     const view = new Float64Array(memory.buffer, offset, len)
     return Array.from(view).map(v => ptrToValue(memory, v, schemas))
   }
@@ -144,8 +144,7 @@ function wrapExport(exports, name, sig, schemas) {
   if (typeof rawFn !== 'function') return rawFn
 
   // sig format: { arrayParams: [0, 2], returnsArray: true }
-  const { arrayParams = [], returnsArray = false } = sig
-  if (arrayParams.length === 0 && !returnsArray) return rawFn
+  const { arrayParams = [] } = sig || {}
 
   return function (...args) {
     // Convert array/object args to pointers
@@ -193,7 +192,8 @@ export async function instantiate(wasm, imports = {}) {
       if (name in signatures) {
         wrapped[name] = wrapExport(rawExports, name, signatures[name], schemas)
       } else if (typeof value === 'function') {
-        wrapped[name] = value // no wrapping needed
+        // Always wrap functions to handle pointer returns
+        wrapped[name] = wrapExport(rawExports, name, {}, schemas)
       }
     }
 

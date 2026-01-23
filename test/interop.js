@@ -173,7 +173,7 @@ test('raw access via wasm namespace for arrays', async () => {
   const rawProcess = mod.wasm.process
   const rawMemory = mod.wasm._memory
 
-  const ptr = rawAlloc(1, 3) // type 1 = F64_ARRAY, len 3
+  const ptr = rawAlloc(1, 3) // type 1 = ARRAY, len 3
 
   // NaN-boxed pointers: extract offset from bits (lower 31 bits)
   const buf = new ArrayBuffer(8)
@@ -189,14 +189,16 @@ test('raw access via wasm namespace for arrays', async () => {
   // Call raw function with pointer
   const resultPtr = rawProcess(ptr)
 
-  // Decode result pointer (NaN-boxed format)
+  // Decode result pointer (NaN-boxed format with length in memory)
   f64View[0] = resultPtr
   const resultBits = u64View[0]
   const NAN_BOX_MASK = 0x7FF8000000000000n
   ok((resultBits & NAN_BOX_MASK) === NAN_BOX_MASK && resultBits !== NAN_BOX_MASK, 'result should be a pointer')
 
   const resultOffset = Number(resultBits & 0x7FFFFFFFn)
-  const resultLen = Number((resultBits >> 31n) & 0xFFFFn)
+  // Length is now stored at offset-8 in memory (C-style header)
+  const lenView = new Float64Array(rawMemory.buffer, resultOffset - 8, 1)
+  const resultLen = Math.floor(lenView[0])
   is(resultLen, 3, 'result length should be 3')
 
   const resultView = new Float64Array(rawMemory.buffer, resultOffset, resultLen)

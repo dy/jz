@@ -203,7 +203,9 @@ export const match = (rw, args) => {
         (else
           ;; Allocate result array
           (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${matchCount})))
+          ;; Allocate temp buffer for group positions (8 bytes: start+end as i32s)
           (local.set ${groupBuf} (global.get $__heap))
+          (global.set $__heap (i32.add (global.get $__heap) (i32.const 8)))
           ;; Second pass: extract matches
           (local.set ${arrIdx} (i32.const 0))
           (local.set ${searchPos} (i32.const 0))
@@ -235,8 +237,9 @@ export const match = (rw, args) => {
     (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
     (local.set ${searchPos} (i32.const 0))
     (local.set ${matchEnd} (i32.const -1))
-    ;; Allocate temp buffer for group positions
+    ;; Allocate temp buffer for group positions (8 bytes per group: start+end as i32s)
     (local.set ${groupBuf} (global.get $__heap))
+    (global.set $__heap (i32.add (global.get $__heap) (i32.const ${(groupCount + 1) * 8})))
     ;; Search loop
     (block $found_${id}
       (loop $search_${id}

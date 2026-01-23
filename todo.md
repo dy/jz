@@ -158,7 +158,7 @@
   * [ ] Date.now, performance.now (host imports)
   * [x] JSON.stringify (numbers, strings, arrays, objects)
   * [-] JSON.parse (full parser - very hard)
-  * [ ] Set, Map (hash table implementation)
+  * [x] Set, Map (open addressing hash table, number/string/object keys)
   * [ ] structuredClone (deep copy)
   * [-] WeakSet, WeakMap (need GC hooks - not feasible)
   * [-] Promise, async/await (not feasible in sync WASM)

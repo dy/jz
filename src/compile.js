@@ -61,7 +61,7 @@ const stringMethods = {
   split: string.split, replace: string.replace, search: string.search, match: string.match
 }
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, INSTANCE_TABLE_END, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, isSet, isMap, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, findHoistedVars, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
@@ -114,7 +114,8 @@ export function compile(ast, options = {}) {
   ctx.inferredSchemas = inferredSchemas
   gen = generate
   const bodyWat = String(f64(generate(ast)))
-  return assemble(bodyWat, ctx, generateFunctions())
+  const funcs = generateFunctions()
+  return assemble(bodyWat, ctx, funcs)
 }
 
 
@@ -523,7 +524,7 @@ function genObjectInferredDecl(name, value, inferred, isConst) {
     const values = literalProps.map(([, val]) => evalConstant(val))
     const arraySpace = Object.keys(ctx.staticArrays).length * 64
     const objectSpace = objectId * 64
-    const offset = INSTANCE_TABLE_END + 4096 + arraySpace + objectSpace
+    const offset = HEAP_START + 4096 + arraySpace + objectSpace
     ctx.staticObjects[objectId] = { offset, values, schemaId }
     const scopedName = ctx.declareVar(name, isConst)
     ctx.addLocal(name, 'object', schemaId, scopedName)
@@ -608,6 +609,54 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (isRegex(receiver) && REGEX_METHODS[name]) {
       ctx.usedMemory = true
       return REGEX_METHODS[name](receiver, args, ctx)
+    }
+
+    // Set methods
+    if (isSet(receiver)) {
+      ctx.usedMemory = true
+      if (name === 'has' && args.length === 1) {
+        ctx.usedStdlib.push('__set_has')
+        return wat(`(call $__set_has ${rw} ${f64(gen(args[0]))})`, 'i32')
+      }
+      if (name === 'add' && args.length === 1) {
+        ctx.usedStdlib.push('__set_add')
+        return wat(`(call $__set_add ${rw} ${f64(gen(args[0]))})`, 'set')
+      }
+      if (name === 'delete' && args.length === 1) {
+        ctx.usedStdlib.push('__set_delete')
+        return wat(`(call $__set_delete ${rw} ${f64(gen(args[0]))})`, 'i32')
+      }
+      if (name === 'clear' && args.length === 0) {
+        ctx.usedStdlib.push('__set_clear')
+        return wat(`(call $__set_clear ${rw})`, 'set')
+      }
+      throw new Error(`Unknown Set method: .${name}`)
+    }
+
+    // Map methods
+    if (isMap(receiver)) {
+      ctx.usedMemory = true
+      if (name === 'has' && args.length === 1) {
+        ctx.usedStdlib.push('__map_has')
+        return wat(`(call $__map_has ${rw} ${f64(gen(args[0]))})`, 'i32')
+      }
+      if (name === 'get' && args.length === 1) {
+        ctx.usedStdlib.push('__map_get')
+        return wat(`(call $__map_get ${rw} ${f64(gen(args[0]))})`, 'f64')
+      }
+      if (name === 'set' && args.length === 2) {
+        ctx.usedStdlib.push('__map_set')
+        return wat(`(call $__map_set ${rw} ${f64(gen(args[0]))} ${f64(gen(args[1]))})`, 'map')
+      }
+      if (name === 'delete' && args.length === 1) {
+        ctx.usedStdlib.push('__map_delete')
+        return wat(`(call $__map_delete ${rw} ${f64(gen(args[0]))})`, 'i32')
+      }
+      if (name === 'clear' && args.length === 0) {
+        ctx.usedStdlib.push('__map_clear')
+        return wat(`(call $__map_clear ${rw})`, 'map')
+      }
+      throw new Error(`Unknown Map method: .${name}`)
     }
 
     // Check if receiver is a closure/function property from an object
@@ -1222,7 +1271,7 @@ const operators = {
     return val
   },
 
-  // Constructor calls: new TypedArray(len)
+  // Constructor calls: new TypedArray(len), new Set(), new Map()
   'new'([ctorCall]) {
     // ctorCall is ['()', ctor, ...args]
     if (!Array.isArray(ctorCall) || ctorCall[0] !== '()') {
@@ -1241,6 +1290,22 @@ const operators = {
       const elemType = TYPED_ARRAY_CTORS[ctorName]
       const lenVal = gen(args[0])
       return wat(typedArrNew(elemType, i32(lenVal)), 'typedarray', elemType)
+    }
+
+    // Set constructor: new Set() or new Set(capacity)
+    if (ctorName === 'Set') {
+      ctx.usedMemory = true
+      ctx.usedStdlib.push('__set_new')
+      const cap = args.length > 0 ? i32(gen(args[0])) : '(i32.const 16)'
+      return wat(`(call $__set_new ${cap})`, 'set')
+    }
+
+    // Map constructor: new Map() or new Map(capacity)
+    if (ctorName === 'Map') {
+      ctx.usedMemory = true
+      ctx.usedStdlib.push('__map_new')
+      const cap = args.length > 0 ? i32(gen(args[0])) : '(i32.const 16)'
+      return wat(`(call $__map_new ${cap})`, 'map')
     }
 
     throw new Error(`Unsupported constructor: ${ctorName || JSON.stringify(ctor)}`)
@@ -1411,10 +1476,10 @@ const operators = {
       // Static object - store in data segment
       const objectId = Object.keys(ctx.staticObjects).length
       const values = props.map(([, val]) => evalConstant(val))
-      // Place after static arrays: INSTANCE_TABLE_END + 4096 + arrays + objects
+      // Place after static arrays: HEAP_START + 4096 + arrays + objects
       const arraySpace = Object.keys(ctx.staticArrays).length * 64
       const objectSpace = objectId * 64
-      const offset = INSTANCE_TABLE_END + 4096 + arraySpace + objectSpace
+      const offset = HEAP_START + 4096 + arraySpace + objectSpace
       ctx.staticObjects[objectId] = { offset, values, schemaId }
       // mkptr(OBJECT, schemaId, offset) - schemaId goes in id field
       return wat(`(call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset}))`, 'object', schemaId)
@@ -1526,6 +1591,19 @@ const operators = {
         return wat(`(call $__ptr_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
       }
       throw new Error(`Cannot get length of ${o.type}`)
+    }
+    // Set/Map .size property
+    if (prop === 'size') {
+      if (isSet(o)) {
+        ctx.usedMemory = true
+        ctx.usedStdlib.push('__set_size')
+        return wat(`(call $__set_size ${o})`, 'i32')
+      }
+      if (isMap(o)) {
+        ctx.usedMemory = true
+        ctx.usedStdlib.push('__map_size')
+        return wat(`(call $__map_size ${o})`, 'i32')
+      }
     }
     if (prop === 'byteLength' && isTypedArray(o)) {
       // byteLength = length * stride
@@ -2329,7 +2407,7 @@ const operators = {
       const { id, length } = typeStrings[name]
       ctx.usedMemory = true
       // NaN boxing: mkptr(type, id, offset) - for string, id = length, offset = memOffset
-      const memOffset = INSTANCE_TABLE_END + id * STRING_STRIDE
+      const memOffset = HEAP_START + id * STRING_STRIDE
       return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${memOffset}))`
     }
     if (val.type === 'f64') {
@@ -2422,13 +2500,13 @@ const operators = {
     for (const part of genParts) {
       if (part.type === 'literal') {
         // Copy literal string (interned) to result at offset
-        // internString returns {id, offset, length} where memory location is INSTANCE_TABLE_END + id * STRING_STRIDE
+        // internString returns {id, offset, length} where memory location is HEAP_START + id * STRING_STRIDE
         const { id: stringId } = ctx.internString(part.value)
         const partLen = part.value.length
         if (partLen > 0) {
           code += `(memory.copy
             (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
-            (i32.const ${INSTANCE_TABLE_END + stringId * STRING_STRIDE})
+            (i32.const ${HEAP_START + stringId * STRING_STRIDE})
             (i32.const ${partLen * 2}))\n`
           code += `(local.set ${offset} (i32.add (local.get ${offset}) (i32.const ${partLen})))\n`
         }
@@ -3308,6 +3386,7 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   if (ctx.usedArrayType) parentCtx.usedArrayType = true
   if (ctx.usedStringType) parentCtx.usedStringType = true
   if (ctx.usedRefArrayType) parentCtx.usedRefArrayType = true
+  if (ctx.usedTypedArrays) parentCtx.usedTypedArrays = true
   if (ctx.usedFuncTypes) {
     if (!parentCtx.usedFuncTypes) parentCtx.usedFuncTypes = new Set()
     for (const arity of ctx.usedFuncTypes) parentCtx.usedFuncTypes.add(arity)
