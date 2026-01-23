@@ -679,6 +679,27 @@ function resolveCall(namespace, name, args, receiver = null) {
       const typeVal = `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const 47))) (i32.const 15))`
       return wat(`(i32.and ${isNaN} (i32.or (i32.eq ${typeVal} (i32.const 1)) (i32.eq ${typeVal} (i32.const 8))))`, 'i32')
     }
+    if (name === 'from' && args.length >= 1) {
+      // Array.from(arr) - shallow copy of array
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      ctx.returnsArrayPointer = true
+      const src = gen(args[0])
+      const id = ctx.uniqueId++
+      const srcLocal = `$_afrom_src_${id}`, len = `$_afrom_len_${id}`, result = `$_afrom_res_${id}`
+      ctx.addLocal(srcLocal, 'f64')
+      ctx.addLocal(len, 'i32')
+      ctx.addLocal(result, 'f64')
+      return wat(wt`
+        (local.set ${srcLocal} ${src})
+        (local.set ${len} (call $__ptr_len (local.get ${srcLocal})))
+        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${len})))
+        (memory.copy
+          (call $__ptr_offset (local.get ${result}))
+          (call $__ptr_offset (local.get ${srcLocal}))
+          (i32.shl (local.get ${len}) (i32.const 3)))
+        (local.get ${result})`, 'array')
+    }
     throw new Error(`Unknown Array.${name}`)
   }
 
@@ -794,6 +815,91 @@ function resolveCall(namespace, name, args, receiver = null) {
 
       throw new Error('Object.assign target must be string, number, boolean, array, or object')
     }
+
+    // Object.keys(obj) - returns array of property names (strings)
+    if (name === 'keys' && args.length === 1) {
+      const obj = gen(args[0])
+      if (!isObject(obj) || !hasSchema(obj)) {
+        throw new Error('Object.keys requires object with known schema')
+      }
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      ctx.usedStringType = true
+      ctx.returnsArrayPointer = true
+      const schema = ctx.objectSchemas[obj.schema]
+      // Filter out internal schema markers like __string__, __number__, __boolean__
+      const keys = schema.filter(k => !k.startsWith('__'))
+      // Create static array of interned strings
+      const keyStrs = keys.map(k => mkString(ctx, k))
+      const id = ctx.uniqueId++
+      const result = `$_okeys_${id}`
+      ctx.addLocal(result, 'f64')
+      const stores = keyStrs.map((s, i) =>
+        `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${s})`).join('\n      ')
+      return wat(wt`
+        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
+        ${stores}
+        (local.get ${result})`, 'array')
+    }
+
+    // Object.values(obj) - returns array of property values
+    if (name === 'values' && args.length === 1) {
+      const obj = gen(args[0])
+      if (!isObject(obj) || !hasSchema(obj)) {
+        throw new Error('Object.values requires object with known schema')
+      }
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      ctx.returnsArrayPointer = true
+      const schema = ctx.objectSchemas[obj.schema]
+      const keys = schema.filter(k => !k.startsWith('__'))
+      const id = ctx.uniqueId++
+      const result = `$_ovals_${id}`, src = `$_ovsrc_${id}`
+      ctx.addLocal(result, 'f64')
+      ctx.addLocal(src, 'f64')
+      // Find indices of non-internal keys
+      const indices = keys.map(k => schema.indexOf(k))
+      const stores = indices.map((idx, i) =>
+        `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${objGet(`(local.get ${src})`, idx)})`).join('\n      ')
+      return wat(wt`
+        (local.set ${src} ${obj})
+        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
+        ${stores}
+        (local.get ${result})`, 'array')
+    }
+
+    // Object.entries(obj) - returns array of [key, value] pairs
+    if (name === 'entries' && args.length === 1) {
+      const obj = gen(args[0])
+      if (!isObject(obj) || !hasSchema(obj)) {
+        throw new Error('Object.entries requires object with known schema')
+      }
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      ctx.usedStringType = true
+      ctx.returnsArrayPointer = true
+      const schema = ctx.objectSchemas[obj.schema]
+      const keys = schema.filter(k => !k.startsWith('__'))
+      const id = ctx.uniqueId++
+      const result = `$_oent_${id}`, src = `$_oesrc_${id}`, pair = `$_oepair_${id}`
+      ctx.addLocal(result, 'f64')
+      ctx.addLocal(src, 'f64')
+      ctx.addLocal(pair, 'f64')
+      // Each entry is [key, value] - a 2-element array
+      const indices = keys.map(k => schema.indexOf(k))
+      const keyStrs = keys.map(k => mkString(ctx, k))
+      const pairs = indices.map((idx, i) => wt`
+        (local.set ${pair} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const 2)))
+        (f64.store (call $__ptr_offset (local.get ${pair})) ${keyStrs[i]})
+        (f64.store (i32.add (call $__ptr_offset (local.get ${pair})) (i32.const 8)) ${objGet(`(local.get ${src})`, idx)})
+        (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) (local.get ${pair}))`).join('\n      ')
+      return wat(wt`
+        (local.set ${src} ${obj})
+        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
+        ${pairs}
+        (local.get ${result})`, 'array')
+    }
+
     throw new Error(`Unknown Object.${name}`)
   }
 

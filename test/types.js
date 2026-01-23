@@ -125,3 +125,41 @@ test('Array.isArray', async () => {
   is(await evaluate('Array.isArray({x: 1})'), 0)
   is(await evaluate('a = [1]; Array.isArray(a)'), 1)
 })
+test('Array.from', async () => {
+  // Basic array copy
+  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[0]'), 1)
+  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[1]'), 2)
+  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b.length'), 3)
+  // Verify it's a copy, not the same reference
+  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); a === b'), 0)
+  // Mutation doesn't affect original
+  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[0] = 99; a[0]'), 1)
+  // Empty array
+  is(await evaluate('Array.from([]).length'), 0)
+})
+
+// Object namespace
+test('Object.keys', async () => {
+  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o).length'), 2)
+  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o)[0]'), 'a')
+  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o)[1]'), 'b')
+  is(await evaluate('let o = {x: 5}; Object.keys(o).length'), 1)
+  is(await evaluate('let o = {x: 5}; Object.keys(o)[0]'), 'x')
+})
+
+test('Object.values', async () => {
+  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o).length'), 2)
+  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o)[0]'), 1)
+  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o)[1]'), 2)
+  is(await evaluate('let o = {x: 42}; Object.values(o)[0]'), 42)
+})
+
+test('Object.entries', async () => {
+  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o).length'), 2)
+  // First entry is ['a', 1]
+  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[0][0]'), 'a')
+  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[0][1]'), 1)
+  // Second entry is ['b', 2]
+  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[1][0]'), 'b')
+  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[1][1]'), 2)
+})
