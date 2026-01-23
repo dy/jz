@@ -120,12 +120,13 @@ export function compile(ast, options = {}) {
 
 /**
  * Check if an AST node is a constant expression (can be computed at compile time).
- * Used for optimizations like constant folding in array literals.
+ * Used for optimizations like constant folding in array literals and static objects.
  *
  * @param {any} ast - AST node to check
  * @returns {boolean} True if expression can be evaluated at compile time
  * @example isConstant([null, 42]) → true
  * @example isConstant(['+', [null, 1], [null, 2]]) → true
+ * @example isConstant(['{', ['a', [null, 1]]]) → true (object with constant values)
  * @example isConstant('x') → false (variable reference)
  */
 function isConstant(ast) {
@@ -134,11 +135,45 @@ function isConstant(ast) {
   if (typeof ast === 'string') return /^(true|false|null|undefined|Infinity|-Infinity|NaN)$/.test(ast) || !isNaN(Number(ast))
   if (!Array.isArray(ast)) return false
   const [op] = ast
-  // Only certain operations are safe to evaluate at compile time
+  // Arithmetic operations
   if (op === '+' || op === '-' || op === '*' || op === '/' || op === '%') {
     return ast.slice(1).every(isConstant)
   }
+  // Object literals: ['{', [key, value], ...] - all values must be constant numbers
+  if (op === '{') {
+    return ast.slice(1).every(([, val]) => isConstant(val))
+  }
   return false
+}
+
+/**
+ * Check if an AST node is a constant string expression (compile-time string).
+ * Used for string concatenation folding: "a" + "b" → "ab"
+ *
+ * @param {any} ast - AST node to check
+ * @returns {boolean} True if expression evaluates to a constant string
+ * @example isStringConstant([undefined, "hello"]) → true
+ * @example isStringConstant(['+', [undefined, "a"], [undefined, "b"]]) → true
+ */
+function isStringConstant(ast) {
+  if (Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'string') return true
+  if (!Array.isArray(ast)) return false
+  // String concatenation with +
+  if (ast[0] === '+' && ast.length === 3) {
+    return isStringConstant(ast[1]) && isStringConstant(ast[2])
+  }
+  return false
+}
+
+/**
+ * Evaluate a constant string expression at compile time.
+ * @param {any} ast - Constant string AST node (must pass isStringConstant check)
+ * @returns {string} Evaluated string value
+ */
+function evalStringConstant(ast) {
+  if (Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'string') return ast[1]
+  if (ast[0] === '+') return evalStringConstant(ast[1]) + evalStringConstant(ast[2])
+  throw new Error(`Cannot evaluate string constant: ${JSON.stringify(ast)}`)
 }
 
 /**
@@ -357,7 +392,7 @@ function allocateBoxed(boxedType, schemaPrefix, target, props, tmpPrefix) {
 
   const id = ctx.uniqueId++
   const tmp = `$_${tmpPrefix}_${id}`
-  ctx.addLocal(tmp.slice(1), 'f64')
+  ctx.addLocal(tmp, 'f64')
 
   const stores = propVals.map((v, i) =>
     `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
@@ -437,7 +472,7 @@ function genBoxedInferredDecl(name, value, inferred, isConst) {
 
   const id = ctx.uniqueId++
   const tmp = `$_bx_${id}`
-  ctx.addLocal(tmp.slice(1), 'f64')
+  ctx.addLocal(tmp, 'f64')
   const stores = vals.map((v, i) =>
     `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
   const scopedName = ctx.declareVar(name, isConst)
@@ -479,6 +514,22 @@ function genObjectInferredDecl(name, value, inferred, isConst) {
     ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
   }
 
+  // Static object optimization: all props from literal, all constant, no closures
+  const noInferredProps = inferred.props.every(p => literalKeys.includes(p))
+  const allConstant = literalProps.every(([, val]) => isConstant(val))
+  const noClosures = inferred.closures.size === 0
+  if (noInferredProps && allConstant && noClosures) {
+    const objectId = Object.keys(ctx.staticObjects).length
+    const values = literalProps.map(([, val]) => evalConstant(val))
+    const arraySpace = Object.keys(ctx.staticArrays).length * 64
+    const objectSpace = objectId * 64
+    const offset = INSTANCE_TABLE_END + 4096 + arraySpace + objectSpace
+    ctx.staticObjects[objectId] = { offset, values, schemaId }
+    const scopedName = ctx.declareVar(name, isConst)
+    ctx.addLocal(name, 'object', schemaId, scopedName)
+    return wat(`(local.tee $${scopedName} (call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset})))`, 'object', schemaId)
+  }
+
   const vals = []
   for (const key of allKeys) {
     const literalProp = literalProps.find(p => p[0] === key)
@@ -497,7 +548,7 @@ function genObjectInferredDecl(name, value, inferred, isConst) {
 
   const id = ctx.uniqueId++
   const tmp = `$_obj_${id}`
-  ctx.addLocal(tmp.slice(1), 'f64')
+  ctx.addLocal(tmp, 'f64')
   const stores = vals.map((v, i) =>
     `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
 
@@ -671,9 +722,9 @@ function resolveCall(namespace, name, args, receiver = null) {
         }
         const id = ctx.uniqueId++
         const tmp = `$_aprp_${id}`, tmpLen = `$_alen_${id}`, tmpInstId = `$_ainst_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-        ctx.addLocal(tmpLen.slice(1), 'i32')
-        ctx.addLocal(tmpInstId.slice(1), 'i32')
+        ctx.addLocal(tmp, 'f64')
+        ctx.addLocal(tmpLen, 'i32')
+        ctx.addLocal(tmpInstId, 'i32')
         // Props stored AFTER array elements: offset + len*8 + i*8
         const stores = propVals.map((v, i) =>
           `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.add (i32.shl (local.get ${tmpLen}) (i32.const 3)) (i32.const ${i * 8}))) ${v})`)
@@ -1064,9 +1115,9 @@ const operators = {
       const tmpLen = `$_slen_${id}`
       const tmpArr = `$_sarr_${id}`
       const tmpIdx = `$_sidx_${id}`
-      ctx.addLocal(tmpLen.slice(1), 'i32')
-      ctx.addLocal(tmpArr.slice(1), 'f64')
-      ctx.addLocal(tmpIdx.slice(1), 'i32')
+      ctx.addLocal(tmpLen, 'i32')
+      ctx.addLocal(tmpArr, 'f64')
+      ctx.addLocal(tmpIdx, 'i32')
 
       // Calculate total length
       let lenCode = '(i32.const 0)'
@@ -1089,8 +1140,8 @@ const operators = {
           const loopId = ctx.uniqueId++
           const tmpSrc = `$_ssrc_${loopId}`
           const tmpI = `$_si_${loopId}`
-          ctx.addLocal(tmpSrc.slice(1), 'f64')
-          ctx.addLocal(tmpI.slice(1), 'i32')
+          ctx.addLocal(tmpSrc, 'f64')
+          ctx.addLocal(tmpI, 'i32')
           code += `(local.set ${tmpSrc} ${p.value})
       (local.set ${tmpI} (i32.const 0))
       (block $break_${loopId} (loop $loop_${loopId}
@@ -1124,6 +1175,22 @@ const operators = {
     const schemaId = ctx.objectCounter + 1
     ctx.objectCounter++
     ctx.objectSchemas[schemaId] = keys
+
+    // Check if all values are constant numbers (static object optimization)
+    const allConstant = props.every(([, val]) => isConstant(val))
+    if (allConstant) {
+      // Static object - store in data segment
+      const objectId = Object.keys(ctx.staticObjects).length
+      const values = props.map(([, val]) => evalConstant(val))
+      // Place after static arrays: INSTANCE_TABLE_END + 4096 + arrays + objects
+      const arraySpace = Object.keys(ctx.staticArrays).length * 64
+      const objectSpace = objectId * 64
+      const offset = INSTANCE_TABLE_END + 4096 + arraySpace + objectSpace
+      ctx.staticObjects[objectId] = { offset, values, schemaId }
+      // mkptr(OBJECT, schemaId, offset) - schemaId goes in id field
+      return wat(`(call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset}))`, 'object', schemaId)
+    }
+
     // Track property types for method call support and nested object access
     if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
     ctx.objectPropTypes[schemaId] = {}
@@ -1145,7 +1212,7 @@ const operators = {
     }
     const id = ctx.uniqueId++
     const tmp = `$_obj_${id}`
-    ctx.addLocal(tmp.slice(1), 'f64')
+    ctx.addLocal(tmp, 'f64')
     const stores = vals.map((v, i) =>
       `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
     // NaN boxing: OBJECT type with schemaId as id field
@@ -1494,6 +1561,12 @@ const operators = {
     if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
       throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
     }
+    // Compile-time string concatenation: "a" + "b" → "ab"
+    if (isStringConstant(a) && isStringConstant(b)) {
+      ctx.usedStringType = true
+      ctx.usedMemory = true
+      return mkString(ctx, evalStringConstant(a) + evalStringConstant(b))
+    }
     return binOp(a, b, i32ops.add, f64ops.add)
   },
   '-'([a, b]) { return binOp(a, b, i32ops.sub, f64ops.sub) },
@@ -1684,7 +1757,7 @@ const operators = {
     }
     const id = ctx.uniqueId++
     const result = `$_for_result_${id}`
-    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(result, 'f64')
 
     code += `(block $break_${id} (loop $continue_${id}\n      `
     if (cond) code += `(br_if $break_${id} (i32.eqz ${bool(gen(cond))}))\n      `
@@ -1705,7 +1778,7 @@ const operators = {
   'while'([cond, body]) {
     const id = ctx.uniqueId++
     const result = `$_while_result_${id}`
-    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(result, 'f64')
     return wat(`(block $break_${id} (loop $continue_${id}
       (br_if $break_${id} (i32.eqz ${bool(gen(cond))}))
       (local.set ${result} ${f64(gen(body))})
@@ -1718,8 +1791,8 @@ const operators = {
     const id = ctx.uniqueId++
     const result = `$_switch_result_${id}`
     const discrim = `$_switch_discrim_${id}`
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(discrim.slice(1), 'f64')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(discrim, 'f64')
 
     let code = `(local.set ${discrim} ${f64(gen(discriminant))})\n    `
     code += `(local.set ${result} (f64.const 0))\n    `
@@ -2071,9 +2144,9 @@ const operators = {
     const result = `$_tpl_result_${id}`
     const totalLen = `$_tpl_len_${id}`
     const offset = `$_tpl_off_${id}`
-    ctx.addLocal(result.slice(1), 'string')
-    ctx.addLocal(totalLen.slice(1), 'i32')
-    ctx.addLocal(offset.slice(1), 'i32')
+    ctx.addLocal(result, 'string')
+    ctx.addLocal(totalLen, 'i32')
+    ctx.addLocal(offset, 'i32')
 
     // Generate code to calculate total length and generate string values
     let lenCalc = '(i32.const 0)'
@@ -2088,7 +2161,7 @@ const operators = {
         // Expression - generate it and get length
         const partId = ctx.uniqueId++
         const partLocal = `$_tpl_part_${partId}`
-        ctx.addLocal(partLocal.slice(1), 'f64')  // Could be string or number
+        ctx.addLocal(partLocal, 'f64')  // Could be string or number
         genParts.push({ type: 'expr', local: partLocal, ast: part })
       }
     }
@@ -2104,9 +2177,8 @@ const operators = {
           code += `(local.set ${part.local} ${val})\n`
           code += `(local.set ${totalLen} (i32.add (local.get ${totalLen}) (call $__ptr_len (local.get ${part.local}))))\n`
         } else {
-          // Non-string interpolation - for now just skip (will be 0 chars)
-          // TODO: implement number-to-string conversion
-          code += `(local.set ${part.local} (f64.const 0))\n`
+          // Non-string interpolation not yet supported (needs number-to-string)
+          throw new Error('Template literal interpolation requires string expression. Number-to-string conversion not yet implemented.')
         }
       }
     }
@@ -2473,7 +2545,7 @@ function genAssign(target, value, returnValue) {
           // Generate temps for all current values (using actual variable types)
           const temps = varInfo.map((info, i) => {
             const tmp = `$_swap_${id}_${i}`
-            ctx.addLocal(tmp.slice(1), info.type)
+            ctx.addLocal(tmp, info.type)
             const getInstr = info.isGlobal ? 'global.get' : 'local.get'
             code += `(local.set ${tmp} (${getInstr} $${info.scopedName}))\n    `
             return tmp
@@ -2544,7 +2616,7 @@ function genAssign(target, value, returnValue) {
     ctx.usedMemory = true
     const id = ctx.uniqueId++
     const tmp = `$_destruct_${id}`
-    ctx.addLocal(tmp.slice(1), 'array')
+    ctx.addLocal(tmp, 'array')
     const aw = gen(value)
     let code = `(local.set ${tmp} ${aw})\n    `
 
@@ -2577,7 +2649,7 @@ function genAssign(target, value, returnValue) {
     ctx.usedMemory = true
     const id = ctx.uniqueId++
     const tmp = `$_destruct_${id}`
-    ctx.addLocal(tmp.slice(1), 'object')
+    ctx.addLocal(tmp, 'object')
     const obj = gen(value)
     if (obj.type !== 'object' || obj.schema === undefined)
       throw new Error('Object destructuring requires object literal on RHS')

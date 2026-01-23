@@ -6,7 +6,7 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~10200 lines)
+## Project Structure (src/, ~10450 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -17,9 +17,10 @@ For any file structure changes, update project structure section below.
 | assemble.js | 461 | WAT assembly: assemble() - combines sections into final WAT module |
 | stdlib.js | 367 | Pure WASM math functions (sin, cos, pow, etc.) |
 | normalize.js | 384 | AST preprocessing from parser |
-| memory.js | 229 | Memory operations: mkString, arrGet, objGet, envGet/Set |
-| array.js | 601 | Array method codegen (map, filter, reduce, etc.) |
-| string.js | 1515 | String method codegen (slice, indexOf, search, match, replace, split) |
+| memory.js | 326 | Memory operations: mkString, arrGet, objGet, envGet/Set, genSubstringSearch, genPrefixMatch |
+| loop.js | 51 | Loop codegen helpers: genLoop, genEarlyExitLoop |
+| array.js | 529 | Array method codegen (map, filter, reduce, etc.) |
+| string.js | 1386 | String method codegen (slice, indexOf, search, match, replace, split) |
 | regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex) |
 | typedarray.js | 891 | TypedArray method codegen (Float32Array, Int32Array, etc.) |
 | closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |

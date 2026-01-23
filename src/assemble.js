@@ -79,6 +79,18 @@ export function assemble(bodyWat, ctx = {
     if (hex) wat += `  (data (i32.const ${offset}) "${hex}")\n`
   }
 
+  // Static object data - same format as arrays (f64 values)
+  for (const key in ctx.staticObjects) {
+    const { offset, values } = ctx.staticObjects[key]
+    let hex = ''
+    for (const val of values) {
+      const f64bytes = new Float64Array([val])
+      const bytes = new Uint8Array(f64bytes.buffer)
+      hex += Array.from(bytes).map(b => '\\' + b.toString(16).padStart(2, '0')).join('')
+    }
+    if (hex) wat += `  (data (i32.const ${offset}) "${hex}")\n`
+  }
+
   // === Memory helper functions ===
 
   if (ctx.usedMemory) {

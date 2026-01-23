@@ -1,7 +1,7 @@
 // String method implementations
 import { ctx, gen } from './compile.js'
 import { PTR_TYPE, wat, i32 } from './types.js'
-import { strCharAt, strLen, strNew, strSetChar } from './memory.js'
+import { strCharAt, strLen, strNew, strSetChar, strCopy, genSubstringSearch, genPrefixMatch } from './memory.js'
 
 export const charCodeAt = (rw, args) => {
   if (args.length !== 1) return null
@@ -11,7 +11,7 @@ export const charCodeAt = (rw, args) => {
   // For complex receivers (multi-statement blocks), store in local first
   const id = ctx.loopCounter++
   const str = `$_charat_str_${id}`
-  ctx.addLocal(str.slice(1), 'string')
+  ctx.addLocal(str, 'string')
   // Store receiver, then compute charCodeAt, return i32
   return wat(`(block (result i32)
     (local.set ${str} ${rw})
@@ -22,19 +22,19 @@ export const slice = (rw, args) => {
   ctx.usedStringType = true
   ctx.usedMemory = true
   const id = ctx.loopCounter++
-  const str = `$_sslice_str_${id}`, idx = `$_sslice_i_${id}`, len = `$_sslice_len_${id}`, result = `$_sslice_result_${id}`, start = `$_sslice_start_${id}`, end = `$_sslice_end_${id}`, newLen = `$_sslice_newlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
+  const str = `$_sslice_str_${id}`, len = `$_sslice_len_${id}`, result = `$_sslice_result_${id}`
+  const start = `$_sslice_start_${id}`, end = `$_sslice_end_${id}`, newLen = `$_sslice_newlen_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(newLen, 'i32')
 
   const startArg = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 0)'
-  const endArg = args.length >= 2 ? i32(gen(args[1])) : strLen( `(local.get ${str})`)
+  const endArg = args.length >= 2 ? i32(gen(args[1])) : strLen(`(local.get ${str})`)
   return wat(`(local.set ${str} ${rw})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
     (local.set ${start} ${startArg})
     (local.set ${end} ${endArg})
     (if (i32.lt_s (local.get ${start}) (i32.const 0))
@@ -45,13 +45,8 @@ export const slice = (rw, args) => {
     (if (i32.gt_s (local.get ${end}) (local.get ${len})) (then (local.set ${end} (local.get ${len}))))
     (local.set ${newLen} (i32.sub (local.get ${end}) (local.get ${start})))
     (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
-    (local.set ${result} ${strNew( `(local.get ${newLen})`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${newLen})))
-      ${strSetChar( `(local.get ${result})`, `(local.get ${idx})`, strCharAt( `(local.get ${str})`, `(i32.add (local.get ${start}) (local.get ${idx}))`))}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+    (local.set ${result} ${strNew(`(local.get ${newLen})`)})
+    ${strCopy(`(local.get ${result})`, '(i32.const 0)', `(local.get ${str})`, `(local.get ${start})`, `(local.get ${newLen})`)}
     (local.get ${result})`, 'string')
 }
 
@@ -62,67 +57,31 @@ export const indexOf = (rw, args) => {
   const searchVal = gen(args[0])
   const id = ctx.loopCounter++
 
-
   // String argument: find substring index
   if (searchVal.type === 'string') {
-    const str = `$_sidx_str_${id}`, search = `$_sidx_search_${id}`, idx = `$_sidx_i_${id}`, len = `$_sidx_len_${id}`, searchLen = `$_sidx_slen_${id}`, result = `$_sidx_result_${id}`, j = `$_sidx_j_${id}`, match = `$_sidx_match_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(search.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(searchLen.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'i32')
-    ctx.addLocal(j.slice(1), 'i32')
-    ctx.addLocal(match.slice(1), 'i32')
-    return wat(`(local.set ${str} ${rw})
-      (local.set ${search} ${searchVal})
-      (local.set ${len} ${strLen( `(local.get ${str})`)})
-      (local.set ${searchLen} ${strLen( `(local.get ${search})`)})
-      (local.set ${result} (i32.const -1))
-      (if (i32.eqz (local.get ${searchLen}))
-        (then (local.set ${result} (i32.const 0)))
-        (else (if (i32.le_s (local.get ${searchLen}) (local.get ${len}))
-          (then
-            (local.set ${idx} (i32.const 0))
-            (block $done_${id} (loop $loop_${id}
-              (br_if $done_${id} (i32.gt_s (local.get ${idx}) (i32.sub (local.get ${len}) (local.get ${searchLen}))))
-              (local.set ${match} (i32.const 1))
-              (local.set ${j} (i32.const 0))
-              (block $inner_done_${id} (loop $inner_loop_${id}
-                (br_if $inner_done_${id} (i32.ge_s (local.get ${j}) (local.get ${searchLen})))
-                (if (i32.ne ${strCharAt( `(local.get ${str})`, `(i32.add (local.get ${idx}) (local.get ${j}))`)} ${strCharAt( `(local.get ${search})`, `(local.get ${j})`)})
-                  (then (local.set ${match} (i32.const 0)) (br $inner_done_${id})))
-                (local.set ${j} (i32.add (local.get ${j}) (i32.const 1)))
-                (br $inner_loop_${id})))
-              (if (local.get ${match})
-                (then (local.set ${result} (local.get ${idx})) (br $done_${id})))
-              (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-              (br $loop_${id})))))))
-      (local.get ${result})`, 'i32')
+    return wat(genSubstringSearch(ctx, rw, String(searchVal), '{idx}', '(i32.const -1)'), 'i32')
   }
 
   // Char code argument
   if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
-  const str = `$_sindexof_str_${id}`, idx = `$_sindexof_i_${id}`, len = `$_sindexof_len_${id}`, result = `$_sindexof_result_${id}`, target = `$_sindexof_target_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'i32')
-  ctx.addLocal(target.slice(1), 'i32')
+  const str = `$_sindexof_str_${id}`, idx = `$_sindexof_i_${id}`, len = `$_sindexof_len_${id}`, target = `$_sindexof_target_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(target, 'i32')
   return wat(`(local.set ${str} ${rw})
     (local.set ${target} ${i32(searchVal)})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
     (local.set ${idx} (i32.const 0))
-    (local.set ${result} (i32.const -1))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      (if (i32.eq ${strCharAt( `(local.get ${str})`, `(local.get ${idx})`)} (local.get ${target}))
-        (then
-          (local.set ${result} (local.get ${idx}))
-          (br $done_${id})))
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
-    (local.get ${result})`, 'i32')
+    (block $found_${id} (result i32)
+      (block $done_${id}
+        (loop $loop_${id}
+          (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (if (i32.eq ${strCharAt(`(local.get ${str})`, `(local.get ${idx})`)} (local.get ${target}))
+            (then (br $found_${id} (local.get ${idx}))))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $loop_${id})))
+      (i32.const -1))`, 'i32')
 }
 
 // str.search(regex) - returns index of first match or -1
@@ -137,10 +96,10 @@ export const search = (rw, args) => {
     ctx.usedMemory = true
     const regexId = searchVal.schema
     const strOff = `$_search_off_${id}`, strLen_ = `$_search_len_${id}`, searchPos = `$_search_pos_${id}`, matchResult = `$_search_res_${id}`
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(strLen_.slice(1), 'i32')
-    ctx.addLocal(searchPos.slice(1), 'i32')
-    ctx.addLocal(matchResult.slice(1), 'i32')
+    ctx.addLocal(strOff, 'i32')
+    ctx.addLocal(strLen_, 'i32')
+    ctx.addLocal(searchPos, 'i32')
+    ctx.addLocal(matchResult, 'i32')
 
     // Search loop: try at each position until match or end
     return wat(`(local.set ${strOff} (call $__ptr_offset ${rw}))
@@ -189,21 +148,21 @@ export const match = (rw, args) => {
   const gStart = `$_match_gs_${id}`, gEnd = `$_match_ge_${id}`
   const matchCount = `$_match_cnt_${id}`, arrIdx = `$_match_ai_${id}`
 
-  ctx.addLocal(strPtr.slice(1), 'f64')
-  ctx.addLocal(strOff.slice(1), 'i32')
-  ctx.addLocal(strLen_.slice(1), 'i32')
-  ctx.addLocal(searchPos.slice(1), 'i32')
-  ctx.addLocal(matchEnd.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'f64')
-  ctx.addLocal(groupBuf.slice(1), 'i32')
-  ctx.addLocal(part.slice(1), 'f64')
-  ctx.addLocal(partLen.slice(1), 'i32')
-  ctx.addLocal(k.slice(1), 'i32')
-  ctx.addLocal(gStart.slice(1), 'i32')
-  ctx.addLocal(gEnd.slice(1), 'i32')
+  ctx.addLocal(strPtr, 'f64')
+  ctx.addLocal(strOff, 'i32')
+  ctx.addLocal(strLen_, 'i32')
+  ctx.addLocal(searchPos, 'i32')
+  ctx.addLocal(matchEnd, 'i32')
+  ctx.addLocal(result, 'f64')
+  ctx.addLocal(groupBuf, 'i32')
+  ctx.addLocal(part, 'f64')
+  ctx.addLocal(partLen, 'i32')
+  ctx.addLocal(k, 'i32')
+  ctx.addLocal(gStart, 'i32')
+  ctx.addLocal(gEnd, 'i32')
   if (isGlobal) {
-    ctx.addLocal(matchCount.slice(1), 'i32')
-    ctx.addLocal(arrIdx.slice(1), 'i32')
+    ctx.addLocal(matchCount, 'i32')
+    ctx.addLocal(arrIdx, 'i32')
   }
 
   // Helper to copy substring
@@ -312,13 +271,13 @@ export const substring = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_substr_str_${id}`, idx = `$_substr_i_${id}`, len = `$_substr_len_${id}`, result = `$_substr_result_${id}`, start = `$_substr_start_${id}`, end = `$_substr_end_${id}`, newLen = `$_substr_newlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(newLen, 'i32')
 
   const startArg = i32(gen(args[0]))
   const endArg = args.length >= 2 ? i32(gen(args[1])) : strLen( `(local.get ${str})`)
@@ -351,11 +310,11 @@ export const toLowerCase = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_tolower_str_${id}`, idx = `$_tolower_i_${id}`, len = `$_tolower_len_${id}`, result = `$_tolower_result_${id}`, ch = `$_tolower_ch_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(ch.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(ch, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -377,11 +336,11 @@ export const toUpperCase = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_toupper_str_${id}`, idx = `$_toupper_i_${id}`, len = `$_toupper_len_${id}`, result = `$_toupper_result_${id}`, ch = `$_toupper_ch_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(ch.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(ch, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -405,67 +364,31 @@ export const includes = (rw, args) => {
   const searchVal = gen(args[0])
   const id = ctx.loopCounter++
 
-
   // String argument: check if substring exists
   if (searchVal.type === 'string') {
-    const str = `$_sincl_str_${id}`, search = `$_sincl_search_${id}`, idx = `$_sincl_i_${id}`, len = `$_sincl_len_${id}`, searchLen = `$_sincl_slen_${id}`, result = `$_sincl_result_${id}`, j = `$_sincl_j_${id}`, match = `$_sincl_match_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(search.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(searchLen.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'i32')
-    ctx.addLocal(j.slice(1), 'i32')
-    ctx.addLocal(match.slice(1), 'i32')
-    return wat(`(local.set ${str} ${rw})
-      (local.set ${search} ${searchVal})
-      (local.set ${len} ${strLen( `(local.get ${str})`)})
-      (local.set ${searchLen} ${strLen( `(local.get ${search})`)})
-      (local.set ${result} (i32.const 0))
-      (if (i32.eqz (local.get ${searchLen}))
-        (then (local.set ${result} (i32.const 1)))
-        (else (if (i32.le_s (local.get ${searchLen}) (local.get ${len}))
-          (then
-            (local.set ${idx} (i32.const 0))
-            (block $done_${id} (loop $loop_${id}
-              (br_if $done_${id} (i32.gt_s (local.get ${idx}) (i32.sub (local.get ${len}) (local.get ${searchLen}))))
-              (local.set ${match} (i32.const 1))
-              (local.set ${j} (i32.const 0))
-              (block $inner_done_${id} (loop $inner_loop_${id}
-                (br_if $inner_done_${id} (i32.ge_s (local.get ${j}) (local.get ${searchLen})))
-                (if (i32.ne ${strCharAt( `(local.get ${str})`, `(i32.add (local.get ${idx}) (local.get ${j}))`)} ${strCharAt( `(local.get ${search})`, `(local.get ${j})`)})
-                  (then (local.set ${match} (i32.const 0)) (br $inner_done_${id})))
-                (local.set ${j} (i32.add (local.get ${j}) (i32.const 1)))
-                (br $inner_loop_${id})))
-              (if (local.get ${match})
-                (then (local.set ${result} (i32.const 1)) (br $done_${id})))
-              (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-              (br $loop_${id})))))))
-      (local.get ${result})`, 'i32')
+    return wat(genSubstringSearch(ctx, rw, String(searchVal), '(i32.const 1)', '(i32.const 0)'), 'i32')
   }
 
   // Char code argument
   if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
-  const str = `$_sincludes_str_${id}`, idx = `$_sincludes_i_${id}`, len = `$_sincludes_len_${id}`, target = `$_sincludes_target_${id}`, result = `$_sincludes_result_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(target.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'i32')
+  const str = `$_sincludes_str_${id}`, idx = `$_sincludes_i_${id}`, len = `$_sincludes_len_${id}`, target = `$_sincludes_target_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(target, 'i32')
   return wat(`(local.set ${str} ${rw})
     (local.set ${target} ${i32(searchVal)})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
     (local.set ${idx} (i32.const 0))
-    (local.set ${result} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      (if (i32.eq ${strCharAt( `(local.get ${str})`, `(local.get ${idx})`)} (local.get ${target}))
-        (then
-          (local.set ${result} (i32.const 1))
-          (br $done_${id})))
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
-    (local.get ${result})`, 'i32')
+    (block $found_${id} (result i32)
+      (block $done_${id}
+        (loop $loop_${id}
+          (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (if (i32.eq ${strCharAt(`(local.get ${str})`, `(local.get ${idx})`)} (local.get ${target}))
+            (then (br $found_${id} (i32.const 1))))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $loop_${id})))
+      (i32.const 0))`, 'i32')
 }
 
 export const startsWith = (rw, args) => {
@@ -475,46 +398,21 @@ export const startsWith = (rw, args) => {
   const searchVal = gen(args[0])
   const id = ctx.loopCounter++
 
-
   // String argument: check prefix
   if (searchVal.type === 'string') {
-    const str = `$_starts_str_${id}`, search = `$_starts_search_${id}`, idx = `$_starts_i_${id}`, len = `$_starts_len_${id}`, searchLen = `$_starts_slen_${id}`, result = `$_starts_result_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(search.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(searchLen.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'i32')
-    return wat(`(local.set ${str} ${rw})
-      (local.set ${search} ${searchVal})
-      (local.set ${len} ${strLen( `(local.get ${str})`)})
-      (local.set ${searchLen} ${strLen( `(local.get ${search})`)})
-      (local.set ${result} (i32.const 1))
-      (if (i32.gt_s (local.get ${searchLen}) (local.get ${len}))
-        (then (local.set ${result} (i32.const 0)))
-        (else
-          (local.set ${idx} (i32.const 0))
-          (block $done_${id} (loop $loop_${id}
-            (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${searchLen})))
-            (if (i32.ne ${strCharAt( `(local.get ${str})`, `(local.get ${idx})`)} ${strCharAt( `(local.get ${search})`, `(local.get ${idx})`)})
-              (then (local.set ${result} (i32.const 0)) (br $done_${id})))
-            (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-            (br $loop_${id})))))
-      (local.get ${result})`, 'i32')
+    return wat(genPrefixMatch(ctx, rw, String(searchVal), 0), 'i32')
   }
 
   // Char code argument (backward compat)
   if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
-  const str = `$_starts_str_${id}`, ch = `$_starts_ch_${id}`, target = `$_starts_target_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(ch.slice(1), 'i32')
-  ctx.addLocal(target.slice(1), 'i32')
+  const str = `$_starts_str_${id}`, target = `$_starts_target_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(target, 'i32')
   return wat(`(local.set ${str} ${rw})
     (local.set ${target} ${i32(searchVal)})
-    (local.set ${ch} (if (result i32) (i32.gt_s ${strLen( `(local.get ${str})`)} (i32.const 0))
-      (then ${strCharAt( `(local.get ${str})`, '(i32.const 0)')})
-      (else (i32.const -1))))
-    (i32.eq (local.get ${ch}) (local.get ${target}))`, 'i32')
+    (if (result i32) (i32.gt_s ${strLen(`(local.get ${str})`)} (i32.const 0))
+      (then (i32.eq ${strCharAt(`(local.get ${str})`, '(i32.const 0)')} (local.get ${target})))
+      (else (i32.const 0)))`, 'i32')
 }
 
 export const endsWith = (rw, args) => {
@@ -524,50 +422,23 @@ export const endsWith = (rw, args) => {
   const searchVal = gen(args[0])
   const id = ctx.loopCounter++
 
-
   // String argument: check suffix
   if (searchVal.type === 'string') {
-    const str = `$_ends_str_${id}`, search = `$_ends_search_${id}`, idx = `$_ends_i_${id}`, len = `$_ends_len_${id}`, searchLen = `$_ends_slen_${id}`, result = `$_ends_result_${id}`, offset = `$_ends_offset_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(search.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(searchLen.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'i32')
-    ctx.addLocal(offset.slice(1), 'i32')
-    return wat(`(local.set ${str} ${rw})
-      (local.set ${search} ${searchVal})
-      (local.set ${len} ${strLen( `(local.get ${str})`)})
-      (local.set ${searchLen} ${strLen( `(local.get ${search})`)})
-      (local.set ${result} (i32.const 1))
-      (if (i32.gt_s (local.get ${searchLen}) (local.get ${len}))
-        (then (local.set ${result} (i32.const 0)))
-        (else
-          (local.set ${offset} (i32.sub (local.get ${len}) (local.get ${searchLen})))
-          (local.set ${idx} (i32.const 0))
-          (block $done_${id} (loop $loop_${id}
-            (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${searchLen})))
-            (if (i32.ne ${strCharAt( `(local.get ${str})`, `(i32.add (local.get ${offset}) (local.get ${idx}))`)} ${strCharAt( `(local.get ${search})`, `(local.get ${idx})`)})
-              (then (local.set ${result} (i32.const 0)) (br $done_${id})))
-            (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-            (br $loop_${id})))))
-      (local.get ${result})`, 'i32')
+    return wat(genPrefixMatch(ctx, rw, String(searchVal), -1), 'i32')
   }
 
   // Char code argument (backward compat)
   if (searchVal.type !== 'i32' && searchVal.type !== 'f64') return null
-  const str = `$_ends_str_${id}`, ch = `$_ends_ch_${id}`, target = `$_ends_target_${id}`, len = `$_ends_len_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(ch.slice(1), 'i32')
-  ctx.addLocal(target.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
+  const str = `$_ends_str_${id}`, target = `$_ends_target_${id}`, len = `$_ends_len_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(target, 'i32')
+  ctx.addLocal(len, 'i32')
   return wat(`(local.set ${str} ${rw})
     (local.set ${target} ${i32(searchVal)})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
-    (local.set ${ch} (if (result i32) (i32.gt_s (local.get ${len}) (i32.const 0))
-      (then ${strCharAt( `(local.get ${str})`, `(i32.sub (local.get ${len}) (i32.const 1))`)})
-      (else (i32.const -1))))
-    (i32.eq (local.get ${ch}) (local.get ${target}))`, 'i32')
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
+    (if (result i32) (i32.gt_s (local.get ${len}) (i32.const 0))
+      (then (i32.eq ${strCharAt(`(local.get ${str})`, `(i32.sub (local.get ${len}) (i32.const 1))`)} (local.get ${target})))
+      (else (i32.const 0)))`, 'i32')
 }
 
 export const trim = (rw, args) => {
@@ -575,14 +446,14 @@ export const trim = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_trim_str_${id}`, idx = `$_trim_i_${id}`, len = `$_trim_len_${id}`, result = `$_trim_result_${id}`, start = `$_trim_start_${id}`, end = `$_trim_end_${id}`, ch = `$_trim_ch_${id}`, newLen = `$_trim_newlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(ch.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(ch, 'i32')
+  ctx.addLocal(newLen, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -629,20 +500,20 @@ export const split = (rw, args) => {
     const str = `$_split_str_${id}`, sep = `$_split_sep_${id}`, len = `$_split_len_${id}`, sepLen = `$_split_slen_${id}`
     const idx = `$_split_i_${id}`, count = `$_split_count_${id}`, start = `$_split_start_${id}`, result = `$_split_result_${id}`
     const j = `$_split_j_${id}`, match = `$_split_match_${id}`, part = `$_split_part_${id}`, partLen = `$_split_plen_${id}`, k = `$_split_k_${id}`, arrIdx = `$_split_arri_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(sep.slice(1), 'string')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(sepLen.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(count.slice(1), 'i32')
-    ctx.addLocal(start.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(j.slice(1), 'i32')
-    ctx.addLocal(match.slice(1), 'i32')
-    ctx.addLocal(part.slice(1), 'string')
-    ctx.addLocal(partLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(arrIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(sep, 'string')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(sepLen, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(count, 'i32')
+    ctx.addLocal(start, 'i32')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(j, 'i32')
+    ctx.addLocal(match, 'i32')
+    ctx.addLocal(part, 'string')
+    ctx.addLocal(partLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(arrIdx, 'i32')
 
     const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
     const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
@@ -738,17 +609,17 @@ export const split = (rw, args) => {
     const str = `$_split_str_${id}`, sepChar = `$_split_sep_${id}`, len = `$_split_len_${id}`
     const idx = `$_split_i_${id}`, count = `$_split_count_${id}`, start = `$_split_start_${id}`, result = `$_split_result_${id}`
     const part = `$_split_part_${id}`, partLen = `$_split_plen_${id}`, k = `$_split_k_${id}`, arrIdx = `$_split_arri_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(sepChar.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(count.slice(1), 'i32')
-    ctx.addLocal(start.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(part.slice(1), 'string')
-    ctx.addLocal(partLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(arrIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(sepChar, 'i32')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(count, 'i32')
+    ctx.addLocal(start, 'i32')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(part, 'string')
+    ctx.addLocal(partLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(arrIdx, 'i32')
 
     const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
     const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
@@ -807,18 +678,18 @@ export const split = (rw, args) => {
     const idx = `$_split_i_${id}`, count = `$_split_count_${id}`, start = `$_split_start_${id}`, result = `$_split_result_${id}`
     const part = `$_split_part_${id}`, partLen = `$_split_plen_${id}`, k = `$_split_k_${id}`, arrIdx = `$_split_arri_${id}`
     const matchEnd = `$_split_mend_${id}`
-    ctx.addLocal(str.slice(1), 'f64')
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(count.slice(1), 'i32')
-    ctx.addLocal(start.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(part.slice(1), 'f64')
-    ctx.addLocal(partLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(arrIdx.slice(1), 'i32')
-    ctx.addLocal(matchEnd.slice(1), 'i32')
+    ctx.addLocal(str, 'f64')
+    ctx.addLocal(strOff, 'i32')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(count, 'i32')
+    ctx.addLocal(start, 'i32')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(part, 'f64')
+    ctx.addLocal(partLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(arrIdx, 'i32')
+    ctx.addLocal(matchEnd, 'i32')
 
     const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${count}))`
     const arrSet = `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${arrIdx}) (i32.const 3))) (local.get ${part}))`
@@ -899,19 +770,19 @@ export const replace = (rw, args) => {
     const len = `$_repl_len_${id}`, searchLen = `$_repl_slen_${id}`, replLen = `$_repl_rlen_${id}`
     const idx = `$_repl_i_${id}`, j = `$_repl_j_${id}`, match = `$_repl_match_${id}`
     const result = `$_repl_result_${id}`, newLen = `$_repl_newlen_${id}`, k = `$_repl_k_${id}`, foundIdx = `$_repl_found_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(search.slice(1), 'string')
-    ctx.addLocal(repl.slice(1), 'string')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(searchLen.slice(1), 'i32')
-    ctx.addLocal(replLen.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(j.slice(1), 'i32')
-    ctx.addLocal(match.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'string')
-    ctx.addLocal(newLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(foundIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(search, 'string')
+    ctx.addLocal(repl, 'string')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(searchLen, 'i32')
+    ctx.addLocal(replLen, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(j, 'i32')
+    ctx.addLocal(match, 'i32')
+    ctx.addLocal(result, 'string')
+    ctx.addLocal(newLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(foundIdx, 'i32')
 
     return wat(`(local.set ${str} ${rw})
       (local.set ${search} ${searchVal})
@@ -975,16 +846,16 @@ export const replace = (rw, args) => {
     const str = `$_repl_str_${id}`, searchChar = `$_repl_sch_${id}`, repl = `$_repl_repl_${id}`
     const len = `$_repl_len_${id}`, replLen = `$_repl_rlen_${id}`
     const idx = `$_repl_i_${id}`, result = `$_repl_result_${id}`, newLen = `$_repl_newlen_${id}`, k = `$_repl_k_${id}`, foundIdx = `$_repl_found_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(searchChar.slice(1), 'i32')
-    ctx.addLocal(repl.slice(1), 'string')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(replLen.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'string')
-    ctx.addLocal(newLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(foundIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(searchChar, 'i32')
+    ctx.addLocal(repl, 'string')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(replLen, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(result, 'string')
+    ctx.addLocal(newLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(foundIdx, 'i32')
 
     return wat(`(local.set ${str} ${rw})
       (local.set ${searchChar} ${i32(searchVal)})
@@ -1042,23 +913,23 @@ export const replace = (rw, args) => {
     const idx = `$_repl_i_${id}`, result = `$_repl_result_${id}`, newLen = `$_repl_newlen_${id}`, k = `$_repl_k_${id}`
     const foundIdx = `$_repl_found_${id}`, matchEnd = `$_repl_mend_${id}`, matchLen = `$_repl_mlen_${id}`
     const totalMatchLen = `$_repl_tml_${id}`, matchCount = `$_repl_mc_${id}`, writePos = `$_repl_wp_${id}`, lastEnd = `$_repl_le_${id}`
-    ctx.addLocal(str.slice(1), 'f64')
-    ctx.addLocal(strOff.slice(1), 'i32')
-    ctx.addLocal(repl.slice(1), 'f64')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(replLen.slice(1), 'i32')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'f64')
-    ctx.addLocal(newLen.slice(1), 'i32')
-    ctx.addLocal(k.slice(1), 'i32')
-    ctx.addLocal(foundIdx.slice(1), 'i32')
-    ctx.addLocal(matchEnd.slice(1), 'i32')
-    ctx.addLocal(matchLen.slice(1), 'i32')
+    ctx.addLocal(str, 'f64')
+    ctx.addLocal(strOff, 'i32')
+    ctx.addLocal(repl, 'f64')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(replLen, 'i32')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(result, 'f64')
+    ctx.addLocal(newLen, 'i32')
+    ctx.addLocal(k, 'i32')
+    ctx.addLocal(foundIdx, 'i32')
+    ctx.addLocal(matchEnd, 'i32')
+    ctx.addLocal(matchLen, 'i32')
     if (isGlobal) {
-      ctx.addLocal(totalMatchLen.slice(1), 'i32')
-      ctx.addLocal(matchCount.slice(1), 'i32')
-      ctx.addLocal(writePos.slice(1), 'i32')
-      ctx.addLocal(lastEnd.slice(1), 'i32')
+      ctx.addLocal(totalMatchLen, 'i32')
+      ctx.addLocal(matchCount, 'i32')
+      ctx.addLocal(writePos, 'i32')
+      ctx.addLocal(lastEnd, 'i32')
     }
 
     if (isGlobal) {
@@ -1201,13 +1072,13 @@ export const substr = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_substr_str_${id}`, idx = `$_substr_i_${id}`, len = `$_substr_len_${id}`, result = `$_substr_result_${id}`, start = `$_substr_start_${id}`, subLen = `$_substr_sublen_${id}`, newLen = `$_substr_newlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(subLen.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(subLen, 'i32')
+  ctx.addLocal(newLen, 'i32')
 
   const startArg = i32(gen(args[0]))
   const lenArg = args.length >= 2 ? i32(gen(args[1])) : `(i32.sub (local.get ${len}) (local.get ${start}))`
@@ -1240,13 +1111,13 @@ export const trimStart = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_trimS_str_${id}`, idx = `$_trimS_i_${id}`, len = `$_trimS_len_${id}`, result = `$_trimS_result_${id}`, start = `$_trimS_start_${id}`, ch = `$_trimS_ch_${id}`, newLen = `$_trimS_newlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(start.slice(1), 'i32')
-  ctx.addLocal(ch.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(start, 'i32')
+  ctx.addLocal(ch, 'i32')
+  ctx.addLocal(newLen, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -1274,12 +1145,12 @@ export const trimEnd = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_trimE_str_${id}`, idx = `$_trimE_i_${id}`, len = `$_trimE_len_${id}`, result = `$_trimE_result_${id}`, end = `$_trimE_end_${id}`, ch = `$_trimE_ch_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(end.slice(1), 'i32')
-  ctx.addLocal(ch.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(end, 'i32')
+  ctx.addLocal(ch, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -1307,14 +1178,14 @@ export const repeat = (rw, args) => {
   ctx.usedMemory = true
   const id = ctx.loopCounter++
   const str = `$_repeat_str_${id}`, idx = `$_repeat_i_${id}`, len = `$_repeat_len_${id}`, result = `$_repeat_result_${id}`, count = `$_repeat_count_${id}`, newLen = `$_repeat_newlen_${id}`, srcIdx = `$_repeat_src_${id}`, rep = `$_repeat_rep_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(count.slice(1), 'i32')
-  ctx.addLocal(newLen.slice(1), 'i32')
-  ctx.addLocal(srcIdx.slice(1), 'i32')
-  ctx.addLocal(rep.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(count, 'i32')
+  ctx.addLocal(newLen, 'i32')
+  ctx.addLocal(srcIdx, 'i32')
+  ctx.addLocal(rep, 'i32')
 
   return wat(`(local.set ${str} ${rw})
     (local.set ${count} ${i32(gen(args[0]))})
@@ -1350,15 +1221,15 @@ export const padStart = (rw, args) => {
   // String padding
   if (padArg && padArg.type === 'string') {
     const str = `$_padS_str_${id}`, idx = `$_padS_i_${id}`, len = `$_padS_len_${id}`, result = `$_padS_result_${id}`, targetLen = `$_padS_target_${id}`, padStr = `$_padS_padstr_${id}`, padStrLen = `$_padS_pslen_${id}`, padLen = `$_padS_padlen_${id}`, padIdx = `$_padS_pidx_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'string')
-    ctx.addLocal(targetLen.slice(1), 'i32')
-    ctx.addLocal(padStr.slice(1), 'string')
-    ctx.addLocal(padStrLen.slice(1), 'i32')
-    ctx.addLocal(padLen.slice(1), 'i32')
-    ctx.addLocal(padIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(result, 'string')
+    ctx.addLocal(targetLen, 'i32')
+    ctx.addLocal(padStr, 'string')
+    ctx.addLocal(padStrLen, 'i32')
+    ctx.addLocal(padLen, 'i32')
+    ctx.addLocal(padIdx, 'i32')
     return wat(`(local.set ${str} ${rw})
       (local.set ${padStr} ${padArg})
       (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -1392,13 +1263,13 @@ export const padStart = (rw, args) => {
 
   // Char code or default space
   const str = `$_padS_str_${id}`, idx = `$_padS_i_${id}`, len = `$_padS_len_${id}`, result = `$_padS_result_${id}`, targetLen = `$_padS_target_${id}`, padChar = `$_padS_pad_${id}`, padLen = `$_padS_padlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(targetLen.slice(1), 'i32')
-  ctx.addLocal(padChar.slice(1), 'i32')
-  ctx.addLocal(padLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(targetLen, 'i32')
+  ctx.addLocal(padChar, 'i32')
+  ctx.addLocal(padLen, 'i32')
   const padCharCode = padArg ? i32(padArg) : '(i32.const 32)'
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -1438,15 +1309,15 @@ export const padEnd = (rw, args) => {
   // String padding
   if (padArg && padArg.type === 'string') {
     const str = `$_padE_str_${id}`, idx = `$_padE_i_${id}`, len = `$_padE_len_${id}`, result = `$_padE_result_${id}`, targetLen = `$_padE_target_${id}`, padStr = `$_padE_padstr_${id}`, padStrLen = `$_padE_pslen_${id}`, padLen = `$_padE_padlen_${id}`, padIdx = `$_padE_pidx_${id}`
-    ctx.addLocal(str.slice(1), 'string')
-    ctx.addLocal(idx.slice(1), 'i32')
-    ctx.addLocal(len.slice(1), 'i32')
-    ctx.addLocal(result.slice(1), 'string')
-    ctx.addLocal(targetLen.slice(1), 'i32')
-    ctx.addLocal(padStr.slice(1), 'string')
-    ctx.addLocal(padStrLen.slice(1), 'i32')
-    ctx.addLocal(padLen.slice(1), 'i32')
-    ctx.addLocal(padIdx.slice(1), 'i32')
+    ctx.addLocal(str, 'string')
+    ctx.addLocal(idx, 'i32')
+    ctx.addLocal(len, 'i32')
+    ctx.addLocal(result, 'string')
+    ctx.addLocal(targetLen, 'i32')
+    ctx.addLocal(padStr, 'string')
+    ctx.addLocal(padStrLen, 'i32')
+    ctx.addLocal(padLen, 'i32')
+    ctx.addLocal(padIdx, 'i32')
     return wat(`(local.set ${str} ${rw})
       (local.set ${padStr} ${padArg})
       (local.set ${len} ${strLen( `(local.get ${str})`)})
@@ -1480,13 +1351,13 @@ export const padEnd = (rw, args) => {
 
   // Char code or default space
   const str = `$_padE_str_${id}`, idx = `$_padE_i_${id}`, len = `$_padE_len_${id}`, result = `$_padE_result_${id}`, targetLen = `$_padE_target_${id}`, padChar = `$_padE_pad_${id}`, padLen = `$_padE_padlen_${id}`
-  ctx.addLocal(str.slice(1), 'string')
-  ctx.addLocal(idx.slice(1), 'i32')
-  ctx.addLocal(len.slice(1), 'i32')
-  ctx.addLocal(result.slice(1), 'string')
-  ctx.addLocal(targetLen.slice(1), 'i32')
-  ctx.addLocal(padChar.slice(1), 'i32')
-  ctx.addLocal(padLen.slice(1), 'i32')
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(result, 'string')
+  ctx.addLocal(targetLen, 'i32')
+  ctx.addLocal(padChar, 'i32')
+  ctx.addLocal(padLen, 'i32')
   const padCharCode = padArg ? i32(padArg) : '(i32.const 32)'
   return wat(`(local.set ${str} ${rw})
     (local.set ${len} ${strLen( `(local.get ${str})`)})

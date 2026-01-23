@@ -40,6 +40,103 @@ export const strSetChar = (w, idx, val) =>
 export const strNew = (lenWat) =>
   `(call $__alloc (i32.const ${PTR_TYPE.STRING}) ${lenWat})`
 
+/** Copy substring: copies len chars from src[srcIdx] to dst[dstIdx] */
+export const strCopy = (dstPtr, dstIdx, srcPtr, srcIdx, len) =>
+  `(memory.copy (i32.add (call $__ptr_offset ${dstPtr}) (i32.shl ${dstIdx} (i32.const 1))) (i32.add (call $__ptr_offset ${srcPtr}) (i32.shl ${srcIdx} (i32.const 1))) (i32.shl ${len} (i32.const 1)))`
+
+/**
+ * Generate prefix/suffix match check - used by startsWith/endsWith
+ * @param {Object} ctx - Compilation context
+ * @param {string} strWat - String pointer expression
+ * @param {string} searchWat - Search string pointer expression
+ * @param {number} offset - 0 for prefix (startsWith), -1 for suffix (endsWith)
+ * @returns {string} WAT code returning i32 (1 if match, 0 if not)
+ */
+export function genPrefixMatch(ctx, strWat, searchWat, offset = 0) {
+  const id = ctx.loopCounter++
+  const str = `$_pfx_str_${id}`, search = `$_pfx_srch_${id}`
+  const idx = `$_pfx_i_${id}`, len = `$_pfx_len_${id}`, searchLen = `$_pfx_slen_${id}`, off = `$_pfx_off_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(search, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(searchLen, 'i32')
+  if (offset !== 0) ctx.addLocal(off, 'i32')
+  
+  const strIdx = offset === 0 ? `(local.get ${idx})` : `(i32.add (local.get ${off}) (local.get ${idx}))`
+  const offsetInit = offset === 0 ? '' : `(local.set ${off} (i32.sub (local.get ${len}) (local.get ${searchLen})))\n      `
+  
+  return `(local.set ${str} ${strWat})
+    (local.set ${search} ${searchWat})
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
+    (local.set ${searchLen} ${strLen(`(local.get ${search})`)})
+    (if (result i32) (i32.gt_s (local.get ${searchLen}) (local.get ${len}))
+      (then (i32.const 0))
+      (else (block (result i32)
+        ${offsetInit}(local.set ${idx} (i32.const 0))
+        (block $fail_${id} (result i32)
+          (block $done_${id}
+            (loop $loop_${id}
+              (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${searchLen})))
+              (if (i32.ne ${strCharAt(`(local.get ${str})`, strIdx)} ${strCharAt(`(local.get ${search})`, `(local.get ${idx})`)})
+                (then (br $fail_${id} (i32.const 0))))
+              (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+              (br $loop_${id})))
+          (i32.const 1)))))`
+}
+
+/**
+ * Generate substring search loop - used by indexOf, includes, lastIndexOf
+ * @param {Object} ctx - Compilation context
+ * @param {string} strWat - String pointer expression  
+ * @param {string} searchWat - Search string pointer expression
+ * @param {string} resultFound - Expression for when found (e.g. '{idx}' or '(i32.const 1)')
+ * @param {string} resultNotFound - Expression for not found (e.g. '(i32.const -1)' or '(i32.const 0)')
+ * @returns {string} WAT code for substring search
+ */
+export function genSubstringSearch(ctx, strWat, searchWat, resultFound, resultNotFound) {
+  const id = ctx.loopCounter++
+  const str = `$_ssrch_str_${id}`, search = `$_ssrch_srch_${id}`
+  const idx = `$_ssrch_i_${id}`, len = `$_ssrch_len_${id}`, searchLen = `$_ssrch_slen_${id}`
+  const j = `$_ssrch_j_${id}`, match = `$_ssrch_match_${id}`
+  ctx.addLocal(str, 'string')
+  ctx.addLocal(search, 'string')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(searchLen, 'i32')
+  ctx.addLocal(j, 'i32')
+  ctx.addLocal(match, 'i32')
+  
+  const resolvedFound = resultFound.replace(/\{idx\}/g, `(local.get ${idx})`)
+  
+  return `(local.set ${str} ${strWat})
+    (local.set ${search} ${searchWat})
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
+    (local.set ${searchLen} ${strLen(`(local.get ${search})`)})
+    (if (result i32) (i32.eqz (local.get ${searchLen}))
+      (then ${resultFound.includes('{idx}') ? '(i32.const 0)' : resultFound.replace(/\{idx\}/g, '(i32.const 0)')})
+      (else (if (result i32) (i32.gt_s (local.get ${searchLen}) (local.get ${len}))
+        (then ${resultNotFound})
+        (else (block (result i32)
+          (local.set ${idx} (i32.const 0))
+          (block $found_${id} (result i32)
+            (block $done_${id}
+              (loop $loop_${id}
+                (br_if $done_${id} (i32.gt_s (local.get ${idx}) (i32.sub (local.get ${len}) (local.get ${searchLen}))))
+                (local.set ${match} (i32.const 1))
+                (local.set ${j} (i32.const 0))
+                (block $inner_done_${id} (loop $inner_${id}
+                  (br_if $inner_done_${id} (i32.ge_s (local.get ${j}) (local.get ${searchLen})))
+                  (if (i32.ne ${strCharAt(`(local.get ${str})`, `(i32.add (local.get ${idx}) (local.get ${j}))`)} ${strCharAt(`(local.get ${search})`, `(local.get ${j})`)})
+                    (then (local.set ${match} (i32.const 0)) (br $inner_done_${id})))
+                  (local.set ${j} (i32.add (local.get ${j}) (i32.const 1)))
+                  (br $inner_${id})))
+                (if (local.get ${match}) (then (br $found_${id} ${resolvedFound})))
+                (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+                (br $loop_${id})))
+            ${resultNotFound}))))))`
+}
+
 // === Arrays ===
 
 /** Get array length from pointer */
@@ -144,7 +241,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     // Mixed-type array: still use ARRAY type but track schema for element types
     const id = ctx.uniqueId++
     const tmp = `$_arr_${id}`
-    ctx.addLocal(tmp.slice(1), 'f64')
+    ctx.addLocal(tmp, 'f64')
     let stores = ''
     const elementSchema = []
     for (let i = 0; i < gens.length; i++) {
@@ -161,7 +258,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     // Dynamic homogeneous f64 array
     const id = ctx.uniqueId++
     const tmp = `$_arr_${id}`
-    ctx.addLocal(tmp.slice(1), 'f64')
+    ctx.addLocal(tmp, 'f64')
     let stores = ''
     for (let i = 0; i < gens.length; i++) {
       stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${f64(gens[i])})\n      `
@@ -208,7 +305,7 @@ export function callClosure(ctx, closureWat, argWats, numArgs) {
   const id = ctx.uniqueId++
   const tmpClosure = `$_clos_${id}`
   const tmpI64 = `$_closi64_${id}`
-  ctx.addLocal(tmpClosure.slice(1), 'f64')
+  ctx.addLocal(tmpClosure, 'f64')
   ctx.localDecls.push(`(local ${tmpI64} i64)`)
 
   // Extract from NaN-boxed closure (new v5 format):
