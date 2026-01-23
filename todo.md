@@ -135,7 +135,7 @@
   * [x] Methods: slice, subarray, reverse, copyWithin, set
   * [x] Methods: every, some, find, findIndex
   * [x] Methods: forEach, map, filter, reduce, reduceRight
-  * [ ] Missing: sort, toReversed, toSorted, with (ES2023)
+  * [x] Methods: sort, toReversed, toSorted, with (ES2023)
   * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
