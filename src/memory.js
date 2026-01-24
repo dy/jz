@@ -285,15 +285,11 @@ export const objGet = (w, idx) =>
 export const objSet = (w, idx, val) =>
   `(f64.store (i32.add (call $__ptr_offset ${w}) (i32.const ${idx * 8})) ${val})`
 
-// === Environment (closures) ===
+// === Environment (closures - read only, capture by value) ===
 
 /** Read from environment memory at field index */
 export const envGet = (envVar, fieldIdx) =>
   `(f64.load (i32.add (call $__ptr_offset (local.get ${envVar})) (i32.const ${fieldIdx * 8})))`
-
-/** Write to environment memory at field index */
-export const envSet = (envVar, fieldIdx, val) =>
-  `(f64.store (i32.add (call $__ptr_offset (local.get ${envVar})) (i32.const ${fieldIdx * 8})) ${val})`
 
 // === Closures ===
 

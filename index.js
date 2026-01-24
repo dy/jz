@@ -1,7 +1,7 @@
 // jz - JS subset to WAT compiler
 import 'subscript/jessie'
 import { parse } from 'subscript/jessie'
-import normalize from './src/normalize.js'
+import normalize, { getWarnings } from './src/normalize.js'
 import { compile as compileAst, assemble } from './src/compile.js'
 
 // NaN-boxing pointer encoding (v6 - unified arrays)
@@ -203,6 +203,10 @@ export async function instantiate(wasm, imports = {}) {
 // Compile JS to WAT
 export function compile(code) {
   const ast = normalize(parse(code))
+  // Emit normalize warnings
+  for (const w of getWarnings()) {
+    console.warn(`jz: [${w.code}] ${w.msg}`)
+  }
   return compileAst(ast)
 }
 

@@ -114,14 +114,6 @@
     * [x] `export const name = ...` - explicit export
     * [x] `export { name }` - export existing
     * [x] internal functions not exported by default
-* [ ] Find all modern cool JS proposals
-  * [ ] Iterator helpers?
-  * [ ] using?
-  * [ ] Float16
-  * [ ] Promise.try
-  * [ ] Iterator.range
-* [ ] Detect unsupported JS features, throw error (detected, unsupported)
-  * [ ] Make sure there's no undetected JS features
 * [x] Which parts of jessie are defective? Port & improve them
   * [x] Tested: 52 features supported, 4 missing
   * [x] Missing: `class extends` - use composition instead
@@ -212,10 +204,42 @@
       * [x] Hard to read, no syntax highlighting
       * [x] Added `wt` tagged template helper in types.js (trims indent, joins arrays)
       * [x] Refactored allocateBoxed, genBoxedInferredDecl, genObjectInferredDecl, object literal
-
-* [ ] prohibit arguments and other implicit constants
-  * [ ] warn about using null or undefined (either or)
-* [ ] incorporate best sane eslint practices with warning
+* [x] Detect unsupported JS features, throw error (detected, unsupported)
+  * [x] Prohibit (error) - impossible or antipattern
+    * [x] `async`/`await`/`Promise` - WASM is synchronous (parser rejects)
+    * [x] `Proxy`/`Reflect` - metaprogramming needs runtime (identifier check)
+    * [x] `Symbol` - no runtime symbol registry (identifier check)
+    * [x] `eval`/`Function()` - no dynamic code (identifier check)
+    * [x] `with` - deprecated, scope pollution (parser rejects)
+    * [x] `WeakMap`/`WeakSet` - need GC hooks (identifier check)
+    * [-] `getter`/`setter` - runtime dispatch overhead (parser rejects)
+    * [x] `arguments` - magic variable, use `...args` (identifier check)
+    * [x] `this` - context binding confusion (parser rejects)
+    * [x] `class` definition - no OOP (parser rejects)
+    * [x] `new` with non-builtin - no custom constructors (compile check)
+    * [-] `prototype` access - no prototype chain (not detected, fails naturally)
+    * [x] `delete` - dynamic shape bad for perf (parser rejects)
+    * [x] `in` operator - prototype chain issues (parser rejects)
+    * [-] `instanceof` - prototype-based (not detected, fails as unknown)
+    * [-] labeled statements - rarely needed (parser rejects)
+    * [-] comma operator - actually allowed, used for args
+    * [x] `function*`/`yield` - generators not feasible (parser rejects)
+    * [x] dynamic `import()` - static resolution only (parser rejects)
+    * [x] `try`/`catch`/`throw` - no exceptions (parser rejects)
+  * [x] Transform (auto-fix in playground)
+    * [x] `function` keyword → arrow function (warn in compiler)
+    * [x] `var` → `let`/`const` (warn in compiler)
+  * [x] Warn - divergent behavior
+    * [x] `==`/`!=` - behaves like `===`/`!==`, no coercion (documented)
+    * [x] `null` vs `undefined` - indistinguishable at runtime (documented)
+    * [x] mutation in forEach callback - mutable capture error
+  * [x] Allowed builtins with `new`
+    * [x] `new Array(n)` - pre-sized array
+    * [x] `new Set()`, `new Map()` - collections
+    * [x] `new Float64Array(n)` etc - typed arrays
+  * [ ] ESLint-inspired rules
+    * [ ] no-redeclare - same name declared twice in scope
+    * [ ] no-loss-of-precision - integer literals > MAX_SAFE_INTEGER
 * [ ] color-space converter
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [ ] Warn/error on hitting memory limits: objects, arrays
@@ -340,6 +364,16 @@
   * [x] NaN boxing pointer format (full f64 range preserved)
   * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
   * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
+
+## Value
+
+* [ ] Pick floatbeat/audio DSP as THE use case. One page, one demo, one undeniable win.
+* [ ] Kill the "JS subset" framing. It's a "numeric computation DSL."
+* [ ] Benchmark against alternatives. Show where jz wins (size? compilation speed? simplicity?).
+* [ ] Ship something someone uses. Even one real user > zero.
+* [ ] Pick ONE use case and make jz undeniably the best tool for it. Stop being "general."
+* [ ] Better readme example making someone say "I need this": something you cannot easily do any other way.
+* [ ] Less defensive positioning in porffor and assemblyscript
 
 ## Comparisons / bench
 

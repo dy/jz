@@ -41,14 +41,12 @@ export function createContext() {
     // Stdlib tracking
     usedStdlib: [],
 
-    // Closures (memory-based)
+    // Closures (memory-based, capture by value)
     funcTableEntries: [],    // Functions in table
     closures: {},            // name -> { envType, envFields, captured }
     closureCounter: 0,
     currentEnv: null,        // Current environment type name
-    capturedVars: {},        // name -> field index in env
-    hoistedVars: null,       // name -> field index in own env
-    ownEnvType: null,        // Own environment type name
+    capturedVars: {},        // name -> { index, type, schema } in received env (immutable)
 
     // Exports
     exports: new Set(),      // Names explicitly exported
@@ -171,11 +169,14 @@ export function createContext() {
 
     /**
      * Emit a compile-time warning
+     * Uses onWarn callback if set, else console.warn
      * @param {string} code - Warning code (e.g. 'array-alias', 'var')
      * @param {string} msg - Warning message
      */
     warn(code, msg) {
-      console.warn(`jz: [${code}] ${msg}`)
+      const text = `jz: [${code}] ${msg}`
+      if (this.onWarn) this.onWarn(code, msg, text)
+      else console.warn(text)
     },
 
     /**
@@ -186,6 +187,9 @@ export function createContext() {
     error(code, msg) {
       throw new Error(`jz: [${code}] ${msg}`)
     },
+
+    // Callbacks for messages (can be overridden for testing or custom output)
+    onWarn: null,
 
     /**
      * Intern a string literal, returning id and metadata

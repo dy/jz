@@ -51,19 +51,19 @@ export function genClosureCallExpr(ctx, gen, closureVal, args) {
 }
 
 /**
- * Create a closure value: funcref + environment.
+ * Create a closure value: funcref + environment (capture by value).
  * NaN-boxed with table index + env pointer in linear memory.
  *
  * @param {object} ctx - Compilation context
  * @param {string} fnName - Name of the generated function
  * @param {string} envType - WASM type name for environment (unused in memory mode, kept for compat)
  * @param {object[]} envFields - Array of {name, index, type} for captured variables
- * @param {boolean} usesOwnEnv - True if closure uses parent's own env directly
+ * @param {boolean} _usesOwnEnv - Deprecated, ignored (kept for API compat)
  * @param {number} arity - Number of parameters (for functype)
  * @returns {object} Typed WAT value with type 'closure'
  * @example genClosureValue(ctx, '__anon0', '$env0', [{name:'x', index:0, type:'f64'}], false, 1)
  */
-export function genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, arity) {
+export function genClosureValue(ctx, fnName, envType, envFields, _usesOwnEnv, arity) {
   ctx.usedFuncTable = true
   ctx.usedMemory = true
   if (!ctx.usedFuncTypes) ctx.usedFuncTypes = new Set()
@@ -85,31 +85,37 @@ export function genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, ari
         (i64.const 0))))`, 'closure')
   }
 
-  // Allocate env in memory
+  // Allocate env in memory and copy captured values (capture by value)
   const id = ctx.uniqueId++
   const tmpEnv = `$_closenv_${id}`
   ctx.addLocal(tmpEnv, 'f64')
 
-  // Store captured values in env
+  // Store captured values in env (always as f64)
   let stores = ''
   for (let i = 0; i < envFields.length; i++) {
     const f = envFields[i]
-    let val
-    if (usesOwnEnv && ctx.hoistedVars && f.name in ctx.hoistedVars) {
-      const offset = ctx.hoistedVars[f.name].index * 8
-      val = `(f64.load (i32.add (call $__ptr_offset (local.get $__ownenv)) (i32.const ${offset})))`
-    } else if (ctx.capturedVars && f.name in ctx.capturedVars) {
+    let val, needsConvert = false
+    if (ctx.capturedVars && f.name in ctx.capturedVars) {
+      // Chained capture - read from received env (already f64)
       const offset = ctx.capturedVars[f.name].index * 8
       val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
     } else {
       const loc = ctx.getLocal(f.name)
-      if (loc) val = `(local.get $${loc.scopedName})`
-      else {
+      if (loc) {
+        val = `(local.get $${loc.scopedName})`
+        needsConvert = loc.type === 'i32'
+      } else {
         const glob = ctx.getGlobal(f.name)
-        if (glob) val = `(global.get $${f.name})`
-        else throw new Error(`Cannot capture ${f.name}: not found`)
+        if (glob) {
+          val = `(global.get $${f.name})`
+          needsConvert = glob.type === 'i32'
+        } else {
+          throw new Error(`Cannot capture ${f.name}: not found`)
+        }
       }
     }
+    // Coerce to f64 for storage
+    if (needsConvert) val = `(f64.convert_i32_s ${val})`
     stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
   }
 

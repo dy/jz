@@ -65,3 +65,42 @@ test('errors - implicit global', () => {
   try { compile('y + 1') } catch (e) { threw = e.message.includes('Unknown identifier') }
   ok(threw, 'undeclared read should throw')
 })
+// Prohibited JS features
+
+test('errors - arguments', () => {
+  let threw = false
+  try { compile('fn = () => arguments.length') } catch (e) { threw = e.message.includes('prohibited') }
+  ok(threw, 'arguments should be prohibited')
+})
+
+test('errors - eval', () => {
+  let threw = false
+  try { compile('eval("1+1")') } catch (e) { threw = e.message.includes('prohibited') }
+  ok(threw, 'eval should be prohibited')
+})
+
+test('errors - new with custom class', () => {
+  let threw = false
+  try { compile('new MyClass()') } catch (e) { threw = e.message.includes('prohibited') && e.message.includes('MyClass') }
+  ok(threw, 'new MyClass should be prohibited')
+})
+
+test('allowed - new Array', () => {
+  const wasm = compile('new Array(5)')
+  ok(wasm instanceof Uint8Array)
+})
+
+test('allowed - new Float64Array', () => {
+  const wasm = compile('new Float64Array(3)')
+  ok(wasm instanceof Uint8Array)
+})
+
+test('allowed - new Set', () => {
+  const wasm = compile('new Set()')
+  ok(wasm instanceof Uint8Array)
+})
+
+test('allowed - new Map', () => {
+  const wasm = compile('new Map()')
+  ok(wasm instanceof Uint8Array)
+})

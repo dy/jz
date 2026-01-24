@@ -57,11 +57,15 @@ let greet = () => "hi"
 let add3 = x => y => z => x + y + z
 add3(1)(2)(3)  // 6
 
-// Closures
-let counter = () => {
-  let n = 0;
-  return () => n += 1
-}
+// Closures capture by VALUE (not reference)
+let makeMultiplier = factor => x => x * factor
+let double = makeMultiplier(2)
+double(5)  // 10
+
+// NOTE: Mutable captures are NOT supported
+// This will throw a compile error:
+// let counter = () => { let n = 0; return () => n += 1 }
+// Use explicit state passing or globals instead
 ```
 
 ### Objects (Static Namespaces)
@@ -301,6 +305,23 @@ jz run program.wat
 ### Equality
 - `==` behaves like `===` (no type coercion)
 
+### Closures
+- Closures capture by **value**, not by reference
+- Mutating a captured variable throws a compile error
+- Use explicit state passing or globals for mutable state
+
+```js
+// ✓ Works: capture by value
+let factor = 2
+let double = x => x * factor  // captures 2
+
+// ✗ Error: mutable capture
+let outer = () => {
+  let n = 0
+  return () => n += 1  // Error: Cannot mutate captured variable 'n'
+}
+```
+
 ### Arrays
 ```js
 let a = [1, 2, 3]
@@ -341,12 +362,48 @@ let a = 1; a + 0.5      // f64.add
 let b = 4; b / 2        // f64.div
 ```
 
-### Not Supported
-- `var` (use `let`/`const`)
-- `class`, `new`, `this`
-- `async`/`await`, generators
-- `try`/`catch`
-- Template literals with expressions
+### Not Supported (Compile Error)
+
+These JS features throw compile errors:
+
+| Feature | Reason | Alternative |
+|---------|--------|-------------|
+| `async`/`await`/`Promise` | WASM is synchronous | Use callbacks or sync code |
+| `class`, `prototype` | No OOP | Use object literals with arrow functions |
+| `this` | Context confusion | Use explicit parameter |
+| `arguments` | Magic variable | Use `...args` rest parameter |
+| `eval`, `Function()` | No dynamic code | - |
+| `try`/`catch`/`throw` | No exceptions (yet) | Return error values |
+| `Proxy`, `Reflect`, `Symbol` | Metaprogramming not feasible | - |
+| `WeakMap`, `WeakSet` | Need GC hooks | Use `Map`/`Set` |
+| `delete` | Fixed object shape | - |
+| `in` operator | Prototype chain | Use `?.` optional chaining |
+| `instanceof` | Prototype-based | Use `typeof` or `Array.isArray()` |
+| `with` | Deprecated | - |
+| `function*`, `yield` | Generators | Use array methods or loops |
+| Dynamic `import()` | Static only | Use static `export` |
+
+### Warnings (Compile but Discouraged)
+
+| Pattern | Issue | Better |
+|---------|-------|--------|
+| `var x` | Hoisting surprises | `let x` or `const x` |
+| `function f() {}` | `this` binding | `f = () => {}` |
+| `==`, `!=` | No coercion in JZ | `===`, `!==` |
+| `null` vs `undefined` | Both become `0` | Pick one consistently |
+
+### Allowed Constructors
+
+Only built-in constructors work with `new`:
+
+```js
+new Array(5)           // ✓ Pre-sized array
+new Float64Array(100)  // ✓ TypedArrays
+new Set()              // ✓ Collections
+new Map()              // ✓
+new RegExp('\\d+')     // ✓ Dynamic regex
+new MyClass()          // ✗ Error
+```
 
 ## Performance Tips
 
