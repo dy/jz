@@ -4,11 +4,10 @@ import { parse } from 'subscript/jessie'
 import normalize, { getWarnings } from './src/normalize.js'
 import { compile as compileAst, assemble } from './src/compile.js'
 
-// NaN-boxing pointer encoding (v6 - unified arrays)
+// NaN-boxing pointer encoding
 // Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
-// Payload: [type:4][id:16][offset:31]
-// Type codes: 1=ARRAY (length at offset-8), 3=STRING, 4=OBJECT, 7=CLOSURE
-// id: schemaId (array/object), len (string), funcIdx (closure)
+// Payload: [type:4][aux:16][offset:31]
+// Types: ARRAY=1, RING=2, TYPED=3, STRING=4, OBJECT=5, HASH=6, SET=7, MAP=8, CLOSURE=9, REGEX=10
 // Canonical NaN (0x7FF8000000000000) is NOT a pointer - payload must be non-zero
 
 const NAN_BOX_MASK = 0x7FF8000000000000n
@@ -58,14 +57,14 @@ function ptrToValue(memory, ptr, schemas) {
   if (!isPtr(ptr)) return ptr // not a pointer, return as-is
   const { type, id, offset } = decodePtr(ptr)
 
-  // Type 3 = STRING: read UTF-16 data (id = length)
-  if (type === 3) {
+  // Type 4 = STRING: read UTF-16 data (id = length)
+  if (type === 4) {
     const view = new Uint16Array(memory.buffer, offset, id)
     return String.fromCharCode(...view)
   }
 
-  // Type 4 = OBJECT: id = schemaId
-  if (type === 4 && schemas && schemas[id]) {
+  // Type 5 = OBJECT: id = schemaId (for legacy, still needed for some cases)
+  if (type === 5 && schemas && schemas[id]) {
     const keys = schemas[id]
     const view = new Float64Array(memory.buffer, offset, keys.length)
     const obj = {}
@@ -89,8 +88,8 @@ function ptrToValue(memory, ptr, schemas) {
     return result
   }
 
-  // Type 8 = SET: hash table with capacity/size at offset-16/-8
-  if (type === 8) {
+  // Type 7 = SET: hash table with capacity/size at offset-16/-8
+  if (type === 7) {
     const capView = new Float64Array(memory.buffer, offset - 16, 1)
     const cap = Math.floor(capView[0])
     const set = new Set()
@@ -106,8 +105,8 @@ function ptrToValue(memory, ptr, schemas) {
     return set
   }
 
-  // Type 9 = MAP: hash table with capacity/size at offset-16/-8
-  if (type === 9) {
+  // Type 8 = MAP: hash table with capacity/size at offset-16/-8
+  if (type === 8) {
     const capView = new Float64Array(memory.buffer, offset - 16, 1)
     const cap = Math.floor(capView[0])
     const obj = {}
@@ -154,13 +153,13 @@ function valueToPtr(exports, val, schemas) {
     }
     // Convert object to array
     const arr = keys.map(k => val[k])
-    const ptr = exports._alloc(4, arr.length) // type 4 = OBJECT
+    const ptr = exports._alloc(5, arr.length) // type 5 = OBJECT
     const { offset } = decodePtr(ptr)
     const view = new Float64Array(exports._memory.buffer, offset, arr.length)
     view.set(arr)
     // Re-encode with schemaId
     if (schemaId > 0) {
-      return encodePtr(4, schemaId, offset)
+      return encodePtr(5, schemaId, offset)
     }
     return ptr
   }
