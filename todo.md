@@ -240,6 +240,91 @@
   * [ ] ESLint-inspired rules
     * [ ] no-redeclare - same name declared twice in scope
     * [ ] no-loss-of-precision - integer literals > MAX_SAFE_INTEGER
+* [ ] Monomorphize (static typing)
+  * [ ] Document principle: all types compile-time known, no runtime dispatch
+  * [ ] Track return types through call graph
+  * [ ] Error on ambiguous params at compile time
+  * [ ] Spread only known-type arrays
+  * [ ] Remove $__ptr_len runtime dispatch (type-specific length access)
+  * [-] RING type: reserved but no API (tree-shaken if unused)
+
+## Pointer Kinds Refactor (from research.md)
+
+* [ ] **Phase 1: Update types.js constants**
+  * [ ] Replace PTR_TYPE enum with new 3-bit types (0-7)
+  * [ ] Add type constants: ATOM=0, ARRAY=1, TYPED=2, STRING=3, OBJECT=4, CLOSURE=5, REGEX=6
+  * [ ] Add ATOM subtypes: NULL=0, UNDEF=1, SYMBOL=2+
+  * [ ] Add OBJECT subtypes: SCHEMA=0, HASH=1, SET=2, MAP=3
+  * [ ] Update pointer encoding helpers for `[type:3][aux:16][off:32]` layout
+  * [ ] Add `mkAtom(kind, id)` for null/undefined/symbol pointers
+  * [ ] Update `ptrType()`, `ptrOffset()` extractors for new bit layout
+
+* [ ] **Phase 2: ATOM type (null/undefined/Symbol)**
+  * [ ] Encode null as `[0:3][0:16][0:32]` (no memory)
+  * [ ] Encode undefined as `[0:3][1:16][0:32]` (no memory)
+  * [ ] Add Symbol support: `[0:3][2+:16][id:32]` (symbol registry in compiler)
+  * [ ] Update null checks to use ATOM type dispatch
+  * [ ] Remove null from other type encodings
+
+* [ ] **Phase 3: STRING SSO**
+  * [ ] Implement 7-bit ASCII packing (6 chars in 42 bits)
+  * [ ] `mkSSO(str)` → packed pointer for ≤6 ASCII chars
+  * [ ] `isSSO(ptr)` → check sso bit
+  * [ ] `readSSO(ptr, i)` → `(data >> (i*7)) & 0x7F`
+  * [ ] Update string literal codegen to use SSO when possible
+  * [ ] Update `strLen`, `strCharAt` to handle SSO case
+  * [ ] Memory strings: `[-8:len][chars:u16...]` (already correct)
+
+* [ ] **Phase 4: TYPED view model**
+  * [ ] Change layout to `[-8: len:i32, dataPtr:i32]` (view header)
+  * [ ] Update `typedNew` to allocate view header + data separately
+  * [ ] Update `typedGet/Set` to read dataPtr then access
+  * [ ] Implement zero-copy `subarray(start, end)`:
+    * [ ] Allocate 8-byte view header
+    * [ ] newLen = end - start
+    * [ ] newDataPtr = dataPtr + start * stride
+  * [ ] Update elem type encoding: 3 bits in pointer aux
+
+* [ ] **Phase 5: OBJECT unification**
+  * [ ] Merge OBJECT and HASH/SET/MAP under type=4
+  * [ ] Schema objects (kind=0): `[-8:inner][props...]`
+    * [ ] inner=0 → static (unboxed)
+    * [ ] inner≠0 → boxed (inner value)
+  * [ ] Update property access to use `offset + i*8` uniformly
+  * [ ] Hash objects (kind=1): `[-8:size][-16:cap][entries...]`
+  * [ ] Update Set/Map to use kind=2,3
+  * [ ] Update JSON.parse to create HASH not SCHEMA
+  * [ ] schemaId (14 bits) for JS interop only
+
+* [ ] **Phase 6: CLOSURE refactor**
+  * [ ] Move funcIdx to pointer (16 bits aux)
+  * [ ] Memory: `[-8:len][env0:f64, env1:f64, ...]`
+  * [ ] Update `genClosureValue` to encode funcIdx in pointer
+  * [ ] Update `genClosureCall` to extract funcIdx from pointer
+  * [ ] Remove funcIdx from memory layout
+
+* [ ] **Phase 7: REGEX refactor**
+  * [ ] Encode flags (6 bits) + funcIdx (10 bits) in pointer aux
+  * [ ] Static regex: funcIdx = compiled matcher, minimal/no memory
+  * [ ] Memory only if `g` flag: `[-8:lastIndex]`
+  * [ ] Update regex codegen to use new pointer format
+  * [ ] Remove flags from memory, read from pointer
+
+* [ ] **Phase 8: ARRAY ring bit**
+  * [ ] Add ring:1 subtype bit to ARRAY pointer
+  * [ ] Flat: `[-8:len][elems...]`
+  * [ ] Ring: `[-16:head][-8:len][slots...]`
+  * [ ] Update array access for ring: `slots[(head + i) & mask]`
+  * [ ] Auto-promote to ring on shift/unshift usage (static analysis)
+
+* [ ] **Phase 9: Cleanup**
+  * [ ] Update assemble.js for new pointer constants
+  * [ ] Update memory.js helpers for new layouts
+  * [ ] Update all type checks to use 3-bit extraction
+  * [ ] Remove old PTR_TYPE values
+  * [ ] Update docs.md with new pointer format
+  * [ ] Run full test suite, fix breakages
+
 * [x] Repointers: unified pointer design
   * [x] Unified format: `[type:4][aux:16][offset:31]` (51 bits in NaN mantissa)
     * [x] 31-bit offset = 2GB (WASM memory32 practical limit, clean i32)
@@ -252,15 +337,17 @@
     * [x] capacity = nextPow2(len), no cap storage needed
     * [x] O(1) push/pop, O(n) shift/unshift
     * [x] `arr.at(-1)` → `elem[(len - 1)]`
-  * [ ] RING (type=2): `[type:4][0:16][offset:31]` → `[-16:head][-8:len][slots...]`
-    * [ ] capacity = nextPow2(len), mask = cap-1
-    * [ ] O(1) all operations: push/pop/shift/unshift
-    * [ ] `arr[i]` → `slots[(head + i) & mask]`
-    * [ ] `arr.at(-1)` → `slots[(head + len - 1) & mask]`
-  * [ ] Compile-time detection: use ARRAY if only push/pop/positive-index, RING if shift/unshift/negative
-  * [x] TYPED (type=3): `[type:4][elemType:3][0:13][offset:31]` → `[-8:len][bytes...]`
+  * [x] RING (type=2): `[type:4][0:16][offset:31]` → `[-16:head][-8:len][slots...]`
+    * [x] WASM helpers: alloc, get/set, push/pop/shift/unshift, resize
+    * [x] capacity = nextPow2(len), mask = cap-1
+    * [x] O(1) all operations: push/pop/shift/unshift
+    * [x] `arr[i]` → `slots[(head + i) & mask]`
+    * [x] `arr.at(-1)` → `slots[(head + len - 1) & mask]`
+  * [-] Compile-time detection: would require runtime type checks for function params - not worth the tax
+  * [x] TYPED (type=3): `[type:4][elemType:3][len:22][offset:22]`
+    * [x] Compact encoding: 4M elements, 4MB addressable
     * [x] elemType in pointer (needed for stride before any access)
-    * [ ] len in memory (enables subarray views later) - currently in pointer bits
+    * [x] len in pointer (subarray views need length without memory read)
   * [x] STRING (type=4): `[type:4][len:16][data:31]`
     * [ ] SSO: len=1-5, data = packed base64 chars (6 bits each, fits `a-zA-Z0-9_-`)
     * [x] Heap: len>0, data = offset (max 65535 chars)
@@ -274,7 +361,7 @@
     * [x] No header (env is just data)
   * [x] REGEX (type=10): `[type:4][regexId:16][offset:31]` → (compiled in function table with flags)
     * [x] No memory (pattern compiled to matcher function)
-  * [ ] f64view(memory, ptr) for JS interop (user creates typed array view)
+  * [x] f64view(memory, ptr) for JS interop (user creates typed array view)
   * [ ] Drop custom schema section (not needed with explicit interop)
 * [ ] color-space converter
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
