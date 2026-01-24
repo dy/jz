@@ -3246,7 +3246,7 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   // Detect destructuring params
   const destructParams = paramInfo?.filter(pi => pi.destruct) || []
 
-  // Register params as locals with appropriate types
+  // Register params as locals with appropriate types (enhanced with default-based inference)
   for (const p of params) {
     if (restParam && p === restParam.name) {
       // Rest param is typed as array
@@ -3260,9 +3260,25 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
         ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
         ctx.usedArrayType = true
       } else {
-        // Default to f64 for params (safe for JS interop - undefined→NaN detectable)
-        // TODO: Future - infer i32 from usage analysis or type annotations
-        ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64', scopedName: p }
+        // Check for type hint from default value
+        const pi = paramInfo?.find(info => info.name === p)
+        const typeHint = pi?.typeHint
+        if (typeHint === 'array') {
+          ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
+          ctx.usedArrayType = true
+        } else if (typeHint === 'object' && pi?.schema) {
+          // Object param with schema - register schema for property access
+          // Create new schema ID and register in objectSchemas
+          const schemaId = ++ctx.objectCounter
+          ctx.objectSchemas[schemaId] = pi.schema
+          ctx.locals[p] = { idx: ctx.localCounter++, type: 'object', scopedName: p, schema: schemaId }
+          ctx.localSchemas[p] = schemaId
+          ctx.usedMemory = true
+        } else {
+          // Default to f64 for params (safe for JS interop - undefined→NaN detectable)
+          // i32 hint from default is still stored as f64 for NaN-based undefined detection
+          ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64', scopedName: p }
+        }
       }
     }
   }
@@ -3279,11 +3295,12 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   if (paramInfo) {
     for (const pi of paramInfo) {
       if (pi.default !== undefined) {
-        // Generate: if param is NaN (undefined), set to default
-        // In JS, undefined args come as NaN in our encoding
+        // Generate: if param is canonical NaN (undefined), set to default
+        // Canonical NaN = 0x7FF8_0000_0000_0000 (quiet NaN with zero payload)
+        // NaN-boxed pointers have non-zero payload, so are different bit patterns
         const defaultVal = gen(pi.default)
-        // Check if param is undefined (NaN) - use f64.ne(x, x) which is true for NaN
-        paramInit += `(if (f64.ne (local.get $${pi.name}) (local.get $${pi.name}))
+        // Check: bits == canonical NaN exactly (0x7FF8000000000000)
+        paramInit += `(if (i64.eq (i64.reinterpret_f64 (local.get $${pi.name})) (i64.const 0x7FF8000000000000))
         (then (local.set $${pi.name} ${f64(defaultVal)})))\n      `
       }
     }

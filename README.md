@@ -1,19 +1,18 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-_JavaScript to WASM compiler_, supporting modern minimal functional JS subset.
+_JavaScript to WAT compiler_ – modern minimal functional JS subset → WebAssembly Text.
 
 ## Usage
 
 ```js
 import jz from 'jz'
+import watr from 'watr'
 
-const { add, mul } = await jz`
-  export const add = (a, b) => a + b;
-  export const mul = (x, y) => x * y;
-`
+// Compile JS → WAT → WASM
+const wasm = watr(jz(`export const add = (a, b) => a + b`))
+const { exports } = await WebAssembly.instantiate(wasm)
 
-add(2, 3)  // 5
-mul(4, 5)  // 20
+exports.add(2, 3)  // 5
 ```
 
 
@@ -44,34 +43,6 @@ mul(4, 5)  // 20
 * More array/string methods
 
 
-## API
-
-```js
-import { compile, instantiate } from 'jz'
-
-// Compile to WASM binary
-const wasm = compile('1 + 2')
-
-// Get WAT text instead
-const wat = compile('1 + 2', { text: true })
-
-// Instantiate and run
-const instance = await instantiate(wasm)
-console.log(instance.run()) // 3
-
-// Or use WebAssembly API directly
-const module = await WebAssembly.compile(wasm)
-const wasmInstance = await WebAssembly.instantiate(module)
-console.log(wasmInstance.exports.main()) // 3
-```
-
-### Options
-
-#### `text`
-
-**false** (default) — Output WASM binary.
-**true** — Output WAT text.
-
 
 ### CLI
 
@@ -79,21 +50,18 @@ console.log(wasmInstance.exports.main()) // 3
 # Install globally
 npm install -g jz
 
-# Evaluate expressions
-jz "console.log(3)"
+# Evaluate expression (requires watr)
+jz "1 + 2"
 # Output: 3
 
-# Compile to WASM binary (default)
-jz compile program.jz -o program.wasm
-# Creates: program.wasm
+# Compile to WAT (default)
+jz compile program.js -o program.wat
 
-# Compile to WAT source text
-jz compile program.jz --text --gc -o program.wat
-# Creates: program.wat (copy with stdlib)
+# Compile to WASM binary (requires watr)
+jz compile program.js -o program.wasm
 
-# Run WAT files directly
-jz run program.wat
-# Output: [result]
+# Run compiled program (requires watr)
+jz run program.js
 
 # Show help
 jz --help
@@ -172,5 +140,10 @@ JavaScript Zero – a return to core, stripped to essentials. Also jazzy.
 
 * [subscript](https://github.com/dy/subscript) – parser
 * [watr](https://www.npmjs.com/package/watr) – WAT to WASM
+
+## Similar
+
+* [porffor](https://github.com/CanadaHonk/porffor)
+* [jawsm](https://github.com/drogus/jawsm?tab=readme-ov-file)
 
 <p align=center><a href="https://github.com/krishnized/license/">ॐ</a></p>

@@ -1,6 +1,10 @@
 import test from 'tst'
 import { is, ok, throws, any } from 'tst/assert.js'
-import { compile, instantiate, compileWat } from '../index.js'
+import { compile as jzCompile, instantiate } from '../index.js'
+import { compile as watrCompile } from 'watr'
+
+// Helper: compile JS to WASM binary
+const compile = (code, opts) => watrCompile(jzCompile(code, opts))
 
 // JS interop tests - custom sections, auto-wrapping, _ prefix
 

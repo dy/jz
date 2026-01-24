@@ -1,6 +1,10 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile, instantiate } from '../index.js'
+import { compile as jzCompile, instantiate } from '../index.js'
+import { compile as watrCompile } from 'watr'
+
+// Helper: compile JS to WASM binary
+const compile = (code, opts) => watrCompile(jzCompile(code, opts))
 
 // Helper for near-equality
 const nearly = (actual, expected, tolerance = 0.0001) => {
@@ -198,7 +202,7 @@ test('TypedArray - multiple arrays', async () => {
 
 // All TypedArray constructors
 test('TypedArray - all constructors compile', async () => {
-  const wat = compile(`
+  const wat = jzCompile(`
     export const testI8 = () => { let b = new Int8Array(1); return b.length }
     export const testU8 = () => { let b = new Uint8Array(1); return b.length }
     export const testI16 = () => { let b = new Int16Array(1); return b.length }
@@ -207,7 +211,7 @@ test('TypedArray - all constructors compile', async () => {
     export const testU32 = () => { let b = new Uint32Array(1); return b.length }
     export const testF32 = () => { let b = new Float32Array(1); return b.length }
     export const testF64 = () => { let b = new Float64Array(1); return b.length }
-  `, { text: true })
+  `)
   ok(wat.includes('__alloc_typed'))
 })
 

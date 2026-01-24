@@ -58,8 +58,84 @@ function extractObjDestructNames(pairs) {
 }
 
 /**
+ * Infer type hint from default parameter value
+ * @param {any} defaultVal - AST node of the default value
+ * @returns {{ type?: string, schema?: string[] }} - Inferred type hint
+ */
+function inferTypeFromDefault(defaultVal) {
+  if (defaultVal == null) return {}
+
+  // Literal number: [null, 42] or [null, 1.5]
+  if (Array.isArray(defaultVal) && defaultVal[0] === null) {
+    const v = defaultVal[1]
+    if (typeof v === 'number') {
+      return { type: Number.isInteger(v) ? 'i32' : 'f64' }
+    }
+    if (typeof v === 'string') return { type: 'string' }
+    return {}
+  }
+
+  // Empty array literal: ["["]
+  if (Array.isArray(defaultVal) && defaultVal[0] === '[') {
+    return { type: 'array' }
+  }
+
+  // Object literal: ["{", ...] or ["{}", ...]
+  if (Array.isArray(defaultVal) && (defaultVal[0] === '{' || defaultVal[0] === '{}')) {
+    const schema = []
+    if (defaultVal[0] === '{') {
+      // Normalized form: ["{", [key, val], [key, val], ...]
+      // or ["{", [":", key, val], ...] with colon syntax
+      for (let i = 1; i < defaultVal.length; i++) {
+        const p = defaultVal[i]
+        if (typeof p === 'string') {
+          // Shorthand string property name
+          schema.push(p)
+        } else if (Array.isArray(p)) {
+          if (p[0] === ':') {
+            // Colon syntax: [":", key, val]
+            schema.push(p[1])
+          } else if (typeof p[0] === 'string') {
+            // Normalized shorthand: [key, val]
+            schema.push(p[0])
+          }
+        }
+      }
+    } else if (defaultVal[0] === '{}') {
+      // Parser form: ["{}", content] where content is either:
+      // - [":", key, val] for single prop
+      // - [",", [":", k1, v1], [":", k2, v2], ...] for multiple props
+      const content = defaultVal[1]
+      if (Array.isArray(content)) {
+        if (content[0] === ':') {
+          // Single property: [":", key, val]
+          schema.push(content[1])
+        } else if (content[0] === ',') {
+          // Multiple properties: [",", [":", k1, v1], ...]
+          for (let i = 1; i < content.length; i++) {
+            const p = content[i]
+            if (Array.isArray(p) && p[0] === ':') schema.push(p[1])
+          }
+        }
+      }
+    }
+    return { type: 'object', schema }
+  }
+
+  // TypedArray constructor: ["()", [".", "Float32Array"], ...]
+  if (Array.isArray(defaultVal) && defaultVal[0] === 'new') {
+    const ctor = defaultVal[1]
+    if (typeof ctor === 'string' && ctor.endsWith('Array')) {
+      return { type: 'typedarray', arrayType: ctor }
+    }
+  }
+
+  return {}
+}
+
+/**
  * Extract rich parameter info for compilation
- * @returns {Array<{name: string, default?: any, rest?: boolean, destruct?: 'array'|'object', pattern?: any}>}
+ * @returns {Array<{name: string, default?: any, typeHint?: string, schema?: string[], rest?: boolean, destruct?: 'array'|'object', pattern?: any}>}
  */
 export function extractParamInfo(params, idx = 0) {
   if (!params) return []
@@ -76,8 +152,11 @@ export function extractParamInfo(params, idx = 0) {
       }
       return result
     }
-    // Default param: ["=", name, default]
-    if (params[0] === '=' && typeof params[1] === 'string') return [{ name: params[1], default: params[2] }]
+    // Default param: ["=", name, default] - with type inference
+    if (params[0] === '=' && typeof params[1] === 'string') {
+      const inferred = inferTypeFromDefault(params[2])
+      return [{ name: params[1], default: params[2], typeHint: inferred.type, schema: inferred.schema }]
+    }
     // Rest param: ["...", name]
     if (params[0] === '...' && typeof params[1] === 'string') return [{ name: params[1], rest: true }]
     // Array destructuring: ["[]", pattern] or ["[]", singleName]

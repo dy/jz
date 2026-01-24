@@ -1,6 +1,10 @@
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import { compile as jzCompile } from '../index.js'
+import { compile as watrCompile } from 'watr'
+
+// Helper: compile JS to WASM binary
+const compile = code => watrCompile(jzCompile(code))
 
 // Warning tests - these compile successfully but emit warnings
 // Run `npm test` to see warnings in output

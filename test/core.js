@@ -1,8 +1,9 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile, instantiate, compileWat } from '../index.js'
+import { compile, instantiate } from '../index.js'
 import { evaluate, evaluateWat } from './util.js'
 import { assemble } from '../src/compile.js'
+import { compile as compileWat } from 'watr'
 
 // MVP Test Suite - Focused on what works with current implementation
 
@@ -453,6 +454,19 @@ test('Default params - basic', async () => {
 test('Default params - expression defaults', async () => {
   is(await evaluate('f = (x = 2 + 3) => x * 2; f()'), 10)
   is(await evaluate('f = (x = 2 * 3) => x + 1; f()'), 7)
+})
+
+test('Default params - array default', async () => {
+  // Array default param signals array type
+  is(await evaluate('len = (arr = []) => arr.length; len()'), 0)
+  is(await evaluate('sum = (arr = []) => arr.reduce((a,b) => a+b, 0); sum([1,2,3])'), 6)
+})
+
+test('Default params - object default with schema', async () => {
+  // Object default param declares schema inline
+  is(await evaluate('getX = (pos = {x: 0, y: 0}) => pos.x; getX({x: 5, y: 10})'), 5)
+  is(await evaluate('getY = (pos = {x: 0, y: 0}) => pos.y; getY({x: 5, y: 10})'), 10)
+  is(await evaluate('getX = (pos = {x: 0, y: 0}) => pos.x; getX()'), 0) // default value
 })
 
 // Rest params

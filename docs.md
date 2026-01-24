@@ -243,25 +243,33 @@ const { fn1, fn2 } = await jz`
 ### Compile Only
 ```js
 import { compile } from 'jz'
+import { compile as assemble } from 'watr'
 
-// To WASM binary
-const wasm = compile('export const f = x => x + 1')
+// JS → WAT text
+const wat = compile('export const f = x => x + 1')
 
-// To WAT text
-const wat = compile('export const f = x => x + 1', { text: true })
+// WAT → WASM binary (requires watr)
+const wasm = assemble(wat)
 ```
 
-### Instantiate
+### Instantiate with interop
 ```js
 import { compile, instantiate } from 'jz'
-const wasm = compile('export const f = x => x + 1')
+import { compile as assemble } from 'watr'
+
+const wat = compile('export const f = x => x + 1')
+const wasm = assemble(wat)
 const mod = await instantiate(wasm)
 mod.f(5)  // 6
 ```
 
 ### Raw WebAssembly Access
 ```js
-const wasm = compile('export const f = x => x + 1')
+import { compile } from 'jz'
+import { compile as assemble } from 'watr'
+
+const wat = compile('export const f = x => x + 1')
+const wasm = assemble(wat)
 const module = await WebAssembly.compile(wasm)
 const instance = await WebAssembly.instantiate(module)
 instance.exports.f(5)  // 6
