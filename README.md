@@ -1,6 +1,7 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-_JavaScript to WAT compiler_ – modern minimal functional JS subset → WebAssembly Text.
+Numeric computation language disguised with syntax of modern minimal functional _JavaScript subset_.
+
 
 ## Usage
 
@@ -13,6 +14,30 @@ const wasm = watr(jz(`export const add = (a, b) => a + b`))
 const { exports } = await WebAssembly.instantiate(wasm)
 
 exports.add(2, 3)  // 5
+```
+
+
+### CLI
+
+```bash
+# Install globally
+npm install -g jz
+
+# Evaluate expression (requires watr)
+jz "1 + 2"
+# Output: 3
+
+# Compile to WAT (default)
+jz compile program.js -o program.wat
+
+# Compile to WASM binary (requires watr)
+jz compile program.js -o program.wasm
+
+# Run compiled program (requires watr)
+jz run program.js
+
+# Show help
+jz --help
 ```
 
 
@@ -42,30 +67,6 @@ exports.add(2, 3)  // 5
 * Regex: `/pattern/.test(str)` - compile-time regex, native WASM matching
 * More array/string methods
 
-
-
-### CLI
-
-```bash
-# Install globally
-npm install -g jz
-
-# Evaluate expression (requires watr)
-jz "1 + 2"
-# Output: 3
-
-# Compile to WAT (default)
-jz compile program.js -o program.wat
-
-# Compile to WASM binary (requires watr)
-jz compile program.js -o program.wasm
-
-# Run compiled program (requires watr)
-jz run program.js
-
-# Show help
-jz --help
-```
 
 <!--
 

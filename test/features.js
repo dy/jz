@@ -228,23 +228,26 @@ test('template literal - non-string interpolation throws', async () => {
   }
 })
 
-// Closure mutation (counter pattern)
-test('closure mutation - counter', async () => {
-  is(await evaluate(`
-    const make = () => { let n = 0; return () => { n += 1; return n } };
-    const counter = make();
-    counter() + counter() * 10 + counter() * 100
-  `), 321) // 1 + 20 + 300
+// Closure mutation - NOT SUPPORTED (closures capture by value)
+// Note: globals CAN be mutated, only captured locals cannot
+test('closure mutation - captured local throws error', async t => {
+  try {
+    // Must nest in a function so 'n' is a captured local, not a global
+    await evaluate(`outer = () => { n = 0; inc = () => { n = n + 1; n }; inc() }; outer()`)
+    t.fail('Should have thrown')
+  } catch (e) {
+    t.ok(e.message.includes('Cannot mutate captured variable'), e.message)
+  }
 })
 
-test('closure mutation - multiple counters independent', async () => {
-  is(await evaluate(`
-    const make = () => { let n = 0; return () => { n += 1; return n } };
-    const a = make();
-    const b = make();
-    a(); a(); b();
-    a() + b() * 10
-  `), 23) // a=3, b=2
+test('closure mutation - nested read-write throws error', async t => {
+  try {
+    // a = a + 1 forces capture (read before write)
+    await evaluate(`outer = () => { a = 1; set = () => { a = a + 1 }; set() }; outer()`)
+    t.fail('Should have thrown')
+  } catch (e) {
+    t.ok(e.message.includes('Cannot mutate captured variable'), e.message)
+  }
 })
 
 // ++/-- operators

@@ -32,6 +32,25 @@ const ALLOWED = new Set([
   '//',           // regex literal (v10.1.0)
 ])
 
+// Prohibited operations with helpful error messages
+const PROHIBITED = {
+  'async': 'async/await not supported: WASM is synchronous',
+  'await': 'async/await not supported: WASM is synchronous',
+  'class': 'class not supported: use object literals with arrow functions',
+  'this': '`this` not supported: use explicit parameter instead',
+  'super': 'super not supported: no class inheritance',
+  'yield': 'generators not supported: use array methods or loops',
+  'delete': 'delete not supported: object shape is fixed at compile time',
+  'in': '`in` operator not supported: use optional chaining (?.) or hasOwnProperty pattern',
+  'instanceof': 'instanceof not supported: use typeof or Array.isArray()',
+  'with': '`with` statement not supported: deprecated and harmful',
+  'try': 'try/catch not supported: no exception handling (yet)',
+  'catch': 'try/catch not supported: no exception handling (yet)',
+  'throw': 'throw not supported: no exception handling (yet)',
+  'import': 'dynamic import() not supported: use static imports',
+  ':': 'labeled statements not supported: restructure control flow',
+}
+
 // Allowed namespaces
 const NAMESPACES = { Math: new Set([
   'abs', 'ceil', 'floor', 'round', 'trunc', 'sqrt', 'min', 'max', 'pow', 'sign', 'clz32', 'fround',
@@ -46,15 +65,48 @@ const NAMESPACES = { Math: new Set([
 Object: new Set(['assign', 'keys', 'values', 'entries']),
 JSON: new Set(['stringify']) }
 
+// Allowed constructors for `new` keyword
+const ALLOWED_CONSTRUCTORS = new Set([
+  'Array', 'Set', 'Map', 'RegExp',
+  'Float64Array', 'Float32Array',
+  'Int8Array', 'Int16Array', 'Int32Array',
+  'Uint8Array', 'Uint16Array', 'Uint32Array',
+  'Uint8ClampedArray',
+])
+
+// Prohibited global identifiers
+const PROHIBITED_IDENTIFIERS = new Set([
+  'arguments', 'eval', 'Function',
+  'Proxy', 'Reflect', 'Symbol',
+  'WeakMap', 'WeakSet',
+  'Promise', 'async',
+])
+
+// Warnings collector (set externally to capture warnings)
+let warnings = []
+export function setWarnings(arr) { warnings = arr }
+export function getWarnings() { return warnings }
+
+function warn(code, msg) {
+  warnings.push({ code, msg })
+}
+
 // Main entry
 export default function normalize(node) {
+  warnings = []  // Reset warnings for each compile
   return expr(node)
 }
 
 // Core normalizer
 function expr(node) {
   if (node == null) return node
-  if (typeof node === 'string') return node
+  if (typeof node === 'string') {
+    // Check for prohibited identifiers
+    if (PROHIBITED_IDENTIFIERS.has(node)) {
+      throw new Error(`jz: [prohibited] \`${node}\` is not supported`)
+    }
+    return node
+  }
   if (!Array.isArray(node)) return node
 
   const [op, ...args] = node
@@ -68,6 +120,11 @@ function expr(node) {
     if (typeof v !== 'number' && typeof v !== 'boolean' && typeof v !== 'string' && v !== null && v !== undefined)
       throw new Error(`Unsupported literal: ${typeof v}`)
     return [, v]  // normalize to [, value] form
+  }
+
+  // Check for prohibited operations
+  if (op in PROHIBITED) {
+    throw new Error(`jz: [prohibited] ${PROHIBITED[op]}`)
   }
 
   if (!ALLOWED.has(op)) throw new Error(`Unsupported: ${op}`)
@@ -159,16 +216,14 @@ const handlers = {
     return ['const', init]
   },
   'var'(op, [init]) {
+    // Extract variable name for warning
+    let varName = init
+    if (Array.isArray(init) && init[0] === '=') varName = init[1]
+    warn('var', `\`var ${varName}\` - prefer \`let\` or \`const\` (var has hoisting surprises)`)
     if (Array.isArray(init) && init[0] === '=') {
       return ['var', ['=', init[1], expr(init[2])]]
     }
     return ['var', init]
-  },
-
-  // Function definition
-  'function'(op, [name, params, body]) {
-    if (typeof name !== 'string') throw new Error('Function needs name')
-    return ['function', name, normalizeParams(params), expr(body)]
   },
 
   // Arrow function
@@ -386,6 +441,29 @@ const handlers = {
     if (typeof pattern !== 'string') throw new Error('Regex pattern must be string')
     if (flags && typeof flags !== 'string') throw new Error('Regex flags must be string')
     return ['//', pattern, flags || '']
+  },
+
+  // new - only allowed with builtin constructors
+  'new'(op, [constructor, ...args]) {
+    // Constructor is either a string or a function call expression
+    let name = constructor
+    if (Array.isArray(constructor) && constructor[0] === '()') {
+      name = constructor[1]
+    }
+    if (typeof name !== 'string') {
+      throw new Error(`jz: [prohibited] \`new\` with computed constructor not supported`)
+    }
+    if (!ALLOWED_CONSTRUCTORS.has(name)) {
+      throw new Error(`jz: [prohibited] \`new ${name}()\` not supported. Allowed: ${[...ALLOWED_CONSTRUCTORS].join(', ')}`)
+    }
+    return ['new', expr(constructor), ...args.map(a => expr(a))]
+  },
+
+  // function keyword - warn, suggest arrow
+  'function'(op, [name, params, body]) {
+    if (typeof name !== 'string') throw new Error('Function needs name')
+    warn('function', `\`function ${name}\` - prefer arrow function: \`${name} = (...) => ...\``)
+    return ['function', name, normalizeParams(params), expr(body)]
   },
 }
 
