@@ -81,12 +81,58 @@ function ptrToValue(memory, ptr, schemas) {
     const lenView = new Float64Array(memory.buffer, offset - 8, 1)
     const len = Math.floor(lenView[0])
     const view = new Float64Array(memory.buffer, offset, len)
-    return Array.from(view).map(v => ptrToValue(memory, v, schemas))
+    // Don't use Array.from - it canonicalizes NaN values, losing NaN-boxed pointers
+    const result = []
+    for (let i = 0; i < len; i++) {
+      result.push(ptrToValue(memory, view[i], schemas))
+    }
+    return result
+  }
+
+  // Type 8 = SET: hash table with capacity/size at offset-16/-8
+  if (type === 8) {
+    const capView = new Float64Array(memory.buffer, offset - 16, 1)
+    const cap = Math.floor(capView[0])
+    const set = new Set()
+    // Entry stride = 16 bytes (hash:f64, key:f64)
+    for (let i = 0; i < cap; i++) {
+      const entryOff = offset + i * 16
+      const entry = new Float64Array(memory.buffer, entryOff, 2)
+      const hash = entry[0]
+      if (hash !== 0 && hash !== 1) { // occupied (0=empty, 1=tombstone)
+        set.add(ptrToValue(memory, entry[1], schemas))
+      }
+    }
+    return set
+  }
+
+  // Type 9 = MAP: hash table with capacity/size at offset-16/-8
+  if (type === 9) {
+    const capView = new Float64Array(memory.buffer, offset - 16, 1)
+    const cap = Math.floor(capView[0])
+    const obj = {}
+    // Entry stride = 24 bytes (hash:f64, key:f64, value:f64)
+    for (let i = 0; i < cap; i++) {
+      const entryOff = offset + i * 24
+      const entry = new Float64Array(memory.buffer, entryOff, 3)
+      const hash = entry[0]
+      if (hash !== 0 && hash !== 1) { // occupied (0=empty, 1=tombstone)
+        const key = ptrToValue(memory, entry[1], schemas)
+        const value = ptrToValue(memory, entry[2], schemas)
+        obj[key] = value
+      }
+    }
+    return obj
   }
 
   // Unknown type, try to read as f64 array with id as length
   const view = new Float64Array(memory.buffer, offset, id)
-  return Array.from(view).map(v => ptrToValue(memory, v, schemas))
+  // Don't use Array.from - it canonicalizes NaN values
+  const result = []
+  for (let i = 0; i < id; i++) {
+    result.push(ptrToValue(memory, view[i], schemas))
+  }
+  return result
 }
 
 // Create memory pointer from JS value (array or object)

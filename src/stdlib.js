@@ -881,6 +881,283 @@ export const FUNCTIONS = {
     (memory.fill (local.get $offset) (i32.const 0) (i32.mul (local.get $cap) (i32.const 24)))
     (f64.store (i32.sub (local.get $offset) (i32.const 8)) (f64.const 0))
     (local.get $map))`,
+
+  // ============================================================================
+  // JSON.parse - recursive descent parser
+  // ============================================================================
+  // Uses global $__json_pos to track current position during parsing.
+  // Input string stored in $__json_str, length in $__json_len.
+  // Returns: f64 (number), string pointer, array pointer, or Map pointer (objects)
+
+  // Get current char, -1 if at end
+  __json_peek: `(func $__json_peek (result i32)
+    (if (result i32) (i32.ge_s (global.get $__json_pos) (global.get $__json_len))
+      (then (i32.const -1))
+      (else (i32.load16_u (i32.add (global.get $__json_str)
+        (i32.shl (global.get $__json_pos) (i32.const 1)))))))`,
+
+  // Advance position by n
+  __json_advance: `(func $__json_advance (param $n i32)
+    (global.set $__json_pos (i32.add (global.get $__json_pos) (local.get $n))))`,
+
+  // Skip whitespace (space, tab, newline, cr)
+  __json_skip_ws: `(func $__json_skip_ws
+    (local $ch i32)
+    (block $done (loop $loop
+      (local.set $ch (call $__json_peek))
+      (br_if $done (i32.and
+        (i32.ne (local.get $ch) (i32.const 32))   ;; space
+        (i32.and (i32.ne (local.get $ch) (i32.const 9))    ;; tab
+          (i32.and (i32.ne (local.get $ch) (i32.const 10))   ;; newline
+            (i32.ne (local.get $ch) (i32.const 13))))))      ;; cr
+      (call $__json_advance (i32.const 1))
+      (br $loop))))`,
+
+  // Parse JSON string (called after opening quote consumed)
+  __json_parse_string: `(func $__json_parse_string (result f64)
+    (local $start i32) (local $len i32) (local $ch i32) (local $result f64)
+    (local $srcOff i32) (local $dstOff i32) (local $hasEsc i32) (local $i i32)
+    ;; First pass: find end and check for escapes
+    (local.set $start (global.get $__json_pos))
+    (local.set $hasEsc (i32.const 0))
+    (block $done (loop $scan
+      (local.set $ch (call $__json_peek))
+      (br_if $done (i32.eq (local.get $ch) (i32.const 34)))  ;; closing quote
+      (br_if $done (i32.eq (local.get $ch) (i32.const -1))) ;; EOF
+      (if (i32.eq (local.get $ch) (i32.const 92))  ;; backslash
+        (then
+          (local.set $hasEsc (i32.const 1))
+          (call $__json_advance (i32.const 2)))  ;; skip escape + char
+        (else (call $__json_advance (i32.const 1))))
+      (br $scan)))
+    (local.set $len (i32.sub (global.get $__json_pos) (local.get $start)))
+    (call $__json_advance (i32.const 1))  ;; skip closing quote
+    ;; No escapes: direct copy
+    (if (i32.eqz (local.get $hasEsc))
+      (then
+        (local.set $result (call $__alloc (i32.const 3) (local.get $len)))
+        (memory.copy (call $__ptr_offset (local.get $result))
+          (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1)))
+          (i32.shl (local.get $len) (i32.const 1)))
+        (return (local.get $result))))
+    ;; Has escapes: decode
+    (local.set $result (call $__alloc (i32.const 3) (local.get $len)))  ;; over-allocate
+    (local.set $srcOff (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1))))
+    (local.set $dstOff (call $__ptr_offset (local.get $result)))
+    (local.set $i (i32.const 0))
+    (local.set $len (i32.const 0))  ;; reuse as output len
+    (block $copy_done (loop $copy
+      (local.set $ch (i32.load16_u (local.get $srcOff)))
+      (br_if $copy_done (i32.eq (local.get $ch) (i32.const 34)))
+      (if (i32.eq (local.get $ch) (i32.const 92))
+        (then
+          (local.set $srcOff (i32.add (local.get $srcOff) (i32.const 2)))
+          (local.set $ch (i32.load16_u (local.get $srcOff)))
+          ;; Decode escape: n→10, t→9, r→13, "→34, \→92, /→47
+          (if (i32.eq (local.get $ch) (i32.const 110))
+            (then (local.set $ch (i32.const 10)))
+          (else (if (i32.eq (local.get $ch) (i32.const 116))
+            (then (local.set $ch (i32.const 9)))
+          (else (if (i32.eq (local.get $ch) (i32.const 114))
+            (then (local.set $ch (i32.const 13)))
+          (else (if (i32.eq (local.get $ch) (i32.const 98))
+            (then (local.set $ch (i32.const 8)))
+          (else (if (i32.eq (local.get $ch) (i32.const 102))
+            (then (local.set $ch (i32.const 12))))))))))))))
+      (i32.store16 (local.get $dstOff) (local.get $ch))
+      (local.set $dstOff (i32.add (local.get $dstOff) (i32.const 2)))
+      (local.set $srcOff (i32.add (local.get $srcOff) (i32.const 2)))
+      (local.set $len (i32.add (local.get $len) (i32.const 1)))
+      (br $copy)))
+    ;; Fix length in pointer and return
+    (call $__ptr_set_len (local.get $result) (local.get $len))
+    (local.get $result))`,
+
+  // Parse JSON number
+  __json_parse_number: `(func $__json_parse_number (result f64)
+    (local $neg i32) (local $val f64) (local $frac f64) (local $ch i32)
+    (local $exp i32) (local $expNeg i32) (local $scale f64)
+    ;; Check for minus
+    (if (i32.eq (call $__json_peek) (i32.const 45))
+      (then (local.set $neg (i32.const 1)) (call $__json_advance (i32.const 1))))
+    ;; Integer part
+    (local.set $val (f64.const 0))
+    (block $int_done (loop $int_loop
+      (local.set $ch (call $__json_peek))
+      (br_if $int_done (i32.or (i32.lt_s (local.get $ch) (i32.const 48))
+                               (i32.gt_s (local.get $ch) (i32.const 57))))
+      (local.set $val (f64.add (f64.mul (local.get $val) (f64.const 10))
+        (f64.convert_i32_s (i32.sub (local.get $ch) (i32.const 48)))))
+      (call $__json_advance (i32.const 1))
+      (br $int_loop)))
+    ;; Fractional part
+    (if (i32.eq (call $__json_peek) (i32.const 46))
+      (then
+        (call $__json_advance (i32.const 1))
+        (local.set $scale (f64.const 0.1))
+        (block $frac_done (loop $frac_loop
+          (local.set $ch (call $__json_peek))
+          (br_if $frac_done (i32.or (i32.lt_s (local.get $ch) (i32.const 48))
+                                    (i32.gt_s (local.get $ch) (i32.const 57))))
+          (local.set $val (f64.add (local.get $val)
+            (f64.mul (local.get $scale)
+              (f64.convert_i32_s (i32.sub (local.get $ch) (i32.const 48))))))
+          (local.set $scale (f64.mul (local.get $scale) (f64.const 0.1)))
+          (call $__json_advance (i32.const 1))
+          (br $frac_loop)))))
+    ;; Exponent part
+    (if (i32.or (i32.eq (call $__json_peek) (i32.const 101))
+                (i32.eq (call $__json_peek) (i32.const 69)))
+      (then
+        (call $__json_advance (i32.const 1))
+        (if (i32.eq (call $__json_peek) (i32.const 45))
+          (then (local.set $expNeg (i32.const 1)) (call $__json_advance (i32.const 1)))
+        (else (if (i32.eq (call $__json_peek) (i32.const 43))
+          (then (call $__json_advance (i32.const 1))))))
+        (local.set $exp (i32.const 0))
+        (block $exp_done (loop $exp_loop
+          (local.set $ch (call $__json_peek))
+          (br_if $exp_done (i32.or (i32.lt_s (local.get $ch) (i32.const 48))
+                                   (i32.gt_s (local.get $ch) (i32.const 57))))
+          (local.set $exp (i32.add (i32.mul (local.get $exp) (i32.const 10))
+            (i32.sub (local.get $ch) (i32.const 48))))
+          (call $__json_advance (i32.const 1))
+          (br $exp_loop)))
+        (if (local.get $expNeg)
+          (then (local.set $exp (i32.sub (i32.const 0) (local.get $exp)))))
+        (local.set $val (f64.mul (local.get $val) (call $pow (f64.const 10) (f64.convert_i32_s (local.get $exp)))))))
+    (if (result f64) (local.get $neg)
+      (then (f64.neg (local.get $val)))
+      (else (local.get $val))))`,
+
+  // Parse JSON array
+  __json_parse_array: `(func $__json_parse_array (result f64)
+    (local $arr f64) (local $val f64) (local $len i32) (local $cap i32)
+    (local $newArr f64) (local $ch i32)
+    ;; Start with capacity 8
+    (local.set $cap (i32.const 8))
+    (local.set $arr (call $__alloc (i32.const 1) (local.get $cap)))
+    (local.set $len (i32.const 0))
+    (call $__json_skip_ws)
+    ;; Check for empty array
+    (if (i32.eq (call $__json_peek) (i32.const 93))
+      (then
+        (call $__json_advance (i32.const 1))
+        (call $__ptr_set_len (local.get $arr) (i32.const 0))
+        (return (local.get $arr))))
+    ;; Parse elements
+    (block $done (loop $elem_loop
+      (call $__json_skip_ws)
+      (local.set $val (call $__json_parse_value))
+      ;; Grow if needed
+      (if (i32.ge_s (local.get $len) (local.get $cap))
+        (then
+          (local.set $newArr (call $__alloc (i32.const 1) (i32.shl (local.get $cap) (i32.const 1))))
+          (memory.copy (call $__ptr_offset (local.get $newArr))
+            (call $__ptr_offset (local.get $arr))
+            (i32.shl (local.get $len) (i32.const 3)))
+          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+          (local.set $arr (local.get $newArr))))
+      ;; Store element
+      (f64.store (i32.add (call $__ptr_offset (local.get $arr))
+        (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
+      (local.set $len (i32.add (local.get $len) (i32.const 1)))
+      (call $__json_skip_ws)
+      (local.set $ch (call $__json_peek))
+      (br_if $done (i32.eq (local.get $ch) (i32.const 93)))  ;; ]
+      (if (i32.eq (local.get $ch) (i32.const 44))  ;; ,
+        (then (call $__json_advance (i32.const 1))))
+      (br $elem_loop)))
+    (call $__json_advance (i32.const 1))  ;; skip ]
+    (call $__ptr_set_len (local.get $arr) (local.get $len))
+    (local.get $arr))`,
+
+  // Parse JSON object (returns Map pointer)
+  __json_parse_object: `(func $__json_parse_object (result f64)
+    (local $map f64) (local $key f64) (local $val f64) (local $ch i32)
+    (local.set $map (call $__map_new (i32.const 16)))
+    (call $__json_skip_ws)
+    ;; Check for empty object
+    (if (i32.eq (call $__json_peek) (i32.const 125))
+      (then
+        (call $__json_advance (i32.const 1))
+        (return (local.get $map))))
+    ;; Parse key-value pairs
+    (block $done (loop $kv_loop
+      (call $__json_skip_ws)
+      ;; Parse key (must be string)
+      (if (i32.ne (call $__json_peek) (i32.const 34))
+        (then (return (f64.const 0))))  ;; error: expected string key
+      (call $__json_advance (i32.const 1))
+      (local.set $key (call $__json_parse_string))
+      (call $__json_skip_ws)
+      ;; Expect colon
+      (if (i32.ne (call $__json_peek) (i32.const 58))
+        (then (return (f64.const 0))))  ;; error: expected :
+      (call $__json_advance (i32.const 1))
+      (call $__json_skip_ws)
+      ;; Parse value
+      (local.set $val (call $__json_parse_value))
+      ;; Store in map
+      (drop (call $__map_set (local.get $map) (local.get $key) (local.get $val)))
+      (call $__json_skip_ws)
+      (local.set $ch (call $__json_peek))
+      (br_if $done (i32.eq (local.get $ch) (i32.const 125)))  ;; }
+      (if (i32.eq (local.get $ch) (i32.const 44))  ;; ,
+        (then (call $__json_advance (i32.const 1))))
+      (br $kv_loop)))
+    (call $__json_advance (i32.const 1))  ;; skip }
+    (local.get $map))`,
+
+  // Main value dispatcher
+  __json_parse_value: `(func $__json_parse_value (result f64)
+    (local $ch i32)
+    (call $__json_skip_ws)
+    (local.set $ch (call $__json_peek))
+    ;; String
+    (if (i32.eq (local.get $ch) (i32.const 34))
+      (then
+        (call $__json_advance (i32.const 1))
+        (return (call $__json_parse_string))))
+    ;; Array
+    (if (i32.eq (local.get $ch) (i32.const 91))
+      (then
+        (call $__json_advance (i32.const 1))
+        (return (call $__json_parse_array))))
+    ;; Object
+    (if (i32.eq (local.get $ch) (i32.const 123))
+      (then
+        (call $__json_advance (i32.const 1))
+        (return (call $__json_parse_object))))
+    ;; Number (digit or minus)
+    (if (i32.or (i32.and (i32.ge_s (local.get $ch) (i32.const 48))
+                         (i32.le_s (local.get $ch) (i32.const 57)))
+                (i32.eq (local.get $ch) (i32.const 45)))
+      (then (return (call $__json_parse_number))))
+    ;; true
+    (if (i32.eq (local.get $ch) (i32.const 116))
+      (then
+        (call $__json_advance (i32.const 4))
+        (return (f64.const 1))))
+    ;; false
+    (if (i32.eq (local.get $ch) (i32.const 102))
+      (then
+        (call $__json_advance (i32.const 5))
+        (return (f64.const 0))))
+    ;; null
+    (if (i32.eq (local.get $ch) (i32.const 110))
+      (then
+        (call $__json_advance (i32.const 4))
+        (return (f64.const 0))))
+    ;; Unknown - return 0
+    (f64.const 0))`,
+
+  // Entry point: JSON.parse(str)
+  __json_parse: `(func $__json_parse (param $str f64) (result f64)
+    (global.set $__json_str (call $__ptr_offset (local.get $str)))
+    (global.set $__json_len (call $__ptr_len (local.get $str)))
+    (global.set $__json_pos (i32.const 0))
+    (call $__json_parse_value))`,
 }
 
 // Dependencies - which functions call which other functions
@@ -911,4 +1188,14 @@ export const DEPS = {
   __map_get: ['__hash', '__key_eq'],
   __map_set: ['__hash', '__key_eq'],
   __map_delete: ['__hash', '__key_eq'],
+  // JSON.parse dependencies
+  __json_parse: ['__json_parse_value'],
+  __json_parse_value: ['__json_skip_ws', '__json_peek', '__json_advance',
+    '__json_parse_string', '__json_parse_number', '__json_parse_array', '__json_parse_object'],
+  __json_parse_string: ['__json_peek', '__json_advance'],
+  __json_parse_number: ['__json_peek', '__json_advance', 'pow'],
+  __json_parse_array: ['__json_skip_ws', '__json_peek', '__json_advance', '__json_parse_value'],
+  __json_parse_object: ['__json_skip_ws', '__json_peek', '__json_advance', '__json_parse_string',
+    '__json_parse_value', '__map_new', '__map_set'],
+  __json_skip_ws: ['__json_peek', '__json_advance'],
 }
