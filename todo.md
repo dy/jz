@@ -212,17 +212,17 @@
     * [x] `eval`/`Function()` - no dynamic code (identifier check)
     * [x] `with` - deprecated, scope pollution (parser rejects)
     * [x] `WeakMap`/`WeakSet` - need GC hooks (identifier check)
-    * [-] `getter`/`setter` - runtime dispatch overhead (parser rejects)
+    * [x] `getter`/`setter` - runtime dispatch overhead (parser rejects)
     * [x] `arguments` - magic variable, use `...args` (identifier check)
     * [x] `this` - context binding confusion (parser rejects)
     * [x] `class` definition - no OOP (parser rejects)
     * [x] `new` with non-builtin - no custom constructors (compile check)
-    * [-] `prototype` access - no prototype chain (not detected, fails naturally)
+    * [x] `prototype` access - no prototype chain (not detected, fails naturally)
     * [x] `delete` - dynamic shape bad for perf (parser rejects)
     * [x] `in` operator - prototype chain issues (parser rejects)
-    * [-] `instanceof` - prototype-based (not detected, fails as unknown)
-    * [-] labeled statements - rarely needed (parser rejects)
-    * [-] comma operator - actually allowed, used for args
+    * [x] `instanceof` - prototype-based (not detected, fails as unknown)
+    * [x] labeled statements - rarely needed (parser rejects)
+    * [x] comma operator - actually allowed, used for args
     * [x] `function*`/`yield` - generators not feasible (parser rejects)
     * [x] dynamic `import()` - static resolution only (parser rejects)
     * [x] `try`/`catch`/`throw` - no exceptions (parser rejects)
@@ -240,6 +240,42 @@
   * [ ] ESLint-inspired rules
     * [ ] no-redeclare - same name declared twice in scope
     * [ ] no-loss-of-precision - integer literals > MAX_SAFE_INTEGER
+* [x] Repointers: unified pointer design
+  * [x] Unified format: `[type:4][aux:16][offset:31]` (51 bits in NaN mantissa)
+    * [x] 31-bit offset = 2GB (WASM memory32 practical limit, clean i32)
+    * [x] 4-bit type = 16 types max
+    * [x] 16-bit aux = type-specific (funcIdx, elemType, regexId+flags, or 0)
+  * [x] Type enum: ARRAY=1, RING=2, TYPED=3, STRING=4, OBJECT=5, HASH=6, SET=7, MAP=8, CLOSURE=9, REGEX=10
+  * [ ] Remove schemaId from runtime pointers (compile-time only via monomorphization)
+  * [ ] Warn on function params that need schema but can't be inferred
+  * [x] ARRAY (type=1): `[type:4][0:16][offset:31]` → `[-8:len][elem0...]`
+    * [x] capacity = nextPow2(len), no cap storage needed
+    * [x] O(1) push/pop, O(n) shift/unshift
+    * [x] `arr.at(-1)` → `elem[(len - 1)]`
+  * [ ] RING (type=2): `[type:4][0:16][offset:31]` → `[-16:head][-8:len][slots...]`
+    * [ ] capacity = nextPow2(len), mask = cap-1
+    * [ ] O(1) all operations: push/pop/shift/unshift
+    * [ ] `arr[i]` → `slots[(head + i) & mask]`
+    * [ ] `arr.at(-1)` → `slots[(head + len - 1) & mask]`
+  * [ ] Compile-time detection: use ARRAY if only push/pop/positive-index, RING if shift/unshift/negative
+  * [x] TYPED (type=3): `[type:4][elemType:3][0:13][offset:31]` → `[-8:len][bytes...]`
+    * [x] elemType in pointer (needed for stride before any access)
+    * [ ] len in memory (enables subarray views later) - currently in pointer bits
+  * [x] STRING (type=4): `[type:4][len:16][data:31]`
+    * [ ] SSO: len=1-5, data = packed base64 chars (6 bits each, fits `a-zA-Z0-9_-`)
+    * [x] Heap: len>0, data = offset (max 65535 chars)
+  * [x] OBJECT (type=5): `[type:4][0:16][offset:31]` → `[prop0, prop1, ...]`
+    * [x] No header (static schema at compile-time)
+  * [x] SET/MAP (type=7,8): `[type:4][0:16][offset:31]` → `[-16:cap][-8:size][entries...]`
+    * [x] Both cap and size needed (tombstones, load factor ~0.7)
+    * [x] cap = power of 2, slot = hash & (cap-1)
+  * [x] CLOSURE (type=9): `[type:4][funcIdx:16][offset:31]` → `[env0, env1, ...]`
+    * [x] funcIdx in pointer (needed for call_indirect)
+    * [x] No header (env is just data)
+  * [x] REGEX (type=10): `[type:4][regexId:16][offset:31]` → (compiled in function table with flags)
+    * [x] No memory (pattern compiled to matcher function)
+  * [ ] f64view(memory, ptr) for JS interop (user creates typed array view)
+  * [ ] Drop custom schema section (not needed with explicit interop)
 * [ ] color-space converter
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [ ] Warn/error on hitting memory limits: objects, arrays

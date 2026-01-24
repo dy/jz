@@ -215,29 +215,18 @@ export function assemble(bodyWat, ctx = {
  *
  * NaN boxing format:
  * - Quiet NaN: 0x7FF8_xxxx_xxxx_xxxx (exponent=0x7FF, bit 51=1, bits 0-50 = payload)
- * - Payload: [type:4][id:16][offset:31] = 51 bits
+ * - Payload: [type:4][aux:16][offset:31] = 51 bits
  *
- * Type meanings:
- * - ARRAY (1): mutable f64 array, id=schemaId, length at offset-8
- * - STRING (3): UTF-16 string, id=length
- * - OBJECT (4): object, id=schemaId
- * - CLOSURE (7): closure, id=funcIdx
- *
- * Benefits:
- * - Full f64 range preserved (any non-NaN value is a number)
- * - 64K schemas, 2GB memory
- * - O(1) push/pop via length in memory
+ * Type enum: ARRAY=1, RING=2, TYPED=3, STRING=4, OBJECT=5, HASH=6, SET=7, MAP=8, CLOSURE=9, REGEX=10
  *
  * NOTE: All helpers emitted together. DCE (watr) removes unused functions.
  */
 function emitMemoryHelpers() {
   return `
-  ;; NaN-boxing pointer encoding (v6 - unified arrays)
+  ;; NaN-boxing pointer encoding
   ;; Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
-  ;; Payload: [type:4][id:16][offset:31]
-  ;; - type: pointer type (1-15)
-  ;; - id: schemaId (array/object), len (string), funcIdx (closure)
-  ;; - offset: memory byte offset (2GB addressable)
+  ;; Payload: [type:4][aux:16][offset:31]
+  ;; Types: ARRAY=1, RING=2, TYPED=3, STRING=4, OBJECT=5, HASH=6, SET=7, MAP=8, CLOSURE=9, REGEX=10
 
   ;; Compute capacity tier for given length: nextPow2(max(len, 4))
   (func $__cap_for_len (param $len i32) (result i32)
@@ -261,7 +250,7 @@ function emitMemoryHelpers() {
       (i32.shl (local.get $cap)
         (select (i32.const 3)  ;; 8 bytes
           (i32.const 1)  ;; 2 bytes for strings
-          (i32.ne (local.get $type) (i32.const 3)))))
+          (i32.ne (local.get $type) (i32.const 4)))))  ;; STRING=4
     (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
     (local.set $offset (global.get $__heap))
     ;; For arrays (type=1), add 8 bytes for length header
@@ -362,9 +351,9 @@ function emitMemoryHelpers() {
   ;; Get length (type-aware): arrays read from memory, strings from pointer
   (func $__ptr_len (param $ptr f64) (result i32)
     (if (result i32)
-      (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const 3))  ;; STRING: len in pointer
+      (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const 4))  ;; STRING=4: len in pointer
       (then (call $__ptr_id (local.get $ptr)))
-      (else  ;; ARRAY: len at offset-8
+      (else  ;; ARRAY/TYPED/etc: len at offset-8
         (i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)))))))
 
   ;; Set length in memory (for mutable arrays)
@@ -390,7 +379,7 @@ function emitMemoryHelpers() {
     (local $lenA i32) (local $lenB i32) (local $result f64) (local $offR i32)
     (local.set $lenA (call $__ptr_len (local.get $a)))
     (local.set $lenB (call $__ptr_len (local.get $b)))
-    (local.set $result (call $__alloc (i32.const 3) (i32.add (local.get $lenA) (local.get $lenB))))
+    (local.set $result (call $__alloc (i32.const 4) (i32.add (local.get $lenA) (local.get $lenB))))  ;; STRING=4
     (local.set $offR (call $__ptr_offset (local.get $result)))
     ;; Copy first string
     (memory.copy (local.get $offR)
@@ -408,7 +397,7 @@ function emitMemoryHelpers() {
     (local.set $lenA (call $__ptr_len (local.get $a)))
     (local.set $lenB (call $__ptr_len (local.get $b)))
     (local.set $lenC (call $__ptr_len (local.get $c)))
-    (local.set $result (call $__alloc (i32.const 3) (i32.add (i32.add (local.get $lenA) (local.get $lenB)) (local.get $lenC))))
+    (local.set $result (call $__alloc (i32.const 4) (i32.add (i32.add (local.get $lenA) (local.get $lenB)) (local.get $lenC))))  ;; STRING=4
     (local.set $offR (call $__ptr_offset (local.get $result)))
     ;; Copy first string
     (memory.copy (local.get $offR)
@@ -484,7 +473,7 @@ function emitMemoryHelpers() {
     (f64.reinterpret_i64
       (i64.or (i64.const 0x7FF8000000000000)
         (i64.or
-          (i64.shl (i64.const 5) (i64.const 47))  ;; type = TYPED_ARRAY = 5
+          (i64.shl (i64.const 3) (i64.const 47))  ;; type = TYPED = 3
           (i64.or
             (i64.shl (i64.extend_i32_u (local.get $elemType)) (i64.const 44))
             (i64.or

@@ -353,14 +353,14 @@ export const FUNCTIONS = {
     (local $temp i32) (local $buf i32) (local $hasDecimal i32)
     (local $intLen i32) (local $fracLen i32) (local $totalLen i32)
     (local $abs f64)
-    ;; Handle NaN
+    ;; Handle NaN (STRING=4)
     (if (f64.ne (local.get $x) (local.get $x))
-      (then (return (call $__mkptr (i32.const 3) (i32.const 3) (global.get $__strNaN)))))
+      (then (return (call $__mkptr (i32.const 4) (i32.const 3) (global.get $__strNaN)))))
     ;; Handle Infinity
     (if (f64.eq (local.get $x) (f64.const inf))
-      (then (return (call $__mkptr (i32.const 3) (i32.const 8) (global.get $__strInf)))))
+      (then (return (call $__mkptr (i32.const 4) (i32.const 8) (global.get $__strInf)))))
     (if (f64.eq (local.get $x) (f64.const -inf))
-      (then (return (call $__mkptr (i32.const 3) (i32.const 9) (global.get $__strNegInf)))))
+      (then (return (call $__mkptr (i32.const 4) (i32.const 9) (global.get $__strNegInf)))))
     ;; Handle negative
     (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
     (local.set $abs (f64.abs (local.get $x)))
@@ -419,7 +419,7 @@ export const FUNCTIONS = {
     (if (local.get $hasDecimal)
       (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $fracLen))))))
     ;; Allocate result string
-    (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+    (local.set $str (call $__alloc (i32.const 4) (local.get $totalLen)))
     (local.set $offset (call $__ptr_offset (local.get $str)))
     (local.set $i (i32.const 0))
     ;; Write minus sign
@@ -476,7 +476,7 @@ export const FUNCTIONS = {
     (if (i32.eqz (local.get $escCount))
       (then (return (local.get $str))))
     ;; Allocate new string with extra space
-    (local.set $result (call $__alloc (i32.const 3) (i32.add (local.get $srcLen) (local.get $escCount))))
+    (local.set $result (call $__alloc (i32.const 4) (i32.add (local.get $srcLen) (local.get $escCount))))
     (local.set $dstOff (call $__ptr_offset (local.get $result)))
     ;; Copy with escaping
     (local.set $i (i32.const 0))
@@ -621,8 +621,8 @@ export const FUNCTIONS = {
     (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
     (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
     (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
-    ;; schemaId=0 for pure Set
-    (call $__mkptr (i32.const 8) (i32.const 0) (local.get $offset)))`,
+    ;; SET=7
+    (call $__mkptr (i32.const 7) (i32.const 0) (local.get $offset)))`,
 
   // Allocate Map with C-style headers
   __map_new: `(func $__map_new (param $cap i32) (result f64)
@@ -635,7 +635,8 @@ export const FUNCTIONS = {
     (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
     (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
     (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
-    (call $__mkptr (i32.const 9) (i32.const 0) (local.get $offset)))`,
+    ;; MAP=8
+    (call $__mkptr (i32.const 8) (i32.const 0) (local.get $offset)))`,
 
   // Set.has(key) - returns 1 if found, 0 if not
   __set_has: `(func $__set_has (param $set f64) (param $key f64) (result i32)
@@ -935,13 +936,13 @@ export const FUNCTIONS = {
     ;; No escapes: direct copy
     (if (i32.eqz (local.get $hasEsc))
       (then
-        (local.set $result (call $__alloc (i32.const 3) (local.get $len)))
+        (local.set $result (call $__alloc (i32.const 4) (local.get $len)))
         (memory.copy (call $__ptr_offset (local.get $result))
           (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1)))
           (i32.shl (local.get $len) (i32.const 1)))
         (return (local.get $result))))
     ;; Has escapes: decode
-    (local.set $result (call $__alloc (i32.const 3) (local.get $len)))  ;; over-allocate
+    (local.set $result (call $__alloc (i32.const 4) (local.get $len)))  ;; over-allocate
     (local.set $srcOff (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1))))
     (local.set $dstOff (call $__ptr_offset (local.get $result)))
     (local.set $i (i32.const 0))

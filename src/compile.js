@@ -2532,16 +2532,16 @@ const operators = {
     ctx.regexFlags[regexId] = flags
 
     // Return a regex "pointer" - NaN-boxed with REGEX type
-    // We store: type=REGEX(6), id=regexId, offset=flags(4bits)|groups(8bits)
+    // We store: type=REGEX(10), id=regexId, offset=flags(4bits)|groups(8bits)
     ctx.usedMemory = true
 
-    // Encode: type 6 (REGEX), id = regexId, offset = flags(4bits) | groups(8bits shifted)
+    // Encode: type 10 (REGEX), id = regexId, offset = flags(4bits) | groups(8bits shifted)
     const flagBits = (flags.includes('g') ? 1 : 0) |
                      (flags.includes('i') ? 2 : 0) |
                      (flags.includes('m') ? 4 : 0) |
                      (flags.includes('s') ? 8 : 0)
     const offsetBits = flagBits | (groupCount << 4)  // groups in upper bits
-    return wat(`(call $__mkptr (i32.const 6) (i32.const ${regexId}) (i32.const ${offsetBits}))`, 'regex', regexId)
+    return wat(`(call $__mkptr (i32.const 10) (i32.const ${regexId}) (i32.const ${offsetBits}))`, 'regex', regexId)
   },
 
   // Export declaration

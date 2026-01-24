@@ -6,89 +6,94 @@
  *
  * Types: 'f64' | 'i32' | 'ref' | 'array' | 'string' | 'object' | 'closure' | 'refarray'
  *
- * gc:false uses NaN-boxing for pointers (arrays, strings, objects, closures)
  * NaN-boxing encodes pointer metadata in the mantissa of a quiet NaN
  *
  * @module types
  */
 
 /**
- * Pointer types for NaN-boxing mode
+ * Pointer types for NaN-boxing
  *
  * NaN box format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
- * Default payload: [type:4][id:16][offset:31]
- *
- * Schema registry: schemas[id] = ['prop1', 'prop2', ...] (compile-time)
+ * Unified payload: [type:4][aux:16][offset:31]
+ *   - type: pointer type (1-15)
+ *   - aux: type-specific (0, funcIdx, elemType, regexId)
+ *   - offset: memory byte offset (2GB addressable, clean i32)
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * POINTER LAYOUTS
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * ARRAY (type=1) - Mutable f64 array with C-style header
- *   Pointer: [type:4=0001][schemaId:16][offset:31]
- *   Memory:  offset-8 → [length:f64]
+ *   Pointer: [type:4][0:16][offset:31]
+ *   Memory:  offset-8 → [len:f64]
  *            offset   → [elem0:f64, elem1:f64, ...]
- *   schemaId: 0=pure array, >0=array with named props at schema offsets
+ *   Capacity = nextPow2(len), no cap storage needed
  *   O(1) push/pop via length in memory, O(n) shift/unshift
  *
- * (type=2) - Reserved for future use
+ * RING (type=2) - Ring buffer array (O(1) shift/unshift)
+ *   Pointer: [type:4][0:16][offset:31]
+ *   Memory:  offset-16 → [head:f64]
+ *            offset-8  → [len:f64]
+ *            offset    → [slots...]
+ *   arr[i] → slots[(head + i) & mask]
  *
- * STRING (type=3) - Immutable UTF-16 string
- *   Pointer: [type:4=0011][len:16][offset:31]
+ * TYPED (type=3) - TypedArray (Int8Array, Float64Array, etc.)
+ *   Pointer: [type:4][elemType:3][0:13][offset:31]
+ *   Memory:  offset-8 → [len:f64]
+ *            offset   → raw bytes
+ *   elemType in pointer (needed for stride), len in memory
+ *
+ * STRING (type=4) - UTF-16 string
+ *   Pointer: [type:4][len:16][offset:31]
  *   Memory:  offset → [char0:u16, char1:u16, ...]
+ *   len in pointer (max 65535 chars)
  *
- * OBJECT (type=4) - Static object (compile-time known shape)
- *   Pointer: [type:4=0100][schemaId:16][offset:31]
+ * OBJECT (type=5) - Static object (compile-time schema)
+ *   Pointer: [type:4][0:16][offset:31]
  *   Memory:  offset → [prop0:f64, prop1:f64, ...]
- *   Schema:  schemas[schemaId] = ['propName0', 'propName1', ...]
+ *   Schema resolved at compile-time via monomorphization
  *
- * TYPED_ARRAY (type=5) - TypedArray (different bit layout!)
- *   Pointer: [type:4=0101][elemType:3][len:22][offset:22]
- *   Memory:  offset → raw bytes (stride depends on elemType)
- *   elemType: 0=i8, 1=u8, 2=i16, 3=u16, 4=i32, 5=u32, 6=f32, 7=f64
+ * HASH (type=6) - Hash table (dynamic object)
+ *   Pointer: [type:4][0:16][offset:31]
+ *   Memory:  offset-16 → [cap:f64]
+ *            offset-8  → [size:f64]
+ *            offset    → [entries...]
  *
- * REGEX (type=6) - Compiled regex pattern
- *   Pointer: [type:4=0110][regexId:16][flags:31]
- *   Memory:  compiled regex in regexFunctions array
- *   flags: i=1, g=2, m=4, etc.
+ * SET (type=7) - Hash set
+ *   Pointer: [type:4][0:16][offset:31]
+ *   Memory:  offset-16 → [cap:f64]
+ *            offset-8  → [size:f64]
+ *            offset    → [hash:f64, key:f64, ...] (16B entries)
  *
- * CLOSURE (type=7) - Function closure with captured environment
- *   Pointer: [type:4=0111][funcIdx:16][offset:31]
- *   Memory:  offset → [captured0:f64, captured1:f64, ...]
+ * MAP (type=8) - Hash map
+ *   Pointer: [type:4][0:16][offset:31]
+ *   Memory:  offset-16 → [cap:f64]
+ *            offset-8  → [size:f64]
+ *            offset    → [hash:f64, key:f64, val:f64, ...] (24B entries)
  *
- * SET (type=8) - Hash set (open addressing)
- *   Pointer: [type:4=1000][schemaId:16][offset:31]
- *   Memory:  offset-16 → [capacity:f64][size:f64]
- *            offset   → [hash0:f64, key0:f64, hash1:f64, key1:f64, ...]
- *   Entry: 16 bytes (hash + key), hash=0 empty, hash=1 deleted
- *   schemaId: 0=pure Set, >0=hybrid with static props at schema offsets
+ * CLOSURE (type=9) - Function closure
+ *   Pointer: [type:4][funcIdx:16][offset:31]
+ *   Memory:  offset → [env0:f64, env1:f64, ...]
+ *   funcIdx in pointer (needed for call_indirect)
  *
- * MAP (type=9) - Hash map (open addressing)
- *   Pointer: [type:4=1001][schemaId:16][offset:31]
- *   Memory:  offset-16 → [capacity:f64][size:f64]
- *            offset   → [hash0:f64, key0:f64, val0:f64, ...]
- *   Entry: 24 bytes (hash + key + val), hash=0 empty, hash=1 deleted
- *   schemaId: 0=pure Map, >0=hybrid with static props at schema offsets
- *
- * DYN_OBJECT (type=10) - Dynamic object (runtime property names)
- *   Pointer: [type:4=1010][schemaId:16][offset:31]
- *   Memory:  same as MAP (hash table for string keys → values)
- *   schemaId: 0=pure dynamic, >0=hybrid (static base + dynamic overflow)
- *   Syntax: obj.prop and obj[key] both use hash lookup
+ * REGEX (type=10) - Compiled regex pattern
+ *   Pointer: [type:4][regexId:16][flags:31]
+ *   No memory (pattern compiled to matcher function)
  *
  * @enum {number}
  */
 export const PTR_TYPE = {
-  ARRAY: 1,        // [type:4][schemaId:16][offset:31] → [-8:len][elem0, elem1, ...]
-  // 2 reserved for future use
-  STRING: 3,       // [type:4][len:16][offset:31] → [char0:u16, char1:u16, ...]
-  OBJECT: 4,       // [type:4][schemaId:16][offset:31] → [prop0, prop1, ...]
-  TYPED_ARRAY: 5,  // [type:4][elemType:3][len:22][offset:22] → raw bytes
-  REGEX: 6,        // [type:4][regexId:16][flags:31] → compiled in regexFunctions
-  CLOSURE: 7,      // [type:4][funcIdx:16][offset:31] → [captured0, captured1, ...]
-  SET: 8,          // [type:4][schemaId:16][offset:31] → [-16:cap][-8:size][entries...]
-  MAP: 9,          // [type:4][schemaId:16][offset:31] → [-16:cap][-8:size][entries...]
-  DYN_OBJECT: 10,  // [type:4][schemaId:16][offset:31] → same as MAP, .prop syntax
+  ARRAY: 1,   // [type:4][0:16][offset:31] → [-8:len][elem0, elem1, ...]
+  RING: 2,    // [type:4][0:16][offset:31] → [-16:head][-8:len][slots...]
+  TYPED: 3,   // [type:4][elemType:3][0:13][offset:31] → [-8:len][bytes...]
+  STRING: 4,  // [type:4][len:16][offset:31] → [char0:u16, char1:u16, ...]
+  OBJECT: 5,  // [type:4][0:16][offset:31] → [prop0, prop1, ...]
+  HASH: 6,    // [type:4][0:16][offset:31] → [-16:cap][-8:size][entries...]
+  SET: 7,     // [type:4][0:16][offset:31] → [-16:cap][-8:size][hash, key, ...]
+  MAP: 8,     // [type:4][0:16][offset:31] → [-16:cap][-8:size][hash, key, val, ...]
+  CLOSURE: 9, // [type:4][funcIdx:16][offset:31] → [env0, env1, ...]
+  REGEX: 10,  // [type:4][regexId:16][flags:31] → (compiled in function table)
 }
 
 // === Memory layout constants ===
