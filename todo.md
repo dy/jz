@@ -149,7 +149,7 @@
   * [ ] console.log/warn/error (import stubs)
   * [ ] Date.now, performance.now (host imports)
   * [x] JSON.stringify (numbers, strings, arrays, objects)
-  * [-] JSON.parse (full parser - very hard)
+  * [x] JSON.parse (recursive descent parser - numbers, strings, arrays, objects)
   * [x] Set, Map (open addressing hash table, number/string/object keys)
   * [ ] structuredClone (deep copy)
   * [-] WeakSet, WeakMap (need GC hooks - not feasible)

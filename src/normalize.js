@@ -63,7 +63,7 @@ const NAMESPACES = { Math: new Set([
   'POSITIVE_INFINITY', 'NEGATIVE_INFINITY', 'NaN'
 ]), Array: new Set(['isArray', 'from']),
 Object: new Set(['assign', 'keys', 'values', 'entries']),
-JSON: new Set(['stringify']) }
+JSON: new Set(['stringify', 'parse']) }
 
 // Allowed constructors for `new` keyword
 const ALLOWED_CONSTRUCTORS = new Set([

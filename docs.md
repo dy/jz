@@ -233,6 +233,34 @@ Math.min(a, b), Math.max(a, b), Math.clamp(x, lo, hi)
 Math.PI, Math.E
 ```
 
+## JSON
+
+```js
+// Serialize to JSON string
+JSON.stringify(42)           // "42"
+JSON.stringify([1, 2, 3])    // "[1,2,3]"
+JSON.stringify({x: 1, y: 2}) // '{"x":1,"y":2}'
+
+// Parse JSON string
+let json = '{"x":1,"y":2}'
+let obj = JSON.parse(json)
+obj.x + obj.y                // 3
+
+// Nested structures
+let data = JSON.parse('[{"a":1},{"b":2}]')
+data[0].a                    // 1
+
+// All JSON types supported
+JSON.parse('"hello"')        // "hello"
+JSON.parse('true')           // 1 (boolean true)
+JSON.parse('null')           // 0
+```
+
+**Limitations:**
+- Objects returned by `JSON.parse` have dynamic keys (Map-based)
+- No reviver/replacer functions
+- No indentation (compact output only)
+
 ## API
 
 ### Tagged Template (Recommended)

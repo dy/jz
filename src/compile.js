@@ -1067,6 +1067,16 @@ function resolveCall(namespace, name, args, receiver = null) {
 
       return wat(genStringify(val, val.type, val.schema), 'string')
     }
+
+    if (name === 'parse' && args.length >= 1) {
+      ctx.usedStringType = true
+      ctx.usedMemory = true
+      ctx.usedStdlib.push('__json_parse')
+      const str = gen(args[0])
+      // Returns f64 (could be number, string ptr, array ptr, or Map ptr)
+      return wat(`(call $__json_parse ${str})`, 'f64')
+    }
+
     throw new Error(`Unknown JSON.${name}`)
   }
 

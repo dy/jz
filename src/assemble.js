@@ -147,6 +147,13 @@ export function assemble(bodyWat, ctx = {
     wat += `  (global $__strNegInf i32 (i32.const ${negInfOffset}))\n`
   }
 
+  // === JSON.parse globals ===
+  if (ctx.usedStdlib.includes('__json_parse')) {
+    wat += `  (global $__json_str (mut i32) (i32.const 0))\n`
+    wat += `  (global $__json_len (mut i32) (i32.const 0))\n`
+    wat += `  (global $__json_pos (mut i32) (i32.const 0))\n`
+  }
+
   // === Globals ===
 
   for (const name in ctx.globals) {
