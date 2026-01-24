@@ -1,7 +1,6 @@
-// jz - JS subset to WASM compiler
+// jz - JS subset to WAT compiler
 import 'subscript/jessie'
 import { parse } from 'subscript/jessie'
-import * as watr from 'watr'
 import normalize from './src/normalize.js'
 import { compile as compileAst, assemble } from './src/compile.js'
 
@@ -45,15 +44,6 @@ const encodePtr = (type, id, offset) => {
     (BigInt(id) << 31n) |
     BigInt(offset >>> 0)
   return f64View[0]
-}
-
-// Compile WAT string to WASM binary
-export function compileWat(wat) {
-  try {
-    return watr.compile(wat)
-  } catch (error) {
-    throw new Error(`WAT compilation failed: ${error.message}\nWAT:\n${wat}`, { cause: error })
-  }
 }
 
 // Read custom section from WASM module
@@ -210,12 +200,10 @@ export async function instantiate(wasm, imports = {}) {
   }
 }
 
-// Compile JS to WASM
-export function compile(code, options = {}) {
-  const { text = false } = options
+// Compile JS to WAT
+export function compile(code) {
   const ast = normalize(parse(code))
-  const wat = compileAst(ast)
-  return text ? wat : compileWat(wat)
+  return compileAst(ast)
 }
 
 export { parse, normalize, compileAst, assemble }

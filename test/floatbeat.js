@@ -1,7 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile, instantiate } from '../index.js'
-import { evaluate } from './util.js'
+import { compile, evaluate } from './util.js'
 
 // Floatbeat/Bytebeat Test Suite
 // NOTE: All code here is PURE JS - runnable in any JS interpreter
@@ -128,15 +127,15 @@ test('floatbeat - classic sierpinski', async () => {
 })
 
 test('floatbeat - simple sine wave', async () => {
-  const wasm = compile('export const wave = t => Math.sin(t * Math.PI / 128)')
-  const { wave } = await instantiate(wasm)
+  const mod = await compile('export const wave = t => Math.sin(t * Math.PI / 128)')
+  const { wave } = mod
   ok(Math.abs(wave(64) - 1) < 0.0001)
   ok(Math.abs(wave(128)) < 0.0001)
 })
 
 test('floatbeat - FM synthesis pattern', async () => {
-  const wasm = compile('export const fm = t => Math.sin(t * Math.PI / 128 + Math.sin(t * Math.PI / 256) * 2)')
-  const { fm } = await instantiate(wasm)
+  const mod = await compile('export const fm = t => Math.sin(t * Math.PI / 128 + Math.sin(t * Math.PI / 256) * 2)')
+  const { fm } = mod
   ok(typeof fm(64) === 'number' && !isNaN(fm(64)))
 })
 
@@ -149,8 +148,7 @@ test('floatbeat - pitch formula', async () => {
 })
 
 test('floatbeat - sequencer pattern', async () => {
-  const wasm = compile('export const seq = t => [0, 2, 4, 7][t >> 13 & 3]')
-  const { seq } = await instantiate(wasm)
+  const { seq } = await compile('export const seq = t => [0, 2, 4, 7][t >> 13 & 3]')
   is(seq(0), 0)
   is(seq(8192), 2)
   is(seq(16384), 4)
@@ -158,27 +156,27 @@ test('floatbeat - sequencer pattern', async () => {
 })
 
 test('floatbeat - combined sequencer + pitch', async () => {
-  const wasm = compile('export const synth = t => (note = [0, 4, 7, 12][t >> 13 & 3], Math.sin(t * Math.pow(2, note / 12) * Math.PI / 256))')
-  const { synth } = await instantiate(wasm)
+  const mod = await compile('export const synth = t => (note = [0, 4, 7, 12][t >> 13 & 3], Math.sin(t * Math.pow(2, note / 12) * Math.PI / 256))')
+  const { synth } = mod
   ok(typeof synth(8192) === 'number' && !isNaN(synth(8192)))
 })
 
 test('floatbeat - envelope pattern', async () => {
-  const wasm = compile('export const env = t => 1 - (t % 8192) / 8192')
-  const { env } = await instantiate(wasm)
+  const mod = await compile('export const env = t => 1 - (t % 8192) / 8192')
+  const { env } = mod
   ok(Math.abs(env(0) - 1) < 0.0001)
   ok(Math.abs(env(4096) - 0.5) < 0.0001)
 })
 
 test('floatbeat - real formula: simple chiptune', async () => {
-  const wasm = compile('export const chip = t => t * ((t >> 12 | t >> 8) & 63 & t >> 4)')
-  const { chip } = await instantiate(wasm)
+  const mod = await compile('export const chip = t => t * ((t >> 12 | t >> 8) & 63 & t >> 4)')
+  const { chip } = mod
   ok(typeof chip(8000) === 'number' && !isNaN(chip(8000)))
 })
 
 test('floatbeat - sustained instance for audio', async () => {
-  const wasm = compile('export const wave = t => Math.sin(t * Math.PI / 128)')
-  const { wave } = await instantiate(wasm)
+  const mod = await compile('export const wave = t => Math.sin(t * Math.PI / 128)')
+  const { wave } = mod
 
   const samples = []
   for (let i = 0; i < 256; i++) {
@@ -217,8 +215,7 @@ test('floatbeat - null and undefined', async () => {
 
 test('arrow functions - basic', async () => {
   const code = 'export const add = (a, b) => a + b'
-  const wasm = compile(code)
-  const { add } = await instantiate(wasm)
+  const { add } = await compile(code)
   is(add(2, 3), 5)
   is(add(-1, 1), 0)
   is(add(10.5, 0.5), 11)
@@ -226,16 +223,14 @@ test('arrow functions - basic', async () => {
 
 test('arrow functions - single param', async () => {
   const code = 'export const double = x => x * 2'
-  const wasm = compile(code)
-  const { double } = await instantiate(wasm)
+  const { double } = await compile(code)
   is(double(5), 10)
   is(double(-3), -6)
 })
 
 test('arrow functions - multiple exports', async () => {
   const code = 'export const add = (a, b) => a + b; export const mul = (x, y) => x * y; export const neg = n => -n'
-  const wasm = compile(code)
-  const { add, mul, neg } = await instantiate(wasm)
+  const { add, mul, neg } = await compile(code)
   is(add(2, 3), 5)
   is(mul(4, 5), 20)
   is(neg(7), -7)
@@ -243,16 +238,14 @@ test('arrow functions - multiple exports', async () => {
 
 test('arrow functions - with Math', async () => {
   const code = 'export const dist = (x, y) => Math.sqrt(x*x + y*y)'
-  const wasm = compile(code)
-  const { dist } = await instantiate(wasm)
+  const { dist } = await compile(code)
   is(dist(3, 4), 5)
   is(dist(0, 1), 1)
 })
 
 test('arrow functions - complex expression', async () => {
   const code = 'export const lerp = (a, b, t) => a + (b - a) * t'
-  const wasm = compile(code)
-  const { lerp } = await instantiate(wasm)
+  const { lerp } = await compile(code)
   is(lerp(0, 10, 0), 0)
   is(lerp(0, 10, 1), 10)
   is(lerp(0, 10, 0.5), 5)
@@ -261,15 +254,13 @@ test('arrow functions - complex expression', async () => {
 
 test('arrow functions - no params', async () => {
   const code = 'export const pi = () => Math.PI'
-  const wasm = compile(code)
-  const { pi } = await instantiate(wasm)
+  const { pi } = await compile(code)
   ok(Math.abs(pi() - Math.PI) < 0.0001)
 })
 
 test('arrow functions - trig', async () => {
   const code = 'export const wave = (t, freq) => Math.sin(t * freq * Math.PI * 2)'
-  const wasm = compile(code)
-  const { wave } = await instantiate(wasm)
+  const { wave } = await compile(code)
   ok(Math.abs(wave(0, 1)) < 0.0001)  // sin(0) = 0
   ok(Math.abs(wave(0.25, 1) - 1) < 0.0001)  // sin(π/2) = 1
 })
@@ -280,8 +271,7 @@ test('arrow functions - inter-function calls', async () => {
     export const triple = x => x * 3;
     export const sixfold = x => double(triple(x))
   `
-  const wasm = compile(code)
-  const { double, triple, sixfold } = await instantiate(wasm)
+  const { double, triple, sixfold } = await compile(code)
   is(double(5), 10)
   is(triple(5), 15)
   is(sixfold(5), 30)
@@ -293,8 +283,7 @@ test('arrow functions - synth example', async () => {
     export const env = (t, attack, decay) => t < attack ? t / attack : Math.exp(-(t - attack) / decay);
     export const synth = (t, freq, attack, decay) => osc(t, freq) * env(t, attack, decay)
   `
-  const wasm = compile(code)
-  const { synth, osc, env } = await instantiate(wasm)
+  const { synth, osc, env } = await compile(code)
   ok(Math.abs(osc(0.25, 1) - 1) < 0.0001)  // sin(π/2) = 1
   ok(Math.abs(env(0.005, 0.01, 0.5) - 0.5) < 0.0001)  // half attack
   is(typeof synth(0.1, 440, 0.01, 0.5), 'number')
@@ -302,8 +291,7 @@ test('arrow functions - synth example', async () => {
 
 test('arrow functions - module-level constants', async () => {
   const code = 'scale = 2; offset = 100; export const linear = x => x * scale + offset'
-  const wasm = compile(code)
-  const { linear } = await instantiate(wasm)
+  const { linear } = await compile(code)
   is(linear(0), 100)
   is(linear(5), 110)
   is(linear(10), 120)
@@ -311,8 +299,7 @@ test('arrow functions - module-level constants', async () => {
 
 test('arrow functions - PI constant in function', async () => {
   const code = 'tau = Math.PI; export const circle = r => tau * 2 * r'
-  const wasm = compile(code)
-  const { circle } = await instantiate(wasm)
+  const { circle } = await compile(code)
   ok(Math.abs(circle(1) - Math.PI * 2) < 0.0001)
 })
 
@@ -392,9 +379,8 @@ test('Array.fill', async () => {
 
 test('Array.fill - practical use', async () => {
   // Common floatbeat pattern: create waveform table
-  const wasm = compile('wave = Array(8).fill(0.5), wave[0]')
-  const inst = await instantiate(wasm)
-  is(inst.run(0), 0.5)
+  const mod = await compile('wave = Array(8).fill(0.5), wave[0]')
+  is(mod.run(0), 0.5)
 })
 
 // ========== Array.map ==========

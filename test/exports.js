@@ -1,7 +1,11 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile, instantiate } from '../index.js'
+import { compile as jzCompile, instantiate } from '../index.js'
+import { compile as watrCompile } from 'watr'
 import { gc } from './util.js'
+
+// Helper: compile JS to WASM binary
+const compile = (code, opts) => watrCompile(jzCompile(code, opts))
 
 // Export model tests
 

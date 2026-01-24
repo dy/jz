@@ -1,8 +1,12 @@
 // Benchmark: GC=true vs GC=false performance
 // Demonstrates memory access patterns and overhead differences
 
-import { compile, instantiate } from './index.js'
+import { compile as jzCompile, instantiate } from './index.js'
+import { compile as watrCompile } from 'watr'
 import { performance } from 'perf_hooks'
+
+// Helper: compile JS to WASM binary
+const compile = (code, opts) => watrCompile(jzCompile(code, opts))
 
 const ITERATIONS = 10000
 

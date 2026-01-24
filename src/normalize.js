@@ -75,6 +75,45 @@ function expr(node) {
   return (handlers[op] || defaultHandler)(op, args)
 }
 
+/**
+ * Normalize function parameters - recursively normalize default values
+ * Handles: x, (x), (x, y), default params, rest params, destructuring
+ */
+function normalizeParams(params) {
+  if (params == null) return params
+  if (typeof params === 'string') return params
+  if (!Array.isArray(params)) return params
+
+  const [op, ...args] = params
+
+  // Wrapped params: ["()", inner]
+  if (op === '()' && args.length === 1) {
+    return ['()', normalizeParams(args[0])]
+  }
+
+  // Comma-separated params: [",", p1, p2, ...]
+  if (op === ',') {
+    return [',', ...args.map(normalizeParams)]
+  }
+
+  // Default param: ["=", name, defaultValue]
+  if (op === '=' && typeof args[0] === 'string') {
+    return ['=', args[0], expr(args[1])]
+  }
+
+  // Rest param: ["...", name]
+  if (op === '...' && typeof args[0] === 'string') {
+    return params
+  }
+
+  // Destructuring: ["[]", pattern] or ["{", ...]
+  if (op === '[]' || op === '{' || op === '{}') {
+    return params  // Don't recurse into destructuring patterns
+  }
+
+  return params
+}
+
 // Handlers
 const handlers = {
   // Unary +/- disambiguation
@@ -129,12 +168,12 @@ const handlers = {
   // Function definition
   'function'(op, [name, params, body]) {
     if (typeof name !== 'string') throw new Error('Function needs name')
-    return ['function', name, params, expr(body)]
+    return ['function', name, normalizeParams(params), expr(body)]
   },
 
   // Arrow function
   '=>'(op, [params, body]) {
-    return ['=>', params, expr(body)]
+    return ['=>', normalizeParams(params), expr(body)]
   },
 
   // Assignment

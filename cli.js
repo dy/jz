@@ -2,32 +2,35 @@
 
 /**
  * JZ CLI - Command-line interface for JZ compiler
- * Supports both WASM binary and WAT text output
+ * Outputs WAT text by default, optionally compiles to WASM binary
  */
 
 import { readFileSync, writeFileSync } from 'fs'
-import { default as JZ } from './index.js'
+import { compile, instantiate } from './index.js'
+
+// Optional watr for binary output
+let watr
+try { watr = await import('watr') } catch {}
 
 function showHelp() {
   console.log(`
 JZ - Minimal modern functional JS subset that compiles to WebAssembly
 
 Usage:
-  jz <expression>           Evaluate expression (WAT syntax)
-  jz <file.wat>            Evaluate WAT file
-  jz compile <file.wat>    Compile to WebAssembly
-  jz run <file.wat>        Compile and run WAT file
+  jz <expression>           Evaluate expression
+  jz <file.js>             Evaluate JS file
+  jz compile <file.js>     Compile to WAT (default) or WASM
+  jz run <file.js>         Compile and run
   jz --help                Show this help
 
 Examples:
-  jz "(f64.add (f64.const 1) (f64.const 2))"           # 3
-  jz compile program.wat --format binary              # Creates program.wasm
-  jz compile program.wat --format wat                 # Creates program.wat (copy)
-  jz run program.wat                                  # Runs compiled program
+  jz "1 + 2"                                         # 3
+  jz compile program.js -o program.wat               # Creates program.wat
+  jz compile program.js -o program.wasm              # Creates program.wasm (requires watr)
+  jz run program.js                                  # Runs compiled program
 
 Options:
-  --output, -o <file>      Output file for compilation
-  --format, -f <format>    Output format: binary (default) or wat
+  --output, -o <file>      Output file (.wat or .wasm)
   `)
 }
 
@@ -59,18 +62,24 @@ async function main() {
 }
 
 async function handleEvaluate(args) {
+  if (!watr) {
+    throw new Error('watr package required for evaluation. Install with: npm i watr')
+  }
+
   const input = args.join(' ')
+  let code
 
   // Check if it's a file
-  if (args.length === 1 && (args[0].endsWith('.wat') || args[0].endsWith('.js'))) {
-    const code = readFileSync(args[0], 'utf8')
-    const result = await JZ.evaluate(code)
-    console.log(result)
+  if (args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz'))) {
+    code = readFileSync(args[0], 'utf8')
   } else {
-    // Evaluate as expression
-    const result = await JZ.evaluate(input)
-    console.log(result)
+    code = input
   }
+
+  const wat = compile(code)
+  const wasm = watr.compile(wat)
+  const instance = await instantiate(wasm)
+  console.log(instance.run())
 }
 
 async function handleCompile(args) {
@@ -79,45 +88,51 @@ async function handleCompile(args) {
   }
 
   const inputFile = args[0]
-  let outputFile = 'out.wasm'
-  let format = 'binary'
+  let outputFile = null
 
   // Parse options
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') {
       outputFile = args[++i]
-    } else if (args[i] === '--format' || args[i] === '-f') {
-      format = args[++i]
     }
   }
 
-  // Set default output file based on format
-  if (outputFile === 'out.wasm' && format === 'wat') {
-    outputFile = 'out.wat'
+  // Default output based on input
+  if (!outputFile) {
+    outputFile = inputFile.replace(/\.(js|jz)$/, '.wat')
   }
 
   const code = readFileSync(inputFile, 'utf8')
-  const result = JZ.compile(code, { format })
+  const wat = compile(code)
 
-  if (format === 'binary') {
-    writeFileSync(outputFile, result)
-    console.log(`Compiled ${inputFile} to ${outputFile} (${result.byteLength} bytes)`)
+  if (outputFile.endsWith('.wasm')) {
+    if (!watr) {
+      throw new Error('watr package required for WASM binary output. Install with: npm i watr')
+    }
+    const wasm = watr.compile(wat)
+    writeFileSync(outputFile, wasm)
+    console.log(`Compiled ${inputFile} → ${outputFile} (${wasm.byteLength} bytes)`)
   } else {
-    writeFileSync(outputFile, result)
-    console.log(`Generated ${inputFile} to ${outputFile} (${result.length} chars)`)
+    writeFileSync(outputFile, wat)
+    console.log(`Compiled ${inputFile} → ${outputFile} (${wat.length} chars)`)
   }
 }
 
 async function handleRun(args) {
+  if (!watr) {
+    throw new Error('watr package required for running. Install with: npm i watr')
+  }
+
   if (args.length === 0) {
     throw new Error('No input file specified')
   }
 
   const inputFile = args[0]
   const code = readFileSync(inputFile, 'utf8')
-
-  const result = await JZ.evaluate(code)
-  console.log(result)
+  const wat = compile(code)
+  const wasm = watr.compile(wat)
+  const instance = await instantiate(wasm)
+  console.log(instance.run())
 }
 
 // Handle uncaught errors

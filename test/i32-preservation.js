@@ -3,9 +3,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile as jzCompile } from '../index.js'
 
-// Helper to get WAT text
+// Helper to get WAT text (compile now always returns WAT)
 function getWat(code) {
-  return jzCompile(code, { text: true })
+  return jzCompile(code)
 }
 
 test('i32 preservation - integer literals', () => {
