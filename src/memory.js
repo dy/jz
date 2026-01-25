@@ -206,12 +206,20 @@ export const directArrLen = (w) => `(i32.trunc_f64_s (f64.load (i32.sub (call $_
 export const arrCapacity = (w) =>
   `(call $__cap_for_len (call $__ptr_len ${w}))`
 
-/** Get array element (f64) */
+/** Get array element (f64) - smart: handles both flat and ring arrays */
 export const arrGet = (w, idx) =>
+  `(call $__arr_get ${w} ${idx})`
+
+/** Set array element (f64) - smart: handles both flat and ring arrays */
+export const arrSet = (w, idx, val) =>
+  `(call $__arr_set ${w} ${idx} ${val})`
+
+/** Get array element - direct flat access (no ring support, for known-flat arrays) */
+export const arrGetFlat = (w, idx) =>
   `(f64.load (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 3))))`
 
-/** Set array element (f64) */
-export const arrSet = (w, idx, val) =>
+/** Set array element - direct flat (no ring support, for known-flat arrays) */
+export const arrSetFlat = (w, idx, val) =>
   `(f64.store (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 3))) ${val})`
 
 /** Allocate dynamic-sized f64 array */
@@ -230,10 +238,11 @@ export const ptrWithLen = (ptrWat, newLenWat) =>
 export const arrCopy = (dstPtr, dstIdx, srcPtr, srcIdx, count) =>
   `(memory.copy (i32.add (call $__ptr_offset ${dstPtr}) (i32.shl ${dstIdx} (i32.const 3))) (i32.add (call $__ptr_offset ${srcPtr}) (i32.shl ${srcIdx} (i32.const 3))) (i32.shl ${count} (i32.const 3)))`
 
-/** Get array element with typed value return - auto-sets ctx flags */
+/** Get array element with typed value return - auto-sets ctx flags
+ * Uses smart accessor that handles both flat and ring arrays */
 export function arrGetTyped(ctx, arrWat, idxWat) {
   ctx.usedMemory = true
-  return wat(`(f64.load (i32.add (call $__ptr_offset ${arrWat}) (i32.shl ${idxWat} (i32.const 3))))`, 'f64')
+  return wat(`(call $__arr_get ${arrWat} ${idxWat})`, 'f64')
 }
 
 // === Ring Buffers (type=2) ===
@@ -323,7 +332,9 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
   const hasRefTypes = gens.some(g => isHeapRef(g) || isString(g))
   ctx.usedMemory = true
 
-  const isStatic = elements.every(isConstant)
+  // Static allocation for constant arrays EXCEPT empty arrays
+  // Empty arrays are typically mutated via push, so allocate fresh each time
+  const isStatic = elements.length > 0 && elements.every(isConstant)
   if (isStatic && !hasRefTypes) {
     // Static f64 array - store in data segment with C-style header
     const arrayId = Object.keys(ctx.staticArrays).length
@@ -332,8 +343,8 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     const headerOffset = HEAP_START + 4096 + (arrayId * 72)  // 8 byte header + 64 bytes data
     const dataOffset = headerOffset + 8
     ctx.staticArrays[arrayId] = { offset: headerOffset, values, headerSize: 8 }
-    // NaN boxing: mkptr(type, schemaId=0, offset to data)
-    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const 0) (i32.const ${dataOffset}))`, 'array', values.map(() => ({ type: 'f64' })))
+    // NaN boxing: mkptr(type, schemaId=0, offset to data) - flat_array for static dispatch
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.ARRAY}) (i32.const 0) (i32.const ${dataOffset}))`, 'flat_array', values.map(() => ({ type: 'f64' })))
   } else if (hasRefTypes) {
     // Mixed-type array: still use ARRAY type but track schema for element types
     const id = ctx.uniqueId++
@@ -343,14 +354,15 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     const elementSchema = []
     for (let i = 0; i < gens.length; i++) {
       const g = gens[i]
-      const val = (g.type === 'array' || g.type === 'object' || g.type === 'string') ? String(g) : String(f64(g))
+      const val = (g.type === 'array' || g.type === 'flat_array' || g.type === 'ring_array' ||
+                   g.type === 'object' || g.type === 'string') ? String(g) : String(f64(g))
       stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${val})\n      `
       if (isObject(g) && g.schema !== undefined) elementSchema.push({ type: 'object', id: g.schema })
       else elementSchema.push({ type: g.type })
     }
     return wat(`(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, 'array', elementSchema)
+      ${stores}(local.get ${tmp}))`, 'flat_array', elementSchema)
   } else {
     // Dynamic homogeneous f64 array
     const id = ctx.uniqueId++
@@ -362,7 +374,7 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
     }
     return wat(`(block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${gens.length})))
-      ${stores}(local.get ${tmp}))`, 'array', gens.map(() => ({ type: 'f64' })))
+      ${stores}(local.get ${tmp}))`, 'flat_array', gens.map(() => ({ type: 'f64' })))
   }
 }
 

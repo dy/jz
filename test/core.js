@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile, instantiate } from '../index.js'
 import { evaluate, evaluateWat } from './util.js'
-import { assemble } from '../src/compile.js'
+import { assemble } from '../src/assemble.js'
 import { compile as compileWat } from 'watr'
 
 // MVP Test Suite - Focused on what works with current implementation

@@ -5,15 +5,17 @@ import { extractParams } from './analyze.js'
 import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, ptrSetLen, strLen, strNew, strCharAt, strSetChar, strCopy } from './memory.js'
 import { genLoop, genEarlyExitLoop } from './loop.js'
 
-export const fill = (rw, args) => {
+export const fill = (rw, args, receiver) => {
   if (args.length < 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
   ctx.usedStdlib.push('arrayFill')
-  return wat(`(call $arrayFill ${rw} ${f64(gen(args[0]))})`, 'f64')
+  // fill preserves receiver type since it mutates in place
+  const rt = receiver?.type || 'array'
+  return wat(`(call $arrayFill ${rw} ${f64(gen(args[0]))})`, rt)
 }
 
-export const map = (rw, args) => {
+export const map = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -32,11 +34,11 @@ export const map = (rw, args) => {
     body: `(local.set $${paramName} ${arrGet('{$arr}', '{idx}')})
       ${arrSet('{$result}', '{idx}', f64(gen(body)))}`,
     result: '{$result}',
-    type: 'f64'
+    type: 'flat_array'
   })
 }
 
-export const reduce = (rw, args) => {
+export const reduce = (rw, args, receiver) => {
   if (args.length < 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -62,7 +64,7 @@ export const reduce = (rw, args) => {
   })
 }
 
-export const filter = (rw, args) => {
+export const filter = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -96,10 +98,10 @@ export const filter = (rw, args) => {
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
     ${setLen}
-    (local.get ${result})`, 'f64')
+    (local.get ${result})`, 'flat_array')
 }
 
-export const find = (rw, args) => {
+export const find = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -121,7 +123,7 @@ export const find = (rw, args) => {
   })
 }
 
-export const findIndex = (rw, args) => {
+export const findIndex = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -143,7 +145,7 @@ export const findIndex = (rw, args) => {
   })
 }
 
-export const indexOf = (rw, args) => {
+export const indexOf = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -161,7 +163,7 @@ export const indexOf = (rw, args) => {
   })
 }
 
-export const includes = (rw, args) => {
+export const includes = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -179,7 +181,7 @@ export const includes = (rw, args) => {
   })
 }
 
-export const every = (rw, args) => {
+export const every = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -201,7 +203,7 @@ export const every = (rw, args) => {
   })
 }
 
-export const some = (rw, args) => {
+export const some = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -223,7 +225,7 @@ export const some = (rw, args) => {
   })
 }
 
-export const slice = (rw, args) => {
+export const slice = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
   ctx.returnsArrayPointer = true
@@ -251,10 +253,10 @@ export const slice = (rw, args) => {
     (if (i32.lt_s (local.get ${newLen}) (i32.const 0)) (then (local.set ${newLen} (i32.const 0))))
     (local.set ${result} ${arrNew(`(local.get ${newLen})`)})
     ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr})`, `(local.get ${start})`, `(local.get ${newLen})`)}
-    (local.get ${result})`, 'f64')
+    (local.get ${result})`, 'flat_array')
 }
 
-export const reverse = (rw, args) => {
+export const reverse = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
   ctx.returnsArrayPointer = true
@@ -265,6 +267,8 @@ export const reverse = (rw, args) => {
   ctx.addLocal(right, 'i32')
   ctx.addLocal(tmp, 'f64')
   ctx.addLocal(len, 'i32')
+  // Preserve receiver type since reverse mutates in place
+  const rt = receiver?.type || 'array'
   return wat(`(local.set ${arr} ${rw})
     (local.set ${len} ${arrLen(`(local.get ${arr})`)})
     (local.set ${left} (i32.const 0))
@@ -277,79 +281,132 @@ export const reverse = (rw, args) => {
       (local.set ${left} (i32.add (local.get ${left}) (i32.const 1)))
       (local.set ${right} (i32.sub (local.get ${right}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${arr})`, 'f64')
+    (local.get ${arr})`, rt)
 }
 
-export const push = (rw, args) => {
+// push(x) - appends element to end, O(1) amortized
+// Mutates array in place when capacity allows, reallocates if needed
+// Returns the array pointer (may be new if reallocation occurred)
+// Static dispatch: flat_array->inline, ring_array->ring call, unknown->runtime check
+// Note: differs from JS which returns new length
+export const push = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
   const val = gen(args[0])
+  const rt = receiver?.type
+
+  // Static dispatch for known ring buffer
+  if (rt === 'ring_array') {
+    return wat(`(call $__ring_push ${rw} ${f64(val)})`, 'ring_array')
+  }
+
+  // Generate flat array push code (inline O(1))
   const id = ctx.loopCounter++
-  const arr = `$_push_arr_${id}`, result = `$_push_result_${id}`, len = `$_push_len_${id}`
+  const arr = `$_push_arr_${id}`, len = `$_push_len_${id}`, cap = `$_push_cap_${id}`, off = `$_push_off_${id}`, newPtr = `$_push_new_${id}`
   ctx.addLocal(arr, 'f64')
-  ctx.addLocal(result, 'f64')
   ctx.addLocal(len, 'i32')
+  ctx.addLocal(cap, 'i32')
+  ctx.addLocal(off, 'i32')
+  ctx.addLocal(newPtr, 'f64')
+
+  const flatPush = `(local.set ${len} (call $__ptr_len (local.get ${arr})))
+        (local.set ${cap} (call $__cap_for_len (local.get ${len})))
+        (if (result f64) (i32.lt_s (local.get ${len}) (local.get ${cap}))
+          (then
+            (local.set ${off} (call $__ptr_offset (local.get ${arr})))
+            (f64.store (i32.add (local.get ${off}) (i32.shl (local.get ${len}) (i32.const 3))) ${f64(val)})
+            (call $__ptr_set_len (local.get ${arr}) (i32.add (local.get ${len}) (i32.const 1)))
+            (local.get ${arr}))
+          (else
+            (local.set ${newPtr} (call $__realloc (local.get ${arr}) (i32.add (local.get ${len}) (i32.const 1))))
+            (local.set ${off} (call $__ptr_offset (local.get ${newPtr})))
+            (f64.store (i32.add (local.get ${off}) (i32.shl (local.get ${len}) (i32.const 3))) ${f64(val)})
+            (local.get ${newPtr})))`
+
+  // Static dispatch for known flat array - no runtime check needed
+  if (rt === 'flat_array') {
+    return wat(`(local.set ${arr} ${rw})
+      ${flatPush}`, 'flat_array')
+  }
+
+  // Unknown array type - need runtime dispatch
   return wat(`(local.set ${arr} ${rw})
-    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-    (local.set ${result} ${arrNew(`(i32.add (local.get ${len}) (i32.const 1))`)})
-    ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr})`, `(i32.const 0)`, `(local.get ${len})`)}
-    ${arrSet(`(local.get ${result})`, `(local.get ${len})`, f64(val))}
-    (local.get ${result})`, 'f64')
+    (if (result f64) (call $__is_ring (local.get ${arr}))
+      (then (call $__ring_push (local.get ${arr}) ${f64(val)}))
+      (else
+        ${flatPush}))`, 'array')
 }
 
-export const pop = (rw, args) => {
+// pop() - removes and returns last element, O(1)
+// Mutates array length in place
+// Static dispatch: flat_array->inline, ring_array->ring call, unknown->runtime check
+export const pop = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
+  const rt = receiver?.type
+
+  // Static dispatch for known ring buffer
+  if (rt === 'ring_array') {
+    return wat(`(call $__ring_pop ${rw})`, 'f64')
+  }
+
+  // Generate flat array pop code (inline O(1))
   const id = ctx.loopCounter++
-  const arr = `$_pop_arr_${id}`, len = `$_pop_len_${id}`
+  const arr = `$_pop_arr_${id}`, len = `$_pop_len_${id}`, off = `$_pop_off_${id}`
   ctx.addLocal(arr, 'f64')
   ctx.addLocal(len, 'i32')
+  ctx.addLocal(off, 'i32')
+
+  const flatPop = `(local.set ${len} (call $__ptr_len (local.get ${arr})))
+        (if (result f64) (i32.le_s (local.get ${len}) (i32.const 0))
+          (then (f64.const nan))
+          (else
+            (local.set ${off} (call $__ptr_offset (local.get ${arr})))
+            (call $__ptr_set_len (local.get ${arr}) (i32.sub (local.get ${len}) (i32.const 1)))
+            (f64.load (i32.add (local.get ${off}) (i32.shl (i32.sub (local.get ${len}) (i32.const 1)) (i32.const 3))))))`
+
+  // Static dispatch for known flat array - no runtime check needed
+  if (rt === 'flat_array') {
+    return wat(`(local.set ${arr} ${rw})
+      ${flatPop}`, 'f64')
+  }
+
+  // Unknown array type - need runtime dispatch
   return wat(`(local.set ${arr} ${rw})
-    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-    (if (result f64) (i32.gt_s (local.get ${len}) (i32.const 0))
-      (then ${arrGet(`(local.get ${arr})`, `(i32.sub (local.get ${len}) (i32.const 1))`)})
-      (else (f64.const nan)))`, 'f64')
+    (if (result f64) (call $__is_ring (local.get ${arr}))
+      (then (call $__ring_pop (local.get ${arr})))
+      (else
+        ${flatPop}))`, 'f64')
 }
 
-// shift() - returns first element, does not mutate array (returns new view would require tracking)
-// For now: simple implementation that just returns first element
-export const shift = (rw, args) => {
+// shift() - removes and returns first element (mutates array in place)
+// Uses ring buffer semantics: O(1) via head pointer adjustment
+// Auto-converts flat arrays to ring on first shift
+// Returns the value removed (f64), but array is now ring_array type
+export const shift = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
-  const id = ctx.loopCounter++
-  const arr = `$_shift_arr_${id}`, len = `$_shift_len_${id}`
-  ctx.addLocal(arr, 'f64')
-  ctx.addLocal(len, 'i32')
-  // Returns first element or NaN if empty
-  return wat(`(local.set ${arr} ${rw})
-    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-    (if (result f64) (i32.gt_s (local.get ${len}) (i32.const 0))
-      (then ${arrGet(`(local.get ${arr})`, `(i32.const 0)`)})
-      (else (f64.const nan)))`, 'f64')
+  // shift always returns f64 (the removed value)
+  // But note: after shift, the array is a ring buffer
+  return wat(`(call $__arr_shift ${rw})`, 'f64')
 }
 
-// unshift(x) - add element to start, returns new array
-export const unshift = (rw, args) => {
+// unshift(x) - prepends element to start (mutates array in place)
+// Uses ring buffer semantics: O(1) via head pointer adjustment
+// Auto-converts flat arrays to ring on first unshift
+// Returns the modified array pointer (ring_array) - may change due to reallocation
+export const unshift = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
   ctx.returnsArrayPointer = true
   const val = gen(args[0])
-  const id = ctx.loopCounter++
-  const arr = `$_unshift_arr_${id}`, result = `$_unshift_result_${id}`, len = `$_unshift_len_${id}`
-  ctx.addLocal(arr, 'f64')
-  ctx.addLocal(result, 'f64')
-  ctx.addLocal(len, 'i32')
-  return wat(`(local.set ${arr} ${rw})
-    (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-    (local.set ${result} ${arrNew(`(i32.add (local.get ${len}) (i32.const 1))`)})
-    ${arrSet(`(local.get ${result})`, `(i32.const 0)`, f64(val))}
-    ${arrCopy(`(local.get ${result})`, `(i32.const 1)`, `(local.get ${arr})`, `(i32.const 0)`, `(local.get ${len})`)}
-    (local.get ${result})`, 'f64')
+  // After unshift, array is always a ring buffer
+  return wat(`(call $__arr_unshift ${rw} ${f64(val)})`, 'ring_array')
 }
 
-export const forEach = (rw, args) => {
+export const forEach = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -370,7 +427,7 @@ export const forEach = (rw, args) => {
   })
 }
 
-export const concat = (rw, args) => {
+export const concat = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -390,12 +447,12 @@ export const concat = (rw, args) => {
     (local.set ${result} ${arrNew(`(i32.add (local.get ${len1}) (local.get ${len2}))`)})
     ${arrCopy(`(local.get ${result})`, `(i32.const 0)`, `(local.get ${arr1})`, `(i32.const 0)`, `(local.get ${len1})`)}
     ${arrCopy(`(local.get ${result})`, `(local.get ${len1})`, `(local.get ${arr2loc})`, `(i32.const 0)`, `(local.get ${len2})`)}
-    (local.get ${result})`, 'f64')
+    (local.get ${result})`, 'flat_array')
 }
 
 // join(separator) - join array of strings with separator
 // Returns a string. Array elements must be strings.
-export const join = (rw, args) => {
+export const join = (rw, args, receiver) => {
   ctx.usedStringType = true
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -464,7 +521,7 @@ export const join = (rw, args) => {
 }
 
 // flat(depth) - flatten nested arrays by depth levels (default 1)
-export const flat = (rw, args) => {
+export const flat = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
   ctx.returnsArrayPointer = true
@@ -521,12 +578,12 @@ export const flat = (rw, args) => {
           (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $copy_loop_${id})))
-    (local.get ${result})`, 'f64')
+    (local.get ${result})`, 'flat_array')
 }
 
 // flatMap(fn) - map then flatten (equivalent to .map(fn).flat(1))
 // Strategy: cache mapped values in temp array to avoid double callback execution
-export const flatMap = (rw, args) => {
+export const flatMap = (rw, args, receiver) => {
   if (args.length !== 1) return null
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -593,5 +650,5 @@ export const flatMap = (rw, args) => {
           (local.set ${outIdx} (i32.add (local.get ${outIdx}) (i32.const 1)))))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $copy_loop_${id})))
-    (local.get ${result})`, 'f64')
+    (local.get ${result})`, 'flat_array')
 }

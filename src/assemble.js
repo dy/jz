@@ -57,6 +57,7 @@ export function assemble(bodyWat, ctx = {
   // Heap starts after strings and static arrays
   const heapStart = Math.max(stringsEnd, ctx.staticOffset || HEAP_START, HEAP_START)
   wat += `  (global $__heap (mut i32) (i32.const ${heapStart}))\n`
+  wat += `  (global $__heap_start (i32) (i32.const ${heapStart}))\n`
 
   // === Data segments ===
 
@@ -116,6 +117,9 @@ export function assemble(bodyWat, ctx = {
   if (ctx.usedMemory) {
     wat += emitMemoryHelpers()
     wat += '  (export "_alloc" (func $__alloc))\n'
+    // Reset heap to initial state (call between independent computations)
+    wat += '  (func $__reset_heap (global.set $__heap (global.get $__heap_start)))\n'
+    wat += '  (export "_resetHeap" (func $__reset_heap))\n'
   }
 
   // TypedArray arena initialization (after heap)
@@ -287,22 +291,6 @@ function emitMemoryHelpers() {
     ;; For other types (object, etc), no header
     (global.set $__heap (i32.add (global.get $__heap) (local.get $size)))
     (call $__mkptr (local.get $type) (local.get $len) (local.get $offset)))
-
-  ;; Allocate array with properties (uses ARRAY type=1 with schemaId > 0)
-  ;; Memory layout: [length:f64][elem0, ..., elemN, prop0, ..., propM]
-  (func $__alloc_array_props (param $elemLen i32) (param $propCount i32) (param $schemaId i32) (result f64)
-    (local $offset i32) (local $size i32) (local $cap i32) (local $totalLen i32) (local $dataOffset i32)
-    (local.set $totalLen (i32.add (local.get $elemLen) (local.get $propCount)))
-    (local.set $cap (call $__cap_for_len (local.get $totalLen)))
-    (local.set $size (i32.shl (local.get $cap) (i32.const 3)))
-    (local.set $size (i32.and (i32.add (local.get $size) (i32.const 7)) (i32.const -8)))
-    (local.set $offset (global.get $__heap))
-    ;; Layout: [length:f64][elements...][props...]
-    (local.set $dataOffset (i32.add (local.get $offset) (i32.const 8)))
-    (global.set $__heap (i32.add (local.get $offset) (i32.add (local.get $size) (i32.const 8))))
-    ;; Store element count (not total) in header
-    (f64.store (local.get $offset) (f64.convert_i32_s (local.get $elemLen)))
-    (call $__mkptr (i32.const 1) (local.get $schemaId) (local.get $dataOffset)))
 
   ;; NaN box base: 0x7FF8_0000_0000_0000 (quiet NaN)
   ;; Create NaN-boxed pointer: [type:3][aux:16][offset:32]
@@ -671,6 +659,60 @@ function emitMemoryHelpers() {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $copy)))
     (local.get $newPtr))
+
+  ;; Check if array is ring type (aux & 0x8000)
+  (func $__is_ring (param $ptr f64) (result i32)
+    (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 0x8000)))
+
+  ;; Smart array get - handles both flat and ring arrays
+  (func $__arr_get (param $ptr f64) (param $i i32) (result f64)
+    (if (result f64) (call $__is_ring (local.get $ptr))
+      (then (call $__ring_get (local.get $ptr) (local.get $i)))
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))
+
+  ;; Smart array set - handles both flat and ring arrays
+  (func $__arr_set (param $ptr f64) (param $i i32) (param $val f64)
+    (if (call $__is_ring (local.get $ptr))
+      (then (call $__ring_set (local.get $ptr) (local.get $i) (local.get $val)))
+      (else (f64.store (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3))) (local.get $val)))))
+
+  ;; Convert flat array to ring array (for shift/unshift support)
+  (func $__to_ring (param $ptr f64) (result f64)
+    (local $len i32) (local $ring f64) (local $i i32) (local $off i32)
+    (if (result f64) (call $__is_ring (local.get $ptr))
+      (then (local.get $ptr))
+      (else
+        (local.set $len (call $__ptr_len (local.get $ptr)))
+        (local.set $ring (call $__alloc_ring (local.get $len)))
+        (local.set $off (call $__ptr_offset (local.get $ptr)))
+        (local.set $i (i32.const 0))
+        (block $done (loop $copy
+          (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+          (call $__ring_set (local.get $ring) (local.get $i)
+            (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $copy)))
+        (local.get $ring))))
+
+  ;; Smart shift: convert to ring if needed, then shift (mutating)
+  (func $__arr_shift (param $ptr f64) (result f64)
+    (local $ring f64)
+    ;; Empty array check
+    (if (result f64) (i32.le_s (call $__ptr_len (local.get $ptr)) (i32.const 0))
+      (then (f64.const nan))
+      (else
+        ;; Convert to ring if not already
+        (local.set $ring (call $__to_ring (local.get $ptr)))
+        ;; Now do ring shift
+        (call $__ring_shift (local.get $ring)))))
+
+  ;; Smart unshift: convert to ring if needed, prepend value (mutating)
+  (func $__arr_unshift (param $ptr f64) (param $val f64) (result f64)
+    (local $ring f64)
+    ;; Convert to ring if not already
+    (local.set $ring (call $__to_ring (local.get $ptr)))
+    ;; Now do ring unshift
+    (call $__ring_unshift (local.get $ring) (local.get $val)))
 
   ;; Concatenate two strings (handles SSO inputs)
   (func $__strcat (param $a f64) (param $b f64) (result f64)

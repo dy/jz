@@ -19,9 +19,17 @@ Numbers (`0.1`, `0xff`, `0b11`), strings (`"a"`, `'b'`), `true`/`false`, `null`,
 ### Arrays
 ```js
 let a = [1, 2, 3]
-a[0]; a[1] = 5; a.length; a.push(4); a.pop()
+a[0]; a[1] = 5; a.length
 a.map(x => x * 2); a.filter(x => x > 1); a.reduce((s, x) => s + x, 0)
 [...a]  // clone (pointer aliasing otherwise)
+
+// push/pop: O(1) mutable, returns array (not length like JS)
+a = a.push(4)   // append → [1,2,3,4], mutates in-place
+a.pop()         // removes & returns last element
+
+// shift/unshift: O(1) via ring buffer, returns array
+a = a.unshift(0)  // prepend → [0,1,2,3,4]
+a.shift()         // removes & returns first element
 ```
 
 ### Functions
@@ -125,9 +133,27 @@ const ptr = mod.wasm.getArr()
 if (isPtr(ptr)) {
   const view = f64view(mod.wasm._memory, ptr)  // direct Float64Array view
 }
+
+// Memory management - reset between independent computations
+mod.wasm._resetHeap?.()        // reset main heap (arrays, objects, strings)
+mod.wasm._resetTypedArrays?.() // reset TypedArray arena
 ```
 
 ## Limitations
+
+### Memory Model
+Bump allocator with no automatic free. Designed for:
+- Short-lived compute (audio worklets, single-call functions)
+- Real-time: no GC pauses
+- Call `_resetHeap()` between independent computations to reclaim memory
+
+```js
+// Audio worklet pattern: reset each frame
+for (let frame = 0; frame < 1000; frame++) {
+  const result = mod.wasm.process(samples)
+  mod.wasm._resetHeap()  // reclaim all allocations
+}
+```
 
 ### Static Typing (Principal)
 All types resolved at compile-time. No runtime dispatch.
@@ -155,6 +181,10 @@ Only: `Array`, `Float64Array`, `Float32Array`, `Int32Array`, `Uint32Array`, `Int
 ## Performance
 
 - Integer literals use `i32.const`, preserved through arithmetic
+- **Array type tracking**: static dispatch for push/pop based on known array kind:
+  - `flat_array`: literals, `new Array`, `Array.from`, `map`, `filter`, `slice`, etc → inline O(1) code
+  - `ring_array`: after `unshift`/`shift` → ring buffer calls
+  - Unknown (`array`): function params → runtime dispatch via `$__is_ring` check
 - TypedArray.map auto-vectorized (SIMD):
   - `f64x2` (Float64Array), `f32x4` (Float32Array), `i32x4` (Int32Array/Uint32Array)
   - Patterns: `x * c`, `x + c`, `x - c`, `x / c`, `-x`, `Math.abs/sqrt/ceil/floor(x)`, `x & c`, `x | c`, `x << c`
