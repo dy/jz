@@ -381,3 +381,58 @@ test('tail call optimization - deep recursion', async () => {
     countDown(100000)
   `), 100000)
 })
+
+// Exception handling - WASM try/catch/throw
+test('exception handling - basic throw/catch', async () => {
+  is(await evaluate(`
+    try {
+      throw 42
+    } catch(e) {
+      e + 1
+    }
+  `), 43)
+})
+
+test('exception handling - no exception', async () => {
+  is(await evaluate(`
+    try {
+      100
+    } catch(e) {
+      e + 1
+    }
+  `), 100)
+})
+
+test('exception handling - cross-function', async () => {
+  // Exception thrown in called function, caught in caller
+  is(await evaluate(`
+    const mayFail = (x) => {
+      if (x < 0) throw x
+      return x * 2
+    }
+    
+    const safe = (x) => {
+      try {
+        return mayFail(x)
+      } catch(e) {
+        return -e
+      }
+    }
+    
+    safe(5) + safe(-3)
+  `), 13) // 10 + 3
+})
+
+test('exception handling - nested try/catch', async () => {
+  is(await evaluate(`
+    try {
+      try {
+        throw 10
+      } catch(inner) {
+        throw inner + 5
+      }
+    } catch(outer) {
+      outer * 2
+    }
+  `), 30) // (10 + 5) * 2
+})

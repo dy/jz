@@ -225,7 +225,6 @@
     * [x] comma operator - actually allowed, used for args
     * [x] `function*`/`yield` - generators not feasible (parser rejects)
     * [x] dynamic `import()` - static resolution only (parser rejects)
-    * [x] `try`/`catch`/`throw` - no exceptions (parser rejects)
   * [x] Transform (auto-fix in playground)
     * [x] `function` keyword → arrow function (warn in compiler)
     * [x] `var` → `let`/`const` (warn in compiler)
@@ -415,16 +414,22 @@
     * [x] Generate `return_call` instead of `call` + `return`
     * [x] Enables stack-safe recursion (factorial, fibonacci, tree traversal)
     * [x] State machine patterns (parser loops, interpreters)
+    * [x] Disable inside try blocks (exceptions wouldn't be caught)
   * [ ] `simd` - v128 vector ops (watr ✓, V8 ✓)
     * [ ] Auto-vectorize simple array loops: `arr.map(x => x * 2)`
+      * Requires: callback pattern detection, loop unrolling, remainder handling
+      * f64x2 processes 2 elements per instruction (2x speedup potential)
     * [ ] f64x2 for pairs, f32x4 for RGBA/XYZW
     * [ ] String ops: i16x8 for UTF-16 case conversion, comparison
     * [ ] Math batching: process 2-4 values per instruction
-  * [ ] `exceptions` - try/catch/throw (watr ✓, V8 ✓)
-    * [ ] Parse `try { } catch (e) { }` blocks (jessie parser rejects - needs extension)
-    * [ ] Parse `throw expr` statements
-    * [ ] Generate WASM tags, throw, try_table
-    * [ ] Error values: could use NaN-boxed error objects
+    * Note: Complex - needs pattern detection in callbacks, not trivial
+  * [x] `exceptions` - try/catch/throw (watr ✓, V8 ✓)
+    * [x] Parse `try { } catch (e) { }` blocks (subscript/jessie already supports)
+    * [x] Parse `throw expr` statements (subscript/jessie already supports)
+    * [x] Generate WASM tags, throw, try_table
+    * [x] Exception values are f64 (NaN-boxed for any value type)
+    * [x] Cross-function exception propagation
+    * [x] Nested try/catch blocks
 * [ ] Excellent WASM output
 * [ ] Future features (watr supports, runtime varies)
   * [x] funcref/call_indirect - already used for closures

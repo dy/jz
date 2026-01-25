@@ -1868,7 +1868,8 @@ const operators = {
     }
     // Tail call optimization: return f(...args) → return_call $f args
     // Only for direct calls to user-defined non-closure functions
-    if (value && Array.isArray(value) && value[0] === '()') {
+    // IMPORTANT: Do NOT use tail call inside try blocks - exception won't be caught!
+    if (value && Array.isArray(value) && value[0] === '()' && !ctx.inTryBlock) {
       const [, fn, ...args] = value
       // Direct call by name (not method, not closure expression)
       if (typeof fn === 'string' && fn in ctx.functions) {
@@ -2201,6 +2202,76 @@ const operators = {
 
     code += `)\n    (local.get ${result})`
     return wat(code, 'f64')
+  },
+
+  // === Exception handling ===
+
+  // throw expr - throws value as exception
+  'throw'([value]) {
+    ctx.usedException = true
+    return wat(`(throw $__error ${f64(gen(value))})`, 'f64')
+  },
+
+  // try body - just executes body (catch wraps this)
+  'try'([body]) {
+    return gen(body)
+  },
+
+  // ['catch', ['try', body], param, catchBody]
+  // WASM structure: (block $done (block $catch (try_table (catch $tag $catch) body) (br $done)) catchBody)
+  'catch'([tryNode, param, catchBody]) {
+    ctx.usedException = true
+    const id = ctx.uniqueId++
+    const catchLabel = `$_catch_${id}`
+    const doneLabel = `$_done_${id}`
+
+    // Generate try body - disable tail call inside try block
+    const savedInTry = ctx.inTryBlock
+    ctx.inTryBlock = true
+    const tryBody = tryNode && tryNode[1] ? gen(tryNode[1]) : wat('(f64.const 0)', 'f64')
+    ctx.inTryBlock = savedInTry
+
+    // Set up catch parameter as local if provided
+    let catchCode
+    if (param && typeof param === 'string') {
+      ctx.pushScope()
+      ctx.addLocal(param, 'f64')
+      // The caught value is on the stack, store it in param
+      const catchVal = gen(catchBody)
+      ctx.popScope()
+      catchCode = `(local.set $${param}) ${f64(catchVal)}`
+    } else if (catchBody) {
+      // No param - drop the caught value
+      catchCode = `(drop) ${f64(gen(catchBody))}`
+    } else {
+      catchCode = `(drop) (f64.const 0)`
+    }
+
+    // WASM try_table:
+    // - try_table catches $__error and branches to $catch with the exception value on stack
+    // - if no exception, result is on stack, br to $done skips catch
+    // - catch block receives exception value, executes catchBody
+    return wat(`(block ${doneLabel} (result f64)
+      (block ${catchLabel} (result f64)
+        (try_table (result f64) (catch $__error ${catchLabel})
+          ${f64(tryBody)})
+        (br ${doneLabel}))
+      ${catchCode})`, 'f64')
+  },
+
+  // ['finally', inner, finallyBody] where inner is try or catch result
+  'finally'([inner, finallyBody]) {
+    const id = ctx.uniqueId++
+    const result = `$_finally_result_${id}`
+    ctx.addLocal(result, 'f64')
+
+    const innerCode = gen(inner)
+    const finallyCode = gen(finallyBody)
+
+    // Execute finally block after try/catch, discard finally result
+    return wat(`(local.set ${result} ${f64(innerCode)})
+      (drop ${f64(finallyCode)})
+      (local.get ${result})`, 'f64')
   },
 
   // Block with scope OR object literal
@@ -3432,6 +3503,7 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   if (ctx.usedStringType) parentCtx.usedStringType = true
   if (ctx.usedRefArrayType) parentCtx.usedRefArrayType = true
   if (ctx.usedTypedArrays) parentCtx.usedTypedArrays = true
+  if (ctx.usedException) parentCtx.usedException = true
   if (ctx.usedFuncTypes) {
     if (!parentCtx.usedFuncTypes) parentCtx.usedFuncTypes = new Set()
     for (const arity of ctx.usedFuncTypes) parentCtx.usedFuncTypes.add(arity)
