@@ -1,6 +1,6 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-Numeric computation language disguised with syntax of modern minimal functional _JavaScript subset_.
+Numeric computation language looking like modern minimal functional _JavaScript subset_.
 
 
 ## Usage
@@ -118,7 +118,7 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
 * _Zero overhead_ – no runtime type checks, functions monomorphized per call-site.
-* _JS interop_ – export/import, preserve func signatures at WASM boundary.
+* _JS interop_ – export/import preserve func signatures at WASM boundary.
 * _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
 
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?

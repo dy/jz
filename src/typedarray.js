@@ -1,5 +1,6 @@
 // TypedArray method implementations
 // All methods use compile-time known elemType for direct WASM instructions
+// SIMD: Float64Array.map uses f64x2 vectorization for simple arithmetic callbacks
 
 import { ctx, gen } from './compile.js'
 import { ELEM_TYPE, ELEM_STRIDE, wat, f64, i32 } from './types.js'
@@ -12,6 +13,151 @@ import {
 const TYPED_LOAD = ['i32.load8_s', 'i32.load8_u', 'i32.load16_s', 'i32.load16_u', 'i32.load', 'i32.load', 'f32.load', 'f64.load']
 const TYPED_STORE = ['i32.store8', 'i32.store8', 'i32.store16', 'i32.store16', 'i32.store', 'i32.store', 'f32.store', 'f64.store']
 const TYPED_SHIFT = [0, 0, 1, 1, 2, 2, 2, 3]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMD Pattern Detection - analyze callback for vectorization
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Analyze callback body to extract SIMD-vectorizable pattern
+ * Returns { op, const } for patterns like x*2, x+1, -x, Math.abs(x)
+ * Returns null if not vectorizable
+ *
+ * Vectorizable patterns (param is the callback parameter name):
+ * - x * c, c * x → { op: 'mul', const: c }
+ * - x + c, c + x → { op: 'add', const: c }
+ * - x - c        → { op: 'sub', const: c }
+ * - x / c        → { op: 'div', const: c }
+ * - -x           → { op: 'neg' }
+ * - Math.abs(x)  → { op: 'abs' }
+ * - Math.sqrt(x) → { op: 'sqrt' }
+ * - Math.ceil(x) → { op: 'ceil' }
+ * - Math.floor(x)→ { op: 'floor' }
+ */
+function analyzeSimdPattern(body, paramName) {
+  if (!Array.isArray(body)) return null
+
+  const [op, ...args] = body
+
+  // Binary ops: x * c, x + c, etc.
+  if ((op === '*' || op === '+' || op === '-' || op === '/') && args.length === 2) {
+    const [a, b] = args
+    const isParamA = a === paramName
+    const isParamB = b === paramName
+    const constA = !isParamA && isConstNum(a)
+    const constB = !isParamB && isConstNum(b)
+
+    // x * c or c * x
+    if (op === '*' && ((isParamA && constB !== false) || (isParamB && constA !== false))) {
+      return { op: 'mul', const: isParamA ? constB : constA }
+    }
+    // x + c or c + x
+    if (op === '+' && ((isParamA && constB !== false) || (isParamB && constA !== false))) {
+      return { op: 'add', const: isParamA ? constB : constA }
+    }
+    // x - c (not c - x, that's not simple)
+    if (op === '-' && isParamA && constB !== false) {
+      return { op: 'sub', const: constB }
+    }
+    // x / c (not c / x)
+    if (op === '/' && isParamA && constB !== false) {
+      return { op: 'div', const: constB }
+    }
+  }
+
+  // Unary minus: ['-', [null], x] or similar patterns from parser
+  if (op === '-' && args.length === 2 && args[0] === null && args[1] === paramName) {
+    return { op: 'neg' }
+  }
+
+  // Math.abs(x), Math.sqrt(x), etc.
+  if (op === '(' && args.length === 2) {
+    const [fn, fnArgs] = args
+    if (Array.isArray(fn) && fn[0] === '.' && fn[1] === 'Math') {
+      const method = fn[2]
+      if (Array.isArray(fnArgs) && fnArgs.length === 1 && fnArgs[0] === paramName) {
+        if (method === 'abs') return { op: 'abs' }
+        if (method === 'sqrt') return { op: 'sqrt' }
+        if (method === 'ceil') return { op: 'ceil' }
+        if (method === 'floor') return { op: 'floor' }
+      }
+    }
+  }
+
+  return null
+}
+
+/** Check if AST node is a constant number, return value or false */
+function isConstNum(node) {
+  if (typeof node === 'number') return node
+  // Handle string numbers from parser
+  if (typeof node === 'string' && !isNaN(Number(node))) return Number(node)
+  // Handle [null/undefined, number] wrapper from parser
+  // Parser uses sparse arrays so node[0] may be undefined (empty item)
+  if (Array.isArray(node) && node.length === 2 && (node[0] === null || node[0] === undefined) && typeof node[1] === 'number') {
+    return node[1]
+  }
+  return false
+}
+
+/**
+ * Generate SIMD f64x2 WAT for the operation
+ * @param {string} vecReg - v128 local name
+ * @param {object} pattern - { op, const? }
+ * @param {number} id - unique id for locals
+ * @returns {string} WAT code to transform vecReg in place
+ */
+function genSimdOp(vecReg, pattern, id) {
+  const { op } = pattern
+  const c = pattern.const
+
+  switch (op) {
+    case 'mul':
+      return `(local.set ${vecReg} (f64x2.mul (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'add':
+      return `(local.set ${vecReg} (f64x2.add (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'sub':
+      return `(local.set ${vecReg} (f64x2.sub (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'div':
+      return `(local.set ${vecReg} (f64x2.div (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'neg':
+      return `(local.set ${vecReg} (f64x2.neg (local.get ${vecReg})))`
+    case 'abs':
+      return `(local.set ${vecReg} (f64x2.abs (local.get ${vecReg})))`
+    case 'sqrt':
+      return `(local.set ${vecReg} (f64x2.sqrt (local.get ${vecReg})))`
+    case 'ceil':
+      return `(local.set ${vecReg} (f64x2.ceil (local.get ${vecReg})))`
+    case 'floor':
+      return `(local.set ${vecReg} (f64x2.floor (local.get ${vecReg})))`
+    default:
+      throw new Error(`Unknown SIMD op: ${op}`)
+  }
+}
+
+/**
+ * Generate scalar f64 WAT for the operation (for remainder)
+ * @param {string} valLocal - f64 local name  
+ * @param {object} pattern - { op, const? }
+ * @returns {string} WAT expression producing f64 result
+ */
+function genScalarOp(valLocal, pattern) {
+  const { op } = pattern
+  const c = pattern.const
+
+  switch (op) {
+    case 'mul': return `(f64.mul (local.get ${valLocal}) (f64.const ${c}))`
+    case 'add': return `(f64.add (local.get ${valLocal}) (f64.const ${c}))`
+    case 'sub': return `(f64.sub (local.get ${valLocal}) (f64.const ${c}))`
+    case 'div': return `(f64.div (local.get ${valLocal}) (f64.const ${c}))`
+    case 'neg': return `(f64.neg (local.get ${valLocal}))`
+    case 'abs': return `(f64.abs (local.get ${valLocal}))`
+    case 'sqrt': return `(f64.sqrt (local.get ${valLocal}))`
+    case 'ceil': return `(f64.ceil (local.get ${valLocal}))`
+    case 'floor': return `(f64.floor (local.get ${valLocal}))`
+    default: throw new Error(`Unknown scalar op: ${op}`)
+  }
+}
 
 // Convert f64 to element type for store
 const toElemType = (elemType, valWat) =>
@@ -247,7 +393,8 @@ export const slice = (elemType, ptrWat, args) => {
   const beginInit = beginArg ? i32(gen(beginArg)) : '(i32.const 0)'
   const endInit = endArg ? i32(gen(endArg)) : `(call $__typed_len (local.get ${src}))`
 
-  return wat(`(local.set ${src} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${src} ${ptrWat})
     (local.set ${begin} ${beginInit})
     (local.set ${end} ${endInit})
     (if (i32.lt_s (local.get ${begin}) (i32.const 0))
@@ -266,7 +413,7 @@ export const slice = (elemType, ptrWat, args) => {
       (${store} ${dstOffset} (${load} ${srcOffset}))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${dst})`, 'typedarray', elemType)
+    (local.get ${dst}))`, 'typedarray', elemType)
 }
 
 /**
@@ -687,6 +834,7 @@ export const forEach = (elemType, ptrWat, args) => {
 
 /**
  * map(fn) - create new TypedArray with transformed values
+ * SIMD optimized for Float64Array with simple arithmetic callbacks
  */
 export const map = (elemType, ptrWat, args) => {
   const callback = args[0]
@@ -696,6 +844,68 @@ export const map = (elemType, ptrWat, args) => {
   const paramName = paramNames[0] || '_v'
   const idxName = paramNames[1]
 
+  // Try SIMD optimization for Float64Array without index param
+  if (elemType === ELEM_TYPE.F64 && !idxName) {
+    const simdPattern = analyzeSimdPattern(body, paramName)
+    if (simdPattern) {
+      ctx.usedSimd = true
+      return mapSimd(ptrWat, simdPattern)
+    }
+  }
+
+  // Fallback to scalar loop
+  return mapScalar(elemType, ptrWat, paramName, idxName, body)
+}
+
+/** SIMD-optimized map for Float64Array */
+function mapSimd(ptrWat, pattern) {
+  const id = ctx.loopCounter++
+  const src = `$_mp_src_${id}`, dst = `$_mp_dst_${id}`
+  const srcBase = `$_mp_srcb_${id}`, dstBase = `$_mp_dstb_${id}`
+  const idx = `$_mp_i_${id}`, len = `$_mp_len_${id}`
+  const vec = `$_mp_vec_${id}`, val = `$_mp_val_${id}`
+
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(vec, 'v128')
+  ctx.addLocal(val, 'f64')
+
+  const simdOp = genSimdOp(vec, pattern, id)
+  const scalarOp = genScalarOp(val, pattern)
+
+  // SIMD loop: process 2 f64 per iteration, then scalar remainder
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${src} ${ptrWat})
+    (local.set ${len} (call $__typed_len (local.get ${src})))
+    (local.set ${dst} (call $__alloc_typed (i32.const ${ELEM_TYPE.F64}) (local.get ${len})))
+    (local.set ${srcBase} (call $__typed_offset (local.get ${src})))
+    (local.set ${dstBase} (call $__typed_offset (local.get ${dst})))
+    (local.set ${idx} (i32.const 0))
+    ;; SIMD loop: 2 elements per iteration
+    (block $simd_done_${id} (loop $simd_loop_${id}
+      (br_if $simd_done_${id} (i32.gt_s (i32.add (local.get ${idx}) (i32.const 2)) (local.get ${len})))
+      ;; Load 2 f64 (16 bytes)
+      (local.set ${vec} (v128.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 3)))))
+      ;; Apply SIMD operation
+      ${simdOp}
+      ;; Store 2 f64
+      (v128.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 3))) (local.get ${vec}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 2)))
+      (br $simd_loop_${id})))
+    ;; Scalar remainder (0 or 1 element)
+    (if (i32.lt_s (local.get ${idx}) (local.get ${len}))
+      (then
+        (local.set ${val} (f64.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 3)))))
+        (f64.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 3))) ${scalarOp})))
+    (local.get ${dst}))`, 'typedarray', ELEM_TYPE.F64)
+}
+
+/** Scalar map implementation */
+function mapScalar(elemType, ptrWat, paramName, idxName, body) {
   const id = ctx.loopCounter++
   const src = `$_mp_src_${id}`, dst = `$_mp_dst_${id}`
   const srcBase = `$_mp_srcb_${id}`, dstBase = `$_mp_dstb_${id}`
@@ -723,7 +933,8 @@ export const map = (elemType, ptrWat, args) => {
   const storeVal = toElemType(elemType, f64(gen(body)))
   const idxSet = idxName ? `(local.set $${idxName} (local.get ${idx}))` : ''
 
-  return wat(`(local.set ${src} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${src} ${ptrWat})
     (local.set ${len} (call $__typed_len (local.get ${src})))
     (local.set ${dst} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
     (local.set ${srcBase} (call $__typed_offset (local.get ${src})))
@@ -736,7 +947,7 @@ export const map = (elemType, ptrWat, args) => {
       (${store} ${dstOffset} ${storeVal})
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${dst})`, 'typedarray', elemType)
+    (local.get ${dst}))`, 'typedarray', elemType)
 }
 
 /**
@@ -774,7 +985,8 @@ export const filter = (elemType, ptrWat, args) => {
   const loadExpr = fromElemType(elemType, `(${load} ${srcOffset})`)
 
   // Note: We allocate max size then create view with actual count
-  return wat(`(local.set ${src} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${src} ${ptrWat})
     (local.set ${len} (call $__typed_len (local.get ${src})))
     (local.set ${dst} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
     (local.set ${srcBase} (call $__typed_offset (local.get ${src})))
@@ -791,7 +1003,7 @@ export const filter = (elemType, ptrWat, args) => {
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
     (call $__mk_typed_ptr (i32.const ${elemType}) (local.get ${count})
-      (call $__typed_offset (local.get ${dst})))`, 'typedarray', elemType)
+      (call $__typed_offset (local.get ${dst}))))`, 'typedarray', elemType)
 }
 
 /**
@@ -968,7 +1180,8 @@ export const toReversed = (elemType, ptrWat, args) => {
     ? `(i32.add (local.get ${resultBase}) (i32.sub (i32.sub (local.get ${len}) (i32.const 1)) (local.get ${idx})))`
     : `(i32.add (local.get ${resultBase}) (i32.shl (i32.sub (i32.sub (local.get ${len}) (i32.const 1)) (local.get ${idx})) (i32.const ${shift})))`
 
-  return wat(`(local.set ${arr} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${arr} ${ptrWat})
     (local.set ${base} (call $__typed_offset (local.get ${arr})))
     (local.set ${len} (call $__typed_len (local.get ${arr})))
     (local.set ${result} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
@@ -979,7 +1192,7 @@ export const toReversed = (elemType, ptrWat, args) => {
       (${store} ${dstOffset} (${load} ${srcOffset}))
       (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
       (br $loop_${id})))
-    (local.get ${result})`, 'typedarray', elemType)
+    (local.get ${result}))`, 'typedarray', elemType)
 }
 
 /**
@@ -1030,7 +1243,8 @@ export const toSorted = (elemType, ptrWat, args) => {
                 elemType === ELEM_TYPE.F32 ? 'f32.gt' : 'i32.gt_s'
 
   // Copy then insertion sort
-  return wat(`(local.set ${arr} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${arr} ${ptrWat})
     (local.set ${base} (call $__typed_offset (local.get ${arr})))
     (local.set ${len} (call $__typed_len (local.get ${arr})))
     (local.set ${result} (call $__alloc_typed (i32.const ${elemType}) (local.get ${len})))
@@ -1058,7 +1272,7 @@ export const toSorted = (elemType, ptrWat, args) => {
       (${store} ${jPlusOneOffset} (local.get ${key}))
       (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
       (br $outer_${id})))
-    (local.get ${result})`, 'typedarray', elemType)
+    (local.get ${result}))`, 'typedarray', elemType)
 }
 
 /**
@@ -1099,7 +1313,8 @@ export const withAt = (elemType, ptrWat, args) => {
   const valInit = toElemType(elemType, f64(gen(valArg)))
 
   // Handle negative index
-  return wat(`(local.set ${arr} ${ptrWat})
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${arr} ${ptrWat})
     (local.set ${base} (call $__typed_offset (local.get ${arr})))
     (local.set ${len} (call $__typed_len (local.get ${arr})))
     (local.set ${targetIdx} ${i32(gen(idxArg))})
@@ -1112,7 +1327,7 @@ export const withAt = (elemType, ptrWat, args) => {
     (memory.copy (local.get ${resultBase}) (local.get ${base}) (i32.mul (local.get ${len}) (i32.const ${stride})))
     ;; Set the new value
     (${store} ${targetOffset} ${valInit})
-    (local.get ${result})`, 'typedarray', elemType)
+    (local.get ${result}))`, 'typedarray', elemType)
 }
 
 /** Method dispatch table */

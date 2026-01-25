@@ -1877,7 +1877,7 @@ const operators = {
         // Skip closures - they need env setup which can't be in tail position
         if (!fnDef.closure) {
           // Expand comma-separated args
-          const expandedArgs = args.filter(a => a != null).flatMap(a => 
+          const expandedArgs = args.filter(a => a != null).flatMap(a =>
             Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
           const argWats = expandedArgs.map(a => String(f64(gen(a)))).join(' ')
           return wat(`(return_call $${fn} ${argWats})`, 'f64')
