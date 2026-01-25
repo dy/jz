@@ -256,56 +256,48 @@
     * [-] Known string params → deferred (rare in hot paths)
     * [-] Known symbol typeof → deferred (rare)
 
-## Pointer Kinds Refactor (from research.md) - COMPLETED
+* [x] Pointer Kinds Refactor (from research.md) - COMPLETED
+  * [x] **Phase 1: Update types.js constants**
+    * [x] Replace PTR_TYPE enum with new 3-bit types (0-7)
+    * [x] Add type constants: ATOM=0, ARRAY=1, TYPED=2, STRING=3, OBJECT=4, CLOSURE=5, REGEX=6
+    * [x] Add ATOM subtypes: NULL=0, UNDEF=1, SYMBOL=2+
+    * [x] Add OBJECT subtypes: SCHEMA=0, HASH=1, SET=2, MAP=3
+    * [x] Update pointer encoding helpers for `[type:3][aux:16][off:32]` layout
+    * [x] Update `__mkptr`, `__ptr_type`, `__ptr_aux`, `__ptr_offset` in assemble.js
+    * [x] Update index.js `decodePtr`/`encodePtr` for new bit layout
+  * [x] **Phase 2: ATOM type (Symbol)** - DONE
+    * Symbol() creates unique ATOM pointers (type=0, aux=2, offset=incrementing id)
+    * typeof returns 'symbol', symbols compare by identity
+    * null/undefined remain as f64(0) for arithmetic compatibility
+  * [x] **Phase 3: STRING SSO** - DONE
+    * ≤6 ASCII chars (len:3 + chars:7×6 = 45 bits) packed in pointer
+    * SSO helpers: `$__is_sso`, `$__str_len`, `$__str_char_at`, `$__str_copy`, `$__sso_to_heap`
+    * All string ops SSO-aware (strcat, template literals, regex, etc.)
+  * [x] **Phase 4: TYPED view model** - DONE
+    * View header: `[len:i32][dataPtr:i32]` (8 bytes), pointer `[type:3][elem:3][_:13][viewOffset:32]`
+    * Zero-copy subarrays: `$__mk_typed_view` allocates 8-byte header sharing dataPtr
+    * Full 32-bit addressing (was 22-bit), unlimited length (was 4M elements)
+  * [x] **Phase 5: OBJECT unification**
+    * [x] Unified OBJECT/HASH/SET/MAP under type=4
+    * [x] kind in aux bits: SCHEMA=0, HASH=1, SET=2, MAP=3
+    * [x] Updated stdlib.js `__set_new`, `__map_new`
+    * [x] Updated index.js `ptrToValue` for new encoding
+  * [x] **Phase 6: CLOSURE refactor** - Already working
+    * [x] funcIdx in pointer aux, env in memory
+    * [x] Already correctly encoded
+  * [x] **Phase 7: REGEX refactor** - Already working
+    * [x] flags+funcIdx in pointer aux
+    * [x] Updated compile.js regex codegen
+  * [x] **Phase 8: ARRAY ring bit**
+    * [x] ring=1 in aux bit for O(1) shift/unshift
+    * [x] Updated `__alloc_ring` to use type=1 with aux=0x8000
 
-* [x] **Phase 1: Update types.js constants**
-  * [x] Replace PTR_TYPE enum with new 3-bit types (0-7)
-  * [x] Add type constants: ATOM=0, ARRAY=1, TYPED=2, STRING=3, OBJECT=4, CLOSURE=5, REGEX=6
-  * [x] Add ATOM subtypes: NULL=0, UNDEF=1, SYMBOL=2+
-  * [x] Add OBJECT subtypes: SCHEMA=0, HASH=1, SET=2, MAP=3
-  * [x] Update pointer encoding helpers for `[type:3][aux:16][off:32]` layout
-  * [x] Update `__mkptr`, `__ptr_type`, `__ptr_aux`, `__ptr_offset` in assemble.js
-  * [x] Update index.js `decodePtr`/`encodePtr` for new bit layout
-
-* [x] **Phase 2: ATOM type (Symbol)** - DONE
-  * Symbol() creates unique ATOM pointers (type=0, aux=2, offset=incrementing id)
-  * typeof returns 'symbol', symbols compare by identity
-  * null/undefined remain as f64(0) for arithmetic compatibility
-
-* [x] **Phase 3: STRING SSO** - DONE
-  * ≤6 ASCII chars (len:3 + chars:7×6 = 45 bits) packed in pointer
-  * SSO helpers: `$__is_sso`, `$__str_len`, `$__str_char_at`, `$__str_copy`, `$__sso_to_heap`
-  * All string ops SSO-aware (strcat, template literals, regex, etc.)
-
-* [x] **Phase 4: TYPED view model** - DONE
-  * View header: `[len:i32][dataPtr:i32]` (8 bytes), pointer `[type:3][elem:3][_:13][viewOffset:32]`
-  * Zero-copy subarrays: `$__mk_typed_view` allocates 8-byte header sharing dataPtr
-  * Full 32-bit addressing (was 22-bit), unlimited length (was 4M elements)
-
-* [x] **Phase 5: OBJECT unification**
-  * [x] Unified OBJECT/HASH/SET/MAP under type=4
-  * [x] kind in aux bits: SCHEMA=0, HASH=1, SET=2, MAP=3
-  * [x] Updated stdlib.js `__set_new`, `__map_new`
-  * [x] Updated index.js `ptrToValue` for new encoding
-
-* [x] **Phase 6: CLOSURE refactor** - Already working
-  * [x] funcIdx in pointer aux, env in memory
-  * [x] Already correctly encoded
-
-* [x] **Phase 7: REGEX refactor** - Already working
-  * [x] flags+funcIdx in pointer aux
-  * [x] Updated compile.js regex codegen
-
-* [x] **Phase 8: ARRAY ring bit**
-  * [x] ring=1 in aux bit for O(1) shift/unshift
-  * [x] Updated `__alloc_ring` to use type=1 with aux=0x8000
-
-* [x] **Phase 9: Cleanup**
-  * [x] Updated assemble.js for new pointer constants
-  * [x] Updated memory.js helpers for new layouts
-  * [x] Updated all type checks to use 3-bit extraction
-  * [x] Updated index.js interop for new encoding
-  * [x] All 481 tests passing
+  * [x] **Phase 9: Cleanup**
+    * [x] Updated assemble.js for new pointer constants
+    * [x] Updated memory.js helpers for new layouts
+    * [x] Updated all type checks to use 3-bit extraction
+    * [x] Updated index.js interop for new encoding
+    * [x] All 481 tests passing
 
 * [x] Repointers: unified pointer design
   * [x] Unified format: `[type:4][aux:16][offset:31]` (51 bits in NaN mantissa)
@@ -415,10 +407,11 @@
     * [x] Enables stack-safe recursion (factorial, fibonacci, tree traversal)
     * [x] State machine patterns (parser loops, interpreters)
     * [x] Disable inside try blocks (exceptions wouldn't be caught)
-  * [ ] `simd` - v128 vector ops (watr ✓, V8 ✓)
-    * [ ] Auto-vectorize simple array loops: `arr.map(x => x * 2)`
-      * Requires: callback pattern detection, loop unrolling, remainder handling
-      * f64x2 processes 2 elements per instruction (2x speedup potential)
+  * [x] `simd` - v128 vector ops (watr ✓, V8 ✓)
+    * [x] Auto-vectorize simple Float64Array loops: `arr.map(x => x * 2)`
+      * Pattern detection for `x * c`, `x + c`, `x - c`, `x / c`
+      * f64x2 main loop processes 2 elements per instruction
+      * Scalar remainder loop for odd-length arrays
     * [ ] f64x2 for pairs, f32x4 for RGBA/XYZW
     * [ ] String ops: i16x8 for UTF-16 case conversion, comparison
     * [ ] Math batching: process 2-4 values per instruction
@@ -446,7 +439,7 @@
   * [ ] WASM modules definitions?
 * [ ] WebGPU compute shaders
 * [ ] Tooling: sourcemaps, debuggins, playground
-* [ ] Jessie validation & optimizations
+* [ ] Optimizations
 * [ ] metacircularity
 * [ ] test262 full
 * [ ] CLI

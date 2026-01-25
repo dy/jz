@@ -410,7 +410,7 @@ test('exception handling - cross-function', async () => {
       if (x < 0) throw x
       return x * 2
     }
-    
+
     const safe = (x) => {
       try {
         return mayFail(x)
@@ -418,7 +418,7 @@ test('exception handling - cross-function', async () => {
         return -e
       }
     }
-    
+
     safe(5) + safe(-3)
   `), 13) // 10 + 3
 })

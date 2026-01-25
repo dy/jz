@@ -501,3 +501,23 @@ new MyClass()          // ✗ Error
 2. **Prefer array methods** over manual iteration
 3. **Clone explicitly** with `[...arr]` when shallow copy needed
 4. **Avoid unnecessary f64 conversions** in hot loops
+5. **Use Float64Array.map with simple callbacks** - auto-vectorized with SIMD (f64x2)
+
+### SIMD Auto-Vectorization
+
+Float64Array.map is automatically vectorized when the callback is a simple arithmetic operation:
+
+```js
+// These patterns use SIMD (f64x2 - 2 elements per instruction)
+arr.map(x => x * 2)      // ✓ multiplication
+arr.map(x => x + 10)     // ✓ addition
+arr.map(x => x - 1)      // ✓ subtraction
+arr.map(x => x / 4)      // ✓ division
+
+// These fall back to scalar loop
+arr.map(x => x * x)      // ✗ non-constant operand
+arr.map(x => x + y)      // ✗ captures variable
+arr.map(x => Math.sin(x)) // ✗ function call
+```
+
+The vectorized loop processes pairs of elements, with a scalar remainder for odd lengths.

@@ -197,10 +197,10 @@ function ptrToValue(memory, ptr, schemas) {
     return result
   }
 
-  // Type 2 = TYPED: view model with header [-8: len:i32, dataPtr:i32]
+  // Type 2 = TYPED: view model with header at offset [len:i32, dataPtr:i32]
   if (type === 2) {
     const elemType = (aux >> 13) & 0x7
-    const header = new Int32Array(memory.buffer, offset - 8, 2)
+    const header = new Int32Array(memory.buffer, offset, 2)
     const len = header[0]
     const dataPtr = header[1]
     // Return as appropriate typed array based on elemType

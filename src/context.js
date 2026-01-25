@@ -108,6 +108,11 @@ export function createContext() {
         this.locals[finalName] = { idx: this.localCounter++, type, originalName: name, scopedName: finalName }
         // Namespace type is compile-time only - no WASM local needed
         if (type === 'namespace') return this.locals[finalName]
+        // v128 for SIMD operations
+        if (type === 'v128') {
+          this.localDecls.push(`(local $${finalName} v128)`)
+          return this.locals[finalName]
+        }
         // Memory-based: all reference types are f64 pointers (NaN-boxed)
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||

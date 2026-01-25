@@ -633,3 +633,53 @@ test('TypedArray - with negative index', async () => {
   `)
   is(test(), 219)  // 1*100 + 2*10 + 99
 })
+
+// SIMD tests - Float64Array.map auto-vectorization
+test('TypedArray - SIMD map multiply', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(8)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      buf[4] = 5; buf[5] = 6; buf[6] = 7; buf[7] = 8
+      let doubled = buf.map(x => x * 2)
+      return doubled[0] + doubled[3] + doubled[7]
+    }
+  `)
+  is(test(), 26)  // 2 + 8 + 16
+})
+
+test('TypedArray - SIMD map add', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(4)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      let result = buf.map(x => x + 10)
+      return result[0] + result[3]
+    }
+  `)
+  is(test(), 25)  // 11 + 14
+})
+
+test('TypedArray - SIMD map odd length (remainder)', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(5)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5
+      let result = buf.map(x => x * 3)
+      return result[4]  // 5 * 3 = 15 (remainder element)
+    }
+  `)
+  is(test(), 15)
+})
+
+test('TypedArray - SIMD map divide', async () => {
+  const { test } = await run(`
+    export const test = () => {
+      let buf = new Float64Array(4)
+      buf[0] = 2; buf[1] = 4; buf[2] = 6; buf[3] = 8
+      let result = buf.map(x => x / 2)
+      return result[0] + result[1] + result[2] + result[3]
+    }
+  `)
+  is(test(), 10)  // 1 + 2 + 3 + 4
+})
