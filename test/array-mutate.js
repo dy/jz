@@ -48,12 +48,19 @@ test('pop - empty array returns NaN', async () => {
   ok(isNaN(await evaluate('[].pop()')))
 })
 
-// Note: Unlike JS, jz arrays return new arrays from push
-// The original array is not mutated
-test('push - original not mutated (new array semantics)', async () => {
-  // a remains [1,2,3], b is [1,2,3,4]
-  is(await evaluate('{ let a = [1,2,3]; let b = a.push(4); a.length }'), 3)
+// push/pop use mutable semantics (like JS) for O(1) performance
+// Note: unlike JS, push returns the array (for chaining), not the new length
+test('push - mutable semantics', async () => {
+  // Within capacity: push mutates the original, a and b point to same array
+  is(await evaluate('{ let a = [1,2,3]; let b = a.push(4); a.length }'), 4)
   is(await evaluate('{ let a = [1,2,3]; let b = a.push(4); b.length }'), 4)
+  is(await evaluate('{ let a = [1,2,3]; let b = a.push(4); a[3] }'), 4)
+})
+
+test('pop - mutable semantics', async () => {
+  // pop mutates the original array
+  is(await evaluate('{ let a = [1,2,3]; let x = a.pop(); a.length }'), 2)
+  is(await evaluate('{ let a = [1,2,3]; let x = a.pop(); x }'), 3)
 })
 
 // Capacity tier tests (gc:false specific behavior)
@@ -193,4 +200,139 @@ test('unshift - build array', async () => {
     }
     a[2]
   }`), 3)
+})
+// O(1) complexity tests - verify scaling via timing
+// These catch regressions where push/pop/shift/unshift become O(n)
+// O(1): 10x ops → ~10x time. O(n): 10x ops → ~100x time
+
+import { compile } from './util.js'
+
+async function measureOps(code, warmup = 2) {
+  const mod = await compile(code)
+  for (let i = 0; i < warmup; i++) mod.run()
+  const start = performance.now()
+  mod.run()
+  return performance.now() - start
+}
+
+test('push - O(1) scaling', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 100; i = i + 1) a = a.push(i);
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 1000; i = i + 1) a = a.push(i);
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `push should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
+})
+
+test('pop - O(1) scaling', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 100; i = i + 1) a = a.push(i);
+      for (let i = 0; i < 100; i = i + 1) a.pop();
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 1000; i = i + 1) a = a.push(i);
+      for (let i = 0; i < 1000; i = i + 1) a.pop();
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `pop should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
+})
+
+test('shift - O(1) via ring buffer', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 100; i = i + 1) a = a.push(i);
+      a = a.unshift(0);
+      for (let i = 0; i < 100; i = i + 1) a.shift();
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 1000; i = i + 1) a = a.push(i);
+      a = a.unshift(0);
+      for (let i = 0; i < 1000; i = i + 1) a.shift();
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `shift should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
+})
+
+test('unshift - O(1) via ring buffer', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 100; i = i + 1) a = a.unshift(i);
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 1000; i = i + 1) a = a.unshift(i);
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `unshift should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
+})
+
+test('queue pattern - O(1) push+shift', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      a = a.unshift(0);
+      for (let i = 0; i < 100; i = i + 1) { a = a.push(i); a.shift(); }
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      a = a.unshift(0);
+      for (let i = 0; i < 1000; i = i + 1) { a = a.push(i); a.shift(); }
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `queue should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
+})
+
+test('stack pattern - O(1) push+pop', async () => {
+  const t100 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 100; i = i + 1) { a = a.push(i); a.pop(); }
+      a.length
+    }
+  `)
+  const t1000 = await measureOps(`
+    export const run = () => {
+      let a = [];
+      for (let i = 0; i < 1000; i = i + 1) { a = a.push(i); a.pop(); }
+      a.length
+    }
+  `)
+  const ratio = t1000 / t100
+  ok(ratio < 12, `stack should be O(1): 10x ops → ${ratio.toFixed(1)}x time (expected <12x)`)
 })

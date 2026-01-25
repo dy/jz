@@ -279,3 +279,32 @@ test('RING buffer - helpers are included in compiled WAT', () => {
   ok(wat.includes('$__ring_shift'), 'should have ring shift')
   ok(wat.includes('$__ring_unshift'), 'should have ring unshift')
 })
+// Memory management - heap reset
+
+test('_resetHeap is exported', async () => {
+  const wasm = compile(`let a = [1,2,3]`)
+  const mod = await instantiate(wasm)
+  ok(mod._resetHeap, 'should have _resetHeap')
+  ok(typeof mod._resetHeap === 'function', '_resetHeap should be function')
+})
+
+test('_resetHeap reclaims memory', async () => {
+  const wasm = compile(`
+    export const alloc = () => {
+      let a = [];
+      for (let i = 0; i < 50; i = i + 1) a = a.push(i);
+      return a.length
+    }
+  `)
+  const mod = await instantiate(wasm)
+
+  // First call establishes baseline
+  is(mod.alloc(), 50)
+
+  // Allocate many times with reset - without reset, would exhaust memory
+  for (let i = 0; i < 100; i++) {
+    mod._resetHeap()  // reset before each call
+    is(mod.alloc(), 50)
+  }
+  ok(true, 'completed 100 allocations with reset')
+})

@@ -4,6 +4,7 @@ It should use API provided by subscript to define operators if needed.
 Document any deviations from standard JS behavior in docs.md as appropriate.
 Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions. Any implemented features should have thorough tests in the test/ folder. For tests we use tst package.
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
+Do not change tha signature or semantic of JS compat functions.
 For any file structure changes, update project structure section below.
 
 ## Project Structure (src/, ~13450 lines)

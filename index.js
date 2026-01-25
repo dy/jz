@@ -2,7 +2,8 @@
 import 'subscript/jessie'
 import { parse } from 'subscript/jessie'
 import normalize, { getWarnings } from './src/normalize.js'
-import { compile as compileAst, assemble } from './src/compile.js'
+import { compile as compileAst } from './src/compile.js'
+import { assemble } from './src/assemble.js'
 
 // NaN-boxing pointer encoding
 // Format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
@@ -335,4 +336,4 @@ export function compile(code) {
   return compileAst(ast)
 }
 
-export { parse, normalize, compileAst, assemble, f64view, isPtr, decodePtr, encodePtr }
+export { parse, normalize, assemble, compileAst, f64view, isPtr, decodePtr, encodePtr }

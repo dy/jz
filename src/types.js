@@ -191,6 +191,23 @@ export const fmtNum = n =>
   n === -Infinity ? '-inf' :
   String(n)
 
+// Types that are f64 pointers (NaN-boxed) - pass through f64() unchanged
+const F64_TYPES = new Set([
+  'f64',
+  // PTR_TYPE.ARRAY
+  'array', 'flat_array', 'ring_array',
+  // PTR_TYPE.STRING
+  'string',
+  // PTR_TYPE.OBJECT (all kinds: SCHEMA, SET, MAP, and boxed variants)
+  'object',
+  // PTR_TYPE.CLOSURE
+  'closure',
+  // PTR_TYPE.TYPED
+  'typedarray',
+  // PTR_TYPE.ATOM kind=SYMBOL
+  'symbol',
+])
+
 /**
  * Coerce WAT value to f64
  * @param {String & {type: string}} op - Boxed WAT string
@@ -198,11 +215,7 @@ export const fmtNum = n =>
  */
 export const f64 = op => {
   const t = op.type
-  // Object is f64 pointer (Strategy B), not GC ref
-  // boxed types, array_props, typedarray, set, map, dyn_object, symbol are also f64 pointers
-  if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object' ||
-      t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props' ||
-      t === 'typedarray' || t === 'set' || t === 'map' || t === 'dyn_object' || t === 'symbol') return op
+  if (F64_TYPES.has(t)) return op
   if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }
@@ -265,8 +278,12 @@ export const isF64 = v => v.type === 'f64'
 export const isI32 = v => v.type === 'i32'
 /** @param {String & {type: string}} v */
 export const isString = v => v.type === 'string'
-/** @param {String & {type: string}} v */
-export const isArray = v => v.type === 'array'
+/** @param {String & {type: string}} v - any array type (array/flat_array/ring_array) */
+export const isArray = v => v.type === 'array' || v.type === 'flat_array' || v.type === 'ring_array'
+/** @param {String & {type: string}} v - known flat array (O(1) push/pop without ring check) */
+export const isFlatArray = v => v.type === 'flat_array'
+/** @param {String & {type: string}} v - known ring buffer (O(1) all ops via head pointer) */
+export const isRingArray = v => v.type === 'ring_array'
 /** @param {String & {type: string}} v */
 export const isObject = v => v.type === 'object'
 /** @param {String & {type: string}} v */
@@ -275,22 +292,22 @@ export const isClosure = v => v.type === 'closure'
 export const isRef = v => v.type === 'ref'
 /** @param {String & {type: string}} v */
 export const isRefArray = v => v.type === 'refarray'
-/** @param {String & {type: string}} v - Boxed string (OBJECT + schema[0]==='__string__') */
-export const isBoxedString = v => v.type === 'boxed_string'
-/** @param {String & {type: string}} v - Boxed number (OBJECT + schema[0]==='__number__') */
-export const isBoxedNumber = v => v.type === 'boxed_number'
-/** @param {String & {type: string}} v - Boxed boolean (OBJECT + schema[0]==='__boolean__') */
-export const isBoxedBoolean = v => v.type === 'boxed_boolean'
-/** @param {String & {type: string}} v - Array with named properties (ARRAY_MUT + schemaId > 0) */
-export const isArrayProps = v => v.type === 'array_props'
+/** @param {String & {type: string}} v - Boxed string (object with schema[0]==='__string__') */
+export const isBoxedString = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0] === '__string__'
+/** @param {String & {type: string}} v - Boxed number (object with schema[0]==='__number__') */
+export const isBoxedNumber = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0] === '__number__'
+/** @param {String & {type: string}} v - Boxed boolean (object with schema[0]==='__boolean__') */
+export const isBoxedBoolean = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0] === '__boolean__'
+/** @param {String & {type: string}} v - Boxed array (object with schema[0]==='__array__') */
+export const isBoxedArray = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0] === '__array__'
+/** @param {String & {type: string}} v - Any boxed primitive (schema[0] starts with '__') */
+export const isBoxed = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0]?.startsWith('__')
 /** @param {String & {type: string}} v - Regex pattern */
 export const isRegex = v => v.type === 'regex'
-/** @param {String & {type: string}} v - Set collection */
-export const isSet = v => v.type === 'set'
-/** @param {String & {type: string}} v - Map collection */
-export const isMap = v => v.type === 'map'
-/** @param {String & {type: string}} v - Dynamic object (hash table, runtime props) */
-export const isDynObject = v => v.type === 'dyn_object'
+/** @param {String & {type: string}} v - Set collection (object with schema==='set') */
+export const isSet = v => v.type === 'object' && v.schema === 'set'
+/** @param {String & {type: string}} v - Map collection (object with schema==='map') */
+export const isMap = v => v.type === 'object' && v.schema === 'map'
 /** @param {String & {type: string}} v - Symbol (ATOM type with id) */
 export const isSymbol = v => v.type === 'symbol'
 
@@ -298,6 +315,6 @@ export const isSymbol = v => v.type === 'symbol'
 /** @param {String & {type: string}} a @param {String & {type: string}} b */
 export const bothI32 = (a, b) => a.type === 'i32' && b.type === 'i32'
 /** @param {String & {type: string}} v */
-export const isHeapRef = v => v.type === 'array' || v.type === 'object' || v.type === 'refarray' || v.type === 'ref'
+export const isHeapRef = v => v.type === 'array' || v.type === 'flat_array' || v.type === 'ring_array' || v.type === 'object' || v.type === 'refarray' || v.type === 'ref'
 /** @param {String & {type: string, schema?: *}} v */
 export const hasSchema = v => v.schema !== undefined

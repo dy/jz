@@ -187,7 +187,7 @@ export function genObjectDestructDecl(ctx, gen, pattern, valueAst, isConst) {
   const obj = gen(valueAst)
 
   const schema = (obj.type === 'object' && obj.schema !== undefined)
-    ? ctx.objectSchemas[obj.schema]
+    ? (Array.isArray(obj.schema) ? obj.schema : ctx.objectSchemas[obj.schema])
     : []
 
   let code = `(local.set ${tmp} ${obj})\n    `

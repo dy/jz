@@ -1,7 +1,7 @@
 // Test utilities
 import { compile as jzCompile, instantiate } from '../index.js'
 import { compile as watrCompile } from 'watr'
-import { assemble } from '../src/compile.js'
+import { assemble } from '../src/assemble.js'
 
 // Evaluate JS expression
 export async function evaluate(code, options = {}) {

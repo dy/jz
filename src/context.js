@@ -119,10 +119,11 @@ export function createContext() {
           return this.locals[finalName]
         }
         // Memory-based: all reference types are f64 pointers (NaN-boxed)
-        const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
+        // flat_array/ring_array are specialized array types for static dispatch
+        const wasmType = (type === 'array' || type === 'flat_array' || type === 'ring_array' ||
+           type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||
-           type === 'boxed_string' || type === 'boxed_number' || type === 'boxed_boolean' ||
-           type === 'array_props' || type === 'typedarray' || type === 'regex' ||
+           type === 'typedarray' || type === 'regex' ||
            type === 'set' || type === 'map' || type === 'symbol') ? 'f64' : type
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }

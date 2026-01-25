@@ -143,7 +143,7 @@ test('SSO vs heap - variable assignment', async () => {
   // SSO string assigned to variable
   is(await evaluate('{ let s = "abc"; s.length }'), 3)
   is(await evaluate('{ let s = "abc"; s.charCodeAt(0) }'), 97)
-  
+
   // Heap string assigned to variable
   is(await evaluate('{ let s = "hello world"; s.length }'), 11)
   is(await evaluate('{ let s = "hello world"; s.charCodeAt(0) }'), 104)
