@@ -104,34 +104,47 @@ function isConstNum(node) {
  * Generate SIMD f64x2 WAT for the operation
  * @param {string} vecReg - v128 local name
  * @param {object} pattern - { op, const? }
- * @param {number} id - unique id for locals
  * @returns {string} WAT code to transform vecReg in place
  */
-function genSimdOp(vecReg, pattern, id) {
+function genSimdOpF64(vecReg, pattern) {
   const { op } = pattern
   const c = pattern.const
 
   switch (op) {
-    case 'mul':
-      return `(local.set ${vecReg} (f64x2.mul (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
-    case 'add':
-      return `(local.set ${vecReg} (f64x2.add (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
-    case 'sub':
-      return `(local.set ${vecReg} (f64x2.sub (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
-    case 'div':
-      return `(local.set ${vecReg} (f64x2.div (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
-    case 'neg':
-      return `(local.set ${vecReg} (f64x2.neg (local.get ${vecReg})))`
-    case 'abs':
-      return `(local.set ${vecReg} (f64x2.abs (local.get ${vecReg})))`
-    case 'sqrt':
-      return `(local.set ${vecReg} (f64x2.sqrt (local.get ${vecReg})))`
-    case 'ceil':
-      return `(local.set ${vecReg} (f64x2.ceil (local.get ${vecReg})))`
-    case 'floor':
-      return `(local.set ${vecReg} (f64x2.floor (local.get ${vecReg})))`
-    default:
-      throw new Error(`Unknown SIMD op: ${op}`)
+    case 'mul': return `(local.set ${vecReg} (f64x2.mul (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'add': return `(local.set ${vecReg} (f64x2.add (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'sub': return `(local.set ${vecReg} (f64x2.sub (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'div': return `(local.set ${vecReg} (f64x2.div (local.get ${vecReg}) (f64x2.splat (f64.const ${c}))))`
+    case 'neg': return `(local.set ${vecReg} (f64x2.neg (local.get ${vecReg})))`
+    case 'abs': return `(local.set ${vecReg} (f64x2.abs (local.get ${vecReg})))`
+    case 'sqrt': return `(local.set ${vecReg} (f64x2.sqrt (local.get ${vecReg})))`
+    case 'ceil': return `(local.set ${vecReg} (f64x2.ceil (local.get ${vecReg})))`
+    case 'floor': return `(local.set ${vecReg} (f64x2.floor (local.get ${vecReg})))`
+    default: throw new Error(`Unknown SIMD op: ${op}`)
+  }
+}
+
+/**
+ * Generate SIMD f32x4 WAT for the operation (4 elements per vector)
+ * @param {string} vecReg - v128 local name
+ * @param {object} pattern - { op, const? }
+ * @returns {string} WAT code to transform vecReg in place
+ */
+function genSimdOpF32(vecReg, pattern) {
+  const { op } = pattern
+  const c = pattern.const
+
+  switch (op) {
+    case 'mul': return `(local.set ${vecReg} (f32x4.mul (local.get ${vecReg}) (f32x4.splat (f32.const ${c}))))`
+    case 'add': return `(local.set ${vecReg} (f32x4.add (local.get ${vecReg}) (f32x4.splat (f32.const ${c}))))`
+    case 'sub': return `(local.set ${vecReg} (f32x4.sub (local.get ${vecReg}) (f32x4.splat (f32.const ${c}))))`
+    case 'div': return `(local.set ${vecReg} (f32x4.div (local.get ${vecReg}) (f32x4.splat (f32.const ${c}))))`
+    case 'neg': return `(local.set ${vecReg} (f32x4.neg (local.get ${vecReg})))`
+    case 'abs': return `(local.set ${vecReg} (f32x4.abs (local.get ${vecReg})))`
+    case 'sqrt': return `(local.set ${vecReg} (f32x4.sqrt (local.get ${vecReg})))`
+    case 'ceil': return `(local.set ${vecReg} (f32x4.ceil (local.get ${vecReg})))`
+    case 'floor': return `(local.set ${vecReg} (f32x4.floor (local.get ${vecReg})))`
+    default: throw new Error(`Unknown SIMD op: ${op}`)
   }
 }
 
@@ -141,7 +154,7 @@ function genSimdOp(vecReg, pattern, id) {
  * @param {object} pattern - { op, const? }
  * @returns {string} WAT expression producing f64 result
  */
-function genScalarOp(valLocal, pattern) {
+function genScalarOpF64(valLocal, pattern) {
   const { op } = pattern
   const c = pattern.const
 
@@ -155,6 +168,30 @@ function genScalarOp(valLocal, pattern) {
     case 'sqrt': return `(f64.sqrt (local.get ${valLocal}))`
     case 'ceil': return `(f64.ceil (local.get ${valLocal}))`
     case 'floor': return `(f64.floor (local.get ${valLocal}))`
+    default: throw new Error(`Unknown scalar op: ${op}`)
+  }
+}
+
+/**
+ * Generate scalar f32 WAT for the operation (for remainder)
+ * @param {string} valLocal - f32 local name  
+ * @param {object} pattern - { op, const? }
+ * @returns {string} WAT expression producing f32 result
+ */
+function genScalarOpF32(valLocal, pattern) {
+  const { op } = pattern
+  const c = pattern.const
+
+  switch (op) {
+    case 'mul': return `(f32.mul (local.get ${valLocal}) (f32.const ${c}))`
+    case 'add': return `(f32.add (local.get ${valLocal}) (f32.const ${c}))`
+    case 'sub': return `(f32.sub (local.get ${valLocal}) (f32.const ${c}))`
+    case 'div': return `(f32.div (local.get ${valLocal}) (f32.const ${c}))`
+    case 'neg': return `(f32.neg (local.get ${valLocal}))`
+    case 'abs': return `(f32.abs (local.get ${valLocal}))`
+    case 'sqrt': return `(f32.sqrt (local.get ${valLocal}))`
+    case 'ceil': return `(f32.ceil (local.get ${valLocal}))`
+    case 'floor': return `(f32.floor (local.get ${valLocal}))`
     default: throw new Error(`Unknown scalar op: ${op}`)
   }
 }
@@ -834,7 +871,7 @@ export const forEach = (elemType, ptrWat, args) => {
 
 /**
  * map(fn) - create new TypedArray with transformed values
- * SIMD optimized for Float64Array with simple arithmetic callbacks
+ * SIMD optimized for Float64Array (f64x2) and Float32Array (f32x4)
  */
 export const map = (elemType, ptrWat, args) => {
   const callback = args[0]
@@ -844,12 +881,13 @@ export const map = (elemType, ptrWat, args) => {
   const paramName = paramNames[0] || '_v'
   const idxName = paramNames[1]
 
-  // Try SIMD optimization for Float64Array without index param
-  if (elemType === ELEM_TYPE.F64 && !idxName) {
+  // Try SIMD optimization for floating-point arrays without index param
+  if (!idxName) {
     const simdPattern = analyzeSimdPattern(body, paramName)
     if (simdPattern) {
       ctx.usedSimd = true
-      return mapSimd(ptrWat, simdPattern)
+      if (elemType === ELEM_TYPE.F64) return mapSimdF64(ptrWat, simdPattern)
+      if (elemType === ELEM_TYPE.F32) return mapSimdF32(ptrWat, simdPattern)
     }
   }
 
@@ -857,8 +895,8 @@ export const map = (elemType, ptrWat, args) => {
   return mapScalar(elemType, ptrWat, paramName, idxName, body)
 }
 
-/** SIMD-optimized map for Float64Array */
-function mapSimd(ptrWat, pattern) {
+/** SIMD-optimized map for Float64Array (f64x2 - 2 elements per vector) */
+function mapSimdF64(ptrWat, pattern) {
   const id = ctx.loopCounter++
   const src = `$_mp_src_${id}`, dst = `$_mp_dst_${id}`
   const srcBase = `$_mp_srcb_${id}`, dstBase = `$_mp_dstb_${id}`
@@ -874,8 +912,8 @@ function mapSimd(ptrWat, pattern) {
   ctx.addLocal(vec, 'v128')
   ctx.addLocal(val, 'f64')
 
-  const simdOp = genSimdOp(vec, pattern, id)
-  const scalarOp = genScalarOp(val, pattern)
+  const simdOp = genSimdOpF64(vec, pattern)
+  const scalarOp = genScalarOpF64(val, pattern)
 
   // SIMD loop: process 2 f64 per iteration, then scalar remainder
   // Wrap in block to make single expression (fixes local.tee/br issues)
@@ -902,6 +940,55 @@ function mapSimd(ptrWat, pattern) {
         (local.set ${val} (f64.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 3)))))
         (f64.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 3))) ${scalarOp})))
     (local.get ${dst}))`, 'typedarray', ELEM_TYPE.F64)
+}
+
+/** SIMD-optimized map for Float32Array (f32x4 - 4 elements per vector) */
+function mapSimdF32(ptrWat, pattern) {
+  const id = ctx.loopCounter++
+  const src = `$_mp_src_${id}`, dst = `$_mp_dst_${id}`
+  const srcBase = `$_mp_srcb_${id}`, dstBase = `$_mp_dstb_${id}`
+  const idx = `$_mp_i_${id}`, len = `$_mp_len_${id}`
+  const vec = `$_mp_vec_${id}`, val = `$_mp_val_${id}`
+
+  ctx.addLocal(src, 'f64')
+  ctx.addLocal(dst, 'f64')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(idx, 'i32')
+  ctx.addLocal(len, 'i32')
+  ctx.addLocal(vec, 'v128')
+  ctx.addLocal(val, 'f32')
+
+  const simdOp = genSimdOpF32(vec, pattern)
+  const scalarOp = genScalarOpF32(val, pattern)
+
+  // SIMD loop: process 4 f32 per iteration, then scalar remainder
+  // Wrap in block to make single expression (fixes local.tee/br issues)
+  return wat(`(block (result f64) (local.set ${src} ${ptrWat})
+    (local.set ${len} (call $__typed_len (local.get ${src})))
+    (local.set ${dst} (call $__alloc_typed (i32.const ${ELEM_TYPE.F32}) (local.get ${len})))
+    (local.set ${srcBase} (call $__typed_offset (local.get ${src})))
+    (local.set ${dstBase} (call $__typed_offset (local.get ${dst})))
+    (local.set ${idx} (i32.const 0))
+    ;; SIMD loop: 4 elements per iteration (f32x4)
+    (block $simd_done_${id} (loop $simd_loop_${id}
+      (br_if $simd_done_${id} (i32.gt_s (i32.add (local.get ${idx}) (i32.const 4)) (local.get ${len})))
+      ;; Load 4 f32 (16 bytes)
+      (local.set ${vec} (v128.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 2)))))
+      ;; Apply SIMD operation
+      ${simdOp}
+      ;; Store 4 f32
+      (v128.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 2))) (local.get ${vec}))
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 4)))
+      (br $simd_loop_${id})))
+    ;; Scalar remainder (0-3 elements)
+    (block $rem_done_${id} (loop $rem_loop_${id}
+      (br_if $rem_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+      (local.set ${val} (f32.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 2)))))
+      (f32.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 2))) ${scalarOp})
+      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+      (br $rem_loop_${id})))
+    (local.get ${dst}))`, 'typedarray', ELEM_TYPE.F32)
 }
 
 /** Scalar map implementation */
