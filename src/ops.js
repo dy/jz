@@ -88,9 +88,3 @@ export const MATH_OPS = {
     LOG10E: Math.LOG10E
   }
 }
-
-// Global constants (outside Math namespace)
-export const GLOBAL_CONSTANTS = {
-  Infinity: Infinity,
-  NaN: NaN
-}

@@ -166,29 +166,26 @@ test('Object.entries', async () => {
 
 // Symbol (ATOM type) tests
 test('Symbol - uniqueness', async () => {
-  // Each Symbol call creates a unique symbol
-  is(await evaluate('const a = Symbol, b = Symbol; a !== b'), 1)
+  // Each Symbol() call creates a unique symbol
   is(await evaluate('const a = Symbol(), b = Symbol(); a !== b'), 1)
-  is(await evaluate('Symbol !== Symbol'), 1)
   is(await evaluate('Symbol() !== Symbol()'), 1)
 })
 
 test('Symbol - identity', async () => {
   // Same symbol equals itself
-  is(await evaluate('const s = Symbol; s === s'), 1)
-  is(await evaluate('const a = Symbol, b = a; a === b'), 1)
+  is(await evaluate('const s = Symbol(); s === s'), 1)
+  is(await evaluate('const a = Symbol(), b = a; a === b'), 1)
 })
 
 test('Symbol - typeof', async () => {
-  is(await evaluate('typeof Symbol'), 'symbol')
   is(await evaluate('typeof Symbol()'), 'symbol')
-  is(await evaluate('typeof Symbol === "symbol"'), 1)
+  is(await evaluate('typeof Symbol() === "symbol"'), 1)
 })
 
 test('Symbol - from function', async () => {
-  is(await evaluate('const f = () => Symbol; typeof f()'), 'symbol')
+  is(await evaluate('const f = () => Symbol(); typeof f()'), 'symbol')
   // Each call returns different symbol
-  is(await evaluate('const f = () => Symbol; f() !== f()'), 1)
+  is(await evaluate('const f = () => Symbol(); f() !== f()'), 1)
 })
 
 // === NUMBER METHODS ===

@@ -145,39 +145,22 @@ export const TYPED_ARRAY_CTORS = {
 export const isTypedArray = (v) => v?.type === 'typedarray'
 
 /**
+ * Dedent multiline string - strips leading indent, trims lines, collapses blank lines
+ * @param {string} code - Multiline string to clean
+ * @returns {string} Cleaned string
+ */
+const dedent = code => code.split('\n').map(l => l.trim()).filter(l => l).join('\n')
+
+/**
  * WAT value constructor - creates boxed string with type metadata
+ * Automatically dedents multiline code.
  * @param {string} code - WAT expression string
  * @param {string} [type='f64'] - Type name
  * @param {*} [schema] - Optional schema metadata
  * @returns {String & {type: string, schema?: *}} Boxed WAT string
  */
 export const wat = (code, type = 'f64', schema) =>
-  Object.assign(new String(code), { type, schema })
-
-/**
- * WAT template tag - clean multiline WAT with interpolation
- * Strips leading indent, trims lines, joins arrays with space.
- *
- * @example
- * wt`(func $name (param $x f64)
- *      ${locals.map(l => `(local $${l} f64)`)}
- *      ${body})`
- *
- * @param {TemplateStringsArray} strings - Template literal strings
- * @param {...*} values - Interpolated values (strings, numbers, or arrays)
- * @returns {string} Clean WAT string
- */
-export function wt(strings, ...values) {
-  // Join template parts with interpolated values
-  let result = strings[0]
-  for (let i = 0; i < values.length; i++) {
-    const v = values[i]
-    result += Array.isArray(v) ? v.join(' ') : String(v ?? '')
-    result += strings[i + 1]
-  }
-  // Strip leading/trailing whitespace per line, collapse blank lines
-  return result.split('\n').map(l => l.trim()).filter(l => l).join('\n')
-}
+  Object.assign(new String(dedent(String(code))), { type, schema })
 
 /**
  * Format number for WAT output (handles special values)
@@ -304,10 +287,10 @@ export const isBoxedArray = v => v.type === 'object' && Array.isArray(v.schema) 
 export const isBoxed = v => v.type === 'object' && Array.isArray(v.schema) && v.schema[0]?.startsWith('__')
 /** @param {String & {type: string}} v - Regex pattern */
 export const isRegex = v => v.type === 'regex'
-/** @param {String & {type: string}} v - Set collection (object with schema==='set') */
-export const isSet = v => v.type === 'object' && v.schema === 'set'
-/** @param {String & {type: string}} v - Map collection (object with schema==='map') */
-export const isMap = v => v.type === 'object' && v.schema === 'map'
+/** @param {String & {type: string}} v - Set collection */
+export const isSet = v => v.type === 'set'
+/** @param {String & {type: string}} v - Map collection */
+export const isMap = v => v.type === 'map'
 /** @param {String & {type: string}} v - Symbol (ATOM type with id) */
 export const isSymbol = v => v.type === 'symbol'
 

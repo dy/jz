@@ -12,7 +12,7 @@ For any file structure changes, update project structure section below.
 | File | Lines | Purpose |
 |------|-------|---------|
 | types.js | 215 | Type system, type predicates, memory constants, `wt` template |
-| ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS, GLOBAL_CONSTANTS |
+| ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS |
 | analyze.js | 1086 | Scope analysis: preanalyze(), extractParams(), analyzeScope() |
 | context.js | 240 | Compilation state factory: createContext(), fork(), warn(), error() |
 | assemble.js | 461 | WAT assembly: assemble() - combines sections into final WAT module |
