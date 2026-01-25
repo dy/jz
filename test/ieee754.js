@@ -162,6 +162,27 @@ test('Math functions with special values', async () => {
 })
 
 // ============================================================
+// Falsy values (JZ: numeric falsiness)
+// ============================================================
+
+test('JZ falsy: 0, NaN, -0 are falsy; all else truthy', async () => {
+  // 0 is falsy
+  is(await evaluate('0 ? 1 : 0'), 0)
+  // -0 is falsy (IEEE 754 negative zero)
+  is(await evaluate('-0 ? 1 : 0'), 0)
+  // NaN is falsy (invalid number)
+  is(await evaluate('NaN ? 1 : 0'), 0)
+  // Regular numbers are truthy
+  is(await evaluate('1 ? 1 : 0'), 1)
+  is(await evaluate('-1 ? 1 : 0'), 1)
+  is(await evaluate('0.1 ? 1 : 0'), 1)
+  is(await evaluate('Infinity ? 1 : 0'), 1)
+  is(await evaluate('-Infinity ? 1 : 0'), 1)
+  // Strings are always truthy (even empty - JZ divergence from JS)
+  // Arrays/objects are always truthy (pointers non-zero)
+})
+
+// ============================================================
 // Comparison edge cases
 // ============================================================
 

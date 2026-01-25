@@ -351,76 +351,111 @@ function genIdent(name) {
 }
 
 /**
- * Create a boxed primitive or array with properties (Object.assign implementation).
- * Returns object type with schema marking the boxed kind via schema[0].
- *
- * @param {string} schemaPrefix - Schema marker: '__string__', '__number__', '__boolean__'
- * @param {object} target - The primitive value (string/number/boolean)
- * @param {any[]} props - Array of [propName, propValue] pairs from source object
- * @param {string} tmpPrefix - Prefix for temp variables
- * @returns {object} Typed WAT value with type='object' and schema=[prefix, ...propKeys]
+ * Check if target is a primitive literal (can't hold properties in JS).
+ * Primitives: string literals, number literals, boolean literals
+ * Non-primitives: arrays, objects, regex, closures, sets, maps, boxed wrappers
  */
-function allocateBoxed(schemaPrefix, target, props, tmpPrefix) {
-  ctx.usedArrayType = true
-  ctx.usedMemory = true
+function isPrimitiveLiteral(target, targetAst) {
+  // String literals are primitives (but String objects from new String() are not)
+  if (isString(target)) return true
+  // Boolean literals
+  if (targetAst === 'true' || targetAst === 'false') return true
+  if (Array.isArray(targetAst) && targetAst[0] === undefined && typeof targetAst[1] === 'boolean') return true
+  // Number literals
+  if ((isI32(target) || isF64(target)) && !isObject(target)) return true
+  return false
+}
 
-  const propKeys = props.map(p => p[0])
-  const schemaId = ctx.objectCounter + 1
-  ctx.objectCounter++
-  ctx.objectSchemas[schemaId] = [schemaPrefix, ...propKeys]
-
-  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-  ctx.objectPropTypes[schemaId] = { [schemaPrefix]: { type: schemaPrefix.slice(2, -2) } }
-
-  const propVals = [String(f64(target))]  // First slot = primitive value
-  for (let i = 0; i < props.length; i++) {
-    const g = gen(props[i][1])
-    propVals.push(String(f64(g)))
-    // Track property types
-    if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'object', schema: g.schema }
-    else if (g.type === 'string') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'string' }
-    else if (g.type === 'array') ctx.objectPropTypes[schemaId][propKeys[i]] = { type: 'array' }
+/**
+ * Get schema prefix for pointer types that can hold properties.
+ * Returns prefix to embed in schema slot 0, or null for plain objects.
+ * @param {object} target - Typed WAT value
+ * @returns {string|null} Schema prefix like '__array__' or null
+ */
+function getPointerPrefix(target) {
+  if (isArray(target)) return '__array__'
+  if (isRegex(target)) return '__regex__'
+  if (isClosure(target)) return '__function__'
+  if (isSet(target)) return '__set__'
+  if (isMap(target)) return '__map__'
+  // Wrapper objects from new String/Number/Boolean
+  if (isObject(target) && hasSchema(target)) {
+    const schema = getSchema(target)
+    if (schema[0]?.startsWith('__') && schema[0]?.endsWith('__')) return schema[0]
   }
+  return null
+}
 
+/**
+ * Allocate object with given schema and values. Core helper for object/boxed allocation.
+ * @param {number} schemaId - Schema ID (already registered in ctx.objectSchemas)
+ * @param {string[]|number} schemaArr - Schema array for type tracking (or schemaId)
+ * @param {string[]} vals - WAT expressions for slot values
+ * @param {string} tmpPrefix - Prefix for temp local variable
+ * @returns {object} Typed WAT value with type='object'
+ */
+function allocObject(schemaId, schemaArr, vals, tmpPrefix) {
   const id = ctx.uniqueId++
   const tmp = `$_${tmpPrefix}_${id}`
   ctx.addLocal(tmp, 'f64')
 
-  const stores = propVals.map((v, i) =>
+  const stores = vals.map((v, i) =>
     `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
 
-  // Return object type - predicates check schema[0] for boxed variant
   return wat(`
     (block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
+      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
       ${stores}
-      (local.get ${tmp}))`, 'object', [schemaPrefix, ...propKeys])
+      (local.get ${tmp}))`, 'object', schemaArr)
 }
 
 /**
- * Generate declaration with forward-inferred schema for Object.assign on primitives.
- * Handles: let s = Object.assign('hello', {type: 1}) where later Object.assign adds more props
+ * Generate declaration with forward-inferred schema.
+ * Handles both plain object literals and Object.assign on pointer types.
  *
  * @param {string} name - Variable name
- * @param {any[]} value - Object.assign call AST node
+ * @param {any[]} value - AST node (object literal or Object.assign call)
  * @param {object} inferred - Inferred schema info from ctx.inferredSchemas
  * @param {boolean} isConst - true for const, false for let
  * @returns {object|null} Typed WAT value or null if not applicable
  */
-function genBoxedInferredDecl(name, value, inferred, isConst) {
-  if (!inferred.isBoxed) return null
+function genInferredDecl(name, value, inferred, isConst) {
+  // Detect Object.assign: ['()', ['.', 'Object', 'assign'], targetAst, sourceAst]
+  const isObjAssign = inferred.isBoxed
 
-  const argsNode = value[2]
-  const targetAst = argsNode[1], sourceAst = argsNode[2]
+  let prefix = null, target = null, litProps = []
 
-  if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
-    throw new Error('Object.assign source must be object literal')
+  if (isObjAssign) {
+    // Object.assign(target, {props})
+    const argsNode = value[2]
+    const targetAst = argsNode[1], sourceAst = argsNode[2]
+
+    if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
+      throw new Error('Object.assign source must be object literal')
+    }
+    litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
+      sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
+
+    target = gen(targetAst)
+
+    // Primitives can't hold properties
+    if (isPrimitiveLiteral(target, targetAst)) {
+      ctx.warn('Object.assign on primitive has no effect (primitives cannot hold properties)')
+      return null
+    }
+
+    prefix = getPointerPrefix(target)
+    if (!prefix) return null
+  } else {
+    // Plain object literal
+    litProps = value.slice(1).map(p => [p[0], p[1]])
   }
-  const litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
-    sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
+
   const literalKeys = litProps.map(p => p[0])
   const allKeys = [...new Set([...literalKeys, ...inferred.props])]
+
+  if (allKeys.length === 0 && !prefix) return null
 
   ctx.usedArrayType = true
   ctx.usedMemory = true
@@ -429,129 +464,58 @@ function genBoxedInferredDecl(name, value, inferred, isConst) {
   if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
   ctx.objectPropTypes[schemaId] = {}
 
-  const target = gen(targetAst)
-  let prefix
-  if (isString(target)) {
-    prefix = '__string__'
-    ctx.objectPropTypes[schemaId].__string__ = { type: 'string' }
-  } else if (targetAst === 'true' || targetAst === 'false') {
-    prefix = '__boolean__'
-    ctx.objectPropTypes[schemaId].__boolean__ = { type: 'boolean' }
-  } else if (isI32(target) || isF64(target)) {
-    prefix = '__number__'
-    ctx.objectPropTypes[schemaId].__number__ = { type: 'number' }
-  } else if (isArray(target)) {
-    return null  // array_props handled by different path
-  } else {
-    return null
+  // Schema: with prefix = [prefix, ...keys], without = [...keys]
+  const schemaArr = prefix ? [prefix, ...allKeys] : allKeys
+  ctx.objectSchemas[schemaId] = schemaArr
+
+  if (prefix) {
+    ctx.objectPropTypes[schemaId][prefix] = { type: prefix.slice(2, -2) }
+  }
+  for (const key of inferred.closures || []) {
+    ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
   }
 
-  const schemaArr = [prefix, ...allKeys]
-  ctx.objectSchemas[schemaId] = schemaArr
-  const vals = [String(f64(target))]
+  // Static object optimization (plain objects only, no prefix)
+  if (!prefix) {
+    const noInferredProps = inferred.props.every(p => literalKeys.includes(p))
+    const allConstant = litProps.every(([, val]) => isConstant(val))
+    const noClosures = !inferred.closures?.size
+    if (noInferredProps && allConstant && noClosures) {
+      const objectId = Object.keys(ctx.staticObjects).length
+      const values = litProps.map(([, val]) => evalConstant(val))
+      const arraySpace = Object.keys(ctx.staticArrays).length * 64
+      const objectSpace = objectId * 64
+      const offset = HEAP_START + 4096 + arraySpace + objectSpace
+      ctx.staticObjects[objectId] = { offset, values, schemaId }
+      const scopedName = ctx.declareVar(name, isConst)
+      ctx.addLocal(name, 'object', schemaId, scopedName)
+      return wat(`(local.tee $${scopedName} (call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset})))`, 'object', schemaId)
+    }
+  }
+
+  // Build values array: [target, ...propVals] if prefix, else [...propVals]
+  const vals = prefix ? [String(f64(target))] : []
   for (const key of allKeys) {
     const litProp = litProps.find(p => p[0] === key)
     if (litProp) {
       const g = gen(litProp[1])
       vals.push(String(f64(g)))
-      if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-      else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-    } else {
-      vals.push('(f64.const 0)')  // Placeholder for inferred-only props
-    }
-  }
-
-  const id = ctx.uniqueId++
-  const tmp = `$_bx_${id}`
-  ctx.addLocal(tmp, 'f64')
-  const stores = vals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
-  const scopedName = ctx.declareVar(name, isConst)
-  ctx.addLocal(name, 'object', schemaArr, scopedName)
-  const objWat = `
-    (block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}
-      (local.get ${tmp}))`
-  return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaArr)
-}
-
-/**
- * Generate declaration with forward-inferred schema for object literals.
- * Handles: let a = {} where a.x = 1; a.y = 2; adds properties later
- *
- * @param {string} name - Variable name
- * @param {any[]} value - Object literal AST node
- * @param {object} inferred - Inferred schema info from ctx.inferredSchemas
- * @param {boolean} isConst - true for const, false for let
- * @returns {object|null} Typed WAT value or null if not applicable
- */
-function genObjectInferredDecl(name, value, inferred, isConst) {
-  const literalProps = value.slice(1)
-  const literalKeys = literalProps.map(p => p[0])
-  const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-  if (allKeys.length === 0) return null
-
-  ctx.usedArrayType = true
-  ctx.usedMemory = true
-  const schemaId = ctx.objectCounter + 1
-  ctx.objectCounter++
-  ctx.objectSchemas[schemaId] = allKeys
-  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-  ctx.objectPropTypes[schemaId] = {}
-  for (const key of inferred.closures) {
-    ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-  }
-
-  // Static object optimization: all props from literal, all constant, no closures
-  const noInferredProps = inferred.props.every(p => literalKeys.includes(p))
-  const allConstant = literalProps.every(([, val]) => isConstant(val))
-  const noClosures = inferred.closures.size === 0
-  if (noInferredProps && allConstant && noClosures) {
-    const objectId = Object.keys(ctx.staticObjects).length
-    const values = literalProps.map(([, val]) => evalConstant(val))
-    const arraySpace = Object.keys(ctx.staticArrays).length * 64
-    const objectSpace = objectId * 64
-    const offset = HEAP_START + 4096 + arraySpace + objectSpace
-    ctx.staticObjects[objectId] = { offset, values, schemaId }
-    const scopedName = ctx.declareVar(name, isConst)
-    ctx.addLocal(name, 'object', schemaId, scopedName)
-    return wat(`(local.tee $${scopedName} (call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset})))`, 'object', schemaId)
-  }
-
-  const vals = []
-  for (const key of allKeys) {
-    const literalProp = literalProps.find(p => p[0] === key)
-    if (literalProp) {
-      const g = gen(literalProp[1])
-      vals.push(String(f64(g)))
-      if (g.type === 'closure' || (Array.isArray(literalProp[1]) && literalProp[1][0] === '=>')) {
+      if (g.type === 'closure' || (Array.isArray(litProp[1]) && litProp[1][0] === '=>')) {
         ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
       } else if (g.type === 'object' && g.schema) {
         ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+      } else if (g.type === 'string') {
+        ctx.objectPropTypes[schemaId][key] = { type: 'string' }
       }
     } else {
       vals.push('(f64.const 0)')  // Placeholder for inferred-only props
     }
   }
 
-  const id = ctx.uniqueId++
-  const tmp = `$_obj_${id}`
-  ctx.addLocal(tmp, 'f64')
-  const stores = vals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
-
+  const objWat = allocObject(schemaId, schemaArr, vals, 'obj')
   const scopedName = ctx.declareVar(name, isConst)
-  ctx.addLocal(name, 'object', schemaId, scopedName)
-  const objWat = `
-    (block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}
-      (local.get ${tmp}))`
-  return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaId)
+  ctx.addLocal(name, 'object', schemaArr, scopedName)
+  return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaArr)
 }
 
 
@@ -777,7 +741,7 @@ function resolveCall(namespace, name, args, receiver = null) {
   // Object namespace
   if (namespace === 'Object') {
     if (name === 'assign' && args.length >= 2) {
-      // Object.assign(target, source) - create boxed string or array with properties
+      // Object.assign(target, source)
       const targetAst = args[0], sourceAst = args[1]
       const target = gen(targetAst), source = gen(sourceAst)
 
@@ -786,36 +750,41 @@ function resolveCall(namespace, name, args, receiver = null) {
         throw new Error('Object.assign source must be object literal')
       }
       const props = sourceAst.slice(1)
-      const propKeys = props.map(p => p[0])
 
-      if (isString(target)) {
-        // BOXED_STRING: Schema = ['__string__', ...props]
-        return allocateBoxed('__string__', target, props, 'bstr')
+      // Primitives can't hold properties - warn and return primitive unchanged
+      if (isPrimitiveLiteral(target, targetAst)) {
+        ctx.warn('Object.assign on primitive has no effect (primitives cannot hold properties)')
+        return target
       }
 
-      if (isArray(target)) {
-        // BOXED_ARRAY: Same pattern as boxed string/number/boolean
-        // Schema = ['__array__', ...props], slot 0 = array pointer
-        return allocateBoxed('__array__', target, props, 'barr')
+      // Pointer types (arrays, regex, etc.) - create new object with prefix + props
+      const prefix = getPointerPrefix(target)
+      if (prefix) {
+        ctx.usedArrayType = true
+        ctx.usedMemory = true
+
+        const propKeys = props.map(p => p[0])
+        const schemaArr = [prefix, ...propKeys]
+        const schemaId = ctx.objectCounter + 1
+        ctx.objectCounter++
+        ctx.objectSchemas[schemaId] = schemaArr
+
+        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+        ctx.objectPropTypes[schemaId] = { [prefix]: { type: prefix.slice(2, -2) } }
+
+        const vals = [String(f64(target))]  // First slot = pointer
+        for (const [key, valueAst] of props) {
+          const g = gen(valueAst)
+          vals.push(String(f64(g)))
+          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
+          else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
+          else if (g.type === 'array') ctx.objectPropTypes[schemaId][key] = { type: 'array' }
+        }
+
+        return allocObject(schemaId, schemaArr, vals, 'obj')
       }
 
-      // Check for boolean literal in AST (true/false identifiers or boolean values)
-      const isBoolTarget = targetAst === 'true' || targetAst === 'false' ||
-        (Array.isArray(targetAst) && targetAst[0] === undefined && typeof targetAst[1] === 'boolean')
-      // Check for number literal in AST
-      const isNumTarget = (isI32(target) || isF64(target)) && !isBoolTarget
-
-      if (isBoolTarget) {
-        // BOXED_BOOLEAN: Schema = ['__boolean__', ...props]
-        return allocateBoxed('__boolean__', target, props, 'bbool')
-      }
-
-      if (isNumTarget) {
-        // BOXED_NUMBER: Schema = ['__number__', ...props]
-        return allocateBoxed('__number__', target, props, 'bnum')
-      }
-
-      // Object.assign on existing object/boxed variable: extend with new properties
+      // Object.assign on existing object: extend with new properties
       // Forward schema inference has already added these props to the schema
       if (isObject(target) && hasSchema(target)) {
         ctx.usedMemory = true
@@ -830,11 +799,10 @@ function resolveCall(namespace, name, args, receiver = null) {
           const vw = f64(gen(prop[1]))
           code += objSet(String(target), idx, vw) + '\n      '
         }
-        // Return the target object
         return wat(`(block (result f64) ${code}${target})`, target.type, target.schema)
       }
 
-      throw new Error('Object.assign target must be string, number, boolean, array, or object')
+      throw new Error('Object.assign target must be an object (not a primitive)')
     }
 
     // Object.keys(obj) - returns array of property names (strings)
@@ -1294,6 +1262,23 @@ const operators = {
       return wat(`(call $__map_new ${cap})`, 'map')
     }
 
+    // Wrapper objects: new String/Number/Boolean - creates object that can hold properties
+    const WRAPPER_CTORS = { String: 'string', Number: 'number', Boolean: 'boolean' }
+    if (ctorName in WRAPPER_CTORS) {
+      if (args.length !== 1) throw new Error(`new ${ctorName}(value) requires exactly 1 argument`)
+      const value = gen(args[0])
+      if (ctorName === 'String' && !isString(value)) throw new Error('new String() argument must be a string')
+      ctx.usedArrayType = true
+      ctx.usedMemory = true
+      const prefix = `__${WRAPPER_CTORS[ctorName]}__`
+      const schemaId = ctx.objectCounter + 1
+      ctx.objectCounter++
+      ctx.objectSchemas[schemaId] = [prefix]
+      if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
+      ctx.objectPropTypes[schemaId] = { [prefix]: { type: WRAPPER_CTORS[ctorName] } }
+      return allocObject(schemaId, [prefix], [String(f64(value))], 'obj')
+    }
+
     throw new Error(`Unsupported constructor: ${ctorName || JSON.stringify(ctor)}`)
   },
 
@@ -1499,19 +1484,7 @@ const operators = {
         ctx.objectPropTypes[schemaId][key] = { type: 'string' }
       }
     }
-    const id = ctx.uniqueId++
-    const tmp = `$_obj_${id}`
-    ctx.addLocal(tmp, 'f64')
-    const stores = vals.map((v, i) =>
-      `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n        ')
-    // NaN boxing: OBJECT type with schemaId as id field
-    // mkptr(OBJECT, schemaId, offset)
-    return wat(`
-      (block (result f64)
-        (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-        (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-        ${stores}
-        (local.get ${tmp}))`, 'object', schemaId)
+    return allocObject(schemaId, keys, vals, 'obj')
   },
 
   '[]'([arr, idx]) {
@@ -1677,6 +1650,13 @@ const operators = {
         }
       }
     }
+
+    // Primitives (string, number, boolean literals) - property access returns undefined
+    if (isString(o) || isI32(o) || isF64(o)) {
+      ctx.warn(`Property access .${prop} on primitive returns undefined`)
+      return undefRef()
+    }
+
     throw new Error(`Invalid property: .${prop}`)
   },
 
@@ -2285,12 +2265,12 @@ const operators = {
       }
     }
 
-    // Forward schema inference for Object.assign on primitives
+    // Forward schema inference for Object.assign on pointer types
     const isObjAssign = Array.isArray(value) && value[0] === '()' &&
       Array.isArray(value[1]) && value[1][0] === '.' &&
       value[1][1] === 'Object' && value[1][2] === 'assign'
     if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-      const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
+      const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
       if (result) return result
     }
 
@@ -2328,7 +2308,7 @@ const operators = {
 
     // Forward schema inference for object literals
     if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-      const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
+      const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
       if (result) return result
     }
 
@@ -2394,12 +2374,12 @@ const operators = {
         continue
       }
 
-      // Forward schema inference for Object.assign on primitives
+      // Forward schema inference for Object.assign on pointer types
       const isObjAssign = Array.isArray(value) && value[0] === '()' &&
         Array.isArray(value[1]) && value[1][0] === '.' &&
         value[1][1] === 'Object' && value[1][2] === 'assign'
       if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-        const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+        const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
         if (result) {
           code += `(drop ${result})\n    `
           lastResult = result
@@ -2409,7 +2389,7 @@ const operators = {
 
       // Forward schema inference for const objects
       if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-        const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+        const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
         if (result) {
           code += `(drop ${result})\n    `
           lastResult = result
