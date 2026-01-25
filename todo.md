@@ -373,7 +373,7 @@
   * [x] `let [a, ...rest] = [1, 2, 3]` - rest in array
   * [x] `let {a, b = 5} = {a: 1}` - object default
   * [x] `let {a, ...rest} = {a: 1, b: 2}` - object rest
-* [ ] Optimizations
+* [x] Optimizations
   * [x] `funcref` - first-class functions, currying, closures
     * [x] Closure representation: struct { funcref fn, ref env }
     * [x] call_ref for indirect function calls
@@ -415,8 +415,12 @@
     * [x] Auto-vectorize Float32Array.map with f32x4 (4 elements per vector)
       * Same patterns as f64x2, 2x throughput
       * Scalar remainder loop for 0-3 remaining elements
-    * [ ] String ops: i16x8 for UTF-16 case conversion, comparison (low priority - SSO complication)
-    * [ ] Integer TypedArray: i32x4 for Int32Array/Uint32Array (medium priority)
+    * [x] Auto-vectorize Int32Array/Uint32Array.map with i32x4 (4 elements per vector)
+      * Patterns: `x * c`, `x + c`, `x - c`, `-x`, `Math.abs(x)`, bitwise `& | ^ << >> >>>`
+      * Note: No SIMD division (i32x4.div doesn't exist)
+    * [x] String toLowerCase/toUpperCase SIMD for heap strings (i16x8)
+      * 8 UTF-16 chars per vector for strings >6 chars
+      * SSO strings (≤6 chars) use scalar path
     * Note: Complex - needs pattern detection in callbacks, not trivial
   * [x] `exceptions` - try/catch/throw (watr ✓, V8 ✓)
     * [x] Parse `try { } catch (e) { }` blocks (subscript/jessie already supports)
@@ -441,7 +445,6 @@
   * [ ] WASM modules definitions?
 * [ ] WebGPU compute shaders
 * [ ] Tooling: sourcemaps, debuggins, playground
-* [ ] Optimizations
 * [ ] metacircularity
 * [ ] test262 full
 * [ ] CLI
@@ -486,6 +489,13 @@
 * [ ] Pick ONE use case and make jz undeniably the best tool for it. Stop being "general."
 * [ ] Better readme example making someone say "I need this": something you cannot easily do any other way.
 * [ ] Less defensive positioning in porffor and assemblyscript
+
+## [ ] Offering
+
+* [ ] Clear, fully transparent and understood codebase
+* [ ] Completed all aspects: docs, readme, code, tests, repl
+* [ ] Integrations
+* [ ] Benchmarks
 
 ## Comparisons / bench
 

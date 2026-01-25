@@ -709,3 +709,79 @@ test('TypedArray - SIMD Float32Array map with remainder', async () => {
   `)
   is(test(), 81)  // 11+12+13+14+15+16
 })
+
+// Int32Array SIMD tests (i32x4 - 4 elements per vector)
+test('TypedArray - SIMD Int32Array map multiply', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Int32Array(8)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      buf[4] = 5; buf[5] = 6; buf[6] = 7; buf[7] = 8
+      let result = buf.map(x => x * 3)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5] + result[6] + result[7]
+    }
+  `)
+  is(test(), 108)  // 3+6+9+12+15+18+21+24
+})
+
+test('TypedArray - SIMD Int32Array map add', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Int32Array(8)
+      buf[0] = 10; buf[1] = 20; buf[2] = 30; buf[3] = 40
+      buf[4] = 50; buf[5] = 60; buf[6] = 70; buf[7] = 80
+      let result = buf.map(x => x + 5)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5] + result[6] + result[7]
+    }
+  `)
+  is(test(), 400)  // 15+25+35+45+55+65+75+85
+})
+
+test('TypedArray - SIMD Int32Array map with remainder', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Int32Array(6)  // 6 elements: 4 SIMD + 2 remainder
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5; buf[5] = 6
+      let result = buf.map(x => x * 10)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5]
+    }
+  `)
+  is(test(), 210)  // 10+20+30+40+50+60
+})
+
+test('TypedArray - SIMD Int32Array bitwise AND', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 0xFF; buf[1] = 0xAA; buf[2] = 0x55; buf[3] = 0xFF00
+      let result = buf.map(x => x & 0xF0)
+      return result[0] + result[1] + result[2] + result[3]
+    }
+  `)
+  is(test(), 480)  // 0xF0 + 0xA0 + 0x50 + 0 = 240+160+80+0
+})
+
+test('TypedArray - SIMD Int32Array shift left', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Int32Array(4)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      let result = buf.map(x => x << 2)
+      return result[0] + result[1] + result[2] + result[3]
+    }
+  `)
+  is(test(), 40)  // 4+8+12+16
+})
+
+test('TypedArray - SIMD Uint32Array map multiply', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Uint32Array(8)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      buf[4] = 5; buf[5] = 6; buf[6] = 7; buf[7] = 8
+      let result = buf.map(x => x * 2)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5] + result[6] + result[7]
+    }
+  `)
+  is(test(), 72)  // 2+4+6+8+10+12+14+16
+})

@@ -19,7 +19,7 @@
  * === This File Sections ===
  * Line ~25   - Imports and exports
  * Line ~55   - Public API: compile()
- * Line ~65   - Core helpers: isConstant(), evalConstant(), generate()
+ * Line ~65   - Core helpers: isConstant(), evalConstant(), gen()
  * Line ~100  - Identifiers: closureDepth(), genLiteral(), genIdent()
  * Line ~145  - Call resolution: resolveCall()
  * Line ~330  - Closure calls: genClosureCall(), genClosureCallExpr()
@@ -30,8 +30,8 @@
  * Line ~1480 - Function generation: generateFunction(), generateFunctions()
  *
  * === Data Flow ===
- * 1. compile(ast) creates context, calls generate(ast)
- * 2. generate() dispatches to operators[op] based on AST node type
+ * 1. compile(ast) creates context, calls gen(ast)
+ * 2. gen() dispatches to operators[op] based on AST node type
  * 3. operators return typed values [type, wat, schema?]
  * 4. generateFunctions() compiles user-defined functions
  * 5. assemble() builds final WAT module from all parts
@@ -92,7 +92,6 @@ const isArrayExpr = node => {
 
 // Current compilation state (module-level for nested access)
 export let ctx = null
-export let gen = null
 
 export { assemble };
 
@@ -113,8 +112,7 @@ export function compile(ast, options = {}) {
   ctx.funcReturnTypes = funcReturnTypes
   ctx.inferredSchemas = inferredSchemas
   ctx.arrayParams = arrayParams  // funcName → Set<paramName> for params used as arrays
-  gen = generate
-  const bodyWat = String(f64(generate(ast)))
+  const bodyWat = String(f64(gen(ast)))
   const funcs = generateFunctions()
   return assemble(bodyWat, ctx, funcs)
 }
@@ -266,10 +264,10 @@ function evalConstant(ast) {
  *
  * @param {any} ast - AST node: null, [undefined, literal], string (identifier), or [op, ...args]
  * @returns {object} Typed WAT value with {type, wat, schema?}
- * @example generate(['+', [null, 1], [null, 2]]) → {type:'f64', wat:'(f64.add (f64.const 1) (f64.const 2))'}
- * @example generate('x') → {type:'f64', wat:'(local.get $x)'}
+ * @example gen(['+', [null, 1], [null, 2]]) → {type:'f64', wat:'(f64.add (f64.const 1) (f64.const 2))'}
+ * @example gen('x') → {type:'f64', wat:'(local.get $x)'}
  */
-function generate(ast) {
+export function gen(ast) {
   if (ast == null) return wat('(f64.const 0)', 'f64')
   if (Array.isArray(ast) && ast[0] === undefined) return genLiteral(ast[1])
   if (typeof ast === 'string') return genIdent(ast)

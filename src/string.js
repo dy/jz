@@ -314,52 +314,138 @@ export const substring = (rw, args) => {
 export const toLowerCase = (rw, args) => {
   ctx.usedStringType = true
   ctx.usedMemory = true
+  ctx.usedSimd = true  // Enable SIMD for heap strings
   const id = ctx.loopCounter++
-  const str = `$_tolower_str_${id}`, idx = `$_tolower_i_${id}`, len = `$_tolower_len_${id}`, result = `$_tolower_result_${id}`, ch = `$_tolower_ch_${id}`
+  const str = `$_tolower_str_${id}`, idx = `$_tolower_i_${id}`, len = `$_tolower_len_${id}`
+  const result = `$_tolower_result_${id}`, ch = `$_tolower_ch_${id}`
+  const srcBase = `$_tolower_srcb_${id}`, dstBase = `$_tolower_dstb_${id}`
+  const vec = `$_tolower_vec_${id}`, mask = `$_tolower_mask_${id}`
+
   ctx.addLocal(str, 'string')
   ctx.addLocal(idx, 'i32')
   ctx.addLocal(len, 'i32')
   ctx.addLocal(result, 'string')
   ctx.addLocal(ch, 'i32')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(vec, 'v128')
+  ctx.addLocal(mask, 'v128')
 
+  // For heap strings (>6 chars), use SIMD i16x8 (8 chars per vector)
+  // toLowerCase: if char in [65,90] (A-Z), add 32
+  // SIMD logic: mask = (char >= 65) & (char <= 90), result = char + (mask & 32)
   return wat(`(local.set ${str} ${rw})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
-    (local.set ${result} ${strNew( `(local.get ${len})`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      (local.set ${ch} ${strCharAt( `(local.get ${str})`, `(local.get ${idx})`)})
-      (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 65)) (i32.le_s (local.get ${ch}) (i32.const 90)))
-        (then (local.set ${ch} (i32.add (local.get ${ch}) (i32.const 32)))))
-      ${strSetChar( `(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
+    (local.set ${result} ${strNew(`(local.get ${len})`)})
+    (if (i32.and (i32.gt_s (local.get ${len}) (i32.const 6)) (i32.eqz (call $__is_sso (local.get ${str}))))
+      (then
+        ;; Heap string SIMD path: 8 chars per iteration
+        (local.set ${srcBase} (call $__ptr_offset (local.get ${str})))
+        (local.set ${dstBase} (call $__ptr_offset (local.get ${result})))
+        (local.set ${idx} (i32.const 0))
+        (block $simd_done_${id} (loop $simd_loop_${id}
+          (br_if $simd_done_${id} (i32.gt_s (i32.add (local.get ${idx}) (i32.const 8)) (local.get ${len})))
+          ;; Load 8 UTF-16 chars
+          (local.set ${vec} (v128.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 1)))))
+          ;; mask = (char >= 65) & (char <= 90)
+          (local.set ${mask} (v128.and
+            (i16x8.ge_s (local.get ${vec}) (i16x8.splat (i32.const 65)))
+            (i16x8.le_s (local.get ${vec}) (i16x8.splat (i32.const 90)))))
+          ;; result = char + (mask & 32)
+          (local.set ${vec} (i16x8.add (local.get ${vec}) (v128.and (local.get ${mask}) (i16x8.splat (i32.const 32)))))
+          ;; Store
+          (v128.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 1))) (local.get ${vec}))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 8)))
+          (br $simd_loop_${id})))
+        ;; Scalar remainder
+        (block $rem_done_${id} (loop $rem_loop_${id}
+          (br_if $rem_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (local.set ${ch} (i32.load16_u (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 1)))))
+          (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 65)) (i32.le_s (local.get ${ch}) (i32.const 90)))
+            (then (local.set ${ch} (i32.add (local.get ${ch}) (i32.const 32)))))
+          (i32.store16 (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 1))) (local.get ${ch}))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $rem_loop_${id}))))
+      (else
+        ;; SSO or short string: scalar path
+        (local.set ${idx} (i32.const 0))
+        (block $done_${id} (loop $loop_${id}
+          (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (local.set ${ch} ${strCharAt(`(local.get ${str})`, `(local.get ${idx})`)})
+          (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 65)) (i32.le_s (local.get ${ch}) (i32.const 90)))
+            (then (local.set ${ch} (i32.add (local.get ${ch}) (i32.const 32)))))
+          ${strSetChar(`(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $loop_${id})))))
     (local.get ${result})`, 'string')
 }
 
 export const toUpperCase = (rw, args) => {
   ctx.usedStringType = true
   ctx.usedMemory = true
+  ctx.usedSimd = true  // Enable SIMD for heap strings
   const id = ctx.loopCounter++
-  const str = `$_toupper_str_${id}`, idx = `$_toupper_i_${id}`, len = `$_toupper_len_${id}`, result = `$_toupper_result_${id}`, ch = `$_toupper_ch_${id}`
+  const str = `$_toupper_str_${id}`, idx = `$_toupper_i_${id}`, len = `$_toupper_len_${id}`
+  const result = `$_toupper_result_${id}`, ch = `$_toupper_ch_${id}`
+  const srcBase = `$_toupper_srcb_${id}`, dstBase = `$_toupper_dstb_${id}`
+  const vec = `$_toupper_vec_${id}`, mask = `$_toupper_mask_${id}`
+
   ctx.addLocal(str, 'string')
   ctx.addLocal(idx, 'i32')
   ctx.addLocal(len, 'i32')
   ctx.addLocal(result, 'string')
   ctx.addLocal(ch, 'i32')
+  ctx.addLocal(srcBase, 'i32')
+  ctx.addLocal(dstBase, 'i32')
+  ctx.addLocal(vec, 'v128')
+  ctx.addLocal(mask, 'v128')
 
+  // For heap strings (>6 chars), use SIMD i16x8 (8 chars per vector)
+  // toUpperCase: if char in [97,122] (a-z), subtract 32
+  // SIMD logic: mask = (char >= 97) & (char <= 122), result = char - (mask & 32)
   return wat(`(local.set ${str} ${rw})
-    (local.set ${len} ${strLen( `(local.get ${str})`)})
-    (local.set ${result} ${strNew( `(local.get ${len})`)})
-    (local.set ${idx} (i32.const 0))
-    (block $done_${id} (loop $loop_${id}
-      (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-      (local.set ${ch} ${strCharAt( `(local.get ${str})`, `(local.get ${idx})`)})
-      (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 97)) (i32.le_s (local.get ${ch}) (i32.const 122)))
-        (then (local.set ${ch} (i32.sub (local.get ${ch}) (i32.const 32)))))
-      ${strSetChar( `(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
-      (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-      (br $loop_${id})))
+    (local.set ${len} ${strLen(`(local.get ${str})`)})
+    (local.set ${result} ${strNew(`(local.get ${len})`)})
+    (if (i32.and (i32.gt_s (local.get ${len}) (i32.const 6)) (i32.eqz (call $__is_sso (local.get ${str}))))
+      (then
+        ;; Heap string SIMD path: 8 chars per iteration
+        (local.set ${srcBase} (call $__ptr_offset (local.get ${str})))
+        (local.set ${dstBase} (call $__ptr_offset (local.get ${result})))
+        (local.set ${idx} (i32.const 0))
+        (block $simd_done_${id} (loop $simd_loop_${id}
+          (br_if $simd_done_${id} (i32.gt_s (i32.add (local.get ${idx}) (i32.const 8)) (local.get ${len})))
+          ;; Load 8 UTF-16 chars
+          (local.set ${vec} (v128.load (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 1)))))
+          ;; mask = (char >= 97) & (char <= 122)
+          (local.set ${mask} (v128.and
+            (i16x8.ge_s (local.get ${vec}) (i16x8.splat (i32.const 97)))
+            (i16x8.le_s (local.get ${vec}) (i16x8.splat (i32.const 122)))))
+          ;; result = char - (mask & 32)
+          (local.set ${vec} (i16x8.sub (local.get ${vec}) (v128.and (local.get ${mask}) (i16x8.splat (i32.const 32)))))
+          ;; Store
+          (v128.store (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 1))) (local.get ${vec}))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 8)))
+          (br $simd_loop_${id})))
+        ;; Scalar remainder
+        (block $rem_done_${id} (loop $rem_loop_${id}
+          (br_if $rem_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (local.set ${ch} (i32.load16_u (i32.add (local.get ${srcBase}) (i32.shl (local.get ${idx}) (i32.const 1)))))
+          (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 97)) (i32.le_s (local.get ${ch}) (i32.const 122)))
+            (then (local.set ${ch} (i32.sub (local.get ${ch}) (i32.const 32)))))
+          (i32.store16 (i32.add (local.get ${dstBase}) (i32.shl (local.get ${idx}) (i32.const 1))) (local.get ${ch}))
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $rem_loop_${id}))))
+      (else
+        ;; SSO or short string: scalar path
+        (local.set ${idx} (i32.const 0))
+        (block $done_${id} (loop $loop_${id}
+          (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+          (local.set ${ch} ${strCharAt(`(local.get ${str})`, `(local.get ${idx})`)})
+          (if (i32.and (i32.ge_s (local.get ${ch}) (i32.const 97)) (i32.le_s (local.get ${ch}) (i32.const 122)))
+            (then (local.set ${ch} (i32.sub (local.get ${ch}) (i32.const 32)))))
+          ${strSetChar(`(local.get ${result})`, `(local.get ${idx})`, `(local.get ${ch})`)}
+          (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+          (br $loop_${id})))))
     (local.get ${result})`, 'string')
 }
 
