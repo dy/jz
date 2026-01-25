@@ -33,6 +33,11 @@ export function assemble(bodyWat, ctx = {
     }
   }
 
+  // Exception tag for try/catch/throw
+  if (ctx.usedException) {
+    wat += `  (tag $__error (param f64))\n`
+  }
+
   // Function table for closure calls
   if (ctx.usedFuncTable && ctx.funcTableEntries.length > 0) {
     const tableSize = ctx.funcTableEntries.length

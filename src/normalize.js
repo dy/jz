@@ -16,6 +16,7 @@ const ALLOWED = new Set([
   'for', 'while',
   'break', 'continue',
   'switch', 'case', 'default',
+  'try', 'catch', 'finally', 'throw',  // exception handling
   '{}',           // block statement
   ';',            // statements
   '=>', '()', 'return',
@@ -44,9 +45,6 @@ const PROHIBITED = {
   'in': '`in` operator not supported: use optional chaining (?.) or hasOwnProperty pattern',
   'instanceof': 'instanceof not supported: use typeof or Array.isArray()',
   'with': '`with` statement not supported: deprecated and harmful',
-  'try': 'try/catch not supported: no exception handling (yet)',
-  'catch': 'try/catch not supported: no exception handling (yet)',
-  'throw': 'throw not supported: no exception handling (yet)',
   'import': 'dynamic import() not supported: use static imports',
   ':': 'labeled statements not supported: restructure control flow',
 }
@@ -328,7 +326,8 @@ const handlers = {
 
     // Block: contains statements
     if (Array.isArray(inner) && (inner[0] === ';' || inner[0] === '=' || inner[0] === 'let' ||
-        inner[0] === 'const' || inner[0] === 'var' || inner[0] === 'for' || inner[0] === 'while' || inner[0] === 'return')) {
+        inner[0] === 'const' || inner[0] === 'var' || inner[0] === 'for' || inner[0] === 'while' || inner[0] === 'return' ||
+        inner[0] === 'try' || inner[0] === 'catch' || inner[0] === 'finally' || inner[0] === 'throw' || inner[0] === 'if')) {
       return ['{}', expr(inner)]
     }
 
