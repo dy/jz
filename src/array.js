@@ -419,9 +419,10 @@ export const join = (rw, args) => {
   // Default separator is ","
   const actualSep = args.length > 0 ? gen(args[0]) : (() => {
     ctx.usedStringType = true
-    const { id: strId, length } = ctx.internString(',')
-    const strOffset = HEAP_START + strId * STRING_STRIDE
-    return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${strOffset}))`
+    const { id: strId } = ctx.internString(',')
+    // Memory layout: [len:i32 + pad][chars...], offset points to chars
+    const strOffset = HEAP_START + strId * STRING_STRIDE + 8
+    return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${strOffset}))`
   })()
 
   return wat(`(local.set ${arr} ${rw})

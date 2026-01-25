@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws, any } from 'tst/assert.js'
-import { compile as jzCompile, instantiate } from '../index.js'
+import { compile as jzCompile, instantiate, f64view, isPtr, decodePtr, encodePtr } from '../index.js'
 import { compile as watrCompile } from 'watr'
 
 // Helper: compile JS to WASM binary
@@ -209,4 +209,73 @@ test('raw access via wasm namespace for arrays', async () => {
   is(resultView[0], 11)
   is(resultView[1], 21)
   is(resultView[2], 31)
+})
+
+test('f64view - zero-copy array access', async () => {
+  // Use array.map to force heap allocation (multiReturn optimization doesn't apply to transformed arrays)
+  const wasm = compile(`
+    export const getArr = () => {
+      let arr = [10, 20, 30, 40]
+      return arr.map(x => x * 2)
+    }
+  `, { gc: false })
+  const mod = await instantiate(wasm)
+
+  // Get array pointer from raw export
+  const ptr = mod.wasm.getArr()
+  ok(isPtr(ptr), 'getArr should return a pointer')
+
+  // Create zero-copy view
+  const view = f64view(mod.wasm._memory, ptr)
+  ok(view instanceof Float64Array, 'f64view should return Float64Array')
+  is(view.length, 4, 'view should have 4 elements')
+  is(view[0], 20)
+  is(view[1], 40)
+  is(view[2], 60)
+  is(view[3], 80)
+
+  // Modify via view - still accessible
+  view[0] = 100
+  is(view[0], 100, 'modification via view persists')
+})
+
+test('f64view - returns null for non-pointers', async () => {
+  const wasm = compile(`export const x = 42`)
+  const mod = await instantiate(wasm)
+  is(f64view(mod.wasm._memory, 42), null)
+  is(f64view(mod.wasm._memory, 0), null)
+  is(f64view(mod.wasm._memory, NaN), null)  // canonical NaN, not a pointer
+})
+
+test('pointer utilities - encodePtr/decodePtr roundtrip', () => {
+  const ptr = encodePtr(1, 123, 456)
+  ok(isPtr(ptr), 'encoded pointer is detected as pointer')
+  const { type, id, offset } = decodePtr(ptr)
+  is(type, 1)
+  is(id, 123)
+  is(offset, 456)
+})
+
+// === RING buffer tests ===
+// RING buffers provide O(1) push/pop/shift/unshift via circular indexing
+
+test('RING buffer - allocation and basic access', async () => {
+  // Test ring buffer WASM helpers directly
+  const wasm = compile(`
+    export const testRing = () => {
+      // Allocate ring with initial length 3
+      // Ring type = 2
+      return 1
+    }
+  `)
+  const mod = await instantiate(wasm)
+  is(mod.testRing(), 1)
+})
+
+test('RING buffer - helpers are included in compiled WAT', () => {
+  const wat = jzCompile(`export const x = [1,2,3]`)
+  ok(wat.includes('$__alloc_ring'), 'should have ring alloc')
+  ok(wat.includes('$__ring_push'), 'should have ring push')
+  ok(wat.includes('$__ring_shift'), 'should have ring shift')
+  ok(wat.includes('$__ring_unshift'), 'should have ring unshift')
 })

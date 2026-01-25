@@ -77,7 +77,7 @@ const ALLOWED_CONSTRUCTORS = new Set([
 // Prohibited global identifiers
 const PROHIBITED_IDENTIFIERS = new Set([
   'arguments', 'eval', 'Function',
-  'Proxy', 'Reflect', 'Symbol',
+  'Proxy', 'Reflect',  // Symbol now supported as ATOM type
   'WeakMap', 'WeakSet',
   'Promise', 'async',
 ])
@@ -202,28 +202,34 @@ const handlers = {
   '>>'(op, [a, b]) { return optimize('>>', expr(a), expr(b)) },
   '>>>'(op, [a, b]) { return optimize('>>>', expr(a), expr(b)) },
 
-  // Variable declarations
-  'let'(op, [init]) {
-    if (Array.isArray(init) && init[0] === '=') {
-      return ['let', ['=', init[1], expr(init[2])]]
-    }
-    return ['let', init]
+  // Variable declarations (can have multiple: let a = 1, b = 2)
+  'let'(op, inits) {
+    return ['let', ...inits.map(init => {
+      if (Array.isArray(init) && init[0] === '=') {
+        return ['=', init[1], expr(init[2])]
+      }
+      return init
+    })]
   },
-  'const'(op, [init]) {
-    if (Array.isArray(init) && init[0] === '=') {
-      return ['const', ['=', init[1], expr(init[2])]]
-    }
-    return ['const', init]
+  'const'(op, inits) {
+    return ['const', ...inits.map(init => {
+      if (Array.isArray(init) && init[0] === '=') {
+        return ['=', init[1], expr(init[2])]
+      }
+      return init
+    })]
   },
-  'var'(op, [init]) {
+  'var'(op, inits) {
     // Extract variable name for warning
-    let varName = init
-    if (Array.isArray(init) && init[0] === '=') varName = init[1]
+    let varName = inits[0]
+    if (Array.isArray(inits[0]) && inits[0][0] === '=') varName = inits[0][1]
     warn('var', `\`var ${varName}\` - prefer \`let\` or \`const\` (var has hoisting surprises)`)
-    if (Array.isArray(init) && init[0] === '=') {
-      return ['var', ['=', init[1], expr(init[2])]]
-    }
-    return ['var', init]
+    return ['var', ...inits.map(init => {
+      if (Array.isArray(init) && init[0] === '=') {
+        return ['=', init[1], expr(init[2])]
+      }
+      return init
+    })]
   },
 
   // Arrow function

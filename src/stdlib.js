@@ -320,13 +320,12 @@ export const FUNCTIONS = {
   // Returns: f64 value or NaN
   // Memory layout: i16 code units at offset
   parseInt: `(func $parseInt (param $str f64) (param $radix i32) (result f64)
-    (local $code i32) (local $len i32) (local $offset i32)
-    (local.set $len (call $__ptr_len (local.get $str)))
+    (local $code i32) (local $len i32)
+    (local.set $len (call $__str_len (local.get $str)))
     (if (i32.eq (local.get $len) (i32.const 0))
       (then (return (f64.const nan))))
-    (local.set $offset (call $__ptr_offset (local.get $str)))
-    ;; Get first character code (i16 stored as 2-byte value)
-    (local.set $code (i32.load16_u (local.get $offset)))
+    ;; Get first character code (SSO-aware)
+    (local.set $code (call $__str_char_at (local.get $str) (i32.const 0)))
     (call $parseIntFromCode (local.get $code) (local.get $radix)))`,
 
   // Array.fill - fill array with value, returns the array
@@ -353,14 +352,14 @@ export const FUNCTIONS = {
     (local $temp i32) (local $buf i32) (local $hasDecimal i32)
     (local $intLen i32) (local $fracLen i32) (local $totalLen i32)
     (local $abs f64)
-    ;; Handle NaN (STRING=4)
+    ;; Handle NaN (STRING=3)
     (if (f64.ne (local.get $x) (local.get $x))
-      (then (return (call $__mkptr (i32.const 4) (i32.const 3) (global.get $__strNaN)))))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNaN)))))
     ;; Handle Infinity
     (if (f64.eq (local.get $x) (f64.const inf))
-      (then (return (call $__mkptr (i32.const 4) (i32.const 8) (global.get $__strInf)))))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strInf)))))
     (if (f64.eq (local.get $x) (f64.const -inf))
-      (then (return (call $__mkptr (i32.const 4) (i32.const 9) (global.get $__strNegInf)))))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNegInf)))))
     ;; Handle negative
     (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
     (local.set $abs (f64.abs (local.get $x)))
@@ -418,8 +417,8 @@ export const FUNCTIONS = {
       (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
     (if (local.get $hasDecimal)
       (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $fracLen))))))
-    ;; Allocate result string
-    (local.set $str (call $__alloc (i32.const 4) (local.get $totalLen)))
+    ;; Allocate result string (STRING=3)
+    (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
     (local.set $offset (call $__ptr_offset (local.get $str)))
     (local.set $i (i32.const 0))
     ;; Write minus sign
@@ -476,7 +475,7 @@ export const FUNCTIONS = {
     (if (i32.eqz (local.get $escCount))
       (then (return (local.get $str))))
     ;; Allocate new string with extra space
-    (local.set $result (call $__alloc (i32.const 4) (i32.add (local.get $srcLen) (local.get $escCount))))
+    (local.set $result (call $__alloc (i32.const 3) (i32.add (local.get $srcLen) (local.get $escCount))))
     (local.set $dstOff (call $__ptr_offset (local.get $result)))
     ;; Copy with escaping
     (local.set $i (i32.const 0))
@@ -611,6 +610,7 @@ export const FUNCTIONS = {
 
   // Allocate Set with C-style headers (capacity/size before entries)
   // Layout: [... | cap:f64 | size:f64 | entry0... ] where offset points to entries
+  // OBJECT type=4 with kind=2 (SET): aux = (2 << 14) = 0x8000
   __set_new: `(func $__set_new (param $cap i32) (result f64)
     (local $offset i32) (local $bytes i32)
     (if (i32.lt_s (local.get $cap) (i32.const 16))
@@ -621,10 +621,11 @@ export const FUNCTIONS = {
     (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
     (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
     (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
-    ;; SET=7
-    (call $__mkptr (i32.const 7) (i32.const 0) (local.get $offset)))`,
+    ;; OBJECT=4, kind=2 (SET), aux = (2 << 14) = 0x8000
+    (call $__mkptr (i32.const 4) (i32.const 0x8000) (local.get $offset)))`,
 
   // Allocate Map with C-style headers
+  // OBJECT type=4 with kind=3 (MAP): aux = (3 << 14) = 0xC000
   __map_new: `(func $__map_new (param $cap i32) (result f64)
     (local $offset i32) (local $bytes i32)
     (if (i32.lt_s (local.get $cap) (i32.const 16))
@@ -635,8 +636,8 @@ export const FUNCTIONS = {
     (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
     (memory.fill (i32.sub (local.get $offset) (i32.const 16)) (i32.const 0) (local.get $bytes))
     (f64.store (i32.sub (local.get $offset) (i32.const 16)) (f64.convert_i32_s (local.get $cap)))
-    ;; MAP=8
-    (call $__mkptr (i32.const 8) (i32.const 0) (local.get $offset)))`,
+    ;; OBJECT=4, kind=3 (MAP), aux = (3 << 14) = 0xC000
+    (call $__mkptr (i32.const 4) (i32.const 0xC000) (local.get $offset)))`,
 
   // Set.has(key) - returns 1 if found, 0 if not
   __set_has: `(func $__set_has (param $set f64) (param $key f64) (result i32)
@@ -933,16 +934,16 @@ export const FUNCTIONS = {
       (br $scan)))
     (local.set $len (i32.sub (global.get $__json_pos) (local.get $start)))
     (call $__json_advance (i32.const 1))  ;; skip closing quote
-    ;; No escapes: direct copy
+    ;; No escapes: direct copy (STRING=3)
     (if (i32.eqz (local.get $hasEsc))
       (then
-        (local.set $result (call $__alloc (i32.const 4) (local.get $len)))
+        (local.set $result (call $__alloc (i32.const 3) (local.get $len)))
         (memory.copy (call $__ptr_offset (local.get $result))
           (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1)))
           (i32.shl (local.get $len) (i32.const 1)))
         (return (local.get $result))))
-    ;; Has escapes: decode
-    (local.set $result (call $__alloc (i32.const 4) (local.get $len)))  ;; over-allocate
+    ;; Has escapes: decode (STRING=3)
+    (local.set $result (call $__alloc (i32.const 3) (local.get $len)))  ;; over-allocate
     (local.set $srcOff (i32.add (global.get $__json_str) (i32.shl (local.get $start) (i32.const 1))))
     (local.set $dstOff (call $__ptr_offset (local.get $result)))
     (local.set $i (i32.const 0))

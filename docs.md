@@ -307,6 +307,31 @@ const instance = await WebAssembly.instantiate(module)
 instance.exports.f(5)  // 6
 ```
 
+### Zero-copy Memory Access
+```js
+import { compile, instantiate, f64view, isPtr, decodePtr, encodePtr } from 'jz'
+import { compile as assemble } from 'watr'
+
+const wat = compile('export const getArr = () => [1,2,3].map(x => x*2)')
+const wasm = assemble(wat)
+const mod = await instantiate(wasm)
+
+// Get raw pointer from wasm namespace
+const ptr = mod.wasm.getArr()
+if (isPtr(ptr)) {
+  // Create zero-copy Float64Array view
+  const view = f64view(mod.wasm._memory, ptr)
+  console.log(Array.from(view))  // [2, 4, 6]
+
+  // Modify directly in WASM memory
+  view[0] = 100
+
+  // Inspect pointer structure
+  const { type, aux, offset } = decodePtr(ptr)
+  // type=1 (ARRAY), aux=subtype bits, offset=memory address
+}
+```
+
 ## CLI
 
 ```bash
@@ -324,6 +349,43 @@ jz run program.wat
 ```
 
 ## Limitations & Divergences
+
+### Static Typing (Principal Limitation)
+
+JZ enforces **compile-time type resolution** for zero-overhead performance. No runtime type dispatch.
+
+**What works:**
+```js
+// Type known at call-site → direct code
+[1,2,3].length        // ARRAY → memory read
+"abc".length          // STRING → pointer extract
+fn([1,2,3])          // Monomorphize fn$array
+
+// Currying (types flow through)
+let mul = x => y => x * y
+mul(2)(3)            // Both calls fully typed
+```
+
+**What doesn't work:**
+```js
+// ✗ Union types at call-site
+let x = cond ? [1] : "hi"
+fn(x)                // Error: ambiguous type
+
+// ✗ Generic functions on unknown params
+let len = x => x.length  // Error unless monomorphized
+
+// ✗ Spread unknown arrays
+function f(...args) {}
+let arr = getArray()
+f(...arr)            // Error: arr type unknown
+```
+
+**Implications:**
+- Functions are **monomorphized** per call-site types
+- No `typeof` runtime checks (use compile-time type)
+- Collections must be **homogeneous** (same element type)
+- Spread only works on compile-time known arrays
 
 ### Types
 - All numbers are `f64` (double precision)

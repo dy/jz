@@ -95,15 +95,18 @@ export const search = (rw, args) => {
     ctx.usedStringType = true
     ctx.usedMemory = true
     const regexId = searchVal.schema
-    const strOff = `$_search_off_${id}`, strLen_ = `$_search_len_${id}`, searchPos = `$_search_pos_${id}`, matchResult = `$_search_res_${id}`
+    const strPtr = `$_search_ptr_${id}`, strOff = `$_search_off_${id}`, strLen_ = `$_search_len_${id}`, searchPos = `$_search_pos_${id}`, matchResult = `$_search_res_${id}`
+    ctx.addLocal(strPtr, 'f64')
     ctx.addLocal(strOff, 'i32')
     ctx.addLocal(strLen_, 'i32')
     ctx.addLocal(searchPos, 'i32')
     ctx.addLocal(matchResult, 'i32')
 
     // Search loop: try at each position until match or end
-    return wat(`(local.set ${strOff} (call $__ptr_offset ${rw}))
-      (local.set ${strLen_} (call $__ptr_len ${rw}))
+    // Convert SSO to heap first for memory access
+    return wat(`(local.set ${strPtr} (call $__sso_to_heap ${rw}))
+      (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
+      (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
       (local.set ${searchPos} (i32.const 0))
       (local.set ${matchResult} (i32.const -1))
       (block $found_${id}
@@ -181,7 +184,7 @@ export const match = (rw, args) => {
   if (isGlobal) {
     // Global match: return array of all match strings (no groups per JS spec)
     return wat(`(block (result f64)
-      (local.set ${strPtr} ${rw})
+      (local.set ${strPtr} (call $__sso_to_heap ${rw}))
       (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
       (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
       ;; First pass: count matches
@@ -232,7 +235,7 @@ export const match = (rw, args) => {
   const arrNew = `(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${resultLen}))`
 
   return wat(`(block (result f64)
-    (local.set ${strPtr} ${rw})
+    (local.set ${strPtr} (call $__sso_to_heap ${rw}))
     (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
     (local.set ${strLen_} (call $__ptr_len (local.get ${strPtr})))
     (local.set ${searchPos} (i32.const 0))
@@ -709,7 +712,7 @@ export const split = (rw, args) => {
         (br $cpy_loop2_${id})))
     `
 
-    return wat(`(local.set ${str} ${rw})
+    return wat(`(local.set ${str} (call $__sso_to_heap ${rw}))
       (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
       (local.set ${len} (call $__ptr_len (local.get ${str})))
       ;; Count parts first
@@ -938,10 +941,11 @@ export const replace = (rw, args) => {
     if (isGlobal) {
       // Global replace: replace ALL matches
       // Wrap in block so the whole thing is a valid expression
+      // Convert SSO strings to heap for memory access
       return wat(`(block (result f64)
-        (local.set ${str} ${rw})
+        (local.set ${str} (call $__sso_to_heap ${rw}))
         (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
-        (local.set ${repl} ${replaceVal})
+        (local.set ${repl} (call $__sso_to_heap ${replaceVal}))
         (local.set ${len} (call $__ptr_len (local.get ${str})))
         (local.set ${replLen} (call $__ptr_len (local.get ${repl})))
         ;; First pass: count matches and total match length
@@ -1013,9 +1017,9 @@ export const replace = (rw, args) => {
     // Non-global: replace first match only
     // Wrap in block so multi-statement is valid expression
     return wat(`(block (result f64)
-      (local.set ${str} ${rw})
+      (local.set ${str} (call $__sso_to_heap ${rw}))
       (local.set ${strOff} (call $__ptr_offset (local.get ${str})))
-      (local.set ${repl} ${replaceVal})
+      (local.set ${repl} (call $__sso_to_heap ${replaceVal}))
       (local.set ${len} (call $__ptr_len (local.get ${str})))
       (local.set ${replLen} (call $__ptr_len (local.get ${repl})))
       (local.set ${foundIdx} (i32.const -1))

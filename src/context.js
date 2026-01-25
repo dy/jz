@@ -108,12 +108,12 @@ export function createContext() {
         this.locals[finalName] = { idx: this.localCounter++, type, originalName: name, scopedName: finalName }
         // Namespace type is compile-time only - no WASM local needed
         if (type === 'namespace') return this.locals[finalName]
-        // Memory-based: all reference types are f64 pointers
+        // Memory-based: all reference types are f64 pointers (NaN-boxed)
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||
            type === 'boxed_string' || type === 'boxed_number' || type === 'boxed_boolean' ||
            type === 'array_props' || type === 'typedarray' || type === 'regex' ||
-           type === 'set' || type === 'map') ? 'f64' : type
+           type === 'set' || type === 'map' || type === 'symbol') ? 'f64' : type
         this.localDecls.push(`(local $${finalName} ${wasmType})`)
       }
       if (schema !== undefined) this.localSchemas[finalName] = schema
@@ -245,6 +245,7 @@ export function createContext() {
       child.objectSchemas = this.objectSchemas
       child.objectPropTypes = this.objectPropTypes
       child.namespaces = this.namespaces
+      child.arrayParams = this.arrayParams  // Pre-analyzed array params (funcName → Set<paramName>)
       child.inFunction = true
       return child
     }

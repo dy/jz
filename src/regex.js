@@ -879,14 +879,16 @@ export const REGEX_METHODS = {
     if (!isString(strVal)) throw new Error('regex.test() argument must be string')
     // Search loop: try at each start position until match or end
     const id = ctx.uniqueId++
-    const strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
+    const strPtr = `$_rptr_${id}`, strOff = `$_rstr_${id}`, strLen = `$_rlen_${id}`, searchPos = `$_rsrch_${id}`, matchResult = `$_rmatch_${id}`
+    ctx.addLocal(strPtr, 'f64')
     ctx.addLocal(strOff, 'i32')
     ctx.addLocal(strLen, 'i32')
     ctx.addLocal(searchPos, 'i32')
     ctx.addLocal(matchResult, 'i32')
     return wat(`(block (result i32)
-      (local.set ${strOff} (call $__ptr_offset ${strVal}))
-      (local.set ${strLen} (call $__ptr_len ${strVal}))
+      (local.set ${strPtr} (call $__sso_to_heap ${strVal}))
+      (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
+      (local.set ${strLen} (call $__ptr_len (local.get ${strPtr})))
       (local.set ${searchPos} (i32.const 0))
       (block $found_${id}
         (loop $search_${id}
@@ -897,7 +899,6 @@ export const REGEX_METHODS = {
           (br $search_${id})))
       (i32.ge_s (local.get ${matchResult}) (i32.const 0)))`, 'i32')
   },
-
   // regex.exec(str) - returns array [fullMatch, group1, ...] or null (0)
   exec(receiver, args) {
     if (args.length !== 1) throw new Error('regex.exec(str) requires 1 argument')
@@ -949,7 +950,7 @@ export const REGEX_METHODS = {
     `
 
     return wat(`(block (result f64)
-      (local.set ${strPtr} ${strVal})
+      (local.set ${strPtr} (call $__sso_to_heap ${strVal}))
       (local.set ${strOff} (call $__ptr_offset (local.get ${strPtr})))
       (local.set ${strLen} (call $__ptr_len (local.get ${strPtr})))
       (local.set ${searchPos} (i32.const 0))

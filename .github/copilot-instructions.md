@@ -29,11 +29,32 @@ For any file structure changes, update project structure section below.
 
 Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 
+Important project decisions are documented in research.md in particular style:
+
+```md
+## [ ] question (with alternatives) -> decision
+  0. core option
+    + argument for 1
+    + argument for 2
+    ...
+    - against 1
+    - against 2
+    ...
+  1. alternative
+    + pro
+    - cons
+  ...
+## [ ] question (just decision) -> decision
+  * Point 1
+  * Point 2
+  ...
+```
 
 ## Design Principles
 
 - **No-overhead primitives**: Prefer compile-time solutions over runtime indirection. Static analysis enables direct calls, inline code, zero allocation.
-- **Meaningful limitations**: Accept constraints that enable performance. Document them clearly. Example: static namespace pattern requires compile-time known schema. Goal for compiler not to introduce runtime overhead just for marginal js compatibility
+- **Static typing, no runtime dispatch**: All types must be resolved at compile-time. No runtime type checks, no polymorphic dispatch. Functions are monomorphized per call-site types. This is a principal limitation for zero-overhead guarantee.
+- **Meaningful limitations**: Accept constraints that enable performance. Document them clearly. Example: static namespace pattern requires compile-time known schema. Goal for compiler not to introduce runtime overhead just for marginal js compatibility.
 - **Don't overcomplicate**: Simple working solution > complex generic solution. Add complexity only when concrete use case demands it.
 - **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
 

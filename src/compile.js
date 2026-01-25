@@ -61,12 +61,12 @@ const stringMethods = {
   split: string.split, replace: string.replace, search: string.search, match: string.match
 }
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, isSet, isMap, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
-import { nullRef, mkString, envGet, arrGet, arrGetTyped, arrLen, objGet, objSet, strCharAt, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
+import { nullRef, undefRef, mkString, envGet, arrGet, arrGetTyped, arrLen, directArrLen, objGet, objSet, strCharAt, strLen, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
 import { TYPED_ARRAY_METHODS } from './typedarray.js'
 import { genClosureCall, genClosureCallExpr, genClosureValue } from './closures.js'
 import { genArrayDestructDecl, genObjectDestructDecl } from './destruct.js'
@@ -107,11 +107,12 @@ export function setCtx(context) {
 export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   setCtx(createContext())
-  // Single pre-analysis pass: f64 vars, func return types, object schemas
-  const { f64Vars, funcReturnTypes, inferredSchemas } = preanalyze(ast)
+  // Single pre-analysis pass: f64 vars, func return types, object schemas, array params
+  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams } = preanalyze(ast)
   ctx.f64Vars = f64Vars
   ctx.funcReturnTypes = funcReturnTypes
   ctx.inferredSchemas = inferredSchemas
+  ctx.arrayParams = arrayParams  // funcName → Set<paramName> for params used as arrays
   gen = generate
   const bodyWat = String(f64(generate(ast)))
   const funcs = generateFunctions()
@@ -330,10 +331,19 @@ function genLiteral(v) {
  * @example genIdent('x') → {type:'f64', wat:'(local.get $x)'}
  */
 function genIdent(name) {
-  if (name === 'null' || name === 'undefined') return nullRef()
+  if (name === 'null') return nullRef()
+  if (name === 'undefined') return undefRef()
   if (name === 'true') return wat('(i32.const 1)', 'i32')
   if (name === 'false') return wat('(i32.const 0)', 'i32')
   if (name in GLOBAL_CONSTANTS) return wat(`(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`, 'f64')
+
+  // Symbol as identifier creates new unique symbol (like Symbol())
+  // In jz, Symbol can't be a first-class function value, so bare `Symbol` = Symbol()
+  if (name === 'Symbol') {
+    ctx.usedMemory = true
+    ctx.usedSymbol = true
+    return wat('(call $__mk_symbol)', 'symbol')
+  }
 
   // Check if this is a captured variable (from closure environment passed to us)
   // Closures capture by value - the env contains immutable copies
@@ -716,12 +726,12 @@ function resolveCall(namespace, name, args, receiver = null) {
   if (namespace === 'Array') {
     if (name === 'isArray' && args.length === 1) {
       const w = gen(args[0])
-      // Check: 1) is NaN (pointer), 2) type is ARRAY (1) or ARRAY_PROPS (8)
-      // Type is in bits 47-50 (4 bits)
+      // Check: 1) is NaN (pointer), 2) type is ARRAY (1)
+      // Type is in bits 48-50 (3 bits) in new encoding
       const v = f64(w)
       const isNaN = `(f64.ne ${v} ${v})`
-      const typeVal = `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const 47))) (i32.const 15))`
-      return wat(`(i32.and ${isNaN} (i32.or (i32.eq ${typeVal} (i32.const 1)) (i32.eq ${typeVal} (i32.const 8))))`, 'i32')
+      const typeVal = `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const 48))) (i32.const 7))`
+      return wat(`(i32.and ${isNaN} (i32.eq ${typeVal} (i32.const ${PTR_TYPE.ARRAY})))`, 'i32')
     }
     if (name === 'from' && args.length >= 1) {
       // Array.from(arr) - shallow copy of array
@@ -1327,6 +1337,15 @@ const operators = {
     // Expand comma-separated args: [',', a, b, c] -> [a, b, c]
     args = args.filter(a => a != null).flatMap(a => Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
 
+    // Symbol() - creates unique symbol (ATOM type)
+    // Symbol('description') - description optional, not stored
+    if (fn === 'Symbol') {
+      ctx.usedMemory = true  // for $__mk_symbol
+      ctx.usedSymbol = true
+      // Each Symbol() call creates a unique symbol with incrementing id
+      return wat('(call $__mk_symbol)', 'symbol')
+    }
+
     // Check for spread args: fn(...arr) or fn(a, ...arr)
     const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
 
@@ -1552,9 +1571,9 @@ const operators = {
     if (isString(a)) {
       return wat(strCharAt(String(a), iw), 'i32')
     }
-    // Boxed string: delegate indexing to inner string pointer
+    // Boxed string: delegate indexing to inner string pointer (SSO-aware)
     if (isBoxedString(a)) {
-      return wat(`(i32.load16_u (i32.add (call $__ptr_offset (f64.load (call $__ptr_offset ${a}))) (i32.shl ${iw} (i32.const 1))))`, 'i32')
+      return wat(`(call $__str_char_at (f64.load (call $__ptr_offset ${a})) ${iw})`, 'i32')
     }
     // Array with props: index into elements (same as regular array)
     if (isArrayProps(a)) {
@@ -1588,14 +1607,35 @@ const operators = {
         ctx.usedMemory = true
         return wat(typedArrLen(String(o)), 'i32')
       }
-      if (isArray(o) || isString(o) || isF64(o) || isArrayProps(o)) {
+      if (isString(o)) {
+        // String length: use SSO-aware strLen
+        ctx.usedMemory = true
+        return wat(strLen(String(o)), 'i32')
+      }
+      if (isArray(o) || isArrayProps(o)) {
         ctx.usedMemory = true
         return wat(arrLen(String(o)), 'i32')
       }
-      if (isBoxedString(o) && hasSchema(o)) {
-        // Boxed string length: get inner string pointer, then its length
+      if (isF64(o)) {
         ctx.usedMemory = true
-        return wat(`(call $__ptr_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
+        // Check if this is a known array param (from preanalysis)
+        if (typeof obj === 'string' && ctx.currentFuncName && ctx.arrayParams) {
+          const funcArrayParams = ctx.arrayParams.get(ctx.currentFuncName)
+          if (funcArrayParams && funcArrayParams.has(obj)) {
+            // Known array param - use direct array length, skip type dispatch
+            return wat(directArrLen(String(o)), 'i32')
+          }
+        }
+        // Runtime f64: could be array or string, need runtime dispatch
+        // Check type: STRING=3 uses $__str_len, others use $__ptr_len
+        return wat(`(if (result i32) (i32.eq (call $__ptr_type ${o}) (i32.const 3))
+          (then (call $__str_len ${o}))
+          (else (call $__ptr_len ${o})))`, 'i32')
+      }
+      if (isBoxedString(o) && hasSchema(o)) {
+        // Boxed string length: get inner string pointer, then its length (SSO-aware)
+        ctx.usedMemory = true
+        return wat(`(call $__str_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
       }
       throw new Error(`Cannot get length of ${o.type}`)
     }
@@ -1726,7 +1766,11 @@ const operators = {
     const o = gen(obj)
     if (prop === 'length') {
       // Memory-based: arrays and strings are f64 pointers
-      if (isF64(o) || isString(o) || isArray(o)) {
+      if (isString(o)) {
+        ctx.usedMemory = true
+        return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__str_len ${o}))))`, 'f64')
+      }
+      if (isF64(o) || isArray(o)) {
         ctx.usedMemory = true
         return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o}))))`, 'f64')
       }
@@ -1822,6 +1866,23 @@ const operators = {
         return wat(elems, 'multi')
       }
     }
+    // Tail call optimization: return f(...args) → return_call $f args
+    // Only for direct calls to user-defined non-closure functions
+    if (value && Array.isArray(value) && value[0] === '()') {
+      const [, fn, ...args] = value
+      // Direct call by name (not method, not closure expression)
+      if (typeof fn === 'string' && fn in ctx.functions) {
+        const fnDef = ctx.functions[fn]
+        // Skip closures - they need env setup which can't be in tail position
+        if (!fnDef.closure) {
+          // Expand comma-separated args
+          const expandedArgs = args.filter(a => a != null).flatMap(a => 
+            Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
+          const argWats = expandedArgs.map(a => String(f64(gen(a)))).join(' ')
+          return wat(`(return_call $${fn} ${argWats})`, 'f64')
+        }
+      }
+    }
     // Preserve type for NaN-boxed pointers (strings, arrays, objects)
     const genVal = value !== undefined ? gen(value) : wat('(f64.const 0)', 'f64')
     const retVal = isString(genVal) || isArray(genVal) || isObject(genVal) ? genVal : f64(genVal)
@@ -1890,7 +1951,8 @@ const operators = {
     const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
     if (isTypeofA && isStringLiteralB) {
       const s = b[1]
-      const code = s === 'undefined' ? 0 : s === 'number' ? 1 : s === 'string' ? 2 : s === 'boolean' ? 3 : s === 'object' ? 4 : s === 'function' ? 5 : null
+      // Type codes: undefined=0, number=1, string=2, boolean=3, object=4, function=5, symbol=6
+      const code = s === 'undefined' ? 0 : s === 'number' ? 1 : s === 'string' ? 2 : s === 'boolean' ? 3 : s === 'object' ? 4 : s === 'function' ? 5 : s === 'symbol' ? 6 : null
       if (code !== null) {
         // Check for literal null/undefined first (before gen)
         const typeofArg = a[1]
@@ -1922,12 +1984,13 @@ const operators = {
         const isBoolExpr = (typeof innerArg === 'string' && (innerArg === 'true' || innerArg === 'false')) ||
           (Array.isArray(innerArg) && innerArg[0] === undefined && typeof innerArg[1] === 'boolean') ||
           (Array.isArray(innerArg) && ['<', '<=', '>', '>=', '==', '===', '!=', '!==', '!'].includes(innerArg[0]))
-        if (isF64(val)) {
+        if (val.type === 'symbol') {
+          typeCode = '(i32.const 6)'  // symbol
+        } else if (isF64(val)) {
           // f64 might be a regular number or an integer-packed pointer
-          // Pointer threshold: values >= 2^48 are pointers (arrays/objects)
-          // Check: if value >= threshold → pointer (type 4 = object), else number (type 1)
+          // Use __typeof_code for proper runtime detection of all pointer types
           ctx.usedMemory = true
-          typeCode = `(select (i32.const 4) (i32.const 1) (call $__is_pointer ${val}))`
+          typeCode = `(call $__typeof_code ${val})`
         } else if (isI32(val)) {
           // i32 can be boolean result or integer number - check AST
           typeCode = isBoolExpr ? '(i32.const 3)' : '(i32.const 1)'
@@ -1946,6 +2009,11 @@ const operators = {
       return operators['==']([b, a])  // Swap and recurse
     }
     const va = gen(a), vb = gen(b)
+    // Symbol comparison: use __ptr_eq for NaN-boxed ATOM pointers
+    if (isSymbol(va) && isSymbol(vb)) {
+      ctx.usedMemory = true
+      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
+    }
     // String comparison: use __ptr_eq for NaN-boxed pointers (f64.eq fails on NaN)
     if ((isString(va) || isBoxedString(va)) && (isString(vb) || isBoxedString(vb))) {
       ctx.usedMemory = true
@@ -2053,7 +2121,7 @@ const operators = {
     ctx.addLocal(result, 'f64')
 
     code += `(block $break_${id} (loop $continue_${id}\n      `
-    if (cond) code += `(br_if $break_${id} (i32.eqz ${bool(gen(cond))}))\n      `
+    if (cond) code += `(br_if $break_${id} ${falsy(gen(cond))})\n      `
     code += `(local.set ${result} ${f64(gen(body))})\n      `
     if (step) {
       if (Array.isArray(step) && step[0] === '=') code += genAssign(step[1], step[2], false)
@@ -2073,7 +2141,7 @@ const operators = {
     const result = `$_while_result_${id}`
     ctx.addLocal(result, 'f64')
     return wat(`(block $break_${id} (loop $continue_${id}
-      (br_if $break_${id} (i32.eqz ${bool(gen(cond))}))
+      (br_if $break_${id} ${falsy(gen(cond))})
       (local.set ${result} ${f64(gen(body))})
       (br $continue_${id})))
     (local.get ${result})`, 'f64')
@@ -2270,57 +2338,87 @@ const operators = {
     return wat(`(local.tee $${scopedName} ${coercedVal})`, varType, val.schema)
   },
 
-  'const'([assignment]) {
-    if (!Array.isArray(assignment) || assignment[0] !== '=') {
-      throw new Error('const requires assignment')
-    }
-    const [, name, value] = assignment
+  'const'(assignments) {
+    // Handle single or multiple declarators: const a = 1  OR  const a = 1, b = 2
+    // Single: [['=', 'a', 1]]   Multiple: [['=', 'a', 1], ['=', 'b', 2]]
+    let code = ''
+    let lastResult = wat('(f64.const 0)', 'f64')
 
-    // Array destructuring in const declaration: const [a, b] = [1, 2]
-    if (Array.isArray(name) && name[0] === '[]') {
-      return _genArrayDestructDecl(name, value, true)
+    for (const assignment of assignments) {
+      if (!Array.isArray(assignment) || assignment[0] !== '=') {
+        throw new Error('const requires assignment')
+      }
+      const [, name, value] = assignment
+
+      // Array destructuring in const declaration: const [a, b] = [1, 2]
+      if (Array.isArray(name) && name[0] === '[]') {
+        const result = _genArrayDestructDecl(name, value, true)
+        code += `(drop ${result})\n    `
+        lastResult = result
+        continue
+      }
+
+      // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
+      if (Array.isArray(name) && name[0] === '{}') {
+        const result = _genObjectDestructDecl(name, value, true)
+        code += `(drop ${result})\n    `
+        lastResult = result
+        continue
+      }
+
+      if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
+      // Arrow function: delegate to genAssign which handles function registration properly
+      if (Array.isArray(value) && value[0] === '=>') {
+        ctx.declareVar(name, true)
+        const result = genAssign(name, value, true)
+        code += `(drop ${result})\n    `
+        lastResult = result
+        continue
+      }
+
+      // Forward schema inference for Object.assign on primitives
+      const isObjAssign = Array.isArray(value) && value[0] === '()' &&
+        Array.isArray(value[1]) && value[1][0] === '.' &&
+        value[1][1] === 'Object' && value[1][2] === 'assign'
+      if (isObjAssign && ctx.inferredSchemas?.has(name)) {
+        const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+        if (result) {
+          code += `(drop ${result})\n    `
+          lastResult = result
+          continue
+        }
+      }
+
+      // Forward schema inference for const objects
+      if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
+        const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
+        if (result) {
+          code += `(drop ${result})\n    `
+          lastResult = result
+          continue
+        }
+      }
+
+      const scopedName = ctx.declareVar(name, true)
+      const val = gen(value)
+      // Track array variables (type-based for gc:true, AST-based for gc:false)
+      const isArr = isArrayType(val.type) || isArrayExpr(value)
+      if (isArr) {
+        ctx.knownArrayVars.add(name)
+      }
+      // Warn on aliasing
+      if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
+        ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
+      }
+      ctx.addLocal(name, val.type, val.schema, scopedName)
+      const result = wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
+      code += `(drop ${result})\n    `
+      lastResult = result
     }
 
-    // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
-    if (Array.isArray(name) && name[0] === '{}') {
-      return _genObjectDestructDecl(name, value, true)
-    }
-
-    if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
-    // Arrow function: delegate to genAssign which handles function registration properly
-    if (Array.isArray(value) && value[0] === '=>') {
-      ctx.declareVar(name, true)
-      return genAssign(name, value, true)
-    }
-
-    // Forward schema inference for Object.assign on primitives
-    const isObjAssign = Array.isArray(value) && value[0] === '()' &&
-      Array.isArray(value[1]) && value[1][0] === '.' &&
-      value[1][1] === 'Object' && value[1][2] === 'assign'
-    if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-      const result = genBoxedInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
-      if (result) return result
-    }
-
-    // Forward schema inference for const objects
-    if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-      const result = genObjectInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
-      if (result) return result
-    }
-
-    const scopedName = ctx.declareVar(name, true)
-    const val = gen(value)
-    // Track array variables (type-based for gc:true, AST-based for gc:false)
-    const isArr = isArrayType(val.type) || isArrayExpr(value)
-    if (isArr) {
-      ctx.knownArrayVars.add(name)
-    }
-    // Warn on aliasing
-    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
-    }
-    ctx.addLocal(name, val.type, val.schema, scopedName)
-    return wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
+    // Return last value (drop the final drop)
+    if (code) code = code.slice(0, code.lastIndexOf('(drop'))
+    return wat(code + String(lastResult), lastResult.type, lastResult.schema)
   },
 
   'var'([assignment]) {
@@ -2385,19 +2483,36 @@ const operators = {
       string: ctx.internString('string'),
       boolean: ctx.internString('boolean'),
       object: ctx.internString('object'),
-      function: ctx.internString('function')
+      function: ctx.internString('function'),
+      symbol: ctx.internString('symbol')
     }
     const mkStr = (name) => {
       const { id, length } = typeStrings[name]
       ctx.usedMemory = true
-      // NaN boxing: mkptr(type, id, offset) - for string, id = length, offset = memOffset
-      const memOffset = HEAP_START + id * STRING_STRIDE
-      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${memOffset}))`
+      // NaN boxing: mkptr(type, aux, offset)
+      // For strings, aux=0, offset points to char data (after 8-byte length header)
+      const memOffset = HEAP_START + id * STRING_STRIDE + 8  // +8 for length header
+      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${memOffset}))`
     }
+    if (val.type === 'symbol') return wat(mkStr('symbol'), 'string')
     if (val.type === 'f64') {
-      // f64 can be number or NaN-encoded pointer
-      // NaN != NaN for pointers, number == number for regular floats
-      return wat(`(select ${mkStr('number')} ${mkStr('object')} (f64.eq ${val} ${val}))`, 'string')
+      // f64 can be number or NaN-encoded pointer (string, object, symbol, function)
+      // Use __typeof_code for proper runtime detection
+      ctx.usedMemory = true
+      // typeof_code: 0=undefined, 1=number, 2=string, 3=boolean, 4=object, 5=function, 6=symbol
+      // Build a chain of selects based on typeof_code
+      const tcLocal = `$__tc_${ctx.uniqueId++}`
+      ctx.addLocal(tcLocal, 'i32')
+      return wat(`(local.set ${tcLocal} (call $__typeof_code ${val}))
+        (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 6))
+          (then ${mkStr('symbol')})
+          (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 2))
+            (then ${mkStr('string')})
+            (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 5))
+              (then ${mkStr('function')})
+              (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 4))
+                (then ${mkStr('object')})
+                (else ${mkStr('number')}))))))))`, 'string')
     }
     if (val.type === 'i32') return wat(mkStr('boolean'), 'string')
     if (val.type === 'string') return wat(mkStr('string'), 'string')
@@ -2468,7 +2583,7 @@ const operators = {
         const val = gen(part.ast)
         if (isString(val)) {
           code += `(local.set ${part.local} ${val})\n`
-          code += `(local.set ${totalLen} (i32.add (local.get ${totalLen}) (call $__ptr_len (local.get ${part.local}))))\n`
+          code += `(local.set ${totalLen} (i32.add (local.get ${totalLen}) (call $__str_len (local.get ${part.local}))))\n`
         } else {
           // Non-string interpolation not yet supported (needs number-to-string)
           throw new Error('Template literal interpolation requires string expression. Number-to-string conversion not yet implemented.')
@@ -2484,25 +2599,26 @@ const operators = {
     for (const part of genParts) {
       if (part.type === 'literal') {
         // Copy literal string (interned) to result at offset
-        // internString returns {id, offset, length} where memory location is HEAP_START + id * STRING_STRIDE
+        // internString stores at HEAP_START + id*STRING_STRIDE with [len:8][chars...]
+        // Char data starts at +8
         const { id: stringId } = ctx.internString(part.value)
         const partLen = part.value.length
         if (partLen > 0) {
           code += `(memory.copy
             (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
-            (i32.const ${HEAP_START + stringId * STRING_STRIDE})
+            (i32.const ${HEAP_START + stringId * STRING_STRIDE + 8})
             (i32.const ${partLen * 2}))\n`
           code += `(local.set ${offset} (i32.add (local.get ${offset}) (i32.const ${partLen})))\n`
         }
       } else {
-        // Copy expression result (if string) to result at offset
+        // Copy expression result (if string) to result at offset - handles SSO strings
+        const partLen = `$_tpl_plen_${ctx.uniqueId++}`
+        ctx.addLocal(partLen, 'i32')
         code += `(if (call $__is_pointer (local.get ${part.local}))
           (then
-            (memory.copy
-              (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
-              (call $__ptr_offset (local.get ${part.local}))
-              (i32.shl (call $__ptr_len (local.get ${part.local})) (i32.const 1)))
-            (local.set ${offset} (i32.add (local.get ${offset}) (call $__ptr_len (local.get ${part.local}))))))\n`
+            (local.set ${partLen} (call $__str_len (local.get ${part.local})))
+            (call $__str_copy (local.get ${result}) (local.get ${offset}) (local.get ${part.local}) (i32.const 0) (local.get ${partLen}))
+            (local.set ${offset} (i32.add (local.get ${offset}) (local.get ${partLen})))))\n`
       }
     }
 
@@ -2532,16 +2648,18 @@ const operators = {
     ctx.regexFlags[regexId] = flags
 
     // Return a regex "pointer" - NaN-boxed with REGEX type
-    // We store: type=REGEX(10), id=regexId, offset=flags(4bits)|groups(8bits)
+    // New encoding: [6:3][flags:6][funcIdx:10][offset:32]
+    // flags in bits 10-15 of aux, funcIdx in bits 0-9 of aux
     ctx.usedMemory = true
 
-    // Encode: type 10 (REGEX), id = regexId, offset = flags(4bits) | groups(8bits shifted)
+    // Encode flags: g=1, i=2, m=4, s=8, u=16, y=32
     const flagBits = (flags.includes('g') ? 1 : 0) |
                      (flags.includes('i') ? 2 : 0) |
                      (flags.includes('m') ? 4 : 0) |
                      (flags.includes('s') ? 8 : 0)
-    const offsetBits = flagBits | (groupCount << 4)  // groups in upper bits
-    return wat(`(call $__mkptr (i32.const 10) (i32.const ${regexId}) (i32.const ${offsetBits}))`, 'regex', regexId)
+    // Combine: aux = (flags << 10) | regexId, offset stores groupCount for now
+    const auxBits = (flagBits << 10) | (regexId & 0x3FF)
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.REGEX}) (i32.const ${auxBits}) (i32.const ${groupCount}))`, 'regex', regexId)
   },
 
   // Export declaration
@@ -2554,12 +2672,15 @@ const operators = {
       }
       return wat('(f64.const 0)', 'f64')
     }
-    // export const/let/var name = value
+    // export const/let/var name = value  (can have multiple declarators)
     if (Array.isArray(decl) && (decl[0] === 'const' || decl[0] === 'let' || decl[0] === 'var')) {
-      const inner = decl[1]
-      if (Array.isArray(inner) && inner[0] === '=') {
-        const name = inner[1]
-        if (typeof name === 'string') ctx.exports.add(name)
+      // Handle multiple declarators: ['const', ['=', 'a', ...], ['=', 'b', ...]]
+      for (let i = 1; i < decl.length; i++) {
+        const inner = decl[i]
+        if (Array.isArray(inner) && inner[0] === '=') {
+          const name = inner[1]
+          if (typeof name === 'string') ctx.exports.add(name)
+        }
       }
       return gen(decl)
     }
@@ -3117,6 +3238,7 @@ function generateFunction(name, params, paramInfo, bodyAst, parentCtx, closureIn
   const newCtx = parentCtx.fork()
   newCtx.closureCounter = parentCtx.closureCounter
   newCtx.returnLabel = '$return_' + name
+  newCtx.currentFuncName = name  // Track current function for array param lookup
   // Enable multi-value return detection for exported functions (not closures)
   newCtx.allowMultiReturn = exported && !closureInfo
   // Analyze for type promotion within this function body
