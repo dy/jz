@@ -322,7 +322,7 @@
   * Tradeoff: ring has 2 extra ops per access (add + and)
     Only pay this cost when shift/unshift detected.
 
-## [x] Pointer kinds -> 3-bit type + subtype encoding
+## [x] Pointer kinds -> 3-bit type + subtype encoding (IMPLEMENTED)
 
   * NaN payload: 51 bits = `[type:3][aux:16][offset:32]`
   * 4GB addressable (32-bit offset)
@@ -333,7 +333,7 @@
   |------|------|------------------|---------------|
   | 0 | ATOM | `[0:3][kind:16][id:32]` | none (value in pointer) |
   | 1 | ARRAY | `[1:3][ring:1][_:15][off:32]` | `[-8:len][elems...]` or `[-16:head][-8:len][slots...]` |
-  | 2 | TYPED | `[2:3][elem:3][_:13][off:32]` | `[-8:len,dataPtr:i32]` (view) |
+  | 2 | TYPED | `[2:3][elem:3][_:13][viewOff:32]` | `[len:i32][dataPtr:i32]` at viewOff |
   | 3 | STRING | `[3:3][sso:1][data:42][_:5]` or `[3:3][0][_:15][off:32]` | `[-8:len][chars:u16...]` |
   | 4 | OBJECT | `[4:3][kind:2][schema:14][off:32]` | varies by kind |
   | 5 | CLOSURE | `[5:3][funcIdx:16][off:32]` | `[-8:len][env0:f64, env1:f64, ...]` |
@@ -351,7 +351,10 @@
 
   **ARRAY (type=1)** - ring=1 adds `[-16:head]` for O(1) shift/unshift
 
-  **TYPED (type=2)** - View: `[-8: len:i32, dataPtr:i32]`, zero-copy subarrays
+  **TYPED (type=2)** - View header: `[len:i32][dataPtr:i32]`, zero-copy subarrays
+  - Pointer: `[type:3][elem:3][_:13][viewOffset:32]`
+  - Memory at viewOffset: `[len:i32][dataPtr:i32]`, data at dataPtr
+  - subarray() allocates 8-byte header only, shares dataPtr with offset
   | elem | Type | Stride |
   |------|------|--------|
   | 0-1 | I8/U8 | 1 |
@@ -360,7 +363,7 @@
   | 6-7 | F32/F64 | 4/8 |
 
   **STRING (type=3)**
-  - sso=1: 42 bits inline (6 ASCII chars, 7 bits each), no allocation
+  - sso=1: ≤6 ASCII chars (len:3 + chars:7×6 = 45 bits inline), no allocation
   - sso=0: offset → `[-8:len][char0:u16, char1:u16, ...]`
 
   **OBJECT (type=4)**

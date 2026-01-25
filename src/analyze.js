@@ -234,34 +234,37 @@ export function analyzeScope(ast, outerDefined = new Set(), inFunction = false) 
       return
     }
 
-    // Declarations: let x, const x = y, var x
+    // Declarations: let x, const x = y, var x (can have multiple: const a = 1, b = 2)
     if (op === 'let' || op === 'const' || op === 'var') {
-      if (Array.isArray(args[0]) && args[0][0] === '=') {
-        const declName = args[0][1]
-        const declValue = args[0][2]
-        // Check if value is a function (closure definition)
-        if (Array.isArray(declValue) && declValue[0] === '=>') {
-          const fnParams = extractParams(declValue[1])
-          const fnBody = declValue[2]
-          // Analyze inner function - outer defined vars available for capture
-          const allDefined = new Set([...defined, ...outerDefined])
-          const analysis = analyzeScope(fnBody, new Set(fnParams), true)
-          // Captured = free vars that are defined in outer scope
-          const captured = [...analysis.free].filter(v => allDefined.has(v))
-          innerFunctions.push({
-            name: declName,
-            params: fnParams,
-            body: fnBody,
-            captured,
-            innerFunctions: analysis.innerFunctions
-          })
-          defined.add(declName)
-          return
+      // Process each declarator in args
+      for (const decl of args) {
+        if (Array.isArray(decl) && decl[0] === '=') {
+          const declName = decl[1]
+          const declValue = decl[2]
+          // Check if value is a function (closure definition)
+          if (Array.isArray(declValue) && declValue[0] === '=>') {
+            const fnParams = extractParams(declValue[1])
+            const fnBody = declValue[2]
+            // Analyze inner function - outer defined vars available for capture
+            const allDefined = new Set([...defined, ...outerDefined])
+            const analysis = analyzeScope(fnBody, new Set(fnParams), true)
+            // Captured = free vars that are defined in outer scope
+            const captured = [...analysis.free].filter(v => allDefined.has(v))
+            innerFunctions.push({
+              name: declName,
+              params: fnParams,
+              body: fnBody,
+              captured,
+              innerFunctions: analysis.innerFunctions
+            })
+            defined.add(declName)
+            continue
+          }
+          walk(declValue, inFunc)
+          if (typeof declName === 'string') defined.add(declName)
+        } else if (typeof decl === 'string') {
+          defined.add(decl)
         }
-        walk(declValue, inFunc)
-        defined.add(declName)
-      } else if (typeof args[0] === 'string') {
-        defined.add(args[0])
       }
       return
     }
@@ -369,6 +372,12 @@ export function preanalyze(ast) {
   const funcs = new Map()       // name → { params, body }
   const funcReturnTypes = new Map() // name → 'i32' | 'f64'
   const inferredSchemas = new Map() // varName -> { props, closures, isBoxed, boxedType }
+  const arrayParams = new Map()  // funcName → Set<paramName> for params used as arrays
+
+  // ===== Array param detection helpers =====
+  const ARRAY_METHODS = new Set(['map', 'filter', 'reduce', 'find', 'findIndex', 'indexOf', 'includes',
+    'some', 'every', 'slice', 'concat', 'join', 'flat', 'flatMap', 'push', 'pop', 'shift', 'unshift',
+    'reverse', 'sort', 'fill', 'at', 'forEach', 'reduceRight', 'copyWithin', 'entries', 'keys', 'values'])
 
   // ===== F64 detection helpers =====
   const F64_OPS = new Set(['/', '**'])
@@ -444,6 +453,7 @@ export function preanalyze(ast) {
     const [op, ...args] = node
 
     // ----- Collect functions for return type analysis -----
+    // export const fn = (args) => body
     if (op === 'export' && Array.isArray(args[0]) && args[0][0] === 'const') {
       const decl = args[0][1]
       if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
@@ -453,6 +463,21 @@ export function preanalyze(ast) {
         }
       }
     }
+    // export function name(params) { body }
+    if (op === 'export' && Array.isArray(args[0]) && args[0][0] === 'function') {
+      const [, name, params, body] = args[0]
+      if (typeof name === 'string') {
+        funcs.set(name, { params: extractParams(params), body })
+      }
+    }
+    // function name(params) { body }
+    if (op === 'function') {
+      const [name, params, body] = args
+      if (typeof name === 'string') {
+        funcs.set(name, { params: extractParams(params), body })
+      }
+    }
+    // const/let fn = (args) => body
     if ((op === 'const' || op === 'let') && Array.isArray(args[0]) && args[0][0] === '=') {
       const [, name, value] = args[0]
       if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
@@ -656,7 +681,50 @@ export function preanalyze(ast) {
     funcReturnTypes.set(name, analyzeFunc(name, params, body))
   }
 
-  return { f64Vars, funcReturnTypes, inferredSchemas }
+  // ===== Detect array params =====
+  // A param is inferred as array if used with: arr[i], arr.length, arr.map(), etc.
+  function detectArrayParams(funcName, params, body) {
+    const paramSet = new Set(params)
+    const arrays = new Set()
+
+    function scan(node) {
+      if (!node || typeof node !== 'object') return
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+
+      // arr[i] - array indexing
+      if (op === '[]' && typeof args[0] === 'string' && paramSet.has(args[0])) {
+        arrays.add(args[0])
+      }
+
+      // arr.length or arr.method()
+      if (op === '.' && typeof args[0] === 'string' && paramSet.has(args[0])) {
+        const prop = args[1]
+        if (prop === 'length' || ARRAY_METHODS.has(prop)) {
+          arrays.add(args[0])
+        }
+      }
+
+      // method call: arr.map(fn) - the '()' wraps ['.', arr, 'map']
+      if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, method] = args[0]
+        if (typeof obj === 'string' && paramSet.has(obj) && ARRAY_METHODS.has(method)) {
+          arrays.add(obj)
+        }
+      }
+
+      for (const arg of args) scan(arg)
+    }
+
+    scan(body)
+    if (arrays.size > 0) arrayParams.set(funcName, arrays)
+  }
+
+  for (const [name, { params, body }] of funcs) {
+    detectArrayParams(name, params, body)
+  }
+
+  return { f64Vars, funcReturnTypes, inferredSchemas, arrayParams }
 }
 
 /**

@@ -12,88 +12,94 @@
  */
 
 /**
- * Pointer types for NaN-boxing
+ * Pointer types for NaN-boxing (3-bit encoding)
  *
  * NaN box format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
- * Unified payload: [type:4][aux:16][offset:31]
- *   - type: pointer type (1-15)
- *   - aux: type-specific (0, funcIdx, elemType, regexId)
- *   - offset: memory byte offset (2GB addressable, clean i32)
+ * Payload layout: [type:3][aux:16][offset:32]
+ *   - type: pointer type (0-7)
+ *   - aux: type-specific metadata
+ *   - offset: memory byte offset (4GB addressable)
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * POINTER LAYOUTS
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * ARRAY (type=1) - Mutable f64 array with C-style header
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset-8 → [len:f64]
- *            offset   → [elem0:f64, elem1:f64, ...]
- *   Capacity = nextPow2(len), no cap storage needed
- *   O(1) push/pop via length in memory, O(n) shift/unshift
+ * ATOM (type=0) - Value types with no memory allocation
+ *   Pointer: [0:3][kind:16][id:32]
+ *   kind=0: null, kind=1: undefined, kind≥2: Symbol(id)
+ *   No memory access needed
  *
- * RING (type=2) - Ring buffer array (O(1) shift/unshift)
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset-16 → [head:f64]
- *            offset-8  → [len:f64]
- *            offset    → [slots...]
- *   arr[i] → slots[(head + i) & mask]
+ * ARRAY (type=1) - Mutable f64 array
+ *   Pointer: [1:3][ring:1][_:15][offset:32]
+ *   Memory (flat):  offset-8 → [len:f64], offset → [elem0, elem1, ...]
+ *   Memory (ring):  offset-16 → [head:f64], offset-8 → [len:f64], offset → [slots...]
+ *   ring=0: O(1) push/pop, O(n) shift/unshift
+ *   ring=1: O(1) all ops, arr[i] → slots[(head + i) & mask]
  *
- * TYPED (type=3) - TypedArray (Int8Array, Float64Array, etc.)
- *   Pointer: [type:4][elemType:3][0:13][offset:31]
- *   Memory:  offset-8 → [len:f64]
- *            offset   → raw bytes
- *   elemType in pointer (needed for stride), len in memory
+ * TYPED (type=2) - TypedArray view
+ *   Pointer: [2:3][elemType:3][_:13][offset:32]
+ *   Memory:  offset-8 → [len:i32, dataPtr:i32]
+ *            dataPtr → [bytes...]
+ *   View model enables zero-copy subarrays
  *
- * STRING (type=4) - UTF-16 string
- *   Pointer: [type:4][len:16][offset:31]
- *   Memory:  offset → [char0:u16, char1:u16, ...]
- *   len in pointer (max 65535 chars)
+ * STRING (type=3) - UTF-16 or SSO string
+ *   Pointer (heap): [3:3][0:1][_:15][offset:32]
+ *   Pointer (SSO):  [3:3][1:1][data:42][_:5]
+ *   Memory (heap):  offset-8 → [len:i32], offset → [char0:u16, char1:u16, ...]
+ *   SSO: 6 ASCII chars (7-bit each) packed in 42 bits, no allocation
  *
- * OBJECT (type=5) - Static object (compile-time schema)
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset → [prop0:f64, prop1:f64, ...]
- *   Schema resolved at compile-time via monomorphization
+ * OBJECT (type=4) - Objects with subtypes
+ *   Pointer: [4:3][kind:2][schema:14][offset:32]
+ *   kind=0 (SCHEMA): offset-8 → [inner:f64], offset → [prop0, prop1, ...]
+ *     inner=0: static object, inner≠0: boxed primitive (inner=value)
+ *   kind=1 (HASH):   offset-16 → [cap:f64], offset-8 → [size:f64], offset → entries
+ *   kind=2 (SET):    same layout as HASH, 16B entries [hash, key]
+ *   kind=3 (MAP):    same layout as HASH, 24B entries [hash, key, val]
  *
- * HASH (type=6) - Hash table (dynamic object)
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset-16 → [cap:f64]
- *            offset-8  → [size:f64]
- *            offset    → [entries...]
+ * CLOSURE (type=5) - Function with captured environment
+ *   Pointer: [5:3][funcIdx:16][offset:32]
+ *   Memory:  offset-8 → [len:f64], offset → [env0, env1, ...]
+ *   funcIdx in pointer for call_indirect, env in memory
  *
- * SET (type=7) - Hash set
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset-16 → [cap:f64]
- *            offset-8  → [size:f64]
- *            offset    → [hash:f64, key:f64, ...] (16B entries)
+ * REGEX (type=6) - Compiled regex pattern
+ *   Pointer: [6:3][flags:6][funcIdx:10][offset:32]
+ *   Memory (if g flag): offset-8 → [lastIndex:f64]
+ *   flags: g=1, i=2, m=4, s=8, u=16, y=32
+ *   Static /pattern/ → funcIdx = compiled matcher
  *
- * MAP (type=8) - Hash map
- *   Pointer: [type:4][0:16][offset:31]
- *   Memory:  offset-16 → [cap:f64]
- *            offset-8  → [size:f64]
- *            offset    → [hash:f64, key:f64, val:f64, ...] (24B entries)
- *
- * CLOSURE (type=9) - Function closure
- *   Pointer: [type:4][funcIdx:16][offset:31]
- *   Memory:  offset → [env0:f64, env1:f64, ...]
- *   funcIdx in pointer (needed for call_indirect)
- *
- * REGEX (type=10) - Compiled regex pattern
- *   Pointer: [type:4][regexId:16][flags:31]
- *   No memory (pattern compiled to matcher function)
+ * (type=7) - Reserved
  *
  * @enum {number}
  */
 export const PTR_TYPE = {
-  ARRAY: 1,   // [type:4][0:16][offset:31] → [-8:len][elem0, elem1, ...]
-  RING: 2,    // [type:4][0:16][offset:31] → [-16:head][-8:len][slots...]
-  TYPED: 3,   // [type:4][elemType:3][0:13][offset:31] → [-8:len][bytes...]
-  STRING: 4,  // [type:4][len:16][offset:31] → [char0:u16, char1:u16, ...]
-  OBJECT: 5,  // [type:4][0:16][offset:31] → [prop0, prop1, ...]
-  HASH: 6,    // [type:4][0:16][offset:31] → [-16:cap][-8:size][entries...]
-  SET: 7,     // [type:4][0:16][offset:31] → [-16:cap][-8:size][hash, key, ...]
-  MAP: 8,     // [type:4][0:16][offset:31] → [-16:cap][-8:size][hash, key, val, ...]
-  CLOSURE: 9, // [type:4][funcIdx:16][offset:31] → [env0, env1, ...]
-  REGEX: 10,  // [type:4][regexId:16][flags:31] → (compiled in function table)
+  ATOM: 0,     // [0:3][kind:16][id:32] - null/undefined/Symbol
+  ARRAY: 1,    // [1:3][ring:1][_:15][off:32] → [-8:len][elems...] or [-16:head][-8:len][slots...]
+  TYPED: 2,    // [2:3][elem:3][_:13][off:32] → [-8:len,dataPtr][data...]
+  STRING: 3,   // [3:3][sso:1][data:42|_:15][off:32] → [-8:len][chars...]
+  OBJECT: 4,   // [4:3][kind:2][schema:14][off:32] → varies by kind
+  CLOSURE: 5,  // [5:3][funcIdx:16][off:32] → [-8:len][env...]
+  REGEX: 6,    // [6:3][flags:6][funcIdx:10][off:32] → [-8:lastIdx] if g flag
+}
+
+/**
+ * ATOM subtypes (kind field for type=0)
+ * @enum {number}
+ */
+export const ATOM_KIND = {
+  NULL: 0,      // null value
+  UNDEF: 1,     // undefined value
+  SYMBOL: 2,    // Symbol (id in offset field)
+}
+
+/**
+ * OBJECT subtypes (kind field for type=4)
+ * @enum {number}
+ */
+export const OBJ_KIND = {
+  SCHEMA: 0,    // Static object with compile-time schema
+  HASH: 1,      // Dynamic object (JSON.parse results)
+  SET: 2,       // Set collection
+  MAP: 3,       // Map collection
 }
 
 // === Memory layout constants ===
@@ -193,10 +199,10 @@ export const fmtNum = n =>
 export const f64 = op => {
   const t = op.type
   // Object is f64 pointer (Strategy B), not GC ref
-  // boxed types, array_props, typedarray, set, map, dyn_object are also f64 pointers
+  // boxed types, array_props, typedarray, set, map, dyn_object, symbol are also f64 pointers
   if (t === 'f64' || t === 'array' || t === 'string' || t === 'closure' || t === 'object' ||
       t === 'boxed_string' || t === 'boxed_number' || t === 'boxed_boolean' || t === 'array_props' ||
-      t === 'typedarray' || t === 'set' || t === 'map' || t === 'dyn_object') return op
+      t === 'typedarray' || t === 'set' || t === 'map' || t === 'dyn_object' || t === 'symbol') return op
   if (t === 'ref') return wat('(f64.const 0)', 'f64')
   return wat(`(f64.convert_i32_s ${op})`, 'f64')
 }
@@ -215,14 +221,32 @@ export const i32 = op => {
 
 /**
  * Convert WAT value to boolean (i32 0 or 1)
+ * For i32: already usable as boolean (0=false, non-zero=true)
+ * For f64: compare with 0.0
+ * For ref: check if null
  * @param {String & {type: string}} op - Boxed WAT string
  * @returns {String & {type: string}} i32 boolean WAT value
  */
 export const bool = op => {
   const t = op.type
   if (t === 'ref') return wat(`(i32.eqz (ref.is_null ${op}))`, 'i32')
-  if (t === 'i32') return wat(`(i32.ne ${op} (i32.const 0))`, 'i32')
+  // i32 values already work as booleans in WASM (0=false, non-zero=true)
+  // Comparisons already return 0/1, other i32 values are truthy if non-zero
+  if (t === 'i32') return op
   return wat(`(f64.ne ${op} (f64.const 0))`, 'i32')
+}
+
+/**
+ * Convert WAT value to falsy check (for loop exit conditions)
+ * Returns i32 that is truthy when the original value is falsy
+ * @param {String & {type: string}} op - Boxed WAT string
+ * @returns {String & {type: string}} i32 value (truthy = original was falsy)
+ */
+export const falsy = op => {
+  const t = op.type
+  if (t === 'ref') return wat(`(ref.is_null ${op})`, 'i32')
+  if (t === 'i32') return wat(`(i32.eqz ${op})`, 'i32')
+  return wat(`(f64.eq ${op} (f64.const 0))`, 'i32')
 }
 
 /**
@@ -267,6 +291,8 @@ export const isSet = v => v.type === 'set'
 export const isMap = v => v.type === 'map'
 /** @param {String & {type: string}} v - Dynamic object (hash table, runtime props) */
 export const isDynObject = v => v.type === 'dyn_object'
+/** @param {String & {type: string}} v - Symbol (ATOM type with id) */
+export const isSymbol = v => v.type === 'symbol'
 
 // === Compound predicates ===
 /** @param {String & {type: string}} a @param {String & {type: string}} b */

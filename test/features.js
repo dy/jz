@@ -358,3 +358,26 @@ test('static namespace - used in exports', async () => {
   `)
   is(instance.toGray(30, 60, 90), 60)
 })
+
+// Tail call optimization - WASM return_call for recursive functions
+test('tail call optimization - factorial', async () => {
+  // return f(...) generates return_call $f instead of call $f
+  is(await evaluate(`
+    const factorial = (n, acc = 1) => {
+      if (n <= 1) return acc
+      return factorial(n - 1, n * acc)
+    }
+    factorial(10)
+  `), 3628800)
+})
+
+test('tail call optimization - deep recursion', async () => {
+  // 100k iterations would overflow without TCO
+  is(await evaluate(`
+    const countDown = (n, acc = 0) => {
+      if (n <= 0) return acc
+      return countDown(n - 1, acc + 1)
+    }
+    countDown(100000)
+  `), 100000)
+})

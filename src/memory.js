@@ -3,46 +3,103 @@
  *
  * All operations use linear memory with NaN-boxed pointers.
  * Pointer format: 0x7FF8_xxxx_xxxx_xxxx (quiet NaN + 51-bit payload)
- * Payload: [type:4][id:16][offset:31]
+ * Payload: [type:3][aux:16][offset:32]
  */
 
-import { PTR_TYPE, ELEM_TYPE, ELEM_STRIDE, HEAP_START, STRING_STRIDE, F64_SIZE, wat, f64, isHeapRef, isString, isObject } from './types.js'
+import { PTR_TYPE, ATOM_KIND, ELEM_TYPE, ELEM_STRIDE, HEAP_START, STRING_STRIDE, F64_SIZE, wat, f64, isHeapRef, isString, isObject } from './types.js'
 
 // === Null/undefined ===
+// Both map to f64(0) at runtime - they are indistinguishable
+// This is a documented limitation for zero-overhead semantics
+// ATOM type (0) is reserved for future use (e.g., Symbol)
 
-/** Create null reference (f64 0) */
+/** Create null reference - f64 zero (indistinguishable from undefined) */
 export const nullRef = () => wat('(f64.const 0)', 'f64')
+
+/** Create undefined reference - f64 zero (indistinguishable from null) */
+export const undefRef = () => wat('(f64.const 0)', 'f64')
 
 // === Strings ===
 
-/** Create string from interned data. Strings are stored at HEAP_START + id*STRING_STRIDE */
-export function mkString(ctx, str) {
-  ctx.usedStringType = true
-  ctx.usedMemory = true
-  const { id, length } = ctx.internString(str)
-  const offset = HEAP_START + id * STRING_STRIDE
-  // NaN boxing: mkptr(type, id, offset) - for string, id = length
-  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${length}) (i32.const ${offset}))`, 'string')
+/**
+ * Check if string can use SSO (Short String Optimization)
+ * Requires: length ≤6, all chars are 7-bit ASCII (0-127)
+ */
+function canSSO(str) {
+  if (str.length > 6) return false
+  for (let i = 0; i < str.length; i++) {
+    if (str.charCodeAt(i) > 127) return false
+  }
+  return true
 }
 
-/** Get string length */
-export const strLen = (w) => `(call $__ptr_len ${w})`
+/**
+ * Pack string into SSO pointer bits
+ * Format: [sso:1][len:3][char5:7][char4:7][char3:7][char2:7][char1:7][char0:7] = 1+3+42 = 46 bits
+ * We use aux (16 bits) + offset (32 bits) = 48 bits total
+ * Layout: aux = [sso:1][len:3][char5_hi:4][char4:7][char3_lo:1], offset = [char3_hi:6][char2:7][char1:7][char0:7][pad:5]
+ *
+ * Simpler approach: pack into 47 bits as one big integer
+ * aux = 0x8000 | ((data >> 32) & 0x7FFF)  [sso flag + 15 bits of data]
+ * offset = data & 0xFFFFFFFF              [32 bits of data]
+ */
+function packSSO(str) {
+  // Pack: len (3 bits) + chars (7 bits each), LSB first
+  let data = BigInt(str.length)  // 3 bits for length (0-6)
+  for (let i = 0; i < str.length; i++) {
+    data |= BigInt(str.charCodeAt(i)) << BigInt(3 + i * 7)
+  }
+  // data is now max 3 + 6*7 = 45 bits
+  const aux = 0x8000 | Number((data >> 32n) & 0x7FFFn)
+  const offset = Number(data & 0xFFFFFFFFn)
+  return { aux, offset }
+}
 
-/** Get char at index */
-export const strCharAt = (w, idx) =>
-  `(i32.load16_u (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 1))))`
+/**
+ * Create string from interned data or SSO
+ * SSO: strings ≤6 ASCII chars packed in pointer (no memory allocation)
+ * Heap: longer strings stored at HEAP_START + id*STRING_STRIDE
+ */
+export function mkString(ctx, str) {
+  // Try SSO for short ASCII strings
+  if (canSSO(str)) {
+    const { aux, offset } = packSSO(str)
+    // SSO needs $__mkptr but not memory allocation
+    ctx.usedMemory = true  // $__mkptr is in memory helpers
+    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const ${aux}) (i32.const ${offset}))`, 'string')
+  }
 
-/** Set char at index */
+  // Heap string: intern and store in memory
+  ctx.usedStringType = true
+  ctx.usedMemory = true
+  const { id } = ctx.internString(str)
+  // Memory layout: [len:i32 + 4 pad][chars...] at HEAP_START + id*STRING_STRIDE
+  // Pointer offset points to char data (after 8-byte header)
+  const offset = HEAP_START + id * STRING_STRIDE + 8
+  // NaN boxing: mkptr(type, aux=0, offset) - aux=0 means heap string (sso bit not set)
+  return wat(`(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${offset}))`, 'string')
+}
+
+/** Get string length - handles both SSO and heap strings */
+export const strLen = (w) => `(call $__str_len ${w})`
+
+/** Get char at index - handles both SSO and heap strings */
+export const strCharAt = (w, idx) => `(call $__str_char_at ${w} ${idx})`
+
+/** Convert SSO string to heap (for operations requiring memory access) */
+export const ssoToHeap = (w) => `(call $__sso_to_heap ${w})`
+
+/** Set char at index - only works for heap strings (SSO is immutable) */
 export const strSetChar = (w, idx, val) =>
   `(i32.store16 (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 1))) ${val})`
 
-/** Allocate dynamic-sized string */
+/** Allocate dynamic-sized string (always heap, not SSO) */
 export const strNew = (lenWat) =>
   `(call $__alloc (i32.const ${PTR_TYPE.STRING}) ${lenWat})`
 
-/** Copy substring: copies len chars from src[srcIdx] to dst[dstIdx] */
+/** Copy substring: copies len chars from src[srcIdx] to dst[dstIdx] - handles SSO source */
 export const strCopy = (dstPtr, dstIdx, srcPtr, srcIdx, len) =>
-  `(memory.copy (i32.add (call $__ptr_offset ${dstPtr}) (i32.shl ${dstIdx} (i32.const 1))) (i32.add (call $__ptr_offset ${srcPtr}) (i32.shl ${srcIdx} (i32.const 1))) (i32.shl ${len} (i32.const 1)))`
+  `(call $__str_copy ${dstPtr} ${dstIdx} ${srcPtr} ${srcIdx} ${len})`
 
 /**
  * Generate prefix/suffix match check - used by startsWith/endsWith
@@ -139,8 +196,11 @@ export function genSubstringSearch(ctx, strWat, searchWat, resultFound, resultNo
 
 // === Arrays ===
 
-/** Get array length from pointer */
+/** Get array length from pointer (generic, dispatches on type) */
 export const arrLen = (w) => `(call $__ptr_len ${w})`
+
+/** Get array length directly (for when we KNOW it's an array, skip type check) */
+export const directArrLen = (w) => `(i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset ${w}) (i32.const 8))))`
 
 /** Get array capacity tier for current length */
 export const arrCapacity = (w) =>
@@ -176,8 +236,39 @@ export function arrGetTyped(ctx, arrWat, idxWat) {
   return wat(`(f64.load (i32.add (call $__ptr_offset ${arrWat}) (i32.shl ${idxWat} (i32.const 3))))`, 'f64')
 }
 
+// === Ring Buffers (type=2) ===
+// Pointer: [type:4][0:16][offset:31]
+// Memory: [-16:head][-8:len][slots...]
+// O(1) push/pop/shift/unshift via circular indexing
+
+/** Allocate ring buffer */
+export const ringNew = (lenWat) =>
+  `(call $__alloc_ring ${lenWat})`
+
+/** Get ring buffer length */
+export const ringLen = (w) => `(call $__ring_len ${w})`
+
+/** Get ring buffer element: slots[(head + i) & mask] */
+export const ringGet = (w, idx) => `(call $__ring_get ${w} ${idx})`
+
+/** Set ring buffer element */
+export const ringSet = (w, idx, val) => `(call $__ring_set ${w} ${idx} ${val})`
+
+/** Push to ring buffer end (O(1)), returns updated pointer */
+export const ringPush = (w, val) => `(call $__ring_push ${w} ${val})`
+
+/** Pop from ring buffer end (O(1)), returns element */
+export const ringPop = (w) => `(call $__ring_pop ${w})`
+
+/** Shift from ring buffer start (O(1)), returns element */
+export const ringShift = (w) => `(call $__ring_shift ${w})`
+
+/** Unshift to ring buffer start (O(1)), returns updated pointer */
+export const ringUnshift = (w, val) => `(call $__ring_unshift ${w} ${val})`
+
 // === TypedArrays ===
 // Pointer format: [type:4][elemType:3][len:22][offset:22]
+// Compact encoding: 4M elements, 4MB addressable (sufficient for typed arrays)
 // Uses bump allocator in dedicated region at end of heap
 
 /** WASM load/store ops per element type */

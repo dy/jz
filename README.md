@@ -110,12 +110,14 @@ JZ is minimal modern subset that maps to WebAssembly.
 * No classes/prototypes – use functions & closures.
 * No old syntax – modern ES6+ only.
 * No async – keep code plain & simple.
+* **Static typing** – all types resolved at compile-time, no runtime dispatch.
 
 ### Goals
 
 * _Lightweight_ – embed anywhere, from websites to microcontrollers.
 * _Fast_ – compiles to WASM faster than `eval` parses.
 * _Tiny output_ – no runtime, no heap, no wrappers.
+* _Zero overhead_ – no runtime type checks, functions monomorphized per call-site.
 * _JS interop_ – export/import, preserve func signatures at WASM boundary.
 * _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
 
