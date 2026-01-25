@@ -1,65 +1,14 @@
 /**
- * jz compiler - AST to WAT compilation
+ * jz compiler - AST to WAT
  *
- * This is the core compiler that transforms JavaScript AST into WAT code.
- *
- * === Module Map ===
- * src/
- *   types.js     - Type system: wat(), f64(), i32(), bool(), predicates
- *   ops.js       - WAT operations: f64.*, i32.*, MATH_OPS
- *   gc.js        - GC abstraction: nullRef, mkString, arrGet, envGet/Set
- *   analyze.js   - Closure analysis: analyzeScope, findHoistedVars
- *   context.js   - Compilation context: locals, globals, functions, closures
- *   emit.js      - WAT assembly: assemble() builds final module
- *   stdlib.js    - Standard library: Math, isNaN, parseInt, etc.
- *   normalize.js - AST normalization from parser
- *   compile.js   - This file: AST→WAT generator, operators, functions
- *   methods/     - Array/string method implementations
- *
- * === This File Sections ===
- * Line ~25   - Imports and exports
- * Line ~55   - Public API: compile()
- * Line ~65   - Core helpers: isConstant(), evalConstant(), gen()
- * Line ~100  - Identifiers: closureDepth(), genLiteral(), genIdent()
- * Line ~145  - Call resolution: resolveCall()
- * Line ~330  - Closure calls: genClosureCall(), genClosureCallExpr()
- * Line ~480  - Closure creation: genClosureValue()
- * Line ~590  - Operators object: all AST operators
- * Line ~1210 - Assignment: genAssign()
- * Line ~1450 - Loop init: genLoopInit()
- * Line ~1480 - Function generation: generateFunction(), generateFunctions()
- *
- * === Data Flow ===
- * 1. compile(ast) creates context, calls gen(ast)
- * 2. gen() dispatches to operators[op] based on AST node type
- * 3. operators return typed values [type, wat, schema?]
- * 4. generateFunctions() compiles user-defined functions
- * 5. assemble() builds final WAT module from all parts
+ * Data flow: compile() → gen(ast) → operators[op] → generateFunctions() → assemble()
  *
  * @module compile
  */
 
-import * as array from './array.js'
-import * as string from './string.js'
+import * as arrayMethods from './array.js'
+import * as stringMethods from './string.js'
 import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
-
-const arrayMethods = {
-  fill: array.fill, map: array.map, reduce: array.reduce, filter: array.filter,
-  find: array.find, findIndex: array.findIndex, indexOf: array.indexOf, includes: array.includes,
-  every: array.every, some: array.some, slice: array.slice, reverse: array.reverse,
-  push: array.push, pop: array.pop, shift: array.shift, unshift: array.unshift,
-  forEach: array.forEach, concat: array.concat, join: array.join,
-  flat: array.flat, flatMap: array.flatMap
-}
-
-const stringMethods = {
-  charCodeAt: string.charCodeAt, slice: string.slice, indexOf: string.indexOf, substring: string.substring,
-  toLowerCase: string.toLowerCase, toUpperCase: string.toUpperCase, includes: string.includes,
-  startsWith: string.startsWith, endsWith: string.endsWith, trim: string.trim,
-  trimStart: string.trimStart, trimEnd: string.trimEnd,
-  substr: string.substr, repeat: string.repeat, padStart: string.padStart, padEnd: string.padEnd,
-  split: string.split, replace: string.replace, search: string.search, match: string.match
-}
 
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'

@@ -1,6 +1,5 @@
 // TypedArray method implementations
-// All methods use compile-time known elemType for direct WASM instructions
-// SIMD: Float64Array.map uses f64x2 vectorization for simple arithmetic callbacks
+// SIMD: f64x2 (Float64Array), f32x4 (Float32Array), i32x4 (Int32Array/Uint32Array)
 
 import { ctx, gen } from './compile.js'
 import { ELEM_TYPE, ELEM_STRIDE, wat, f64, i32 } from './types.js'
@@ -201,7 +200,7 @@ function genSimdOpI32(vecReg, pattern) {
 
 /**
  * Generate scalar f64 WAT for the operation (for remainder)
- * @param {string} valLocal - f64 local name  
+ * @param {string} valLocal - f64 local name
  * @param {object} pattern - { op, const? }
  * @returns {string} WAT expression producing f64 result
  */
@@ -225,7 +224,7 @@ function genScalarOpF64(valLocal, pattern) {
 
 /**
  * Generate scalar f32 WAT for the operation (for remainder)
- * @param {string} valLocal - f32 local name  
+ * @param {string} valLocal - f32 local name
  * @param {object} pattern - { op, const? }
  * @returns {string} WAT expression producing f32 result
  */
@@ -249,7 +248,7 @@ function genScalarOpF32(valLocal, pattern) {
 
 /**
  * Generate scalar i32 WAT for the operation (for remainder)
- * @param {string} valLocal - i32 local name  
+ * @param {string} valLocal - i32 local name
  * @param {object} pattern - { op, const? }
  * @returns {string} WAT expression producing i32 result
  */
