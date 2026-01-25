@@ -190,3 +190,50 @@ test('Symbol - from function', async () => {
   // Each call returns different symbol
   is(await evaluate('const f = () => Symbol; f() !== f()'), 1)
 })
+
+// === NUMBER METHODS ===
+
+test('number.toFixed', async () => {
+  is(await evaluate('(3.14159).toFixed(2)'), '3.14')
+  is(await evaluate('(3.14159).toFixed(0)'), '3')
+  is(await evaluate('(3.14159).toFixed(4)'), '3.1416')
+  is(await evaluate('(-3.14159).toFixed(2)'), '-3.14')
+  is(await evaluate('(0).toFixed(2)'), '0.00')
+  is(await evaluate('(123).toFixed(2)'), '123.00')
+  // Variable
+  is(await evaluate('let x = 42.567; x.toFixed(1)'), '42.6')
+})
+
+test('number.toString - radix', async () => {
+  is(await evaluate('(255).toString(16)'), 'ff')
+  is(await evaluate('(10).toString(2)'), '1010')
+  is(await evaluate('(8).toString(8)'), '10')
+  is(await evaluate('(35).toString(36)'), 'z')
+  is(await evaluate('(-255).toString(16)'), '-ff')
+})
+
+test('number.toString - default', async () => {
+  is(await evaluate('(42).toString()'), '42')
+  is(await evaluate('(3.14).toString()'), '3.14')
+  is(await evaluate('(-123).toString()'), '-123')
+})
+
+test('number.toExponential', async () => {
+  is(await evaluate('(12345).toExponential(2)'), '1.23e+4')
+  is(await evaluate('(0.00123).toExponential(2)'), '1.23e-3')
+  is(await evaluate('(1.5).toExponential(0)'), '2e+0')
+  is(await evaluate('(0).toExponential(2)'), '0.00e+0')
+  is(await evaluate('(-12345).toExponential(1)'), '-1.2e+4')
+  // Variable
+  is(await evaluate('let x = 9876.5; x.toExponential(3)'), '9.877e+3')
+})
+
+test('number.toPrecision', async () => {
+  is(await evaluate('(123.456).toPrecision(4)'), '123.5')
+  is(await evaluate('(123.456).toPrecision(2)'), '1.2e+2')
+  is(await evaluate('(0.000123).toPrecision(2)'), '0.00012')
+  is(await evaluate('(0).toPrecision(3)'), '0.00')
+  is(await evaluate('(-123.456).toPrecision(3)'), '-123')
+  // Variable
+  is(await evaluate('let x = 5.678; x.toPrecision(2)'), '5.7')
+})

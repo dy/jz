@@ -119,6 +119,15 @@ function getSchemaId(v) {
 }
 
 /**
+ * Check if AST is a numeric constant (compile-time number).
+ * @param {any} ast - AST node to check
+ * @returns {boolean}
+ */
+function isNumericConstant(ast) {
+  return Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'number'
+}
+
+/**
  * Check if an AST node is a constant string expression (compile-time string).
  * Used for string concatenation folding: "a" + "b" → "ab"
  *
@@ -138,6 +147,13 @@ function isStringConstant(ast) {
 }
 
 /**
+ * Check if AST can be coerced to string at compile-time (string or number constant).
+ */
+function isCoercibleToStringConstant(ast) {
+  return isStringConstant(ast) || isNumericConstant(ast)
+}
+
+/**
  * Evaluate a constant string expression at compile time.
  * @param {any} ast - Constant string AST node (must pass isStringConstant check)
  * @returns {string} Evaluated string value
@@ -146,6 +162,14 @@ function evalStringConstant(ast) {
   if (Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'string') return ast[1]
   if (ast[0] === '+') return evalStringConstant(ast[1]) + evalStringConstant(ast[2])
   throw new Error(`Cannot evaluate string constant: ${JSON.stringify(ast)}`)
+}
+
+/**
+ * Evaluate AST to string, coercing numbers. For compile-time string concat.
+ */
+function evalToString(ast) {
+  if (isNumericConstant(ast)) return String(ast[1])
+  return evalStringConstant(ast)
 }
 
 /**
@@ -577,6 +601,37 @@ function resolveCall(namespace, name, args, receiver = null) {
     if (rt === 'string' && STRING_METHODS[name]) {
       const result = STRING_METHODS[name](rw, args)
       if (result) return result
+    }
+
+    // Number methods (f64/i32)
+    if (rt === 'f64' || rt === 'i32') {
+      if (name === 'toFixed') {
+        ctx.usedStdlib.push('toFixed')
+        ctx.usedMemory = true
+        const digits = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 0)'
+        return wat(`(call $toFixed ${f64(receiver)} ${digits})`, 'string')
+      }
+      if (name === 'toString') {
+        ctx.usedMemory = true
+        if (args.length >= 1) {
+          ctx.usedStdlib.push('toString')
+          return wat(`(call $toString ${f64(receiver)} ${i32(gen(args[0]))})`, 'string')
+        }
+        ctx.usedStdlib.push('numToString')
+        return wat(`(call $numToString ${f64(receiver)})`, 'string')
+      }
+      if (name === 'toExponential') {
+        ctx.usedStdlib.push('toExponential')
+        ctx.usedMemory = true
+        const frac = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 6)'
+        return wat(`(call $toExponential ${f64(receiver)} ${frac})`, 'string')
+      }
+      if (name === 'toPrecision') {
+        ctx.usedStdlib.push('toPrecision')
+        ctx.usedMemory = true
+        const prec = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 6)'
+        return wat(`(call $toPrecision ${f64(receiver)} ${prec})`, 'string')
+      }
     }
 
     // Regex methods
@@ -1786,13 +1841,32 @@ const operators = {
     if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
       throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
     }
-    // Compile-time string concatenation: "a" + "b" → "ab"
-    if (isStringConstant(a) && isStringConstant(b)) {
+    // Compile-time string concatenation with coercion: "a" + 1 → "a1"
+    const strA = isCoercibleToStringConstant(a), strB = isCoercibleToStringConstant(b)
+    if (strA && strB && (isStringConstant(a) || isStringConstant(b))) {
       ctx.usedStringType = true
       ctx.usedMemory = true
-      return mkString(ctx, evalStringConstant(a) + evalStringConstant(b))
+      return mkString(ctx, evalToString(a) + evalToString(b))
     }
-    return binOp(a, b, i32ops.add, f64ops.add)
+    // Runtime string concatenation
+    const va = gen(a), vb = gen(b)
+    if (isString(va) && isString(vb)) {
+      ctx.usedStringType = true
+      ctx.usedMemory = true
+      ctx.needsStrcat = true
+      return wat(`(call $__strcat ${va} ${vb})`, 'string')
+    }
+    // Mixed: coerce non-string to string via numToString
+    if (isString(va) || isString(vb)) {
+      ctx.usedStringType = true
+      ctx.usedMemory = true
+      ctx.needsStrcat = true
+      ctx.usedStdlib.push('numToString')
+      const strA = isString(va) ? va : `(call $numToString ${f64(va)})`
+      const strB = isString(vb) ? vb : `(call $numToString ${f64(vb)})`
+      return wat(`(call $__strcat ${strA} ${strB})`, 'string')
+    }
+    return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb)
   },
   '-'([a, b]) { return binOp(a, b, i32ops.sub, f64ops.sub) },
   '*'([a, b]) { return binOp(a, b, i32ops.mul, f64ops.mul) },

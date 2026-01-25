@@ -136,7 +136,7 @@ export function assemble(bodyWat, ctx = {
 
   // === Stdlib functions ===
 
-  const included = {}
+  const included = Object.create(null)  // No prototype - avoids toString/valueOf collision
   function include(name) {
     if (name in included) return
     included[name] = true
@@ -150,7 +150,12 @@ export function assemble(bodyWat, ctx = {
 
   // === numToString static strings ===
   // Add globals and data for special number string representations
-  if (ctx.usedStdlib.includes('numToString')) {
+  const needsNumStrGlobals = ctx.usedStdlib.includes('numToString') || 
+                              ctx.usedStdlib.includes('toFixed') || 
+                              ctx.usedStdlib.includes('toString') ||
+                              ctx.usedStdlib.includes('toExponential') ||
+                              ctx.usedStdlib.includes('toPrecision')
+  if (needsNumStrGlobals) {
     // These are placed at fixed offsets after heap start for simplicity
     // NaN: 4 chars, Infinity: 8 chars, -Infinity: 9 chars
     const nanOffset = heapStart

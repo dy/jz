@@ -1,8 +1,70 @@
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { evaluate } from './util.js'
+import { compile } from '../index.js'
 
-// String method tests - use .length and .charCodeAt() to verify results
+// String tests - operators, literals, and methods
+
+// === STRING OPERATORS ===
+
+test('string concat - compile time', async () => {
+  // Literal + literal folded at compile time
+  is(await evaluate('("hello" + " world").length'), 11)
+  is(await evaluate('("hello" + " world").charCodeAt(0)'), 104) // 'h'
+  is(await evaluate('("hello" + " world").charCodeAt(6)'), 119) // 'w'
+  // Multiple concat
+  is(await evaluate('("a" + "b" + "c").length'), 3)
+  // Empty string concat
+  is(await evaluate('("" + "hello").length'), 5)
+  is(await evaluate('("hello" + "").length'), 5)
+})
+
+test('string concat - runtime', async () => {
+  // Variable + variable
+  is(await evaluate('let a = "hello"; let b = " world"; (a + b).length'), 11)
+  is(await evaluate('let a = "hello"; let b = " world"; (a + b).charCodeAt(0)'), 104) // 'h'
+  is(await evaluate('let a = "hello"; let b = " world"; (a + b).charCodeAt(5)'), 32) // ' '
+  is(await evaluate('let a = "hello"; let b = " world"; (a + b).charCodeAt(6)'), 119) // 'w'
+  // Assign concat result
+  is(await evaluate('let a = "hello"; let b = " world"; let c = a + b; c.length'), 11)
+  // Variable + literal
+  is(await evaluate('let a = "hello"; (a + "!").length'), 6)
+  is(await evaluate('let b = "!"; ("hello" + b).length'), 6)
+  // Chained concat
+  is(await evaluate('let a = "a"; let b = "b"; let c = "c"; (a + b + c).length'), 3)
+})
+
+test('string concat - SSO to heap transition', async () => {
+  // 6 chars = max SSO
+  is(await evaluate('("abc" + "def").length'), 6)
+  // 7 chars = heap
+  is(await evaluate('("abc" + "defg").length'), 7)
+  // Verify heap string works correctly
+  is(await evaluate('("abc" + "defg").charCodeAt(6)'), 103) // 'g'
+})
+
+test('string concat - coercion', async () => {
+  // Compile-time: string + number → string
+  is(await evaluate('("a" + 1).length'), 2)
+  is(await evaluate('("x" + 42).charCodeAt(1)'), 52) // '4'
+  is(await evaluate('(1 + "a").length'), 2)
+  is(await evaluate('(1 + "a").charCodeAt(0)'), 49) // '1'
+  // Runtime: string var + number
+  is(await evaluate('let s = "val:"; let n = 123; (s + n).length'), 7)
+  is(await evaluate('let n = 42; let s = "!"; (n + s).length'), 3)
+  // Chained coercion
+  is(await evaluate('("n=" + 1 + 2).length'), 4) // "n=12" not "n=3"
+})
+
+// === STRING LITERALS ===
+
+test('string.charCodeAt', async () => {
+  is(await evaluate('"hello".charCodeAt(0)'), 104) // 'h'
+  is(await evaluate('"hello".charCodeAt(1)'), 101) // 'e'
+  is(await evaluate('"ABC".charCodeAt(0)'), 65) // 'A'
+})
+
+// === STRING METHODS ===
 
 test('string.substring', async () => {
   is(await evaluate('"hello".substring(1, 3).length'), 2)
