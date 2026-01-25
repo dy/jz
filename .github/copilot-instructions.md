@@ -6,7 +6,7 @@ Code changes should have comments updated, if code is not self-explanatory. JSDo
 Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~10450 lines)
+## Project Structure (src/, ~13450 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -20,9 +20,9 @@ For any file structure changes, update project structure section below.
 | memory.js | 326 | Memory operations: mkString, arrGet, objGet, envGet/Set, genSubstringSearch, genPrefixMatch |
 | loop.js | 51 | Loop codegen helpers: genLoop, genEarlyExitLoop |
 | array.js | 529 | Array method codegen (map, filter, reduce, etc.) |
-| string.js | 1386 | String method codegen (slice, indexOf, search, match, replace, split) |
+| string.js | 1479 | String method codegen (slice, indexOf, toLowerCase SIMD, match, replace, split) |
 | regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex) |
-| typedarray.js | 891 | TypedArray method codegen (Float32Array, Int32Array, etc.) |
+| typedarray.js | 1566 | TypedArray method codegen with SIMD (f64x2, f32x4, i32x4 auto-vectorization) |
 | closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |
 | destruct.js | 253 | Destructuring codegen: genArrayDestructDecl, genObjectDestructDecl |
 | compile.js | 3051 | Core compiler: AST → WAT, operators, binOp helper |

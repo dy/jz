@@ -271,3 +271,34 @@ test('array.join - string arrays', async () => {
   // Empty array
   is(await evaluate('[].join("-").length'), 0)
 })
+
+// SIMD tests for long strings (>6 chars trigger SIMD path for heap strings)
+test('string.toLowerCase SIMD (long string)', async () => {
+  // 16 chars = 8 SIMD + 8 SIMD
+  is(await evaluate('"ABCDEFGHIJKLMNOP".toLowerCase().length'), 16)
+  is(await evaluate('"ABCDEFGHIJKLMNOP".toLowerCase().charCodeAt(0)'), 97) // 'a'
+  is(await evaluate('"ABCDEFGHIJKLMNOP".toLowerCase().charCodeAt(7)'), 104) // 'h'
+  is(await evaluate('"ABCDEFGHIJKLMNOP".toLowerCase().charCodeAt(15)'), 112) // 'p'
+  // 10 chars = 8 SIMD + 2 remainder
+  is(await evaluate('"ABCDEFGHIJ".toLowerCase().length'), 10)
+  is(await evaluate('"ABCDEFGHIJ".toLowerCase().charCodeAt(9)'), 106) // 'j'
+  // Mixed case: only A-Z converted
+  is(await evaluate('"HELLO world 123".toLowerCase().charCodeAt(0)'), 104) // 'h'
+  is(await evaluate('"HELLO world 123".toLowerCase().charCodeAt(6)'), 119) // 'w' unchanged
+  is(await evaluate('"HELLO world 123".toLowerCase().charCodeAt(12)'), 49) // '1' unchanged
+})
+
+test('string.toUpperCase SIMD (long string)', async () => {
+  // 16 chars = 8 SIMD + 8 SIMD
+  is(await evaluate('"abcdefghijklmnop".toUpperCase().length'), 16)
+  is(await evaluate('"abcdefghijklmnop".toUpperCase().charCodeAt(0)'), 65) // 'A'
+  is(await evaluate('"abcdefghijklmnop".toUpperCase().charCodeAt(7)'), 72) // 'H'
+  is(await evaluate('"abcdefghijklmnop".toUpperCase().charCodeAt(15)'), 80) // 'P'
+  // 10 chars = 8 SIMD + 2 remainder
+  is(await evaluate('"abcdefghij".toUpperCase().length'), 10)
+  is(await evaluate('"abcdefghij".toUpperCase().charCodeAt(9)'), 74) // 'J'
+  // Mixed case: only a-z converted
+  is(await evaluate('"hello WORLD 123".toUpperCase().charCodeAt(0)'), 72) // 'H'
+  is(await evaluate('"hello WORLD 123".toUpperCase().charCodeAt(6)'), 87) // 'W' unchanged
+  is(await evaluate('"hello WORLD 123".toUpperCase().charCodeAt(12)'), 49) // '1' unchanged
+})

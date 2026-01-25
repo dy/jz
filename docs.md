@@ -501,29 +501,54 @@ new MyClass()          // ✗ Error
 2. **Prefer array methods** over manual iteration
 3. **Clone explicitly** with `[...arr]` when shallow copy needed
 4. **Avoid unnecessary f64 conversions** in hot loops
-5. **Use Float64Array/Float32Array.map with simple callbacks** - auto-vectorized with SIMD
+5. **Use TypedArray.map with simple callbacks** - auto-vectorized with SIMD
+6. **Use long strings for case conversion** - SIMD enabled for heap strings (>6 chars)
 
 ### SIMD Auto-Vectorization
 
-TypedArray.map is automatically vectorized for Float64Array (f64x2: 2 elements) and Float32Array (f32x4: 4 elements) when the callback is simple arithmetic:
+TypedArray.map is automatically vectorized when the callback is simple arithmetic:
+
+| Type | SIMD Width | Elements/Vector |
+|------|------------|-----------------|
+| Float64Array | f64x2 | 2 |
+| Float32Array | f32x4 | 4 |
+| Int32Array | i32x4 | 4 |
+| Uint32Array | i32x4 | 4 |
 
 ```js
-// Vectorized patterns - Float64Array uses f64x2, Float32Array uses f32x4
+// Float64Array/Float32Array patterns
 arr.map(x => x * 2)        // ✓ multiplication
 arr.map(x => x + 10)       // ✓ addition
 arr.map(x => x - 1)        // ✓ subtraction
 arr.map(x => x / 4)        // ✓ division
 arr.map(x => -x)           // ✓ negation
 arr.map(x => Math.abs(x))  // ✓ absolute value
-arr.map(x => Math.sqrt(x)) // ✓ square root
-arr.map(x => Math.ceil(x)) // ✓ ceiling
-arr.map(x => Math.floor(x))// ✓ floor
+arr.map(x => Math.sqrt(x)) // ✓ square root (float only)
+arr.map(x => Math.ceil(x)) // ✓ ceiling (float only)
+arr.map(x => Math.floor(x))// ✓ floor (float only)
+
+// Int32Array/Uint32Array additional patterns
+arr.map(x => x & 0xFF)     // ✓ bitwise AND
+arr.map(x => x | 1)        // ✓ bitwise OR
+arr.map(x => x ^ mask)     // ✓ bitwise XOR
+arr.map(x => x << 2)       // ✓ shift left
+arr.map(x => x >> 1)       // ✓ shift right (signed)
+arr.map(x => x >>> 1)      // ✓ shift right (unsigned)
 
 // Falls back to scalar loop
 arr.map(x => x * x)        // ✗ non-constant operand
 arr.map(x => x + y)        // ✗ captures variable
 arr.map(x => Math.sin(x))  // ✗ function call (no SIMD sin)
 arr.map((x, i) => x + i)   // ✗ uses index parameter
+intArr.map(x => x / 2)     // ✗ no i32x4.div in WASM SIMD
 ```
 
-Float32Array.map with f32x4 processes 4 elements per instruction (2x throughput vs Float64Array).
+### String Case Conversion SIMD
+
+`toLowerCase()` and `toUpperCase()` use i16x8 SIMD for heap strings (>6 chars), processing 8 UTF-16 characters per instruction:
+
+```js
+"HELLO".toLowerCase()              // scalar (SSO, ≤6 chars)
+"HELLO WORLD!!!".toLowerCase()     // SIMD (heap, >6 chars)
+```
+
