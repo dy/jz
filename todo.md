@@ -408,13 +408,15 @@
     * [x] State machine patterns (parser loops, interpreters)
     * [x] Disable inside try blocks (exceptions wouldn't be caught)
   * [x] `simd` - v128 vector ops (watr ✓, V8 ✓)
-    * [x] Auto-vectorize simple Float64Array loops: `arr.map(x => x * 2)`
-      * Pattern detection for `x * c`, `x + c`, `x - c`, `x / c`
+    * [x] Auto-vectorize Float64Array.map: `arr.map(x => x * 2)`
+      * Pattern detection for `x * c`, `x + c`, `x - c`, `x / c`, `-x`, `Math.abs/sqrt/ceil/floor(x)`
       * f64x2 main loop processes 2 elements per instruction
       * Scalar remainder loop for odd-length arrays
-    * [ ] f64x2 for pairs, f32x4 for RGBA/XYZW
-    * [ ] String ops: i16x8 for UTF-16 case conversion, comparison
-    * [ ] Math batching: process 2-4 values per instruction
+    * [x] Auto-vectorize Float32Array.map with f32x4 (4 elements per vector)
+      * Same patterns as f64x2, 2x throughput
+      * Scalar remainder loop for 0-3 remaining elements
+    * [ ] String ops: i16x8 for UTF-16 case conversion, comparison (low priority - SSO complication)
+    * [ ] Integer TypedArray: i32x4 for Int32Array/Uint32Array (medium priority)
     * Note: Complex - needs pattern detection in callbacks, not trivial
   * [x] `exceptions` - try/catch/throw (watr ✓, V8 ✓)
     * [x] Parse `try { } catch (e) { }` blocks (subscript/jessie already supports)

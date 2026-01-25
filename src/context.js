@@ -113,6 +113,11 @@ export function createContext() {
           this.localDecls.push(`(local $${finalName} v128)`)
           return this.locals[finalName]
         }
+        // f32 for Float32Array scalar operations
+        if (type === 'f32') {
+          this.localDecls.push(`(local $${finalName} f32)`)
+          return this.locals[finalName]
+        }
         // Memory-based: all reference types are f64 pointers (NaN-boxed)
         const wasmType = (type === 'array' || type === 'ref' || type === 'refarray' ||
            type === 'object' || type === 'string' || type === 'closure' ||

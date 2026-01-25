@@ -501,23 +501,29 @@ new MyClass()          // ✗ Error
 2. **Prefer array methods** over manual iteration
 3. **Clone explicitly** with `[...arr]` when shallow copy needed
 4. **Avoid unnecessary f64 conversions** in hot loops
-5. **Use Float64Array.map with simple callbacks** - auto-vectorized with SIMD (f64x2)
+5. **Use Float64Array/Float32Array.map with simple callbacks** - auto-vectorized with SIMD
 
 ### SIMD Auto-Vectorization
 
-Float64Array.map is automatically vectorized when the callback is a simple arithmetic operation:
+TypedArray.map is automatically vectorized for Float64Array (f64x2: 2 elements) and Float32Array (f32x4: 4 elements) when the callback is simple arithmetic:
 
 ```js
-// These patterns use SIMD (f64x2 - 2 elements per instruction)
-arr.map(x => x * 2)      // ✓ multiplication
-arr.map(x => x + 10)     // ✓ addition
-arr.map(x => x - 1)      // ✓ subtraction
-arr.map(x => x / 4)      // ✓ division
+// Vectorized patterns - Float64Array uses f64x2, Float32Array uses f32x4
+arr.map(x => x * 2)        // ✓ multiplication
+arr.map(x => x + 10)       // ✓ addition
+arr.map(x => x - 1)        // ✓ subtraction
+arr.map(x => x / 4)        // ✓ division
+arr.map(x => -x)           // ✓ negation
+arr.map(x => Math.abs(x))  // ✓ absolute value
+arr.map(x => Math.sqrt(x)) // ✓ square root
+arr.map(x => Math.ceil(x)) // ✓ ceiling
+arr.map(x => Math.floor(x))// ✓ floor
 
-// These fall back to scalar loop
-arr.map(x => x * x)      // ✗ non-constant operand
-arr.map(x => x + y)      // ✗ captures variable
-arr.map(x => Math.sin(x)) // ✗ function call
+// Falls back to scalar loop
+arr.map(x => x * x)        // ✗ non-constant operand
+arr.map(x => x + y)        // ✗ captures variable
+arr.map(x => Math.sin(x))  // ✗ function call (no SIMD sin)
+arr.map((x, i) => x + i)   // ✗ uses index parameter
 ```
 
-The vectorized loop processes pairs of elements, with a scalar remainder for odd lengths.
+Float32Array.map with f32x4 processes 4 elements per instruction (2x throughput vs Float64Array).

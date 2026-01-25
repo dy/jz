@@ -683,3 +683,29 @@ test('TypedArray - SIMD map divide', async () => {
   `)
   is(test(), 10)  // 1 + 2 + 3 + 4
 })
+
+// Float32Array SIMD tests (f32x4 - 4 elements per vector)
+test('TypedArray - SIMD Float32Array map multiply', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Float32Array(8)
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4
+      buf[4] = 5; buf[5] = 6; buf[6] = 7; buf[7] = 8
+      let result = buf.map(x => x * 2)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5] + result[6] + result[7]
+    }
+  `)
+  is(test(), 72)  // 2+4+6+8+10+12+14+16
+})
+
+test('TypedArray - SIMD Float32Array map with remainder', async () => {
+  let { test } = await run(`
+    export let test = () => {
+      let buf = new Float32Array(6)  // 6 elements: 4 SIMD + 2 remainder
+      buf[0] = 1; buf[1] = 2; buf[2] = 3; buf[3] = 4; buf[4] = 5; buf[5] = 6
+      let result = buf.map(x => x + 10)
+      return result[0] + result[1] + result[2] + result[3] + result[4] + result[5]
+    }
+  `)
+  is(test(), 81)  // 11+12+13+14+15+16
+})
