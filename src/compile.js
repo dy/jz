@@ -6,8 +6,8 @@
  * @module compile
  */
 
-import * as arrayMethods from './array.js'
-import * as stringMethods from './string.js'
+import * as ARRAY_METHODS from './array.js'
+import * as STRING_METHODS from './string.js'
 import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
 
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isArrayProps, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
@@ -544,16 +544,16 @@ function resolveCall(namespace, name, args, receiver = null) {
 
     // Dispatch to method modules - f64 can be array pointer
     const isArrayLike = rt === 'array' || rt === 'f64'
-    if (isArrayLike && arrayMethods[name]) {
+    if (isArrayLike && ARRAY_METHODS[name]) {
       // Track param usage for JS interop
       if (receiver.paramName) {
         ctx.inferredArrayParams.add(receiver.paramName)
       }
-      const result = arrayMethods[name](rw, args)
+      const result = ARRAY_METHODS[name](rw, args)
       if (result) return result
     }
-    if (rt === 'string' && stringMethods[name]) {
-      const result = stringMethods[name](rw, args)
+    if (rt === 'string' && STRING_METHODS[name]) {
+      const result = STRING_METHODS[name](rw, args)
       if (result) return result
     }
 
@@ -1962,8 +1962,13 @@ const operators = {
       ctx.usedMemory = true
       return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
-    // String comparison: use __ptr_eq for NaN-boxed pointers (f64.eq fails on NaN)
-    if ((isString(va) || isBoxedString(va)) && (isString(vb) || isBoxedString(vb))) {
+    // Plain string comparison: use __str_eq for value equality (compares actual content)
+    if (isString(va) && isString(vb)) {
+      ctx.usedMemory = true
+      return wat(`(call $__str_eq ${va} ${vb})`, 'i32')
+    }
+    // Boxed strings (Object.assign("str", {})) use reference equality
+    if (isBoxedString(va) && isBoxedString(vb)) {
       ctx.usedMemory = true
       return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
     }
@@ -2001,8 +2006,13 @@ const operators = {
       return operators['!=']([b, a])
     }
     const va = gen(a), vb = gen(b)
-    // String comparison: use __ptr_eq for NaN-boxed pointers
-    if ((isString(va) || isBoxedString(va)) && (isString(vb) || isBoxedString(vb))) {
+    // Plain string comparison: use __str_eq for value equality
+    if (isString(va) && isString(vb)) {
+      ctx.usedMemory = true
+      return wat(`(i32.eqz (call $__str_eq ${va} ${vb}))`, 'i32')
+    }
+    // Boxed strings use reference inequality
+    if (isBoxedString(va) && isBoxedString(vb)) {
       ctx.usedMemory = true
       return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
     }
