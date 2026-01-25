@@ -10,9 +10,9 @@ import * as ARRAY_METHODS from './array.js'
 import * as STRING_METHODS from './string.js'
 import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, wt, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
-import { f64ops, i32ops, MATH_OPS, GLOBAL_CONSTANTS } from './ops.js'
+import { f64ops, i32ops, MATH_OPS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
 import { nullRef, undefRef, mkString, envGet, arrGet, arrGetTyped, arrLen, directArrLen, objGet, objSet, strCharAt, strLen, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
@@ -329,15 +329,8 @@ function genIdent(name) {
   if (name === 'undefined') return undefRef()
   if (name === 'true') return wat('(i32.const 1)', 'i32')
   if (name === 'false') return wat('(i32.const 0)', 'i32')
-  if (name in GLOBAL_CONSTANTS) return wat(`(f64.const ${fmtNum(GLOBAL_CONSTANTS[name])})`, 'f64')
-
-  // Symbol as identifier creates new unique symbol (like Symbol())
-  // In jz, Symbol can't be a first-class function value, so bare `Symbol` = Symbol()
-  if (name === 'Symbol') {
-    ctx.usedMemory = true
-    ctx.usedSymbol = true
-    return wat('(call $__mk_symbol)', 'symbol')
-  }
+  if (name === 'Infinity') return wat(`(f64.const ${fmtNum(Infinity)})`, 'f64')
+  if (name === 'NaN') return wat(`(f64.const ${fmtNum(NaN)})`, 'f64')
 
   // Check if this is a captured variable (from closure environment passed to us)
   // Closures capture by value - the env contains immutable copies
@@ -394,10 +387,10 @@ function allocateBoxed(schemaPrefix, target, props, tmpPrefix) {
   ctx.addLocal(tmp, 'f64')
 
   const stores = propVals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
 
   // Return object type - predicates check schema[0] for boxed variant
-  return wat(wt`
+  return wat(`
     (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${propVals.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
@@ -472,10 +465,10 @@ function genBoxedInferredDecl(name, value, inferred, isConst) {
   const tmp = `$_bx_${id}`
   ctx.addLocal(tmp, 'f64')
   const stores = vals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
   const scopedName = ctx.declareVar(name, isConst)
   ctx.addLocal(name, 'object', schemaArr, scopedName)
-  const objWat = wt`
+  const objWat = `
     (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
@@ -548,11 +541,11 @@ function genObjectInferredDecl(name, value, inferred, isConst) {
   const tmp = `$_obj_${id}`
   ctx.addLocal(tmp, 'f64')
   const stores = vals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
+    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
 
   const scopedName = ctx.declareVar(name, isConst)
   ctx.addLocal(name, 'object', schemaId, scopedName)
-  const objWat = wt`
+  const objWat = `
     (block (result f64)
       (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${allKeys.length})))
       (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
@@ -768,7 +761,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       ctx.addLocal(srcLocal, 'f64')
       ctx.addLocal(len, 'i32')
       ctx.addLocal(result, 'f64')
-      return wat(wt`
+      return wat(`
         (local.set ${srcLocal} ${src})
         (local.set ${len} (call $__ptr_len (local.get ${srcLocal})))
         (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${len})))
@@ -864,7 +857,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       ctx.addLocal(result, 'f64')
       const stores = keyStrs.map((s, i) =>
         `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${s})`).join('\n      ')
-      return wat(wt`
+      return wat(`
         (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
         ${stores}
         (local.get ${result})`, 'flat_array')
@@ -889,7 +882,7 @@ function resolveCall(namespace, name, args, receiver = null) {
       const indices = keys.map(k => schema.indexOf(k))
       const stores = indices.map((idx, i) =>
         `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${objGet(`(local.get ${src})`, idx)})`).join('\n      ')
-      return wat(wt`
+      return wat(`
         (local.set ${src} ${obj})
         (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
         ${stores}
@@ -916,12 +909,12 @@ function resolveCall(namespace, name, args, receiver = null) {
       // Each entry is [key, value] - a 2-element array
       const indices = keys.map(k => schema.indexOf(k))
       const keyStrs = keys.map(k => mkString(ctx, k))
-      const pairs = indices.map((idx, i) => wt`
+      const pairs = indices.map((idx, i) => `
         (local.set ${pair} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const 2)))
         (f64.store (call $__ptr_offset (local.get ${pair})) ${keyStrs[i]})
         (f64.store (i32.add (call $__ptr_offset (local.get ${pair})) (i32.const 8)) ${objGet(`(local.get ${src})`, idx)})
         (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) (local.get ${pair}))`).join('\n      ')
-      return wat(wt`
+      return wat(`
         (local.set ${src} ${obj})
         (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
         ${pairs}
@@ -963,7 +956,7 @@ function resolveCall(namespace, name, args, receiver = null) {
 
         // String type - wrap in quotes, escape special chars
         if (type === 'string') {
-          return wt`(local.set ${v} ${valExpr})
+          return `(local.set ${v} ${valExpr})
             (local.set ${r} (call $__strcat3 ${strQuote} (call $escapeJsonString (local.get ${v})) ${strQuote}))
             (local.get ${r})`
         }
@@ -975,7 +968,7 @@ function resolveCall(namespace, name, args, receiver = null) {
 
         // Boolean
         if (type === 'bool') {
-          return wt`(select ${strTrue} ${strFalse} ${i32(valExpr)})`
+          return `(select ${strTrue} ${strFalse} ${i32(valExpr)})`
         }
 
         // Object with known schema - unroll properties
@@ -985,7 +978,7 @@ function resolveCall(namespace, name, args, receiver = null) {
           const obj = `$_jso_${ctx.uniqueId++}`
           ctx.addLocal(obj, 'f64')
 
-          let code = wt`(local.set ${obj} ${valExpr})\n`
+          let code = `(local.set ${obj} ${valExpr})\n`
           code += `(local.set ${r} ${strLBrace})\n`
 
           schemaKeys.forEach((key, i) => {
@@ -996,14 +989,14 @@ function resolveCall(namespace, name, args, receiver = null) {
             // TODO: detect property types for proper recursion
             // Note: objGet returns f64 (f64.load), so no conversion needed
             const propStr = `(call $numToString ${propVal})`
-            code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${keyStr}))\n`
-            code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${propStr}))\n`
+            code += `(local.set ${r} (call $__strcat (local.get ${r}) ${keyStr}))\n`
+            code += `(local.set ${r} (call $__strcat (local.get ${r}) ${propStr}))\n`
             if (i < schemaKeys.length - 1) {
-              code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))\n`
+              code += `(local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))\n`
             }
           })
 
-          code += wt`(local.set ${r} (call $__strcat (local.get ${r}) ${strRBrace}))\n`
+          code += `(local.set ${r} (call $__strcat (local.get ${r}) ${strRBrace}))\n`
           code += `(local.get ${r})`
           return code
         }
@@ -1019,7 +1012,7 @@ function resolveCall(namespace, name, args, receiver = null) {
           ctx.addLocal(len, 'i32')
           ctx.addLocal(elem, 'f64')
 
-          return wt`(local.set ${arr} ${valExpr})
+          return `(local.set ${arr} ${valExpr})
             (local.set ${len} ${arrLen(`(local.get ${arr})`)})
             (local.set ${r} ${strLBracket})
             (local.set ${idx} (i32.const 0))
@@ -1038,7 +1031,7 @@ function resolveCall(namespace, name, args, receiver = null) {
         }
 
         // Default - try to detect type at runtime
-        return wt`(local.set ${v} ${valExpr})
+        return `(local.set ${v} ${valExpr})
           (if (result f64) (call $__is_pointer (local.get ${v}))
             (then
               (if (result f64) (i32.eq (call $__ptr_type (local.get ${v})) (i32.const ${PTR_TYPE.STRING}))
@@ -1510,10 +1503,10 @@ const operators = {
     const tmp = `$_obj_${id}`
     ctx.addLocal(tmp, 'f64')
     const stores = vals.map((v, i) =>
-      `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`)
+      `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n        ')
     // NaN boxing: OBJECT type with schemaId as id field
     // mkptr(OBJECT, schemaId, offset)
-    return wat(wt`
+    return wat(`
       (block (result f64)
         (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
         (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))

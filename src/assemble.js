@@ -150,8 +150,8 @@ export function assemble(bodyWat, ctx = {
 
   // === numToString static strings ===
   // Add globals and data for special number string representations
-  const needsNumStrGlobals = ctx.usedStdlib.includes('numToString') || 
-                              ctx.usedStdlib.includes('toFixed') || 
+  const needsNumStrGlobals = ctx.usedStdlib.includes('numToString') ||
+                              ctx.usedStdlib.includes('toFixed') ||
                               ctx.usedStdlib.includes('toString') ||
                               ctx.usedStdlib.includes('toExponential') ||
                               ctx.usedStdlib.includes('toPrecision')
