@@ -105,3 +105,92 @@ test('map and push', async () => {
   is(await evaluate('[1,2,3].map(x => x * 2).push(8)[3]'), 8)
   is(await evaluate('[1,2,3].map(x => x * 2).push(8)[0]'), 2)
 })
+// === shift tests ===
+// shift() returns first element (does not mutate in jz - returns same array)
+test('shift - returns first element', async () => {
+  is(await evaluate('[1, 2, 3].shift()'), 1)
+  is(await evaluate('[10, 20, 30].shift()'), 10)
+  is(await evaluate('[42].shift()'), 42)
+})
+
+test('shift - empty returns NaN', async () => {
+  ok(isNaN(await evaluate('[].shift()')))
+})
+
+// Note: jz shift does NOT mutate - it just returns the first element
+test('shift - original unchanged (jz semantics)', async () => {
+  is(await evaluate('{ let a = [1, 2, 3]; a.shift(); a.length }'), 3)
+  is(await evaluate('{ let a = [1, 2, 3]; a.shift(); a[0] }'), 1)
+})
+
+// === unshift tests ===
+// unshift(x) prepends element, returns NEW array
+test('unshift - prepends element', async () => {
+  is(await evaluate('[2, 3].unshift(1)[0]'), 1)
+  is(await evaluate('[2, 3].unshift(1)[1]'), 2)
+  is(await evaluate('[2, 3].unshift(1)[2]'), 3)
+  is(await evaluate('[2, 3].unshift(1).length'), 3)
+})
+
+test('unshift - empty array', async () => {
+  is(await evaluate('[].unshift(5)[0]'), 5)
+  is(await evaluate('[].unshift(5).length'), 1)
+})
+
+test('unshift - original unchanged (new array semantics)', async () => {
+  is(await evaluate('{ let a = [1, 2]; let b = a.unshift(0); a.length }'), 2)
+  is(await evaluate('{ let a = [1, 2]; let b = a.unshift(0); b.length }'), 3)
+  is(await evaluate('{ let a = [1, 2]; let b = a.unshift(0); a[0] }'), 1)
+  is(await evaluate('{ let a = [1, 2]; let b = a.unshift(0); b[0] }'), 0)
+})
+
+test('unshift - chained', async () => {
+  is(await evaluate('[3].unshift(2).unshift(1).length'), 3)
+  is(await evaluate('[3].unshift(2).unshift(1)[0]'), 1)
+  is(await evaluate('[3].unshift(2).unshift(1)[1]'), 2)
+  is(await evaluate('[3].unshift(2).unshift(1)[2]'), 3)
+})
+
+// Combinations
+test('push and shift', async () => {
+  is(await evaluate('[1, 2].push(3).shift()'), 1)
+})
+
+test('unshift and pop', async () => {
+  is(await evaluate('[1, 2].unshift(0).pop()'), 2)
+})
+
+test('unshift and shift', async () => {
+  is(await evaluate('[1, 2].unshift(0).shift()'), 0)
+})
+
+// Build array with unshift (reverse order)
+test('unshift - build array', async () => {
+  is(await evaluate(`{
+    let a = [];
+    let i = 3;
+    while (i > 0) {
+      a = a.unshift(i);
+      i = i - 1;
+    }
+    a.length
+  }`), 3)
+  is(await evaluate(`{
+    let a = [];
+    let i = 3;
+    while (i > 0) {
+      a = a.unshift(i);
+      i = i - 1;
+    }
+    a[0]
+  }`), 1)
+  is(await evaluate(`{
+    let a = [];
+    let i = 3;
+    while (i > 0) {
+      a = a.unshift(i);
+      i = i - 1;
+    }
+    a[2]
+  }`), 3)
+})

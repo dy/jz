@@ -486,6 +486,31 @@ function emitMemoryHelpers() {
         ;; Already heap
         (local.get $ptr))))
 
+  ;; String value equality - compares actual content, not pointers
+  ;; Handles SSO vs SSO, heap vs heap, and SSO vs heap
+  (func $__str_eq (param $a f64) (param $b f64) (result i32)
+    (local $lenA i32) (local $lenB i32) (local $i i32)
+    ;; Fast path: identical pointers (same interned string)
+    (if (i64.eq (i64.reinterpret_f64 (local.get $a)) (i64.reinterpret_f64 (local.get $b)))
+      (then (return (i32.const 1))))
+    ;; Compare lengths first
+    (local.set $lenA (call $__str_len (local.get $a)))
+    (local.set $lenB (call $__str_len (local.get $b)))
+    (if (i32.ne (local.get $lenA) (local.get $lenB))
+      (then (return (i32.const 0))))
+    ;; Compare chars
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $loop
+        (br_if $done (i32.ge_s (local.get $i) (local.get $lenA)))
+        (if (i32.ne
+              (call $__str_char_at (local.get $a) (local.get $i))
+              (call $__str_char_at (local.get $b) (local.get $i)))
+          (then (return (i32.const 0))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)))
+    (i32.const 1))
+
   ;; Set length in memory (for mutable arrays)
   (func $__ptr_set_len (param $ptr f64) (param $len i32)
     (f64.store
