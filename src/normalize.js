@@ -66,6 +66,7 @@ JSON: new Set(['stringify', 'parse']) }
 // Allowed constructors for `new` keyword
 const ALLOWED_CONSTRUCTORS = new Set([
   'Array', 'Set', 'Map', 'RegExp',
+  'String', 'Number', 'Boolean',  // Boxed primitive wrappers
   'Float64Array', 'Float32Array',
   'Int8Array', 'Int16Array', 'Int32Array',
   'Uint8Array', 'Uint16Array', 'Uint32Array',
@@ -450,6 +451,25 @@ const handlers = {
 
   // new - only allowed with builtin constructors
   'new'(op, [constructor, ...args]) {
+    // Handle member access on new expression: new String("x").length
+    // Parser gives: ['new', ['.', ['()', 'String', arg], 'length']]
+    // We need: ['.', ['new', ['()', 'String', arg]], 'length']
+    if (Array.isArray(constructor) && (constructor[0] === '.' || constructor[0] === '?.')) {
+      const [dotOp, innerExpr, prop] = constructor
+      // innerExpr should be the call expression ['()', 'String', ...]
+      if (Array.isArray(innerExpr) && innerExpr[0] === '()') {
+        // Normalize: new X().prop => ['.', ['new', X()], prop]
+        return [dotOp, expr(['new', innerExpr, ...args]), prop]
+      }
+    }
+    // Handle indexing on new expression: new String("x")[0]
+    if (Array.isArray(constructor) && constructor[0] === '[') {
+      const [bracketOp, innerExpr, idx] = constructor
+      if (Array.isArray(innerExpr) && innerExpr[0] === '()') {
+        return ['[', expr(['new', innerExpr, ...args]), expr(idx)]
+      }
+    }
+
     // Constructor is either a string or a function call expression
     let name = constructor
     if (Array.isArray(constructor) && constructor[0] === '()') {

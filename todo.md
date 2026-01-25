@@ -255,7 +255,23 @@
     * [x] Known array params → direct `directArrLen()`, skip type dispatch
     * [-] Known string params → deferred (rare in hot paths)
     * [-] Known symbol typeof → deferred (rare)
-
+* [x] Douglas Crockford JS mistakes (JZ stance)
+  * [x] `null` - typeof bug, JSON uses it; JZ: both null/undefined → 0
+  * [x] `this` - 4 binding rules; JZ: prohibited
+  * [x] `new` - fake classes; JZ: only builtins (Array, Set, Map, TypedArray)
+  * [x] `==` coercion - unpredictable; JZ: behaves like `===`
+  * [x] `with` - scope pollution; JZ: prohibited
+  * [x] `eval`/`Function()` - security hole; JZ: prohibited
+  * [x] `arguments` - magic object; JZ: use `...rest`
+  * [x] Global pollution - implicit globals; JZ: error on undeclared
+  * [x] ASI - semicolon insertion; JZ: explicit parsing
+  * [x] Falsy values - JS has 6 (0/""/null/undefined/NaN/false); JZ: numeric only (0, NaN, -0)
+    * Strings always truthy (even "") - no runtime length check in conditions
+    * Pointers always truthy - arrays, objects, etc.
+    * Simplifies mental model: "is this a valid number?"
+  * [x] `for...in` - prototype chain; JZ: not supported
+  * [x] Floating point - 0.1+0.2≠0.3; JZ: IEEE 754, unavoidable
+* [ ] Rational type for arithmetic?
 * [x] Pointer Kinds Refactor (from research.md) - COMPLETED
   * [x] **Phase 1: Update types.js constants**
     * [x] Replace PTR_TYPE enum with new 3-bit types (0-7)

@@ -182,13 +182,13 @@ const F64_TYPES = new Set([
   // PTR_TYPE.STRING
   'string',
   // PTR_TYPE.OBJECT (all kinds: SCHEMA, SET, MAP, and boxed variants)
-  'object',
+  'object', 'set', 'map',
   // PTR_TYPE.CLOSURE
   'closure',
   // PTR_TYPE.TYPED
   'typedarray',
-  // PTR_TYPE.ATOM kind=SYMBOL
-  'symbol',
+  // PTR_TYPE.ATOM (symbol, regex)
+  'symbol', 'regex',
 ])
 
 /**
@@ -218,7 +218,7 @@ export const i32 = op => {
 /**
  * Convert WAT value to boolean (i32 0 or 1)
  * For i32: already usable as boolean (0=false, non-zero=true)
- * For f64: compare with 0.0
+ * For f64: 0 and NaN are falsy (numeric falsiness)
  * For ref: check if null
  * @param {String & {type: string}} op - Boxed WAT string
  * @returns {String & {type: string}} i32 boolean WAT value
@@ -229,7 +229,9 @@ export const bool = op => {
   // i32 values already work as booleans in WASM (0=false, non-zero=true)
   // Comparisons already return 0/1, other i32 values are truthy if non-zero
   if (t === 'i32') return op
-  return wat(`(f64.ne ${op} (f64.const 0))`, 'i32')
+  // f64: truthy if not zero AND not NaN (both 0 and NaN are falsy)
+  // (x != 0) && (x == x) - second part is false for NaN
+  return wat(`(i32.and (f64.ne ${op} (f64.const 0)) (f64.eq ${op} ${op}))`, 'i32')
 }
 
 /**
@@ -242,7 +244,9 @@ export const falsy = op => {
   const t = op.type
   if (t === 'ref') return wat(`(ref.is_null ${op})`, 'i32')
   if (t === 'i32') return wat(`(i32.eqz ${op})`, 'i32')
-  return wat(`(f64.eq ${op} (f64.const 0))`, 'i32')
+  // f64: falsy if zero OR NaN
+  // (x == 0) || (x != x) - second part is true for NaN
+  return wat(`(i32.or (f64.eq ${op} (f64.const 0)) (f64.ne ${op} ${op}))`, 'i32')
 }
 
 /**
