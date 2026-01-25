@@ -451,6 +451,565 @@ export const FUNCTIONS = {
             (br $write_frac)))))
     (local.get $str))`,
 
+  // toFixed(x, digits) - format number with fixed decimal places
+  // Returns string representation with exactly 'digits' decimal places
+  toFixed: `(func $toFixed (param $x f64) (param $digits i32) (result f64)
+    (local $str f64) (local $offset i32)
+    (local $neg i32) (local $scaled i64) (local $intPart i64) (local $fracPart i64)
+    (local $digit i32) (local $i i32) (local $j i32)
+    (local $buf i32) (local $intLen i32) (local $fracLen i32) (local $totalLen i32)
+    (local $abs f64) (local $scale f64)
+    ;; Clamp digits to 0-20 (JS spec)
+    (if (i32.lt_s (local.get $digits) (i32.const 0))
+      (then (local.set $digits (i32.const 0))))
+    (if (i32.gt_s (local.get $digits) (i32.const 20))
+      (then (local.set $digits (i32.const 20))))
+    ;; Handle NaN
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNaN)))))
+    ;; Handle Infinity
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strInf)))))
+    (if (f64.eq (local.get $x) (f64.const -inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNegInf)))))
+    ;; Handle negative
+    (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
+    (local.set $abs (f64.abs (local.get $x)))
+    ;; Compute scale = 10^digits
+    (local.set $scale (f64.const 1))
+    (local.set $i (i32.const 0))
+    (block $scale_done (loop $scale_loop
+      (br_if $scale_done (i32.ge_s (local.get $i) (local.get $digits)))
+      (local.set $scale (f64.mul (local.get $scale) (f64.const 10)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scale_loop)))
+    ;; Round: scaled = floor(abs * scale + 0.5) as integer
+    (local.set $scaled (i64.trunc_f64_s (f64.floor (f64.add (f64.mul (local.get $abs) (local.get $scale)) (f64.const 0.5)))))
+    ;; Split into integer and fractional parts using integer division
+    (local.set $intPart (i64.div_u (local.get $scaled) (i64.trunc_f64_s (local.get $scale))))
+    (local.set $fracPart (i64.rem_u (local.get $scaled) (i64.trunc_f64_s (local.get $scale))))
+    ;; Handle digits=0 case
+    (if (i32.eqz (local.get $digits))
+      (then (local.set $intPart (local.get $scaled))))
+    ;; Use temp buffer at 65480
+    (local.set $buf (i32.const 65480))
+    ;; Extract integer digits (reversed) at buf[0..31]
+    (local.set $intLen (i32.const 0))
+    (if (i64.eqz (local.get $intPart))
+      (then
+        (i32.store8 (local.get $buf) (i32.const 48))
+        (local.set $intLen (i32.const 1)))
+      (else
+        (loop $int_loop
+          (if (i64.gt_u (local.get $intPart) (i64.const 0))
+            (then
+              (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $intPart) (i64.const 10))))
+              (i32.store8 (i32.add (local.get $buf) (local.get $intLen)) (i32.add (i32.const 48) (local.get $digit)))
+              (local.set $intLen (i32.add (local.get $intLen) (i32.const 1)))
+              (local.set $intPart (i64.div_u (local.get $intPart) (i64.const 10)))
+              (br $int_loop))))))
+    ;; Extract fractional digits (reversed) at buf[32..63]
+    (local.set $fracLen (i32.const 0))
+    (if (i32.gt_s (local.get $digits) (i32.const 0))
+      (then
+        (local.set $i (i32.const 0))
+        (loop $frac_loop
+          (if (i32.lt_s (local.get $i) (local.get $digits))
+            (then
+              (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $fracPart) (i64.const 10))))
+              (i32.store8 (i32.add (i32.const 65512) (local.get $fracLen)) (i32.add (i32.const 48) (local.get $digit)))
+              (local.set $fracLen (i32.add (local.get $fracLen) (i32.const 1)))
+              (local.set $fracPart (i64.div_u (local.get $fracPart) (i64.const 10)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $frac_loop))))))
+    ;; Calculate total length: neg? + intLen + (digits > 0 ? 1 + digits : 0)
+    (local.set $totalLen (local.get $intLen))
+    (if (local.get $neg)
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+    (if (i32.gt_s (local.get $digits) (i32.const 0))
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $digits))))))
+    ;; Allocate result string
+    (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+    (local.set $offset (call $__ptr_offset (local.get $str)))
+    ;; Write minus sign
+    (if (local.get $neg)
+      (then
+        (i32.store16 (local.get $offset) (i32.const 45))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+    ;; Write integer digits (reverse order)
+    (local.set $j (i32.sub (local.get $intLen) (i32.const 1)))
+    (block $wi_done (loop $wi_loop
+      (br_if $wi_done (i32.lt_s (local.get $j) (i32.const 0)))
+      (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+      (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $wi_loop)))
+    ;; Write decimal point and fraction digits (reverse order from extraction)
+    (if (i32.gt_s (local.get $digits) (i32.const 0))
+      (then
+        (i32.store16 (local.get $offset) (i32.const 46))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $j (i32.sub (local.get $fracLen) (i32.const 1)))
+        (block $wf_done (loop $wf_loop
+          (br_if $wf_done (i32.lt_s (local.get $j) (i32.const 0)))
+          (i32.store16 (local.get $offset) (i32.load8_u (i32.add (i32.const 65512) (local.get $j))))
+          (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+          (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+          (br $wf_loop)))))
+    (local.get $str))`,
+
+  // toString(x, radix) - convert number to string with specified base (2-36)
+  // For radix 10, delegates to numToString
+  toString: `(func $toString (param $x f64) (param $radix i32) (result f64)
+    (local $str f64) (local $offset i32) (local $neg i32)
+    (local $intPart i64) (local $digit i32) (local $intLen i32) (local $j i32)
+    (local $buf i32) (local $ch i32)
+    ;; Clamp radix to 2-36
+    (if (i32.lt_s (local.get $radix) (i32.const 2))
+      (then (local.set $radix (i32.const 10))))
+    (if (i32.gt_s (local.get $radix) (i32.const 36))
+      (then (local.set $radix (i32.const 36))))
+    ;; For radix 10, use numToString
+    (if (i32.eq (local.get $radix) (i32.const 10))
+      (then (return (call $numToString (local.get $x)))))
+    ;; Handle NaN
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNaN)))))
+    ;; Handle Infinity
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strInf)))))
+    (if (f64.eq (local.get $x) (f64.const -inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNegInf)))))
+    ;; Handle negative
+    (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
+    ;; Truncate to integer for non-decimal bases
+    (local.set $intPart (i64.trunc_f64_s (f64.trunc (f64.abs (local.get $x)))))
+    ;; Use temp buffer
+    (local.set $buf (i32.const 65480))
+    ;; Extract digits in given radix (reversed)
+    (local.set $intLen (i32.const 0))
+    (if (i64.eqz (local.get $intPart))
+      (then
+        (i32.store8 (local.get $buf) (i32.const 48))
+        (local.set $intLen (i32.const 1)))
+      (else
+        (loop $int_loop
+          (if (i64.gt_u (local.get $intPart) (i64.const 0))
+            (then
+              (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $intPart) (i64.extend_i32_s (local.get $radix)))))
+              ;; 0-9 -> '0'-'9', 10-35 -> 'a'-'z'
+              (if (i32.lt_s (local.get $digit) (i32.const 10))
+                (then (local.set $ch (i32.add (i32.const 48) (local.get $digit))))
+                (else (local.set $ch (i32.add (i32.const 87) (local.get $digit))))) ;; 87 = 'a' - 10
+              (i32.store8 (i32.add (local.get $buf) (local.get $intLen)) (local.get $ch))
+              (local.set $intLen (i32.add (local.get $intLen) (i32.const 1)))
+              (local.set $intPart (i64.div_u (local.get $intPart) (i64.extend_i32_s (local.get $radix))))
+              (br $int_loop))))))
+    ;; Allocate result string
+    (local.set $str (call $__alloc (i32.const 3) (i32.add (local.get $intLen) (local.get $neg))))
+    (local.set $offset (call $__ptr_offset (local.get $str)))
+    ;; Write minus sign
+    (if (local.get $neg)
+      (then
+        (i32.store16 (local.get $offset) (i32.const 45))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+    ;; Write digits (reverse order)
+    (local.set $j (i32.sub (local.get $intLen) (i32.const 1)))
+    (block $w_done (loop $w_loop
+      (br_if $w_done (i32.lt_s (local.get $j) (i32.const 0)))
+      (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+      (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $w_loop)))
+    (local.get $str))`,
+
+  // toExponential(x, fractionDigits) - format number in exponential notation
+  // Returns string like "1.23e+4" or "1.23e-4"
+  toExponential: `(func $toExponential (param $x f64) (param $frac i32) (result f64)
+    (local $str f64) (local $offset i32) (local $neg i32)
+    (local $abs f64) (local $exp i32) (local $mantissa f64)
+    (local $scaled i64) (local $digit i32) (local $i i32) (local $j i32)
+    (local $buf i32) (local $digLen i32) (local $totalLen i32)
+    (local $scale f64) (local $expNeg i32) (local $expAbs i32) (local $expLen i32)
+    ;; Clamp fractionDigits to 0-20
+    (if (i32.lt_s (local.get $frac) (i32.const 0))
+      (then (local.set $frac (i32.const 0))))
+    (if (i32.gt_s (local.get $frac) (i32.const 20))
+      (then (local.set $frac (i32.const 20))))
+    ;; Handle NaN
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNaN)))))
+    ;; Handle Infinity
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strInf)))))
+    (if (f64.eq (local.get $x) (f64.const -inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNegInf)))))
+    ;; Handle zero
+    (if (f64.eq (local.get $x) (f64.const 0))
+      (then
+        ;; Build "0.000...e+0" with frac zeros
+        (local.set $totalLen (i32.add (i32.const 5) (local.get $frac))) ;; "0." + frac + "e+0" = 1+1+frac+3
+        (if (i32.eqz (local.get $frac))
+          (then (local.set $totalLen (i32.const 4)))) ;; "0e+0"
+        (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+        (local.set $offset (call $__ptr_offset (local.get $str)))
+        (i32.store16 (local.get $offset) (i32.const 48)) ;; '0'
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (if (i32.gt_s (local.get $frac) (i32.const 0))
+          (then
+            (i32.store16 (local.get $offset) (i32.const 46)) ;; '.'
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $i (i32.const 0))
+            (block $z_done (loop $z_loop
+              (br_if $z_done (i32.ge_s (local.get $i) (local.get $frac)))
+              (i32.store16 (local.get $offset) (i32.const 48))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $z_loop)))))
+        (i32.store16 (local.get $offset) (i32.const 101)) ;; 'e'
+        (i32.store16 (i32.add (local.get $offset) (i32.const 2)) (i32.const 43)) ;; '+'
+        (i32.store16 (i32.add (local.get $offset) (i32.const 4)) (i32.const 48)) ;; '0'
+        (return (local.get $str))))
+    ;; Handle negative
+    (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
+    (local.set $abs (f64.abs (local.get $x)))
+    ;; Calculate exponent: floor(log10(abs))
+    (local.set $exp (i32.const 0))
+    (local.set $mantissa (local.get $abs))
+    ;; Normalize: find exp such that 1 <= mantissa < 10
+    (block $norm_done
+      (loop $norm_up
+        (br_if $norm_done (f64.lt (local.get $mantissa) (f64.const 10)))
+        (local.set $mantissa (f64.div (local.get $mantissa) (f64.const 10)))
+        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))
+        (br $norm_up)))
+    (block $norm_done2
+      (loop $norm_down
+        (br_if $norm_done2 (f64.ge (local.get $mantissa) (f64.const 1)))
+        (local.set $mantissa (f64.mul (local.get $mantissa) (f64.const 10)))
+        (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))
+        (br $norm_down)))
+    ;; Round mantissa to (frac+1) digits
+    (local.set $scale (f64.const 1))
+    (local.set $i (i32.const 0))
+    (block $sc_done (loop $sc_loop
+      (br_if $sc_done (i32.ge_s (local.get $i) (local.get $frac)))
+      (local.set $scale (f64.mul (local.get $scale) (f64.const 10)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $sc_loop)))
+    (local.set $scaled (i64.trunc_f64_s (f64.floor (f64.add (f64.mul (local.get $mantissa) (local.get $scale)) (f64.const 0.5)))))
+    ;; Handle rounding overflow (e.g., 9.999 rounds to 10.00)
+    (if (i64.ge_s (local.get $scaled) (i64.trunc_f64_s (f64.mul (local.get $scale) (f64.const 10))))
+      (then
+        (local.set $scaled (i64.div_s (local.get $scaled) (i64.const 10)))
+        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))
+    ;; Use temp buffer
+    (local.set $buf (i32.const 65480))
+    ;; Extract digits (reversed)
+    (local.set $digLen (i32.const 0))
+    (block $dig_done (loop $dig_loop
+      (if (i64.gt_s (local.get $scaled) (i64.const 0))
+        (then
+          (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $scaled) (i64.const 10))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $digLen)) (i32.add (i32.const 48) (local.get $digit)))
+          (local.set $digLen (i32.add (local.get $digLen) (i32.const 1)))
+          (local.set $scaled (i64.div_u (local.get $scaled) (i64.const 10)))
+          (br $dig_loop)))))
+    ;; Pad with leading zeros if needed
+    (block $pad_done (loop $pad_loop
+      (br_if $pad_done (i32.gt_s (local.get $digLen) (local.get $frac)))
+      (i32.store8 (i32.add (local.get $buf) (local.get $digLen)) (i32.const 48))
+      (local.set $digLen (i32.add (local.get $digLen) (i32.const 1)))
+      (br $pad_loop)))
+    ;; Calculate exponent string length
+    (local.set $expNeg (i32.lt_s (local.get $exp) (i32.const 0)))
+    (local.set $expAbs (select (i32.sub (i32.const 0) (local.get $exp)) (local.get $exp) (local.get $expNeg)))
+    (local.set $expLen (i32.const 1))
+    (if (i32.ge_s (local.get $expAbs) (i32.const 10))
+      (then (local.set $expLen (i32.const 2))))
+    (if (i32.ge_s (local.get $expAbs) (i32.const 100))
+      (then (local.set $expLen (i32.const 3))))
+    ;; Total length: neg? + 1 + (frac>0 ? 1+frac : 0) + 2 + expLen
+    (local.set $totalLen (i32.add (i32.const 1) (i32.add (i32.const 2) (local.get $expLen)))) ;; digit + "e+" + exp
+    (if (local.get $neg)
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+    (if (i32.gt_s (local.get $frac) (i32.const 0))
+      (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $frac))))))
+    ;; Allocate result
+    (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+    (local.set $offset (call $__ptr_offset (local.get $str)))
+    ;; Write minus sign
+    (if (local.get $neg)
+      (then
+        (i32.store16 (local.get $offset) (i32.const 45))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+    ;; Write first digit (last in reversed buffer)
+    (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $digLen) (i32.const 1)))))
+    (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+    ;; Write decimal point and remaining digits
+    (if (i32.gt_s (local.get $frac) (i32.const 0))
+      (then
+        (i32.store16 (local.get $offset) (i32.const 46))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $j (i32.sub (local.get $digLen) (i32.const 2)))
+        (block $wd_done (loop $wd_loop
+          (br_if $wd_done (i32.lt_s (local.get $j) (i32.const 0)))
+          (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+          (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+          (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+          (br $wd_loop)))))
+    ;; Write 'e'
+    (i32.store16 (local.get $offset) (i32.const 101))
+    (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+    ;; Write '+' or '-'
+    (i32.store16 (local.get $offset) (select (i32.const 45) (i32.const 43) (local.get $expNeg)))
+    (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+    ;; Write exponent digits
+    (if (i32.ge_s (local.get $expLen) (i32.const 3))
+      (then
+        (i32.store16 (local.get $offset) (i32.add (i32.const 48) (i32.div_s (local.get $expAbs) (i32.const 100))))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $expAbs (i32.rem_s (local.get $expAbs) (i32.const 100)))))
+    (if (i32.ge_s (local.get $expLen) (i32.const 2))
+      (then
+        (i32.store16 (local.get $offset) (i32.add (i32.const 48) (i32.div_s (local.get $expAbs) (i32.const 10))))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (local.set $expAbs (i32.rem_s (local.get $expAbs) (i32.const 10)))))
+    (i32.store16 (local.get $offset) (i32.add (i32.const 48) (local.get $expAbs)))
+    (local.get $str))`,
+
+  // toPrecision(x, precision) - format number to specified significant digits
+  // Returns exponential notation if needed, otherwise fixed notation
+  toPrecision: `(func $toPrecision (param $x f64) (param $prec i32) (result f64)
+    (local $str f64) (local $offset i32) (local $neg i32)
+    (local $abs f64) (local $exp i32) (local $mantissa f64)
+    (local $scaled i64) (local $digit i32) (local $i i32) (local $j i32)
+    (local $buf i32) (local $digLen i32) (local $totalLen i32)
+    (local $scale f64) (local $expNeg i32) (local $expAbs i32) (local $expLen i32)
+    (local $useExp i32) (local $intDigits i32) (local $fracDigits i32)
+    ;; Clamp precision to 1-21
+    (if (i32.lt_s (local.get $prec) (i32.const 1))
+      (then (local.set $prec (i32.const 1))))
+    (if (i32.gt_s (local.get $prec) (i32.const 21))
+      (then (local.set $prec (i32.const 21))))
+    ;; Handle NaN
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNaN)))))
+    ;; Handle Infinity
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strInf)))))
+    (if (f64.eq (local.get $x) (f64.const -inf))
+      (then (return (call $__mkptr (i32.const 3) (i32.const 0) (global.get $__strNegInf)))))
+    ;; Handle zero
+    (if (f64.eq (local.get $x) (f64.const 0))
+      (then
+        ;; Build "0.000..." with prec-1 zeros after decimal
+        (local.set $totalLen (local.get $prec))
+        (if (i32.gt_s (local.get $prec) (i32.const 1))
+          (then (local.set $totalLen (i32.add (local.get $prec) (i32.const 1))))) ;; +1 for '.'
+        (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+        (local.set $offset (call $__ptr_offset (local.get $str)))
+        (i32.store16 (local.get $offset) (i32.const 48))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (if (i32.gt_s (local.get $prec) (i32.const 1))
+          (then
+            (i32.store16 (local.get $offset) (i32.const 46))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $i (i32.const 1))
+            (block $z_done (loop $z_loop
+              (br_if $z_done (i32.ge_s (local.get $i) (local.get $prec)))
+              (i32.store16 (local.get $offset) (i32.const 48))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $z_loop)))))
+        (return (local.get $str))))
+    ;; Handle negative
+    (local.set $neg (f64.lt (local.get $x) (f64.const 0)))
+    (local.set $abs (f64.abs (local.get $x)))
+    ;; Calculate exponent
+    (local.set $exp (i32.const 0))
+    (local.set $mantissa (local.get $abs))
+    (block $norm_done
+      (loop $norm_up
+        (br_if $norm_done (f64.lt (local.get $mantissa) (f64.const 10)))
+        (local.set $mantissa (f64.div (local.get $mantissa) (f64.const 10)))
+        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))
+        (br $norm_up)))
+    (block $norm_done2
+      (loop $norm_down
+        (br_if $norm_done2 (f64.ge (local.get $mantissa) (f64.const 1)))
+        (local.set $mantissa (f64.mul (local.get $mantissa) (f64.const 10)))
+        (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))
+        (br $norm_down)))
+    ;; Round to prec significant digits
+    (local.set $scale (f64.const 1))
+    (local.set $i (i32.const 1))
+    (block $sc_done (loop $sc_loop
+      (br_if $sc_done (i32.ge_s (local.get $i) (local.get $prec)))
+      (local.set $scale (f64.mul (local.get $scale) (f64.const 10)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $sc_loop)))
+    (local.set $scaled (i64.trunc_f64_s (f64.floor (f64.add (f64.mul (local.get $mantissa) (local.get $scale)) (f64.const 0.5)))))
+    ;; Handle rounding overflow
+    (if (i64.ge_s (local.get $scaled) (i64.trunc_f64_s (f64.mul (local.get $scale) (f64.const 10))))
+      (then
+        (local.set $scaled (i64.div_s (local.get $scaled) (i64.const 10)))
+        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))
+    ;; Decide: use exponential if exp < -6 or exp >= prec
+    (local.set $useExp (i32.or (i32.lt_s (local.get $exp) (i32.const -6))
+                               (i32.ge_s (local.get $exp) (local.get $prec))))
+    ;; Use temp buffer
+    (local.set $buf (i32.const 65480))
+    ;; Extract digits (reversed)
+    (local.set $digLen (i32.const 0))
+    (block $dig_done (loop $dig_loop
+      (if (i64.gt_s (local.get $scaled) (i64.const 0))
+        (then
+          (local.set $digit (i32.wrap_i64 (i64.rem_u (local.get $scaled) (i64.const 10))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $digLen)) (i32.add (i32.const 48) (local.get $digit)))
+          (local.set $digLen (i32.add (local.get $digLen) (i32.const 1)))
+          (local.set $scaled (i64.div_u (local.get $scaled) (i64.const 10)))
+          (br $dig_loop)))))
+    ;; Pad with leading zeros if needed
+    (block $pad_done (loop $pad_loop
+      (br_if $pad_done (i32.ge_s (local.get $digLen) (local.get $prec)))
+      (i32.store8 (i32.add (local.get $buf) (local.get $digLen)) (i32.const 48))
+      (local.set $digLen (i32.add (local.get $digLen) (i32.const 1)))
+      (br $pad_loop)))
+    ;; Branch: exponential or fixed notation
+    (if (local.get $useExp)
+      (then
+        ;; Exponential notation
+        (local.set $expNeg (i32.lt_s (local.get $exp) (i32.const 0)))
+        (local.set $expAbs (select (i32.sub (i32.const 0) (local.get $exp)) (local.get $exp) (local.get $expNeg)))
+        (local.set $expLen (i32.const 1))
+        (if (i32.ge_s (local.get $expAbs) (i32.const 10))
+          (then (local.set $expLen (i32.const 2))))
+        (if (i32.ge_s (local.get $expAbs) (i32.const 100))
+          (then (local.set $expLen (i32.const 3))))
+        ;; Length: neg? + 1 + (prec>1 ? 1+prec-1 : 0) + 2 + expLen
+        (local.set $totalLen (i32.add (i32.const 3) (local.get $expLen))) ;; digit + "e+" + exp
+        (if (local.get $neg)
+          (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+        (if (i32.gt_s (local.get $prec) (i32.const 1))
+          (then (local.set $totalLen (i32.add (local.get $totalLen) (local.get $prec))))) ;; . + frac digits
+        (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+        (local.set $offset (call $__ptr_offset (local.get $str)))
+        ;; Write minus
+        (if (local.get $neg)
+          (then
+            (i32.store16 (local.get $offset) (i32.const 45))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+        ;; Write first digit
+        (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $digLen) (i32.const 1)))))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        ;; Write decimal and remaining
+        (if (i32.gt_s (local.get $prec) (i32.const 1))
+          (then
+            (i32.store16 (local.get $offset) (i32.const 46))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $j (i32.sub (local.get $digLen) (i32.const 2)))
+            (block $wd_done (loop $wd_loop
+              (br_if $wd_done (i32.lt_s (local.get $j) (i32.const 0)))
+              (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+              (br $wd_loop)))))
+        ;; Write exponent
+        (i32.store16 (local.get $offset) (i32.const 101))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (i32.store16 (local.get $offset) (select (i32.const 45) (i32.const 43) (local.get $expNeg)))
+        (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+        (if (i32.ge_s (local.get $expLen) (i32.const 3))
+          (then
+            (i32.store16 (local.get $offset) (i32.add (i32.const 48) (i32.div_s (local.get $expAbs) (i32.const 100))))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $expAbs (i32.rem_s (local.get $expAbs) (i32.const 100)))))
+        (if (i32.ge_s (local.get $expLen) (i32.const 2))
+          (then
+            (i32.store16 (local.get $offset) (i32.add (i32.const 48) (i32.div_s (local.get $expAbs) (i32.const 10))))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (local.set $expAbs (i32.rem_s (local.get $expAbs) (i32.const 10)))))
+        (i32.store16 (local.get $offset) (i32.add (i32.const 48) (local.get $expAbs))))
+      (else
+        ;; Fixed notation - handles both exp >= 0 and exp < 0
+        (if (i32.lt_s (local.get $exp) (i32.const 0))
+          (then
+            ;; Small number: 0.000...digits (exp < 0)
+            ;; leadingZeros = abs(exp) - 1 = -exp - 1
+            (local.set $intDigits (i32.sub (i32.sub (i32.const 0) (local.get $exp)) (i32.const 1)))
+            ;; totalLen = neg? + "0." + leadingZeros + prec
+            (local.set $totalLen (i32.add (i32.const 2) (i32.add (local.get $intDigits) (local.get $prec))))
+            (if (local.get $neg)
+              (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+            (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+            (local.set $offset (call $__ptr_offset (local.get $str)))
+            ;; Write minus
+            (if (local.get $neg)
+              (then
+                (i32.store16 (local.get $offset) (i32.const 45))
+                (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+            ;; Write "0."
+            (i32.store16 (local.get $offset) (i32.const 48))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            (i32.store16 (local.get $offset) (i32.const 46))
+            (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+            ;; Write leading zeros
+            (local.set $i (i32.const 0))
+            (block $lz_done (loop $lz_loop
+              (br_if $lz_done (i32.ge_s (local.get $i) (local.get $intDigits)))
+              (i32.store16 (local.get $offset) (i32.const 48))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $lz_loop)))
+            ;; Write significant digits (reversed in buffer)
+            (local.set $j (i32.sub (local.get $digLen) (i32.const 1)))
+            (block $sd_done (loop $sd_loop
+              (br_if $sd_done (i32.lt_s (local.get $j) (i32.const 0)))
+              (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+              (br $sd_loop))))
+          (else
+            ;; Normal fixed: intPart.fracPart (exp >= 0)
+            (local.set $intDigits (i32.add (local.get $exp) (i32.const 1)))
+            (local.set $fracDigits (i32.sub (local.get $prec) (local.get $intDigits)))
+            ;; Length: neg? + intDigits + (fracDigits > 0 ? 1 + fracDigits : 0)
+            (local.set $totalLen (local.get $intDigits))
+            (if (local.get $neg)
+              (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.const 1)))))
+            (if (i32.gt_s (local.get $fracDigits) (i32.const 0))
+              (then (local.set $totalLen (i32.add (local.get $totalLen) (i32.add (i32.const 1) (local.get $fracDigits))))))
+            (local.set $str (call $__alloc (i32.const 3) (local.get $totalLen)))
+            (local.set $offset (call $__ptr_offset (local.get $str)))
+            ;; Write minus
+            (if (local.get $neg)
+              (then
+                (i32.store16 (local.get $offset) (i32.const 45))
+                (local.set $offset (i32.add (local.get $offset) (i32.const 2)))))
+            ;; Write integer digits (from end of buffer, reversed)
+            (local.set $j (i32.sub (local.get $digLen) (i32.const 1)))
+            (local.set $i (i32.const 0))
+            (block $wi_done (loop $wi_loop
+              (br_if $wi_done (i32.ge_s (local.get $i) (local.get $intDigits)))
+              (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+              (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+              (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $wi_loop)))
+            ;; Write decimal and fraction
+            (if (i32.gt_s (local.get $fracDigits) (i32.const 0))
+              (then
+                (i32.store16 (local.get $offset) (i32.const 46))
+                (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+                (block $wf_done (loop $wf_loop
+                  (br_if $wf_done (i32.lt_s (local.get $j) (i32.const 0)))
+                  (i32.store16 (local.get $offset) (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+                  (local.set $offset (i32.add (local.get $offset) (i32.const 2)))
+                  (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+                  (br $wf_loop)))))))))
+    (local.get $str))`,
+
   // escapeJsonString - escape special characters for JSON
   escapeJsonString: `(func $escapeJsonString (param $str f64) (result f64)
     (local $srcOff i32) (local $srcLen i32) (local $i i32) (local $ch i32)
@@ -1182,6 +1741,8 @@ export const DEPS = {
   expm1: ['exp'],
   log1p: ['log'],
   parseInt: ['parseIntFromCode'],
+  // Number methods
+  toString: ['numToString'],
   // Set/Map dependencies
   __set_has: ['__hash', '__key_eq'],
   __set_add: ['__hash', '__key_eq'],
