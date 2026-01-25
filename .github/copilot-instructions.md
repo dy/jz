@@ -7,7 +7,7 @@ Any JZ code must be valid JS code as well, except for a few quirks that must be 
 Do not change tha signature or semantic of JS compat functions.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~13450 lines)
+## Project Structure (src/, ~13400 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
@@ -22,11 +22,14 @@ For any file structure changes, update project structure section below.
 | loop.js | 51 | Loop codegen helpers: genLoop, genEarlyExitLoop |
 | array.js | 529 | Array method codegen (map, filter, reduce, etc.) |
 | string.js | 1479 | String method codegen (slice, indexOf, toLowerCase SIMD, match, replace, split) |
-| regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex) |
+| regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex, REGEX_METHODS) |
 | typedarray.js | 1566 | TypedArray method codegen with SIMD (f64x2, f32x4, i32x4 auto-vectorization) |
+| number.js | 34 | Number method codegen (toFixed, toString, toExponential, toPrecision) |
+| set.js | 30 | Set method codegen (has, add, delete, clear) |
+| map.js | 36 | Map method codegen (has, get, set, delete, clear) |
 | closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |
 | destruct.js | 253 | Destructuring codegen: genArrayDestructDecl, genObjectDestructDecl |
-| compile.js | 3051 | Core compiler: AST → WAT, operators, binOp helper |
+| compile.js | 3419 | Core compiler: AST → WAT, operators, binOp helper |
 
 Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
 

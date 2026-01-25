@@ -9,6 +9,9 @@
 import * as ARRAY_METHODS from './array.js'
 import * as STRING_METHODS from './string.js'
 import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
+import { NUMBER_METHODS } from './number.js'
+import { SET_METHODS } from './set.js'
+import { MAP_METHODS } from './map.js'
 
 import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
@@ -561,34 +564,8 @@ function resolveCall(namespace, name, args, receiver = null) {
     }
 
     // Number methods (f64/i32)
-    if (rt === 'f64' || rt === 'i32') {
-      if (name === 'toFixed') {
-        ctx.usedStdlib.push('toFixed')
-        ctx.usedMemory = true
-        const digits = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 0)'
-        return wat(`(call $toFixed ${f64(receiver)} ${digits})`, 'string')
-      }
-      if (name === 'toString') {
-        ctx.usedMemory = true
-        if (args.length >= 1) {
-          ctx.usedStdlib.push('toString')
-          return wat(`(call $toString ${f64(receiver)} ${i32(gen(args[0]))})`, 'string')
-        }
-        ctx.usedStdlib.push('numToString')
-        return wat(`(call $numToString ${f64(receiver)})`, 'string')
-      }
-      if (name === 'toExponential') {
-        ctx.usedStdlib.push('toExponential')
-        ctx.usedMemory = true
-        const frac = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 6)'
-        return wat(`(call $toExponential ${f64(receiver)} ${frac})`, 'string')
-      }
-      if (name === 'toPrecision') {
-        ctx.usedStdlib.push('toPrecision')
-        ctx.usedMemory = true
-        const prec = args.length >= 1 ? i32(gen(args[0])) : '(i32.const 6)'
-        return wat(`(call $toPrecision ${f64(receiver)} ${prec})`, 'string')
-      }
+    if ((rt === 'f64' || rt === 'i32') && NUMBER_METHODS[name]) {
+      return NUMBER_METHODS[name](receiver, args, ctx, gen)
     }
 
     // Regex methods
@@ -598,51 +575,13 @@ function resolveCall(namespace, name, args, receiver = null) {
     }
 
     // Set methods
-    if (isSet(receiver)) {
-      ctx.usedMemory = true
-      if (name === 'has' && args.length === 1) {
-        ctx.usedStdlib.push('__set_has')
-        return wat(`(call $__set_has ${rw} ${f64(gen(args[0]))})`, 'i32')
-      }
-      if (name === 'add' && args.length === 1) {
-        ctx.usedStdlib.push('__set_add')
-        return wat(`(call $__set_add ${rw} ${f64(gen(args[0]))})`, 'set')
-      }
-      if (name === 'delete' && args.length === 1) {
-        ctx.usedStdlib.push('__set_delete')
-        return wat(`(call $__set_delete ${rw} ${f64(gen(args[0]))})`, 'i32')
-      }
-      if (name === 'clear' && args.length === 0) {
-        ctx.usedStdlib.push('__set_clear')
-        return wat(`(call $__set_clear ${rw})`, 'set')
-      }
-      throw new Error(`Unknown Set method: .${name}`)
+    if (isSet(receiver) && SET_METHODS[name]) {
+      return SET_METHODS[name](rw, args, ctx, gen)
     }
 
     // Map methods
-    if (isMap(receiver)) {
-      ctx.usedMemory = true
-      if (name === 'has' && args.length === 1) {
-        ctx.usedStdlib.push('__map_has')
-        return wat(`(call $__map_has ${rw} ${f64(gen(args[0]))})`, 'i32')
-      }
-      if (name === 'get' && args.length === 1) {
-        ctx.usedStdlib.push('__map_get')
-        return wat(`(call $__map_get ${rw} ${f64(gen(args[0]))})`, 'f64')
-      }
-      if (name === 'set' && args.length === 2) {
-        ctx.usedStdlib.push('__map_set')
-        return wat(`(call $__map_set ${rw} ${f64(gen(args[0]))} ${f64(gen(args[1]))})`, 'map')
-      }
-      if (name === 'delete' && args.length === 1) {
-        ctx.usedStdlib.push('__map_delete')
-        return wat(`(call $__map_delete ${rw} ${f64(gen(args[0]))})`, 'i32')
-      }
-      if (name === 'clear' && args.length === 0) {
-        ctx.usedStdlib.push('__map_clear')
-        return wat(`(call $__map_clear ${rw})`, 'map')
-      }
-      throw new Error(`Unknown Map method: .${name}`)
+    if (isMap(receiver) && MAP_METHODS[name]) {
+      return MAP_METHODS[name](rw, args, ctx, gen)
     }
 
     // Check if receiver is a closure/function property from an object
