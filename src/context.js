@@ -262,6 +262,9 @@ export function createContext() {
       child.objectPropTypes = this.objectPropTypes
       child.namespaces = this.namespaces
       child.arrayParams = this.arrayParams  // Pre-analyzed array params (funcName → Set<paramName>)
+      // NaN-boxing optimization data
+      child.internalFuncs = this.internalFuncs  // Set<funcName> - functions not reachable from exports
+      child.funcParamPtrTypes = this.funcParamPtrTypes  // Map<funcName, Map<paramName, Set<type>>>
       child.inFunction = true
       return child
     }

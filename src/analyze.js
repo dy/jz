@@ -11,6 +11,8 @@
  * - Type promotion: variables assigned f64 anywhere are promoted to f64
  */
 
+import { TYPED_ARRAY_CTORS } from './types.js'
+
 // Global constants - identifiers that don't count as free variables
 const BUILTIN_IDENTS = new Set([
   'true', 'false', 'null', 'undefined',
@@ -122,11 +124,17 @@ function inferTypeFromDefault(defaultVal) {
     return { type: 'object', schema }
   }
 
-  // TypedArray constructor: ["()", [".", "Float32Array"], ...]
+  // TypedArray constructor: ["new", ["()", "Float64Array", ...]]
   if (Array.isArray(defaultVal) && defaultVal[0] === 'new') {
     const ctor = defaultVal[1]
+    // new Float64Array(4) → ['new', ['()', 'Float64Array', [null, 4]]]
+    if (Array.isArray(ctor) && ctor[0] === '()' && typeof ctor[1] === 'string' && ctor[1].endsWith('Array')) {
+      const ctorName = ctor[1]
+      return { type: 'typedarray', arrayType: TYPED_ARRAY_CTORS[ctorName] }
+    }
+    // Direct constructor name (shouldn't happen but handle)
     if (typeof ctor === 'string' && ctor.endsWith('Array')) {
-      return { type: 'typedarray', arrayType: ctor }
+      return { type: 'typedarray', arrayType: TYPED_ARRAY_CTORS[ctor] }
     }
   }
 
@@ -155,7 +163,7 @@ export function extractParamInfo(params, idx = 0) {
     // Default param: ["=", name, default] - with type inference
     if (params[0] === '=' && typeof params[1] === 'string') {
       const inferred = inferTypeFromDefault(params[2])
-      return [{ name: params[1], default: params[2], typeHint: inferred.type, schema: inferred.schema }]
+      return [{ name: params[1], default: params[2], typeHint: inferred.type, schema: inferred.schema, arrayType: inferred.arrayType }]
     }
     // Rest param: ["...", name]
     if (params[0] === '...' && typeof params[1] === 'string') return [{ name: params[1], rest: true }]
@@ -499,6 +507,11 @@ export function preanalyze(ast) {
         funcs.set(name, { params: extractParams(value[1]), body: value[2], exported: false })
       }
     }
+    // fn = (args) => body (bare assignment)
+    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>') {
+      const [name, value] = args
+      funcs.set(name, { params: extractParams(value[1]), body: value[2], exported: false })
+    }
 
     // ----- F64 vars: variable declarations -----
     if ((op === 'let' || op === 'const' || op === 'var') && Array.isArray(args[0]) && args[0][0] === '=') {
@@ -604,6 +617,33 @@ export function preanalyze(ast) {
   // Walk the AST once
   walk(ast, new Set())
 
+  // ===== Track top-level function calls (reachable from main export) =====
+  // Functions called at top level are NOT internal - they're called from the implicit main export
+  const topLevelCalls = new Set()
+  function scanTopLevelCalls(node, inFunc = false) {
+    if (!node || typeof node !== 'object' || !Array.isArray(node)) return
+    const [op, ...args] = node
+
+    // Skip function bodies - we only want top-level calls
+    if (op === '=>') return
+    if (op === 'function') return
+
+    // Track function calls at top level (not inside function bodies)
+    if (!inFunc && op === '()' && typeof args[0] === 'string' && funcs.has(args[0])) {
+      topLevelCalls.add(args[0])
+    }
+
+    // Recurse into statements but not function definitions
+    for (const arg of args) scanTopLevelCalls(arg, inFunc)
+  }
+  scanTopLevelCalls(ast)
+
+  // Add top-level calls to funcCallGraph under pseudo "main" export
+  if (topLevelCalls.size > 0) {
+    funcCallGraph.set('__main__', topLevelCalls)
+    exportedFuncs.add('__main__')
+  }
+
   // ===== Analyze function return types (needs funcs collected first) =====
   const PRESERVING_OPS = new Set(['+', '-', '*', '%', '&', '|', '^', '<<', '>>', '>>>'])
   const CMP_OPS = new Set(['<', '<=', '>', '>=', '==', '!=', '===', '!=='])
@@ -702,6 +742,18 @@ export function preanalyze(ast) {
     'lastIndexOf', 'includes', 'startsWith', 'endsWith', 'split', 'trim', 'trimStart', 'trimEnd',
     'padStart', 'padEnd', 'repeat', 'replace', 'toLowerCase', 'toUpperCase', 'match', 'search'])
 
+  // Methods exclusive to TypedArrays (not on regular arrays)
+  const TYPED_ARRAY_ONLY_METHODS = new Set(['set', 'subarray'])
+  const TYPED_ARRAY_ONLY_PROPS = new Set(['buffer', 'byteLength', 'byteOffset', 'BYTES_PER_ELEMENT'])
+
+  // Methods exclusive to regular arrays (not on TypedArrays)
+  const ARRAY_ONLY_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'concat', 'join', 'flat', 'flatMap', 'splice', 'toSpliced'])
+
+  // Methods shared by both arrays and TypedArrays
+  const SHARED_ARRAY_METHODS = new Set(['map', 'filter', 'reduce', 'find', 'findIndex', 'indexOf', 'includes',
+    'some', 'every', 'slice', 'forEach', 'reduceRight', 'at', 'fill', 'reverse', 'copyWithin',
+    'sort', 'toReversed', 'toSorted', 'with', 'entries', 'keys', 'values'])
+
   function detectParamPtrTypes(funcName, params, body) {
     const paramSet = new Set(params)
     const ptrTypes = new Map() // paramName → Set<'array'|'string'|'object'>
@@ -727,9 +779,15 @@ export function preanalyze(ast) {
       if (op === '.' && typeof args[0] === 'string' && paramSet.has(args[0])) {
         const prop = args[1]
         if (prop === 'length') {
-          // Ambiguous: array or string both have .length
+          // Ambiguous: array, typedarray, or string all have .length
           // Will be resolved by other usages or default to array
-        } else if (ARRAY_METHODS.has(prop)) {
+        } else if (TYPED_ARRAY_ONLY_PROPS.has(prop)) {
+          addType(args[0], 'typedarray')
+        } else if (ARRAY_ONLY_METHODS.has(prop)) {
+          addType(args[0], 'array')
+        } else if (SHARED_ARRAY_METHODS.has(prop)) {
+          // Could be array or typedarray - mark as array (more common)
+          // Will be refined if typedarray-specific usage found
           addType(args[0], 'array')
         } else if (STRING_METHODS.has(prop)) {
           addType(args[0], 'string')
@@ -743,7 +801,9 @@ export function preanalyze(ast) {
       if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.') {
         const [, obj, method] = args[0]
         if (typeof obj === 'string' && paramSet.has(obj)) {
-          if (ARRAY_METHODS.has(method)) addType(obj, 'array')
+          if (TYPED_ARRAY_ONLY_METHODS.has(method)) addType(obj, 'typedarray')
+          else if (ARRAY_ONLY_METHODS.has(method)) addType(obj, 'array')
+          else if (SHARED_ARRAY_METHODS.has(method)) addType(obj, 'array')
           else if (STRING_METHODS.has(method)) addType(obj, 'string')
         }
       }
@@ -774,7 +834,10 @@ export function preanalyze(ast) {
     detectParamPtrTypes(name, params, body)
   }
 
-  return { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph }
+  // Collect all function names (for internal function detection)
+  const allFuncs = new Set(funcs.keys())
+
+  return { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph, allFuncs }
 }
 
 /**
@@ -928,6 +991,13 @@ export function findFuncReturnTypes(ast) {
       if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
         funcs.set(name, { params: extractParams(value[1]), body: value[2] })
       }
+      return
+    }
+
+    // name = (params) => body (bare assignment)
+    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>') {
+      const [name, value] = args
+      funcs.set(name, { params: extractParams(value[1]), body: value[2] })
       return
     }
 

@@ -4,15 +4,14 @@ JS syntax that compiles to pure WASM. No runtime, no GC, no overhead.
 
 ```js
 import jz from 'jz'
-import watr from 'watr'
 
 // 3 lines of JS → 120 bytes of WASM, compiles in <1ms
-const { exports } = await WebAssembly.instantiate(watr(jz(`
+const { exports } = await WebAssembly.instantiate(jz(`
   let { sin, PI } = Math
   export let sine = (out, freq, t) => {
     for (let i = 0; i < out.length; i++) out[i] = sin((t + i) * freq * PI * 2 / 44100)
   }
-`)))
+`))
 
 // Real-time audio at native speed, zero GC pauses
 exports.sine(audioBuffer, 440, sampleOffset)
@@ -22,9 +21,8 @@ exports.sine(audioBuffer, 440, sampleOffset)
 
 ```js
 import jz from 'jz'
-import watr from 'watr'
 
-const wasm = watr(jz(`export const add = (a, b) => a + b`))
+const wasm = jz(`export const add = (a, b) => a + b`)
 const { exports } = await WebAssembly.instantiate(wasm)
 
 exports.add(2, 3)  // 5

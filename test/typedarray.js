@@ -2,6 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile as jzCompile, instantiate } from '../index.js'
 import { compile as watrCompile } from 'watr'
+import { evaluate } from './util.js'
 
 // Helper: compile JS to WASM binary
 const compile = (code, opts) => watrCompile(jzCompile(code, opts))
@@ -213,6 +214,28 @@ test('TypedArray - all constructors compile', async () => {
     export const testF64 = () => { let b = new Float64Array(1); return b.length }
   `)
   ok(wat.includes('__alloc_typed'))
+})
+
+// Array initializer syntax: new Float64Array([1, 2, 3])
+test('TypedArray - array initializer Float64Array', async () => {
+  is(await evaluate('let a = new Float64Array([1, 2, 3, 4]); a[2]'), 3)
+  is(await evaluate('let a = new Float64Array([10, 20, 30]); a.length'), 3)
+  is(await evaluate('let a = new Float64Array([5]); a[0]'), 5)
+})
+
+test('TypedArray - array initializer Int32Array', async () => {
+  is(await evaluate('let a = new Int32Array([5, 6, 7]); a[0] + a[1] + a[2]'), 18)
+  is(await evaluate('let a = new Int32Array([-1, 0, 1]); a[0]'), -1)
+})
+
+test('TypedArray - array initializer Uint8Array', async () => {
+  is(await evaluate('let a = new Uint8Array([200, 255, 128]); a[1]'), 255)
+  is(await evaluate('let a = new Uint8Array([0, 127, 255]); a.length'), 3)
+})
+
+test('TypedArray - array initializer Float32Array', async () => {
+  const result = await evaluate('let a = new Float32Array([1.5, 2.5]); a[0] + a[1]')
+  ok(Math.abs(result - 4) < 0.001, `Expected ~4, got ${result}`)
 })
 
 // ========== TypedArray Methods ==========
