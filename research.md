@@ -122,6 +122,56 @@
   * Implementation: NaN-boxed pointer with [funcIdx:16][envOffset:31].
     Env stored in linear memory. call_indirect with env as first param.
 
+## [x] Floating point precision -> Compile-time rational simplification
+  0. Accept IEEE 754 behavior (0.1 + 0.2 = 0.30000000000000004)
+    + Standard JS behavior
+    - Confusing for users
+    - Impossible to test exact equality on computed fractions
+
+  1. Runtime rational type (i64 = num:32|den:32)
+    + Perfect precision for all rationals
+    + Runtime arithmetic
+    - Overhead for every operation (not zero-overhead)
+    - Type propagation complexity
+    - Different from JS behavior
+
+  2. Compile-time rational simplification (chosen)
+    + Zero runtime cost
+    + Exact arithmetic for constant expressions
+    + Falls back to f64 for dynamic values
+    + `1/3 * 3 = 1` (exact), `1/10 + 2/10 = 0.3` (exact)
+    - Only helps compile-time constants
+    - Overflow falls back to f64
+
+  * Decision: Compile-time rationals. Constant folding propagates Rational
+    objects through AST during normalization. Integer division creates
+    Rational(num, den) with GCD reduction. Arithmetic (+, -, *, /) on
+    rationals produces new rationals. Final emit converts to f64.const.
+
+  * Implementation:
+    ```js
+    // types.js - Rational with GCD reduction
+    class Rational {
+      constructor(num, den = 1) { /* reduce via gcd */ }
+      add(r) { return new Rational(this.num*r.den + r.num*this.den, this.den*r.den) }
+      // ... sub, mul, div similarly
+      fitsI32() { return abs(num) < 2**31 && abs(den) < 2**31 }
+      toF64() { return this.num / this.den }
+    }
+
+    // normalize.js optimize() - propagate rationals
+    if (ra && rb && (op === '+' || op === '-' || op === '*' || op === '/')) {
+      let result = ra[op](rb)
+      if (result.fitsI32()) return [, result.den === 1 ? result.num : result]
+    }
+
+    // compile.js genLiteral() - emit final f64
+    if (v instanceof Rational) return wat(`(f64.const ${v.toF64()})`, 'f64')
+    ```
+
+  * Overflow handling: When num or den exceeds i32 range, falls back to f64
+    arithmetic. Example: `(2**30) / 3 * 3` → f64 (can't fit intermediate).
+
 ## [x] Pointers -> NaN-boxing
   0. NaN-boxing (current)
     + Single f64 value = clean JS interop

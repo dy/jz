@@ -183,6 +183,53 @@ test('JZ falsy: 0, NaN, -0 are falsy; all else truthy', async () => {
 })
 
 // ============================================================
+// Compile-time Rational Simplification
+// ============================================================
+
+test('Rational simplification: 1/3 * 3 = 1 (exact)', async () => {
+  // This is the classic floating point problem - JS gives 0.9999999999999999
+  // JZ with rational simplification gives exactly 1
+  is(await evaluate('1/3 * 3'), 1)
+})
+
+test('Rational simplification: 1/10 + 2/10 = 0.3 (exact)', async () => {
+  // JS: 0.1 + 0.2 = 0.30000000000000004
+  // JZ: 1/10 + 2/10 = 3/10 = 0.3 exactly
+  is(await evaluate('1/10 + 2/10'), 0.3)
+})
+
+test('Rational simplification: chained operations', async () => {
+  // (1/2 + 1/4) * 4 = 3/4 * 4 = 3
+  is(await evaluate('(1/2 + 1/4) * 4'), 3)
+  // 1/6 + 1/6 + 1/6 = 3/6 = 1/2
+  is(await evaluate('1/6 + 1/6 + 1/6'), 0.5)
+  // 2/3 - 1/3 = 1/3
+  const third = await evaluate('2/3 - 1/3')
+  is(Math.abs(third - 1/3) < 1e-15, true) // Allow tiny epsilon for f64 conversion
+})
+
+test('Rational simplification: nested expressions', async () => {
+  // ((1/2) / (1/4)) = (1/2) * (4/1) = 2
+  is(await evaluate('(1/2) / (1/4)'), 2)
+  // (3/4) / (3/8) = (3/4) * (8/3) = 2
+  is(await evaluate('(3/4) / (3/8)'), 2)
+})
+
+test('Rational: overflow falls back to f64', async () => {
+  // Large numbers that would overflow i32 fall back to f64
+  // 2^30 / 1 is still rational, but 2^31 overflows
+  is(await evaluate('1073741824 / 1'), 1073741824)
+  // Very large division still works via f64
+  is(await evaluate('9999999999 / 3'), 9999999999 / 3)
+})
+
+test('Rational: modulo breaks rational (falls back to f64)', async () => {
+  // Modulo is not a rational operation
+  is(await evaluate('7 % 3'), 1)
+  is(await evaluate('10 % 4'), 2)
+})
+
+// ============================================================
 // Comparison edge cases
 // ============================================================
 

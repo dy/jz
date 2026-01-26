@@ -305,3 +305,97 @@ export const bothI32 = (a, b) => a.type === 'i32' && b.type === 'i32'
 export const isHeapRef = v => v.type === 'array' || v.type === 'flat_array' || v.type === 'ring_array' || v.type === 'object' || v.type === 'refarray' || v.type === 'ref'
 /** @param {String & {type: string, schema?: *}} v */
 export const hasSchema = v => v.schema !== undefined
+
+// === Compile-time Rational Arithmetic ===
+
+/**
+ * GCD using Euclidean algorithm
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+const gcd = (a, b) => b === 0 ? a : gcd(b, a % b)
+
+/** Maximum value for rational numerator/denominator before overflow */
+const RATIONAL_MAX = 0x7FFFFFFF // 2^31 - 1
+
+/**
+ * Compile-time rational number for exact arithmetic.
+ * Used during constant folding to preserve exactness (1/3 * 3 = 1).
+ * Converts to f64 when emitted or on overflow.
+ */
+export class Rational {
+  /**
+   * @param {number} num - Numerator (integer)
+   * @param {number} den - Denominator (integer, non-zero)
+   */
+  constructor(num, den = 1) {
+    if (den === 0) { this.num = num > 0 ? Infinity : num < 0 ? -Infinity : NaN; this.den = 1; return }
+    // Normalize sign: denominator always positive
+    if (den < 0) { num = -num; den = -den }
+    // Reduce by GCD
+    const g = gcd(Math.abs(num), den)
+    this.num = num / g
+    this.den = den / g
+  }
+
+  /** @returns {boolean} True if fits in i32 range */
+  fitsI32() { return Math.abs(this.num) <= RATIONAL_MAX && this.den <= RATIONAL_MAX }
+
+  /** @returns {boolean} True if this is an integer (den === 1) */
+  isInt() { return this.den === 1 }
+
+  /** @returns {number} Convert to f64 */
+  toF64() { return this.num / this.den }
+
+  /** @param {Rational} r @returns {Rational} */
+  add(r) { return new Rational(this.num * r.den + r.num * this.den, this.den * r.den) }
+
+  /** @param {Rational} r @returns {Rational} */
+  sub(r) { return new Rational(this.num * r.den - r.num * this.den, this.den * r.den) }
+
+  /** @param {Rational} r @returns {Rational} */
+  mul(r) { return new Rational(this.num * r.num, this.den * r.den) }
+
+  /** @param {Rational} r @returns {Rational} */
+  div(r) { return new Rational(this.num * r.den, this.den * r.num) }
+
+  /** @returns {Rational} */
+  neg() { return new Rational(-this.num, this.den) }
+
+  /** @param {number} n @returns {Rational} Create from integer */
+  static fromInt(n) { return new Rational(n, 1) }
+
+  /** @param {number} f @returns {Rational|null} Try to create from f64, null if irrational */
+  static fromF64(f) {
+    if (!Number.isFinite(f)) return null
+    // Only convert exact decimals (e.g., 0.1 → 1/10, 0.25 → 1/4)
+    // Use continued fraction approximation with limited iterations
+    const str = f.toString()
+    const match = str.match(/^-?(\d+)\.?(\d*)$/)
+    if (!match) return null
+    const [, int, frac] = match
+    const den = Math.pow(10, frac.length)
+    const num = parseInt(int + frac, 10) * (f < 0 ? -1 : 1)
+    const r = new Rational(num, den)
+    // Verify roundtrip
+    if (r.toF64() === f && r.fitsI32()) return r
+    return null
+  }
+}
+
+/**
+ * Check if AST node is an integer literal
+ * @param {any} ast
+ * @returns {boolean}
+ */
+export const isIntLiteral = ast =>
+  Array.isArray(ast) && ast[0] == null && typeof ast[1] === 'number' && Number.isInteger(ast[1])
+
+/**
+ * Check if AST node is a numeric literal (int or float)
+ * @param {any} ast
+ * @returns {boolean}
+ */
+export const isNumLiteral = ast =>
+  Array.isArray(ast) && ast[0] == null && typeof ast[1] === 'number'
