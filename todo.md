@@ -270,11 +270,20 @@
     * Pointers always truthy - arrays, objects, etc.
     * Simplifies mental model: "is this a valid number?"
   * [x] `for...in` - prototype chain; JZ: not supported
-  * [x] Floating point - 0.1+0.2≠0.3; JZ: IEEE 754, unavoidable
-* [ ] Rational type for arithmetic?
+  * [x] Floating point - 0.1+0.2≠0.3; JZ: compile-time rational simplification
+* [x] Compile-time Rational Simplification (zero runtime tax)
+  * [x] Rational class in types.js: num/den with GCD reduction
+  * [x] Detect integer division: `1/3` where both are int literals → rational
+  * [x] Rational arithmetic: +, -, *, / preserve exactness
+  * [x] Overflow detection: num/den > 2^31 → convert to f64
+  * [x] Triggers to stay rational: int literals, known rationals, +/-/*// ops
+  * [x] Triggers to f64: mixed with f64, Math.*, **, %, dynamic operand
+  * [x] Final emit: rational → f64.const (exact where possible)
+  * [x] Tests: 1/3*3=1, 1/10+2/10=0.3, overflow handling
+  * [x] Docs: document in research.md
 * [x] Pointer Kinds Refactor (from research.md) - COMPLETED
   * [x] **Phase 1: Update types.js constants**
-    * [x] Replace PTR_TYPE enum with new 3-bit types (0-7)
+    * [x] Replace PTR_TYPE enum with new 3-bit types (0-7)/
     * [x] Add type constants: ATOM=0, ARRAY=1, TYPED=2, STRING=3, OBJECT=4, CLOSURE=5, REGEX=6
     * [x] Add ATOM subtypes: NULL=0, UNDEF=1, SYMBOL=2+
     * [x] Add OBJECT subtypes: SCHEMA=0, HASH=1, SET=2, MAP=3

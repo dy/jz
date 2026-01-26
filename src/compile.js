@@ -13,7 +13,7 @@ import { NUMBER_METHODS } from './number.js'
 import { SET_METHODS } from './set.js'
 import { MAP_METHODS } from './map.js'
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema } from './types.js'
+import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema, Rational, isIntLiteral, isNumLiteral } from './types.js'
 import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
 import { f64ops, i32ops, MATH_OPS } from './ops.js'
 import { createContext } from './context.js'
@@ -228,34 +228,86 @@ function detectMultiReturn(ast) {
 }
 
 /**
- * Evaluate a constant expression at compile time.
- * Used with isConstant() for constant folding optimizations.
+ * Evaluate a constant expression at compile time using rational arithmetic.
+ * Preserves exact fractions (1/3 * 3 = 1) until final conversion to f64.
  *
  * @param {any} ast - Constant AST node (must pass isConstant check)
- * @returns {number} Evaluated numeric result
- * @example evalConstant([null, 42]) → 42
- * @example evalConstant(['+', [null, 1], [null, 2]]) → 3
- * @example evalConstant('true') → 1
+ * @returns {number|Rational} Evaluated result (Rational if exact, number otherwise)
+ * @example evalConstant([null, 42]) → Rational(42, 1)
+ * @example evalConstant(['/', [null, 1], [null, 3]]) → Rational(1, 3)
+ * @example evalConstant(['*', ['/', [null, 1], [null, 3]], [null, 3]]) → Rational(1, 1)
  */
 function evalConstant(ast) {
-  if (ast == null) return 0
-  if (Array.isArray(ast) && ast[0] == null) return ast[1]
+  if (ast == null) return new Rational(0)
+  if (Array.isArray(ast) && ast[0] == null) {
+    const v = ast[1]
+    if (Number.isInteger(v)) return new Rational(v)
+    // Try to convert f64 to rational (e.g., 0.5 → 1/2)
+    const r = Rational.fromF64(v)
+    return r || v  // Return f64 if can't be rationalized
+  }
   if (typeof ast === 'string') {
     const val = parseFloat(ast)
-    return isNaN(val) ? (ast === 'true' ? 1 : 0) : val
+    if (isNaN(val)) return ast === 'true' ? new Rational(1) : new Rational(0)
+    if (Number.isInteger(val)) return new Rational(val)
+    return val
   }
-  if (!Array.isArray(ast)) return 0
+  if (!Array.isArray(ast)) return new Rational(0)
   const [op, ...args] = ast
   const vals = args.map(evalConstant)
+
+  // Helper: convert to Rational if needed, or return null if can't
+  const toRat = v => v instanceof Rational ? v : (typeof v === 'number' ? Rational.fromF64(v) : null)
+  // Helper: convert to f64
+  const toF64 = v => v instanceof Rational ? v.toF64() : v
+
+  // If any operand is non-rationalizable f64, fall back to f64 arithmetic
+  const rats = vals.map(toRat)
+  const allRational = rats.every(r => r !== null)
+
   switch (op) {
-    case '+': return vals[0] + vals[1]
-    case '-': return vals.length === 1 ? -vals[0] : vals[0] - vals[1]
-    case '*': return vals.reduce((a, b) => a * b, 1)
-    case '/': return vals[0] / vals[1]
-    case '%': return vals[0] % vals[1]
-    default: return 0
+    case '+':
+      if (allRational) {
+        const r = rats[0].add(rats[1])
+        return r.fitsI32() ? r : r.toF64()
+      }
+      return toF64(vals[0]) + toF64(vals[1])
+    case '-':
+      if (vals.length === 1) {
+        if (allRational) return rats[0].neg()
+        return -toF64(vals[0])
+      }
+      if (allRational) {
+        const r = rats[0].sub(rats[1])
+        return r.fitsI32() ? r : r.toF64()
+      }
+      return toF64(vals[0]) - toF64(vals[1])
+    case '*':
+      if (allRational) {
+        const r = rats.reduce((a, b) => a.mul(b), new Rational(1))
+        return r.fitsI32() ? r : r.toF64()
+      }
+      return vals.map(toF64).reduce((a, b) => a * b, 1)
+    case '/':
+      if (allRational && rats[1].num !== 0) {
+        const r = rats[0].div(rats[1])
+        return r.fitsI32() ? r : r.toF64()
+      }
+      return toF64(vals[0]) / toF64(vals[1])
+    case '%':
+      // Modulo breaks rational exactness
+      return toF64(vals[0]) % toF64(vals[1])
+    default:
+      return new Rational(0)
   }
 }
+
+/**
+ * Convert evalConstant result to f64 number for emission
+ * @param {number|Rational} v
+ * @returns {number}
+ */
+const toNumber = v => v instanceof Rational ? v.toF64() : v
 
 /**
  * Core AST generator: converts an AST node to a typed WAT value.
@@ -302,7 +354,9 @@ function closureDepth(body) {
  * @example genLiteral('hello') → {type:'string', wat:'(call $__strconst ...)'}
  */
 function genLiteral(v) {
-  if (v === null || v === undefined) return nullRef()
+  if (v == null) return nullRef()
+  // Rational from constant folding: convert to f64
+  if (v instanceof Rational) return wat(`(f64.const ${fmtNum(v.toF64())})`, 'f64')
   if (typeof v === 'number') {
     // Integer literals stay i32, float literals become f64
     if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
@@ -485,7 +539,7 @@ function genInferredDecl(name, value, inferred, isConst) {
     const noClosures = !inferred.closures?.size
     if (noInferredProps && allConstant && noClosures) {
       const objectId = Object.keys(ctx.staticObjects).length
-      const values = litProps.map(([, val]) => evalConstant(val))
+      const values = litProps.map(([, val]) => toNumber(evalConstant(val)))
       const arraySpace = Object.keys(ctx.staticArrays).length * 64
       const objectSpace = objectId * 64
       const offset = HEAP_START + 4096 + arraySpace + objectSpace
@@ -1309,7 +1363,9 @@ const operators = {
     if (!hasSpread) {
       // No spread - use existing array literal codegen
       const gens = elements.map(e => gen(e))
-      return mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements)
+      // Wrap evalConstant to convert Rational→number for static arrays
+      const evalNum = ast => toNumber(evalConstant(ast))
+      return mkArrayLiteral(ctx, gens, isConstant, evalNum, elements)
     }
 
     // Handle spread: [...arr1, x, ...arr2, y] -> concat arrays and elements
@@ -1394,7 +1450,7 @@ const operators = {
     if (allConstant) {
       // Static object - store in data segment
       const objectId = Object.keys(ctx.staticObjects).length
-      const values = props.map(([, val]) => evalConstant(val))
+      const values = props.map(([, val]) => toNumber(evalConstant(val)))
       // Place after static arrays: HEAP_START + 4096 + arrays + objects
       const arraySpace = Object.keys(ctx.staticArrays).length * 64
       const objectSpace = objectId * 64
@@ -1440,7 +1496,7 @@ const operators = {
     const schema = a.schema
     let litIdx = null
     if (isConstant(idx)) {
-      const v = evalConstant(idx)
+      const v = toNumber(evalConstant(idx))
       litIdx = Number.isFinite(v) ? (v | 0) : null
     }
     if (Array.isArray(schema) && litIdx !== null) {
@@ -1753,6 +1809,16 @@ const operators = {
     if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
       throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
     }
+    // Compile-time rational simplification for numeric constants
+    if (isConstant(a) && isConstant(b) && !isStringConstant(a) && !isStringConstant(b)) {
+      const result = toNumber(evalConstant(['+', a, b]))
+      if (Number.isFinite(result)) {
+        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
+          return wat(`(i32.const ${result})`, 'i32')
+        }
+        return wat(`(f64.const ${result})`, 'f64')
+      }
+    }
     // Compile-time string concatenation with coercion: "a" + 1 → "a1"
     const strA = isCoercibleToStringConstant(a), strB = isCoercibleToStringConstant(b)
     if (strA && strB && (isStringConstant(a) || isStringConstant(b))) {
@@ -1780,9 +1846,46 @@ const operators = {
     }
     return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb)
   },
-  '-'([a, b]) { return binOp(a, b, i32ops.sub, f64ops.sub) },
-  '*'([a, b]) { return binOp(a, b, i32ops.mul, f64ops.mul) },
-  '/'([a, b]) { return f64ops.div(gen(a), gen(b)) },
+  '-'([a, b]) {
+    // Compile-time rational simplification
+    if (isConstant(a) && isConstant(b)) {
+      const result = toNumber(evalConstant(['-', a, b]))
+      if (Number.isFinite(result)) {
+        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
+          return wat(`(i32.const ${result})`, 'i32')
+        }
+        return wat(`(f64.const ${result})`, 'f64')
+      }
+    }
+    return binOp(a, b, i32ops.sub, f64ops.sub)
+  },
+  '*'([a, b]) {
+    // Compile-time rational simplification
+    if (isConstant(a) && isConstant(b)) {
+      const result = toNumber(evalConstant(['*', a, b]))
+      if (Number.isFinite(result)) {
+        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
+          return wat(`(i32.const ${result})`, 'i32')
+        }
+        return wat(`(f64.const ${result})`, 'f64')
+      }
+    }
+    return binOp(a, b, i32ops.mul, f64ops.mul)
+  },
+  '/'([a, b]) {
+    // Compile-time rational simplification for constant expressions
+    if (isConstant(a) && isConstant(b)) {
+      const result = toNumber(evalConstant(['/', a, b]))
+      if (Number.isFinite(result)) {
+        // Check if result is an integer
+        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
+          return wat(`(i32.const ${result})`, 'i32')
+        }
+        return wat(`(f64.const ${result})`, 'f64')
+      }
+    }
+    return f64ops.div(gen(a), gen(b))
+  },
   '%'([a, b]) { return wat(`(call $f64.rem ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
   '**'([a, b]) { ctx.usedStdlib.push('pow'); return wat(`(call $pow ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
 

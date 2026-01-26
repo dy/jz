@@ -1,6 +1,8 @@
 // AST normalization + validation + optimization
 // Single pass: validate JS subset, normalize AST, apply optimizations
 
+import { Rational } from './types.js'
+
 // Allowed operations for JZ subset
 const ALLOWED = new Set([
   undefined,      // literal [, value]
@@ -497,10 +499,36 @@ function defaultHandler(op, args) {
   return [op, ...args.map(a => expr(a))]
 }
 
-// Constant folding optimization
+// Constant folding optimization with rational arithmetic
+// Preserves exactness: 1/3 * 3 = 1 (not 0.9999...)
 function optimize(op, a, b) {
-  if (a[0] === undefined && b[0] === undefined) {
-    const va = a[1], vb = b[1]
+  // AST literals are [null, value] or [undefined, value]
+  const isLitA = a[0] == null, isLitB = b[0] == null
+  if (isLitA && isLitB) {
+    let va = a[1], vb = b[1]
+    // Convert numbers to Rationals for propagation
+    const ra = va instanceof Rational ? va : (typeof va === 'number' && Number.isInteger(va) ? new Rational(va) : null)
+    const rb = vb instanceof Rational ? vb : (typeof vb === 'number' && Number.isInteger(vb) ? new Rational(vb) : null)
+
+    // Rational arithmetic for +, -, *, /
+    if (ra && rb && (op === '+' || op === '-' || op === '*' || op === '/')) {
+      let result
+      switch (op) {
+        case '+': result = ra.add(rb); break
+        case '-': result = ra.sub(rb); break
+        case '*': result = ra.mul(rb); break
+        case '/': result = rb.num !== 0 ? ra.div(rb) : null; break
+      }
+      if (result && result.fitsI32()) {
+        // Keep as Rational for further propagation, convert to f64 at end
+        return [, result.den === 1 ? result.num : result]
+      }
+    }
+
+    // Convert Rationals to f64 for non-propagating ops
+    if (va instanceof Rational) va = va.toF64()
+    if (vb instanceof Rational) vb = vb.toF64()
+
     if (typeof va === 'number' && typeof vb === 'number') {
       switch (op) {
         case '+': return [, va + vb]
@@ -519,10 +547,10 @@ function optimize(op, a, b) {
     }
   }
   // Identity optimizations
-  if (b[0] === undefined && b[1] === 0 && (op === '+' || op === '-')) return a
-  if (b[0] === undefined && b[1] === 1 && (op === '*' || op === '/')) return a
-  if (a[0] === undefined && a[1] === 0 && op === '+') return b
-  if (a[0] === undefined && a[1] === 1 && op === '*') return b
+  if (isLitB && b[1] === 0 && (op === '+' || op === '-')) return a
+  if (isLitB && b[1] === 1 && (op === '*' || op === '/')) return a
+  if (isLitA && a[1] === 0 && op === '+') return b
+  if (isLitA && a[1] === 1 && op === '*') return b
 
   return [op, a, b]
 }
