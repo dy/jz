@@ -509,6 +509,69 @@ test('Object destructuring params', async () => {
   is(await evaluate('getX = ({x}) => x; getX({x: 42, y: 1})'), 42)
 })
 
+// Internal function optimization: non-exported functions use i32 offsets directly
+test('Internal function i32 optimization', async () => {
+  // Inner function takes array, calls reduce - should work with i32 param
+  is(await evaluate(`
+    inner = arr => arr.reduce((a,b) => a+b, 0);
+    outer = arr => inner(arr);
+    outer([1,2,3,4])
+  `), 10)
+  // Multiple levels of internal calls
+  is(await evaluate(`
+    sum = arr => arr.reduce((a,b) => a+b, 0);
+    double = arr => arr.map(x => x*2);
+    process = arr => sum(double(arr));
+    process([1,2,3])
+  `), 12)
+})
+
+// TypedArray i32 optimization: internal functions with typed arrays
+test('Internal function i32 optimization - TypedArray', async () => {
+  // TypedArray with known elemType uses i32 viewOff - length
+  is(await evaluate(`
+    inner = (arr = new Float64Array(4)) => arr.length;
+    outer = arr => inner(arr);
+    outer(new Float64Array(5))
+  `), 5)
+  // TypedArray index access with i32 viewOff - both functions have TypedArray default
+  is(await evaluate(`
+    getFirst = (arr = new Float64Array(4)) => arr[0];
+    wrap = (arr = new Float64Array(4)) => { arr[0] = 42; return getFirst(arr) };
+    wrap(new Float64Array(3))
+  `), 42)
+  // TypedArray set with i32 viewOff
+  is(await evaluate(`
+    setFirst = (arr = new Float64Array(4), v = 0) => { arr[0] = v; return arr[0] };
+    test = (arr, v) => setFirst(arr, v);
+    test(new Float64Array(4), 99)
+  `), 99)
+})
+
+test('Internal function i32 optimization - Array', async () => {
+  // Internal functions with array params use i32 offset
+  // sum is internal (called by outer, outer is called at top level)
+  is(await evaluate(`
+    sum = arr => arr[0] + arr[1] + arr[2];
+    outer = arr => sum(arr);
+    outer([10, 20, 30])
+  `), 60)
+  // Array methods work with i32 params
+  is(await evaluate(`
+    mapDouble = arr => arr.map(x => x * 2);
+    outer = arr => mapDouble(arr);
+    let r = outer([1, 2, 3]);
+    r[0] + r[1] + r[2]
+  `), 12)
+  // Nested internal calls
+  is(await evaluate(`
+    first = arr => arr[0];
+    getFirst = arr => first(arr);
+    test = arr => getFirst(arr);
+    test([99, 88, 77])
+  `), 99)
+})
+
 // NOTE: JZ is PURE JS subset - no shorthand math or WASM extensions
 // All math functions require Math.* namespace (Math.sin, Math.sqrt, etc.)
 // This ensures ANY JZ code can run in a standard JS interpreter

@@ -89,6 +89,16 @@ export const strCharAt = (w, idx) => `(call $__str_char_at ${w} ${idx})`
 /** Convert SSO string to heap (for operations requiring memory access) */
 export const ssoToHeap = (w) => `(call $__sso_to_heap ${w})`
 
+// === String i32 accessors (heap offset directly, no SSO check needed) ===
+// These avoid NaN-boxing overhead when string is guaranteed heap (SSO converted at boundary)
+// Memory at offset-8: [len:i32][pad:i32], at offset: [char0:u16][char1:u16]...
+
+/** Get heap string length from offset (i32 directly) */
+export const strLenI32 = (off) => `(i32.load offset=-8 ${off})`
+
+/** Get char at index from heap string (i32 offset directly) */
+export const strCharAtI32 = (off, idx) => `(i32.load16_u (i32.add ${off} (i32.shl ${idx} (i32.const 1))))`
+
 /** Set char at index - only works for heap strings (SSO is immutable) */
 export const strSetChar = (w, idx, val) =>
   `(i32.store16 (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 1))) ${val})`
@@ -336,6 +346,40 @@ export function typedArrSet(elemType, ptrWat, idxWat, valWat) {
   return `(${store} ${offsetCalc} (i32.trunc_f64_s ${valWat}))`
 }
 
+// === TypedArray i32 accessors (viewOff directly, elemType compile-time known) ===
+// These avoid NaN-boxing overhead when viewOff is passed as i32 to internal functions
+// Memory at viewOff: [len:i32][dataPtr:i32]
+
+/** Get TypedArray length from viewOff (i32 directly) */
+export const typedArrLenI32 = (viewOff) => `(i32.load ${viewOff})`
+
+/** Get TypedArray dataPtr from viewOff (i32 directly) */
+export const typedArrOffsetI32 = (viewOff) => `(i32.load offset=4 ${viewOff})`
+
+/** Get element from TypedArray (i32 viewOff, compile-time elemType) */
+export function typedArrGetI32(elemType, viewOffWat, idxWat) {
+  const shift = TYPED_SHIFT[elemType]
+  const load = TYPED_LOAD[elemType]
+  const offsetCalc = shift === 0
+    ? `(i32.add (i32.load offset=4 ${viewOffWat}) ${idxWat})`
+    : `(i32.add (i32.load offset=4 ${viewOffWat}) (i32.shl ${idxWat} (i32.const ${shift})))`
+  if (elemType === ELEM_TYPE.F64) return `(${load} ${offsetCalc})`
+  if (elemType === ELEM_TYPE.F32) return `(f64.promote_f32 (${load} ${offsetCalc}))`
+  return `(f64.convert_i32_s (${load} ${offsetCalc}))`
+}
+
+/** Set element in TypedArray (i32 viewOff, compile-time elemType) */
+export function typedArrSetI32(elemType, viewOffWat, idxWat, valWat) {
+  const shift = TYPED_SHIFT[elemType]
+  const store = TYPED_STORE[elemType]
+  const offsetCalc = shift === 0
+    ? `(i32.add (i32.load offset=4 ${viewOffWat}) ${idxWat})`
+    : `(i32.add (i32.load offset=4 ${viewOffWat}) (i32.shl ${idxWat} (i32.const ${shift})))`
+  if (elemType === ELEM_TYPE.F64) return `(${store} ${offsetCalc} ${valWat})`
+  if (elemType === ELEM_TYPE.F32) return `(${store} ${offsetCalc} (f32.demote_f64 ${valWat}))`
+  return `(${store} ${offsetCalc} (i32.trunc_f64_s ${valWat}))`
+}
+
 /**
  * Create array literal from generated values
  */
@@ -391,13 +435,21 @@ export function mkArrayLiteral(ctx, gens, isConstant, evalConstant, elements) {
 
 // === Objects ===
 
-/** Get object property by index */
+/** Get object property by index (f64 NaN-boxed pointer) */
 export const objGet = (w, idx) =>
   `(f64.load (i32.add (call $__ptr_offset ${w}) (i32.const ${idx * 8})))`
 
-/** Set object property by index */
+/** Get object property by index (i32 offset directly) */
+export const objGetI32 = (off, idx) =>
+  `(f64.load (i32.add ${off} (i32.const ${idx * 8})))`
+
+/** Set object property by index (f64 NaN-boxed pointer) */
 export const objSet = (w, idx, val) =>
   `(f64.store (i32.add (call $__ptr_offset ${w}) (i32.const ${idx * 8})) ${val})`
+
+/** Set object property by index (i32 offset directly) */
+export const objSetI32 = (off, idx, val) =>
+  `(f64.store (i32.add ${off} (i32.const ${idx * 8})) ${val})`
 
 // === Environment (closures - read only, capture by value) ===
 

@@ -18,7 +18,7 @@ import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars,
 import { f64ops, i32ops, MATH_OPS } from './ops.js'
 import { createContext } from './context.js'
 import { assemble } from './assemble.js'
-import { nullRef, undefRef, mkString, envGet, arrGet, arrGetTyped, arrLen, directArrLen, objGet, objSet, strCharAt, strLen, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen } from './memory.js'
+import { nullRef, undefRef, mkString, envGet, arrGet, arrGetTyped, arrGetI32, arrLen, arrLenI32, directArrLen, objGet, objGetI32, objSet, objSetI32, strCharAt, strLen, strLenI32, strCharAtI32, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen, typedArrGetI32, typedArrSetI32, typedArrLenI32, typedArrOffsetI32 } from './memory.js'
 import { TYPED_ARRAY_METHODS } from './typedarray.js'
 import { genClosureCall, genClosureCallExpr, genClosureValue } from './closures.js'
 import { genArrayDestructDecl, genObjectDestructDecl } from './destruct.js'
@@ -58,7 +58,7 @@ export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   setCtx(createContext())
   // Single pre-analysis pass: f64 vars, func return types, object schemas, array params, export analysis
-  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph } = preanalyze(ast)
+  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph, allFuncs } = preanalyze(ast)
   ctx.f64Vars = f64Vars
   ctx.funcReturnTypes = funcReturnTypes
   ctx.inferredSchemas = inferredSchemas
@@ -66,9 +66,28 @@ export function compile(ast, options = {}) {
   ctx.exportedFuncs = exportedFuncs // Set<funcName> - functions at JS boundary
   ctx.funcParamPtrTypes = funcParamPtrTypes // funcName → Map<paramName, Set<'array'|'string'|'object'>>
   ctx.funcCallGraph = funcCallGraph // funcName → Set<calledFuncName>
+
+  // Compute internal functions: can use i32 params for pointers (not called from JS)
+  // A function is internal if it's not exported AND not called by any exported function (transitively)
+  ctx.internalFuncs = computeInternalFuncs(exportedFuncs, funcCallGraph, allFuncs)
+
   const bodyWat = String(f64(gen(ast)))
   const funcs = genFunctions()
   return assemble(bodyWat, ctx, funcs)
+}
+
+/**
+ * Compute which functions are purely internal (can use i32 pointer params).
+ * A function is internal if it's not directly exported to JS.
+ * Even if called by exported functions, internal functions control both sides
+ * of the call (caller extracts offset, callee expects i32).
+ */
+function computeInternalFuncs(exportedFuncs, funcCallGraph, allFuncs) {
+  const internal = new Set()
+  for (const funcName of allFuncs) {
+    if (!exportedFuncs.has(funcName)) internal.add(funcName)
+  }
+  return internal
 }
 
 
@@ -422,8 +441,13 @@ function genIdent(name) {
 
   const loc = ctx.getLocal(name)
   if (loc) {
-    const result = wat(`(local.get $${loc.scopedName})`, loc.type, ctx.localSchemas[loc.scopedName])
+    // Use semanticType for method dispatch (array/string/object/typedarray), actual type for wasm codegen
+    const effectiveType = loc.semanticType || loc.type
+    // Schema can come from localSchemas (objects) or loc.schema (typedarrays, i32 objects)
+    const schema = ctx.localSchemas[loc.scopedName] ?? loc.schema
+    const result = wat(`(local.get $${loc.scopedName})`, effectiveType, schema)
     result.paramName = name  // Track original name for array param inference
+    result.isI32Ptr = loc.type === 'i32' && loc.semanticType  // Mark as i32 pointer for codegen
     return result
   }
   const glob = ctx.getGlobal(name)
@@ -1110,6 +1134,10 @@ function resolveCall(namespace, name, args, receiver = null) {
     // Detect destructuring params
     const destructParams = fn.paramInfo?.filter(p => p.destruct) || []
 
+    // Check if callee is internal (uses i32 for pointer params)
+    const calleeInternal = ctx.internalFuncs?.has(name)
+    const calleePtrParams = ctx.funcParamPtrTypes?.get(name) // Map<paramName, Set<type>>
+
     // Generate args for normal functions
     const genArgs = () => {
       if (hasSpread) {
@@ -1122,11 +1150,62 @@ function resolveCall(namespace, name, args, receiver = null) {
           // Destructuring param - pass the array/object directly
           return String(gen(a))
         }
+
+        // Check if callee expects i32 for this param
+        const paramName = fn.params[i]
+        // Check both usage-based detection and typeHint from defaults
+        const usageType = calleePtrParams?.get(paramName)?.values().next().value
+        const hintType = paramInfo?.typeHint
+        // Prefer typeHint for typedarray (default is more specific than usage)
+        const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
+        // TypedArray (with known elemType), Object (with schema), and Array use i32 optimization
+        // String is NOT optimized (SSO and runtime methods need f64)
+        const calleeExpectsI32 = calleeInternal && (
+          (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
+          (semanticType === 'object' && paramInfo?.schema) ||
+          (semanticType === 'array')
+        )
+
+        if (calleeExpectsI32) {
+          // Callee is internal and expects i32 offset for this param
+          // semanticType already determined above
+
+          // Try to pass offset directly if available, otherwise extract it
+          if (typeof a === 'string') {
+            // Simple identifier - check if we have cached offset or i32 param
+            if (ctx.cachedOffsets?.has(a)) {
+              return `(local.get $${ctx.cachedOffsets.get(a)})`
+            }
+            if (ctx.i32PtrParams?.has(a)) {
+              return `(local.get $${a})`
+            }
+          }
+          // Fall back: generate value and extract offset based on type
+          const argVal = gen(a)
+          if (semanticType === 'typedarray') {
+            // TypedArray: extract viewOff (not dataPtr)
+            return `(call $__typed_view ${argVal})`
+          } else {
+            return `(call $__ptr_offset ${argVal})`
+          }
+        }
+
         return String(f64(gen(a)))
       })
-      // Pad missing optional args with NaN (undefined)
+      // Pad missing optional args with NaN (undefined) for f64 params, 0 for i32
       while (argWats.length < fn.params.length) {
-        argWats.push('(f64.const nan)')
+        const idx = argWats.length
+        const paramName = fn.params[idx]
+        const paramInfo = fn.paramInfo?.[idx]
+        const usageType = calleePtrParams?.get(paramName)?.values().next().value
+        const hintType = paramInfo?.typeHint
+        const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
+        const expectsI32 = calleeInternal && (
+          (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
+          (semanticType === 'object' && paramInfo?.schema) ||
+          (semanticType === 'array')
+        )
+        argWats.push(expectsI32 ? '(i32.const 0)' : '(f64.const nan)')
       }
       return argWats.join(' ')
     }
@@ -1259,7 +1338,30 @@ const operators = {
       ctx.usedTypedArrays = true
       ctx.usedMemory = true
       const elemType = TYPED_ARRAY_CTORS[ctorName]
-      const lenVal = gen(args[0])
+      const arg = args[0]
+
+      // Check if argument is array literal: ['[', elem1, elem2, ...]
+      if (Array.isArray(arg) && arg[0] === '[') {
+        // Array initializer: new Float64Array([1, 2, 3, 4])
+        const elems = arg.slice(1)
+        const len = elems.length
+        const id = ctx.loopCounter++
+        const tmp = `$_typed_init_${id}`
+        ctx.addLocal(tmp.slice(1), 'f64')
+
+        // Allocate TypedArray and store each element in a block
+        let stores = ''
+        for (let i = 0; i < len; i++) {
+          const val = gen(elems[i])
+          stores += `${typedArrSet(elemType, `(local.get ${tmp})`, `(i32.const ${i})`, f64(val))}\n        `
+        }
+        return wat(`(block (result f64)
+        (local.set ${tmp} ${typedArrNew(elemType, `(i32.const ${len})`)})
+        ${stores}(local.get ${tmp}))`, 'typedarray', elemType)
+      }
+
+      // Length argument: new Float64Array(n)
+      const lenVal = gen(arg)
       return wat(typedArrNew(elemType, i32(lenVal)), 'typedarray', elemType)
     }
 
@@ -1514,6 +1616,10 @@ const operators = {
     // TypedArray access
     if (isTypedArray(a)) {
       const elemType = a.schema  // elemType stored in schema field
+      // Use i32 accessor if receiver is an i32 viewOff param
+      if (a.isI32Ptr) {
+        return wat(typedArrGetI32(elemType, `(local.get $${a.paramName})`, iw), 'f64')
+      }
       return wat(typedArrGet(elemType, String(a), iw), 'f64')
     }
 
@@ -1530,6 +1636,10 @@ const operators = {
       }
     }
     if (isString(a)) {
+      // Use i32 accessor if receiver is an i32 heap offset param
+      if (a.isI32Ptr) {
+        return wat(strCharAtI32(`(local.get $${a.paramName})`, iw), 'i32')
+      }
       return wat(strCharAt(String(a), iw), 'i32')
     }
     // Boxed string: delegate indexing to inner string pointer (SSO-aware)
@@ -1539,6 +1649,10 @@ const operators = {
     // Boxed array: index into inner array (slot 0)
     if (isBoxedArray(a)) {
       return wat(`(call $__arr_get (f64.load (call $__ptr_offset ${a})) ${iw})`, 'f64')
+    }
+    // Array with i32 offset param (internal function optimization)
+    if (isArray(a) && a.isI32Ptr) {
+      return wat(arrGetI32(`(local.get $${a.paramName})`, iw), 'f64')
     }
     return arrGetTyped(ctx, String(a), iw)
   },
@@ -1566,15 +1680,26 @@ const operators = {
     if (prop === 'length') {
       if (isTypedArray(o)) {
         ctx.usedMemory = true
+        // Use i32 accessor if receiver is an i32 viewOff param
+        if (o.isI32Ptr) {
+          return wat(typedArrLenI32(`(local.get $${o.paramName})`), 'i32')
+        }
         return wat(typedArrLen(String(o)), 'i32')
       }
       if (isString(o)) {
-        // String length: use SSO-aware strLen
+        // String length: use i32 accessor if heap offset param, else SSO-aware strLen
         ctx.usedMemory = true
+        if (o.isI32Ptr) {
+          return wat(strLenI32(`(local.get $${o.paramName})`), 'i32')
+        }
         return wat(strLen(String(o)), 'i32')
       }
       if (isArray(o)) {
         ctx.usedMemory = true
+        // Use i32 accessor if param is i32 offset
+        if (o.isI32Ptr) {
+          return wat(arrLenI32(`(local.get $${o.paramName})`), 'i32')
+        }
         return wat(arrLen(String(o)), 'i32')
       }
       if (isBoxedArray(o)) {
@@ -1623,7 +1748,10 @@ const operators = {
       ctx.usedMemory = true
       const elemType = o.schema
       const stride = ELEM_STRIDE[elemType]
-      return wat(`(i32.mul ${typedArrLen(String(o))} (i32.const ${stride}))`, 'i32')
+      const lenExpr = o.isI32Ptr
+        ? typedArrLenI32(`(local.get $${o.paramName})`)
+        : typedArrLen(String(o))
+      return wat(`(i32.mul ${lenExpr} (i32.const ${stride}))`, 'i32')
     }
     if (prop === 'BYTES_PER_ELEMENT' && isTypedArray(o)) {
       const elemType = o.schema
@@ -1659,7 +1787,11 @@ const operators = {
               resultType = 'string'
             }
           }
-          const result = wat(objGet(String(o), idx), resultType, resultSchema)
+          // Use i32 accessor if receiver is an i32 pointer param
+          const getExpr = o.isI32Ptr
+            ? objGetI32(String(o), idx)
+            : objGet(String(o), idx)
+          const result = wat(getExpr, resultType, resultSchema)
           // Preserve schema and property info for method calls
           result.objSchema = o.schema
           result.propName = prop
@@ -1796,7 +1928,32 @@ const operators = {
           // Expand comma-separated args
           const expandedArgs = args.filter(a => a != null).flatMap(a =>
             Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
-          const argWats = expandedArgs.map(a => String(f64(gen(a)))).join(' ')
+          // Check if callee is internal (uses i32 for pointer params)
+          const calleeInternal = ctx.internalFuncs?.has(fn)
+          const calleePtrParams = ctx.funcParamPtrTypes?.get(fn)
+          // Generate args with i32 extraction if needed
+          const argWats = expandedArgs.map((a, i) => {
+            const paramInfo = fnDef.paramInfo?.[i]
+            const paramName = fnDef.params[i]
+            const usageType = calleePtrParams?.get(paramName)?.values().next().value
+            const hintType = paramInfo?.typeHint
+            const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
+            const calleeExpectsI32 = calleeInternal && (
+              (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
+              (semanticType === 'object' && paramInfo?.schema) ||
+              (semanticType === 'array')
+            )
+            if (calleeExpectsI32) {
+              // Check if arg is already an i32 param in current function
+              if (typeof a === 'string' && ctx.i32PtrParams?.has(a)) {
+                return `(local.get $${a})`
+              }
+              const argVal = gen(a)
+              if (semanticType === 'typedarray') return `(call $__typed_view ${argVal})`
+              else return `(call $__ptr_offset ${argVal})`
+            }
+            return String(f64(gen(a)))
+          }).join(' ')
           return wat(`(return_call $${fn} ${argWats})`, 'f64')
         }
       }
@@ -3153,7 +3310,10 @@ function genAssign(target, value, returnValue) {
     // TypedArray element assignment
     if (isTypedArray(aw)) {
       const elemType = aw.schema
-      const code = typedArrSet(elemType, String(aw), iw, vw)
+      // Use i32 accessor if receiver is an i32 viewOff param
+      const code = aw.isI32Ptr
+        ? typedArrSetI32(elemType, `(local.get $${aw.paramName})`, iw, vw)
+        : typedArrSet(elemType, String(aw), iw, vw)
       return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
     }
 
@@ -3340,6 +3500,14 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
   // Detect destructuring params
   const destructParams = paramInfo?.filter(pi => pi.destruct) || []
 
+  // Determine if this is an internal function (can use i32 for pointer params)
+  // Internal = not exported AND not reachable from any export (never called from JS)
+  const isInternal = !exported && !closureInfo && parentCtx.internalFuncs?.has(name)
+  const ptrParamTypes = parentCtx.funcParamPtrTypes?.get(name) // Map<paramName, Set<type>>
+
+  // Track which params use i32 (direct offset) vs f64 (NaN-boxed)
+  ctx.i32PtrParams = new Set() // params that are i32 offsets directly
+
   // Register params as locals with appropriate types (enhanced with default-based inference)
   for (const p of params) {
     if (restParam && p === restParam.name) {
@@ -3357,9 +3525,58 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
         // Check for type hint from default value
         const pi = paramInfo?.find(info => info.name === p)
         const typeHint = pi?.typeHint
+
+        // Determine semantic type from ptrParamTypes or default value
+        const ptrTypes = ptrParamTypes?.get(p)
+        let semanticType = ptrTypes?.values().next().value
+        // Fall back to typeHint from default when no usage-based detection
+        // BUT: if typeHint is 'typedarray', prefer it (default is more specific than usage)
+        if (!semanticType && typeHint) semanticType = typeHint
+        if (typeHint === 'typedarray') semanticType = 'typedarray'
+
+        // For internal functions, use i32 for pointer params (no NaN-boxing needed)
+        if (isInternal && semanticType) {
+          // TypedArray with known elemType: pass viewOff as i32, store elemType in schema
+          if (semanticType === 'typedarray' && pi?.arrayType !== undefined) {
+            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p, schema: pi.arrayType }
+            ctx.i32PtrParams.add(p)
+            ctx.usedTypedArrays = true
+            ctx.usedMemory = true
+            continue
+          } else if (semanticType === 'typedarray') {
+            // TypedArray without known elemType: fall through to non-i32 path
+          } else if (semanticType === 'object' && pi?.schema) {
+            // For object type, also need to register schema
+            const schemaId = ++ctx.objectCounter
+            ctx.objectSchemas[schemaId] = pi.schema
+            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p, schema: schemaId }
+            ctx.localSchemas[p] = schemaId
+            ctx.i32PtrParams.add(p)
+            ctx.usedMemory = true
+            continue
+          } else if (semanticType === 'string') {
+            // String: DON'T use i32 - string methods need f64 NaN-boxed pointer
+            // SSO and runtime methods require full pointer, not just offset
+            // Fall through to non-i32 path
+          } else if (semanticType === 'array') {
+            // Array: use i32 offset directly via __ptr_offset
+            // Methods use arrLenI32/arrGetI32/arrSetI32 for i32 offset params
+            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p }
+            ctx.i32PtrParams.add(p)
+            ctx.usedArrayType = true
+            ctx.usedMemory = true
+            continue
+          }
+        }
+
+        // Non-i32 paths (including typedarray without known elemType)
         if (typeHint === 'array') {
           ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
           ctx.usedArrayType = true
+        } else if (typeHint === 'typedarray' && pi?.arrayType) {
+          // TypedArray from default - use normal typedarray type
+          ctx.locals[p] = { idx: ctx.localCounter++, type: 'typedarray', scopedName: p, schema: pi.arrayType }
+          ctx.usedTypedArrays = true
         } else if (typeHint === 'object' && pi?.schema) {
           // Object param with schema - register schema for property access
           // Create new schema ID and register in objectSchemas
@@ -3389,13 +3606,19 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
   if (paramInfo) {
     for (const pi of paramInfo) {
       if (pi.default !== undefined) {
-        // Generate: if param is canonical NaN (undefined), set to default
-        // Canonical NaN = 0x7FF8_0000_0000_0000 (quiet NaN with zero payload)
-        // NaN-boxed pointers have non-zero payload, so are different bit patterns
         const defaultVal = gen(pi.default)
-        // Check: bits == canonical NaN exactly (0x7FF8000000000000)
-        paramInit += `(if (i64.eq (i64.reinterpret_f64 (local.get $${pi.name})) (i64.const 0x7FF8000000000000))
+        if (ctx.i32PtrParams.has(pi.name)) {
+          // i32 param: check if value is 0 (null/undefined passed as i32 offset)
+          paramInit += `(if (i32.eqz (local.get $${pi.name}))
+        (then (local.set $${pi.name} (call $__ptr_offset ${f64(defaultVal)}))))\n      `
+        } else {
+          // f64 param: check for canonical NaN (undefined)
+          // Canonical NaN = 0x7FF8_0000_0000_0000 (quiet NaN with zero payload)
+          // NaN-boxed pointers have non-zero payload, so are different bit patterns
+          // Check: bits == canonical NaN exactly (0x7FF8000000000000)
+          paramInit += `(if (i64.eq (i64.reinterpret_f64 (local.get $${pi.name})) (i64.const 0x7FF8000000000000))
         (then (local.set $${pi.name} ${f64(defaultVal)})))\n      `
+        }
       }
     }
   }
@@ -3423,7 +3646,10 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
   const ptrTypes = parentCtx.funcParamPtrTypes?.get(name)
   if (ptrTypes && !closureInfo) {
     for (const [paramName, types] of ptrTypes) {
-      // Create i32 local to cache the offset
+      // Skip if param is already i32 (internal function, no caching needed)
+      if (ctx.i32PtrParams.has(paramName)) continue
+
+      // Create i32 local to cache the offset (for f64 params)
       const offsetLocal = `${paramName}_off`
       ctx.addLocal(offsetLocal, 'i32')
       ctx.cachedOffsets.set(paramName, offsetLocal)
@@ -3466,8 +3692,10 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
     }
   }
 
-  // Generate param declarations (all f64 for JS interop)
-  const paramDecls = params.map(p => `(param $${p} f64)`).join(' ')
+  // Generate param declarations (i32 for internal pointer params, f64 otherwise)
+  const paramDecls = params.map(p =>
+    ctx.i32PtrParams.has(p) ? `(param $${p} i32)` : `(param $${p} f64)`
+  ).join(' ')
   const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
 
   // Track export signature for JS wrapper generation

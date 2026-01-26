@@ -4,14 +4,29 @@ import { wat } from './types.js'
 import { arrGetI32, arrLenI32 } from './memory.js'
 
 /**
- * Check if a WAT expression is a simple local.get of a param with cached offset.
- * Returns the cached offset local name, or null.
+ * Check if a WAT expression can provide a direct i32 offset.
+ * Returns the i32 offset expression, or null.
+ *
+ * Works for:
+ * 1. Params with cached offsets (f64 param → extracted i32)
+ * 2. Internal function i32 params (param IS the offset)
  */
 export function getCachedOffset(watExpr) {
   const match = watExpr.match(/^\(local\.get \$(\w+)\)$/)
-  if (match && ctx.cachedOffsets?.has(match[1])) {
-    return `(local.get $${ctx.cachedOffsets.get(match[1])})`
+  if (!match) return null
+
+  const paramName = match[1]
+
+  // Check for cached offset (f64 param with extracted offset)
+  if (ctx.cachedOffsets?.has(paramName)) {
+    return `(local.get $${ctx.cachedOffsets.get(paramName)})`
   }
+
+  // Check for i32 param (internal function, param IS the offset)
+  if (ctx.i32PtrParams?.has(paramName)) {
+    return watExpr // param itself is the i32 offset
+  }
+
   return null
 }
 
