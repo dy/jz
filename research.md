@@ -450,3 +450,268 @@
 * [Metallic](https://github.com/jdh8/metallic)
 * [Piezo](https://github.com/dy/piezo/blob/main/src/stdlib.js)
 * [AssemblyScript](https://github.com/AssemblyScript/musl/tree/master)
+
+## [ ] Imports -> Pre-bundled source + primitives-only linking
+
+### Problem
+JZ needs to support `import`/`export` across modules. Challenges:
+1. **Resolution**: Who finds the source? (CLI vs browser, fs vs fetch)
+2. **WASM API**: Can't pass JS objects to WASM (metacircular case)
+3. **Memory**: Modules compiled separately can't share strings/arrays/objects
+
+### Separation of Concerns
+- **Resolution** = host responsibility (JS/Node/WASI)
+- **Compilation** = JZ responsibility (pure transform, no I/O)
+
+### A. Resolution Strategy
+
+  0. **CLI resolves via fs**
+    + Node has filesystem access
+    + Can read importmaps.json for bare specifiers
+    + Standard behavior for compilers
+    - Only works in Node/CLI
+
+  1. **API: `modules` option (pre-resolved)**
+    ```js
+    compile(src, { modules: { './math.js': mathSrc } })
+    ```
+    + Works everywhere (browser, Node, WASM)
+    + Caller controls resolution (fetch, fs, bundled)
+    + Sync API, no async complications
+    - Caller must gather all sources upfront
+
+  2. **API: `resolve` callback (lazy)**
+    ```js
+    compile(src, { resolve: async (spec) => fetch(spec).then(r => r.text()) })
+    ```
+    + Lazy loading, on-demand
+    + Flexible (CORS proxy, transforms, etc.)
+    - Async complicates API
+    - CORS issues in browser
+    - Can't work in pure WASM (no callbacks)
+
+  * Decision: CLI uses fs + importmap. API uses `modules` option.
+    Keeps compiler pure (no I/O), resolution is caller's job.
+
+### B. WASM-Compatible Module Passing
+
+  0. **JSON string**
+    ```js
+    compile(src, JSON.stringify({ modules: {...} }))
+    ```
+    + Works in WASM (single string param)
+    - Escaping nightmare (strings in strings in JSON)
+    - Parsing overhead
+    - Ugly API
+
+  1. **Pre-bundled source format**
+    ```
+    //!jz:module ./math.js
+    export let add = (a, b) => a + b
+    //!jz:module ./utils.js
+    export let double = x => x * 2
+    //!jz:main
+    import { add } from './math.js'
+    export let x = add(1, 2)
+    ```
+    + Simplest WASM API (single string in, WASM out)
+    + No escaping issues
+    + Host bundles, JZ compiles (clear responsibility)
+    - Requires bundler logic in host
+
+  2. **Host callback import**
+    ```wat
+    (import "jz" "resolve" (func $resolve (param i32 i32) (result i32 i32)))
+    ```
+    + Lazy resolution
+    + Matches WASI capability model
+    - Complex memory coordination
+    - Non-pure compilation (side effects)
+
+  3. **WASM Component Model**
+    ```wit
+    record compile-options { modules: list<tuple<string, string>> }
+    compile: func(source: string, opts: compile-options) -> result<bytes, string>
+    ```
+    + Clean, typed, standard
+    + Structured data without JSON
+    - Not widely supported yet (2026+)
+    - Adds toolchain dependency
+
+  * Decision: Pre-bundled source format. Host bundles all sources into
+    single string with markers, JZ parses and compiles. Zero WASM complexity.
+
+### C. Multi-Module Compilation (Memory Sharing)
+
+  0. **Bundle into single WASM** (current)
+    + Single memory, all modules share
+    + Strings/arrays/objects work across module boundaries
+    + Tree-shaking, dead code elimination
+    - Must compile together
+    - No separate caching
+
+  1. **Separate WASM + shared memory**
+    ```js
+    const shared = new WebAssembly.Memory({ initial: 256, shared: true })
+    const mathInst = instantiate(mathWasm, { env: { memory: shared } })
+    const mainInst = instantiate(mainWasm, { env: { memory: shared } })
+    ```
+    + Separate compilation, shared data
+    + Can cache individual modules
+    - Heap coordination (who allocates where?)
+    - Requires SharedArrayBuffer (security restrictions)
+    - Complex: need memory allocator protocol
+
+  2. **Separate WASM + primitives-only linking**
+    ```js
+    compile(src, {
+      imports: {
+        './math.js': { add: { params: ['f64', 'f64'], result: 'f64' } }
+      }
+    })
+    // Links at instantiation:
+    instantiate(mainWasm, { './math.js': mathInst.exports })
+    ```
+    + Standard WASM import/export
+    + Modules compile independently
+    + Clean type signatures
+    - No string/array/object passing between modules
+    - Limited to numeric types (f64, i32)
+
+  3. **Separate WASM + copy on boundary**
+    ```js
+    // At each cross-module call:
+    // 1. Serialize string/array from caller's memory
+    // 2. Copy bytes to callee's memory
+    // 3. Deserialize, call function
+    // 4. Serialize result, copy back
+    ```
+    + Full type support across modules
+    - Significant overhead per call
+    - Breaks object identity (a !== a after round-trip)
+    - Complex codegen (wrapper functions)
+
+  4. **WASM Multiple Memories proposal**
+    ```wat
+    (memory $shared (import "env" "shared") 1)
+    (memory $local 1)
+    (func $get (param $ptr i32) (result f64)
+      (f64.load $shared (local.get $ptr)))
+    ```
+    + Explicit memory params
+    + Can share specific memory regions
+    - Phase 3, limited runtime support
+    - Requires careful memory management
+    - Not ergonomic
+
+  * Decision: Bundle into single WASM (primary), primitives-only linking (optional).
+    Bundling handles most cases (modules sharing data). Separate compilation
+    only for leaf modules with numeric interfaces (math libs, DSP kernels).
+
+### D. Circular Imports
+
+  0. **Prohibit** (Jessie-style)
+    + Simple implementation
+    + Forces clean dependency graphs
+    + No initialization order issues
+    - Less JS-compatible
+
+  1. **Allow with TDZ**
+    + JS-compatible
+    - Complex: must detect cycles, defer initialization
+    - Runtime errors if accessed before init
+
+  * Decision: Prohibit circular imports. Matches Jessie philosophy,
+    avoids initialization complexity. Error at compile time.
+
+### E. Export Styles
+
+  0. **Named exports only**
+    ```js
+    export let add = (a, b) => a + b
+    export { add, sub }
+    ```
+    + Explicit, tree-shakeable
+    + Consistent with WASM exports
+
+  1. **Default exports**
+    ```js
+    export default (a, b) => a + b
+    import math from './math.js'  // math is the function
+    ```
+    + JS-compatible
+    - Ambiguous naming
+    - Complicates import resolution
+
+  2. **Re-exports**
+    ```js
+    export { add } from './math.js'
+    export * from './utils.js'
+    ```
+    + Convenient barrel files
+    - Requires resolving during compilation
+    - `export *` complicates tree-shaking
+
+  * Decision: Named exports + re-exports. No default exports.
+    Explicit naming, clean tree-shaking, Jessie-compatible.
+
+### F. Bare Specifiers
+
+  0. **Require relative/absolute paths**
+    ```js
+    import { x } from './node_modules/lodash/index.js'
+    ```
+    + Explicit, no magic
+    - Verbose, fragile paths
+
+  1. **Import maps (CLI)**
+    ```json
+    // importmap.json
+    { "imports": { "lodash": "./node_modules/lodash/index.js" } }
+    ```
+    ```js
+    import { x } from 'lodash'  // resolved via importmap
+    ```
+    + Standard (browsers support import maps)
+    + Centralizes dependency mapping
+    - CLI-only (must read file)
+
+  2. **Node resolution algorithm**
+    ```js
+    import { x } from 'lodash'  // → node_modules/lodash/package.json → main
+    ```
+    + Node-compatible
+    - Complex algorithm
+    - package.json parsing
+
+  * Decision: Relative paths required in source. CLI uses importmap.json
+    if present. No implicit node_modules resolution.
+
+### Summary
+
+| Aspect | Decision | Rationale |
+|--------|----------|-----------|
+| Resolution | Host responsibility | Compiler stays pure, no I/O |
+| CLI | fs + importmap.json | Standard compiler behavior |
+| API | `modules` option | Sync, works everywhere |
+| WASM API | Pre-bundled format | Single string, no complexity |
+| Multi-module | Bundle (default) | Shared memory, full types |
+| Linking | Primitives-only | For numeric leaf modules |
+| Circular | Prohibited | Jessie-style, simple |
+| Exports | Named + re-export | Explicit, tree-shakeable |
+| Bare specs | Importmap (CLI) | Standard, explicit |
+
+### Implementation
+
+```js
+// Phase 1: Single-file (current)
+compile(source) → wasm
+
+// Phase 2: Bundled modules
+compile(bundledSource) → wasm
+// Host provides: //!jz:module markers
+
+// Phase 3: Separate compilation (optional)
+compile(source, { imports: { './math.js': signatures } }) → wasm
+// Links at instantiation via standard WASM imports
+```

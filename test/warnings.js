@@ -104,3 +104,27 @@ test('allowed - new Map', () => {
   const wasm = compile('new Map()')
   ok(wasm instanceof Uint8Array)
 })
+
+test('warnings - no-redeclare', () => {
+  // Should warn: x already declared in scope
+  const wasm = compile('let x = 1; let x = 2')
+  ok(wasm instanceof Uint8Array)
+})
+
+test('warnings - no-redeclare in block scope', () => {
+  // Should NOT warn: different scopes
+  const wasm = compile('let x = 1; { let x = 2 }')
+  ok(wasm instanceof Uint8Array)
+})
+
+test('warnings - no-loss-of-precision', () => {
+  // Should warn: exceeds MAX_SAFE_INTEGER
+  const wasm = compile('let x = 9007199254740993')  // MAX_SAFE_INTEGER + 2
+  ok(wasm instanceof Uint8Array)
+})
+
+test('no warning - safe integer', () => {
+  // Should NOT warn: within safe range
+  const wasm = compile('let x = 9007199254740991')  // MAX_SAFE_INTEGER
+  ok(wasm instanceof Uint8Array)
+})

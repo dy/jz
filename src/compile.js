@@ -358,6 +358,10 @@ function genLiteral(v) {
   // Rational from constant folding: convert to f64
   if (v instanceof Rational) return wat(`(f64.const ${fmtNum(v.toF64())})`, 'f64')
   if (typeof v === 'number') {
+    // no-loss-of-precision: integer literals > MAX_SAFE_INTEGER lose precision
+    if (Number.isInteger(v) && (v > Number.MAX_SAFE_INTEGER || v < Number.MIN_SAFE_INTEGER)) {
+      ctx.warn('no-loss-of-precision', `Integer literal ${v} exceeds MAX_SAFE_INTEGER; precision may be lost`)
+    }
     // Integer literals stay i32, float literals become f64
     if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
       return wat(`(i32.const ${v})`, 'i32')

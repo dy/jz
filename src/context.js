@@ -163,8 +163,13 @@ export function createContext() {
      * @returns {string} - Scoped name for the variable
      */
     declareVar(name, isConst = false) {
+      // no-redeclare: check if already declared in current scope
+      const currentScope = this.scopes[this.scopes.length - 1]
+      if (currentScope[name]) {
+        this.warn('no-redeclare', `'${name}' is already declared in this scope`)
+      }
       const scopedName = this.scopeDepth > 0 ? `${name}_s${this.scopeDepth}` : name
-      this.scopes[this.scopes.length - 1][name] = true
+      currentScope[name] = true
       if (isConst) this.constVars[scopedName] = true
       return scopedName
     },
