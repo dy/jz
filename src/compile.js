@@ -1220,23 +1220,40 @@ function resolveCall(namespace, name, args, receiver = null) {
 
       const { envFields } = fn.closure
 
+      // Pointer type constants for reboxing i32 offsets
+      const PTR_TYPES = { array: 1, object: 5, string: 4 }
+
       // Build environment with captured variables (copy by value into memory)
       ctx.usedMemory = true
       const envSize = envFields.length * 8
       const envVals = envFields.map((f, i) => {
-        let val
+        let val, needsRebox = false, reboxType = 0, reboxAux = 0
         if (ctx.capturedVars && f.name in ctx.capturedVars) {
-          // Read from our received env (chained capture)
+          // Read from our received env (chained capture - already f64)
           const offset = ctx.capturedVars[f.name].index * 8
           val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
         } else {
           const loc = ctx.getLocal(f.name)
-          if (loc) val = `(local.get $${loc.scopedName})`
-          else {
+          if (loc) {
+            val = `(local.get $${loc.scopedName})`
+            // Check if this is an i32 pointer param that needs reboxing
+            if (loc.type === 'i32' && loc.semanticType) {
+              needsRebox = true
+              reboxType = PTR_TYPES[loc.semanticType] || 0
+              // For objects, aux is schemaId
+              if (loc.semanticType === 'object' && loc.schema !== undefined) {
+                reboxAux = typeof loc.schema === 'number' ? loc.schema : 0
+              }
+            }
+          } else {
             const glob = ctx.getGlobal(f.name)
             if (glob) val = `(global.get $${f.name})`
             else throw new Error(`Cannot capture ${f.name}: not found`)
           }
+        }
+        // Rebox i32 pointer to f64 NaN-boxed pointer before storing
+        if (needsRebox) {
+          val = `(call $__mkptr (i32.const ${reboxType}) (i32.const ${reboxAux}) ${val})`
         }
         // Store at direct offset (no header)
         return `(f64.store (i32.add (global.get $__heap) (i32.const ${i * 8})) ${val})`
@@ -1709,6 +1726,10 @@ const operators = {
       }
       if (isF64(o)) {
         ctx.usedMemory = true
+        // Track param usage for JS interop (if obj is a direct param identifier)
+        if (typeof obj === 'string' && o.paramName) {
+          ctx.inferredArrayParams.add(o.paramName)
+        }
         // Check if this is a known array param (from preanalysis)
         if (typeof obj === 'string' && ctx.currentFuncName && ctx.arrayParams) {
           const funcArrayParams = ctx.arrayParams.get(ctx.currentFuncName)
@@ -1865,12 +1886,24 @@ const operators = {
     const analysis = analyzeScope(body, new Set(fnParams), true)
     const captured = [...analysis.free].filter(v => outerDefined.has(v) && !fnParams.includes(v))
 
-    // Helper to get variable schema for captured var (for objects)
-    const getVarSchema = (v) => {
+    // Helper to get variable info for captured var (schema, semanticType for reboxing)
+    const getVarInfo = (v) => {
       const loc = ctx.getLocal(v)
-      if (loc) return ctx.localSchemas[loc.scopedName]
-      if (ctx.capturedVars?.[v]?.schema !== undefined) return ctx.capturedVars[v].schema
-      return undefined
+      if (loc) {
+        return {
+          schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
+          semanticType: loc.semanticType,
+          wasmType: loc.type
+        }
+      }
+      if (ctx.capturedVars?.[v]) {
+        return {
+          schema: ctx.capturedVars[v].schema,
+          semanticType: ctx.capturedVars[v].semanticType,
+          wasmType: 'f64' // captured vars are always f64 in env
+        }
+      }
+      return {}
     }
 
     // Generate unique name for anonymous closure
@@ -1885,7 +1918,10 @@ const operators = {
     } else {
       const envId = ctx.closureCounter++
       envType = `$env${envId}`
-      envFields = captured.map((v, i) => ({ name: v, index: i, type: 'f64', schema: getVarSchema(v) }))
+      envFields = captured.map((v, i) => {
+        const info = getVarInfo(v)
+        return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+      })
     }
 
     // Register the lifted function
@@ -2923,11 +2959,17 @@ const operators = {
         localNames.includes(v) && !fnParams.includes(v) && !ctx.namespaces[v]
       )
 
-      // Helper to get variable schema for captured var
-      const getVarSchema = (v) => {
+      // Helper to get variable info for captured var (schema, semanticType for reboxing)
+      const getVarInfo = (v) => {
         const loc = ctx.getLocal(v)
-        if (loc) return ctx.localSchemas[loc.scopedName]
-        return undefined
+        if (loc) {
+          return {
+            schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
+            semanticType: loc.semanticType,
+            wasmType: loc.type
+          }
+        }
+        return {}
       }
 
       if (captured.length > 0) {
@@ -2935,7 +2977,10 @@ const operators = {
         // Captured vars always stored as f64 in env
         const envId = ctx.closureCounter++
         const envType = `$env${envId}`
-        const envFields = captured.map((v, i) => ({ name: v, index: i, type: 'f64', schema: getVarSchema(v) }))
+        const envFields = captured.map((v, i) => {
+          const info = getVarInfo(v)
+          return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+        })
         ctx.functions['main'] = {
           params: fnParams,
           paramInfo: fnParamInfo,
@@ -3070,12 +3115,35 @@ function genAssign(target, value, returnValue) {
       outerDefined.has(v) && !params.includes(v) && !ctx.namespaces[v]
     )
 
+    // Helper to get variable info for captured var (schema, semanticType for reboxing)
+    const getVarInfo = (v) => {
+      const loc = ctx.getLocal(v)
+      if (loc) {
+        return {
+          schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
+          semanticType: loc.semanticType,
+          wasmType: loc.type
+        }
+      }
+      if (ctx.capturedVars?.[v]) {
+        return {
+          schema: ctx.capturedVars[v].schema,
+          semanticType: ctx.capturedVars[v].semanticType,
+          wasmType: 'f64'
+        }
+      }
+      return {}
+    }
+
     if (captured.length > 0) {
       // Create fresh env with captured values (copy by value)
       // Env always stores f64, so captured vars are always f64
       const envId = ctx.closureCounter++
       const envType = `$env${envId}`
-      const envFields = captured.map((v, i) => ({ name: v, index: i, type: 'f64' }))
+      const envFields = captured.map((v, i) => {
+        const info = getVarInfo(v)
+        return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+      })
 
       ctx.closures[target] = { envType, envFields, captured, params, body }
 
@@ -3093,7 +3161,6 @@ function genAssign(target, value, returnValue) {
 
       return returnValue ? wat('(f64.const 0)', 'f64') : ''
     }
-
     // Check if function body returns a closure (arrow function as body)
     const returnsClosure = Array.isArray(body) && body[0] === '=>'
     const depth = closureDepth(body)

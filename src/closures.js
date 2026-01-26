@@ -90,11 +90,14 @@ export function genClosureValue(ctx, fnName, envType, envFields, _usesOwnEnv, ar
   const tmpEnv = `$_closenv_${id}`
   ctx.addLocal(tmpEnv, 'f64')
 
+  // Pointer type constants for reboxing i32 offsets
+  const PTR_TYPES = { array: 1, object: 5, string: 4 }
+
   // Store captured values in env (always as f64)
   let stores = ''
   for (let i = 0; i < envFields.length; i++) {
     const f = envFields[i]
-    let val, needsConvert = false
+    let val, needsConvert = false, needsRebox = false, reboxType = 0, reboxAux = 0
     if (ctx.capturedVars && f.name in ctx.capturedVars) {
       // Chained capture - read from received env (already f64)
       const offset = ctx.capturedVars[f.name].index * 8
@@ -103,7 +106,17 @@ export function genClosureValue(ctx, fnName, envType, envFields, _usesOwnEnv, ar
       const loc = ctx.getLocal(f.name)
       if (loc) {
         val = `(local.get $${loc.scopedName})`
-        needsConvert = loc.type === 'i32'
+        // Check if this is an i32 pointer param that needs reboxing
+        if (loc.type === 'i32' && loc.semanticType) {
+          needsRebox = true
+          reboxType = PTR_TYPES[loc.semanticType] || 0
+          // For objects, aux is schemaId
+          if (loc.semanticType === 'object' && loc.schema !== undefined) {
+            reboxAux = typeof loc.schema === 'number' ? loc.schema : 0
+          }
+        } else if (loc.type === 'i32') {
+          needsConvert = true
+        }
       } else {
         const glob = ctx.getGlobal(f.name)
         if (glob) {
@@ -115,7 +128,12 @@ export function genClosureValue(ctx, fnName, envType, envFields, _usesOwnEnv, ar
       }
     }
     // Coerce to f64 for storage
-    if (needsConvert) val = `(f64.convert_i32_s ${val})`
+    if (needsRebox) {
+      // Rebox i32 offset to full NaN-boxed pointer
+      val = `(call $__mkptr (i32.const ${reboxType}) (i32.const ${reboxAux}) ${val})`
+    } else if (needsConvert) {
+      val = `(f64.convert_i32_s ${val})`
+    }
     stores += `(f64.store (i32.add (call $__ptr_offset (local.get ${tmpEnv})) (i32.const ${i * 8})) ${val})\n      `
   }
 

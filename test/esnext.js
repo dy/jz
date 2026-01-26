@@ -2,42 +2,43 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { evaluateWat, evaluate } from './util.js'
 
-// ESNext Test Suite - Focused on minimal functional JS subset
-// Tests that align with JZ's philosophy: functional, minimal, WASM-compatible
-
-// Note: Currently using WAT syntax for evaluation
-// TODO: Update when JS-to-WAT compilation is implemented
-console.log('ESNext Test Suite - Testing modern JS features in JZ context')
-console.log('Note: Many features are conceptual until JS-to-WAT compilation is implemented')
+// ESNext Test Suite - Testing modern JS features in JZ
 
 test('ESNext Numeric Literals', async () => {
-  // Binary literals (converted to decimal for WAT)
-  is(await evaluateWat('(f64.const 10)'), 10) // 0b1010
+  // Binary literals
+  is(await evaluate('0b1010'), 10)
+  is(await evaluate('0b11111111'), 255)
+  is(await evaluate('let x = 0b1010; x'), 10)
 
-  // Octal literals (converted to decimal for WAT)
-  is(await evaluateWat('(f64.const 493)'), 493) // 0o755
+  // Octal literals
+  is(await evaluate('0o755'), 493)
+  is(await evaluate('0o10'), 8)
+  is(await evaluate('let x = 0o755; x'), 493)
 
   // Exponential notation
-  is(await evaluateWat('(f64.const 1000)'), 1000) // 1e3
-  is(await evaluateWat('(f64.const 150)'), 150) // 1.5e2
+  is(await evaluate('1e3'), 1000)
+  is(await evaluate('1.5e2'), 150)
+  is(await evaluate('let x = 1e3; x'), 1000)
 
-  // Hexadecimal (converted to decimal for WAT)
-  is(await evaluateWat('(f64.const 255)'), 255) // 0xFF
+  // Hexadecimal
+  is(await evaluate('0xFF'), 255)
+  is(await evaluate('0xDEAD'), 0xDEAD)
+  is(await evaluate('let x = 0xFF; x'), 255)
 })
 
-test('ESNext Arrow Functions (conceptual)', async () => {
-  // Test basic function evaluation
-  // Note: Function compilation not yet implemented
-  is(await evaluateWat('(f64.const 42)'), 42)
+test('ESNext Arrow Functions', async () => {
+  // Basic arrow function
+  is(await evaluate('(() => 42)()'), 42)
+  is(await evaluate('((x) => x * 2)(21)'), 42)
+  is(await evaluate('((a, b) => a + b)(2, 3)'), 5)
 
-  // Test that we can handle simple expressions
-  is(await evaluateWat('(f64.add (f64.const 2) (f64.const 3))'), 5)
-})
+  // Arrow function with block body
+  is(await evaluate('(() => { return 42 })()'), 42)
+  is(await evaluate('((x) => { return x * 2 })(21)'), 42)
 
-test('ESNext Template Literals (conceptual)', async () => {
-  // Test string concatenation via addition
-  // Note: String support not yet implemented
-  is(await evaluateWat('(f64.add (f64.const 1) (f64.const 2))'), 3)
+  // Higher-order functions
+  is(await evaluate('[1,2,3].map(x => x * 2)[1]'), 4)
+  is(await evaluate('[1,2,3,4].filter(x => x > 2).length'), 2)
 })
 
 test('ESNext Destructuring', async () => {
@@ -85,125 +86,60 @@ test('ESNext Destructuring', async () => {
   is(await evaluate('const {a, ...rest} = {a: 1, b: 2, c: 3}; a'), 1)
 })
 
-test('ESNext Spread Operator (conceptual)', async () => {
-  // Test function application patterns
-  // Note: Spread operator not yet implemented
-  is(await evaluateWat('(f64.div (f64.const 15) (f64.const 3))'), 5)
+test('ESNext Spread Operator', async () => {
+  // Array spread
+  is(await evaluate('let a = [1, 2]; let b = [...a, 3]; b.length'), 3)
+  is(await evaluate('let a = [1, 2]; let b = [...a, 3]; b[2]'), 3)
+  is(await evaluate('let a = [1]; let b = [2]; [...a, ...b].length'), 2)
+
+  // Spread in function calls
+  is(await evaluate('let sum = (a, b, c) => a + b + c; let args = [1, 2, 3]; sum(...args)'), 6)
 })
 
-test('ESNext Optional Chaining (conceptual)', async () => {
-  // Test safe property access patterns
-  // Note: Optional chaining not yet implemented
-  is(await evaluateWat('(f64.sub (f64.const 10) (f64.const 4))'), 6)
+test('ESNext Optional Chaining', async () => {
+  // Property access
+  is(await evaluate('let o = {a: 1}; o?.a'), 1)
+  is(await evaluate('let o = {a: {b: 2}}; o?.a?.b'), 2)
+
+  // With null/undefined
+  is(await evaluate('let o = null; o?.a ?? 42'), 42)
+  is(await evaluate('let o = undefined; o?.a ?? 42'), 42)
 })
 
-test('ESNext Nullish Coalescing (conceptual)', async () => {
-  // Test logical operations with null/undefined handling
-  // Note: Nullish coalescing not yet implemented
-  is(await evaluateWat('(f64.add (f64.const 0) (f64.const 5))'), 5)
+test('ESNext Nullish Coalescing', async () => {
+  // Basic usage
+  is(await evaluate('null ?? 5'), 5)
+  is(await evaluate('undefined ?? 10'), 10)
+  is(await evaluate('0 ?? 5'), 0)  // 0 is not nullish
+  is(await evaluate('"" ?? "default"'), '')  // empty string not nullish
+
+  // With variables
+  is(await evaluate('let x = null; x ?? 42'), 42)
+  is(await evaluate('let x = 0; x ?? 42'), 0)
 })
 
-test('ESNext BigInt (conceptual)', async () => {
-  // Test large number handling
-  // Note: BigInt not yet implemented, but full f64 range works with NaN boxing
-  is(await evaluateWat('(f64.const 281474976710655)'), 281474976710655)
-  is(await evaluateWat('(f64.const 9007199254740991)'), 9007199254740991) // MAX_SAFE_INTEGER
+test('ESNext Exponentiation', async () => {
+  is(await evaluate('2 ** 10'), 1024)
+  is(await evaluate('3 ** 3'), 27)
+  is(await evaluate('let x = 2; x ** 8'), 256)
 })
 
-test('ESNext Modules (conceptual)', async () => {
-  // Test module-like behavior
-  // Note: Module system not yet implemented
-  is(await evaluateWat('(f64.const 1)'), 1)
+test('ESNext Const and Let Block Scoping', async () => {
+  // Block scoping
+  is(await evaluate('let x = 1; { let x = 2 }; x'), 1)
+  is(await evaluate('const x = 1; { const x = 2 }; x'), 1)
+
+  // Let in loops
+  is(await evaluate('let sum = 0; for (let i = 0; i < 3; i++) sum += i; sum'), 3)
 })
 
-test('ESNext Promises/Async (conceptual)', async () => {
-  // Test async evaluation
-  const result = await evaluateWat('(f64.const 42)')
-  is(result, 42)
+test('WASM-Optimized Math', async () => {
+  // Math functions that map to WASM instructions
+  is(await evaluate('Math.sqrt(16)'), 4)
+  is(await evaluate('Math.abs(-7.5)'), 7.5)
+  is(await evaluate('Math.floor(3.7)'), 3)
+  is(await evaluate('Math.ceil(2.1)'), 3)
+  is(await evaluate('Math.trunc(-3.7)'), -3)
+  is(await evaluate('Math.min(5, 3)'), 3)
+  is(await evaluate('Math.max(5, 3)'), 5)
 })
-
-test('Functional Programming Patterns', async () => {
-  // Higher-order function concepts
-  is(await evaluateWat('(f64.mul (f64.const 2) (f64.const 21))'), 42)
-
-  // Function composition
-  is(await evaluateWat('(f64.add (f64.mul (f64.const 3) (f64.const 4)) (f64.const 2))'), 14)
-
-  // Currying concept
-  is(await evaluateWat('(f64.mul (f64.add (f64.const 1) (f64.const 2)) (f64.const 3))'), 9)
-})
-
-test('Immutable Data Patterns', async () => {
-  // Test that operations don't mutate values
-  const original = await evaluateWat('(f64.const 5)')
-  const result = await evaluateWat('(f64.add (f64.const 5) (f64.const 3))')
-
-  is(original, 5) // Original value unchanged
-  is(result, 8)   // New value created
-})
-
-test('Pure Function Properties', async () => {
-  // Same input always produces same output
-  const result1 = await evaluateWat('(f64.add (f64.const 2) (f64.const 2))')
-  const result2 = await evaluateWat('(f64.add (f64.const 2) (f64.const 2))')
-
-  is(result1, result2)
-  is(result1, 4)
-})
-
-test('Minimal Syntax Patterns', async () => {
-  // Test concise expression evaluation
-  is(await evaluateWat('(f64.const 42)'), 42)
-  is(await evaluateWat('(f64.neg (f64.const 5))'), -5)
-  is(await evaluateWat('(f64.abs (f64.const -7))'), 7)
-})
-
-test('WASM Compatibility', async () => {
-  // Test that operations work within WASM constraints
-  is(await evaluateWat('(f64.add (f64.const 0.1) (f64.const 0.2))'), 0.30000000000000004)
-  is(await evaluateWat('(f64.div (f64.const 1) (f64.const 3))'), 0.3333333333333333)
-})
-
-test('JZ Core Philosophy - Minimal Functional Patterns', async () => {
-  // Function composition (core to functional programming)
-  is(await evaluateWat('(f64.add (f64.mul (f64.const 2) (f64.const 3)) (f64.const 1))'), 7)
-
-  // Higher-order function concepts
-  is(await evaluateWat('(f64.mul (f64.add (f64.const 1) (f64.const 2)) (f64.const 3))'), 9)
-
-  // Pure functions - no side effects
-  const result1 = await evaluateWat('(f64.const 42)')
-  const result2 = await evaluateWat('(f64.const 42)')
-  is(result1, result2)
-
-  // Immutability - operations create new values
-  const original = await evaluateWat('(f64.const 5)')
-  const transformed = await evaluateWat('(f64.add (f64.const 5) (f64.const 3))')
-  is(original, 5)
-  is(transformed, 8)
-})
-
-test('WASM-Optimized Patterns', async () => {
-  // Operations that map well to WASM instructions
-  is(await evaluateWat('(f64.sqrt (f64.const 16))'), 4)
-  is(await evaluateWat('(f64.abs (f64.const -7.5))'), 7.5)
-  is(await evaluateWat('(f64.floor (f64.const 3.7))'), 3)
-  is(await evaluateWat('(f64.ceil (f64.const 2.1))'), 3)
-})
-
-test('ESNext Features That Fit JZ Philosophy', async () => {
-  // Const declarations (immutability)
-  is(await evaluateWat('(f64.const 100)'), 100)
-
-  // Arrow functions (concise syntax)
-  is(await evaluateWat('(f64.add (f64.const 10) (f64.const 20))'), 30)
-
-  // Template literals (string interpolation concept)
-  is(await evaluateWat('(f64.const 42)'), 42)
-
-  // Destructuring (pattern matching concept)
-  is(await evaluateWat('(f64.mul (f64.const 6) (f64.const 7))'), 42)
-})
-
-console.log('ESNext Test Suite - Testing modern JS features in JZ context')
-console.log('Note: Many features are conceptual until JS-to-WAT compilation is implemented')

@@ -80,3 +80,21 @@ test('closure - currying with multiple args', async () => {
 test('closure - nested depth 2', async () => {
   is(await evaluate('a = (x) => (y) => (z) => x + y + z; a(1)(2)(3)'), 6)
 })
+
+// Closure capturing i32 pointer param (Phase 7: closure boundary reboxing)
+// When internal func has i32 array param and closure captures it,
+// the i32 offset must be reboxed to f64 pointer for the closure env
+test('closure - i32 array param capture', async () => {
+  const { compile } = await import('./util.js')
+  // process uses arr[0] to trigger i32 param, closure captures arr
+  const mod = await compile(`
+    const process = arr => {
+      const first = arr[0]
+      const getLen = () => arr.length
+      return first + getLen()
+    }
+    export const main = arr => arr.reduce((s, x) => s + x, 0) + process(arr)
+  `)
+  // reduce([10,20,30]) = 60, process returns first(10) + len(3) = 13
+  is(mod.main([10, 20, 30]), 73)
+})
