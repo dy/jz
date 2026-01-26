@@ -236,9 +236,9 @@
     * [x] `new Array(n)` - pre-sized array
     * [x] `new Set()`, `new Map()` - collections
     * [x] `new Float64Array(n)` etc - typed arrays
-  * [ ] ESLint-inspired rules
-    * [ ] no-redeclare - same name declared twice in scope
-    * [ ] no-loss-of-precision - integer literals > MAX_SAFE_INTEGER
+  * [x] ESLint-inspired rules
+    * [x] no-redeclare - same name declared twice in scope
+    * [x] no-loss-of-precision - integer literals > MAX_SAFE_INTEGER
 * [x] Monomorphize (static typing)
   * [x] Track return types through call graph (`funcReturnTypes` in preanalyze)
   * [x] Remove $__ptr_len runtime dispatch (type-specific length access)
@@ -359,13 +359,13 @@
   * [x] REGEX (type=10): `[type:4][regexId:16][offset:31]` → (compiled in function table with flags)
     * [x] No memory (pattern compiled to matcher function)
   * [x] f64view(memory, ptr) for JS interop (user creates typed array view)
-  * [ ] Drop custom schema section (not needed with explicit interop)
 * [ ] color-space converter
-  * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
+
 * [ ] Warn/error on hitting memory limits: objects, arrays
 * [ ] Import model
   * [ ] Bundle/resolve static-time
   * [ ] Resolve imports by the compiler, not runtime (static-time)
+  * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [x] JS improvements (warn on quirks, document divergences)
   * [x] Warning system (console.warn during compilation)
   * [x] Warnings/errors implemented:
@@ -410,7 +410,6 @@
     * [x] Track `multiReturn: N` in jz:sig custom section
     * [x] Destructuring assignment via multi-value returns
     * [x] Swap/rotate operations
-    * [ ] Error+value pattern (result i32 f64)
   * [x] **Unify loop code generation** (array.js + string.js + typedarray.js):
     * [x] 30+ nearly identical loop patterns across 3 files
     * [x] Extract `genIterLoop(ctx, config)` helper with standardized structure
@@ -504,6 +503,10 @@
   * [x] NaN boxing pointer format (full f64 range preserved)
   * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
   * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
+* [ ] sourcemaps
+* [ ] make all explicit? (math, json, any globals)
+  * [ ] can provide implicit globals via options
+
 
 ## Value
 
