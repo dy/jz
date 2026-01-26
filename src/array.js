@@ -2,8 +2,8 @@
 import { ctx, gen } from './compile.js'
 import { PTR_TYPE, wat, f64, i32, bool, HEAP_START, STRING_STRIDE } from './types.js'
 import { extractParams } from './analyze.js'
-import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, ptrSetLen, strLen, strNew, strCharAt, strSetChar, strCopy } from './memory.js'
-import { genLoop, genEarlyExitLoop } from './loop.js'
+import { arrGet, arrSet, arrLen, arrNew, arrCopy, ptrWithLen, ptrSetLen, strLen, strNew, strCharAt, strSetChar, strCopy, arrGetI32, arrSetI32, arrLenI32 } from './memory.js'
+import { genLoop, genEarlyExitLoop, getCachedOffset } from './loop.js'
 
 export const fill = (rw, args, receiver) => {
   if (args.length < 1) return null
@@ -25,6 +25,28 @@ export const map = (rw, args, receiver) => {
   const [, params, body] = callback
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
+
+  // Optimization: if receiver is a param with cached offset, use direct i32 access
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    const id = ctx.loopCounter++
+    const i = `$_map_i_${id}`, len = `$_map_len_${id}`, result = `$_map_result_${id}`, resultOff = `$_map_roff_${id}`
+    ctx.addLocal(i.slice(1), 'i32')
+    ctx.addLocal(len.slice(1), 'i32')
+    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(resultOff.slice(1), 'i32')
+    return wat(`(local.set ${len} ${arrLenI32(cachedOff)})
+      (local.set ${result} ${arrNew(`(local.get ${len})`)})
+      (local.set ${resultOff} (call $__ptr_offset (local.get ${result})))
+      (local.set ${i} (i32.const 0))
+      (block $done_${id} (loop $loop_${id}
+        (br_if $done_${id} (i32.ge_s (local.get ${i}) (local.get ${len})))
+        (local.set $${paramName} ${arrGetI32(cachedOff, `(local.get ${i})`)})
+        (f64.store (i32.add (local.get ${resultOff}) (i32.shl (local.get ${i}) (i32.const 3))) ${f64(gen(body))})
+        (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
+        (br $loop_${id})))
+      (local.get ${result})`, 'flat_array')
+  }
 
   return genLoop('map', {
     locals: ['arr:f64', 'result:f64'],
@@ -51,6 +73,28 @@ export const reduce = (rw, args, receiver) => {
   ctx.addLocal(curName, 'f64')
   const initVal = args.length >= 2 ? f64(gen(args[1])) : '(f64.const 0)'
 
+  // Optimization: if receiver is a param with cached offset, use direct i32 access
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    // Use cached i32 offset - no unboxing in loop
+    const id = ctx.loopCounter++
+    const acc = `$_reduce_acc_${id}`, i = `$_reduce_i_${id}`, len = `$_reduce_len_${id}`
+    ctx.addLocal(acc.slice(1), 'f64')
+    ctx.addLocal(i.slice(1), 'i32')
+    ctx.addLocal(len.slice(1), 'i32')
+    return wat(`(local.set ${len} ${arrLenI32(cachedOff)})
+      (local.set ${acc} ${initVal})
+      (local.set ${i} (i32.const 0))
+      (block $done_${id} (loop $loop_${id}
+        (br_if $done_${id} (i32.ge_s (local.get ${i}) (local.get ${len})))
+        (local.set $${accName} (local.get ${acc}))
+        (local.set $${curName} ${arrGetI32(cachedOff, `(local.get ${i})`)})
+        (local.set ${acc} ${f64(gen(body))})
+        (local.set ${i} (i32.add (local.get ${i}) (i32.const 1)))
+        (br $loop_${id})))
+      (local.get ${acc})`, 'f64')
+  }
+
   return genLoop('reduce', {
     locals: ['arr:f64', 'acc:f64'],
     init: `{=arr ${rw}}
@@ -74,13 +118,42 @@ export const filter = (rw, args, receiver) => {
   const [, params, body] = callback
   const paramName = extractParams(params)[0] || '_v'
   const id = ctx.loopCounter++
-  const arr = `$_filter_arr_${id}`, result = `$_filter_result_${id}`, idx = `$_filter_i_${id}`, len = `$_filter_len_${id}`, count = `$_filter_count_${id}`
-  ctx.addLocal(arr, 'f64')
-  ctx.addLocal(result, 'f64')
-  ctx.addLocal(idx, 'i32')
-  ctx.addLocal(len, 'i32')
-  ctx.addLocal(count, 'i32')
   ctx.addLocal(paramName, 'f64')
+
+  // Optimization: if receiver is a param with cached offset, use direct i32 access
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    const result = `$_filter_result_${id}`, resultOff = `$_filter_roff_${id}`, idx = `$_filter_i_${id}`, len = `$_filter_len_${id}`, count = `$_filter_count_${id}`
+    ctx.addLocal(result.slice(1), 'f64')
+    ctx.addLocal(resultOff.slice(1), 'i32')
+    ctx.addLocal(idx.slice(1), 'i32')
+    ctx.addLocal(len.slice(1), 'i32')
+    ctx.addLocal(count.slice(1), 'i32')
+    const setLen = ptrSetLen(`(local.get ${result})`, `(local.get ${count})`)
+    return wat(`(local.set ${len} ${arrLenI32(cachedOff)})
+      (local.set ${result} ${arrNew(`(local.get ${len})`)})
+      (local.set ${resultOff} (call $__ptr_offset (local.get ${result})))
+      (local.set ${idx} (i32.const 0))
+      (local.set ${count} (i32.const 0))
+      (block $done_${id} (loop $loop_${id}
+        (br_if $done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
+        (local.set $${paramName} ${arrGetI32(cachedOff, `(local.get ${idx})`)})
+        (if ${bool(gen(body))}
+          (then
+            (f64.store (i32.add (local.get ${resultOff}) (i32.shl (local.get ${count}) (i32.const 3))) (local.get $${paramName}))
+            (local.set ${count} (i32.add (local.get ${count}) (i32.const 1)))))
+        (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
+        (br $loop_${id})))
+      ${setLen}
+      (local.get ${result})`, 'flat_array')
+  }
+
+  const arr = `$_filter_arr_${id}`, result = `$_filter_result_${id}`, idx = `$_filter_i_${id}`, len = `$_filter_len_${id}`, count = `$_filter_count_${id}`
+  ctx.addLocal(arr.slice(1), 'f64')
+  ctx.addLocal(result.slice(1), 'f64')
+  ctx.addLocal(idx.slice(1), 'i32')
+  ctx.addLocal(len.slice(1), 'i32')
+  ctx.addLocal(count.slice(1), 'i32')
   // After loop, set actual length and return pointer
   const setLen = ptrSetLen(`(local.get ${result})`, `(local.get ${count})`)
   return wat(`(local.set ${arr} ${rw})
@@ -111,6 +184,20 @@ export const find = (rw, args, receiver) => {
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
 
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('find', {
+      locals: [],
+      init: `{=len ${arrLenI32(cachedOff)}}`,
+      preTest: `(local.set $${paramName} ${arrGetI32(cachedOff, '{idx}')})`,
+      test: bool(gen(body)),
+      found: `(local.get $${paramName})`,
+      notFound: '(f64.const nan)',
+      type: 'f64'
+    })
+  }
+
   return genEarlyExitLoop('find', {
     locals: ['arr:f64'],
     init: `{=arr ${rw}}
@@ -133,6 +220,20 @@ export const findIndex = (rw, args, receiver) => {
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
 
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('findi', {
+      locals: [],
+      init: `{=len ${arrLenI32(cachedOff)}}`,
+      preTest: `(local.set $${paramName} ${arrGetI32(cachedOff, '{idx}')})`,
+      test: bool(gen(body)),
+      found: '{idx}',
+      notFound: '(i32.const -1)',
+      type: 'i32'
+    })
+  }
+
   return genEarlyExitLoop('findi', {
     locals: ['arr:f64'],
     init: `{=arr ${rw}}
@@ -151,6 +252,20 @@ export const indexOf = (rw, args, receiver) => {
   ctx.usedMemory = true
   const searchVal = gen(args[0])
 
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('indexof', {
+      locals: ['target:f64'],
+      init: `{=target ${f64(searchVal)}}
+        {=len ${arrLenI32(cachedOff)}}`,
+      test: `(f64.eq ${arrGetI32(cachedOff, '{idx}')} {$target})`,
+      found: '{idx}',
+      notFound: '(i32.const -1)',
+      type: 'i32'
+    })
+  }
+
   return genEarlyExitLoop('indexof', {
     locals: ['arr:f64', 'target:f64'],
     init: `{=arr ${rw}}
@@ -168,6 +283,20 @@ export const includes = (rw, args, receiver) => {
   ctx.usedArrayType = true
   ctx.usedMemory = true
   const searchVal = gen(args[0])
+
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('includes', {
+      locals: ['target:f64'],
+      init: `{=target ${f64(searchVal)}}
+        {=len ${arrLenI32(cachedOff)}}`,
+      test: `(f64.eq ${arrGetI32(cachedOff, '{idx}')} {$target})`,
+      found: '(i32.const 1)',
+      notFound: '(i32.const 0)',
+      type: 'i32'
+    })
+  }
 
   return genEarlyExitLoop('includes', {
     locals: ['arr:f64', 'target:f64'],
@@ -191,6 +320,20 @@ export const every = (rw, args, receiver) => {
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
 
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('every', {
+      locals: [],
+      init: `{=len ${arrLenI32(cachedOff)}}`,
+      preTest: `(local.set $${paramName} ${arrGetI32(cachedOff, '{idx}')})`,
+      test: `(i32.eqz ${bool(gen(body))})`,
+      found: '(i32.const 0)',
+      notFound: '(i32.const 1)',
+      type: 'i32'
+    })
+  }
+
   return genEarlyExitLoop('every', {
     locals: ['arr:f64'],
     init: `{=arr ${rw}}
@@ -212,6 +355,20 @@ export const some = (rw, args, receiver) => {
   const [, params, body] = callback
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
+
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genEarlyExitLoop('some', {
+      locals: [],
+      init: `{=len ${arrLenI32(cachedOff)}}`,
+      preTest: `(local.set $${paramName} ${arrGetI32(cachedOff, '{idx}')})`,
+      test: bool(gen(body)),
+      found: '(i32.const 1)',
+      notFound: '(i32.const 0)',
+      type: 'i32'
+    })
+  }
 
   return genEarlyExitLoop('some', {
     locals: ['arr:f64'],
@@ -415,6 +572,19 @@ export const forEach = (rw, args, receiver) => {
   const [, params, body] = callback
   const paramName = extractParams(params)[0] || '_v'
   ctx.addLocal(paramName, 'f64')
+
+  // Optimization: use cached offset if available
+  const cachedOff = getCachedOffset(rw)
+  if (cachedOff) {
+    return genLoop('foreach', {
+      locals: [],
+      init: `{=len ${arrLenI32(cachedOff)}}`,
+      body: `(local.set $${paramName} ${arrGetI32(cachedOff, '{idx}')})
+        (drop ${f64(gen(body))})`,
+      result: '(f64.const 0)',
+      type: 'f64'
+    })
+  }
 
   return genLoop('foreach', {
     locals: ['arr:f64'],

@@ -202,6 +202,9 @@ export const arrLen = (w) => `(call $__ptr_len ${w})`
 /** Get array length directly (for when we KNOW it's an array, skip type check) */
 export const directArrLen = (w) => `(i32.trunc_f64_s (f64.load (i32.sub (call $__ptr_offset ${w}) (i32.const 8))))`
 
+/** Get array length using pre-computed i32 offset (fastest: no unboxing) */
+export const arrLenI32 = (off) => `(i32.trunc_f64_s (f64.load (i32.sub ${off} (i32.const 8))))`
+
 /** Get array capacity tier for current length */
 export const arrCapacity = (w) =>
   `(call $__cap_for_len (call $__ptr_len ${w}))`
@@ -218,9 +221,17 @@ export const arrSet = (w, idx, val) =>
 export const arrGetFlat = (w, idx) =>
   `(f64.load (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 3))))`
 
+/** Get array element using pre-computed i32 offset (fastest: no unboxing) */
+export const arrGetI32 = (off, idx) =>
+  `(f64.load (i32.add ${off} (i32.shl ${idx} (i32.const 3))))`
+
 /** Set array element - direct flat (no ring support, for known-flat arrays) */
 export const arrSetFlat = (w, idx, val) =>
   `(f64.store (i32.add (call $__ptr_offset ${w}) (i32.shl ${idx} (i32.const 3))) ${val})`
+
+/** Set array element using pre-computed i32 offset (fastest: no unboxing) */
+export const arrSetI32 = (off, idx, val) =>
+  `(f64.store (i32.add ${off} (i32.shl ${idx} (i32.const 3))) ${val})`
 
 /** Allocate dynamic-sized f64 array */
 export const arrNew = (lenWat) =>

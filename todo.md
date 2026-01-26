@@ -507,34 +507,30 @@
   * **Principle**: NaN-boxing exists for JS interop. Internal code uses raw i32 offsets.
   * NaN-boxing required ONLY at: JS export boundary, f64 memory slots, closures
   * Internal functions: `(param $arr_off i32)` - no boxing overhead
-  * [ ] **Phase 1: Export boundary analysis** (analyze.js)
-    * [ ] `ctx.exportedFuncs = Set<name>` - functions in `export` statements
-    * [ ] `ctx.internalFuncs = Set<name>` - all others (never called from JS)
-    * [ ] Track call graph: which internal funcs called by exports vs other internals
-  * [ ] **Phase 2: Parameter type inference** (analyze.js)
-    * [ ] `ctx.funcParamTypes = Map<funcName, Map<paramIdx, Set<type>>>`
-    * [ ] Infer from usage: `arr[i]` → array, `obj.prop` → object, `str.length` → string
-    * [ ] Infer from call sites: `helper(myArr)` where myArr known array
-    * [ ] Track which params are always same type vs polymorphic
-  * [ ] **Phase 3: Monomorphization** (compile.js)
-    * [ ] Single-type params → direct i32 signature: `$fn_arr(i32)`, `$fn_str(i32)`
-    * [ ] Multi-type params → emit variants: `$fn$arr`, `$fn$str`, `$fn$obj`
-    * [ ] Call sites choose variant based on known arg type
-    * [ ] Unknown type at call site → fallback f64 variant with unbox
-  * [ ] **Phase 4: Dual signatures for exports** (assemble.js)
+  * [x] **Phase 1: Export boundary analysis** (analyze.js)
+    * [x] `ctx.exportedFuncs = Set<name>` - functions in `export` statements
+    * [x] Track call graph: which internal funcs called by exports vs other internals
+  * [x] **Phase 2: Parameter type inference** (analyze.js)
+    * [x] `ctx.funcParamPtrTypes = Map<funcName, Map<paramName, Set<type>>>`
+    * [x] Infer from usage: `arr[i]` → array, `obj.prop` → object, `str.length` → string
+  * [x] **Phase 3: Offset caching** (compile.js)
+    * [x] At function entry: `(local.set $arr_off (call $__ptr_offset (local.get $arr)))`
+    * [x] `ctx.cachedOffsets = Map<paramName, offsetLocalName>`
+    * [x] Direct i32 helpers: `arrGetI32(off, idx)`, `arrLenI32(off)`, `arrSetI32(off, idx, val)`
+  * [x] **Phase 4: Optimized array methods** (array.js, loop.js)
+    * [x] `getCachedOffset(watExpr)` - detect param refs with cached offset
+    * [x] Optimized methods: reduce, map, filter, find, findIndex, indexOf, includes, every, some, forEach
+    * [x] Loop body uses inline f64.load/f64.store with cached offset (no unbox in hot path)
+  * [ ] **Phase 5: Dual signatures for exports** (assemble.js)
     * [ ] Internal: `(func $sum_arr (param $off i32) (result f64) ...)`
     * [ ] Export wrapper: `(func (export "sum") (param $ptr f64) (result f64) (call $sum_arr (call $__ptr_offset (local.get $ptr))))`
     * [ ] Wrapper unboxes args, calls internal, boxes result if pointer
     * [ ] Option: `{ gcExports: true }` → export GC refs instead of NaN-boxed f64
-  * [ ] **Phase 5: Internal calling convention** (compile.js)
-    * [ ] Pointer params become i32 offset + type known statically
-    * [ ] No `__ptr_offset` calls inside internal functions
-    * [ ] Aux bits (schema, elemType) passed as separate i32 param when needed
-    * [ ] Example: `helper(arr)` → `(call $helper_arr (i32.const schemaId) (local.get $arr_off))`
-  * [ ] **Phase 6: Memory operations** (memory.js)
-    * [ ] All internal helpers take i32 offset: `arrGetI32(off, idx)`, `objGetI32(off, propIdx)`
-    * [ ] Remove f64→i32 unboxing from hot paths
-    * [ ] Only box when: storing to f64 slot, returning from export, passing to closure
+  * [ ] **Phase 6: Monomorphization** (compile.js)
+    * [ ] Single-type params → direct i32 signature: `$fn_arr(i32)`, `$fn_str(i32)`
+    * [ ] Multi-type params → emit variants: `$fn$arr`, `$fn$str`, `$fn$obj`
+    * [ ] Call sites choose variant based on known arg type
+    * [ ] Unknown type at call site → fallback f64 variant with unbox
   * [ ] **Phase 7: Closure boundary** (closures.js)
     * [ ] Closure env stores f64 (must, for uniform slots)
     * [ ] On capture: box i32 → f64

@@ -1,6 +1,19 @@
 // Loop codegen helpers - unified iteration patterns
 import { ctx } from './compile.js'
 import { wat } from './types.js'
+import { arrGetI32, arrLenI32 } from './memory.js'
+
+/**
+ * Check if a WAT expression is a simple local.get of a param with cached offset.
+ * Returns the cached offset local name, or null.
+ */
+export function getCachedOffset(watExpr) {
+  const match = watExpr.match(/^\(local\.get \$(\w+)\)$/)
+  if (match && ctx.cachedOffsets?.has(match[1])) {
+    return `(local.get $${ctx.cachedOffsets.get(match[1])})`
+  }
+  return null
+}
 
 // Resolve placeholders: {idx}, {len}, {$name}, {=name val}, {id}
 const resolver = (prefix, id) => str => str
