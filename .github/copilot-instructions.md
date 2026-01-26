@@ -54,6 +54,8 @@ Important project decisions are documented in research.md in particular style:
   ...
 ```
 
+Be frugal with descriptions, don't get too verbose or detailed - show key insights/points.
+
 ## Design Principles
 
 - **No-overhead primitives**: Prefer compile-time solutions over runtime indirection. Static analysis enables direct calls, inline code, zero allocation.

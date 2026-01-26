@@ -64,6 +64,53 @@
   * Embedded scripting (IoT, microcontrollers)
   * Plugin systems (safe sandboxed compute)
 
+## [ ] Alternatives
+
+### JS/TS → WASM compilers (direct competitors)
+
+| Project | Approach | Pointers | Interop | WASI/Env |
+|---------|----------|----------|---------|----------|
+| porffor | AOT JS→WASM | Custom | Custom imports | No WASI, "mostly unusable standalone" |
+| jawsm | JS→WASM GC | WASM GC refs | WASIp2 polyfill | Requires Node v23+ |
+| assemblyscript | TS-like→WASM | Linear memory | wasm-bindgen style | wasi-shim |
+| javy | QuickJS embedded | QuickJS internal | Javy.IO | WASI fd_read/write |
+
+### Other langs → WASM (similar challenges)
+
+| Project | Lang | Pointers | Interop | WASI/Env |
+|---------|------|----------|---------|----------|
+| emscripten | C/C++ | Native | JS glue | WASI + glue |
+| wasm-bindgen | Rust | Linear | JS bindings gen | wasm-pack |
+| grain | Grain | WASM GC | Grain runtime | Custom |
+| tinygo | Go | Linear | JS/WASI | WASI |
+| kotlin/wasm | Kotlin | WASM GC | Kotlin/JS | WASIp2 |
+| moonbit | MoonBit | WASM GC | JS FFI | WASI |
+| zig | Zig | Native | C-style | WASI |
+| nelua | Nelua | Native | C-style | WASI |
+| lys | Lys | Linear | Custom | Custom |
+| walt | WAT-like | Linear | Manual | None (unmaintained) |
+
+### WASM runtimes
+
+| Project | Notes |
+|---------|-------|
+| wasmer | Fast, WASI, plugins |
+| wasmtime | Bytecode Alliance reference |
+| wasm3 | Fast interpreter, embedded |
+| wasmi | Rust interpreter, embedded |
+| WasmEdge | Cloud/edge, WASI |
+| lunatic | Erlang-inspired, actors |
+| txiki.js | Tiny JS runtime with WASM |
+
+
+### Key patterns observed
+
+  1. **Pointer strategies**: Linear memory (emscripten, AS, jz) vs WASM GC (jawsm, kotlin, moonbit)
+  2. **JS interop**: Glue code (emscripten) vs bindgen (Rust) vs manual (jz)
+  3. **WASI adoption**: Universal for CLI/server, shims for browser
+  4. **Interpreter vs AOT**: QuickJS-based (javy) vs direct compile (porffor, jz)
+  5. **GC compilers converging on WASMp2**: kotlin, dart, moonbit target WASM GC
+
 ## [x] Arrays: GC vs memory -> Memory (linear)
   0. Linear memory with NaN-boxed pointers
     + Zero-copy JS interop via SharedArrayBuffer
@@ -197,6 +244,53 @@
   * Decision: NaN-boxing. Preserves function signatures, enables zero-copy
     JS interop, encodes metadata without overhead. 2GB limit is non-issue
     for target use cases (audio buffers, game state).
+
+## [ ] Internal calling convention -> i32 offsets, box only at JS boundary
+
+  0. All functions use f64 NaN-boxed params (current)
+    + Uniform signatures
+    + Simple codegen
+    - ~6 WASM ops per `__ptr_offset` extraction
+    - Tax paid on every pointer access, even internal calls
+
+  1. Internal i32, export wrappers (chosen)
+    + Zero NaN tax inside module
+    + Internal calls pass raw i32 offset
+    + Type info known statically (monomorphization)
+    + Export wrappers handle JS boundary
+    - Two signatures per exported func
+    - Monomorphization can grow code size
+
+  2. Global slots for implicit type passing
+    ```wat
+    (global $__ptr_type (mut i32))
+    (global $__ptr_aux (mut i32))
+    ;; caller sets globals before call
+    ```
+    + Preserves f64-only signatures
+    - Not thread-safe
+    - Save/restore overhead for nested calls
+    - Still extra instructions
+
+  * Decision: Option 1. Internal functions use `(param $off i32)` for pointers.
+    Export wrappers unbox args, call internal, box results.
+    Monomorphize when same func used with multiple pointer types.
+    
+  * Implementation:
+    - analyze.js: track exported vs internal funcs, infer param types
+    - compile.js: emit i32 params for internal, call `__ptr_offset` only at boundary
+    - assemble.js: generate thin export wrappers
+    - closures: env stores f64 (must), unbox once at closure entry
+
+  * Example:
+    ```wat
+    ;; Internal (no boxing)
+    (func $sum_arr (param $off i32) (result f64) ...)
+    
+    ;; Export wrapper
+    (func (export "sum") (param $ptr f64) (result f64)
+      (call $sum_arr (call $__ptr_offset (local.get $ptr))))
+    ```
 
 ## [x] Types -> Monomorphic + hybrid fallback
   0. Monomorphic (primary)
@@ -463,7 +557,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
 - **Resolution** = host responsibility (JS/Node/WASI)
 - **Compilation** = JZ responsibility (pure transform, no I/O)
 
-### A. Resolution Strategy
+### Resolution Strategy
 
   0. **CLI resolves via fs**
     + Node has filesystem access
@@ -493,7 +587,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
   * Decision: CLI uses fs + importmap. API uses `modules` option.
     Keeps compiler pure (no I/O), resolution is caller's job.
 
-### B. WASM-Compatible Module Passing
+### WASM-Compatible Module Passing
 
   0. **JSON string**
     ```js
@@ -541,7 +635,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
   * Decision: Pre-bundled source format. Host bundles all sources into
     single string with markers, JZ parses and compiles. Zero WASM complexity.
 
-### C. Multi-Module Compilation (Memory Sharing)
+### Multi-Module Compilation (Memory Sharing)
 
   0. **Bundle into single WASM** (current)
     + Single memory, all modules share
@@ -608,7 +702,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
     Bundling handles most cases (modules sharing data). Separate compilation
     only for leaf modules with numeric interfaces (math libs, DSP kernels).
 
-### D. Circular Imports
+### Circular Imports
 
   0. **Prohibit** (Jessie-style)
     + Simple implementation
@@ -624,7 +718,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
   * Decision: Prohibit circular imports. Matches Jessie philosophy,
     avoids initialization complexity. Error at compile time.
 
-### E. Export Styles
+### Export Styles
 
   0. **Named exports only**
     ```js
@@ -655,7 +749,7 @@ JZ needs to support `import`/`export` across modules. Challenges:
   * Decision: Named exports + re-exports. No default exports.
     Explicit naming, clean tree-shaking, Jessie-compatible.
 
-### F. Bare Specifiers
+### Bare Specifiers
 
   0. **Require relative/absolute paths**
     ```js
@@ -715,3 +809,176 @@ compile(bundledSource) → wasm
 compile(source, { imports: { './math.js': signatures } }) → wasm
 // Links at instantiation via standard WASM imports
 ```
+
+## [ ] Objects / Arrays JS interop -> view() helper
+
+  0. **GC structs at export boundary**
+    + Standard WASM GC
+    + Direct JS interop
+    - GC pauses (violates real-time guarantees)
+    - Not universally supported
+
+  1. **`instantiate()` wrapper with auto-marshalling** (current)
+    + Convenient: arrays/objects Just Work™
+    + Reads schemas from jz:sig custom section
+    - Custom wrapper, not standard WASM
+    - Doesn't work in wasmer/wasmtime
+    - Hidden magic
+
+  2. **`view()` helper** (recommended)
+    ```js
+    const $ = view(wasm.exports)  // reads _schemas export
+    const value = $(ptr)          // read any: array, string, object
+    $(ptr, [1, 2, 3])             // write, returns ptr
+    ```
+    + Explicit: user controls marshalling
+    + Works with standard WebAssembly.instantiate
+    + No wrapper needed
+    + Schemas from exported function, not custom section
+    - User must call explicitly
+
+  2.1 **Schemas via export**
+    ```js
+    // JZ emits:
+    (func (export "_schemas") (result i32)
+      (i32.const <ptr_to_schema_json>))
+
+    // JS:
+    const schemaPtr = wasm.exports._schemas()
+    const schemas = JSON.parse(readString(memory, schemaPtr))
+    ```
+    + Works in wasmer/wasmtime (just a function call)
+    + No custom section parsing needed
+    + Standard WASM
+
+  * Decision: Option 2.1 - `view()` helper with `_schemas` export.
+    Keep `instantiate()` for convenience but document as optional.
+    Raw WASM works everywhere via standard APIs.
+
+## [ ] Host APIs (console, Date, performance) -> WASI + shim
+
+  0. **Custom JZ imports**
+    ```wat
+    (import "jz" "log_f64" (func $log_f64 (param f64)))
+    (import "jz" "time_now" (func $time_now (result f64)))
+    ```
+    + Simple, minimal
+    + Works everywhere with thin adapter
+    - Non-standard
+    - Each host needs adapter
+
+  1. **WASI** (recommended)
+    ```wat
+    (import "wasi_snapshot_preview1" "fd_write" (func ...))
+    (import "wasi_snapshot_preview1" "clock_time_get" (func ...))
+    ```
+    + Standard interface
+    + Native support in wasmer/wasmtime
+    + Portable WASM (same binary everywhere)
+    - Browser/Node need WASI shim
+    - More complex API (fd handles, etc.)
+
+  * Decision: WASI as primary interface.
+    - wasmer/wasmtime: native support
+    - Browser/Node: use WASI shim (browser_wasi_shim, wasmer-js)
+    - JZ emits standard WASI imports for console/Date/performance
+
+  ### WASI Mapping
+
+  | JS API | WASI Function | Notes |
+  |--------|---------------|-------|
+  | console.log | fd_write(1, ...) | stdout |
+  | console.error | fd_write(2, ...) | stderr |
+  | Date.now() | clock_time_get(realtime) | ms since epoch |
+  | performance.now() | clock_time_get(monotonic) | high-res timer |
+  | File read | path_open + fd_read | for import resolution |
+
+
+
+## [ ] metacircular (jz.wasm) -> WASI or minimal imports
+
+### Prior Art (JS/TS → WASM compilers)
+
+| Project | Host APIs | Standalone? | Modules |
+|---------|-----------|-------------|---------|
+| **Porffor** | Only I/O imports | ❌ "not WASI, mostly unusable standalone" | Single file |
+| **Javy** | WASI (fd_read/write) + Javy.IO | ✅ wasmtime/wasmer | Embeds QuickJS interpreter |
+| **jawsm** | WASIp2 polyfill (JS) | ❌ Requires Node v23+ | Single file, uses WASM GC |
+| **AssemblyScript** | `declare` → custom imports | ⚠️ Host must provide | `@external` decorator |
+| **Emscripten** | WASI + JS glue | ⚠️ Needs JS glue for most | static/dynamic linking |
+
+### Key Insights
+
+1. **No fully standalone exists** - All require either WASI or custom imports
+2. **WASI is the closest to "standard"** - wasmtime/wasmer support it natively
+3. **Porffor explicitly says** "does not use import standard like WASI, mostly unusable standalone"
+4. **Javy pattern**: `Javy.IO.readSync(fd, buffer)` → internal WASI fd_read
+5. **jawsm**: Targets WASIp2 but runtimes don't support all features yet, uses JS polyfill
+
+### Options for JZ
+
+  0. **No I/O** (pure compute only)
+    + Truly standalone
+    + Runs anywhere
+    - No console.log, no Date.now, no file access
+    - jz.wasm can't resolve imports (pre-bundled only)
+
+  1. **WASI** (like Javy)
+    + wasmtime/wasmer native support
+    + Browser/Node: use WASI shim
+    + Standard, widely adopted
+    - Browser WASI shims exist but add weight
+
+  2. **Minimal custom imports** (like Porffor)
+    ```wat
+    (import "jz" "log" (func $log (param i32 i32)))
+    (import "jz" "read" (func $read (param i32 i32) (result i32)))
+    (import "jz" "time" (func $time (result f64)))
+    ```
+    + Simpler than WASI (3 functions vs 45+)
+    + Host provides (browser: fetch, Node: fs)
+    - Non-standard
+    - wasmer can provide via --invoke, but awkward
+
+  3. **Both: WASI primary, fallback to custom**
+    + WASI for wasmtime/wasmer
+    + Same binary, detect which imports available
+    - Complex
+
+### Decision: Option 1 (WASI)
+
+  * console.log → fd_write(stdout)
+  * Date.now → clock_time_get(realtime)
+  * File read → fd_read (for import resolution)
+  * Browser/Node: lightweight WASI shim (e.g. browser_wasi_shim, wasmer-js)
+  * jz.wasm uses WASI internally
+
+### AssemblyScript Web APIs → WASI mapping
+
+AS by default uses "Web APIs" (host-provided imports), wasi-shim replaces them with WASI:
+
+| Web API | WASI function | Notes |
+|---------|---------------|-------|
+| `env.abort(msg,file,line,col)` | fd_write(stderr) + proc_exit(255) | AS special import |
+| `env.trace(msg,n,a0..a4)` | fd_write(stderr) | AS special import |
+| `env.seed()` | random_get | For Math.random() |
+| `console.log/debug/info` | fd_write(stdout) | |
+| `console.warn/error` | fd_write(stderr) | |
+| `console.time/timeEnd` | clock_time_get(MONOTONIC) | |
+| `Date.now()` | clock_time_get(REALTIME) / 1000000 | ns → ms |
+| `performance.now()` | clock_time_get(MONOTONIC) / 1000000 | |
+| `crypto.getRandomValues` | random_get | |
+| `process.stdin/stdout/stderr` | fd_read/fd_write(0/1/2) | |
+| `process.argv/env` | args_get/environ_get | |
+| `process.exit` | proc_exit | |
+
+**Key insight**: AS "Web APIs" are just 3 special imports (`env.abort`, `env.trace`, `env.seed`) + standard JS globals reimplemented. The shim maps everything to ~5 WASI functions: `fd_write`, `fd_read`, `clock_time_get`, `random_get`, `proc_exit`.
+
+**For JZ**: Could use same pattern - define minimal "jz.abort", "jz.log", "jz.time", "jz.random" imports, then provide either WASI shim or browser shim. But WASI is simpler (standard).
+
+### WASI Shims for Browser/Node
+
+  * [wasmer-js](https://www.npmjs.com/package/@wasmer/wasi) - wasmer runtime for browser/Node
+  * [@tybys/wasm-util](https://github.com/toyobayashi/wasm-util) - lightweight WASI polyfill
+  * [@assemblyscript/wasi-shim](https://github.com/AssemblyScript/wasi-shim) - compile-time, AS→WASI
+  * [@bytecodealliance/preview2-shim](https://www.npmjs.com/package/@bytecodealliance/preview2-shim) - WASIp2 for JS
