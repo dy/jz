@@ -445,6 +445,11 @@ export function preanalyze(ast) {
     if (node === 'true' || node === 'false') return 'boolean'
     if (typeof node === 'number') return 'number'
     if (Array.isArray(node) && node[0] === '[') return 'array'
+    if (Array.isArray(node) && node[0] === '=>') return 'function'
+    // new Set(), new Map(), /regex/
+    if (Array.isArray(node) && node[0] === 'new' && node[1] === 'Set') return 'set'
+    if (Array.isArray(node) && node[0] === 'new' && node[1] === 'Map') return 'map'
+    if (Array.isArray(node) && node[0] === 'regex') return 'regex'
     return null
   }
 
@@ -1225,6 +1230,11 @@ export function inferObjectSchemas(ast) {
     if (node === 'true' || node === 'false') return 'boolean'
     if (typeof node === 'number') return 'number'
     if (Array.isArray(node) && node[0] === '[') return 'array'
+    if (Array.isArray(node) && node[0] === '=>') return 'function'
+    // new Set(), new Map(), /regex/
+    if (Array.isArray(node) && node[0] === 'new' && node[1] === 'Set') return 'set'
+    if (Array.isArray(node) && node[0] === 'new' && node[1] === 'Map') return 'map'
+    if (Array.isArray(node) && node[0] === 'regex') return 'regex'
     return null
   }
 

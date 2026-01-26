@@ -187,3 +187,39 @@ test('boxed map - multiple properties', async () => {
      boxed.min + boxed.max)
   `), 100)
 })
+// ===========================================================================
+// BOXED FUNCTIONS - Functions can hold properties via Object.assign
+// ===========================================================================
+
+test('boxed function - basic property access', async () => {
+  is(await evaluate('Object.assign(() => 42, {name: 1}).name'), 1)
+})
+
+test('boxed function - store in variable', async () => {
+  is(await evaluate(`
+    (fn = Object.assign(() => 100, {scale: 2}),
+     fn.scale)
+  `), 2)
+})
+
+test('boxed function - call still works', async () => {
+  is(await evaluate(`
+    (fn = Object.assign(() => 100, {scale: 2}),
+     fn())
+  `), 100)
+})
+
+test('boxed function - multiple properties', async () => {
+  is(await evaluate(`
+    (fn = Object.assign(() => 0, {min: 1, max: 99}),
+     fn.min + fn.max)
+  `), 100)
+})
+
+test('boxed function - closure with props', async () => {
+  is(await evaluate(`
+    (x = 10,
+     fn = Object.assign(() => x, {multiplier: 2}),
+     fn() * fn.multiplier)
+  `), 20)
+})
