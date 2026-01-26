@@ -369,10 +369,13 @@ export function findHoistedVars(bodyAst, params) {
  */
 export function preanalyze(ast) {
   const f64Vars = new Set()
-  const funcs = new Map()       // name → { params, body }
+  const funcs = new Map()       // name → { params, body, exported }
   const funcReturnTypes = new Map() // name → 'i32' | 'f64'
   const inferredSchemas = new Map() // varName -> { props, closures, isBoxed, boxedType }
   const arrayParams = new Map()  // funcName → Set<paramName> for params used as arrays
+  const exportedFuncs = new Set() // functions in export statements (JS boundary)
+  const funcParamPtrTypes = new Map() // funcName → Map<paramName, Set<'array'|'string'|'object'>>
+  const funcCallGraph = new Map() // funcName → Set<calledFuncName> (for type propagation)
 
   // ===== Array param detection helpers =====
   const ARRAY_METHODS = new Set(['map', 'filter', 'reduce', 'find', 'findIndex', 'indexOf', 'includes',
@@ -459,7 +462,8 @@ export function preanalyze(ast) {
       if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') {
         const [, name, value] = decl
         if (Array.isArray(value) && value[0] === '=>') {
-          funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+          funcs.set(name, { params: extractParams(value[1]), body: value[2], exported: true })
+          exportedFuncs.add(name)
         }
       }
     }
@@ -467,21 +471,32 @@ export function preanalyze(ast) {
     if (op === 'export' && Array.isArray(args[0]) && args[0][0] === 'function') {
       const [, name, params, body] = args[0]
       if (typeof name === 'string') {
-        funcs.set(name, { params: extractParams(params), body })
+        funcs.set(name, { params: extractParams(params), body, exported: true })
+        exportedFuncs.add(name)
+      }
+    }
+    // export { name } - mark existing function as exported
+    if (op === 'export' && Array.isArray(args[0]) && args[0][0] === '{') {
+      for (let i = 1; i < args[0].length; i++) {
+        const name = args[0][i]
+        if (typeof name === 'string') {
+          exportedFuncs.add(name)
+          if (funcs.has(name)) funcs.get(name).exported = true
+        }
       }
     }
     // function name(params) { body }
     if (op === 'function') {
       const [name, params, body] = args
       if (typeof name === 'string') {
-        funcs.set(name, { params: extractParams(params), body })
+        funcs.set(name, { params: extractParams(params), body, exported: false })
       }
     }
     // const/let fn = (args) => body
     if ((op === 'const' || op === 'let') && Array.isArray(args[0]) && args[0][0] === '=') {
       const [, name, value] = args[0]
       if (typeof name === 'string' && Array.isArray(value) && value[0] === '=>') {
-        funcs.set(name, { params: extractParams(value[1]), body: value[2] })
+        funcs.set(name, { params: extractParams(value[1]), body: value[2], exported: false })
       }
     }
 
@@ -681,50 +696,85 @@ export function preanalyze(ast) {
     funcReturnTypes.set(name, analyzeFunc(name, params, body))
   }
 
-  // ===== Detect array params =====
-  // A param is inferred as array if used with: arr[i], arr.length, arr.map(), etc.
-  function detectArrayParams(funcName, params, body) {
+  // ===== Detect pointer param types =====
+  // Infer param pointer types from usage patterns
+  const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'charAt', 'charCodeAt', 'indexOf',
+    'lastIndexOf', 'includes', 'startsWith', 'endsWith', 'split', 'trim', 'trimStart', 'trimEnd',
+    'padStart', 'padEnd', 'repeat', 'replace', 'toLowerCase', 'toUpperCase', 'match', 'search'])
+
+  function detectParamPtrTypes(funcName, params, body) {
     const paramSet = new Set(params)
-    const arrays = new Set()
+    const ptrTypes = new Map() // paramName → Set<'array'|'string'|'object'>
+    const calledFuncs = new Set()
+
+    function addType(param, type) {
+      if (!ptrTypes.has(param)) ptrTypes.set(param, new Set())
+      ptrTypes.get(param).add(type)
+    }
 
     function scan(node) {
       if (!node || typeof node !== 'object') return
       if (!Array.isArray(node)) return
       const [op, ...args] = node
 
-      // arr[i] - array indexing
+      // p[i] - array indexing (could be array or string)
       if (op === '[]' && typeof args[0] === 'string' && paramSet.has(args[0])) {
-        arrays.add(args[0])
+        // Ambiguous: could be array or string, mark as array (most common)
+        addType(args[0], 'array')
       }
 
-      // arr.length or arr.method()
+      // p.prop - property/method access
       if (op === '.' && typeof args[0] === 'string' && paramSet.has(args[0])) {
         const prop = args[1]
-        if (prop === 'length' || ARRAY_METHODS.has(prop)) {
-          arrays.add(args[0])
+        if (prop === 'length') {
+          // Ambiguous: array or string both have .length
+          // Will be resolved by other usages or default to array
+        } else if (ARRAY_METHODS.has(prop)) {
+          addType(args[0], 'array')
+        } else if (STRING_METHODS.has(prop)) {
+          addType(args[0], 'string')
+        } else {
+          // Unknown property → assume object
+          addType(args[0], 'object')
         }
       }
 
-      // method call: arr.map(fn) - the '()' wraps ['.', arr, 'map']
+      // method call: p.map(fn) - the '()' wraps ['.', p, 'method']
       if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.') {
         const [, obj, method] = args[0]
-        if (typeof obj === 'string' && paramSet.has(obj) && ARRAY_METHODS.has(method)) {
-          arrays.add(obj)
+        if (typeof obj === 'string' && paramSet.has(obj)) {
+          if (ARRAY_METHODS.has(method)) addType(obj, 'array')
+          else if (STRING_METHODS.has(method)) addType(obj, 'string')
         }
+      }
+
+      // Track function calls for call graph: helper(p) or fn(a, p, b)
+      if (op === '()' && typeof args[0] === 'string' && funcs.has(args[0])) {
+        calledFuncs.add(args[0])
       }
 
       for (const arg of args) scan(arg)
     }
 
     scan(body)
+
+    // Store results
+    if (ptrTypes.size > 0) funcParamPtrTypes.set(funcName, ptrTypes)
+    if (calledFuncs.size > 0) funcCallGraph.set(funcName, calledFuncs)
+
+    // Also update legacy arrayParams for backward compat
+    const arrays = new Set()
+    for (const [param, types] of ptrTypes) {
+      if (types.has('array')) arrays.add(param)
+    }
     if (arrays.size > 0) arrayParams.set(funcName, arrays)
   }
 
   for (const [name, { params, body }] of funcs) {
-    detectArrayParams(name, params, body)
+    detectParamPtrTypes(name, params, body)
   }
 
-  return { f64Vars, funcReturnTypes, inferredSchemas, arrayParams }
+  return { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph }
 }
 
 /**

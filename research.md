@@ -275,7 +275,7 @@
   * Decision: Option 1. Internal functions use `(param $off i32)` for pointers.
     Export wrappers unbox args, call internal, box results.
     Monomorphize when same func used with multiple pointer types.
-    
+
   * Implementation:
     - analyze.js: track exported vs internal funcs, infer param types
     - compile.js: emit i32 params for internal, call `__ptr_offset` only at boundary
@@ -286,7 +286,7 @@
     ```wat
     ;; Internal (no boxing)
     (func $sum_arr (param $off i32) (result f64) ...)
-    
+
     ;; Export wrapper
     (func (export "sum") (param $ptr f64) (result f64)
       (call $sum_arr (call $__ptr_offset (local.get $ptr))))

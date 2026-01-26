@@ -57,12 +57,15 @@ export function setCtx(context) {
 export function compile(ast, options = {}) {
   // Initialize shared state for method modules
   setCtx(createContext())
-  // Single pre-analysis pass: f64 vars, func return types, object schemas, array params
-  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams } = preanalyze(ast)
+  // Single pre-analysis pass: f64 vars, func return types, object schemas, array params, export analysis
+  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph } = preanalyze(ast)
   ctx.f64Vars = f64Vars
   ctx.funcReturnTypes = funcReturnTypes
   ctx.inferredSchemas = inferredSchemas
   ctx.arrayParams = arrayParams  // funcName → Set<paramName> for params used as arrays
+  ctx.exportedFuncs = exportedFuncs // Set<funcName> - functions at JS boundary
+  ctx.funcParamPtrTypes = funcParamPtrTypes // funcName → Map<paramName, Set<'array'|'string'|'object'>>
+  ctx.funcCallGraph = funcCallGraph // funcName → Set<calledFuncName>
   const bodyWat = String(f64(gen(ast)))
   const funcs = genFunctions()
   return assemble(bodyWat, ctx, funcs)
@@ -326,6 +329,23 @@ export function gen(ast) {
   const [op, ...args] = ast
   if (op in operators) return operators[op](args)
   throw new Error(`Unknown operator: ${op}`)
+}
+
+/**
+ * Get i32 offset for a pointer expression.
+ * If the expression is a param with cached offset, returns the cached local.
+ * Otherwise, generates `(call $__ptr_offset expr)`.
+ *
+ * @param {string} ptrExpr - WAT expression that evaluates to NaN-boxed pointer
+ * @param {string|null} paramName - If this is a param access, the param name
+ * @returns {string} WAT i32 expression for the offset
+ */
+export function ptrOffset(ptrExpr, paramName = null) {
+  // Check if we have a cached offset for this param
+  if (paramName && ctx.cachedOffsets?.has(paramName)) {
+    return `(local.get $${ctx.cachedOffsets.get(paramName)})`
+  }
+  return `(call $__ptr_offset ${ptrExpr})`
 }
 
 /**
@@ -3394,6 +3414,20 @@ function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = 
       di.names.forEach((name, idx) => {
         paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
       })
+    }
+  }
+
+  // Cache i32 offsets for pointer params (optimization: unbox once, use throughout)
+  // For params inferred as array/string/object, extract offset at function entry
+  ctx.cachedOffsets = new Map() // paramName → localName (for i32 offset)
+  const ptrTypes = parentCtx.funcParamPtrTypes?.get(name)
+  if (ptrTypes && !closureInfo) {
+    for (const [paramName, types] of ptrTypes) {
+      // Create i32 local to cache the offset
+      const offsetLocal = `${paramName}_off`
+      ctx.addLocal(offsetLocal, 'i32')
+      ctx.cachedOffsets.set(paramName, offsetLocal)
+      paramInit += `(local.set $${offsetLocal} (call $__ptr_offset (local.get $${paramName})))\n      `
     }
   }
 
