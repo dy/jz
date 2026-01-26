@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile as jzCompile } from '../index.js'
+import { evaluate } from './util.js'
 
 // Helper to get WAT text (compile now always returns WAT)
 function getWat(code) {
@@ -113,4 +114,34 @@ test('i32 preservation - comparison function returns i32', () => {
     export const equals = (a, b) => a === b
   `)
   ok(wat.includes('(result i32)'), 'comparison function should return i32')
+})
+
+// Runtime verification tests - ensure i32 preservation works correctly at runtime
+
+test('i32 runtime - integer arithmetic produces correct results', async () => {
+  is(await evaluate('let a = 1000000; let b = 2000000; a + b'), 3000000)
+  is(await evaluate('let a = 100; let b = 50; a - b'), 50)
+  is(await evaluate('let a = 123; let b = 456; a * b'), 56088)
+})
+
+test('i32 runtime - bitwise operations work correctly', async () => {
+  is(await evaluate('let a = 0xFF; let b = 0x0F; a & b'), 0x0F)
+  is(await evaluate('let a = 0xF0; let b = 0x0F; a | b'), 0xFF)
+  is(await evaluate('let a = 0xFF; let b = 0xF0; a ^ b'), 0x0F)
+  is(await evaluate('let a = 1; a << 4'), 16)
+  is(await evaluate('let a = 32; a >> 2'), 8)
+})
+
+test('i32 runtime - comparisons return correct boolean values', async () => {
+  is(await evaluate('let a = 5; a > 3 ? 1 : 0'), 1)
+  is(await evaluate('let a = 5; a < 3 ? 1 : 0'), 0)
+  is(await evaluate('let a = 5; a === 5 ? 1 : 0'), 1)
+  is(await evaluate('let a = 5; a !== 5 ? 1 : 0'), 0)
+})
+
+test('i32 runtime - mixed arithmetic promotes correctly', async () => {
+  // Division always produces f64
+  is(await evaluate('let a = 5; a / 2'), 2.5)
+  // i32 + f64 promotes to f64
+  is(await evaluate('let a = 1; a + 0.5'), 1.5)
 })

@@ -527,6 +527,8 @@
     * Export boundary: 1 unbox per ptr param, 1 box per ptr return
     * ~90% of pointer ops become pure i32 arithmetic
 * [ ] clean off source from `this`, `Object.create`.
+* [ ] Simplify main API (don't use own instantiate/wrapper)
+  * [ ] Compile binary right away, expose wat string.
 * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [ ] console.log/warn/error (import stubs)
 * [ ] Date.now, performance.now (host imports)

@@ -982,3 +982,66 @@ AS by default uses "Web APIs" (host-provided imports), wasi-shim replaces them w
   * [@tybys/wasm-util](https://github.com/toyobayashi/wasm-util) - lightweight WASI polyfill
   * [@assemblyscript/wasi-shim](https://github.com/AssemblyScript/wasi-shim) - compile-time, AS→WASI
   * [@bytecodealliance/preview2-shim](https://www.npmjs.com/package/@bytecodealliance/preview2-shim) - WASIp2 for JS
+
+
+## [ ] Compile API → `{binary, wat}`
+
+  **Research: How other compilers expose output**
+
+  * AssemblyScript: `asc.compileString()` → `{binary, text, stderr, stats}` (both formats)
+  * AssemblyScript CLI: `--outFile out.wasm` + `--textFile out.wat` (separate flags)
+  * Porffor: `porf wasm script.js out.wasm` (CLI command per format)
+  * Binaryen: `module.emitBinary()` / `module.emitText()` (separate methods)
+
+  **Current JZ flow** (3 steps, user manages watr):
+  ```js
+  const wat = compile(code)       // JZ: JS → WAT
+  const binary = watrCompile(wat) // watr: WAT → binary
+  const inst = instantiate(binary)
+  ```
+
+  **watr options** (what we'd hide):
+  * features: gc, simd, exceptions, relaxed-simd, etc.
+  * polyfill: fallback codegen for unsupported features
+  * optimize: tree-shake, inline, etc.
+
+  **Options**
+
+  0. Return `{binary, wat}` from compile()
+    + Matches AssemblyScript pattern
+    + Single call gets both formats
+    + wat available for debugging when needed
+    + User doesn't need to know/import watr
+    + Zero breaking change for instantiate()
+    - Hides watr options (features, polyfill)
+    - Slightly more work if user only wants wat (rare)
+
+  1. Return binary only, expose wat via option
+    + Simpler return type
+    - wat inaccessible without option flag
+    - Debugging harder
+
+  2. Return wat only (current)
+    + User controls watr options (features, polyfill, optimize)
+    + Can swap watr for another assembler
+    - Extra step for common case
+    - User must know about watr
+
+  3. Return instantiated module
+    + One-liner: `const {fn} = compile(code)`
+    - Async required (WebAssembly.instantiate)
+    - Can't inspect wat/binary
+    - Can't pass custom imports easily
+
+  4. Return `{binary, wat}` + accept watr options
+    ```js
+    compile(code, { watr: { features: ['simd'], polyfill: true } })
+    ```
+    + Best of both: simple default, configurable when needed
+    + wat always available for custom assembler path
+    - API slightly more complex
+
+  **Decision**: Option 4 - return `{binary, wat}`, pass-through watr options
+  * Most users want binary, wat is for debugging
+  * watr is already a dependency
+  * Matches established pattern (AssemblyScript)

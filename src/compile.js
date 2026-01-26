@@ -1491,6 +1491,15 @@ const operators = {
       const loc = ctx.getLocal(name)
       const captured = ctx.capturedVars && name in ctx.capturedVars
       if (loc || captured) {
+        // Check if this is a boxed function (object with __function__ prefix)
+        const schema = ctx.localSchemas[loc?.scopedName] ?? loc?.schema ?? captured?.schema
+        if (Array.isArray(schema) && schema[0] === '__function__') {
+          // Boxed function: extract closure from slot 0 and call it
+          ctx.usedMemory = true
+          const closureWat = objGet(`(local.get $${loc?.scopedName || name})`, 0)
+          const argWats = args.map(a => f64(gen(a))).join(' ')
+          return wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
+        }
         // This is calling a closure value stored in a variable
         return _genClosureCall(name, args)
       }
@@ -1887,12 +1896,15 @@ const operators = {
     const captured = [...analysis.free].filter(v => outerDefined.has(v) && !fnParams.includes(v))
 
     // Helper to get variable info for captured var (schema, semanticType for reboxing)
+    // Pointer types (array, object, string, etc.) have WASM type f64 but semantic type for dispatch
+    const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
     const getVarInfo = (v) => {
       const loc = ctx.getLocal(v)
       if (loc) {
+        const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
         return {
           schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-          semanticType: loc.semanticType,
+          semanticType: semType,
           wasmType: loc.type
         }
       }
@@ -1920,7 +1932,7 @@ const operators = {
       envType = `$env${envId}`
       envFields = captured.map((v, i) => {
         const info = getVarInfo(v)
-        return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+        return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
       })
     }
 
@@ -2960,12 +2972,15 @@ const operators = {
       )
 
       // Helper to get variable info for captured var (schema, semanticType for reboxing)
+      // Pointer types have WASM type f64 but semantic type for dispatch
+      const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
       const getVarInfo = (v) => {
         const loc = ctx.getLocal(v)
         if (loc) {
+          const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
           return {
             schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-            semanticType: loc.semanticType,
+            semanticType: semType,
             wasmType: loc.type
           }
         }
@@ -2979,7 +2994,7 @@ const operators = {
         const envType = `$env${envId}`
         const envFields = captured.map((v, i) => {
           const info = getVarInfo(v)
-          return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+          return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
         })
         ctx.functions['main'] = {
           params: fnParams,
@@ -3116,12 +3131,15 @@ function genAssign(target, value, returnValue) {
     )
 
     // Helper to get variable info for captured var (schema, semanticType for reboxing)
+    // Pointer types have WASM type f64 but semantic type for dispatch
+    const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
     const getVarInfo = (v) => {
       const loc = ctx.getLocal(v)
       if (loc) {
+        const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
         return {
           schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-          semanticType: loc.semanticType,
+          semanticType: semType,
           wasmType: loc.type
         }
       }
@@ -3142,7 +3160,7 @@ function genAssign(target, value, returnValue) {
       const envType = `$env${envId}`
       const envFields = captured.map((v, i) => {
         const info = getVarInfo(v)
-        return { name: v, index: i, type: 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
+        return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
       })
 
       ctx.closures[target] = { envType, envFields, captured, params, body }
