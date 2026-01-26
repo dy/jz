@@ -128,7 +128,6 @@
   * [x] Methods: every, some, find, findIndex
   * [x] Methods: forEach, map, filter, reduce, reduceRight
   * [x] Methods: sort, toReversed, toSorted, with (ES2023)
-  * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [x] Math full (35/36 methods native/stdlib, f16round approximated via f32)
 * [x] Boxed primitives via Object.assign (String, Number, Boolean, Array)
 * [x] Regex
@@ -146,12 +145,9 @@
   * [x] Array.isArray (pointer type check)
   * [x] Array.from (copy array)
   * [x] Object.keys, Object.values, Object.entries (schema lookup)
-  * [ ] console.log/warn/error (import stubs)
-  * [ ] Date.now, performance.now (host imports)
   * [x] JSON.stringify (numbers, strings, arrays, objects)
   * [x] JSON.parse (recursive descent parser - numbers, strings, arrays, objects)
   * [x] Set, Map (open addressing hash table, number/string/object keys)
-  * [ ] structuredClone (deep copy)
   * [-] WeakSet, WeakMap (need GC hooks - not feasible)
   * [-] Promise, async/await (not feasible in sync WASM)
   * [-] Proxy, Reflect (metaprogramming - not feasible)
@@ -316,14 +312,12 @@
   * [x] **Phase 8: ARRAY ring bit**
     * [x] ring=1 in aux bit for O(1) shift/unshift
     * [x] Updated `__alloc_ring` to use type=1 with aux=0x8000
-
   * [x] **Phase 9: Cleanup**
     * [x] Updated assemble.js for new pointer constants
     * [x] Updated memory.js helpers for new layouts
     * [x] Updated all type checks to use 3-bit extraction
     * [x] Updated index.js interop for new encoding
     * [x] All 481 tests passing
-
 * [x] Repointers: unified pointer design
   * [x] Unified format: `[type:4][aux:16][offset:31]` (51 bits in NaN mantissa)
     * [x] 31-bit offset = 2GB (WASM memory32 practical limit, clean i32)
@@ -359,12 +353,6 @@
   * [x] REGEX (type=10): `[type:4][regexId:16][offset:31]` → (compiled in function table with flags)
     * [x] No memory (pattern compiled to matcher function)
   * [x] f64view(memory, ptr) for JS interop (user creates typed array view)
-* [ ] color-space converter
-
-* [ ] Warn/error on hitting memory limits: objects, arrays
-* [ ] Import model
-  * [ ] Bundle/resolve static-time
-  * [ ] Resolve imports by the compiler, not runtime (static-time)
   * [x] infer object schema by forward analysis (let a = {}; a.x = 1)
 * [x] JS improvements (warn on quirks, document divergences)
   * [x] Warning system (console.warn during compilation)
@@ -453,28 +441,6 @@
     * [x] Exception values are f64 (NaN-boxed for any value type)
     * [x] Cross-function exception propagation
     * [x] Nested try/catch blocks
-* [ ] Excellent WASM output
-* [ ] Future features (watr supports, runtime varies)
-  * [x] funcref/call_indirect - already used for closures
-  * [x] multi-value returns - already used for destructuring
-  * [ ] threads/atomics (watr ✓, V8 ✓) - SharedArrayBuffer, Worker coordination
-  * [ ] memory64 (watr ✓, V8 ✓) - >4GB memory, needs ecosystem support
-  * [ ] relaxed SIMD (watr ✓, V8 ✓) - faster but non-deterministic
-  * [-] i31ref - GC feature, not needed with NaN-boxing
-  * [-] branch hinting - micro-optimization, compiler can't predict well
-* [ ] Options
-  * [ ] Memory size (features:'') - default 1 page (64KB), configurable
-  * [ ] Custom imports - user-provided functions
-  * [ ] Source maps
-  * [ ] WASM modules definitions?
-* [ ] WebGPU compute shaders
-* [ ] Tooling: sourcemaps, debuggins, playground
-* [ ] metacircularity
-* [ ] test262 full
-* [ ] CLI
-  * [ ] jz run
-  * [ ] jz compile
-* [ ] Produce component interface for exports (wit)
 * [x] i32 Type Preservation
   * [x] Integer literals (42, 0, -1) → i32.const
   * [x] Track variable types in ctx (i32 vs f64)
@@ -503,10 +469,97 @@
   * [x] NaN boxing pointer format (full f64 range preserved)
   * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
   * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
+* [ ] Missing: ArrayBuffer backing (no shared buffer views)
+* [ ] console.log/warn/error (import stubs)
+* [ ] Date.now, performance.now (host imports)
+* [ ] structuredClone (deep copy)
+* [ ] color-space converter
+* [ ] Warn/error on hitting memory limits: objects, arrays
+* [ ] Import model
+  * [ ] Bundle/resolve static-time
+  * [ ] Resolve imports by the compiler, not runtime (static-time)
+* [ ] Excellent WASM output
+* [ ] Future features (watr supports, runtime varies)
+  * [x] funcref/call_indirect - already used for closures
+  * [x] multi-value returns - already used for destructuring
+  * [ ] threads/atomics (watr ✓, V8 ✓) - SharedArrayBuffer, Worker coordination
+  * [ ] memory64 (watr ✓, V8 ✓) - >4GB memory, needs ecosystem support
+  * [ ] relaxed SIMD (watr ✓, V8 ✓) - faster but non-deterministic
+  * [-] i31ref - GC feature, not needed with NaN-boxing
+  * [-] branch hinting - micro-optimization, compiler can't predict well
+* [ ] Options
+  * [ ] Memory size (features:'') - default 1 page (64KB), configurable
+  * [ ] Custom imports - user-provided functions
+  * [ ] Source maps
+  * [ ] WASM modules definitions?
+* [ ] WebGPU compute shaders
+* [ ] Tooling: sourcemaps, debuggins, playground
+* [ ] metacircularity
+* [ ] test262 full
+* [ ] CLI
+  * [ ] jz run
+  * [ ] jz compile
+* [ ] Produce component interface for exports (wit)
 * [ ] sourcemaps
 * [ ] make all explicit? (math, json, any globals)
   * [ ] can provide implicit globals via options
+* [ ] Eliminate NaN-boxing tax (internal i32, box only at boundary)
+  * **Principle**: NaN-boxing exists for JS interop. Internal code uses raw i32 offsets.
+  * NaN-boxing required ONLY at: JS export boundary, f64 memory slots, closures
+  * Internal functions: `(param $arr_off i32)` - no boxing overhead
+  * [ ] **Phase 1: Export boundary analysis** (analyze.js)
+    * [ ] `ctx.exportedFuncs = Set<name>` - functions in `export` statements
+    * [ ] `ctx.internalFuncs = Set<name>` - all others (never called from JS)
+    * [ ] Track call graph: which internal funcs called by exports vs other internals
+  * [ ] **Phase 2: Parameter type inference** (analyze.js)
+    * [ ] `ctx.funcParamTypes = Map<funcName, Map<paramIdx, Set<type>>>`
+    * [ ] Infer from usage: `arr[i]` → array, `obj.prop` → object, `str.length` → string
+    * [ ] Infer from call sites: `helper(myArr)` where myArr known array
+    * [ ] Track which params are always same type vs polymorphic
+  * [ ] **Phase 3: Monomorphization** (compile.js)
+    * [ ] Single-type params → direct i32 signature: `$fn_arr(i32)`, `$fn_str(i32)`
+    * [ ] Multi-type params → emit variants: `$fn$arr`, `$fn$str`, `$fn$obj`
+    * [ ] Call sites choose variant based on known arg type
+    * [ ] Unknown type at call site → fallback f64 variant with unbox
+  * [ ] **Phase 4: Dual signatures for exports** (assemble.js)
+    * [ ] Internal: `(func $sum_arr (param $off i32) (result f64) ...)`
+    * [ ] Export wrapper: `(func (export "sum") (param $ptr f64) (result f64) (call $sum_arr (call $__ptr_offset (local.get $ptr))))`
+    * [ ] Wrapper unboxes args, calls internal, boxes result if pointer
+    * [ ] Option: `{ gcExports: true }` → export GC refs instead of NaN-boxed f64
+  * [ ] **Phase 5: Internal calling convention** (compile.js)
+    * [ ] Pointer params become i32 offset + type known statically
+    * [ ] No `__ptr_offset` calls inside internal functions
+    * [ ] Aux bits (schema, elemType) passed as separate i32 param when needed
+    * [ ] Example: `helper(arr)` → `(call $helper_arr (i32.const schemaId) (local.get $arr_off))`
+  * [ ] **Phase 6: Memory operations** (memory.js)
+    * [ ] All internal helpers take i32 offset: `arrGetI32(off, idx)`, `objGetI32(off, propIdx)`
+    * [ ] Remove f64→i32 unboxing from hot paths
+    * [ ] Only box when: storing to f64 slot, returning from export, passing to closure
+  * [ ] **Phase 7: Closure boundary** (closures.js)
+    * [ ] Closure env stores f64 (must, for uniform slots)
+    * [ ] On capture: box i32 → f64
+    * [ ] On access: unbox f64 → i32 once at closure entry
+    * [ ] Closure body works with i32 like normal internal func
+  * **Signature examples**:
+    ```wat
+    ;; Internal (no boxing)
+    (func $sum_arr (param $off i32) (result f64)
+      (local $i i32) (local $acc f64)
+      (loop ... (f64.load (i32.add (local.get $off) ...)) ...))
 
+    ;; Export wrapper (boxes at boundary)
+    (func (export "sum") (param $ptr f64) (result f64)
+      (call $sum_arr (call $__ptr_offset (local.get $ptr))))
+
+    ;; With schema (aux passed explicitly)
+    (func $get_prop (param $schema i32) (param $off i32) (param $idx i32) (result f64)
+      (f64.load (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const 8)))))
+    ```
+  * **Expected wins**:
+    * Internal loops: 0 unbox ops (was 6 per access)
+    * Function calls: 0 box/unbox between internal funcs
+    * Export boundary: 1 unbox per ptr param, 1 box per ptr return
+    * ~90% of pointer ops become pure i32 arithmetic
 
 ## Value
 
