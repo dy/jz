@@ -1,48 +1,83 @@
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { ok, is } from 'tst/assert.js'
 import { compile as jzCompile } from '../index.js'
 import { compile as watrCompile } from 'watr'
+import { getWarnings, setWarnings } from '../src/normalize.js'
 
-// Helper: compile JS to WASM binary
+// Helper: compile JS to WASM binary, capturing warnings
+let capturedWarnings = []
+const originalWarn = console.warn
+
+function captureWarnings() {
+  capturedWarnings = []
+  setWarnings([])  // Reset normalize warnings
+  console.warn = (...args) => {
+    capturedWarnings.push(args.join(' '))
+  }
+}
+
+function restoreWarnings() {
+  console.warn = originalWarn
+  // Also capture normalize warnings
+  for (const w of getWarnings()) {
+    capturedWarnings.push(`jz: [${w.code}] ${w.msg}`)
+  }
+  return capturedWarnings
+}
+
+function compileWithWarnings(code) {
+  captureWarnings()
+  const wat = jzCompile(code)
+  const warnings = restoreWarnings()
+  const wasm = watrCompile(wat)
+  return { wasm, warnings }
+}
+
+// Helper: compile JS to WASM binary (no warning capture)
 const compile = code => watrCompile(jzCompile(code))
 
-// Warning tests - these compile successfully but emit warnings
-// Run `npm test` to see warnings in output
+// Warning tests - verify warnings ARE actually emitted
 
 test('warnings - var hoisting', () => {
-  // Should warn: prefer let/const
-  const wasm = compile('var x = 1')
+  const { wasm, warnings } = compileWithWarnings('var x = 1')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('var') && w.includes('prefer')),
+    `Expected var warning, got: ${warnings.join('; ')}`)
 })
 
 test('warnings - parseInt without radix', () => {
-  // Should warn: JZ defaults to 10
-  const wasm = compile('parseInt("10")')
+  const { wasm, warnings } = compileWithWarnings('parseInt("10")')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('parseInt') && w.includes('radix')),
+    `Expected parseInt warning, got: ${warnings.join('; ')}`)
 })
 
 test('warnings - NaN === NaN', () => {
-  // Should warn: always false, use Number.isNaN
-  const wasm = compile('NaN === NaN')
+  const { wasm, warnings } = compileWithWarnings('NaN === NaN')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('NaN') && w.includes('Number.isNaN')),
+    `Expected NaN warning, got: ${warnings.join('; ')}`)
 })
 
 test('warnings - NaN !== NaN', () => {
-  // Should warn: always true, use Number.isNaN
-  const wasm = compile('NaN !== NaN')
+  const { wasm, warnings } = compileWithWarnings('NaN !== NaN')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('NaN') && w.includes('Number.isNaN')),
+    `Expected NaN warning, got: ${warnings.join('; ')}`)
 })
 
 test('warnings - array alias', () => {
-  // Should warn: pointer copy, not deep clone
-  const wasm = compile('let a = [1,2,3]; let b = a')
+  const { wasm, warnings } = compileWithWarnings('let a = [1,2,3]; let b = a')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('array') && w.includes('pointer')),
+    `Expected array alias warning, got: ${warnings.join('; ')}`)
 })
 
 test('warnings - x == null idiom', () => {
-  // Should warn: won't catch undefined in JZ
-  const wasm = compile('let x = 1; x == null')
+  const { wasm, warnings } = compileWithWarnings('let x = 1; x == null')
   ok(wasm instanceof Uint8Array)
+  ok(warnings.some(w => w.includes('null') && w.includes('undefined')),
+    `Expected null compare warning, got: ${warnings.join('; ')}`)
 })
 
 test('errors - +[] coercion', () => {

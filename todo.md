@@ -469,7 +469,7 @@
   * [x] NaN boxing pointer format (full f64 range preserved)
   * [x] Boxed strings via Object.assign (unified with OBJECT, schema[0]==='__string__')
   * [x] Arrays with properties via Object.assign (unified with ARRAY_MUT via schemaId)
-* [ ] Eliminate NaN-boxing tax (internal i32, box only at boundary)
+* [x] Eliminate NaN-boxing tax (internal i32, box only at boundary)
   * **Principle**: NaN-boxing exists for JS interop. Internal code uses raw i32 offsets.
   * NaN-boxing required ONLY at: JS export boundary, f64 memory slots, closures
   * Internal functions: `(param $arr_off i32)` - no boxing overhead
@@ -496,16 +496,16 @@
     * [x] `objGetI32`, `objSetI32` for object property access with i32 pointers
     * [x] Default param handling for i32 params (check `i32.eqz` instead of canonical NaN)
     * [x] Propagate `internalFuncs`, `funcParamPtrTypes` via `ctx.fork()`
-  * [ ] **Phase 6: Monomorphization** (compile.js)
-    * [ ] Single-type params → direct i32 signature: `$fn_arr(i32)`, `$fn_str(i32)`
-    * [ ] Multi-type params → emit variants: `$fn$arr`, `$fn$str`, `$fn$obj`
-    * [ ] Call sites choose variant based on known arg type
-    * [ ] Unknown type at call site → fallback f64 variant with unbox
-  * [ ] **Phase 7: Closure boundary** (closures.js)
-    * [ ] Closure env stores f64 (must, for uniform slots)
-    * [ ] On capture: box i32 → f64
-    * [ ] On access: unbox f64 → i32 once at closure entry
-    * [ ] Closure body works with i32 like normal internal func
+  * [x] **Phase 6: Monomorphization** (compile.js) — single-type params use i32 internally
+    * [x] Single-type params → use i32 directly (already in Phase 5)
+    * [-] Multi-type params → emit variants: `$fn$arr`, `$fn$str`, `$fn$obj` (deferred: rare case, complex)
+    * [x] Call sites extract offset via `__ptr_offset` for known ptr args
+    * [x] Unknown type at call site → fallback f64 variant (default behavior)
+  * [x] **Phase 7: Closure boundary** (closures.js)
+    * [x] Closure env stores f64 (uniform slots)
+    * [x] On capture: rebox i32 → f64 via `__mkptr(type, aux, offset)`
+    * [x] `semanticType` preserved on locals for correct rebox type
+    * [x] Object schema preserved via `loc.schema` for aux bits
   * **Signature examples**:
     ```wat
     ;; Internal (no boxing)
