@@ -26,8 +26,8 @@ export function registerModule(name, mod) {
  */
 function createContext() {
   return {
-    types: new Map(),
-    emitters: new Map(),
+    types: {},
+    emitters: {},
     optimizers: [],
     funcs: [],
     imports: [],
@@ -60,7 +60,6 @@ export function compile(code, opts = {}) {
     }
     // Call module init function
     if (typeof m === 'function') m(ctx)
-    else if (m.default) m.default(ctx)
   }
 
   // Pipeline: Parse → Analyze → Emit → Optimize → Assemble

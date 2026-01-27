@@ -9,6 +9,3 @@
  */
 
 export { compile, registerModule } from './src/compile.js'
-
-// Re-export core API for module authors
-export { type, emit, op, optimize, func, extern, needsMemory } from './module/_core.js'

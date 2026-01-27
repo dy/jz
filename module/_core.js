@@ -8,6 +8,7 @@
  */
 
 import { parse as parseWat } from 'watr'
+import { emitExpr } from '../src/emit.js'
 
 /**
  * Declare type signature
@@ -16,7 +17,7 @@ import { parse as parseWat } from 'watr'
  * @param {string} sig - Type signature: 'f64 -> f64' or 'f64'
  */
 export function type(ctx, name, sig) {
-  ctx.types.set(name, parseSignature(sig))
+  ctx.types[name] = parseSignature(sig)
 }
 
 /**
@@ -26,17 +27,7 @@ export function type(ctx, name, sig) {
  * @param {Function} handler - (emittedArgs) => IR
  */
 export function emit(ctx, name, handler) {
-  ctx.emitters.set(name, (args, c) => handler(args.map(a => c.emit(a))))
-}
-
-/**
- * Map name to WASM instruction (simplest case)
- * @param {Object} ctx - Compilation context
- * @param {string} name - JS name
- * @param {string} wasmOp - WASM instruction
- */
-export function op(ctx, name, wasmOp) {
-  ctx.emitters.set(name, (args, c) => [wasmOp, ...args.map(a => c.emit(a))])
+  ctx.emitters[name] = (args, c) => handler(args.map(a => emitExpr(a, c)))
 }
 
 /**
@@ -59,7 +50,7 @@ export function func(ctx, name, wat) {
   const tree = parseWat(wat)
   ctx.funcs.push(tree)
   // Auto-register emitter: sin(x) -> (call $__sin <x>)
-  ctx.emitters.set(name, (args, c) => ['call', `$__${name}`, ...args.map(a => c.emit(a))])
+  ctx.emitters[name] = (args, c) => ['call', `$__${name}`, ...args.map(a => emitExpr(a, c))]
 }
 
 /**

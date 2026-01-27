@@ -12,9 +12,6 @@
 export function emit(ast, ctx) {
   const funcs = []
 
-  // Add emit helper to ctx for use by custom emitters
-  ctx.emit = (expr) => emitExpr(expr, ctx)
-
   // Process top-level statements
   const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
 
@@ -94,107 +91,81 @@ function emitFunc(name, arrow, ctx, exported) {
   return fn
 }
 
-/**
- * Emit expression to IR
- */
-function emitExpr(expr, ctx) {
-  // Literal number
-  if (typeof expr === 'number') {
-    return ['f64.const', expr]
-  }
+// Core emitters for built-in ops
+const emitters = {
+  // Binary arithmetic
+  '+': (a, c) => ['f64.add', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '-': (a, c) => a.length === 1
+    ? ['f64.neg', emitExpr(a[0], c)]
+    : ['f64.sub', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '*': (a, c) => ['f64.mul', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '/': (a, c) => ['f64.div', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '%': (a, c) => ['f64.rem', emitExpr(a[0], c), emitExpr(a[1], c)],
 
-  // Variable reference
-  if (typeof expr === 'string') {
-    // Check if it's a module-provided constant
-    if (ctx.emitters?.has(expr)) {
-      return ctx.emitters.get(expr)([], ctx)
-    }
-    return ['local.get', `$${expr}`]
-  }
+  // Comparisons
+  '==': (a, c) => ['f64.eq', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '!=': (a, c) => ['f64.ne', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '<': (a, c) => ['f64.lt', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '>': (a, c) => ['f64.gt', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '<=': (a, c) => ['f64.le', emitExpr(a[0], c), emitExpr(a[1], c)],
+  '>=': (a, c) => ['f64.ge', emitExpr(a[0], c), emitExpr(a[1], c)],
 
-  if (!Array.isArray(expr)) {
-    return ['f64.const', 0]
-  }
+  // Logical
+  '!': (a, c) => ['f64.eq', emitExpr(a[0], c), ['f64.const', 0]],
 
-  const [op, ...args] = expr
+  // Ternary
+  '?:': (a, c) => ['select',
+    emitExpr(a[1], c),
+    emitExpr(a[2], c),
+    ['f64.ne', emitExpr(a[0], c), ['f64.const', 0]]
+  ],
 
-  // Subscript wraps literals as [,value] (sparse array) - unwrap
-  if (op == null && args.length === 1) {
-    return emitExpr(args[0], ctx)
-  }
+  // Parentheses
+  '(': (a, c) => emitExpr(a[0], c),
 
-  // Check for custom emitter
-  if (ctx.emitters?.has(op)) {
-    return ctx.emitters.get(op)(args, ctx)
-  }
-
-  // Binary operators
-  const binOps = {
-    '+': 'f64.add', '-': 'f64.sub', '*': 'f64.mul', '/': 'f64.div',
-    '%': 'f64.rem', '**': null,  // pow needs stdlib
-    '==': 'f64.eq', '!=': 'f64.ne',
-    '<': 'f64.lt', '>': 'f64.gt', '<=': 'f64.le', '>=': 'f64.ge',
-  }
-
-  if (op in binOps && args.length === 2) {
-    const wasmOp = binOps[op]
-    if (!wasmOp) {
-      throw new Error(`Operator ${op} requires math module`)
-    }
-    return [wasmOp, emitExpr(args[0], ctx), emitExpr(args[1], ctx)]
-  }
-
-  // Unary operators
-  if (op === '-' && args.length === 1) {
-    return ['f64.neg', emitExpr(args[0], ctx)]
-  }
-
-  if (op === '!') {
-    return ['f64.eq', emitExpr(args[0], ctx), ['f64.const', 0]]
-  }
-
-  // Ternary: ['?:', cond, then, else]
-  if (op === '?:') {
-    return ['select',
-      emitExpr(args[1], ctx),  // then
-      emitExpr(args[2], ctx),  // else
-      ['f64.ne', emitExpr(args[0], ctx), ['f64.const', 0]]  // cond (truthy)
-    ]
-  }
-
-  // Function call: ['()', callee, args]
-  if (op === '()') {
+  // Function call
+  '()': (args, ctx) => {
     const [callee, callArgs] = args
     const argList = Array.isArray(callArgs)
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
 
     // Check if callee has custom emitter
-    if (typeof callee === 'string' && ctx.emitters?.has(callee)) {
-      return ctx.emitters.get(callee)(argList, ctx)
+    if (typeof callee === 'string' && callee in ctx.emitters) {
+      return ctx.emitters[callee](argList, ctx)
     }
 
-    // Regular function call
     const fnName = typeof callee === 'string' ? `$${callee}` : '$fn'
     return ['call', fnName, ...argList.map(a => emitExpr(a, ctx))]
-  }
-
-  // Parentheses: ['(', expr]
-  if (op === '(') {
-    return emitExpr(args[0], ctx)
-  }
-
-  // Default: try to lower recursively
-  console.warn(`Unknown op: ${op}`)
-  return ['f64.const', 0]
+  },
 }
 
 /**
- * Create emit context helper for modules
+ * Emit expression to IR
  */
-export function createEmitCtx(ctx) {
-  return {
-    emit: (expr) => emitExpr(expr, ctx),
-    ...ctx
+export function emitExpr(expr, ctx) {
+  // Literal number
+  if (typeof expr === 'number') return ['f64.const', expr]
+
+  // Variable reference
+  if (typeof expr === 'string') {
+    if (expr in ctx.emitters) return ctx.emitters[expr]([], ctx)
+    return ['local.get', `$${expr}`]
   }
+
+  if (!Array.isArray(expr)) return ['f64.const', 0]
+
+  const [op, ...args] = expr
+
+  // Subscript wraps literals as [,value] (sparse array)
+  if (op == null && args.length === 1) return emitExpr(args[0], ctx)
+
+  // Module emitters (can override built-ins)
+  if (op in ctx.emitters) return ctx.emitters[op](args, ctx)
+
+  // Built-in emitters
+  if (op in emitters) return emitters[op](args, ctx)
+
+  console.warn(`Unknown op: ${op}`)
+  return ['f64.const', 0]
 }

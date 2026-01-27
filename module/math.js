@@ -3,7 +3,7 @@
  * @module math
  */
 
-import { type, emit, op, func } from './_core.js'
+import { type, emit, func } from './_core.js'
 
 export default function init(ctx) {
   // Type declarations
@@ -26,16 +26,16 @@ export default function init(ctx) {
   emit(ctx, 'E', () => ['f64.const', Math.E])
 
   // Built-in WASM ops
-  op(ctx, 'sqrt', 'f64.sqrt')
-  op(ctx, 'abs', 'f64.abs')
-  op(ctx, 'floor', 'f64.floor')
-  op(ctx, 'ceil', 'f64.ceil')
-  op(ctx, 'min', 'f64.min')
-  op(ctx, 'max', 'f64.max')
-  op(ctx, 'round', 'f64.nearest')
+  emit(ctx, 'sqrt', a => ['f64.sqrt', ...a])
+  emit(ctx, 'abs', a => ['f64.abs', ...a])
+  emit(ctx, 'floor', a => ['f64.floor', ...a])
+  emit(ctx, 'ceil', a => ['f64.ceil', ...a])
+  emit(ctx, 'min', a => ['f64.min', ...a])
+  emit(ctx, 'max', a => ['f64.max', ...a])
+  emit(ctx, 'round', a => ['f64.nearest', ...a])
 
   // Power operator (uses stdlib)
-  emit(ctx, '**', (args) => ['call', '$__pow', ...args])
+  emit(ctx, '**', a => ['call', '$__pow', ...a])
 
   // sin(x) Taylor series: x - x³/6 + x⁵/120 - x⁷/5040
   func(ctx, 'sin', `(func $__sin (param $x f64) (result f64)
