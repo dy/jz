@@ -66,52 +66,52 @@
 
 ## [ ] Alternatives
 
-### JS/TS → WASM compilers (direct competitors)
+  ### JS/TS → WASM compilers (direct competitors)
 
-| Project | Approach | Pointers | Interop | WASI/Env |
-|---------|----------|----------|---------|----------|
-| porffor | AOT JS→WASM | Custom | Custom imports | No WASI, "mostly unusable standalone" |
-| jawsm | JS→WASM GC | WASM GC refs | WASIp2 polyfill | Requires Node v23+ |
-| assemblyscript | TS-like→WASM | Linear memory | wasm-bindgen style | wasi-shim |
-| javy | QuickJS embedded | QuickJS internal | Javy.IO | WASI fd_read/write |
+  | Project | Approach | Pointers | Interop | WASI/Env |
+  |---------|----------|----------|---------|----------|
+  | porffor | AOT JS→WASM | Custom | Custom imports | No WASI, "mostly unusable standalone" |
+  | jawsm | JS→WASM GC | WASM GC refs | WASIp2 polyfill | Requires Node v23+ |
+  | assemblyscript | TS-like→WASM | Linear memory | wasm-bindgen style | wasi-shim |
+  | javy | QuickJS embedded | QuickJS internal | Javy.IO | WASI fd_read/write |
 
-### Other langs → WASM (similar challenges)
+  ### Other langs → WASM (similar challenges)
 
-| Project | Lang | Pointers | Interop | WASI/Env |
-|---------|------|----------|---------|----------|
-| emscripten | C/C++ | Native | JS glue | WASI + glue |
-| wasm-bindgen | Rust | Linear | JS bindings gen | wasm-pack |
-| grain | Grain | WASM GC | Grain runtime | Custom |
-| tinygo | Go | Linear | JS/WASI | WASI |
-| kotlin/wasm | Kotlin | WASM GC | Kotlin/JS | WASIp2 |
-| moonbit | MoonBit | WASM GC | JS FFI | WASI |
-| zig | Zig | Native | C-style | WASI |
-| nelua | Nelua | Native | C-style | WASI |
-| lys | Lys | Linear | Custom | Custom |
-| walt | WAT-like | Linear | Manual | None (unmaintained) |
+  | Project | Lang | Pointers | Interop | WASI/Env |
+  |---------|------|----------|---------|----------|
+  | emscripten | C/C++ | Native | JS glue | WASI + glue |
+  | wasm-bindgen | Rust | Linear | JS bindings gen | wasm-pack |
+  | grain | Grain | WASM GC | Grain runtime | Custom |
+  | tinygo | Go | Linear | JS/WASI | WASI |
+  | kotlin/wasm | Kotlin | WASM GC | Kotlin/JS | WASIp2 |
+  | moonbit | MoonBit | WASM GC | JS FFI | WASI |
+  | zig | Zig | Native | C-style | WASI |
+  | nelua | Nelua | Native | C-style | WASI |
+  | lys | Lys | Linear | Custom | Custom |
+  | walt | WAT-like | Linear | Manual | None (unmaintained) |
 
-### WASM runtimes
+  ### WASM runtimes
 
-| Project | Notes |
-|---------|-------|
-| wasmer | Fast, WASI, plugins |
-| wasmtime | Bytecode Alliance reference |
-| wasm3 | Fast interpreter, embedded |
-| wasmi | Rust interpreter, embedded |
-| WasmEdge | Cloud/edge, WASI |
-| lunatic | Erlang-inspired, actors |
-| txiki.js | Tiny JS runtime with WASM |
+  | Project | Notes |
+  |---------|-------|
+  | wasmer | Fast, WASI, plugins |
+  | wasmtime | Bytecode Alliance reference |
+  | wasm3 | Fast interpreter, embedded |
+  | wasmi | Rust interpreter, embedded |
+  | WasmEdge | Cloud/edge, WASI |
+  | lunatic | Erlang-inspired, actors |
+  | txiki.js | Tiny JS runtime with WASM |
 
 
-### Key patterns observed
+  ### Key patterns observed
 
-  1. **Pointer strategies**: Linear memory (emscripten, AS, jz) vs WASM GC (jawsm, kotlin, moonbit)
-  2. **JS interop**: Glue code (emscripten) vs bindgen (Rust) vs manual (jz)
-  3. **WASI adoption**: Universal for CLI/server, shims for browser
-  4. **Interpreter vs AOT**: QuickJS-based (javy) vs direct compile (porffor, jz)
-  5. **GC compilers converging on WASMp2**: kotlin, dart, moonbit target WASM GC
+    1. **Pointer strategies**: Linear memory (emscripten, AS, jz) vs WASM GC (jawsm, kotlin, moonbit)
+    2. **JS interop**: Glue code (emscripten) vs bindgen (Rust) vs manual (jz)
+    3. **WASI adoption**: Universal for CLI/server, shims for browser
+    4. **Interpreter vs AOT**: QuickJS-based (javy) vs direct compile (porffor, jz)
+    5. **GC compilers converging on WASMp2**: kotlin, dart, moonbit target WASM GC
 
-## [x] Arrays: GC vs memory -> Memory (linear)
+## [ ] Arrays: GC vs memory ->
   0. Linear memory with NaN-boxed pointers
     + Zero-copy JS interop via SharedArrayBuffer
     + Predictable performance (no GC pauses)
@@ -132,7 +132,7 @@
   * Decision: Linear memory. Audio/DSP primary use case demands deterministic timing.
     GC pauses in audio thread = audible glitches. Trade automatic cleanup for predictability.
 
-## [x] Closures: how? -> Capture by value + explicit env param
+## [ ] Closures: how? -> Capture by value + explicit env param
   0. No closures
     - Too limiting for functional style
     + Simplest
@@ -219,7 +219,7 @@
   * Overflow handling: When num or den exceeds i32 range, falls back to f64
     arithmetic. Example: `(2**30) / 3 * 3` → f64 (can't fit intermediate).
 
-## [x] Pointers -> NaN-boxing
+## [ ] Pointers ->
   0. NaN-boxing (current)
     + Single f64 value = clean JS interop
     + 51-bit payload: [type:4][aux:16][offset:31]
@@ -293,6 +293,7 @@
     ```
 
 ## [x] Types -> Monomorphic + hybrid fallback
+
   0. Monomorphic (primary)
     + Zero runtime dispatch
     + Optimal code per call-site
@@ -1089,3 +1090,7 @@
   * Most users want binary, wat is for debugging
   * watr is already a dependency
   * Matches established pattern (AssemblyScript)
+
+## [ ] Pluggable architecture
+
+  0. `import` defines language extensions

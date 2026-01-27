@@ -526,13 +526,15 @@
     * Function calls: 0 box/unbox between internal funcs
     * Export boundary: 1 unbox per ptr param, 1 box per ptr return
     * ~90% of pointer ops become pure i32 arithmetic
-* [ ] clean off source from `this`, `Object.create`.
+
+* [ ] Pluggable architecture
+
 * [ ] Simplify main API (don't use own instantiate/wrapper)
+* [ ] clean off source from `this`, `Object.create`.
   * [ ] Compile binary right away, expose wat string.
 * [ ] Missing: ArrayBuffer backing (no shared buffer views)
 * [ ] console.log/warn/error (import stubs)
 * [ ] Date.now, performance.now (host imports)
-* [ ] structuredClone (deep copy)
 * [ ] color-space converter
 * [ ] Warn/error on hitting memory limits: objects, arrays
 * [ ] Import model
@@ -564,16 +566,11 @@
 * [ ] make all explicit? (math, json, any globals)
   * [ ] can provide implicit globals via options
 * [ ] template tag
-
-## Value
-
 * [ ] Pick floatbeat/audio DSP as THE use case. One page, one demo, one undeniable win.
-* [ ] Kill the "JS subset" framing. It's a "numeric computation DSL."
 * [ ] Benchmark against alternatives. Show where jz wins (size? compilation speed? simplicity?).
 * [ ] Ship something someone uses. Even one real user > zero.
 * [ ] Pick ONE use case and make jz undeniably the best tool for it. Stop being "general."
 * [ ] Better readme example making someone say "I need this": something you cannot easily do any other way.
-* [ ] Less defensive positioning in porffor and assemblyscript
 
 ## [ ] Offering
 
@@ -597,7 +594,6 @@
   * [ ] waveform copy-paste
 * [ ] database + recipe book
 * [ ] samples collection
-
 
 ## Applications
 
