@@ -1091,6 +1091,185 @@
   * watr is already a dependency
   * Matches established pattern (AssemblyScript)
 
-## [ ] Pluggable architecture
+## [ ] Pluggable architecture -> Modules as regular JS/JZ with 'jz' imports
 
-  0. `import` defines language extensions
+  ### Principle
+  Modules are regular JS/JZ files. To extend the compiler, they import from `'jz'`.
+
+  ### The 'jz' Module (compiler intrinsics)
+
+  ```js
+  // math.js - a builtin module
+  import { inline, type } from 'jz:core'
+
+  // Declare types for exports
+  type('sin', '(f64) -> f64')
+  type('PI', 'f64')
+
+  // Inline WASM for sin
+  inline('sin', (x) => `(call $__sin ${x})`)
+
+  // Constants just export
+  export const PI = 3.141592653589793
+
+  // Regular function (compiled normally)
+  export let sin = x => __sin(x)
+  ```
+
+  ### 'jz' Exports (compiler hooks)
+
+  | Export | Purpose | Phase |
+  |--------|---------|-------|
+  | `type(name, sig)` | Declare type signature | analyze |
+  | `inline(name, fn)` | Custom codegen | compile |
+  | `syntax(op, prec, fn)` | Add operator | parse |
+  | `wat(code)` | Include raw WAT | assemble |
+  | `import(mod, name, sig)` | Declare host import | link |
+
+  ### Examples
+
+  **math.js** (pure WASM)
+  ```js
+  import { inline, wat } from 'jz:core'
+
+  // Include stdlib WAT
+  wat(`
+    (func $__sin (param $x f64) (result f64)
+      ;; Taylor series or WASM intrinsic
+    )
+  `)
+
+  inline('sin', x => `(call $__sin ${x})`)
+  inline('sqrt', x => `(f64.sqrt ${x})`)
+  inline('PI', () => `(f64.const 3.141592653589793)`)
+
+  export { sin, sqrt, PI }
+  ```
+
+  **console.js** (host-bound)
+  ```js
+  import { inline, import as hostImport } from 'jz:core'
+
+  // Declare host import
+  hostImport('env', 'log', '(f64) -> void')
+
+  inline('log', x => `(call $__env_log ${x})`)
+
+  export { log }
+  ```
+
+  **pipe.js** (syntax extension)
+  ```js
+  import { syntax } from 'jz:core'
+
+  // Add |> operator: x |> f  →  f(x)
+  syntax('|>', 1, (left, right) => ({
+    type: 'CallExpression',
+    callee: right,
+    arguments: [left]
+  }))
+  ```
+
+  **units.js** (syntax + transform)
+  ```js
+  import { syntax } from 'jz:core'
+
+  // 440hz → 440 (with metadata for piezo)
+  syntax('NumericLiteral', (node) => {
+    if (node.raw.endsWith('hz')) {
+      return { ...node, value: parseFloat(node.raw) }
+    }
+    return node
+  })
+  ```
+
+  ### Resolution Order
+
+  1. **'jz'** - compiler intrinsics (always available)
+  2. **Builtins** - `'math'`, `'array'`, `'string'`, `'console'` (shipped with jz)
+  3. **User modules** - `'./foo.js'`, `'./bar.js'`
+  4. **External** - via `modules` option or importmap
+
+  ### Compiler Flow
+
+  ```
+  1. Parse imports
+     ↓
+  2. Load modules (recursively)
+     ↓
+  3. For each module with 'jz' imports:
+     - Execute syntax() calls → extend parser
+     - Collect type() declarations → type registry
+     - Collect inline() handlers → codegen registry
+     - Collect wat() code → stdlib
+     - Collect import() decls → host imports
+     ↓
+  4. Re-parse user code (with extended syntax)
+     ↓
+  5. Analyze (with type registry)
+     ↓
+  6. Compile (with codegen registry)
+     ↓
+  7. Assemble (with stdlib + host imports)
+  ```
+
+  ### API
+
+  ```js
+  import { compile } from 'jz'
+
+  // Default: builtins available
+  compile(`
+    import { sin } from 'math'
+    export let f = t => sin(t)
+  `)
+
+  // Custom module
+  compile(code, {
+    modules: {
+      './dsp.js': `
+        import { inline } from 'jz'
+        inline('lerp', (a,b,t) => \`...\`)
+        export { lerp }
+      `
+    }
+  })
+
+  // Syntax extension
+  compile(code, {
+    modules: {
+      'pipe': pipeSrc  // contains syntax() call
+    }
+  })
+
+  // Restrict builtins (sandboxing)
+  compile(code, { builtins: ['math'] })  // only math available
+
+  // Autoimport (JS-compat)
+  compile(code, { autoimport: true })  // Math.sin works
+  ```
+
+  ### Benefits
+
+  1. **Modules are just code** - no special format, valid JS/JZ
+  2. **Compiler hooks via import** - explicit, discoverable
+  3. **Same module can run in JS** - 'jz' imports become no-ops
+  4. **Composable** - modules can import other modules
+  5. **Tree-shakeable** - unused exports not compiled
+
+  ### Builtins shipped with jz
+
+  | Module | Provides | Uses 'jz' for |
+  |--------|----------|---------------|
+  | `'math'` | sin, cos, sqrt, PI... | inline (WASM ops) |
+  | `'array'` | map, filter, reduce... | inline (loops) |
+  | `'string'` | slice, indexOf... | inline (memory ops) |
+  | `'console'` | log, warn, error | import (host) |
+  | `'json'` | parse, stringify | wat (codec) |
+
+  ### Non-goals
+
+  - Dynamic `import()` - all imports static
+  - Circular imports - prohibited
+  - Default exports - named only
+  - Runtime module loading - compile-time only

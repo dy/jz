@@ -25,7 +25,7 @@ export let tone = t => sin(t * 440 * PI * 2 / 44100)
 **jz = Crockford's safe JS subset → WASM**
 
 Not "JS compatibility". Not "JS subset".
-**JS as it was supposed to be.**
+**JS as it was supposed to be. JavaScript Zero**
 
 | JS | jz |
 |----|-----|
@@ -50,10 +50,10 @@ Not "JS compatibility". Not "JS subset".
                       ▼
 ┌────────────────────────────────────────────────┐
 │                 jz compiler                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
-│  │  parse   │→ │ analyze  │→ │ compile  │     │
-│  │(subscript)│  │  scope   │  │   WAT    │     │
-│  └──────────┘  └──────────┘  └──────────┘     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │  parse    │→│ analyze  │→ │ compile  │      │
+│  │(subscript)│ │  scope   │  │   WAT    │      │
+│  └──────────┘  └──────────┘  └──────────┘      │
 │                      ↑                         │
 │              ┌───────┴───────┐                 │
 │              │   prelude     │                 │

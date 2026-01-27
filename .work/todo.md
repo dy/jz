@@ -605,7 +605,7 @@
 
 ## REPL
 
-* [ ] ! on pasting code it converts var to let/const, function to ()=>{}
-* [ ] choose compiler
+* [ ] ! on pasting JS code it converts var to let/const, function to ()=>{} etc.
+  * [ ] auto-imports implicit globals
 * [ ] see produced WAT
 * [ ] document interop
