@@ -1,5 +1,5 @@
 import test, { is, throws } from 'tst'
-import { parseRegex, compileRegex } from '../src/regex.js'
+import { parseRegex, compileRegex } from '../module/regex.js'
 
 test('regex: literal chars', () => {
   is(parseRegex('a'), ['seq', 'a'])

@@ -7,33 +7,24 @@ Any JZ code must be valid JS code as well, except for a few quirks that must be 
 Do not change tha signature or semantic of JS compat functions.
 For any file structure changes, update project structure section below.
 
-## Project Structure (src/, ~13400 lines)
+## Project Structure (src/ + module/, ~800 lines)
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| types.js | 215 | Type system, type predicates, memory constants, `wt` template |
-| ops.js | 96 | WAT binary ops (f64.*, i32.*), MATH_OPS |
-| analyze.js | 1086 | Scope analysis: preanalyze(), extractParams(), analyzeScope() |
-| context.js | 240 | Compilation state factory: createContext(), fork(), warn(), error() |
-| assemble.js | 461 | WAT assembly: assemble() - combines sections into final WAT module |
-| stdlib.js | 367 | Pure WASM math functions (sin, cos, pow, etc.) |
-| normalize.js | 384 | AST preprocessing from parser |
-| memory.js | 326 | Memory operations: mkString, arrGet, objGet, envGet/Set, genSubstringSearch, genPrefixMatch |
-| loop.js | 51 | Loop codegen helpers: genLoop, genEarlyExitLoop |
-| array.js | 529 | Array method codegen (map, filter, reduce, etc.) |
-| string.js | 1479 | String method codegen (slice, indexOf, toLowerCase SIMD, match, replace, split) |
-| regex.js | 986 | Regex parser and WASM codegen (parseRegex, compileRegex, REGEX_METHODS) |
-| typedarray.js | 1566 | TypedArray method codegen with SIMD (f64x2, f32x4, i32x4 auto-vectorization) |
-| number.js | 34 | Number method codegen (toFixed, toString, toExponential, toPrecision) |
-| set.js | 30 | Set method codegen (has, add, delete, clear) |
-| map.js | 36 | Map method codegen (has, get, set, delete, clear) |
-| closures.js | 126 | Closure codegen: genClosureCall, genClosureValue |
-| destruct.js | 253 | Destructuring codegen: genArrayDestructDecl, genObjectDestructDecl |
-| compile.js | 3419 | Core compiler: AST → WAT, operators, binOp helper |
+| src/parse.js | 17 | subscript/jessie wrapper |
+| src/analyze.js | 136 | scope analysis |
+| src/emit.js | 200 | AST → IR (watr format) |
+| src/optimize.js | 107 | IR passes (tree transforms) |
+| src/assemble.js | 34 | combine sections into module |
+| src/context.js | 18 | createContext() factory |
+| src/compile.js | 61 | compile() entry point |
+| module/_core.js | 128 | module extension API: type, emit, op, optimize, func, extern |
+| module/math.js | 80 | sin, cos, tan, sqrt, pow, PI, E |
+| index.js | 20 | package entry + register modules |
 
-Data Flow: index.js: parse(code) → normalize(ast) → compile(ast, {gc}) → assemble() → WAT
+Data Flow: index.js: parse(code) → analyze(ast) → emit(ast) → optimize(ir) → assemble() → watr
 
-Important project decisions are documented in research.md in particular style:
+Important project decisions are documented in .work/research.md in particular style:
 
 ```md
 ## [ ] question (with alternatives) -> decision

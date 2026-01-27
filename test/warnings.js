@@ -2,7 +2,7 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { compile as jzCompile } from '../index.js'
 import { compile as watrCompile } from 'watr'
-import { getWarnings, setWarnings } from '../src/normalize.js'
+import { getWarnings, setWarnings } from '../src/parse.js'
 
 // Helper: compile JS to WASM binary, capturing warnings
 let capturedWarnings = []
