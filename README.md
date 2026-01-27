@@ -1,6 +1,6 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-JS syntax that compiles to pure WASM. No runtime, no GC, no overhead.
+Research on the topic: JS syntax that compiles to pure WASM. No runtime, no GC, no overhead.
 
 ```js
 import jz from 'jz'
@@ -114,6 +114,7 @@ for (let t = 0; t < 8000; t++) {
 
 -->
 
+
 ## Why?
 
 JS grew complex with legacy (`var`, OOP) and niche features (generators, async).
@@ -133,6 +134,8 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _JS interop_ – export/import preserve func signatures at WASM boundary.
 * _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
 
+<!--
+
 ### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
 Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays small, fast and flexible.
@@ -141,7 +144,6 @@ Porffor is brilliant, but aligns to TC39 and hesitant on full WASM. JZ stays sma
 
 AssemblyScript is TypeScript-based. JZ stays pure JS.
 
-<!--
 ### Why not [piezo](https://github.com/dy/piezo)?
 
 Piezo offers extra features like groups, pipes, units, ranges and extra operators. JZ is a possible first step for it.

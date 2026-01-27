@@ -547,270 +547,317 @@
 
 ## [ ] Imports -> Pre-bundled source + primitives-only linking
 
-### Problem
-JZ needs to support `import`/`export` across modules. Challenges:
-1. **Resolution**: Who finds the source? (CLI vs browser, fs vs fetch)
-2. **WASM API**: Can't pass JS objects to WASM (metacircular case)
-3. **Memory**: Modules compiled separately can't share strings/arrays/objects
+  ### Problem
+  JZ needs to support `import`/`export` across modules. Challenges:
+  1. **Resolution**: Who finds the source? (CLI vs browser, fs vs fetch)
+  2. **WASM API**: Can't pass JS objects to WASM (metacircular case)
+  3. **Memory**: Modules compiled separately can't share strings/arrays/objects
 
-### Separation of Concerns
-- **Resolution** = host responsibility (JS/Node/WASI)
-- **Compilation** = JZ responsibility (pure transform, no I/O)
+  ### Separation of Concerns
+  - **Resolution** = host responsibility (JS/Node/WASI)
+  - **Compilation** = JZ responsibility (pure transform, no I/O)
 
-### Resolution Strategy
+  ### Resolution Strategy
 
-  0. **CLI resolves via fs**
-    + Node has filesystem access
-    + Can read importmaps.json for bare specifiers
-    + Standard behavior for compilers
-    - Only works in Node/CLI
+    0. **CLI resolves via fs**
+      + Node has filesystem access
+      + Can read importmaps.json for bare specifiers
+      + Standard behavior for compilers
+      - Only works in Node/CLI
 
-  1. **API: `modules` option (pre-resolved)**
-    ```js
-    compile(src, { modules: { './math.js': mathSrc } })
-    ```
-    + Works everywhere (browser, Node, WASM)
-    + Caller controls resolution (fetch, fs, bundled)
-    + Sync API, no async complications
-    - Caller must gather all sources upfront
+    1. **API: `modules` option (pre-resolved)**
+      ```js
+      compile(src, { modules: { './math.js': mathSrc } })
+      ```
+      + Works everywhere (browser, Node, WASM)
+      + Caller controls resolution (fetch, fs, bundled)
+      + Sync API, no async complications
+      - Caller must gather all sources upfront
 
-  2. **API: `resolve` callback (lazy)**
-    ```js
-    compile(src, { resolve: async (spec) => fetch(spec).then(r => r.text()) })
-    ```
-    + Lazy loading, on-demand
-    + Flexible (CORS proxy, transforms, etc.)
-    - Async complicates API
-    - CORS issues in browser
-    - Can't work in pure WASM (no callbacks)
+    2. **API: `resolve` callback (lazy)**
+      ```js
+      compile(src, { resolve: async (spec) => fetch(spec).then(r => r.text()) })
+      ```
+      + Lazy loading, on-demand
+      + Flexible (CORS proxy, transforms, etc.)
+      - Async complicates API
+      - CORS issues in browser
+      - Can't work in pure WASM (no callbacks)
 
-  * Decision: CLI uses fs + importmap. API uses `modules` option.
-    Keeps compiler pure (no I/O), resolution is caller's job.
+    * Decision: CLI uses fs + importmap. API uses `modules` option.
+      Keeps compiler pure (no I/O), resolution is caller's job.
 
-### WASM-Compatible Module Passing
+  ### WASM-Compatible Module Passing
 
-  0. **JSON string**
-    ```js
-    compile(src, JSON.stringify({ modules: {...} }))
-    ```
-    + Works in WASM (single string param)
-    - Escaping nightmare (strings in strings in JSON)
-    - Parsing overhead
-    - Ugly API
+    0. **JSON string**
+      ```js
+      compile(src, JSON.stringify({ modules: {...} }))
+      ```
+      + Works in WASM (single string param)
+      - Escaping nightmare (strings in strings in JSON)
+      - Parsing overhead
+      - Ugly API
 
-  1. **Pre-bundled source format**
-    ```
-    //!jz:module ./math.js
-    export let add = (a, b) => a + b
-    //!jz:module ./utils.js
-    export let double = x => x * 2
-    //!jz:main
-    import { add } from './math.js'
-    export let x = add(1, 2)
-    ```
-    + Simplest WASM API (single string in, WASM out)
-    + No escaping issues
-    + Host bundles, JZ compiles (clear responsibility)
-    - Requires bundler logic in host
+    1. **Pre-bundled source format**
+      ```
+      //!jz:module ./math.js
+      export let add = (a, b) => a + b
+      //!jz:module ./utils.js
+      export let double = x => x * 2
+      //!jz:main
+      import { add } from './math.js'
+      export let x = add(1, 2)
+      ```
+      + Simplest WASM API (single string in, WASM out)
+      + No escaping issues
+      + Host bundles, JZ compiles (clear responsibility)
+      - Requires bundler logic in host
 
-  2. **Host callback import**
-    ```wat
-    (import "jz" "resolve" (func $resolve (param i32 i32) (result i32 i32)))
-    ```
-    + Lazy resolution
-    + Matches WASI capability model
-    - Complex memory coordination
-    - Non-pure compilation (side effects)
+    2. **Host callback import**
+      ```wat
+      (import "jz" "resolve" (func $resolve (param i32 i32) (result i32 i32)))
+      ```
+      + Lazy resolution
+      + Matches WASI capability model
+      - Complex memory coordination
+      - Non-pure compilation (side effects)
 
-  3. **WASM Component Model**
-    ```wit
-    record compile-options { modules: list<tuple<string, string>> }
-    compile: func(source: string, opts: compile-options) -> result<bytes, string>
-    ```
-    + Clean, typed, standard
-    + Structured data without JSON
-    - Not widely supported yet (2026+)
-    - Adds toolchain dependency
+    3. **WASM Component Model**
+      ```wit
+      record compile-options { modules: list<tuple<string, string>> }
+      compile: func(source: string, opts: compile-options) -> result<bytes, string>
+      ```
+      + Clean, typed, standard
+      + Structured data without JSON
+      - Not widely supported yet (2026+)
+      - Adds toolchain dependency
 
-  * Decision: Pre-bundled source format. Host bundles all sources into
-    single string with markers, JZ parses and compiles. Zero WASM complexity.
+    * Decision: Pre-bundled source format. Host bundles all sources into
+      single string with markers, JZ parses and compiles. Zero WASM complexity.
 
-### Multi-Module Compilation (Memory Sharing)
+  ### Multi-Module Compilation (Memory Sharing)
 
-  0. **Bundle into single WASM** (current)
-    + Single memory, all modules share
-    + Strings/arrays/objects work across module boundaries
-    + Tree-shaking, dead code elimination
-    - Must compile together
-    - No separate caching
+    0. **Bundle into single WASM** (current)
+      + Single memory, all modules share
+      + Strings/arrays/objects work across module boundaries
+      + Tree-shaking, dead code elimination
+      - Must compile together
+      - No separate caching
 
-  1. **Separate WASM + shared memory**
-    ```js
-    const shared = new WebAssembly.Memory({ initial: 256, shared: true })
-    const mathInst = instantiate(mathWasm, { env: { memory: shared } })
-    const mainInst = instantiate(mainWasm, { env: { memory: shared } })
-    ```
-    + Separate compilation, shared data
-    + Can cache individual modules
-    - Heap coordination (who allocates where?)
-    - Requires SharedArrayBuffer (security restrictions)
-    - Complex: need memory allocator protocol
+    1. **Separate WASM + shared memory**
+      ```js
+      const shared = new WebAssembly.Memory({ initial: 256, shared: true })
+      const mathInst = instantiate(mathWasm, { env: { memory: shared } })
+      const mainInst = instantiate(mainWasm, { env: { memory: shared } })
+      ```
+      + Separate compilation, shared data
+      + Can cache individual modules
+      - Heap coordination (who allocates where?)
+      - Requires SharedArrayBuffer (security restrictions)
+      - Complex: need memory allocator protocol
 
-  2. **Separate WASM + primitives-only linking**
-    ```js
-    compile(src, {
-      imports: {
-        './math.js': { add: { params: ['f64', 'f64'], result: 'f64' } }
-      }
-    })
-    // Links at instantiation:
-    instantiate(mainWasm, { './math.js': mathInst.exports })
-    ```
-    + Standard WASM import/export
-    + Modules compile independently
-    + Clean type signatures
-    - No string/array/object passing between modules
-    - Limited to numeric types (f64, i32)
+    2. **Separate WASM + primitives-only linking**
+      ```js
+      compile(src, {
+        imports: {
+          './math.js': { add: { params: ['f64', 'f64'], result: 'f64' } }
+        }
+      })
+      // Links at instantiation:
+      instantiate(mainWasm, { './math.js': mathInst.exports })
+      ```
+      + Standard WASM import/export
+      + Modules compile independently
+      + Clean type signatures
+      - No string/array/object passing between modules
+      - Limited to numeric types (f64, i32)
 
-  3. **Separate WASM + copy on boundary**
-    ```js
-    // At each cross-module call:
-    // 1. Serialize string/array from caller's memory
-    // 2. Copy bytes to callee's memory
-    // 3. Deserialize, call function
-    // 4. Serialize result, copy back
-    ```
-    + Full type support across modules
-    - Significant overhead per call
-    - Breaks object identity (a !== a after round-trip)
-    - Complex codegen (wrapper functions)
+    3. **Separate WASM + copy on boundary**
+      ```js
+      // At each cross-module call:
+      // 1. Serialize string/array from caller's memory
+      // 2. Copy bytes to callee's memory
+      // 3. Deserialize, call function
+      // 4. Serialize result, copy back
+      ```
+      + Full type support across modules
+      - Significant overhead per call
+      - Breaks object identity (a !== a after round-trip)
+      - Complex codegen (wrapper functions)
 
-  4. **WASM Multiple Memories proposal**
-    ```wat
-    (memory $shared (import "env" "shared") 1)
-    (memory $local 1)
-    (func $get (param $ptr i32) (result f64)
-      (f64.load $shared (local.get $ptr)))
-    ```
-    + Explicit memory params
-    + Can share specific memory regions
-    - Phase 3, limited runtime support
-    - Requires careful memory management
-    - Not ergonomic
+    4. **WASM Multiple Memories proposal**
+      ```wat
+      (memory $shared (import "env" "shared") 1)
+      (memory $local 1)
+      (func $get (param $ptr i32) (result f64)
+        (f64.load $shared (local.get $ptr)))
+      ```
+      + Explicit memory params
+      + Can share specific memory regions
+      - Phase 3, limited runtime support
+      - Requires careful memory management
+      - Not ergonomic
 
-  * Decision: Bundle into single WASM (primary), primitives-only linking (optional).
-    Bundling handles most cases (modules sharing data). Separate compilation
-    only for leaf modules with numeric interfaces (math libs, DSP kernels).
+    * Decision: Bundle into single WASM (primary), primitives-only linking (optional).
+      Bundling handles most cases (modules sharing data). Separate compilation
+      only for leaf modules with numeric interfaces (math libs, DSP kernels).
 
-### Circular Imports
+  ### Circular Imports
 
-  0. **Prohibit** (Jessie-style)
-    + Simple implementation
-    + Forces clean dependency graphs
-    + No initialization order issues
-    - Less JS-compatible
+    0. **Prohibit** (Jessie-style)
+      + Simple implementation
+      + Forces clean dependency graphs
+      + No initialization order issues
+      - Less JS-compatible
 
-  1. **Allow with TDZ**
-    + JS-compatible
-    - Complex: must detect cycles, defer initialization
-    - Runtime errors if accessed before init
+    1. **Allow with TDZ**
+      + JS-compatible
+      - Complex: must detect cycles, defer initialization
+      - Runtime errors if accessed before init
 
-  * Decision: Prohibit circular imports. Matches Jessie philosophy,
-    avoids initialization complexity. Error at compile time.
+    * Decision: Prohibit circular imports. Matches Jessie philosophy,
+      avoids initialization complexity. Error at compile time.
 
-### Export Styles
+  ### Export Styles
 
-  0. **Named exports only**
-    ```js
-    export let add = (a, b) => a + b
-    export { add, sub }
-    ```
-    + Explicit, tree-shakeable
-    + Consistent with WASM exports
+    0. **Named exports only**
+      ```js
+      export let add = (a, b) => a + b
+      export { add, sub }
+      ```
+      + Explicit, tree-shakeable
+      + Consistent with WASM exports
 
-  1. **Default exports**
-    ```js
-    export default (a, b) => a + b
-    import math from './math.js'  // math is the function
-    ```
-    + JS-compatible
-    - Ambiguous naming
-    - Complicates import resolution
+    1. **Default exports**
+      ```js
+      export default (a, b) => a + b
+      import math from './math.js'  // math is the function
+      ```
+      + JS-compatible
+      - Ambiguous naming
+      - Complicates import resolution
 
-  2. **Re-exports**
-    ```js
-    export { add } from './math.js'
-    export * from './utils.js'
-    ```
-    + Convenient barrel files
-    - Requires resolving during compilation
-    - `export *` complicates tree-shaking
+    2. **Re-exports**
+      ```js
+      export { add } from './math.js'
+      export * from './utils.js'
+      ```
+      + Convenient barrel files
+      - Requires resolving during compilation
+      - `export *` complicates tree-shaking
 
-  * Decision: Named exports + re-exports. No default exports.
-    Explicit naming, clean tree-shaking, Jessie-compatible.
+    * Decision: Named exports + re-exports. No default exports.
+      Explicit naming, clean tree-shaking, Jessie-compatible.
 
-### Bare Specifiers
+  ### Bare Specifiers
 
-  0. **Require relative/absolute paths**
-    ```js
-    import { x } from './node_modules/lodash/index.js'
-    ```
-    + Explicit, no magic
-    - Verbose, fragile paths
+    0. **Require relative/absolute paths**
+      ```js
+      import { x } from './node_modules/lodash/index.js'
+      ```
+      + Explicit, no magic
+      - Verbose, fragile paths
 
-  1. **Import maps (CLI)**
-    ```json
-    // importmap.json
-    { "imports": { "lodash": "./node_modules/lodash/index.js" } }
-    ```
-    ```js
-    import { x } from 'lodash'  // resolved via importmap
-    ```
-    + Standard (browsers support import maps)
-    + Centralizes dependency mapping
-    - CLI-only (must read file)
+    1. **Import maps (CLI)**
+      ```json
+      // importmap.json
+      { "imports": { "lodash": "./node_modules/lodash/index.js" } }
+      ```
+      ```js
+      import { x } from 'lodash'  // resolved via importmap
+      ```
+      + Standard (browsers support import maps)
+      + Centralizes dependency mapping
+      - CLI-only (must read file)
 
-  2. **Node resolution algorithm**
-    ```js
-    import { x } from 'lodash'  // → node_modules/lodash/package.json → main
-    ```
-    + Node-compatible
-    - Complex algorithm
-    - package.json parsing
+    2. **Node resolution algorithm**
+      ```js
+      import { x } from 'lodash'  // → node_modules/lodash/package.json → main
+      ```
+      + Node-compatible
+      - Complex algorithm
+      - package.json parsing
 
-  * Decision: Relative paths required in source. CLI uses importmap.json
-    if present. No implicit node_modules resolution.
+    * Decision: Relative paths required in source. CLI uses importmap.json
+      if present. No implicit node_modules resolution.
 
-### Summary
+  ### Summary
 
-| Aspect | Decision | Rationale |
-|--------|----------|-----------|
-| Resolution | Host responsibility | Compiler stays pure, no I/O |
-| CLI | fs + importmap.json | Standard compiler behavior |
-| API | `modules` option | Sync, works everywhere |
-| WASM API | Pre-bundled format | Single string, no complexity |
-| Multi-module | Bundle (default) | Shared memory, full types |
-| Linking | Primitives-only | For numeric leaf modules |
-| Circular | Prohibited | Jessie-style, simple |
-| Exports | Named + re-export | Explicit, tree-shakeable |
-| Bare specs | Importmap (CLI) | Standard, explicit |
+  | Aspect | Decision | Rationale |
+  |--------|----------|-----------|
+  | Resolution | Host responsibility | Compiler stays pure, no I/O |
+  | CLI | fs + importmap.json | Standard compiler behavior |
+  | API | `modules` option | Sync, works everywhere |
+  | WASM API | Pre-bundled format | Single string, no complexity |
+  | Multi-module | Bundle (default) | Shared memory, full types |
+  | Linking | Primitives-only | For numeric leaf modules |
+  | Circular | Prohibited | Jessie-style, simple |
+  | Exports | Named + re-export | Explicit, tree-shakeable |
+  | Bare specs | Importmap (CLI) | Standard, explicit |
 
-### Implementation
+  ### Implementation
 
-```js
-// Phase 1: Single-file (current)
-compile(source) → wasm
+  ```js
+  // Phase 1: Single-file (current)
+  compile(source) → wasm
 
-// Phase 2: Bundled modules
-compile(bundledSource) → wasm
-// Host provides: //!jz:module markers
+  // Phase 2: Bundled modules
+  compile(bundledSource) → wasm
+  // Host provides: //!jz:module markers
 
-// Phase 3: Separate compilation (optional)
-compile(source, { imports: { './math.js': signatures } }) → wasm
-// Links at instantiation via standard WASM imports
-```
+  // Phase 3: Separate compilation (optional)
+  compile(source, { imports: { './math.js': signatures } }) → wasm
+  // Links at instantiation via standard WASM imports
+  ```
 
 ## [ ] Objects / Arrays JS interop -> view() helper
+
+  ### Prior Art: How compilers return objects/arrays to JS
+
+  | Compiler | Strategy | Mechanism |
+  |----------|----------|-----------|
+  | **wasm-bindgen** (Rust) | Copy at boundary | Structs become JS classes w/ ptr; `Vec<T>` → JS Array (copied) |
+  | **Emscripten/embind** | Value types / memory views | `value_object` auto-copies; `typed_memory_view` for zero-copy |
+  | **AssemblyScript** | Linear memory + loader | `__getArray()`, `__getString()` in loader; or WASM GC refs |
+  | **Porffor** | AOT, no runtime | Returns primitives; complex types not yet interoperable |
+  | **Javy** | QuickJS + JSON | `Javy.IO` reads/writes JSON strings via fd |
+  | **Grain** | WASM GC | Native GC structs, records, enums - direct JS interop |
+  | **Kotlin/Wasm** | WASM GC | GC-managed objects, interop via externref |
+  | **Go (wasip1)** | Pack ptr+len | `ptr | (len << 32)` in i64/u64, JS unpacks & reads memory |
+  | **Zig/Nelua** | C-style | Return ptr, caller reads via memory view |
+
+  ### Patterns observed
+
+  1. **Copy at boundary** (wasm-bindgen, embind value_object)
+     - Safest: no lifetime issues
+     - Overhead: allocation + copy each call
+     - Best for: infrequent calls, small data
+
+  2. **Memory view** (embind typed_memory_view, AS loader, Zig)
+     - Zero-copy: JS gets view into WASM memory
+     - Dangerous: view invalidates if memory grows/reallocates
+     - Best for: large buffers (audio, textures), hot paths
+
+  3. **Packed pointer** (Go wasip1 pattern)
+     ```go
+     return uint64(ptr) | (uint64(len) << 32)
+     ```
+     - Returns ptr+len in single i64
+     - JS unpacks: `ptr = result & 0xFFFFFFFF`, `len = result >> 32`
+     - Best for: returning dynamic-length data without multi-value
+
+  4. **Wrapper classes** (wasm-bindgen, embind)
+     - JS class wraps WASM pointer
+     - Methods call into WASM
+     - Manual `.delete()` or ref-counting
+     - Best for: long-lived objects with methods
+
+  5. **WASM GC** (Grain, Kotlin/Wasm, jawsm)
+     - Native GC-managed structs/arrays
+     - Direct JS interop via externref
+     - Best for: GC-tolerant apps (not real-time audio)
+
+  ### JZ Options
 
   0. **GC structs at export boundary**
     + Standard WASM GC
@@ -893,96 +940,93 @@ compile(source, { imports: { './math.js': signatures } }) → wasm
   | performance.now() | clock_time_get(monotonic) | high-res timer |
   | File read | path_open + fd_read | for import resolution |
 
-
-
 ## [ ] metacircular (jz.wasm) -> WASI or minimal imports
 
-### Prior Art (JS/TS → WASM compilers)
+  ### Prior Art (JS/TS → WASM compilers)
 
-| Project | Host APIs | Standalone? | Modules |
-|---------|-----------|-------------|---------|
-| **Porffor** | Only I/O imports | ❌ "not WASI, mostly unusable standalone" | Single file |
-| **Javy** | WASI (fd_read/write) + Javy.IO | ✅ wasmtime/wasmer | Embeds QuickJS interpreter |
-| **jawsm** | WASIp2 polyfill (JS) | ❌ Requires Node v23+ | Single file, uses WASM GC |
-| **AssemblyScript** | `declare` → custom imports | ⚠️ Host must provide | `@external` decorator |
-| **Emscripten** | WASI + JS glue | ⚠️ Needs JS glue for most | static/dynamic linking |
+  | Project | Host APIs | Standalone? | Modules |
+  |---------|-----------|-------------|---------|
+  | **Porffor** | Only I/O imports | ❌ "not WASI, mostly unusable standalone" | Single file |
+  | **Javy** | WASI (fd_read/write) + Javy.IO | ✅ wasmtime/wasmer | Embeds QuickJS interpreter |
+  | **jawsm** | WASIp2 polyfill (JS) | ❌ Requires Node v23+ | Single file, uses WASM GC |
+  | **AssemblyScript** | `declare` → custom imports | ⚠️ Host must provide | `@external` decorator |
+  | **Emscripten** | WASI + JS glue | ⚠️ Needs JS glue for most | static/dynamic linking |
 
-### Key Insights
+  ### Key Insights
 
-1. **No fully standalone exists** - All require either WASI or custom imports
-2. **WASI is the closest to "standard"** - wasmtime/wasmer support it natively
-3. **Porffor explicitly says** "does not use import standard like WASI, mostly unusable standalone"
-4. **Javy pattern**: `Javy.IO.readSync(fd, buffer)` → internal WASI fd_read
-5. **jawsm**: Targets WASIp2 but runtimes don't support all features yet, uses JS polyfill
+  1. **No fully standalone exists** - All require either WASI or custom imports
+  2. **WASI is the closest to "standard"** - wasmtime/wasmer support it natively
+  3. **Porffor explicitly says** "does not use import standard like WASI, mostly unusable standalone"
+  4. **Javy pattern**: `Javy.IO.readSync(fd, buffer)` → internal WASI fd_read
+  5. **jawsm**: Targets WASIp2 but runtimes don't support all features yet, uses JS polyfill
 
-### Options for JZ
+  ### Options for JZ
 
-  0. **No I/O** (pure compute only)
-    + Truly standalone
-    + Runs anywhere
-    - No console.log, no Date.now, no file access
-    - jz.wasm can't resolve imports (pre-bundled only)
+    0. **No I/O** (pure compute only)
+      + Truly standalone
+      + Runs anywhere
+      - No console.log, no Date.now, no file access
+      - jz.wasm can't resolve imports (pre-bundled only)
 
-  1. **WASI** (like Javy)
-    + wasmtime/wasmer native support
-    + Browser/Node: use WASI shim
-    + Standard, widely adopted
-    - Browser WASI shims exist but add weight
+    1. **WASI** (like Javy)
+      + wasmtime/wasmer native support
+      + Browser/Node: use WASI shim
+      + Standard, widely adopted
+      - Browser WASI shims exist but add weight
 
-  2. **Minimal custom imports** (like Porffor)
-    ```wat
-    (import "jz" "log" (func $log (param i32 i32)))
-    (import "jz" "read" (func $read (param i32 i32) (result i32)))
-    (import "jz" "time" (func $time (result f64)))
-    ```
-    + Simpler than WASI (3 functions vs 45+)
-    + Host provides (browser: fetch, Node: fs)
-    - Non-standard
-    - wasmer can provide via --invoke, but awkward
+    2. **Minimal custom imports** (like Porffor)
+      ```wat
+      (import "jz" "log" (func $log (param i32 i32)))
+      (import "jz" "read" (func $read (param i32 i32) (result i32)))
+      (import "jz" "time" (func $time (result f64)))
+      ```
+      + Simpler than WASI (3 functions vs 45+)
+      + Host provides (browser: fetch, Node: fs)
+      - Non-standard
+      - wasmer can provide via --invoke, but awkward
 
-  3. **Both: WASI primary, fallback to custom**
-    + WASI for wasmtime/wasmer
-    + Same binary, detect which imports available
-    - Complex
+    3. **Both: WASI primary, fallback to custom**
+      + WASI for wasmtime/wasmer
+      + Same binary, detect which imports available
+      - Complex
 
-### Decision: Option 1 (WASI)
+  ### Decision: Option 1 (WASI)
 
-  * console.log → fd_write(stdout)
-  * Date.now → clock_time_get(realtime)
-  * File read → fd_read (for import resolution)
-  * Browser/Node: lightweight WASI shim (e.g. browser_wasi_shim, wasmer-js)
-  * jz.wasm uses WASI internally
+    * console.log → fd_write(stdout)
+    * Date.now → clock_time_get(realtime)
+    * File read → fd_read (for import resolution)
+    * Browser/Node: lightweight WASI shim (e.g. browser_wasi_shim, wasmer-js)
+    * jz.wasm uses WASI internally
 
-### AssemblyScript Web APIs → WASI mapping
+  ### AssemblyScript Web APIs → WASI mapping
 
-AS by default uses "Web APIs" (host-provided imports), wasi-shim replaces them with WASI:
+  AS by default uses "Web APIs" (host-provided imports), wasi-shim replaces them with WASI:
 
-| Web API | WASI function | Notes |
-|---------|---------------|-------|
-| `env.abort(msg,file,line,col)` | fd_write(stderr) + proc_exit(255) | AS special import |
-| `env.trace(msg,n,a0..a4)` | fd_write(stderr) | AS special import |
-| `env.seed()` | random_get | For Math.random() |
-| `console.log/debug/info` | fd_write(stdout) | |
-| `console.warn/error` | fd_write(stderr) | |
-| `console.time/timeEnd` | clock_time_get(MONOTONIC) | |
-| `Date.now()` | clock_time_get(REALTIME) / 1000000 | ns → ms |
-| `performance.now()` | clock_time_get(MONOTONIC) / 1000000 | |
-| `crypto.getRandomValues` | random_get | |
-| `process.stdin/stdout/stderr` | fd_read/fd_write(0/1/2) | |
-| `process.argv/env` | args_get/environ_get | |
-| `process.exit` | proc_exit | |
+  | Web API | WASI function | Notes |
+  |---------|---------------|-------|
+  | `env.abort(msg,file,line,col)` | fd_write(stderr) + proc_exit(255) | AS special import |
+  | `env.trace(msg,n,a0..a4)` | fd_write(stderr) | AS special import |
+  | `env.seed()` | random_get | For Math.random() |
+  | `console.log/debug/info` | fd_write(stdout) | |
+  | `console.warn/error` | fd_write(stderr) | |
+  | `console.time/timeEnd` | clock_time_get(MONOTONIC) | |
+  | `Date.now()` | clock_time_get(REALTIME) / 1000000 | ns → ms |
+  | `performance.now()` | clock_time_get(MONOTONIC) / 1000000 | |
+  | `crypto.getRandomValues` | random_get | |
+  | `process.stdin/stdout/stderr` | fd_read/fd_write(0/1/2) | |
+  | `process.argv/env` | args_get/environ_get | |
+  | `process.exit` | proc_exit | |
 
-**Key insight**: AS "Web APIs" are just 3 special imports (`env.abort`, `env.trace`, `env.seed`) + standard JS globals reimplemented. The shim maps everything to ~5 WASI functions: `fd_write`, `fd_read`, `clock_time_get`, `random_get`, `proc_exit`.
+  **Key insight**: AS "Web APIs" are just 3 special imports (`env.abort`, `env.trace`, `env.seed`) + standard JS globals reimplemented. The shim maps everything to ~5 WASI functions: `fd_write`, `fd_read`, `clock_time_get`, `random_get`, `proc_exit`.
 
-**For JZ**: Could use same pattern - define minimal "jz.abort", "jz.log", "jz.time", "jz.random" imports, then provide either WASI shim or browser shim. But WASI is simpler (standard).
+  **For JZ**: Could use same pattern - define minimal "jz.abort", "jz.log", "jz.time", "jz.random" imports, then provide either WASI shim or browser shim. But WASI is simpler (standard).
 
-### WASI Shims for Browser/Node
+  ### WASI Shims for Browser/Node
 
-  * [wasmer-js](https://www.npmjs.com/package/@wasmer/wasi) - wasmer runtime for browser/Node
-  * [@tybys/wasm-util](https://github.com/toyobayashi/wasm-util) - lightweight WASI polyfill
-  * [@assemblyscript/wasi-shim](https://github.com/AssemblyScript/wasi-shim) - compile-time, AS→WASI
-  * [@bytecodealliance/preview2-shim](https://www.npmjs.com/package/@bytecodealliance/preview2-shim) - WASIp2 for JS
-
+    * [wasmer-js](https://www.npmjs.com/package/@wasmer/wasi) - wasmer runtime for browser/Node
+    * [@tybys/wasm-util](https://github.com/toyobayashi/wasm-util) - lightweight WASI polyfill
+    * [@assemblyscript/wasi-shim](https://github.com/AssemblyScript/wasi-shim) - compile-time, AS→WASI
+    * [@bytecodealliance/preview2-shim](https://www.npmjs.com/package/@bytecodealliance/preview2-shim) - WASIp2 for JS
 
 ## [ ] Compile API → `{binary, wat}`
 

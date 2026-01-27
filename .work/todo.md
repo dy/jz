@@ -563,6 +563,7 @@
 * [ ] sourcemaps
 * [ ] make all explicit? (math, json, any globals)
   * [ ] can provide implicit globals via options
+* [ ] template tag
 
 ## Value
 
@@ -606,6 +607,9 @@
 * [ ] color-space conversions
 * [ ] zzfx synth
 
-## Playground
+## REPL
 
 * [ ] ! on pasting code it converts var to let/const, function to ()=>{}
+* [ ] choose compiler
+* [ ] see produced WAT
+* [ ] document interop
