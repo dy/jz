@@ -1,6 +1,6 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-Research on the topic: JS syntax that compiles to pure WASM. No runtime, no GC, no overhead.
+_Research on the topic_: JS syntax that compiles to pure WASM. No runtime, no GC, no overhead.
 
 ```js
 import jz from 'jz'
@@ -114,7 +114,7 @@ for (let t = 0; t < 8000; t++) {
 
 -->
 
-
+<!--
 ## Why?
 
 JS grew complex with legacy (`var`, OOP) and niche features (generators, async).
@@ -133,6 +133,7 @@ JZ is minimal modern subset that maps to WebAssembly.
 * _Zero overhead_ – no runtime type checks, functions monomorphized per call-site.
 * _JS interop_ – export/import preserve func signatures at WASM boundary.
 * _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
+-->
 
 <!--
 
@@ -149,9 +150,11 @@ AssemblyScript is TypeScript-based. JZ stays pure JS.
 Piezo offers extra features like groups, pipes, units, ranges and extra operators. JZ is a possible first step for it.
 -->
 
+<!--
 ### Why _jz_?
 
 JavaScript Zero – a return to core, stripped to essentials. Also jazzy.
+-->
 
 ## Built With
 
