@@ -8,7 +8,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { emitExpr } from '../src/emit.js'
+import { emitExpr } from '../src/compile.js'
 
 /**
  * Declare type signature
