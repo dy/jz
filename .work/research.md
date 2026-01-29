@@ -1091,7 +1091,7 @@
   * watr is already a dependency
   * Matches established pattern (AssemblyScript)
 
-## [ ] Pluggable architecture -> Modules as regular JS/JZ with 'jz' imports
+## [x] Pluggable architecture -> Modules as regular JS/JZ with 'jz' imports
 
   ### Principle
   Modules are regular JS/JZ files. To extend the compiler, they import from `'jz'`.

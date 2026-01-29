@@ -4,17 +4,16 @@ _Research on the topic_: JS syntax that compiles to pure WASM. No runtime, no GC
 
 ```js
 import jz from 'jz'
+import math from 'jz/module/math.js'
 
-// 3 lines of JS → 120 bytes of WASM, compiles in <1ms
-const { exports } = await WebAssembly.instantiate(jz(`
-  let { sin, PI } = Math
-  export let sine = (out, freq, t) => {
-    for (let i = 0; i < out.length; i++) out[i] = sin((t + i) * freq * PI * 2 / 44100)
-  }
-`))
+// JS → WASM, with Math module
+const wasm = jz(`
+  export let sine = (freq, t, i) =>
+    Math.sin((t + i) * freq * Math.PI * 2 / 44100)
+`, { modules: [math] })
 
-// Real-time audio at native speed, zero GC pauses
-exports.sine(audioBuffer, 440, sampleOffset)
+const { sine } = (await WebAssembly.instantiate(wasm)).instance.exports
+sine(440, 0, 0)  // Real-time audio at native speed
 ```
 
 ## Usage
@@ -22,10 +21,19 @@ exports.sine(audioBuffer, 440, sampleOffset)
 ```js
 import jz from 'jz'
 
-const wasm = jz(`export const add = (a, b) => a + b`)
-const { exports } = await WebAssembly.instantiate(wasm)
+const wasm = jz(`export let add = (a, b) => a + b`)
+const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
 
-exports.add(2, 3)  // 5
+add(2, 3)  // 5
+```
+
+### With Modules
+
+```js
+import jz from 'jz'
+import math from 'jz/module/math.js'
+
+const wasm = jz(`export let f = x => Math.sqrt(x)`, { modules: [math] })
 ```
 
 
@@ -57,7 +65,8 @@ jz --help
 
 * Numbers: `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0o357`
 * Strings: `"abc"`, `'abc'`
-* Values: `true`, `false`, `null`, `NaN`, `Infinity`, `PI`, `E`
+* Values: `true`, `false`, `null`, `NaN`, `Infinity`
+* Math: `Math.PI`, `Math.E`, `Math.sin(x)`, `Math.sqrt(x)`, etc.
 * Access: `a.b`, `a[b]`, `a(b)`, `a?.b`
 * Arithmetic:`+a`, `-a`, `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`
 * Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`

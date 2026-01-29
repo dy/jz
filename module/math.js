@@ -1,44 +1,50 @@
 /**
- * Math module - sin, cos, sqrt, PI, etc.
+ * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
+ * 
+ * Module API:
+ * - ctx.emit['math.X'] = (args) => WasmNode - custom emitters
+ * - ctx.stdlib['math.X'] = '(func ...)' - WAT function definitions
+ * - ctx.deps['math.X'] = ['dep1', 'dep2'] - stdlib dependencies
+ * - include('math.X') - marks stdlib for inclusion (called by emitters)
+ * 
+ * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
+ * Compile looks up ctx.emit['math.sin'] and calls it.
+ * 
  * @module math
  */
 
-import { type, emit, func } from './_core.js'
+import { emit } from '../src/compile.js'
+import { include } from '../src/prepare.js'
 
-export default function init(ctx) {
-  // Type declarations
-  type(ctx, 'sin', 'f64 -> f64')
-  type(ctx, 'cos', 'f64 -> f64')
-  type(ctx, 'tan', 'f64 -> f64')
-  type(ctx, 'sqrt', 'f64 -> f64')
-  type(ctx, 'abs', 'f64 -> f64')
-  type(ctx, 'floor', 'f64 -> f64')
-  type(ctx, 'ceil', 'f64 -> f64')
-  type(ctx, 'round', 'f64 -> f64')
-  type(ctx, 'min', '(f64, f64) -> f64')
-  type(ctx, 'max', '(f64, f64) -> f64')
-  type(ctx, 'pow', '(f64, f64) -> f64')
-  type(ctx, 'PI', 'f64')
-  type(ctx, 'E', 'f64')
-
+export default (ctx) => {
   // Constants
-  emit(ctx, 'PI', () => ['f64.const', Math.PI])
-  emit(ctx, 'E', () => ['f64.const', Math.E])
+  ctx.emit['math.PI'] = () => ['f64.const', Math.PI]
+  ctx.emit['math.E'] = () => ['f64.const', Math.E]
 
-  // Built-in WASM ops
-  emit(ctx, 'sqrt', a => ['f64.sqrt', ...a])
-  emit(ctx, 'abs', a => ['f64.abs', ...a])
-  emit(ctx, 'floor', a => ['f64.floor', ...a])
-  emit(ctx, 'ceil', a => ['f64.ceil', ...a])
-  emit(ctx, 'min', a => ['f64.min', ...a])
-  emit(ctx, 'max', a => ['f64.max', ...a])
-  emit(ctx, 'round', a => ['f64.nearest', ...a])
+  // Built-in WASM ops (prefixed)
+  ctx.emit['math.sqrt'] = (a) => ['f64.sqrt', emit(a)]
+  ctx.emit['math.abs'] = (a) => ['f64.abs', emit(a)]
+  ctx.emit['math.floor'] = (a) => ['f64.floor', emit(a)]
+  ctx.emit['math.ceil'] = (a) => ['f64.ceil', emit(a)]
+  ctx.emit['math.min'] = (a, b) => ['f64.min', emit(a), emit(b)]
+  ctx.emit['math.max'] = (a, b) => ['f64.max', emit(a), emit(b)]
+  ctx.emit['math.round'] = (a) => ['f64.nearest', emit(a)]
 
-  // Power operator (uses stdlib)
-  emit(ctx, '**', a => ['call', '$__pow', ...a])
+  // Trig - include wat, return call
+  ctx.emit['math.sin'] = (a) => (include('math.sin'), ['call', '$math.sin', emit(a)])
+  ctx.emit['math.cos'] = (a) => (include('math.cos'), ['call', '$math.cos', emit(a)])
+  ctx.emit['math.tan'] = (a) => (include('math.tan'), ['call', '$math.tan', emit(a)])
 
-  // sin(x) Taylor series: x - x³/6 + x⁵/120 - x⁷/5040
-  func(ctx, 'sin', `(func $__sin (param $x f64) (result f64)
+  // Power
+  ctx.emit['math.pow'] = (a, b) => (include('math.pow'), ['call', '$math.pow', emit(a), emit(b)])
+  ctx.emit['**'] = (a, b) => ctx.emit['math.pow'](a, b)
+
+  // Dependencies
+  ctx.deps['math.cos'] = ['math.sin']
+  ctx.deps['math.tan'] = ['math.sin', 'math.cos']
+
+  // WAT stdlib
+  ctx.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
     (local $x2 f64) (local $r f64)
     (local.set $x2 (f64.mul (local.get $x) (local.get $x)))
     (local.set $r (local.get $x))
@@ -49,17 +55,17 @@ export default function init(ctx) {
     (local.set $r (f64.sub (local.get $r)
       (f64.div (f64.mul (local.get $x) (f64.mul (local.get $x2) (f64.mul (local.get $x2) (local.get $x2)))) (f64.const 5040))))
     (local.get $r)
-  )`)
+  )`
 
-  func(ctx, 'cos', `(func $__cos (param $x f64) (result f64)
-    (call $__sin (f64.add (local.get $x) (f64.const ${Math.PI / 2})))
-  )`)
+  ctx.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
+    (call $math.sin (f64.add (local.get $x) (f64.const ${Math.PI / 2})))
+  )`
 
-  func(ctx, 'tan', `(func $__tan (param $x f64) (result f64)
-    (f64.div (call $__sin (local.get $x)) (call $__cos (local.get $x)))
-  )`)
+  ctx.stdlib['math.tan'] = `(func $math.tan (param $x f64) (result f64)
+    (f64.div (call $math.sin (local.get $x)) (call $math.cos (local.get $x)))
+  )`
 
-  func(ctx, 'pow', `(func $__pow (param $x f64) (param $y f64) (result f64)
+  ctx.stdlib['math.pow'] = `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $r f64) (local $i f64)
     (local.set $r (f64.const 1))
     (local.set $i (f64.const 0))
@@ -70,5 +76,5 @@ export default function init(ctx) {
         (local.set $i (f64.add (local.get $i) (f64.const 1)))
         (br $loop)))
     (local.get $r)
-  )`)
+  )`
 }

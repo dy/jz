@@ -1,28 +1,22 @@
+The goal of the project is to be JavaScript as it should be: clean, functional, modern, compiling to WebAssembly with zero runtime overhead.
+
 Parser is based on subscript/jessie.
-If something is not supported by jessie, it needs to be fixed there, not worked around.
-It should use API provided by subscript to define operators if needed.
+Data Flow: index.js: parse(code) → prepare(ast) → emit(ast) → watr
+Prepare does AST normalization, validation and analysis.
+Each compilation can import modules from module/ folder, extending jz capabilities.
+
 Document any deviations from standard JS behavior in docs.md as appropriate.
-Code changes should have comments updated, if code is not self-explanatory. JSDoc should be present for external functions. Any implemented features should have thorough tests in the test/ folder. For tests we use tst package.
-Any JZ code must be valid JS code as well, except for a few quirks that must be documented.
-Do not change tha signature or semantic of JS compat functions.
+
+**JSDoc Requirements** (types are generated from JSDoc):
+- All exported functions MUST have JSDoc with @param and @returns
+- Use @typedef for complex types (define once, reference via import())
+- Keep descriptions short, user-focused and clear
+- Include @example for public API functions
+
+Code changes should have comments updated, if code is not self-explanatory. Any implemented features should have thorough tests in the test/ folder. For tests we use tst package.
+Any JZ code must be valid JS code as well, except for a few quirks.
+Do not change the signature or semantic of JS compatible functions.
 For any file structure changes, update project structure section below.
-
-## Project Structure (src/ + module/, ~800 lines)
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| src/parse.js | 17 | subscript/jessie wrapper |
-| src/analyze.js | 136 | scope analysis |
-| src/emit.js | 200 | AST → IR (watr format) |
-| src/optimize.js | 107 | IR passes (tree transforms) |
-| src/assemble.js | 34 | combine sections into module |
-| src/context.js | 18 | createContext() factory |
-| src/compile.js | 61 | compile() entry point |
-| module/_core.js | 128 | module extension API: type, emit, op, optimize, func, extern |
-| module/math.js | 80 | sin, cos, tan, sqrt, pow, PI, E |
-| index.js | 20 | package entry + register modules |
-
-Data Flow: index.js: parse(code) → analyze(ast) → emit(ast) → optimize(ir) → assemble() → watr
 
 Important project decisions are documented in .work/research.md in particular style:
 
@@ -50,9 +44,9 @@ Be frugal with descriptions, don't get too verbose or detailed - show key insigh
 ## Design Principles
 
 - **No-overhead primitives**: Prefer compile-time solutions over runtime indirection. Static analysis enables direct calls, inline code, zero allocation.
-- **Static typing, no runtime dispatch**: All types must be resolved at compile-time. No runtime type checks, no polymorphic dispatch. Functions are monomorphized per call-site types. This is a principal limitation for zero-overhead guarantee.
+- **Static typing, no runtime dispatch**: All types must be resolved at compile-time. No runtime type checks, no polymorphic dispatch. Functions are monomorphized per call-sites. This is a principal limitation for zero-overhead guarantee.
 - **Meaningful limitations**: Accept constraints that enable performance. Document them clearly. Example: static namespace pattern requires compile-time known schema. Goal for compiler not to introduce runtime overhead just for marginal js compatibility.
 - **Don't overcomplicate**: Simple working solution > complex generic solution. Add complexity only when concrete use case demands it.
 - **Arrays as model**: f64 pointers work well - same pattern applies to objects when needed.
 
-When implementing features, rely on watr ability to polyfill modern WASM features – you can use funcrefs, multiple values, tail calls. Also watr can optimize wat (tree-shake etc), so no need to prematurely optimize instructions in jz.
+Reuse existing patterns and structure as much as possible, instead of introducing new abstractions or layers.

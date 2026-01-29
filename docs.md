@@ -10,8 +10,7 @@ add(2, 3)  // 5
 
 ## Syntax
 
-### Primitives
-Numbers (`0.1`, `0xff`, `0b11`), strings (`"a"`, `'b'`), `true`/`false`, `null`, `NaN`, `Infinity`, `PI`, `E`
+### Primitives\nNumbers (`0.1`, `0xff`, `0b11`), strings (`\"a\"`, `'b'`), `true`/`false`, `null`, `NaN`, `Infinity`", "oldString": "### Primitives\nNumbers (`0.1`, `0xff`, `0b11`), strings (`\"a\"`, `'b'`), `true`/`false`, `null`, `NaN`, `Infinity`, `PI`, `E`
 
 ### Operators
 `+ - * / % **` | `< <= > >= == !=` | `~ & | ^ << >> >>>` | `! && || ?? ?:` | `= += -= *= /=`
@@ -115,28 +114,47 @@ let m = new Map(); m.set("k", 1); m.get("k"); m.has("k"); m.delete("k"); m.size
 ## API
 
 ```js
-// Tagged template (recommended)
 import jz from 'jz'
-const { fn } = await jz`export const fn = x => x + 1`
+import math from 'jz/module/math.js'
 
-// Compile only
-import { compile } from 'jz'
-const wat = compile('export const f = x => x + 1')  // JS → WAT
+// Basic compilation
+const wasm = jz('export let add = (a, b) => a + b')
+const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
 
-// With watr
-import { compile as watr } from 'watr'
-const wasm = watr(wat)  // WAT → WASM binary
+// With modules (e.g., Math.sin, Math.PI)
+const wasm = jz('export let f = x => Math.sin(x)', { modules: [math] })
 
-// Zero-copy memory
-import { f64view, isPtr, decodePtr } from 'jz'
-const ptr = mod.wasm.getArr()
-if (isPtr(ptr)) {
-  const view = f64view(mod.wasm._memory, ptr)  // direct Float64Array view
+// WAT output for debugging
+const wat = jz('export let f = x => x * 2', { wat: true })
+```
+
+### Module API
+
+Modules extend the compiler by registering:
+- `ctx.emit['name']` - emitter function: (args) → WasmNode
+- `ctx.stdlib['name']` - WAT function definition string
+- `ctx.deps['name']` - array of dependency names
+
+```js
+// Example: custom module
+export default (ctx) => {
+  // Simple emitter (WASM op)
+  ctx.emit['mymod.double'] = (a) => ['f64.mul', emit(a), ['f64.const', 2]]
+  
+  // Emitter with stdlib function
+  ctx.emit['mymod.cube'] = (a) => {
+    include('mymod.cube')  // mark stdlib for inclusion
+    return ['call', '$mymod.cube', emit(a)]
+  }
+  
+  // WAT stdlib definition
+  ctx.stdlib['mymod.cube'] = `(func $mymod.cube (param $x f64) (result f64)
+    (f64.mul (local.get $x) (f64.mul (local.get $x) (local.get $x)))
+  )`
+  
+  // Dependencies (included automatically)
+  ctx.deps['mymod.complex'] = ['mymod.cube', 'mymod.double']
 }
-
-// Memory management - reset between independent computations
-mod.wasm._resetHeap?.()        // reset main heap (arrays, objects, strings)
-mod.wasm._resetTypedArrays?.() // reset TypedArray arena
 ```
 
 ## Limitations

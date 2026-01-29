@@ -1,7 +1,8 @@
 // New core tests for jz v2
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { compile } from '../index.js'
+import compile from '../index.js'
+import math from '../module/math.js'
 
 // Helper: compile and run
 function run(code = {}, opts = {}) {
@@ -59,26 +60,26 @@ test('precedence', async () => {
 })
 
 test('math module: wasm ops', async () => {
-  const opts = { modules: ['math'] }
-  is(run('export let f = x => sqrt(x)', opts).f(16), 4)
-  is(run('export let f = x => abs(x)', opts).f(-5), 5)
-  is(run('export let f = x => floor(x)', opts).f(3.7), 3)
-  is(run('export let f = x => ceil(x)', opts).f(3.2), 4)
-  is(run('export let f = x => round(x)', opts).f(3.5), 4)
+  const opts = { modules: [math] }
+  is(run('export let f = x => Math.sqrt(x)', opts).f(16), 4)
+  is(run('export let f = x => Math.abs(x)', opts).f(-5), 5)
+  is(run('export let f = x => Math.floor(x)', opts).f(3.7), 3)
+  is(run('export let f = x => Math.ceil(x)', opts).f(3.2), 4)
+  is(run('export let f = x => Math.round(x)', opts).f(3.5), 4)
 })
 
 test('math module: constants', async () => {
-  const opts = { modules: ['math'] }
-  almost(run('export let f = () => PI', opts).f(), Math.PI)
-  almost(run('export let f = () => E', opts).f(), Math.E)
+  const opts = { modules: [math] }
+  almost(run('export let f = () => Math.PI', opts).f(), Math.PI)
+  almost(run('export let f = () => Math.E', opts).f(), Math.E)
 })
 
 test('math module: sin/cos (taylor)', async () => {
-  const opts = { modules: ['math'] }
-  const sin0 = run('export let f = () => sin(0)', opts).f()
+  const opts = { modules: [math] }
+  const sin0 = run('export let f = () => Math.sin(0)', opts).f()
   ok(Math.abs(sin0) < 1e-6)
   // Taylor series less accurate at PI/2
-  const sinPi2 = run('export let f = () => sin(PI / 2)', opts).f()
+  const sinPi2 = run('export let f = () => Math.sin(Math.PI / 2)', opts).f()
   ok(Math.abs(sinPi2 - 1) < 0.01) // ~1% tolerance
 })
 

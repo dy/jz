@@ -1,11 +1,66 @@
 /**
- * jz - JS subset to WASM compiler
- *
- * @example
- * import { compile } from 'jz'
- * const wasm = compile('export let f = x => x * 2')
- * const { f } = await WebAssembly.instantiate(wasm).then(m => m.instance.exports)
- * f(21) // 42
+ * jz - JavaScript subset compiler to WebAssembly
+ * @module jz
  */
 
-export { compile, registerModule } from './src/compile.js'
+import { parse } from 'subscript/jessie'
+import { compile as watrCompile, print as watrPrint } from 'watr'
+import prepare from './src/prepare.js'
+import compile, { emitter } from './src/compile.js'
+
+/**
+ * Global compilation context. Reset on each jz() call.
+ * @type {CompileContext}
+ */
+export let ctx
+
+/**
+ * @typedef {Object} CompileContext
+ * @property {Record<string, Function>} emit - Emitter table: name → (args) => WasmNode
+ * @property {Record<string, string>} stdlib - WAT function definitions: name → WAT string
+ * @property {Record<string, string[]>} deps - Stdlib dependencies: name → [dep names]
+ * @property {Set<string>} included - Included stdlib names (deduped)
+ * @property {Array} funcs - User function definitions from prepare
+ * @property {Array} imports - WASM import declarations
+ * @property {boolean} memory - Whether memory section is needed
+ * @property {Record<string, {type: string, mutable: boolean}>} vars - Variable type info
+ * @property {Record<string, boolean>} exports - Exported function names
+ */
+
+/**
+ * @typedef {Object} CompileOptions
+ * @property {Function[]} [modules] - Module initializers
+ * @property {boolean} [wat] - Return WAT text instead of binary
+ */
+
+/**
+ * Compile JS code to WASM binary (or WAT text).
+ * @param {string} code - JavaScript source code
+ * @param {CompileOptions} [opts] - Compilation options
+ * @returns {Uint8Array|string} WASM binary or WAT text if opts.wat
+ * @example
+ * const wasm = jz('export let add = (a, b) => a + b')
+ * const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
+ */
+export default function jz(code, opts = {}) {
+  ctx = {
+    emit: Object.create(emitter),
+    stdlib: {},
+    deps: {},
+    included: new Set(),
+    funcs: [],
+    imports: [],
+    memory: false,
+    vars: {},
+    exports: {},
+  }
+
+  // Load modules
+  if (opts.modules) for (const mod of opts.modules) mod(ctx)
+
+  // Parse → Prepare → Compile
+  const ast = prepare(parse(code))
+  const module = compile(ast)
+
+  return opts.wat ? watrPrint(module) : watrCompile(module)
+}
