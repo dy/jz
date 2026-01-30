@@ -154,22 +154,15 @@ const handlers = {
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
-  // Object literal / block
+  // Block statement
+  '{'(inner) { return ['{', prep(inner)] },
+
+  // Object literal - flatten comma, expand shorthand
   '{}'(inner) {
-    // FIXME: shouldn't it be handled by subscript?
-    if (inner == null) return ['{']
-    if (Array.isArray(inner) && [';', '=', 'let', 'const', 'var', 'for', 'while', 'return', 'if'].includes(inner[0]))
-      return ['{}', prep(inner)]
-    if (typeof inner === 'string') return ['{', [inner, inner]]
-    if (Array.isArray(inner) && inner[0] === ':') return ['{', [inner[1], prep(inner[2])]]
-    if (Array.isArray(inner) && inner[0] === ',') {
-      return ['{', ...inner.slice(1).map(p => {
-        if (typeof p === 'string') return [p, p]
-        if (Array.isArray(p) && p[0] === ':') return [p[1], prep(p[2])]
-        err(`Invalid object property: ${JSON.stringify(p)}`)
-      })]
-    }
-    err(`Invalid block/object: ${JSON.stringify(inner)}`)
+    if (inner == null) return ['{}']
+    const prop = p => typeof p === 'string' ? [':', p, p] : prep(p)
+    if (Array.isArray(inner) && inner[0] === ',') return ['{}', ...inner.slice(1).map(prop)]
+    return ['{}', prop(inner)]
   },
 
   // For loop
