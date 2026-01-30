@@ -20,13 +20,20 @@ import * as mods from '../module/index.js'
  */
 export default function prep(node) {
   if (node == null) return node
-  if (!Array.isArray(node)) return typeof node === 'string' && PROHIBITED[node] ?
-    err(PROHIBITED[node]) :
-    node
+  if (!Array.isArray(node)) {
+    if (typeof node === 'string') {
+      if (PROHIBITED[node]) err(PROHIBITED[node])
+      // Resolve via scope: sin → math.sin (direct bindings have dot)
+      const resolved = ctx.scope[node]
+      if (resolved?.includes('.')) return resolved
+    }
+    return node
+  }
 
   const [op, ...args] = node
   if (op == null) return [, args[0]]
-  return handlers[op]?.(...args) ?? [op, ...args.map(prep)]
+  const handler = handlers[op]
+  return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
 // Prohibited identifiers (string nodes)
@@ -38,7 +45,7 @@ const PROHIBITED = {
 }
 
 // Global namespaces for module auto-import
-const GLOBALS = {
+export const GLOBALS = {
   Math: 'math',
   Number: 'core',
   String: 'core',
@@ -69,49 +76,89 @@ const handlers = {
   'in': () => err('`in` not supported: use optional chaining'),
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
-  'import': () => err('dynamic import() not supported'),
+
+  // Static import: import { sin, cos } from 'math'
+  // AST: ['import', ['from', specifiers, source]]
+  'import'(fromNode) {
+    if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
+      return err('Dynamic import() not supported')
+    return handlers['from'](fromNode[1], fromNode[2])
+  },
+
+  'from'(specifiers, source) {
+    const mod = source?.[1] // [null, 'math'] → 'math'
+    if (!mod || typeof mod !== 'string') return err('Invalid import source')
+    includeModule(mod)
+
+    // Parse specifiers: string | ['{}', ...] | ['as', '*', alias]
+    const bind = (name, alias) => {
+      const key = mod + '.' + name
+      if (!ctx.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
+      ctx.scope[alias || name] = key // direct: sin → math.sin
+    }
+
+    if (typeof specifiers === 'string') {
+      // import math from 'math' → namespace
+      ctx.scope[specifiers] = mod
+      return null
+    }
+    if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
+      // import * as m from 'math' → namespace
+      ctx.scope[specifiers[2]] = mod
+      return null
+    }
+    if (Array.isArray(specifiers) && specifiers[0] === '{}') {
+      // import { a, b } or { a as x }
+      const inner = specifiers[1]
+      if (inner == null) return null // import {} from 'math' - noop
+      const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+      for (const item of items) {
+        if (typeof item === 'string') bind(item)
+        else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
+        else err(`Invalid import specifier: ${JSON.stringify(item)}`)
+      }
+    }
+    return null // imports don't emit code
+  },
+
   ':': () => err('labeled statements not supported'),
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
 
   // Statements
-  ';': (...stmts) => [';', ...stmts.map(prep)],
+  ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],
 
-  'let': (...inits) => ['let', ...inits.map(i => {
-    if (!Array.isArray(i) || i[0] !== '=') return i
-    const [, name, init] = i, normed = prep(init)
-    if (typeof name === 'string') {
-      ctx.vars[name] = { type: type(normed), mutable: true }
-      if (Array.isArray(normed) && normed[0] === '=>')
-        ctx.funcs.push({ name, body: normed, exported: false })
+  'let': (...inits) => {
+    const rest = []
+    for (const i of inits) {
+      if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
+      const [, name, init] = i, normed = prep(init)
+      if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable: true }
+      if (!defFunc(name, normed)) rest.push(['=', name, normed])
     }
-    return ['=', name, normed]
-  })],
+    return rest.length ? ['let', ...rest] : null
+  },
 
-  'const': (...inits) => ['const', ...inits.map(i => {
-    if (!Array.isArray(i) || i[0] !== '=') return i
-    const [, name, init] = i, normed = prep(init)
-    if (typeof name === 'string') {
-      ctx.vars[name] = { type: type(normed), mutable: false }
-      if (Array.isArray(normed) && normed[0] === '=>')
-        ctx.funcs.push({ name, body: normed, exported: false })
+  'const': (...inits) => {
+    const rest = []
+    for (const i of inits) {
+      if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
+      const [, name, init] = i, normed = prep(init)
+      if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable: false }
+      if (!defFunc(name, normed)) rest.push(['=', name, normed])
     }
-    return ['=', name, normed]
-  })],
+    return rest.length ? ['const', ...rest] : null
+  },
 
   // TODO: handle imports that includes module from /module
 
   'export': decl => {
-    const normed = prep(decl)
-    if (Array.isArray(normed) && (normed[0] === 'let' || normed[0] === 'const'))
-      for (const a of normed.slice(1))
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
-          ctx.exports[a[1]] = true
-          // Mark function as exported
-          const fn = ctx.funcs.find(f => f.name === a[1])
-          if (fn) fn.exported = true
-        }
-    return ['export', normed]
+    // Mark exported names before prep (so let/const can see them)
+    if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
+      for (const i of decl.slice(1))
+        if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
+          ctx.exports[i[1]] = true
+    return prep(decl)
   },
 
   // Unary +/- disambiguation
@@ -131,14 +178,19 @@ const handlers = {
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
 
-  // Function call - resolve Math.X to math.X
+  // Function call - resolve scope bindings and namespaces
   '()'(callee, ...args) {
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
+      // Resolve via scope: sin → math.sin
+      const resolved = ctx.scope[callee]
+      if (resolved?.includes('.')) callee = resolved
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      if (typeof obj === 'string' && GLOBALS[obj])
-        callee = (includeModule(GLOBALS[obj]), GLOBALS[obj] + '.' + prop)
+      const mod = ctx.scope[obj]
+      // Namespace: m.sin where scope.m = 'math' (no dot)
+      if (typeof obj === 'string' && mod && !mod.includes('.'))
+        callee = (includeModule(mod), mod + '.' + prop)
     }
     return ['()', callee, ...args.map(prep)]
   },
@@ -175,10 +227,12 @@ const handlers = {
     return ['for', prep(head), prep(body)]
   },
 
-  // Property access - resolve Math.X to math.X string
+  // Property access - resolve namespaces (Math.X, m.X) to module.X
   '.'(obj, prop) {
-    if (typeof obj === 'string' && GLOBALS[obj])
-      return includeModule(GLOBALS[obj]), GLOBALS[obj] + '.' + prop
+    const mod = ctx.scope[obj]
+    // Namespace: scope.m = 'math' (no dot means namespace)
+    if (typeof obj === 'string' && mod && !mod.includes('.'))
+      return includeModule(mod), mod + '.' + prop
     return ['.', prep(obj), prop]
   },
 
@@ -186,7 +240,8 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor
     if (Array.isArray(ctor) && ctor[0] === '()') name = ctor[1]
-    if (typeof name === 'string' && GLOBALS[name]) includeModule(GLOBALS[name])
+    const mod = ctx.scope[name]
+    if (typeof name === 'string' && mod && !mod.includes('.')) includeModule(mod)
     return ['new', prep(ctor), ...args.map(prep)]
   }
 }
@@ -217,6 +272,17 @@ function type(expr) {
   }
   if (Array.isArray(expr) && expr[0] === '=>') return 'func'
   return 'f64'
+}
+
+/** If arrow func, add to ctx.funcs and return true */
+function defFunc(name, node) {
+  if (!Array.isArray(node) || node[0] !== '=>') return false
+  const [, rawParams, body] = node
+  let p = rawParams
+  if (Array.isArray(p) && p[0] === '()') p = p[1]
+  const params = Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : p ? [p] : []
+  ctx.funcs.push({ name, params, body, exported: !!ctx.exports[name] })
+  return true
 }
 
 const err = msg => { throw Error(msg) }

@@ -30,8 +30,8 @@ Not "JS compatibility". Not "JS subset".
 | JS | jz |
 |----|-----|
 | Implicit `Math.sin` | `import { sin } from 'math'` |
-| Implicit `console.log` | `import { log } from 'console'` |
-| Implicit `JSON.parse` | `import { parse } from 'json'` |
+| Implicit `console.log` | `import { console } from 'core'` |
+| Implicit `JSON.parse` | `import { JSON } from 'core'` |
 | `var`, hoisting | `let`, `const` only |
 | `function`, `this` | Arrow functions only |
 | `class`, `new Foo()` | Plain objects, composition |
@@ -50,10 +50,10 @@ Not "JS compatibility". Not "JS subset".
                       ▼
 ┌────────────────────────────────────────────────┐
 │                 jz compiler                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │  parse    │→│ analyze  │→ │ compile  │      │
+│  ┌───────────┐ ┌──────────┐  ┌──────────┐      │
+│  │  parse    │→│ prepare  │→ │ compile  │      │
 │  │(subscript)│ │  scope   │  │   WAT    │      │
-│  └──────────┘  └──────────┘  └──────────┘      │
+│  └───────────┘ └──────────┘  └──────────┘      │
 │                      ↑                         │
 │              ┌───────┴───────┐                 │
 │              │   prelude     │                 │
@@ -73,25 +73,9 @@ Not "JS compatibility". Not "JS subset".
 | Prelude | Provides | Compiles to |
 |---------|----------|-------------|
 | `math` | sin, cos, sqrt, PI, E... | WASM f64 ops + stdlib |
-| `array` | map, filter, reduce... | inline WASM loops |
-| `string` | slice, indexOf, split... | WASM string ops |
-| `console` | log, warn, error | WASM imports (host) |
-| `json` | parse, stringify | WASM JSON codec |
+| `core` | Array, String, JSON, console | inline WASM loops |
+| `binary` | TypedArray, Uint8Array | WASM binary array |
 
-### Compiler options
-
-```js
-import { compile } from 'jz'
-
-// Minimal: no preludes, pure numeric
-compile(code)
-
-// With preludes
-compile(code, { preludes: ['math', 'array'] })
-
-// JS-compat mode: implicit globals (escape hatch)
-compile(code, { implicit: true })
-```
 
 ## Who Benefits
 
@@ -132,9 +116,8 @@ compile(code, { implicit: true })
 * [ ] Remove all implicit globals from core
 * [ ] Define prelude interface
 * [ ] Implement `import { x } from 'prelude'` resolution
-* [ ] Core preludes: math, array, string
-* [ ] Optional preludes: console, json, set, map
-* [ ] `implicit: true` option for JS-compat mode
+* [ ] Core preludes: math, core, binary
+* [ ] WASI for core
 
 **Value**: Principled foundation. No magic.
 
@@ -145,6 +128,7 @@ compile(code, { implicit: true })
 **Deliverable**: Single HTML page, works in browser
 
 * [ ] Formula editor
+  * [ ] lighthigh
 * [ ] Play/stop
 * [ ] Waveform display
 * [ ] 10 preset formulas

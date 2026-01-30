@@ -5,7 +5,7 @@
 
 import { parse } from 'subscript/jessie'
 import { compile as watrCompile, print as watrPrint } from 'watr'
-import prepare from './src/prepare.js'
+import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
 
 /**
@@ -19,11 +19,12 @@ export let ctx
  * @property {Record<string, Function>} emit - Emitter table: name → (args) => WasmNode
  * @property {Record<string, string>} stdlib - included functions: name → WAT string
  * @property {Set<string>} includes - Included stdlib names (deduped)
- * @property {Array} funcs - User function definitions from prepare
  * @property {Array} imports - WASM import declarations
+ * @property {Record<string, string>} scope - Name resolution: sin→math.sin, m→math
  * @property {boolean} memory - Whether memory section is needed
  * @property {Record<string, {type: string, mutable: boolean}>} vars - Variable type info
  * @property {Record<string, boolean>} exports - Exported function names
+ * @property {Array<{name: string, params: string[], body: any, exported: boolean}>} funcs - Function defs
  */
 
 /**
@@ -45,12 +46,13 @@ export default function jz(code, opts = {}) {
     emit: Object.create(emitter),
     stdlib: {},
     includes: new Set(),
-    funcs: [],
-    imports: [],
+    imports: [],              // WASM imports
+    scope: Object.create(GLOBALS), // name resolution: sin→math.sin, m→math
     memory: false,
-    modules: {},
+    modules: {},              // loaded module init guards
     vars: {},
-    exports: {},
+    exports: {},              // name → true for exported functions
+    funcs: [],                // {name, params, body, exported} - body is AST ref
   }
 
   // Parse → Prepare → Compile

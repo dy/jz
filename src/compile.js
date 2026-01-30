@@ -20,10 +20,16 @@ const err = msg => { throw Error(msg) }
  * @returns {WasmNode} Complete WASM module as S-expression
  */
 export default function compile(ast) {
-  const body = emit(ast)
-
-  // Emit user funcs (may call include() for stdlib deps)
-  const funcs = ctx.funcs.map(f => func(f))
+  // Emit functions (may call include() for stdlib deps)
+  const funcs = ctx.funcs.map(({ name, params, body, exported }) => {
+    const fn = ['func']
+    if (exported) fn.push(['export', `"${name}"`])
+    else fn.push(`$${name}`)
+    fn.push(...params.map(p => ['param', `$${p}`, 'f64']))
+    fn.push(['result', 'f64'])
+    fn.push(emit(body))
+    return fn
+  })
 
   const sections = [
     ...ctx.imports,
@@ -33,9 +39,10 @@ export default function compile(ast) {
     ...funcs
   ]
 
-  // Start function if there's init code (non-empty body)
-  if (body?.length) {
-    sections.push(['func', '$__start', body])
+  // Start function if there's init code
+  const init = emit(ast)
+  if (init?.length) {
+    sections.push(['func', '$__start', ...init])
     sections.push(['start', '$__start'])
   }
 
@@ -51,9 +58,9 @@ export default function compile(ast) {
 export const emitter = {
   // Statements
   ';': (...args) => args.map(emit).filter(x => x != null),
-  'let': () => null,    // Functions collected in prepare
-  'const': () => null,  // Functions collected in prepare
-  'export': () => null, // Exports tracked in prepare
+  'let': () => null,    // declarations handled by defFunc in prepare
+  'const': () => null,
+  'export': () => null,
 
   // Arithmetic
   '+': (a, b) => ['f64.add', emit(a), emit(b)],
@@ -97,6 +104,7 @@ export const emitter = {
  * @returns {WasmNode} watr-compatible S-expression
  */
 export function emit(node) {
+  if (node == null) return null
   if (typeof node === 'number') return ['f64.const', node]
   if (typeof node === 'string') {
     // Constants (e.g., math.PI) have emitters
@@ -113,28 +121,4 @@ export function emit(node) {
   const handler = ctx.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
   return handler(...args)
-}
-
-/**
- * Emit function definition to WASM IR.
- * @param {{name: string, body: any[], exported: boolean}} fn - Function info from prepare
- * @returns {WasmNode} WASM func definition
- */
-function func({ name, body, exported }) {
-  const [, rawParams, fnBody] = body
-
-  let params = rawParams
-  if (Array.isArray(params) && params[0] === '()') params = params[1]
-  const paramList = Array.isArray(params)
-    ? (params[0] === ',' ? params.slice(1) : [params])
-    : params ? [params] : []
-
-  const fn = ['func']
-  if (exported) fn.push(['export', `"${name}"`])
-  else fn.push(`$${name}`)
-  fn.push(...paramList.map(p => ['param', `$${p}`, 'f64']))
-  fn.push(['result', 'f64'])
-  fn.push(emit(fnBody))
-
-  return fn
 }
