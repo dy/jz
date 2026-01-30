@@ -40,23 +40,23 @@ const PROHIBITED = {
 // Global namespaces for module auto-import
 const GLOBALS = {
   Math: 'math',
-  Number: 'number',
-  String: 'string',
-  Boolean: 'boolean',
-  Array: 'array',
-  Object: 'object',
-  JSON: 'json',
-  Set: 'set',
-  Map: 'map',
-  RegExp: 'regex',
-  Float64Array: 'typedarray',
-  Float32Array: 'typedarray',
-  Int8Array: 'typedarray',
-  Int16Array: 'typedarray',
-  Int32Array: 'typedarray',
-  Uint8Array: 'typedarray',
-  Uint16Array: 'typedarray',
-  Uint8ClampedArray: 'typedarray'
+  Number: 'core',
+  String: 'core',
+  Boolean: 'core',
+  Array: 'core',
+  Object: 'core',
+  JSON: 'core',
+  Set: 'core',
+  Map: 'core',
+  RegExp: 'core',
+  Float64Array: 'binary',
+  Float32Array: 'binary',
+  Int8Array: 'binary',
+  Int16Array: 'binary',
+  Int32Array: 'binary',
+  Uint8Array: 'binary',
+  Uint16Array: 'binary',
+  Uint8ClampedArray: 'binary'
 }
 
 const handlers = {
@@ -128,6 +128,9 @@ const handlers = {
   '++'(a, post) { return post === null ? ['-', ['+=', a, [, 1]], [, 1]] : ['+=', a, [, 1]] },
   '--'(a, post) { return post === null ? ['+', ['-=', a, [, 1]], [, 1]] : ['-=', a, [, 1]] },
 
+  // auto-include math for ** operator
+  '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
+
   // Function call - resolve Math.X to math.X
   '()'(callee, ...args) {
     if (typeof callee === 'string') {
@@ -135,7 +138,7 @@ const handlers = {
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       if (typeof obj === 'string' && GLOBALS[obj])
-        callee = GLOBALS[obj] + '.' + prop
+        callee = (includeModule(GLOBALS[obj]), GLOBALS[obj] + '.' + prop)
     }
     return ['()', callee, ...args.map(prep)]
   },
@@ -182,7 +185,7 @@ const handlers = {
   // Property access - resolve Math.X to math.X string
   '.'(obj, prop) {
     if (typeof obj === 'string' && GLOBALS[obj])
-      return GLOBALS[obj] + '.' + prop
+      return includeModule(GLOBALS[obj]), GLOBALS[obj] + '.' + prop
     return ['.', prep(obj), prop]
   },
 
@@ -200,12 +203,11 @@ const handlers = {
  * @param {*} name
  */
 function includeModule(name) {
-  if (ctx.modules[name]) return
+  let init = mods[name]
+  if (!init) return err(`Module not found: ${name}`)
+    if (ctx.modules[name]) return
+  init(ctx)
   ctx.modules[name] = true
-
-  let moduleDefs = mods[name] ? mods[name](ctx) : err(`Module not found: ${name}`)
-
-  Object.assign(ctx.stdlib, moduleDefs)
 }
 
 /**

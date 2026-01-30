@@ -1,5 +1,6 @@
 import './core-v2.js'
 import './errors.js'
+import './math.js'
 // import './esnext.js'
 // import './ieee754.js'
 // import './floatbeat.js'

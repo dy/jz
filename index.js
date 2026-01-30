@@ -35,7 +35,6 @@ export let ctx
 /**
  * Compile JS code to WASM binary (or WAT text).
  * @param {string} code - JavaScript source code
- * @param {CompileOptions} [opts] - Compilation options
  * @returns {Uint8Array|string} WASM binary or WAT text if opts.wat
  * @example
  * const wasm = jz('export let add = (a, b) => a + b')
@@ -49,12 +48,10 @@ export default function jz(code, opts = {}) {
     funcs: [],
     imports: [],
     memory: false,
+    modules: {},
     vars: {},
     exports: {},
   }
-
-  // Load modules
-  if (opts.modules) for (const mod of opts.modules) mod(ctx)
 
   // Parse → Prepare → Compile
   const ast = prepare(parse(code))

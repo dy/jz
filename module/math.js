@@ -151,20 +151,6 @@ export default (ctx) => {
   ctx.emit['math.clz32'] = (a) => ['f64.convert_i32_u', ['i32.clz', ['i32.trunc_f64_s', emit(a)]]]
   ctx.emit['math.imul'] = (a, b) => ['f64.convert_i32_s', ['i32.mul', ['i32.trunc_f64_s', emit(a)], ['i32.trunc_f64_s', emit(b)]]]
 
-  // Type checks
-  ctx.emit['math.isNaN'] = (a) => (
-    ctx.includes.add('math.isNaN'),
-    ['call', '$math.isNaN', emit(a)]
-  )
-  ctx.emit['math.isFinite'] = (a) => (
-    ctx.includes.add('math.isFinite'),
-    ['call', '$math.isFinite', emit(a)]
-  )
-  ctx.emit['math.isInteger'] = (a) => (
-    ctx.includes.add('math.isInteger'),
-    ['call', '$math.isInteger', emit(a)]
-  )
-
   // Random
   ctx.emit['math.random'] = () => (
     ctx.includes.add('math.random'),
@@ -283,7 +269,7 @@ export default (ctx) => {
           (f64.mul (local.get $z) (f64.add (f64.const 0.2)
             (f64.mul (local.get $z) (f64.add (f64.const 0.14285714285714285)
               (f64.mul (local.get $z) (f64.add (f64.const 0.1111111111111111)
-                (f64.mul (local.get $z) (f64.const 0.09090909090909091)))))))))))))`
+                (f64.mul (local.get $z) (f64.const 0.09090909090909091)))))))))))))))`
 
   ctx.stdlib['math.log2'] = `(func $math.log2 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`
@@ -410,27 +396,20 @@ export default (ctx) => {
     (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`
 
   ctx.stdlib['math.cbrt'] = `(func $math.cbrt (param $x f64) (result f64)
+    (local $y f64)
     (if (result f64) (f64.lt (local.get $x) (f64.const 0.0))
       (then (f64.neg (call $math.cbrt (f64.neg (local.get $x)))))
-      (else (call $math.pow (local.get $x) (f64.const 0.3333333333333333)))))`
+      (else (if (result f64) (f64.eq (local.get $x) (f64.const 0.0))
+        (then (f64.const 0.0))
+        (else
+          ;; Initial guess via pow, then Newton-Raphson: y = (2y + x/y²)/3
+          (local.set $y (call $math.pow (local.get $x) (f64.const 0.3333333333333333)))
+          (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
+          (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
+          (local.get $y))))))`
 
   ctx.stdlib['math.hypot'] = `(func $math.hypot (param $x f64) (param $y f64) (result f64)
     (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`
-
-  ctx.stdlib['math.isNaN'] = `(func $math.isNaN (param $x f64) (result f64)
-    (if (result f64) (f64.ne (local.get $x) (local.get $x)) (then (f64.const 1.0)) (else (f64.const 0.0))))`
-
-  ctx.stdlib['math.isFinite'] = `(func $math.isFinite (param $x f64) (result f64)
-    (if (result f64) (f64.eq (f64.sub (local.get $x) (local.get $x)) (f64.const 0.0))
-      (then (f64.const 1.0)) (else (f64.const 0.0))))`
-
-  ctx.stdlib['math.isInteger'] = `(func $math.isInteger (param $x f64) (result f64)
-    (if (result f64) (i32.and
-        (f64.eq (local.get $x) (local.get $x))
-        (i32.and
-          (f64.ne (f64.abs (local.get $x)) (f64.const inf))
-          (f64.eq (f64.trunc (local.get $x)) (local.get $x))))
-      (then (f64.const 1.0)) (else (f64.const 0.0))))`
 
   ctx.stdlib['math.random'] = `(func $math.random (result f64)
     (local $s i32)

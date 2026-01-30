@@ -28,6 +28,7 @@ export default function compile(ast) {
   const sections = [
     ...ctx.imports,
     ...(ctx.memory ? [['memory', ['export', '"memory"'], 1]] : []),
+    ...(ctx.globals || []).map(g => parseWat(g)),
     ...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])),
     ...funcs
   ]
