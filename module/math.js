@@ -1,21 +1,19 @@
 /**
  * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
- * 
+ *
  * Module API:
  * - ctx.emit['math.X'] = (args) => WasmNode - custom emitters
  * - ctx.stdlib['math.X'] = '(func ...)' - WAT function definitions
  * - ctx.deps['math.X'] = ['dep1', 'dep2'] - stdlib dependencies
  * - include('math.X') - marks stdlib for inclusion (called by emitters)
- * 
+ *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.emit['math.sin'] and calls it.
- * 
+ *
  * @module math
  */
 
 import { emit } from '../src/compile.js'
-import { include } from '../src/prepare.js'
-
 export default (ctx) => {
   // Constants
   ctx.emit['math.PI'] = () => ['f64.const', Math.PI]
@@ -31,17 +29,25 @@ export default (ctx) => {
   ctx.emit['math.round'] = (a) => ['f64.nearest', emit(a)]
 
   // Trig - include wat, return call
-  ctx.emit['math.sin'] = (a) => (include('math.sin'), ['call', '$math.sin', emit(a)])
-  ctx.emit['math.cos'] = (a) => (include('math.cos'), ['call', '$math.cos', emit(a)])
-  ctx.emit['math.tan'] = (a) => (include('math.tan'), ['call', '$math.tan', emit(a)])
+  ctx.emit['math.sin'] = (a) => (
+    ctx.includes.add('math.sin'),
+    ['call', '$math.sin', emit(a)]
+  )
+  ctx.emit['math.cos'] = (a) => (
+    ctx.includes.add('math.sin').add('math.cos'),
+    ['call', '$math.cos', emit(a)]
+  )
+  ctx.emit['math.tan'] = (a) => (
+    ctx.includes.add('math.sin').add('math.cos').add('math.tan'),
+    ['call', '$math.tan', emit(a)]
+  )
 
   // Power
-  ctx.emit['math.pow'] = (a, b) => (include('math.pow'), ['call', '$math.pow', emit(a), emit(b)])
+  ctx.emit['math.pow'] = (a, b) => (
+    ctx.includes.add('math.pow'),
+    ['call', '$math.pow', emit(a), emit(b)]
+  )
   ctx.emit['**'] = (a, b) => ctx.emit['math.pow'](a, b)
-
-  // Dependencies
-  ctx.deps['math.cos'] = ['math.sin']
-  ctx.deps['math.tan'] = ['math.sin', 'math.cos']
 
   // WAT stdlib
   ctx.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)

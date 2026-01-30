@@ -25,13 +25,10 @@ export default function compile(ast) {
   // Emit user funcs (may call include() for stdlib deps)
   const funcs = ctx.funcs.map(f => func(f))
 
-  // Resolve included stdlib (after user funcs to capture all deps)
-  const stdlib = [...ctx.included].map(n => parseWat(ctx.stdlib[n]))
-
   const sections = [
     ...ctx.imports,
     ...(ctx.memory ? [['memory', ['export', '"memory"'], 1]] : []),
-    ...stdlib,
+    ...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])),
     ...funcs
   ]
 

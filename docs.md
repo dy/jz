@@ -133,27 +133,23 @@ const wat = jz('export let f = x => x * 2', { wat: true })
 Modules extend the compiler by registering:
 - `ctx.emit['name']` - emitter function: (args) → WasmNode
 - `ctx.stdlib['name']` - WAT function definition string
-- `ctx.deps['name']` - array of dependency names
 
 ```js
 // Example: custom module
 export default (ctx) => {
   // Simple emitter (WASM op)
   ctx.emit['mymod.double'] = (a) => ['f64.mul', emit(a), ['f64.const', 2]]
-  
+
   // Emitter with stdlib function
   ctx.emit['mymod.cube'] = (a) => {
-    include('mymod.cube')  // mark stdlib for inclusion
+    ctx.includes.add('mymod.cube')  // mark stdlib for inclusion
     return ['call', '$mymod.cube', emit(a)]
   }
-  
+
   // WAT stdlib definition
   ctx.stdlib['mymod.cube'] = `(func $mymod.cube (param $x f64) (result f64)
     (f64.mul (local.get $x) (f64.mul (local.get $x) (local.get $x)))
   )`
-  
-  // Dependencies (included automatically)
-  ctx.deps['mymod.complex'] = ['mymod.cube', 'mymod.double']
 }
 ```
 

@@ -17,9 +17,8 @@ export let ctx
 /**
  * @typedef {Object} CompileContext
  * @property {Record<string, Function>} emit - Emitter table: name → (args) => WasmNode
- * @property {Record<string, string>} stdlib - WAT function definitions: name → WAT string
- * @property {Record<string, string[]>} deps - Stdlib dependencies: name → [dep names]
- * @property {Set<string>} included - Included stdlib names (deduped)
+ * @property {Record<string, string>} stdlib - included functions: name → WAT string
+ * @property {Set<string>} includes - Included stdlib names (deduped)
  * @property {Array} funcs - User function definitions from prepare
  * @property {Array} imports - WASM import declarations
  * @property {boolean} memory - Whether memory section is needed
@@ -46,8 +45,7 @@ export default function jz(code, opts = {}) {
   ctx = {
     emit: Object.create(emitter),
     stdlib: {},
-    deps: {},
-    included: new Set(),
+    includes: new Set(),
     funcs: [],
     imports: [],
     memory: false,

@@ -11,17 +11,6 @@ import * as mods from '../module/index.js'
  * @typedef {null|number|string|ASTNode[]} ASTNode
  */
 
-/**
- * Include stdlib function and its dependencies.
- * Called by module emitters (e.g., math.sin emitter calls include('math.sin')).
- * Recursively includes deps from ctx.deps, deduped via ctx.included Set.
- * @param {string} name - Stdlib function name (e.g., 'math.sin')
- */
-export function include(name) {
-  if (ctx.included.has(name)) return
-  ctx.included.add(name)
-  ctx.deps[name]?.forEach(include)
-}
 
 /**
  * Prepare AST node for compilation. Normalizes syntax, validates

@@ -27,14 +27,6 @@ const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
 add(2, 3)  // 5
 ```
 
-### With Modules
-
-```js
-import jz from 'jz'
-import math from 'jz/module/math.js'
-
-const wasm = jz(`export let f = x => Math.sqrt(x)`, { modules: [math] })
-```
 
 
 ### CLI
