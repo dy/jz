@@ -1,6 +1,16 @@
 /**
  * AST preparation: normalize, validate, analyze in single pass.
- * Resolves Math.X → math.X for module emitters.
+ *
+ * Responsibilities:
+ * - Validate: reject prohibited features (this, class, async, var...)
+ * - Resolve: Math.sin → math.sin, import bindings → module.name
+ * - Extract: arrow functions → ctx.funcs with sig (params, results)
+ * - Normalize: ++/-- → +=/-=, unary ± disambiguation, for head flattening
+ * - Auto-import: Math/Array/etc usage triggers module loading
+ *
+ * Handler table mirrors compile's emitter table — same dispatch pattern.
+ * Unhandled ops fall through to recursive prep of children.
+ *
  * @module prepare
  */
 
@@ -20,10 +30,19 @@ export default function prepare(node) {
   return prep(node)
 }
 
+// Named constants → numeric literals
+const CONSTANTS = { 'true': 1, 'false': 0, 'null': 0, 'undefined': 0 }
+// NaN/Infinity stay as special f64 values in emit()
+const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
+
 function prep(node) {
-  if (node == null) return node
+  if (node == null) return [, 0] // null/undefined → 0 literal
+  if (node === true) return [, 1]
+  if (node === false) return [, 0]
   if (!Array.isArray(node)) {
     if (typeof node === 'string') {
+      if (node in CONSTANTS) return [, CONSTANTS[node]]
+      if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (PROHIBITED[node]) err(PROHIBITED[node])
       const resolved = ctx.scope[node]
       if (resolved?.includes('.')) return resolved
@@ -147,6 +166,21 @@ const handlers = {
   // Arrow: don't prep params (they're declarations, not expressions)
   '=>': (params, body) => ['=>', params, prep(body)],
 
+  // Switch: prep discriminant and case values/bodies
+  // Parser appends fall-through flag (number) to case bodies — strip it
+  'switch'(discriminant, ...cases) {
+    const prepCase = body => {
+      if (Array.isArray(body) && body[0] === ';')
+        return prep([';', ...body.slice(1).filter(s => typeof s !== 'number')])
+      return prep(body)
+    }
+    return ['switch', prep(discriminant), ...cases.map(c => {
+      if (c[0] === 'case') return ['case', prep(c[1]), prepCase(c[2])]
+      if (c[0] === 'default') return ['default', prep(c[1])]
+      return prep(c)
+    })]
+  },
+
   // Unary +/- disambiguation
   '+'(a, b) {
     if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' ? na : ['u+', na] }
@@ -164,8 +198,11 @@ const handlers = {
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
 
-  // Function call - resolve scope bindings and namespaces
+  // Function call or grouping parens
   '()'(callee, ...args) {
+    // Grouping parens: (expr) with no args, callee is an expression not a name
+    if (!args.length && typeof callee !== 'string') return prep(callee)
+
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
       const resolved = ctx.scope[callee]
@@ -251,9 +288,51 @@ function defFunc(name, node) {
   const [, rawParams, body] = node
   let p = rawParams
   if (Array.isArray(p) && p[0] === '()') p = p[1]
-  const params = Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : p ? [p] : []
-  ctx.funcs.push({ name, params, body, exported: !!ctx.exports[name] })
+  const raw = Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : p ? [p] : []
+
+  // Extract param names and defaults: 'x' or ['=', 'x', default]
+  const params = [], defaults = {}
+  for (const r of raw) {
+    if (Array.isArray(r) && r[0] === '=') {
+      params.push({ name: r[1], type: 'f64' })
+      defaults[r[1]] = prep(r[2])
+    } else {
+      params.push({ name: r, type: 'f64' })
+    }
+  }
+
+  const sig = { params, results: detectResults(body) }
+  const hasDefaults = Object.keys(defaults).length > 0
+  ctx.funcs.push({ name, body, exported: !!ctx.exports[name], sig, ...(hasDefaults && { defaults }) })
   return true
+}
+
+/** Detect return arity from function body. */
+function detectResults(body) {
+  // Expression body: [e1, e2, ...] → multi-return
+  if (Array.isArray(body) && body[0] === '[' && body.length > 2)
+    return Array(body.length - 1).fill('f64')
+  // Block body: scan return statements
+  if (Array.isArray(body) && body[0] === '{}') {
+    const rets = []
+    collectReturns(body, rets)
+    if (rets.length) {
+      const n = rets[0]
+      if (n > 1 && rets.every(r => r === n)) return Array(n).fill('f64')
+    }
+  }
+  return ['f64']
+}
+
+/** Collect return value arities from block AST. */
+function collectReturns(node, out) {
+  if (!Array.isArray(node)) return
+  if (node[0] === 'return') {
+    const val = node[1]
+    out.push(Array.isArray(val) && val[0] === '[' && val.length > 2 ? val.length - 1 : 1)
+    return
+  }
+  for (let i = 1; i < node.length; i++) collectReturns(node[i], out)
 }
 
 const err = msg => { throw Error(msg) }

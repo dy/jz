@@ -15,35 +15,41 @@ const { tone } = (await WebAssembly.instantiate(wasm)).instance.exports
 tone(440, 0, 0)  // Real-time audio at native speed
 ```
 
-## What works today
+## Profiles
 
-Scalar f64 math compiled to WASM. Arrow functions, exports, inter-function calls.
+jz compiles to one of three ABI profiles:
 
 ```js
-import jz from 'jz'
+// Scalar (default): all f64 params, single f64 return
+jz(`export let add = (a, b) => a + b`)
 
-const wasm = jz(`export let add = (a, b) => a + b`)
-const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
-add(2, 3)  // 5
+// Multi: all f64 params, multi-value f64 returns (tuples)
+jz(`export let rgb2xyz = (r, g, b) => [
+  r * 0.4124 + g * 0.3576 + b * 0.1805,
+  r * 0.2126 + g * 0.7152 + b * 0.0722,
+  r * 0.0193 + g * 0.1192 + b * 0.9505
+]`, { profile: 'multi' })
+
+// Memory (planned): f64 + i32 pointer params, shared linear memory
 ```
 
-### Supported
+## Supported
 
 * Numbers: `0.1`, `1.2e+3`, `0xabc`, `0b101`, `0o357`
-* Arithmetic: `+a`, `-a`, `a + b`, `a - b`, `a * b`, `a / b`, `a % b`
-* Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`
-* Ternary: `a ? b : c`
-* Functions: `(a, b) => expr`, `a => expr`, `() => expr`
-* Multiple exports, inter-function calls
+* Arithmetic: `+`, `-`, `*`, `/`, `%`
+* Comparison: `<`, `<=`, `>`, `>=`, `==`, `!=`
+* Logic: `&&`, `||`, `!`, `? :` (short-circuit)
+* Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`
+* Functions: `(a, b) => expr`, `(x) => { let y = x * 2; return y }`
+* Control flow: `if`/`else`, `for`, `while`, `break`, `continue`
+* Multi-value return: `(a, b) => [a, b]` (with `{ profile: 'multi' }`)
 * Math module: `Math.sin`, `Math.cos`, `Math.sqrt`, `Math.PI`, etc. (35+ functions)
-* Explicit imports: `import { sin, PI } from 'math'`
-* Namespace imports: `import * as m from 'math'`
+* Imports: `import { sin, PI } from 'math'`, `import * as m from 'math'`
+* Multiple exports, inter-function calls
 
-### Not yet (planned)
+### Not yet
 
-* Statement bodies (`{ }`, `if/else`, `for`, `let` in bodies)
-* Multi-value return (`return [a, b, c]`)
-* Memory/array operations
+* Memory/array operations (Phase 3)
 * Strings, objects, closures
 
 ### Prohibited (by design)

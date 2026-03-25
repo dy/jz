@@ -1,236 +1,158 @@
+// Type coercion: i32/f64 by operator, bitwise ops, named constants
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
-import { evaluate } from './util.js'
+import { is, ok, throws, almost } from 'tst/assert.js'
+import compile from '../index.js'
 
-// typeof returns string type names (optimized comparison)
-test('typeof - number', async () => {
-  is(await evaluate('typeof 5 === "number"'), 1)
-  is(await evaluate('typeof 3.14 === "number"'), 1)
-  is(await evaluate('typeof NaN === "number"'), 1)
-  is(await evaluate('typeof Infinity === "number"'), 1)
+function run(code, opts) {
+  const wasm = compile(code, opts)
+  const mod = new WebAssembly.Module(wasm)
+  return new WebAssembly.Instance(mod).exports
+}
+
+// === Integer preservation ===
+
+test('type: 1 + 2 stays i32 internally', () => {
+  is(run('export let f = () => 1 + 2').f(), 3)
 })
 
-test('typeof - boolean', async () => {
-  is(await evaluate('typeof true === "boolean"'), 1)
-  is(await evaluate('typeof false === "boolean"'), 1)
-  is(await evaluate('typeof (1 < 2) === "boolean"'), 1)
+test('type: 1.0 + 2.0 is f64', () => {
+  is(run('export let f = () => 1.0 + 2.0').f(), 3)
 })
 
-test('typeof - string', async () => {
-  is(await evaluate('typeof "hello" === "string"'), 1)
-  is(await evaluate('typeof "" === "string"'), 1)
+test('type: mixed i32 + f64 promotes', () => {
+  is(run('export let f = () => 1 + 2.5').f(), 3.5)
 })
 
-test('typeof - undefined/null', async () => {
-  is(await evaluate('typeof undefined === "undefined"'), 1)
-  is(await evaluate('typeof null === "object"'), 1)  // JS quirk preserved for compatibility
+test('type: division always f64', () => {
+  is(run('export let f = () => 10 / 3').f(), 10 / 3)
 })
 
-test('typeof - object', async () => {
-  is(await evaluate('typeof {x: 1} === "object"'), 1)
-  is(await evaluate('typeof [1, 2] === "object"'), 1)
+test('type: i32 chain', () => {
+  is(run('export let f = (a, b) => a * 2 + b * 3').f(4, 5), 23)
 })
 
-test('typeof - inequality', async () => {
-  is(await evaluate('typeof 5 !== "string"'), 1)
-  is(await evaluate('typeof "x" !== "number"'), 1)
-  is(await evaluate('typeof true !== "object"'), 1)
+test('type: local preserves i32', () => {
+  is(run('export let f = () => { let x = 5; let y = 3; return x + y }').f(), 8)
 })
 
-// === strict equality (same as == for primitives, ref equality for objects)
-test('=== primitives', async () => {
-  is(await evaluate('5 === 5'), 1)
-  is(await evaluate('5 === 5.0'), 1)
-  is(await evaluate('5 === 6'), 0)
-  is(await evaluate('true === true'), 1)
-  is(await evaluate('true === false'), 0)
+test('type: local widens to f64', () => {
+  is(run('export let f = () => { let x = 5; x = 2.5; return x }').f(), 2.5)
 })
 
-test('=== strings', async () => {
-  is(await evaluate('"abc" === "abc"'), 1)
-  is(await evaluate('"abc" === "def"'), 0)
+// === Bitwise operators ===
+
+test('bitwise: &', () => {
+  is(run('export let f = (a, b) => a & b').f(0xFF, 0x0F), 0x0F)
 })
 
-test('=== arrays - reference equality', async () => {
-  is(await evaluate('[1, 2] === [1, 2]'), 0)  // different refs
-  is(await evaluate('a = [1]; a === a'), 1)   // same ref
-  is(await evaluate('a = [1]; b = a; a === b'), 1)  // same ref via assignment
+test('bitwise: |', () => {
+  is(run('export let f = (a, b) => a | b').f(0xF0, 0x0F), 0xFF)
 })
 
-test('=== objects - reference equality', async () => {
-  is(await evaluate('{x: 1} === {x: 1}'), 0)  // different refs
-  is(await evaluate('o = {x: 1}; o === o'), 1)  // same ref
-  is(await evaluate('o = {x: 1}; p = o; o === p'), 1)  // same ref via assignment
+test('bitwise: ^', () => {
+  is(run('export let f = (a, b) => a ^ b').f(0xFF, 0x0F), 0xF0)
 })
 
-// !== strict inequality
-test('!== primitives', async () => {
-  is(await evaluate('5 !== 6'), 1)
-  is(await evaluate('5 !== 5'), 0)
-  is(await evaluate('true !== false'), 1)
+test('bitwise: ~', () => {
+  is(run('export let f = (a) => ~a').f(0), -1)
 })
 
-test('!== arrays - reference inequality', async () => {
-  is(await evaluate('[1] !== [1]'), 1)  // different refs
-  is(await evaluate('a = [1]; a !== a'), 0)  // same ref
+test('bitwise: <<', () => {
+  is(run('export let f = (a, b) => a << b').f(1, 8), 256)
 })
 
-test('!== objects - reference inequality', async () => {
-  is(await evaluate('{x: 1} !== {x: 1}'), 1)  // different refs
-  is(await evaluate('o = {x: 1}; o !== o'), 0)  // same ref
+test('bitwise: >>', () => {
+  is(run('export let f = (a, b) => a >> b').f(256, 4), 16)
 })
 
-// Number namespace
-test('Number.isNaN', async () => {
-  is(await evaluate('Number.isNaN(NaN)'), 1)
-  is(await evaluate('Number.isNaN(5)'), 0)
-  is(await evaluate('Number.isNaN(Infinity)'), 0)
-  // Note: strings coerce to NaN in our system, so isNaN("NaN") returns 1
-  is(await evaluate('Number.isNaN("NaN")'), 1)
+test('bitwise: >>>', () => {
+  is(run('export let f = (a, b) => a >>> b').f(256, 4), 16)
 })
 
-test('Number.isFinite', async () => {
-  is(await evaluate('Number.isFinite(5)'), 1)
-  is(await evaluate('Number.isFinite(3.14)'), 1)
-  is(await evaluate('Number.isFinite(Infinity)'), 0)
-  is(await evaluate('Number.isFinite(-Infinity)'), 0)
-  is(await evaluate('Number.isFinite(NaN)'), 0)
+test('bitwise: floatbeat t >> 8 & 255', () => {
+  is(run('export let f = (t) => t >> 8 & 255').f(0x1234), 0x12)
 })
 
-test('Number.isInteger', async () => {
-  is(await evaluate('Number.isInteger(5)'), 1)
-  is(await evaluate('Number.isInteger(5.0)'), 1)
-  is(await evaluate('Number.isInteger(5.5)'), 0)
-  is(await evaluate('Number.isInteger(Infinity)'), 0)
-  is(await evaluate('Number.isInteger(NaN)'), 0)
+// === Named constants ===
+
+test('constant: true', () => {
+  is(run('export let f = () => true').f(), 1)
 })
 
-test('Number constants', async () => {
-  is(await evaluate('Number.MAX_VALUE'), 1.7976931348623157e+308)
-  is(await evaluate('Number.MIN_VALUE'), 5e-324)
-  is(await evaluate('Number.EPSILON'), 2.220446049250313e-16)
-  is(await evaluate('Number.MAX_SAFE_INTEGER'), 9007199254740991)
-  is(await evaluate('Number.MIN_SAFE_INTEGER'), -9007199254740991)
-  is(await evaluate('Number.POSITIVE_INFINITY'), Infinity)
-  is(await evaluate('Number.NEGATIVE_INFINITY'), -Infinity)
-  // Note: Number.NaN conflicts with global NaN keyword, just use NaN directly
+test('constant: false', () => {
+  is(run('export let f = () => false').f(), 0)
 })
 
-// Array namespace
-test('Array.isArray', async () => {
-  is(await evaluate('Array.isArray([1, 2, 3])'), 1)
-  is(await evaluate('Array.isArray([])'), 1)
-  is(await evaluate('Array.isArray(5)'), 0)
-  is(await evaluate('Array.isArray("hello")'), 0)
-  is(await evaluate('Array.isArray({x: 1})'), 0)
-  is(await evaluate('a = [1]; Array.isArray(a)'), 1)
-})
-test('Array.from', async () => {
-  // Basic array copy
-  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[0]'), 1)
-  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[1]'), 2)
-  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b.length'), 3)
-  // Verify it's a copy, not the same reference
-  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); a === b'), 0)
-  // Mutation doesn't affect original
-  is(await evaluate('let a = [1, 2, 3]; let b = Array.from(a); b[0] = 99; a[0]'), 1)
-  // Empty array
-  is(await evaluate('Array.from([]).length'), 0)
+test('constant: null', () => {
+  is(run('export let f = () => null').f(), 0)
 })
 
-// Object namespace
-test('Object.keys', async () => {
-  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o).length'), 2)
-  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o)[0]'), 'a')
-  is(await evaluate('let o = {a: 1, b: 2}; Object.keys(o)[1]'), 'b')
-  is(await evaluate('let o = {x: 5}; Object.keys(o).length'), 1)
-  is(await evaluate('let o = {x: 5}; Object.keys(o)[0]'), 'x')
+test('constant: NaN', () => {
+  ok(isNaN(run('export let f = () => NaN').f()))
 })
 
-test('Object.values', async () => {
-  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o).length'), 2)
-  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o)[0]'), 1)
-  is(await evaluate('let o = {a: 1, b: 2}; Object.values(o)[1]'), 2)
-  is(await evaluate('let o = {x: 42}; Object.values(o)[0]'), 42)
+test('constant: Infinity', () => {
+  is(run('export let f = () => Infinity').f(), Infinity)
 })
 
-test('Object.entries', async () => {
-  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o).length'), 2)
-  // First entry is ['a', 1]
-  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[0][0]'), 'a')
-  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[0][1]'), 1)
-  // Second entry is ['b', 2]
-  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[1][0]'), 'b')
-  is(await evaluate('let o = {a: 1, b: 2}; Object.entries(o)[1][1]'), 2)
+test('constant: true/false in condition', () => {
+  is(run('export let f = () => { if (true) return 1; return 0 }').f(), 1)
+  is(run('export let f = () => { if (false) return 1; return 0 }').f(), 0)
 })
 
-// Symbol (ATOM type) tests
-test('Symbol - uniqueness', async () => {
-  // Each Symbol() call creates a unique symbol
-  is(await evaluate('const a = Symbol(), b = Symbol(); a !== b'), 1)
-  is(await evaluate('Symbol() !== Symbol()'), 1)
+test('comparison result in bitwise', () => {
+  is(run('export let f = (a, b) => (a > b) & 1').f(5, 3), 1)
+  is(run('export let f = (a, b) => (a > b) & 1').f(1, 3), 0)
 })
 
-test('Symbol - identity', async () => {
-  // Same symbol equals itself
-  is(await evaluate('const s = Symbol(); s === s'), 1)
-  is(await evaluate('const a = Symbol(), b = a; a === b'), 1)
+// === Nullish coalescing ===
+
+test('??: returns left if truthy', () => {
+  is(run('export let f = (a, b) => a ?? b').f(5, 10), 5)
 })
 
-test('Symbol - typeof', async () => {
-  is(await evaluate('typeof Symbol()'), 'symbol')
-  is(await evaluate('typeof Symbol() === "symbol"'), 1)
+test('??: returns right if left is 0', () => {
+  is(run('export let f = (a, b) => a ?? b').f(0, 10), 10)
 })
 
-test('Symbol - from function', async () => {
-  is(await evaluate('const f = () => Symbol(); typeof f()'), 'symbol')
-  // Each call returns different symbol
-  is(await evaluate('const f = () => Symbol(); f() !== f()'), 1)
+// === void ===
+
+test('void: returns 0', () => {
+  is(run('export let f = (x) => void x').f(42), 0)
 })
 
-// === NUMBER METHODS ===
+// === switch ===
 
-test('number.toFixed', async () => {
-  is(await evaluate('(3.14159).toFixed(2)'), '3.14')
-  is(await evaluate('(3.14159).toFixed(0)'), '3')
-  is(await evaluate('(3.14159).toFixed(4)'), '3.1416')
-  is(await evaluate('(-3.14159).toFixed(2)'), '-3.14')
-  is(await evaluate('(0).toFixed(2)'), '0.00')
-  is(await evaluate('(123).toFixed(2)'), '123.00')
-  // Variable
-  is(await evaluate('let x = 42.567; x.toFixed(1)'), '42.6')
+test('switch: with default', () => {
+  const { f } = run(`export let f = (x) => {
+    switch(x) { case 1: return 10; default: return 0 }
+  }`)
+  is(f(1), 10)
+  is(f(99), 0)
 })
 
-test('number.toString - radix', async () => {
-  is(await evaluate('(255).toString(16)'), 'ff')
-  is(await evaluate('(10).toString(2)'), '1010')
-  is(await evaluate('(8).toString(8)'), '10')
-  is(await evaluate('(35).toString(36)'), 'z')
-  is(await evaluate('(-255).toString(16)'), '-ff')
+test('switch: two cases', () => {
+  // Note: parser has recursion limit with many cases in block body
+  const { f } = run(`export let f = (x) => {
+    switch(x) { case 1: return 10; case 2: return 20 }
+    return -1
+  }`)
+  is(f(1), 10)
+  is(f(2), 20)
+  is(f(99), -1)
 })
 
-test('number.toString - default', async () => {
-  is(await evaluate('(42).toString()'), '42')
-  is(await evaluate('(3.14).toString()'), '3.14')
-  is(await evaluate('(-123).toString()'), '-123')
+// === Default params ===
+
+test('default param: used when arg missing', () => {
+  const { f } = run('export let f = (x = 5) => x')
+  is(f(), 5)    // missing → NaN → default kicks in
+  is(f(0), 0)   // explicit 0 is NOT missing
+  is(f(3), 3)
 })
 
-test('number.toExponential', async () => {
-  is(await evaluate('(12345).toExponential(2)'), '1.23e+4')
-  is(await evaluate('(0.00123).toExponential(2)'), '1.23e-3')
-  is(await evaluate('(1.5).toExponential(0)'), '2e+0')
-  is(await evaluate('(0).toExponential(2)'), '0.00e+0')
-  is(await evaluate('(-12345).toExponential(1)'), '-1.2e+4')
-  // Variable
-  is(await evaluate('let x = 9876.5; x.toExponential(3)'), '9.877e+3')
-})
-
-test('number.toPrecision', async () => {
-  is(await evaluate('(123.456).toPrecision(4)'), '123.5')
-  is(await evaluate('(123.456).toPrecision(2)'), '1.2e+2')
-  is(await evaluate('(0.000123).toPrecision(2)'), '0.00012')
-  is(await evaluate('(0).toPrecision(3)'), '0.00')
-  is(await evaluate('(-123.456).toPrecision(3)'), '-123')
-  // Variable
-  is(await evaluate('let x = 5.678; x.toPrecision(2)'), '5.7')
+test('default param: second param', () => {
+  const { f } = run('export let f = (a, b = 10) => a + b')
+  is(f(1, 2), 3)
+  is(f(1), 11)   // b missing → NaN → default 10
 })

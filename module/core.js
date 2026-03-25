@@ -7,34 +7,16 @@
  * @module core
  */
 
-import { emit } from '../src/compile.js'
+import { emit, typed, asF64 } from '../src/compile.js'
 
 export default (ctx) => {
-  // ============================================
+  const call = (name, ...args) => (ctx.includes.add(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
+
   // Number utilities
-  // ============================================
-
-  // parseInt - parse integer from char code
-  // TODO: Full parseInt from string requires pointer operations
-  ctx.emit['core.parseIntFromCode'] = (code, radix) => (
-    ctx.includes.add('core.parseIntFromCode'),
-    ['call', '$core.parseIntFromCode', emit(code), emit(radix)]
-  )
-
-  // Number type checks (aliases to math versions for convenience)
-  ctx.emit['core.isNaN'] = (a) => (
-    ctx.includes.add('core.isNaN'),
-    ['call', '$core.isNaN', emit(a)]
-  )
-  ctx.emit['core.isFinite'] = (a) => (
-    ctx.includes.add('core.isFinite'),
-    ['call', '$core.isFinite', emit(a)]
-  )
-  ctx.emit['core.isInteger'] = (a) => (
-    ctx.includes.add('core.isInteger'),
-    ['call', '$core.isInteger', emit(a)]
-  )
-  // Global functions (isNaN, isFinite)
+  ctx.emit['core.parseIntFromCode'] = (code, radix) => call('core.parseIntFromCode', code, radix)
+  ctx.emit['core.isNaN'] = a => call('core.isNaN', a)
+  ctx.emit['core.isFinite'] = a => call('core.isFinite', a)
+  ctx.emit['core.isInteger'] = a => call('core.isInteger', a)
   ctx.emit['isNaN'] = ctx.emit['core.isNaN']
   ctx.emit['isFinite'] = ctx.emit['core.isFinite']
 

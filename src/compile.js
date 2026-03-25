@@ -1,7 +1,18 @@
 /**
- * Compile prepared AST to WASM module.
- * Emitters in ctx.emit handle AST nodes → WASM IR.
- * Modules register emitters for custom ops (e.g., math.sin).
+ * Compile prepared AST to WASM module (S-expression arrays for watr).
+ *
+ * Core abstraction: emitter table (ctx.emit) maps AST ops → WASM nodes.
+ * Base operators defined in `emitter` export, modules extend via prototype chain.
+ * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.emit[op].
+ *
+ * Type system: every emitted node carries .type ('i32' | 'f64').
+ * Operators preserve i32 when both operands are i32.
+ * Division/power always produce f64. Bitwise/comparisons always produce i32.
+ * Variables are typed by pre-analysis: if any assignment is f64, local is f64.
+ *
+ * Per-function state on ctx: locals (Map name→type), stack (loop labels), uid (counter), sig.
+ * Profile (ctx.profile) controls ABI: scalar=single return, multi=multi-value returns.
+ *
  * @module compile
  */
 
@@ -10,40 +21,197 @@ import { ctx } from './ctx.js'
 
 const err = msg => { throw Error(msg) }
 
+// === Type helpers ===
+
+/** Tag a WASM node with its result type. */
+export const typed = (node, type) => (node.type = type, node)
+
+/** Coerce node to f64. */
+export const asF64 = n => n.type === 'f64' ? n : typed(['f64.convert_i32_s', n], 'f64')
+
+/** Coerce node to i32. */
+export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_f64_s', n], 'i32')
+
+/** Coerce to i32 boolean (for br_if/if conditions). */
+function toBool(node) {
+  const op = Array.isArray(node) ? node[0] : null
+  // Comparisons and ! already emit i32
+  if (['>', '<', '>=', '<=', '==', '!=', '!'].includes(op)) return emit(node)
+  const e = emit(node)
+  if (e.type === 'i32') return e
+  return typed(['f64.ne', e, ['f64.const', 0]], 'i32')
+}
+
+/** Allocate a temp local (always f64 for now), returns name without $. */
+function temp() {
+  const name = `__${ctx.uid++}`
+  ctx.locals.set(name, 'f64')
+  return name
+}
+
+/** Get current loop labels or throw. */
+function loopTop() {
+  const top = ctx.stack.at(-1)
+  if (!top) err('break/continue outside loop')
+  return top
+}
+
+/** Emit let/const initializations as typed local.set instructions. */
+function emitDecl(...inits) {
+  const result = []
+  for (const i of inits) {
+    if (!Array.isArray(i) || i[0] !== '=') continue
+    const [, name, init] = i
+    if (typeof name !== 'string' || init == null) continue
+    const val = emit(init)
+    const localType = ctx.locals.get(name) || 'f64'
+    result.push(typed(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)], localType))
+  }
+  return result.length === 0 ? null : result.length === 1 ? result[0] : result
+}
+
+// === Pre-analysis ===
+
 /**
- * @typedef {Array} WasmNode - watr-compatible S-expression
+ * Infer expression result type from AST (without emitting).
+ * Used to determine local variable types before compilation.
  */
+function exprType(expr, locals) {
+  if (expr == null) return 'f64'
+  if (typeof expr === 'number')
+    return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 ? 'i32' : 'f64'
+  if (typeof expr === 'string') return locals.get(expr) || 'f64'
+  if (!Array.isArray(expr)) return 'f64'
+
+  const [op, ...args] = expr
+  if (op == null) return exprType(args[0], locals) // literal [, value]
+
+  // Always f64
+  if (op === '/' || op === '**') return 'f64'
+  // Always i32
+  if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
+  // Preserve i32 if both operands i32
+  if (['+', '-', '*', '%'].includes(op)) {
+    const ta = exprType(args[0], locals)
+    const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
+    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
+  }
+  // Unary preserves type
+  if (op === 'u-' || op === 'u+') return exprType(args[0], locals)
+  // Ternary / logical: conciliate
+  if (op === '?:' || op === '&&' || op === '||') {
+    const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
+    const ta = exprType(branches[0], locals), tb = exprType(branches[1], locals)
+    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
+  }
+  // Array literal (multi-return) → f64
+  if (op === '[') return 'f64'
+  // Function calls → conservative f64
+  return 'f64'
+}
+
+/**
+ * Analyze all local declarations and assignments to determine types.
+ * A local is i32 if ALL assignments produce i32. Any f64 widens to f64.
+ */
+function analyzeLocals(body) {
+  const locals = new Map() // name → 'i32' | 'f64'
+
+  function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+
+    // let/const declarations
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        const name = a[1], t = exprType(a[2], locals)
+        if (!locals.has(name)) locals.set(name, t)
+        else if (locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
+      }
+    }
+
+    // Plain assignment
+    if (op === '=' && typeof args[0] === 'string') {
+      const name = args[0], t = exprType(args[1], locals)
+      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
+    }
+
+    // Compound assignment
+    if (['+=', '-=', '*=', '%='].includes(op) && typeof args[0] === 'string') {
+      const name = args[0], opChar = op[0]
+      const t = exprType([opChar, args[0], args[1]], locals)
+      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
+    }
+    if (['/='].includes(op) && typeof args[0] === 'string') {
+      if (locals.has(args[0])) locals.set(args[0], 'f64') // division always f64
+    }
+
+    for (const a of args) walk(a)
+  }
+
+  walk(body)
+  return locals
+}
+
+/** Normalize emitter output to flat node array. */
+const flat = ir => ir == null ? [] : Array.isArray(ir) && ir.length && Array.isArray(ir[0]) ? ir : [ir]
+
+// === Module compilation ===
 
 /**
  * Compile prepared AST to WASM module IR.
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
- * @returns {WasmNode} Complete WASM module as S-expression
+ * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast) {
 
-  const funcs = ctx.funcs.map(({ name, params, body, exported }) => {
+  const funcs = ctx.funcs.map(func => {
+    const { name, body, exported, sig } = func
+
+    // Profile validation
+    const multi = sig.results.length > 1
+    if (multi && ctx.profile === 'scalar')
+      err(`Multi-value return in '${name}' requires { profile: 'multi' }`)
+
     // Reset per-function state
-    ctx.locals = new Set()
     ctx.stack = []
     ctx.uid = 0
+    ctx.sig = sig
+
+    // Pre-analyze local types from body
+    const block = Array.isArray(body) && body[0] === '{}'
+    ctx.locals = block ? analyzeLocals(body) : new Map()
 
     const fn = ['func']
     if (exported) fn.push(['export', `"${name}"`])
     else fn.push(`$${name}`)
-    fn.push(...params.map(p => ['param', `$${p}`, 'f64']))
-    fn.push(['result', 'f64'])
+    fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
+    fn.push(...sig.results.map(t => ['result', t]))
 
-    const block = Array.isArray(body) && body[0] === '{}'
+    // Default params: missing JS args become NaN in WASM f64 params
+    // Check: if param != param (NaN test), use default value
+    const defaults = func.defaults || {}
+    const defaultInits = []
+    for (const [pname, defVal] of Object.entries(defaults)) {
+      const p = sig.params.find(p => p.name === pname)
+      const t = p?.type || 'f64'
+      defaultInits.push(
+        ['if', ['f64.ne', typed(['local.get', `$${pname}`], 'f64'), typed(['local.get', `$${pname}`], 'f64')],
+          ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
+    }
 
     if (block) {
-      collectLocals(body)
       const stmts = emitBody(body)
-      for (const l of ctx.locals) fn.push(['local', `$${l}`, 'f64'])
-      fn.push(...stmts, ['f64.const', 0])
+      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      fn.push(...defaultInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
+    } else if (multi && body[0] === '[') {
+      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      fn.push(...body.slice(1).map(e => emit(e)))
     } else {
       const ir = emit(body)
-      for (const l of ctx.locals) fn.push(['local', `$${l}`, 'f64'])
-      fn.push(ir)
+      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      fn.push(...defaultInits, asF64(ir))
     }
 
     return fn
@@ -66,17 +234,6 @@ export default function compile(ast) {
   return ['module', ...sections]
 }
 
-/** Collect all let/const variable names from AST (recursive). */
-function collectLocals(node) {
-  if (!Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === 'let' || op === 'const')
-    for (const a of args)
-      if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string')
-        ctx.locals.add(a[1])
-  for (const a of args) collectLocals(a)
-}
-
 /** Emit block body as flat list of WASM instructions. */
 function emitBody(node) {
   const inner = node[1]
@@ -86,46 +243,12 @@ function emitBody(node) {
   return out
 }
 
-/** Normalize emitter output to flat node array. */
-const flat = ir => ir == null ? [] : Array.isArray(ir) && Array.isArray(ir[0]) ? ir : [ir]
-
-/** Convert AST condition to i32 for br_if/if. */
-function toBool(node) {
-  const op = Array.isArray(node) ? node[0] : null
-  if (['>', '<', '>=', '<=', '==', '!=', '!'].includes(op)) return emit(node)
-  return ['f64.ne', emit(node), ['f64.const', 0]]
-}
-
-/** Allocate a temp local, returns name without $. */
-function temp() {
-  const name = `__${ctx.uid++}`
-  ctx.locals.add(name)
-  return name
-}
-
-/** Get current loop labels or throw. */
-function loopTop() {
-  const top = ctx.stack.at(-1)
-  if (!top) err('break/continue outside loop')
-  return top
-}
-
-/** Emit let/const initializations as local.set instructions. */
-function emitDecl(...inits) {
-  const result = []
-  for (const i of inits) {
-    if (!Array.isArray(i) || i[0] !== '=') continue
-    const [, name, init] = i
-    if (typeof name === 'string' && init != null)
-      result.push(['local.set', `$${name}`, emit(init)])
-  }
-  return result.length === 0 ? null : result.length === 1 ? result[0] : result
-}
+// === Emitter table ===
 
 /**
  * Core emitter table. Maps AST ops to WASM IR generators.
  * Modules extend ctx.emit (inherits from emitter) for custom ops.
- * @type {Record<string, (...args: any[]) => WasmNode>}
+ * @type {Record<string, (...args: any[]) => Array>}
  */
 export const emitter = {
   // === Statements ===
@@ -134,90 +257,175 @@ export const emitter = {
   'let': emitDecl,
   'const': emitDecl,
   'export': () => null,
-  'return': expr => ['return', emit(expr)],
+
+  'return': expr => {
+    if (ctx.sig?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
+      return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'f64')
+    return typed(['return', asF64(emit(expr))], 'f64')
+  },
 
   // === Assignment ===
 
   '=': (name, val) => {
-    if (typeof name === 'string') return ['local.set', `$${name}`, emit(val)]
-    err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    const v = emit(val), t = ctx.locals.get(name) || 'f64'
+    return typed(['local.set', `$${name}`, t === 'f64' ? asF64(v) : asI32(v)], t)
   },
 
-  ...Object.fromEntries([['+=','f64.add'],['-=','f64.sub'],['*=','f64.mul'],['/=','f64.div'],['%=','f64.rem']]
-    .map(([op, wasm]) => [op, (name, val) => ['local.set', `$${name}`, [wasm, ['local.get', `$${name}`], emit(val)]]])),
+  // Compound assignments: read-modify-write with type coercion
+  ...Object.fromEntries([
+    ['+=', 'add'], ['-=', 'sub'], ['*=', 'mul'],
+  ].map(([op, fn]) => [op, (name, val) => {
+    const t = ctx.locals.get(name) || 'f64'
+    const va = typed(['local.get', `$${name}`], t), vb = emit(val)
+    const result = va.type === 'i32' && vb.type === 'i32'
+      ? typed([`i32.${fn}`, va, vb], 'i32')
+      : typed([`f64.${fn}`, asF64(va), asF64(vb)], 'f64')
+    return typed(['local.set', `$${name}`, t === 'f64' ? asF64(result) : asI32(result)], t)
+  }])),
 
-  // === Arithmetic ===
+  '/=': (name, val) => {
+    const t = ctx.locals.get(name) || 'f64'
+    const va = asF64(typed(['local.get', `$${name}`], t)), vb = asF64(emit(val))
+    return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.div', va, vb], 'f64') : asI32(typed(['f64.div', va, vb], 'f64'))], t)
+  },
 
-  '+': (a, b) => ['f64.add', emit(a), emit(b)],
-  '-': (a, b) => b === undefined ? ['f64.neg', emit(a)] : ['f64.sub', emit(a), emit(b)],
+  '%=': (name, val) => {
+    const t = ctx.locals.get(name) || 'f64'
+    const va = asF64(typed(['local.get', `$${name}`], t)), vb = asF64(emit(val))
+    return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.rem', va, vb], 'f64') : asI32(typed(['f64.rem', va, vb], 'f64'))], t)
+  },
+
+  // === Arithmetic (type-preserving) ===
+
+  '+': (a, b) => {
+    const va = emit(a), vb = emit(b)
+    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.add', va, vb], 'i32')
+    return typed(['f64.add', asF64(va), asF64(vb)], 'f64')
+  },
+  '-': (a, b) => {
+    if (b === undefined) { const v = emit(a); return v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64') }
+    const va = emit(a), vb = emit(b)
+    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.sub', va, vb], 'i32')
+    return typed(['f64.sub', asF64(va), asF64(vb)], 'f64')
+  },
   'u+': a => emit(a),
-  'u-': a => ['f64.neg', emit(a)],
-  '*': (a, b) => ['f64.mul', emit(a), emit(b)],
-  '/': (a, b) => ['f64.div', emit(a), emit(b)],
-  '%': (a, b) => ['f64.rem', emit(a), emit(b)],
+  'u-': a => { const v = emit(a); return v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64') },
+  '*': (a, b) => {
+    const va = emit(a), vb = emit(b)
+    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.mul', va, vb], 'i32')
+    return typed(['f64.mul', asF64(va), asF64(vb)], 'f64')
+  },
+  '/': (a, b) => typed(['f64.div', asF64(emit(a)), asF64(emit(b))], 'f64'), // always f64
+  '%': (a, b) => typed(['f64.rem', asF64(emit(a)), asF64(emit(b))], 'f64'), // f64 rem (no i32 rem in wasm)
 
-  // === Comparisons (return i32) ===
+  // === Comparisons (always i32 result) ===
 
-  '==': (a, b) => ['f64.eq', emit(a), emit(b)],
-  '!=': (a, b) => ['f64.ne', emit(a), emit(b)],
-  '<': (a, b) => ['f64.lt', emit(a), emit(b)],
-  '>': (a, b) => ['f64.gt', emit(a), emit(b)],
-  '<=': (a, b) => ['f64.le', emit(a), emit(b)],
-  '>=': (a, b) => ['f64.ge', emit(a), emit(b)],
+  '==': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.eq', va, vb], 'i32') : typed(['f64.eq', asF64(va), asF64(vb)], 'i32') },
+  '!=': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.ne', va, vb], 'i32') : typed(['f64.ne', asF64(va), asF64(vb)], 'i32') },
+  '<':  (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.lt_s', va, vb], 'i32') : typed(['f64.lt', asF64(va), asF64(vb)], 'i32') },
+  '>':  (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.gt_s', va, vb], 'i32') : typed(['f64.gt', asF64(va), asF64(vb)], 'i32') },
+  '<=': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.le_s', va, vb], 'i32') : typed(['f64.le', asF64(va), asF64(vb)], 'i32') },
+  '>=': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.ge_s', va, vb], 'i32') : typed(['f64.ge', asF64(va), asF64(vb)], 'i32') },
 
   // === Logical ===
 
-  '!': a => ['f64.eq', emit(a), ['f64.const', 0]],
-  '?:': (a, b, c) => ['select', emit(b), emit(c), ['f64.ne', emit(a), ['f64.const', 0]]],
+  '!': a => { const v = emit(a); return v.type === 'i32' ? typed(['i32.eqz', v], 'i32') : typed(['f64.eq', v, ['f64.const', 0]], 'i32') },
+
+  '?:': (a, b, c) => {
+    const vb = emit(b), vc = emit(c)
+    if (vb.type === 'i32' && vc.type === 'i32')
+      return typed(['select', vb, vc, toBool(a)], 'i32')
+    return typed(['select', asF64(vb), asF64(vc), toBool(a)], 'f64')
+  },
 
   '&&': (a, b) => {
     const t = temp()
-    return ['if', ['result', 'f64'],
-      ['f64.ne', ['local.tee', `$${t}`, emit(a)], ['f64.const', 0]],
-      ['then', emit(b)],
-      ['else', ['local.get', `$${t}`]]]
+    const va = emit(a)
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, asF64(va)], ['f64.const', 0]],
+      ['then', asF64(emit(b))],
+      ['else', ['local.get', `$${t}`]]], 'f64')
   },
 
   '||': (a, b) => {
     const t = temp()
-    return ['if', ['result', 'f64'],
-      ['f64.ne', ['local.tee', `$${t}`, emit(a)], ['f64.const', 0]],
+    const va = emit(a)
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, asF64(va)], ['f64.const', 0]],
       ['then', ['local.get', `$${t}`]],
-      ['else', emit(b)]]
+      ['else', asF64(emit(b))]], 'f64')
   },
 
+  // a ?? b: in f64 world null=0, same as || (revisit when null is distinct from 0)
+  '??': (a, b) => {
+    const t = temp()
+    const va = emit(a)
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, asF64(va)], ['f64.const', 0]],
+      ['then', ['local.get', `$${t}`]],
+      ['else', asF64(emit(b))]], 'f64')
+  },
+
+  'void': a => { emit(a); return typed(['f64.const', 0], 'f64') },
+
   '(': a => emit(a),
+
+  // === Bitwise (always i32) ===
+
+  '~':   a => typed(['i32.xor', asI32(emit(a)), typed(['i32.const', -1], 'i32')], 'i32'),
+  '&':   (a, b) => typed(['i32.and', asI32(emit(a)), asI32(emit(b))], 'i32'),
+  '|':   (a, b) => typed(['i32.or', asI32(emit(a)), asI32(emit(b))], 'i32'),
+  '^':   (a, b) => typed(['i32.xor', asI32(emit(a)), asI32(emit(b))], 'i32'),
+  '<<':  (a, b) => typed(['i32.shl', asI32(emit(a)), asI32(emit(b))], 'i32'),
+  '>>':  (a, b) => typed(['i32.shr_s', asI32(emit(a)), asI32(emit(b))], 'i32'),
+  '>>>': (a, b) => typed(['i32.shr_u', asI32(emit(a)), asI32(emit(b))], 'i32'),
 
   // === Control flow ===
 
   'if': (cond, then, els) => {
     const c = toBool(cond)
-    if (els != null)
-      return ['if', c, ['then', emit(then)], ['else', emit(els)]]
+    if (els != null) return ['if', c, ['then', emit(then)], ['else', emit(els)]]
     return ['if', c, ['then', emit(then)]]
   },
 
   'for': (init, cond, step, body) => {
     if (body === undefined) return err('for-in/for-of not supported')
-
     const id = ctx.uid++
-    const brk = `$brk${id}`
-    const loop = `$loop${id}`
+    const brk = `$brk${id}`, loop = `$loop${id}`
     ctx.stack.push({ brk, loop })
-
     const result = []
     if (init != null) result.push(...flat(emit(init)))
-
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
     loopBody.push(...flat(emit(body)))
     if (step) loopBody.push(...flat(emit(step)))
     loopBody.push(['br', loop])
-
     result.push(['block', brk, ['loop', loop, ...loopBody]])
-
     ctx.stack.pop()
     return result.length === 1 ? result[0] : result
+  },
+
+  'switch': (discriminant, ...cases) => {
+    const disc = `__disc${ctx.uid++}`
+    ctx.locals.set(disc, 'f64')
+
+    const result = [typed(['local.set', `$${disc}`, asF64(emit(discriminant))], 'f64')]
+
+    for (const c of cases) {
+      if (c[0] === 'case') {
+        const [, test, body] = c
+        const skip = `$skip${ctx.uid++}`
+        // Block: skip if discriminant != test, otherwise execute body
+        result.push(['block', skip,
+          ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
+          ...flat(emit(body))])
+      } else if (c[0] === 'default') {
+        result.push(...flat(emit(c[1])))
+      }
+    }
+
+    return result
   },
 
   'while': (cond, body) => emitter['for'](null, cond, null, body),
@@ -231,26 +439,41 @@ export const emitter = {
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
     if (ctx.emit[callee]) return ctx.emit[callee](...argList)
-    return ['call', `$${callee}`, ...argList.map(emit)]
+    // User-defined functions: coerce args to f64 (all params are f64 for now)
+    return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
   },
 }
 
+// === Emit dispatch ===
+
 /**
- * Emit single AST node to WASM IR.
- * @param {import('./prepare.js').ASTNode} node - Prepared AST node
- * @returns {WasmNode} watr-compatible S-expression
+ * Emit single AST node to typed WASM IR.
+ * Every returned node has .type = 'i32' | 'f64'.
+ * @param {import('./prepare.js').ASTNode} node
+ * @returns {Array} typed WASM S-expression
  */
 export function emit(node) {
   if (node == null) return null
-  if (typeof node === 'number') return ['f64.const', node]
+  if (node === true) return typed(['i32.const', 1], 'i32')
+  if (node === false) return typed(['i32.const', 0], 'i32')
+  if (typeof node === 'number') {
+    if (Number.isInteger(node) && node >= -2147483648 && node <= 2147483647)
+      return typed(['i32.const', node], 'i32')
+    return typed(['f64.const', node], 'f64')
+  }
   if (typeof node === 'string') {
     if (ctx.emit[node]) return ctx.emit[node]()
-    return ['local.get', `$${node}`]
+    const t = ctx.locals?.get(node) || ctx.sig?.params.find(p => p.name === node)?.type || 'f64'
+    return typed(['local.get', `$${node}`], t)
   }
-  if (!Array.isArray(node)) return ['f64.const', 0]
+  if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 
   const [op, ...args] = node
-  if (op == null && args.length === 1) return emit(args[0])
+  // Literal node [, value] — handle null/undefined values
+  if (op == null && args.length === 1) {
+    const v = args[0]
+    return v == null ? typed(['f64.const', 0], 'f64') : emit(v)
+  }
 
   const handler = ctx.emit[op]
   if (!handler) err(`Unknown op: ${op}`)

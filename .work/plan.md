@@ -8,28 +8,24 @@ Write natural JS, compile to optimal WASM. The API surface is just JS. Each comp
 
 ## Current state (scratch branch)
 
-**Working** (~480 lines core):
-- parse → prepare → compile → watr pipeline
-- Single-expression arrow functions, all f64
-- Math module (35+ functions, all tested, 83/85 pass)
+**Working** (~580 lines core, 116 tests passing):
+- ctx.js → index.js → prepare.js → compile.js pipeline (no circular deps)
+- Scalar profile: arithmetic, comparisons, ternary, single-expression functions
+- Multi profile: `return [a, b, c]` → `(result f64 f64 f64)` multi-value
+- Block bodies: let/const, if/else, for, while, break/continue, return
+- Logical operators: &&, || with short-circuit
+- Math module (35+ functions)
 - Module system (import/auto-import/namespace)
-- Prohibited feature detection
+- Function signature model: `sig = { params: [{name, type}], results: [type] }`
 - CLI working (`jz "1+2"` → `3`)
+- README matches reality
 
 **Missing for DSP**:
-- Statement bodies (for, if/else, let/const within functions)
-- Local variable emission, assignment operators
-- Control flow (loops, break/continue)
-- Multi-value return (tuple outputs)
 - Memory operations (array indexing) — requires ABI changes, not just a module
 
 **Not yet wired** (exist, need adapting for new arch):
 - stdlib.js — WAT implementations of standard JS (math, array, string ops)
 - core.js, binary.js — assume NaN-boxed pointers, need rewrite for new pointer strategy
-
-**External clarity gaps**:
-- README now matches reality (scalar math, math module, arrow functions)
-- `modules` option documented in index.js JSDoc but never read from opts (auto-import handles it)
 
 ## Integration targets
 
@@ -53,84 +49,45 @@ export let gain = (buf, len, g) => {
 
 ## ABI profiles
 
-Three profiles, explicitly chosen per compilation. No silent promotion.
+### Revised understanding
 
-| Profile | Params | Returns | Best for |
-|---------|--------|---------|----------|
-| **scalar** | all f64 | single f64 | single-value math (current) |
-| **multi** | all f64 | `(result f64 f64 f64)` | tuples, color-space |
-| **memory** | f64 + i32 pointers | f64 | array processing, DSP |
+"Profile" is the wrong abstraction. There's no scalar/multi/memory mode.
 
-### Tuple return rule
+- **Internal**: always fastest representation. Memory for arrays. Multi-value for tuples. i32/f64 by operator.
+- **Boundary** (JS↔WASM exports): configurable per-compilation — how complex data crosses the edge.
 
-`return [a, b, c]` with array literal is a **compile error in scalar profile**. It requires multi profile explicitly:
-```js
-jz(code)                    // scalar: return [a,b,c] → error
-jz(code, { profile: 'multi' })  // multi: return [a,b,c] → (result f64 f64 f64)
-```
-No silent promotion. User knows which ABI they're targeting.
+| Boundary option | Arrays in | Tuples out | Best for |
+|----------------|-----------|------------|----------|
+| **multi-value** | not supported | `(result f64 f64 f64)` | fixed-size returns (color-space) |
+| **memory pointer** | i32 offset+len | i32 offset | large buffers (audio DSP) |
+| **GC struct** | GC array/struct | GC struct | clean JS interop |
 
-### Decisions
+The `{ profile: 'multi' }` flag currently controls multi-value returns. This will evolve into a boundary convention option rather than a global mode. See research.md "Data representation" for full analysis.
 
-- **Memory mode is explicit** — param used with `[i]` compiles as i32 pointer. This changes function signature — backend work, not a module.
-- **GC is research** — not in mainline until multi+memory are proven.
-- **Memory management is a contract** — bump allocator default. Export `_alloc(bytes) → i32` and `_reset()` (arena-style, not per-allocation free).
-- **WASI-aware from the start** — host imports designed to be WASI-compatible.
+### Memory management
 
-### JS-side for memory mode
+Allocator is a pluggable contract, not hardcoded:
+- **Bump (arena)**: simplest, reset all at once. Default. Good for DSP batch processing.
+- **Free list**: individual alloc/free. For mixed lifetimes.
+- **WASM GC**: host engine manages. For non-realtime, clean interop.
 
-Standard approach, no special class:
-```js
-const { memory, _alloc, _reset, gain } = instance.exports
-const ptr = _alloc(1024 * 8) // 1024 f64s
-const buf = new Float64Array(memory.buffer, ptr, 1024)
-buf.set(inputData)
-gain(ptr, 1024, 0.5)
-// buf now contains processed data
-_reset() // release all allocations
-```
+Export `_alloc(bytes) → i32` and `_reset()` or `_free(ptr)` — implementation swappable.
 
 ## Phases
 
 ### Phase 0: Honesty ✓
 
-- ~~cli.js: fix broken import~~ Done
-- ~~README: strip to what actually works~~ Done
-- Remove unused `modules` JSDoc from index.js (or wire it up)
+### Phase 1: Scalar compiler ✓
 
-### Phase 1: Scalar compiler
+Block bodies, let/const, assignment ops, if/else, for/while, break/continue, &&/||, return.
 
-Add to compile.js emitter:
-- Multiline function bodies (block statements `{ }`)
-- `let`/`const` in bodies → `local` declarations + `local.set`
-- `=`, `+=`, `-=` etc → `local.set` / `local.tee`
-- `if`/`else` → WASM `if/then/else`
-- `for` → `loop/block/br_if`
-- `break`/`continue` → `br`
-- `&&`/`||` → short-circuit
-- `return` → function body result
+### Phase 1.5: Function signature model ✓
 
-**Validation**: compile `lrgb2rgb` from color-space (gamma with pow + conditionals).
+`sig = { params: [{name, type}], results: [type] }` — populated by prepare, consumed by compile. Data-driven ABI.
 
-### Phase 1.5: Function signature model
+### Phase 2: Multi-value return ✓
 
-Before multi or memory can work, compile.js needs a real signature model:
-- Replace hardcoded `['param', '$p', 'f64']` / `['result', 'f64']` with per-function signature metadata
-- `ctx.funcs[i].sig = { params: [{name, type}], results: [type] }` — populated by prepare, consumed by compile
-- Profile validation: scalar profile rejects multi-return, memory profile allows i32 params
-- This is the seam that Phase 2 and Phase 3 build on
-
-Currently index.js:27 only stores param names. compile.js:28 hardcodes f64. This must become data-driven before ABI can vary per-function.
-
-### Phase 2: Multi-value return
-
-- `return [a, b, c]` with array literal → `(result f64 f64 f64)`
-- prepare.js detects fixed-length array return → sets `sig.results = ['f64', 'f64', 'f64']`
-- compile.js reads sig.results (no longer hardcoded)
-- Requires `{ profile: 'multi' }` — error in scalar profile
-- Still all f64 params — no ABI change on input side
-
-**Validation**: compile `rgb2xyz`, `xyz2lab` from color-space.
+`return [a, b, c]` → `(result f64 f64 f64)`. Expression and block bodies. Profile validation. rgb2xyz pattern validated.
 
 ### Phase 3: Memory mode (ABI change)
 

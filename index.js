@@ -1,5 +1,10 @@
 /**
- * jz - JavaScript subset compiler to WebAssembly
+ * jz - JS subset → WASM compiler.
+ *
+ * Pipeline: parse(subscript) → prepare(AST) → compile(AST) → watr → binary
+ * State: shared ctx object (src/ctx.js), reset per call
+ * Extension: modules register emitters on ctx.emit (see module/)
+ *
  * @module jz
  */
 
@@ -13,6 +18,8 @@ import compile, { emitter } from './src/compile.js'
  * Compile JS code to WASM binary (or WAT text).
  * @param {string} code - JavaScript source code
  * @param {object} [opts]
+ * @param {string} [opts.profile='scalar'] - ABI profile: 'scalar' | 'multi' | 'memory'
+ * @param {boolean} [opts.wat] - Return WAT text instead of binary
  * @returns {Uint8Array|string} WASM binary or WAT text if opts.wat
  * @example
  * const wasm = jz('export let add = (a, b) => a + b')
@@ -30,6 +37,7 @@ export default function jz(code, opts = {}) {
   ctx.exports = {}
   ctx.funcs = []
   ctx.globals = []
+  ctx.profile = opts.profile || 'scalar'
 
   const ast = prepare(parse(code))
   const module = compile(ast)

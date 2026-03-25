@@ -13,149 +13,80 @@
  * @module math
  */
 
-import { emit } from '../src/compile.js'
-export default (ctx) => {
-  // Constants
-  ctx.emit['math.PI'] = () => ['f64.const', Math.PI]
-  ctx.emit['math.E'] = () => ['f64.const', Math.E]
-  ctx.emit['math.LN2'] = () => ['f64.const', Math.LN2]
-  ctx.emit['math.LN10'] = () => ['f64.const', Math.LN10]
-  ctx.emit['math.LOG2E'] = () => ['f64.const', Math.LOG2E]
-  ctx.emit['math.LOG10E'] = () => ['f64.const', Math.LOG10E]
-  ctx.emit['math.SQRT2'] = () => ['f64.const', Math.SQRT2]
-  ctx.emit['math.SQRT1_2'] = () => ['f64.const', Math.SQRT1_2]
+import { emit, typed, asF64, asI32 } from '../src/compile.js'
 
-  // Built-in WASM ops (prefixed)
-  ctx.emit['math.sqrt'] = (a) => ['f64.sqrt', emit(a)]
-  ctx.emit['math.abs'] = (a) => ['f64.abs', emit(a)]
-  ctx.emit['math.floor'] = (a) => ['f64.floor', emit(a)]
-  ctx.emit['math.ceil'] = (a) => ['f64.ceil', emit(a)]
-  ctx.emit['math.trunc'] = (a) => ['f64.trunc', emit(a)]
-  ctx.emit['math.min'] = (a, b) => ['f64.min', emit(a), emit(b)]
-  ctx.emit['math.max'] = (a, b) => ['f64.max', emit(a), emit(b)]
-  ctx.emit['math.round'] = (a) => ['f64.nearest', emit(a)]
+export default (ctx) => {
+  // Helpers: all math ops take f64 and return f64
+  const f = (op, a) => typed([op, asF64(emit(a))], 'f64')
+  const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')
+  const call = (name, ...args) => (ctx.includes.add(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
+  const inc = (deps, name, ...args) => { for (const d of deps) ctx.includes.add(d); return call(name, ...args) }
+
+  // Constants
+  ctx.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
+  ctx.emit['math.E'] = () => typed(['f64.const', Math.E], 'f64')
+  ctx.emit['math.LN2'] = () => typed(['f64.const', Math.LN2], 'f64')
+  ctx.emit['math.LN10'] = () => typed(['f64.const', Math.LN10], 'f64')
+  ctx.emit['math.LOG2E'] = () => typed(['f64.const', Math.LOG2E], 'f64')
+  ctx.emit['math.LOG10E'] = () => typed(['f64.const', Math.LOG10E], 'f64')
+  ctx.emit['math.SQRT2'] = () => typed(['f64.const', Math.SQRT2], 'f64')
+  ctx.emit['math.SQRT1_2'] = () => typed(['f64.const', Math.SQRT1_2], 'f64')
+
+  // Built-in WASM ops
+  ctx.emit['math.sqrt'] = a => f('f64.sqrt', a)
+  ctx.emit['math.abs'] = a => f('f64.abs', a)
+  ctx.emit['math.floor'] = a => f('f64.floor', a)
+  ctx.emit['math.ceil'] = a => f('f64.ceil', a)
+  ctx.emit['math.trunc'] = a => f('f64.trunc', a)
+  ctx.emit['math.min'] = (a, b) => f2('f64.min', a, b)
+  ctx.emit['math.max'] = (a, b) => f2('f64.max', a, b)
+  ctx.emit['math.round'] = a => f('f64.nearest', a)
+  ctx.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
 
   // Sign
-  ctx.emit['math.sign'] = (a) => (
-    ctx.includes.add('math.sign'),
-    ['call', '$math.sign', emit(a)]
-  )
+  ctx.emit['math.sign'] = a => call('math.sign', a)
 
-  // fround
-  ctx.emit['math.fround'] = (a) => ['f64.promote_f32', ['f32.demote_f64', emit(a)]]
-
-  // Trig - include wat, return call
-  ctx.emit['math.sin'] = (a) => (
-    ctx.includes.add('math.sin'),
-    ['call', '$math.sin', emit(a)]
-  )
-  ctx.emit['math.cos'] = (a) => (
-    ctx.includes.add('math.cos'),
-    ['call', '$math.cos', emit(a)]
-  )
-  ctx.emit['math.tan'] = (a) => (
-    ctx.includes.add('math.sin').add('math.cos').add('math.tan'),
-    ['call', '$math.tan', emit(a)]
-  )
+  // Trig
+  ctx.emit['math.sin'] = a => call('math.sin', a)
+  ctx.emit['math.cos'] = a => call('math.cos', a)
+  ctx.emit['math.tan'] = a => inc(['math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
 
   // Inverse trig
-  ctx.emit['math.asin'] = (a) => (
-    ctx.includes.add('math.atan').add('math.asin'),
-    ['call', '$math.asin', emit(a)]
-  )
-  ctx.emit['math.acos'] = (a) => (
-    ctx.includes.add('math.atan').add('math.asin').add('math.acos'),
-    ['call', '$math.acos', emit(a)]
-  )
-  ctx.emit['math.atan'] = (a) => (
-    ctx.includes.add('math.atan'),
-    ['call', '$math.atan', emit(a)]
-  )
-  ctx.emit['math.atan2'] = (a, b) => (
-    ctx.includes.add('math.atan').add('math.atan2'),
-    ['call', '$math.atan2', emit(a), emit(b)]
-  )
+  ctx.emit['math.asin'] = a => inc(['math.atan', 'math.asin'], 'math.asin', a)
+  ctx.emit['math.acos'] = a => inc(['math.atan', 'math.asin', 'math.acos'], 'math.acos', a)
+  ctx.emit['math.atan'] = a => call('math.atan', a)
+  ctx.emit['math.atan2'] = (a, b) => inc(['math.atan', 'math.atan2'], 'math.atan2', a, b)
 
   // Hyperbolic
-  ctx.emit['math.sinh'] = (a) => (
-    ctx.includes.add('math.exp').add('math.sinh'),
-    ['call', '$math.sinh', emit(a)]
-  )
-  ctx.emit['math.cosh'] = (a) => (
-    ctx.includes.add('math.exp').add('math.cosh'),
-    ['call', '$math.cosh', emit(a)]
-  )
-  ctx.emit['math.tanh'] = (a) => (
-    ctx.includes.add('math.exp').add('math.tanh'),
-    ['call', '$math.tanh', emit(a)]
-  )
+  ctx.emit['math.sinh'] = a => inc(['math.exp', 'math.sinh'], 'math.sinh', a)
+  ctx.emit['math.cosh'] = a => inc(['math.exp', 'math.cosh'], 'math.cosh', a)
+  ctx.emit['math.tanh'] = a => inc(['math.exp', 'math.tanh'], 'math.tanh', a)
 
   // Inverse hyperbolic
-  ctx.emit['math.asinh'] = (a) => (
-    ctx.includes.add('math.log').add('math.asinh'),
-    ['call', '$math.asinh', emit(a)]
-  )
-  ctx.emit['math.acosh'] = (a) => (
-    ctx.includes.add('math.log').add('math.acosh'),
-    ['call', '$math.acosh', emit(a)]
-  )
-  ctx.emit['math.atanh'] = (a) => (
-    ctx.includes.add('math.log').add('math.atanh'),
-    ['call', '$math.atanh', emit(a)]
-  )
+  ctx.emit['math.asinh'] = a => inc(['math.log', 'math.asinh'], 'math.asinh', a)
+  ctx.emit['math.acosh'] = a => inc(['math.log', 'math.acosh'], 'math.acosh', a)
+  ctx.emit['math.atanh'] = a => inc(['math.log', 'math.atanh'], 'math.atanh', a)
 
   // Exponential and logarithmic
-  ctx.emit['math.exp'] = (a) => (
-    ctx.includes.add('math.exp'),
-    ['call', '$math.exp', emit(a)]
-  )
-  ctx.emit['math.expm1'] = (a) => (
-    ctx.includes.add('math.exp').add('math.expm1'),
-    ['call', '$math.expm1', emit(a)]
-  )
-  ctx.emit['math.log'] = (a) => (
-    ctx.includes.add('math.log'),
-    ['call', '$math.log', emit(a)]
-  )
-  ctx.emit['math.log2'] = (a) => (
-    ctx.includes.add('math.log').add('math.log2'),
-    ['call', '$math.log2', emit(a)]
-  )
-  ctx.emit['math.log10'] = (a) => (
-    ctx.includes.add('math.log').add('math.log10'),
-    ['call', '$math.log10', emit(a)]
-  )
-  ctx.emit['math.log1p'] = (a) => (
-    ctx.includes.add('math.log').add('math.log1p'),
-    ['call', '$math.log1p', emit(a)]
-  )
+  ctx.emit['math.exp'] = a => call('math.exp', a)
+  ctx.emit['math.expm1'] = a => inc(['math.exp', 'math.expm1'], 'math.expm1', a)
+  ctx.emit['math.log'] = a => call('math.log', a)
+  ctx.emit['math.log2'] = a => inc(['math.log', 'math.log2'], 'math.log2', a)
+  ctx.emit['math.log10'] = a => inc(['math.log', 'math.log10'], 'math.log10', a)
+  ctx.emit['math.log1p'] = a => inc(['math.log', 'math.log1p'], 'math.log1p', a)
 
   // Power
-  ctx.emit['math.pow'] = (a, b) => (
-    ctx.includes.add('math.exp').add('math.log').add('math.pow'),
-    ['call', '$math.pow', emit(a), emit(b)]
-  )
+  ctx.emit['math.pow'] = (a, b) => inc(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
   ctx.emit['**'] = ctx.emit['math.pow']
+  ctx.emit['math.cbrt'] = a => inc(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
+  ctx.emit['math.hypot'] = (a, b) => call('math.hypot', a, b)
 
-  // Other functions
-  ctx.emit['math.cbrt'] = (a) => (
-    ctx.includes.add('math.exp').add('math.log').add('math.pow').add('math.cbrt'),
-    ['call', '$math.cbrt', emit(a)]
-  )
-  ctx.emit['math.hypot'] = (a, b) => (
-    ctx.includes.add('math.hypot'),
-    ['call', '$math.hypot', emit(a), emit(b)]
-  )
-
-  // Integer/bit operations
-  ctx.emit['math.clz32'] = (a) => ['f64.convert_i32_u', ['i32.clz', ['i32.trunc_f64_s', emit(a)]]]
-  ctx.emit['math.imul'] = (a, b) => ['f64.convert_i32_s', ['i32.mul', ['i32.trunc_f64_s', emit(a)], ['i32.trunc_f64_s', emit(b)]]]
+  // Integer/bit operations (coerce to i32 internally, return f64)
+  ctx.emit['math.clz32'] = a => typed(['f64.convert_i32_u', ['i32.clz', asI32(emit(a))]], 'f64')
+  ctx.emit['math.imul'] = (a, b) => typed(['f64.convert_i32_s', ['i32.mul', asI32(emit(a)), asI32(emit(b))]], 'f64')
 
   // Random
-  ctx.emit['math.random'] = () => (
-    ctx.includes.add('math.random'),
-    ['call', '$math.random']
-  )
+  ctx.emit['math.random'] = () => (ctx.includes.add('math.random'), typed(['call', '$math.random'], 'f64'))
 
   // ============================================
   // WAT stdlib implementations
