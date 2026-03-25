@@ -2,35 +2,29 @@
 
 /**
  * JZ CLI - Command-line interface for JZ compiler
- * Outputs WAT text by default, optionally compiles to WASM binary
  */
 
 import { readFileSync, writeFileSync } from 'fs'
-import { compile, instantiate } from './index.js'
-
-// Optional watr for binary output
-let watr
-try { watr = await import('watr') } catch {}
+import jz from './index.js'
 
 function showHelp() {
   console.log(`
-JZ - Minimal modern functional JS subset that compiles to WebAssembly
+jz - JS subset → WASM compiler
 
 Usage:
   jz <expression>           Evaluate expression
-  jz <file.js>             Evaluate JS file
-  jz compile <file.js>     Compile to WAT (default) or WASM
-  jz run <file.js>         Compile and run
-  jz --help                Show this help
+  jz <file.js>              Evaluate JS file
+  jz compile <file.js>      Compile to WAT (default) or WASM
+  jz --help                 Show this help
 
 Examples:
-  jz "1 + 2"                                         # 3
-  jz compile program.js -o program.wat               # Creates program.wat
-  jz compile program.js -o program.wasm              # Creates program.wasm (requires watr)
-  jz run program.js                                  # Runs compiled program
+  jz "1 + 2"
+  jz compile program.js -o program.wat
+  jz compile program.js -o program.wasm
 
 Options:
-  --output, -o <file>      Output file (.wat or .wasm)
+  --output, -o <file>       Output file (.wat or .wasm)
+  --wat                     Output WAT text instead of binary
   `)
 }
 
@@ -42,19 +36,9 @@ async function main() {
     return
   }
 
-  const command = args[0]
-
   try {
-    switch (command) {
-      case 'compile':
-        await handleCompile(args.slice(1))
-        break
-      case 'run':
-        await handleRun(args.slice(1))
-        break
-      default:
-        await handleEvaluate(args)
-    }
+    if (args[0] === 'compile') await handleCompile(args.slice(1))
+    else await handleEvaluate(args)
   } catch (error) {
     console.error('Error:', error.message)
     process.exit(1)
@@ -62,91 +46,50 @@ async function main() {
 }
 
 async function handleEvaluate(args) {
-  if (!watr) {
-    throw new Error('watr package required for evaluation. Install with: npm i watr')
-  }
-
   const input = args.join(' ')
   let code
 
-  // Check if it's a file
-  if (args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz'))) {
+  if (args.length === 1 && (args[0].endsWith('.js') || args[0].endsWith('.jz')))
     code = readFileSync(args[0], 'utf8')
-  } else {
-    code = input
-  }
+  else
+    code = `export let _ = () => ${input}`
 
-  const wat = compile(code)
-  const wasm = watr.compile(wat)
-  const instance = await instantiate(wasm)
-  console.log(instance.run())
+  const wasm = jz(code)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod)
+
+  // If there's an exported _ (expression eval), call it
+  if (inst.exports._) console.log(inst.exports._())
+  else console.log(inst.exports)
 }
 
 async function handleCompile(args) {
-  if (args.length === 0) {
-    throw new Error('No input file specified')
-  }
+  if (args.length === 0) throw new Error('No input file specified')
 
   const inputFile = args[0]
   let outputFile = null
+  let wat = false
 
-  // Parse options
   for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--output' || args[i] === '-o') {
-      outputFile = args[++i]
-    }
+    if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
+    if (args[i] === '--wat') wat = true
   }
 
-  // Default output based on input
-  if (!outputFile) {
-    outputFile = inputFile.replace(/\.(js|jz)$/, '.wat')
-  }
+  if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
+  if (outputFile.endsWith('.wat')) wat = true
 
   const code = readFileSync(inputFile, 'utf8')
-  const wat = compile(code)
+  const result = jz(code, { wat })
 
-  if (outputFile.endsWith('.wasm')) {
-    if (!watr) {
-      throw new Error('watr package required for WASM binary output. Install with: npm i watr')
-    }
-    const wasm = watr.compile(wat)
-    writeFileSync(outputFile, wasm)
-    console.log(`Compiled ${inputFile} → ${outputFile} (${wasm.byteLength} bytes)`)
+  if (wat) {
+    writeFileSync(outputFile, result)
+    console.log(`${inputFile} → ${outputFile} (${result.length} chars)`)
   } else {
-    writeFileSync(outputFile, wat)
-    console.log(`Compiled ${inputFile} → ${outputFile} (${wat.length} chars)`)
+    writeFileSync(outputFile, result)
+    console.log(`${inputFile} → ${outputFile} (${result.byteLength} bytes)`)
   }
 }
 
-async function handleRun(args) {
-  if (!watr) {
-    throw new Error('watr package required for running. Install with: npm i watr')
-  }
-
-  if (args.length === 0) {
-    throw new Error('No input file specified')
-  }
-
-  const inputFile = args[0]
-  const code = readFileSync(inputFile, 'utf8')
-  const wat = compile(code)
-  const wasm = watr.compile(wat)
-  const instance = await instantiate(wasm)
-  console.log(instance.run())
-}
-
-// Handle uncaught errors
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught error:', error.message)
-  process.exit(1)
-})
-
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason)
-  process.exit(1)
-})
-
-// Run CLI
 main().catch(error => {
   console.error('Error:', error.message)
   process.exit(1)

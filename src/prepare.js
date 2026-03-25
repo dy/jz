@@ -4,26 +4,27 @@
  * @module prepare
  */
 
-import { ctx } from '../index.js'
+import { ctx } from './ctx.js'
 import * as mods from '../module/index.js'
 
 /**
  * @typedef {null|number|string|ASTNode[]} ASTNode
  */
 
-
 /**
- * Prepare AST node for compilation. Normalizes syntax, validates
- * prohibited features, tracks variables, and auto-imports modules.
+ * Prepare AST node for compilation.
  * @param {ASTNode} node - Raw AST from parser
  * @returns {ASTNode} Normalized AST
  */
-export default function prep(node) {
+export default function prepare(node) {
+  return prep(node)
+}
+
+function prep(node) {
   if (node == null) return node
   if (!Array.isArray(node)) {
     if (typeof node === 'string') {
       if (PROHIBITED[node]) err(PROHIBITED[node])
-      // Resolve via scope: sin → math.sin (direct bindings have dot)
       const resolved = ctx.scope[node]
       if (resolved?.includes('.')) return resolved
     }
@@ -36,7 +37,6 @@ export default function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// Prohibited identifiers (string nodes)
 const PROHIBITED = {
   'this': '`this` not supported: use explicit parameter',
   'super': '`super` not supported: no class inheritance',
@@ -66,8 +66,20 @@ export const GLOBALS = {
   Uint8ClampedArray: 'binary'
 }
 
+/** Prepare let/const declaration. */
+function prepDecl(op, mutable, ...inits) {
+  const rest = []
+  for (const i of inits) {
+    if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
+    const [, name, init] = i, normed = prep(init)
+    if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable }
+    if (!defFunc(name, normed)) rest.push(['=', name, normed])
+  }
+  return rest.length ? [op, ...rest] : null
+}
+
 const handlers = {
-  // Prohibited ops (actual parser node types)
+  // Prohibited ops
   'async': () => err('async/await not supported: WASM is synchronous'),
   'await': () => err('async/await not supported: WASM is synchronous'),
   'class': () => err('class not supported: use object literals'),
@@ -76,9 +88,11 @@ const handlers = {
   'in': () => err('`in` not supported: use optional chaining'),
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
+  ':': () => err('labeled statements not supported'),
+  'var': () => err('`var` not supported: use let/const'),
+  'function': () => err('`function` not supported: use arrow functions'),
 
-  // Static import: import { sin, cos } from 'math'
-  // AST: ['import', ['from', specifiers, source]]
+  // Import
   'import'(fromNode) {
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
       return err('Dynamic import() not supported')
@@ -86,31 +100,27 @@ const handlers = {
   },
 
   'from'(specifiers, source) {
-    const mod = source?.[1] // [null, 'math'] → 'math'
+    const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err('Invalid import source')
     includeModule(mod)
 
-    // Parse specifiers: string | ['{}', ...] | ['as', '*', alias]
     const bind = (name, alias) => {
       const key = mod + '.' + name
       if (!ctx.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
-      ctx.scope[alias || name] = key // direct: sin → math.sin
+      ctx.scope[alias || name] = key
     }
 
     if (typeof specifiers === 'string') {
-      // import math from 'math' → namespace
       ctx.scope[specifiers] = mod
       return null
     }
     if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
-      // import * as m from 'math' → namespace
       ctx.scope[specifiers[2]] = mod
       return null
     }
     if (Array.isArray(specifiers) && specifiers[0] === '{}') {
-      // import { a, b } or { a as x }
       const inner = specifiers[1]
-      if (inner == null) return null // import {} from 'math' - noop
+      if (inner == null) return null
       const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
       for (const item of items) {
         if (typeof item === 'string') bind(item)
@@ -118,48 +128,24 @@ const handlers = {
         else err(`Invalid import specifier: ${JSON.stringify(item)}`)
       }
     }
-    return null // imports don't emit code
+    return null
   },
-
-  ':': () => err('labeled statements not supported'),
-  'var': () => err('`var` not supported: use let/const'),
-  'function': () => err('`function` not supported: use arrow functions'),
 
   // Statements
   ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],
-
-  'let': (...inits) => {
-    const rest = []
-    for (const i of inits) {
-      if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
-      const [, name, init] = i, normed = prep(init)
-      if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable: true }
-      if (!defFunc(name, normed)) rest.push(['=', name, normed])
-    }
-    return rest.length ? ['let', ...rest] : null
-  },
-
-  'const': (...inits) => {
-    const rest = []
-    for (const i of inits) {
-      if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
-      const [, name, init] = i, normed = prep(init)
-      if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable: false }
-      if (!defFunc(name, normed)) rest.push(['=', name, normed])
-    }
-    return rest.length ? ['const', ...rest] : null
-  },
-
-  // TODO: handle imports that includes module from /module
+  'let': (...inits) => prepDecl('let', true, ...inits),
+  'const': (...inits) => prepDecl('const', false, ...inits),
 
   'export': decl => {
-    // Mark exported names before prep (so let/const can see them)
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
           ctx.exports[i[1]] = true
     return prep(decl)
   },
+
+  // Arrow: don't prep params (they're declarations, not expressions)
+  '=>': (params, body) => ['=>', params, prep(body)],
 
   // Unary +/- disambiguation
   '+'(a, b) {
@@ -171,9 +157,9 @@ const handlers = {
     return ['-', prep(a), prep(b)]
   },
 
-  // ++/-- → compound assignment
-  '++'(a, post) { return post === null ? ['-', ['+=', a, [, 1]], [, 1]] : ['+=', a, [, 1]] },
-  '--'(a, post) { return post === null ? ['+', ['-=', a, [, 1]], [, 1]] : ['-=', a, [, 1]] },
+  // ++/-- → compound assignment (no post/pre value distinction for now)
+  '++'(a) { return ['+=', a, [, 1]] },
+  '--'(a) { return ['-=', a, [, 1]] },
 
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
@@ -182,13 +168,11 @@ const handlers = {
   '()'(callee, ...args) {
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
-      // Resolve via scope: sin → math.sin
       const resolved = ctx.scope[callee]
       if (resolved?.includes('.')) callee = resolved
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       const mod = ctx.scope[obj]
-      // Namespace: m.sin where scope.m = 'math' (no dot)
       if (typeof obj === 'string' && mod && !mod.includes('.'))
         callee = (includeModule(mod), mod + '.' + prop)
     }
@@ -221,16 +205,14 @@ const handlers = {
   'for'(head, body) {
     if (Array.isArray(head) && head[0] === ';') {
       const [, init, cond, step] = head
-      // FIXME: feels like belonging to subscript
       return ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
     }
     return ['for', prep(head), prep(body)]
   },
 
-  // Property access - resolve namespaces (Math.X, m.X) to module.X
+  // Property access - resolve namespaces
   '.'(obj, prop) {
     const mod = ctx.scope[obj]
-    // Namespace: scope.m = 'math' (no dot means namespace)
     if (typeof obj === 'string' && mod && !mod.includes('.'))
       return includeModule(mod), mod + '.' + prop
     return ['.', prep(obj), prop]
@@ -246,27 +228,17 @@ const handlers = {
   }
 }
 
-/**
- * Include module to compilation context
- * @param {*} name
- */
 function includeModule(name) {
-  let init = mods[name]
+  const init = mods[name]
   if (!init) return err(`Module not found: ${name}`)
-    if (ctx.modules[name]) return
+  if (ctx.modules[name]) return
   init(ctx)
   ctx.modules[name] = true
 }
 
-/**
- * Infer type from expression (compile-time only).
- * @param {ASTNode} expr
- * @returns {'f64'|'func'} Inferred WASM type
- */
 function type(expr) {
   if (typeof expr === 'number') return 'f64'
   if (typeof expr === 'string') {
-    if (ctx.types[expr]) return ctx.types[expr][1] || 'f64'  // [params, returns]
     if (ctx.vars[expr]) return ctx.vars[expr].type
     return 'f64'
   }
@@ -274,7 +246,6 @@ function type(expr) {
   return 'f64'
 }
 
-/** If arrow func, add to ctx.funcs and return true */
 function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   const [, rawParams, body] = node
