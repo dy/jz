@@ -37,6 +37,12 @@ export default function jz(code, opts = {}) {
   ctx.globals = []
   ctx.schemas = []
   ctx.varSchemas = new Map()
+  ctx.depth = 0
+  ctx.fnTypes = null
+  ctx.fnTable = null
+  ctx.closureBodies = null
+  ctx.makeClosure = null
+  ctx.callClosure = null
 
   const ast = prepare(parse(code))
   const module = compile(ast)

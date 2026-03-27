@@ -31,4 +31,11 @@ export const ctx = {
   varSchemas: new Map(), // variable name → schema id
   findPropIndex: null,  // (varName, prop) → index (set by ptr module)
   registerSchema: null, // (props) → schemaId (set by ptr module)
+
+  // --- Closures (set by fn module) ---
+  fnTypes: null,        // Set<arity> — function types for call_indirect
+  fnTable: null,        // string[] — function names in table
+  closureBodies: null,  // closure body descriptors for compilation
+  makeClosure: null,    // (params, body, captures) → WasmNode (set by fn module)
+  callClosure: null,    // (closureExpr, args) → WasmNode (set by fn module)
 }

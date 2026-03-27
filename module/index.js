@@ -3,4 +3,5 @@ import ptr from './ptr.js'
 import array from './array.js'
 import object from './object.js'
 import string from './string.js'
-export { math, ptr, array, object, string }
+import fn from './fn.js'
+export { math, ptr, array, object, string, fn }

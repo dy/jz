@@ -69,29 +69,33 @@
 
 ### Core language
 
-* [ ] Optional chaining (?.)
-* [ ] typeof — needs strings (returns type name)
-* [ ] Strings (literals, charCodeAt, basic ops)
-* [ ] Template literals
+* [x] Optional chaining (?. and ?.[])
+* [x] typeof (returns ptr type code: -1=number, 1=array, 4=string, 5=sso, 6=object)
+* [x] Strings (literals, .length, [i] charCodeAt, SSO + heap)
+* [ ] Template literals (needs string concat)
 
 ### Data structures
 
-* [x] Array literals, indexing, mutation — done via NaN-boxed pointers + linear memory
-* [ ] Array methods (map, filter, reduce, find, indexOf, slice, etc.)
-* [ ] Array destructuring, spread
-* [ ] Object literals, property access
-* [ ] Object destructuring, shorthand
-* [ ] Rest params (...args)
-* [x] Default params (x = 5) — done, NaN-based detection
+* [x] Array literals, indexing, mutation — NaN-boxed pointers + linear memory
+* [x] Array destructuring — let [a, b] = arr
+* [x] Array methods — .map, .filter, .reduce, .forEach, .find, .indexOf, .includes, .slice
+* [x] Method chaining — arr.map(fn).reduce(fn, 0)
+* [ ] Array spread [...a, ...b] (needs array concat)
+* [x] Object literals, property access, write — schema-based NaN-boxed pointers
+* [x] Object destructuring — let {x, y} = obj
+* [ ] Object shorthand in destruct — let {x: alias} = obj
+* [ ] Rest params (...args) — WASM has fixed arity, needs design
+* [x] Default params (x = 5) — NaN-based detection
 * [ ] TypedArrays (Float64/32, Int8/16/32, Uint8/16/32)
 * [ ] Set, Map
 * [ ] JSON.stringify, JSON.parse
 
 ### Functions
 
-* [ ] Closures (capture by value)
-* [ ] First-class functions (currying, funcref/call_indirect)
-* [ ] Nested function definitions
+* [x] Closures — capture by value, NaN-boxed pointer (type=10, aux=funcIdx, offset=envPtr)
+* [x] First-class functions — currying, callbacks, funcref via call_indirect + function table
+* [x] Nested function definitions — depth tracking, inner arrows stay as closure values
+* [ ] Mutable capture (capture by reference) — currently errors silently, returns stale value
 
 ### String methods
 

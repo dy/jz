@@ -55,6 +55,21 @@ function loopTop() {
   return top
 }
 
+/** Find free variables in AST that aren't in the given set (for closure capture). */
+function findFreeVars(node, bound, free) {
+  if (node == null) return
+  if (typeof node === 'string') {
+    // Free if: not a param of the inner function, AND exists in outer scope (locals or params)
+    const isOuterVar = ctx.locals?.has(node) || ctx.sig?.params.some(p => p.name === node)
+    if (!bound.has(node) && isOuterVar && !free.includes(node)) free.push(node)
+    return
+  }
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '=>') return  // don't cross into nested arrows
+  for (const a of args) findFreeVars(a, bound, free)
+}
+
 /** Emit let/const initializations as typed local.set instructions. */
 function emitDecl(...inits) {
   const result = []
@@ -164,6 +179,8 @@ const flat = ir => ir == null ? [] : Array.isArray(ir) && ir.length && Array.isA
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast) {
+  // Known function names for direct call detection
+  ctx.funcNames = new Set(ctx.funcs.map(f => f.name))
 
   const funcs = ctx.funcs.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
@@ -182,9 +199,8 @@ export default function compile(ast) {
     const block = Array.isArray(body) && body[0] === '{}'
     ctx.locals = block ? analyzeLocals(body) : new Map()
 
-    const fn = ['func']
+    const fn = ['func', `$${name}`]
     if (exported) fn.push(['export', `"${name}"`])
-    else fn.push(`$${name}`)
     fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
     fn.push(...sig.results.map(t => ['result', t]))
 
@@ -216,13 +232,78 @@ export default function compile(ast) {
     return fn
   })
 
-  const sections = [
-    ...ctx.imports,
-    ...(ctx.memory ? [['memory', ['export', '"memory"'], 1]] : []),
-    ...(ctx.globals || []).map(g => parseWat(g)),
-    ...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])),
-    ...funcs
-  ]
+  // Compile closure bodies (generated during emit phase)
+  const closureFuncs = []
+  if (ctx.closureBodies) {
+    for (const cb of ctx.closureBodies) {
+      // Reset per-function state for closure body
+      ctx.locals = new Map()
+      ctx.stack = []
+      ctx.uid = Math.max(ctx.uid, 100) // avoid label collisions
+      ctx.sig = { params: [{ name: '__env', type: 'f64' }, ...cb.params.map(n => ({ name: n, type: 'f64' }))], results: ['f64'] }
+
+      const fn = ['func', `$${cb.name}`]
+      fn.push(['param', '$__env', 'f64'])
+      fn.push(...cb.params.map(p => ['param', `$${p}`, 'f64']))
+      fn.push(['result', 'f64'])
+
+      // Load captured variables from env memory into locals
+      for (let i = 0; i < cb.captures.length; i++) {
+        const name = cb.captures[i]
+        ctx.locals.set(name, 'f64')
+      }
+
+      // Emit body
+      const block = Array.isArray(cb.body) && cb.body[0] === '{}'
+      let bodyIR
+      if (block) {
+        analyzeLocals(cb.body)  // adds declared locals
+        bodyIR = emitBody(cb.body)
+      } else {
+        bodyIR = [asF64(emit(cb.body))]
+      }
+
+      // Insert locals (captures + declared)
+      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+
+      // Load captures from env
+      for (let i = 0; i < cb.captures.length; i++) {
+        fn.push(['local.set', `$${cb.captures[i]}`,
+          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', '$__env']], ['i32.const', i * 8]]]])
+      }
+
+      fn.push(...bodyIR)
+      if (block) fn.push(['f64.const', 0]) // fallthrough
+      closureFuncs.push(fn)
+    }
+  }
+
+  // Build module sections
+  const sections = [...ctx.imports]
+
+  // Function types for call_indirect (one per arity)
+  if (ctx.fnTypes) {
+    for (const arity of ctx.fnTypes) {
+      const params = [['param', 'f64']] // env
+      for (let i = 0; i < arity; i++) params.push(['param', 'f64'])
+      sections.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
+    }
+  }
+
+  if (ctx.memory) sections.push(['memory', ['export', '"memory"'], 1])
+
+  // Table for closures
+  if (ctx.fnTable?.length)
+    sections.push(['table', ctx.fnTable.length, 'funcref'])
+
+  sections.push(...(ctx.globals || []).map(g => parseWat(g)))
+  sections.push(...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])))
+  sections.push(...closureFuncs)
+  sections.push(...funcs)
+
+  // Element section: populate function table
+  if (ctx.fnTable?.length)
+    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.fnTable.map(n => `$${n}`)])
 
   const init = emit(ast)
   if (init?.length) {
@@ -451,12 +532,47 @@ export const emitter = {
 
   // === Call ===
 
+  // Arrow as value → closure
+  '=>': (rawParams, body) => {
+    if (!ctx.makeClosure) err('Closures require fn module (auto-included)')
+
+    // Extract param names
+    let p = rawParams
+    if (Array.isArray(p) && p[0] === '()') p = p[1]
+    const params = p == null ? []
+      : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p])
+      : [p]
+
+    // Find free variables in body that aren't params → captures
+    const paramSet = new Set(params)
+    const captures = []
+    findFreeVars(body, paramSet, captures)
+
+    return ctx.makeClosure(params, body, captures)
+  },
+
   '()': (callee, callArgs) => {
     const argList = Array.isArray(callArgs)
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
+
+    // Method call: obj.method(args) → dispatch to method emitter
+    if (Array.isArray(callee) && callee[0] === '.') {
+      const [, obj, method] = callee
+      const key = `.${method}`
+      if (ctx.emit[key]) return ctx.emit[key](obj, ...argList)
+    }
+
     if (ctx.emit[callee]) return ctx.emit[callee](...argList)
-    // User-defined functions: coerce args to f64 (all params are f64 for now)
+
+    // Direct call if callee is a known top-level function
+    if (typeof callee === 'string' && ctx.funcNames.has(callee))
+      return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
+
+    // Closure call: callee is a variable holding a NaN-boxed closure pointer
+    if (ctx.callClosure) return ctx.callClosure(emit(callee), argList)
+
+    // Unknown callee — assume direct call
     return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
   },
 }

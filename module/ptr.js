@@ -14,6 +14,7 @@ import { ctx } from '../src/ctx.js'
 
 const NAN_PREFIX = 0x7FF8
 const err = msg => { throw Error(msg) }
+const temp = () => { const n = `__t${ctx.uid++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
   ctx.memory = true
@@ -83,6 +84,42 @@ export default () => {
     }
 
     err(`Unknown property: .${prop}`)
+  }
+
+  // Optional chaining: obj?.prop → 0 if obj is 0/null, else obj.prop
+  ctx.emit['?.'] = (obj, prop) => {
+    const t = temp()
+    const va = asF64(emit(obj))
+    // Resolve property index at compile time
+    const propIdx = typeof obj === 'string' ? ctx.findPropIndex(obj, prop) : -1
+    const access = prop === 'length'
+      ? ['f64.convert_i32_s', ['call', '$__ptr_aux', ['local.get', `$${t}`]]]
+      : propIdx >= 0
+        ? ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
+        : ['f64.const', 0]
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, va], ['f64.const', 0]],
+      ['then', access],
+      ['else', ['f64.const', 0]]], 'f64')
+  }
+
+  // Optional index: arr?.[i] → 0 if arr is 0 (null), else arr[i]
+  ctx.emit['?.[]'] = (arr, idx) => {
+    const t = temp()
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(arr))], ['f64.const', 0]],
+      ['then', ctx.emit['[]']?.(arr, idx) || typed(['f64.const', 0], 'f64')],
+      ['else', ['f64.const', 0]]], 'f64')
+  }
+
+  // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
+  ctx.emit['typeof'] = (a) => {
+    const t = temp()
+    return typed(['if', ['result', 'f64'],
+      // NaN check: val != val means it's a NaN-boxed pointer
+      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(a))], ['local.get', `$${t}`]],
+      ['then', ['f64.convert_i32_s', ['call', '$__ptr_type', ['local.get', `$${t}`]]]],
+      ['else', ['f64.const', -1]]], 'f64') // -1 = plain number
   }
 
   // === Schema helpers (shared via ctx, used by object module + prepare) ===

@@ -82,6 +82,27 @@ function prepDecl(op, ...inits) {
   for (const i of inits) {
     if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
     const [, name, init] = i, normed = prep(init)
+
+    // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
+    if (Array.isArray(name) && name[0] === '[]') {
+      const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
+      const tmp = `__d${ctx.uid || 0}`; if (!ctx.uid) ctx.uid = 0; ctx.uid++
+      rest.push(['=', tmp, normed])
+      for (let j = 0; j < items.length; j++)
+        if (items[j] != null) rest.push(['=', items[j], ['[]', tmp, [, j]]])
+      continue
+    }
+
+    // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
+    if (Array.isArray(name) && name[0] === '{}') {
+      const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
+      const tmp = `__d${ctx.uid || 0}`; if (!ctx.uid) ctx.uid = 0; ctx.uid++
+      rest.push(['=', tmp, normed])
+      for (const item of items)
+        if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
+      continue
+    }
+
     // Track object schemas for property access
     if (typeof name === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
       const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
@@ -158,8 +179,14 @@ const handlers = {
     return prep(decl)
   },
 
-  // Arrow: don't prep params (they're declarations, not expressions)
-  '=>': (params, body) => ['=>', params, prep(body)],
+  // Arrow: don't prep params. Track depth for nested function detection.
+  '=>': (params, body) => {
+    if (ctx.depth > 0) { includeModule('ptr'); includeModule('fn') }
+    ctx.depth = (ctx.depth || 0) + 1
+    const result = ['=>', params, prep(body)]
+    ctx.depth--
+    return result
+  },
 
   // Switch: prep discriminant and case values/bodies
   // Parser appends fall-through flag (number) to case bodies — strip it
@@ -175,6 +202,11 @@ const handlers = {
       return prep(c)
     })]
   },
+
+  // Optional chaining / typeof — need ptr module
+  '?.'(obj, prop) { includeModule('ptr'); return ['?.', prep(obj), prop] },
+  '?.[]'(obj, idx) { includeModule('ptr'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
+  'typeof'(a) { includeModule('ptr'); return ['typeof', prep(a)] },
 
   // Unary +/- disambiguation
   '+'(a, b) {
@@ -207,6 +239,8 @@ const handlers = {
       const mod = ctx.scope[obj]
       if (typeof obj === 'string' && mod && !mod.includes('.'))
         callee = (includeModule(mod), mod + '.' + prop)
+      else
+        callee = prep(callee)  // prep method callee (triggers . handler → module loading)
     }
     return ['()', callee, ...args.map(prep)]
   },
@@ -262,14 +296,14 @@ const handlers = {
     return ['for', prep(head), prep(body)]
   },
 
-  // Property access - resolve namespaces or object properties
+  // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     const mod = ctx.scope[obj]
     if (typeof obj === 'string' && mod && !mod.includes('.'))
       return includeModule(mod), mod + '.' + prop
-    // Non-module property access → needs ptr + object modules
     includeModule('ptr')
     includeModule('object')
+    includeModule('array')  // for .map, .filter, .length etc
     return ['.', prep(obj), prop]
   },
 
@@ -293,6 +327,8 @@ function includeModule(name) {
 
 function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
+  // Only extract top-level functions, not nested (closures stay as values)
+  if (ctx.depth > 0) return false
   const [, rawParams, body] = node
   let p = rawParams
   if (Array.isArray(p) && p[0] === '()') p = p[1]
