@@ -87,7 +87,7 @@ function exprType(expr, locals) {
   if (op == null) return exprType(args[0], locals) // literal [, value]
 
   // Always f64
-  if (op === '/' || op === '**') return 'f64'
+  if (op === '/' || op === '**' || op === '[' || op === '[]') return 'f64'
   // Always i32
   if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
   // Preserve i32 if both operands i32
@@ -167,12 +167,12 @@ const flat = ir => ir == null ? [] : Array.isArray(ir) && ir.length && Array.isA
 export default function compile(ast) {
 
   const funcs = ctx.funcs.map(func => {
+    // Raw WAT functions (e.g., _alloc, _reset from memory module)
+    if (func.raw) return parseWat(func.raw)
+
     const { name, body, exported, sig } = func
 
-    // Profile validation
     const multi = sig.results.length > 1
-    if (multi && ctx.profile === 'scalar')
-      err(`Multi-value return in '${name}' requires { profile: 'multi' }`)
 
     // Reset per-function state
     ctx.stack = []
@@ -267,6 +267,12 @@ export const emitter = {
   // === Assignment ===
 
   '=': (name, val) => {
+    // Array index assignment: arr[i] = x → f64.store
+    if (Array.isArray(name) && name[0] === '[]') {
+      const [, arr, idx] = name
+      const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
+      return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], vv]
+    }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     const v = emit(val), t = ctx.locals.get(name) || 'f64'
     return typed(['local.set', `$${name}`, t === 'f64' ? asF64(v) : asI32(v)], t)

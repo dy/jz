@@ -32,6 +32,34 @@
 * [x] void operator
 * [x] Default params (x = 5) — triggers on NaN (missing arg), not 0
 
+## Phase 3 — Memory + NaN-boxing ✓
+
+* [x] NaN-boxing pointer helpers (mkptr, ptr_type, ptr_aux, ptr_offset)
+* [x] Bump allocator (_alloc, _reset) + memory section
+* [x] Array literal `[1, 2, 3]` → allocate + fill in memory, return NaN-boxed pointer
+* [x] Array indexing arr[i] → f64.load, arr[i]=x → f64.store
+* [x] Auto-include memory module when arrays are used
+* [x] Remove profile option — multi-value and NaN-boxing just work
+* [x] Multi-value threshold (≤8 = tuple, >8 = pointer)
+* [x] Pointer encoding tests for all 12 NaN-boxing types
+* [x] JS roundtrip preserves NaN bits
+
+## Next: Remaining memory features
+
+* [ ] Array `.length` (extract from NaN-boxed aux bits)
+* [ ] Array as function param (pass NaN-boxed pointer, auto-extract offset)
+* [ ] Object literals `{ x: 1, y: 2 }` → allocate schema-based, return pointer
+* [ ] Object property access `obj.x` → compile-time schema lookup, f64.load
+* [ ] String literals → allocate in memory, return pointer
+* [ ] Wire stdlib.js WAT into modules where needed
+
+## Next: Phase 4 — Products (from plan.md)
+
+* [ ] 4a: floatbeat — single-page demo, waveform, preset formulas
+* [ ] 4b: color-space/wasm — compile actual conversions, publish package
+* [ ] 4c: digital-filter/wasm — compile biquad/SVF, benchmark vs JS
+* [ ] 4d: standard JS support — string ops, array methods, WASI host imports (as needed by products)
+
 ## Backlog
 
 ### Core language
@@ -43,7 +71,7 @@
 
 ### Data structures
 
-* [ ] Array literals, indexing, mutation (memory profile)
+* [x] Array literals, indexing, mutation — done via NaN-boxed pointers + linear memory
 * [ ] Array methods (map, filter, reduce, find, indexOf, slice, etc.)
 * [ ] Array destructuring, spread
 * [ ] Object literals, property access
@@ -78,7 +106,7 @@
 * [ ] try/catch/throw (WASM exceptions)
 * [ ] Tail call optimization
 * [ ] SIMD auto-vectorization
-* [ ] i32 type preservation
+* [x] i32 type preservation — done via type coercion system
 
 ### Optimizations (revisit for new arch)
 

@@ -1,4 +1,5 @@
 import math from './math.js'
 import core from './core.js'
 import binary from './binary.js'
-export { math, core, binary }
+import memory from './memory.js'
+export { math, core, binary, memory }

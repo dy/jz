@@ -68,35 +68,88 @@ The stack:
   * Slight divergence from JS (documented)
   * Sufficient for functional patterns (currying, callbacks)
 
-## [x] Floating point precision -> Compile-time rational simplification
+## [ ] Floating point precision -> Compile-time rational simplification
 
   * Zero runtime cost
   * Exact arithmetic for constant expressions (`1/3 * 3 = 1`, `1/10 + 2/10 = 0.3`)
   * Falls back to f64 for dynamic values
   * Overflow falls back to f64
 
-## [x] Data representation -> internal vs boundary
+## [x] Data representation -> NaN-boxed f64 everywhere
 
-  ### Core insight
+  ### Decision: NaN-boxing for all pointers, internal and external
 
-  Internally, always fastest. The only question is the JS↔WASM export boundary.
+  Everything is f64. Scalars are regular f64/i32. Pointers are NaN-encoded f64.
+  No wrapping layers, no export adapters, no mixed signatures. Simplest design.
 
-  | Data | Internal | Why |
-  |------|----------|-----|
-  | Scalars | i32/f64 by operator | Direct WASM ops |
-  | Tuples | Multi-value | Zero allocation |
-  | Arrays/objects | Linear memory, i32 offset | No GC, deterministic |
+  | Data | Representation |
+  |------|---------------|
+  | Scalars | f64 or i32 (type-coerced by operator) |
+  | Pointers (arrays, objects, strings) | NaN-boxed f64 (type+aux+offset in quiet NaN) |
+  | Tuple returns | Multi-value `(result f64 f64 f64)` |
 
-  ### Exported functions are boundary wrappers
+  **Cost**: extracting i32 offset from NaN = 3 register ops (~1 cycle), once per function entry.
+  Cached in i32 local — loop body is pure i32 arithmetic. Negligible.
 
-  Internal function is always the same. Export is a thin adapter:
+  **Benefit**: uniform f64 signatures everywhere. No wrapper generation. No param type analysis.
+  JS passes/receives plain numbers. Polymorphism for free (param can be number or pointer).
+
+  Both sides of the boundary (JS and WASM) follow the same convention: read/write memory
+  at the offset encoded in the NaN payload. JS uses typed array views on exported memory.
+
+  ### WASM GC: not viable for JS boundary
+
+  Tested: GC structs and arrays are **opaque from JS** — no field access, no indexing.
+  `p[0]` → undefined. Only accessor functions work. The `gc-js-customization` proposal
+  exists but no engine implements it. GC types only useful for WASM↔WASM.
+
+  ### Return convention: multi-value vs pointer
+
+  **Array literal return** → multi-value (tuple). Compile-time known length.
+  ```js
+  return [a, b, c]  // → (result f64 f64 f64), JS gets real Array
   ```
-  Internal:  $process(ptr: i32, len: i32)        ← always memory, fast
-  Export:    (export "process") → passthrough     ← memory pointer boundary
-  GC export: (export "process") → unwrap GC→mem  ← GC boundary adapter
+
+  **Variable/dynamic array return** → NaN-boxed pointer to memory.
+  ```js
+  return arr         // → (result f64), NaN-boxed pointer
   ```
-  Single option `{ gc: true }` generates GC adapter wrappers around exports.
-  No option = memory pointer boundary (default, zero overhead).
+
+  Heuristic: `return [expr, expr, ...]` with literal brackets = multi-value.
+  Everything else = single f64 return (scalar or pointer).
+
+  ### NaN-boxing pointer layout
+
+  Quiet NaN format: `0x7FF8_xxxx_xxxx_xxxx` — 51-bit payload.
+  Layout: `[type:4][aux:15][offset:32]`. 16 types, each with ONE layout (no flags).
+  Type dispatch handles everything — no extra branches, no conditional interpretation.
+
+  | Type | Name | aux (15 bits) | offset (32 bits) | Memory |
+  |------|------|---------------|------------------|--------|
+  | 0 | ATOM | kind | id | none |
+  | 1 | ARRAY | len (≤32767) | data offset | `[elems...]` no header |
+  | 2 | ARRAY_HEAP | — | data offset | `[-8:len][elems...]` |
+  | 3 | TYPED | elem:3 + flags | view offset | `[-8:len,dataPtr][data]` |
+  | 4 | STRING | len (≤32767) | char offset | `[u16 chars...]` no header |
+  | 5 | STRING_SSO | — | — | none (47 bits = ~6 ASCII inline) |
+  | 6 | OBJECT | schemaId | data offset | `[prop0, prop1, ...]` |
+  | 7 | HASH | — | data offset | `[-16:cap][-8:size][entries]` |
+  | 8 | SET | — | data offset | same as HASH |
+  | 9 | MAP | — | data offset | same as HASH |
+  | 10 | CLOSURE | funcIdx | env offset | `[env0, env1, ...]` |
+  | 11 | REGEX | flags:6+idx:9 | — | `[-8:lastIdx]` if g |
+  | 12-15 | — | reserved | — | — |
+
+  Key properties:
+  - 4GB addressable (32-bit offset), type extractable with 3 bit ops
+  - **One layout per type** — no flags, no subtypes. "Parse, don't validate" for pointers.
+  - **Inline length** — ARRAY/STRING `.length` = bit extract, zero memory read, no header.
+  - ATOM/STRING_SSO need zero memory allocation
+  - 4 free slots for future (Promise, Iterator, ArrayBuffer, etc)
+
+  **vs Go/Rust**: Go/Rust are statically typed — no runtime type bits needed. jz needs them
+  because a single f64 param could be number/array/string/object (JS polymorphism).
+  NaN-boxing is the cheapest way to pay it.
 
 ## [x] Allocator -> for linear memory, pluggable
 
@@ -132,11 +185,7 @@ The stack:
   * Variables typed by pre-analysis: if any assignment is f64, local is f64.
   * All types resolved at compile-time. No runtime dispatch.
 
-## [x] Pointers -> i32 offsets (internal), boundary wraps
-
-  Internal functions use i32 offsets for arrays/objects. No NaN-boxing in new arch.
-  Export wrappers handle JS boundary (memory pointer or GC wrapper).
-  Old NaN-boxing design preserved in git history for reference.
+## [x] Pointers -> i32 internal, boundary wraps (see Data representation above)
 
 ## [x] Imports -> Pre-bundled source, primitives-only linking
 

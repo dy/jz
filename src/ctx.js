@@ -1,10 +1,9 @@
 /**
  * Global compilation context, reset per jz() call.
  *
- * Profile controls the ABI — what WASM signatures are emitted:
- * - 'scalar': all params f64, single f64 return (default)
- * - 'multi':  all params f64, multi-value f64 returns (for tuples)
- * - 'memory': f64 + i32 pointer params, shared linear memory (planned)
+ * Everything is f64. Scalars are regular numbers. Pointers are NaN-boxed f64.
+ * Multi-value returns just work (return [a, b] → result f64 f64).
+ * Memory auto-enabled when arrays are used.
  */
 export const ctx = {
   emit: {},         // emitter table: op → (args) => WasmNode
@@ -14,9 +13,8 @@ export const ctx = {
   scope: {},        // name resolution: sin → math.sin
   memory: false,    // whether memory section is needed
   modules: {},      // loaded module init guards
-  vars: {},         // variable type info (for future type system)
+  vars: {},         // variable type info
   exports: {},      // exported function names
   funcs: [],        // function defs with sig: {params, results}
   globals: [],      // WASM global declarations
-  profile: 'scalar', // ABI profile: 'scalar' | 'multi' | 'memory'
 }

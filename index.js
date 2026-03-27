@@ -18,7 +18,6 @@ import compile, { emitter } from './src/compile.js'
  * Compile JS code to WASM binary (or WAT text).
  * @param {string} code - JavaScript source code
  * @param {object} [opts]
- * @param {string} [opts.profile='scalar'] - ABI profile: 'scalar' | 'multi' | 'memory'
  * @param {boolean} [opts.wat] - Return WAT text instead of binary
  * @returns {Uint8Array|string} WASM binary or WAT text if opts.wat
  * @example
@@ -37,7 +36,6 @@ export default function jz(code, opts = {}) {
   ctx.exports = {}
   ctx.funcs = []
   ctx.globals = []
-  ctx.profile = opts.profile || 'scalar'
 
   const ast = prepare(parse(code))
   const module = compile(ast)

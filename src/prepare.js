@@ -216,14 +216,16 @@ const handlers = {
     return ['()', callee, ...args.map(prep)]
   },
 
-  // Array literal/indexing
+  // Array literal/indexing — auto-include memory module
   '[]'(...args) {
     if (args.length === 1) {
       const inner = args[0]
+      includeModule('memory')
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',') return ['[', ...inner.slice(1).map(prep)]
       return ['[', prep(inner)]
     }
+    includeModule('memory')
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
@@ -307,18 +309,23 @@ function defFunc(name, node) {
   return true
 }
 
+// Multi-value threshold: ≤8 elements = tuple (multi-value return), >8 = memory array
+const MAX_MULTI = 8
+
 /** Detect return arity from function body. */
 function detectResults(body) {
-  // Expression body: [e1, e2, ...] → multi-return
-  if (Array.isArray(body) && body[0] === '[' && body.length > 2)
-    return Array(body.length - 1).fill('f64')
+  // Expression body: [e1, e2, ...] → multi-return if ≤ threshold
+  if (Array.isArray(body) && body[0] === '[' && body.length > 2) {
+    const n = body.length - 1
+    if (n <= MAX_MULTI) return Array(n).fill('f64')
+  }
   // Block body: scan return statements
   if (Array.isArray(body) && body[0] === '{}') {
     const rets = []
     collectReturns(body, rets)
     if (rets.length) {
       const n = rets[0]
-      if (n > 1 && rets.every(r => r === n)) return Array(n).fill('f64')
+      if (n > 1 && n <= MAX_MULTI && rets.every(r => r === n)) return Array(n).fill('f64')
     }
   }
   return ['f64']
