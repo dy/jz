@@ -17,19 +17,15 @@ const CLOSURE = 10
 
 export default () => {
   // Function type registry: arity → type name
-  if (!ctx.fnTypes) ctx.fnTypes = new Set()
-  if (!ctx.fnTable) ctx.fnTable = []    // table entries: func names
-  if (!ctx.closureBodies) ctx.closureBodies = [] // WAT for closure body functions
+  if (!ctx.fn.types) ctx.fn.types = new Set()
+  if (!ctx.fn.table) ctx.fn.table = []
+  if (!ctx.fn.bodies) ctx.fn.bodies = []
 
-  // Register a function type for call_indirect (env + N params → f64)
-  const ensureType = (arity) => {
-    ctx.fnTypes.add(arity)
-  }
+  const ensureType = (arity) => ctx.fn.types.add(arity)
 
-  // Add a function to the table, return its index
   const addToTable = (name) => {
-    let idx = ctx.fnTable.indexOf(name)
-    if (idx === -1) { idx = ctx.fnTable.length; ctx.fnTable.push(name) }
+    let idx = ctx.fn.table.indexOf(name)
+    if (idx === -1) { idx = ctx.fn.table.length; ctx.fn.table.push(name) }
     return idx
   }
 
@@ -42,17 +38,17 @@ export default () => {
    * @param {string[]} captures - Names of variables captured from outer scope
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.makeClosure = (params, body, captures) => {
+  ctx.fn.make = (params, body, captures) => {
     const arity = params.length
     ensureType(arity)
 
     // Generate closure body function name
-    const fnName = `__closure${ctx.fnTable.length}`
+    const fnName = `__closure${ctx.fn.table.length}`
 
     // Build the closure body: (env: f64, param0: f64, ...) → f64
     // Inside the body, captured vars are loaded from env memory
     const bodyFn = { name: fnName, params, body, captures, arity }
-    ctx.closureBodies.push(bodyFn)
+    ctx.fn.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)
 
@@ -84,7 +80,7 @@ export default () => {
    * @param {WasmNode} closureExpr - Already-emitted closure pointer expression
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
    */
-  ctx.callClosure = (closureExpr, args) => {
+  ctx.fn.call = (closureExpr, args) => {
     const arity = args.length
     ensureType(arity)
 

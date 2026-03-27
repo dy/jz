@@ -95,11 +95,41 @@ export let divmod = (a, b) => { let q = a / b; return [q, a % b] }
 
 ### Arrays
 ```js
-// Array variable = NaN-boxed pointer to linear memory
 let a = [1, 2, 3]
-a[0]          // read → f64.load
-a[i] = x     // write → f64.store
-return a      // return pointer (single f64, NaN-encoded)
+a[0]; a[i] = x; a.length           // read, write, length
+a.push(4); a.pop()                  // mutate in place (aliases see changes)
+a.map(fn); a.filter(fn); a.reduce(fn, 0)  // callbacks via closures
+a.forEach(fn); a.find(fn); a.indexOf(x); a.includes(x); a.slice(1, 3)
+let [x, y] = a                     // destructuring
+[...a, ...b, 99]                   // spread
+```
+
+### Objects
+```js
+let o = {x: 1, y: 2}
+o.x; o.y = 5                       // read, write (schema-based)
+let {x, y} = o; let {x: a} = o    // destructuring, alias
+```
+
+### Strings
+```js
+let s = "hi"                        // SSO (≤4 chars inline, no allocation)
+let s = "hello world"               // heap (memory allocated)
+s.length; s[0]                      // length, charCodeAt
+```
+
+### Closures
+```js
+let add = (a) => (b) => a + b      // currying (capture by value)
+let apply = (fn, x) => fn(x)       // first-class functions (call_indirect)
+arr.map((x) => x * 2)              // callbacks
+```
+
+### Collections
+```js
+let s = new Set(); s.add(1); s.has(1); s.delete(1); s.size
+let m = new Map(); m.set(k, v); m.get(k); m.size
+new Float64Array(n); new Int32Array(n)    // TypedArrays
 ```
 
 ### Prohibited (by design)
@@ -109,7 +139,7 @@ return a      // return pointer (single f64, NaN-encoded)
 `eval`, `arguments`, `with` — explicit is better
 
 ### Not yet
-Objects, strings, closures, destructuring, TypedArrays, regex, `.length`, `.map`, `.filter`
+Template literals, string methods (.slice, .indexOf, etc.), rest params, regex, JSON
 
 ## Module API
 

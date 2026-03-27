@@ -17,7 +17,7 @@ const err = msg => { throw Error(msg) }
 const temp = () => { const n = `__t${ctx.uid++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
-  ctx.memory = true
+  // Memory section auto-enabled: compile.js checks ctx.modules.ptr
 
   // === NaN-boxing: encode/decode ===
 
@@ -52,7 +52,24 @@ export default () => {
   ctx.stdlib['__reset'] = `(func $__reset
     (global.set $__heap (i32.const 1024)))`
 
-  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset'])
+  // === Memory-based length/cap helpers (C-style headers) ===
+
+  // Array/TypedArray: [-8:len(i32)][-4:cap(i32)][data...]
+  ctx.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))`
+
+  ctx.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
+
+  // String (heap): [-4:len(i32)][chars...]
+  ctx.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
+
+  // Set len in memory (for push/pop)
+  ctx.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
+    (i32.store (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)) (local.get $len)))`
+
+  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len'])
     ctx.includes.add(name)
 
   // Export allocator
@@ -70,13 +87,28 @@ export default () => {
   // === Property dispatch (.length, .prop) ===
 
   ctx.emit['.'] = (obj, prop) => {
-    // .length → aux bits (works for arrays, strings, any pointer with length in aux)
-    if (prop === 'length')
-      return typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asF64(emit(obj))]], 'f64')
+    // .length → dispatch by pointer type
+    // SSO (type=5): aux bits. Heap string (type=4): offset-4. Array/typed/set/map: offset-8.
+    if (prop === 'length') {
+      const va = asF64(emit(obj))
+      const t = `__lt${ctx.uid++}`
+      ctx.locals.set(t, 'i32')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ['call', '$__ptr_type', va]],
+        ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 5]],
+          ['then', ['f64.convert_i32_s', ['call', '$__ptr_aux', va]]],
+          ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 4]],
+            ['then', ['f64.convert_i32_s', ['call', '$__str_len', va]]],
+            ['else', ['f64.convert_i32_s', ['call', '$__len', va]]]]]]], 'f64')
+    }
+
+    // Module-registered property emitter (.size, etc.)
+    const propKey = `.${prop}`
+    if (ctx.emit[propKey]) return ctx.emit[propKey](obj)
 
     // Object property → schema lookup
     if (typeof obj === 'string') {
-      const idx = ctx.findPropIndex(obj, prop)
+      const idx = ctx.schema.find(obj, prop)
       if (idx >= 0) {
         const va = emit(obj)
         return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]]], 'f64')
@@ -91,9 +123,9 @@ export default () => {
     const t = temp()
     const va = asF64(emit(obj))
     // Resolve property index at compile time
-    const propIdx = typeof obj === 'string' ? ctx.findPropIndex(obj, prop) : -1
+    const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
     const access = prop === 'length'
-      ? ['f64.convert_i32_s', ['call', '$__ptr_aux', ['local.get', `$${t}`]]]
+      ? ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]
       : propIdx >= 0
         ? ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
         : ['f64.const', 0]
@@ -124,19 +156,17 @@ export default () => {
 
   // === Schema helpers (shared via ctx, used by object module + prepare) ===
 
-  ctx.registerSchema = (props) => {
+  ctx.schema.register = (props) => {
     const key = props.join(',')
-    const existing = ctx.schemas.findIndex(s => s.join(',') === key)
+    const existing = ctx.schema.list.findIndex(s => s.join(',') === key)
     if (existing >= 0) return existing
-    return ctx.schemas.push(props) - 1
+    return ctx.schema.list.push(props) - 1
   }
 
-  ctx.findPropIndex = (varName, prop) => {
-    // Check variable's known schema first
-    const id = ctx.varSchemas.get(varName)
-    if (id != null) { const idx = ctx.schemas[id].indexOf(prop); if (idx >= 0) return idx }
-    // Duck typing: find any schema with this property (for function params)
-    for (const s of ctx.schemas) { const idx = s.indexOf(prop); if (idx >= 0) return idx }
+  ctx.schema.find = (varName, prop) => {
+    const id = ctx.schema.vars.get(varName)
+    if (id != null) { const idx = ctx.schema.list[id].indexOf(prop); if (idx >= 0) return idx }
+    for (const s of ctx.schema.list) { const idx = s.indexOf(prop); if (idx >= 0) return idx }
     return -1
   }
 

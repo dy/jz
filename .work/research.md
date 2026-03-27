@@ -124,21 +124,24 @@ The stack:
   Layout: `[type:4][aux:15][offset:32]`. 16 types, each with ONE layout (no flags).
   Type dispatch handles everything — no extra branches, no conditional interpretation.
 
-  | Type | Name | aux (15 bits) | offset (32 bits) | Memory |
-  |------|------|---------------|------------------|--------|
+  Principle: aux holds IMMUTABLE metadata only. Mutable state (length, size) in memory.
+  Aliases see mutations. C-style: header + data contiguous.
+
+  | Type | Name | aux (15 bits) | offset → | Memory layout |
+  |------|------|---------------|----------|---------------|
   | 0 | ATOM | kind | id | none |
-  | 1 | ARRAY | len (≤32767) | data offset | `[elems...]` no header |
-  | 2 | ARRAY_HEAP | — | data offset | `[-8:len][elems...]` |
-  | 3 | TYPED | elem:3 + flags | view offset | `[-8:len,dataPtr][data]` |
-  | 4 | STRING | len (≤32767) | char offset | `[u16 chars...]` no header |
-  | 5 | STRING_SSO | — | — | none (47 bits = ~6 ASCII inline) |
-  | 6 | OBJECT | schemaId | data offset | `[prop0, prop1, ...]` |
-  | 7 | HASH | — | data offset | `[-16:cap][-8:size][entries]` |
-  | 8 | SET | — | data offset | same as HASH |
-  | 9 | MAP | — | data offset | same as HASH |
-  | 10 | CLOSURE | funcIdx | env offset | `[env0, env1, ...]` |
-  | 11 | REGEX | flags:6+idx:9 | — | `[-8:lastIdx]` if g |
-  | 12-15 | — | reserved | — | — |
+  | 1 | ARRAY | 0 | data start | `[-8:len(i32)][-4:cap(i32)][elem0:f64, ...]` |
+  | 2 | (free) | | | |
+  | 3 | TYPED | elemType:3 | data start | `[-8:len(i32)][-4:cap(i32)][bytes...]` |
+  | 4 | STRING | 0 | data start | `[-4:len(i32)][chars:u8...]` |
+  | 5 | STRING_SSO | len | packed chars | none (≤4 ASCII inline) |
+  | 6 | OBJECT | schemaId | data start | `[prop0:f64, prop1:f64, ...]` |
+  | 7 | (free) | | | |
+  | 8 | SET | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
+  | 9 | MAP | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
+  | 10 | CLOSURE | funcIdx | env start | `[env0:f64, env1:f64, ...]` |
+  | 11 | REGEX | flags | — | `[-8:lastIdx]` if g |
+  | 12-15 | (free) | | | |
 
   Key properties:
   - 4GB addressable (32-bit offset), type extractable with 3 bit ops

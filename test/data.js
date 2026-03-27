@@ -335,3 +335,129 @@ test('string: heap [i] charCodeAt', () => {
 test('string: literal [i]', () => {
   is(run('export let f = () => "abc"[1]').f(), 98)  // 'b' = 98
 })
+
+// ============================================
+// Array mutation: push, pop, alias
+// ============================================
+
+test('array: push basic', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    a.push(4)
+    return a[3]
+  }`)
+  is(f(), 4)
+})
+
+test('array: push updates length', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    a.push(3)
+    a.push(4)
+    return a.length
+  }`)
+  is(f(), 4)
+})
+
+test('array: pop returns last', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20, 30]
+    return a.pop()
+  }`)
+  is(f(), 30)
+})
+
+test('array: pop decrements length', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20, 30]
+    a.pop()
+    return a.length
+  }`)
+  is(f(), 2)
+})
+
+test('array: push then pop', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    a.push(99)
+    return a.pop()
+  }`)
+  is(f(), 99)
+})
+
+test('array: alias sees length change', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    let b = a
+    a.push(4)
+    return b.length
+  }`)
+  is(f(), 4)  // b sees a's push because length is in memory
+})
+
+test('array: alias sees element write', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    let b = a
+    a[0] = 99
+    return b[0]
+  }`)
+  is(f(), 99)  // b sees a's write (same memory)
+})
+
+// ============================================
+// Set/Map alias (mutate in place)
+// ============================================
+
+test('Set: add returns same pointer (alias-safe)', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    let s2 = s
+    s.add(42)
+    return s2.has(42)
+  }`)
+  is(f(), 1)  // s2 sees the add
+})
+
+test('Map: set returns same pointer (alias-safe)', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    let m2 = m
+    m.set(1, 100)
+    return m2.get(1)
+  }`)
+  is(f(), 100)  // m2 sees the set
+})
+
+// ============================================
+// Edge cases: push chain, empty pop
+// ============================================
+
+test('array: push chained', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1]
+    a.push(2)
+    a.push(3)
+    a.push(4)
+    return a[0] + a[1] + a[2] + a[3]
+  }`)
+  is(f(), 10)
+})
+
+test('array: push preserves existing', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20]
+    a.push(30)
+    return a[0] + a[1]
+  }`)
+  is(f(), 30)  // original elements unchanged
+})
+
+test('array: pop on single element', () => {
+  const { f } = run(`export let f = () => {
+    let a = [42]
+    let v = a.pop()
+    return v + a.length
+  }`)
+  is(f(), 42)  // v=42, length=0
+})

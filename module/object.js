@@ -23,7 +23,7 @@ export default () => {
       if (Array.isArray(p) && p[0] === ':') { names.push(p[1]); values.push(p[2]) }
     }
 
-    const schemaId = ctx.registerSchema(names)
+    const schemaId = ctx.schema.register(names)
     const t = `__obj${ctx.uid++}`
     ctx.locals.set(t, 'i32')
 

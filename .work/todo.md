@@ -58,12 +58,28 @@
 * [x] Schema consolidation (ctx.schemas, ctx.findPropIndex, ctx.registerSchema)
 * [-] Wire stdlib.js WAT into modules — not needed, each module defines its own WAT inline
 
+## Heap-length refactor ✓ (C-style arrays)
+
+Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases see changes.
+
+* [x] research.md pointer table updated (ARRAY_HEAP eliminated, 2 freed type slots)
+* [x] __len/__cap/__str_len/__set_len WAT helpers
+* [x] .length dispatch: SSO→aux, heap string→offset-4, array/typed/set/map→offset-8
+* [x] array.js: [-8:len][-4:cap][elems...] header, push/pop mutate in place
+* [x] string.js heap: [-4:len][chars...] header
+* [x] typed.js: [-8:len][-4:cap][data...] header, aux=elemType only
+* [x] collection.js: Set/Map mutate size in memory, return same pointer
+* [x] Alias-safe: push changes len, b=a; a.push(4); b.length sees change
+* [x] 273 tests, 0 regressions
+
 ## Next: Phase 4 — Products (from plan.md)
 
 * [ ] 4a: floatbeat — single-page demo, waveform, preset formulas
 * [ ] 4b: color-space/wasm — compile actual conversions, publish package
 * [ ] 4c: digital-filter/wasm — compile biquad/SVF, benchmark vs JS
 * [ ] 4d: standard JS support — string ops, array methods, WASI host imports (as needed by products)
+
+
 
 ## Backlog
 
@@ -80,14 +96,14 @@
 * [x] Array destructuring — let [a, b] = arr
 * [x] Array methods — .map, .filter, .reduce, .forEach, .find, .indexOf, .includes, .slice
 * [x] Method chaining — arr.map(fn).reduce(fn, 0)
-* [ ] Array spread [...a, ...b] (needs array concat)
+* [x] Array spread — [...a, ...b], [...a, 99]
 * [x] Object literals, property access, write — schema-based NaN-boxed pointers
-* [x] Object destructuring — let {x, y} = obj
-* [ ] Object shorthand in destruct — let {x: alias} = obj
-* [ ] Rest params (...args) — WASM has fixed arity, needs design
+* [x] Object destructuring — let {x, y} = obj, let {x: alias} = obj
+* [ ] Rest params (...args) — WASM has fixed arity, deferred
 * [x] Default params (x = 5) — NaN-based detection
-* [ ] TypedArrays (Float64/32, Int8/16/32, Uint8/16/32)
-* [ ] Set, Map
+* [x] TypedArrays — new Float64Array(n), Int32Array, etc. (type=3, elem in aux)
+* [x] Set — new Set(), .add, .has, .delete, .size (type=8, open addressing)
+* [x] Map — new Map(), .set, .get, .has, .size (type=9, open addressing)
 * [ ] JSON.stringify, JSON.parse
 
 ### Functions

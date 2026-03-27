@@ -17,6 +17,8 @@
 import { ctx } from './ctx.js'
 import * as mods from '../module/index.js'
 
+let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
+
 /**
  * @typedef {null|number|string|ASTNode[]} ASTNode
  */
@@ -27,6 +29,7 @@ import * as mods from '../module/index.js'
  * @returns {ASTNode} Normalized AST
  */
 export default function prepare(node) {
+  depth = 0
   return prep(node)
 }
 
@@ -98,15 +101,18 @@ function prepDecl(op, ...inits) {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `__d${ctx.uid || 0}`; if (!ctx.uid) ctx.uid = 0; ctx.uid++
       rest.push(['=', tmp, normed])
-      for (const item of items)
+      for (const item of items) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
+        // Alias: {x: a} → a = tmp.x
+        else if (Array.isArray(item) && item[0] === ':') rest.push(['=', item[2], ['.', tmp, item[1]]])
+      }
       continue
     }
 
     // Track object schemas for property access
     if (typeof name === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
       const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-      if (props.length && ctx.registerSchema) ctx.varSchemas.set(name, ctx.registerSchema(props))
+      if (props.length && ctx.schema.register) ctx.schema.vars.set(name, ctx.schema.register(props))
     }
     if (!defFunc(name, normed)) rest.push(['=', name, normed])
   }
@@ -181,10 +187,10 @@ const handlers = {
 
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
-    if (ctx.depth > 0) { includeModule('ptr'); includeModule('fn') }
-    ctx.depth = (ctx.depth || 0) + 1
+    if (depth > 0) { includeModule('ptr'); includeModule('fn') }
+    depth++
     const result = ['=>', params, prep(body)]
-    ctx.depth--
+    depth--
     return result
   },
 
@@ -283,7 +289,7 @@ const handlers = {
       : ['{}', prop(inner)]
     // Register schema so property access works for function params (duck typing)
     const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-    if (props.length && ctx.registerSchema) ctx.registerSchema(props)
+    if (props.length && ctx.schema.register) ctx.schema.register(props)
     return result
   },
 
@@ -307,10 +313,23 @@ const handlers = {
     return ['.', prep(obj), prop]
   },
 
-  // new - auto-import modules
+  // new - auto-import modules, resolve constructors
   'new'(ctor, ...args) {
-    let name = ctor
-    if (Array.isArray(ctor) && ctor[0] === '()') name = ctor[1]
+    let name = ctor, ctorArgs = args
+    if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
+
+    // TypedArray constructors
+    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
+    if (typedArrays.includes(name)) {
+      includeModule('ptr'); includeModule('typed')
+      return ['()', `new.${name}`, ...ctorArgs.map(prep)]
+    }
+    // Set/Map constructors
+    if (name === 'Set' || name === 'Map') {
+      includeModule('ptr'); includeModule('collection')
+      return ['()', `new.${name}`, ...ctorArgs.map(prep)]
+    }
+
     const mod = ctx.scope[name]
     if (typeof name === 'string' && mod && !mod.includes('.')) includeModule(mod)
     return ['new', prep(ctor), ...args.map(prep)]
@@ -328,7 +347,7 @@ function includeModule(name) {
 function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   // Only extract top-level functions, not nested (closures stay as values)
-  if (ctx.depth > 0) return false
+  if (depth > 0) return false
   const [, rawParams, body] = node
   let p = rawParams
   if (Array.isArray(p) && p[0] === '()') p = p[1]

@@ -23,17 +23,19 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
     }
 
-    // Heap string: allocate bytes, store ASCII
+    // Heap string: [-4:len(i32)][chars:u8...]
     const len = str.length
     const t = `__str${ctx.uid++}`
     ctx.locals.set(t, 'i32')
 
     const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len]]],
+      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],  // 4-byte header + chars
+      ['i32.store', ['local.get', `$${t}`], ['i32.const', len]],  // store len
+      ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],  // skip header
     ]
     for (let i = 0; i < len; i++)
       body.push(['i32.store8', ['i32.add', ['local.get', `$${t}`], ['i32.const', i]], ['i32.const', str.charCodeAt(i)]])
-    body.push(['call', '$__mkptr', ['i32.const', STRING], ['i32.const', len], ['local.get', `$${t}`]])
+    body.push(['call', '$__mkptr', ['i32.const', STRING], ['i32.const', 0], ['local.get', `$${t}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }

@@ -19,6 +19,7 @@ import { parse as parseWat } from 'watr'
 import { ctx } from './ctx.js'
 
 const err = msg => { throw Error(msg) }
+let funcNames  // Set<string> — known function names, set per compile()
 
 // === Type helpers ===
 
@@ -180,7 +181,7 @@ const flat = ir => ir == null ? [] : Array.isArray(ir) && ir.length && Array.isA
  */
 export default function compile(ast) {
   // Known function names for direct call detection
-  ctx.funcNames = new Set(ctx.funcs.map(f => f.name))
+  funcNames = new Set(ctx.funcs.map(f => f.name))
 
   const funcs = ctx.funcs.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
@@ -234,8 +235,8 @@ export default function compile(ast) {
 
   // Compile closure bodies (generated during emit phase)
   const closureFuncs = []
-  if (ctx.closureBodies) {
-    for (const cb of ctx.closureBodies) {
+  if (ctx.fn.bodies) {
+    for (const cb of ctx.fn.bodies) {
       // Reset per-function state for closure body
       ctx.locals = new Map()
       ctx.stack = []
@@ -282,19 +283,19 @@ export default function compile(ast) {
   const sections = [...ctx.imports]
 
   // Function types for call_indirect (one per arity)
-  if (ctx.fnTypes) {
-    for (const arity of ctx.fnTypes) {
+  if (ctx.fn.types) {
+    for (const arity of ctx.fn.types) {
       const params = [['param', 'f64']] // env
       for (let i = 0; i < arity; i++) params.push(['param', 'f64'])
       sections.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
     }
   }
 
-  if (ctx.memory) sections.push(['memory', ['export', '"memory"'], 1])
+  if (ctx.modules.ptr) sections.push(['memory', ['export', '"memory"'], 1])
 
   // Table for closures
-  if (ctx.fnTable?.length)
-    sections.push(['table', ctx.fnTable.length, 'funcref'])
+  if (ctx.fn.table?.length)
+    sections.push(['table', ctx.fn.table.length, 'funcref'])
 
   sections.push(...(ctx.globals || []).map(g => parseWat(g)))
   sections.push(...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])))
@@ -302,8 +303,8 @@ export default function compile(ast) {
   sections.push(...funcs)
 
   // Element section: populate function table
-  if (ctx.fnTable?.length)
-    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.fnTable.map(n => `$${n}`)])
+  if (ctx.fn.table?.length)
+    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.fn.table.map(n => `$${n}`)])
 
   const init = emit(ast)
   if (init?.length) {
@@ -357,8 +358,8 @@ export const emitter = {
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
       // Delegate to '.' emitter for index calculation, but store instead of load
-      if (typeof obj === 'string' && ctx.findPropIndex) {
-        const idx = ctx.findPropIndex(obj, prop)
+      if (typeof obj === 'string' && ctx.schema.find) {
+        const idx = ctx.schema.find(obj, prop)
         if (idx >= 0) {
           const va = emit(obj), vv = asF64(emit(val))
           return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], vv]
@@ -534,7 +535,7 @@ export const emitter = {
 
   // Arrow as value → closure
   '=>': (rawParams, body) => {
-    if (!ctx.makeClosure) err('Closures require fn module (auto-included)')
+    if (!ctx.fn.make) err('Closures require fn module (auto-included)')
 
     // Extract param names
     let p = rawParams
@@ -548,7 +549,7 @@ export const emitter = {
     const captures = []
     findFreeVars(body, paramSet, captures)
 
-    return ctx.makeClosure(params, body, captures)
+    return ctx.fn.make(params, body, captures)
   },
 
   '()': (callee, callArgs) => {
@@ -566,11 +567,11 @@ export const emitter = {
     if (ctx.emit[callee]) return ctx.emit[callee](...argList)
 
     // Direct call if callee is a known top-level function
-    if (typeof callee === 'string' && ctx.funcNames.has(callee))
+    if (typeof callee === 'string' && funcNames.has(callee))
       return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer
-    if (ctx.callClosure) return ctx.callClosure(emit(callee), argList)
+    if (ctx.fn.call) return ctx.fn.call(emit(callee), argList)
 
     // Unknown callee — assume direct call
     return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
