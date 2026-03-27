@@ -44,14 +44,19 @@
 * [x] Pointer encoding tests for all 12 NaN-boxing types
 * [x] JS roundtrip preserves NaN bits
 
-## Next: Remaining memory features
+## Remaining memory features
 
-* [ ] Array `.length` (extract from NaN-boxed aux bits)
-* [ ] Array as function param (pass NaN-boxed pointer, auto-extract offset)
-* [ ] Object literals `{ x: 1, y: 2 }` → allocate schema-based, return pointer
-* [ ] Object property access `obj.x` → compile-time schema lookup, f64.load
-* [ ] String literals → allocate in memory, return pointer
-* [ ] Wire stdlib.js WAT into modules where needed
+* [x] Array `.length` (extract from NaN-boxed aux bits)
+* [x] Array as function param (pass NaN-boxed pointer, auto-extract offset)
+* [x] Object literals `{ x: 1, y: 2 }` → allocate schema-based, return pointer
+* [x] Object property access `obj.x` → compile-time schema lookup, f64.load
+* [x] Object property write `obj.x = v` → f64.store at schema index
+* [x] String literals → SSO (≤4 chars inline) + heap (>4 chars in memory)
+* [x] String `.length` → aux bits (same as arrays)
+* [x] String `[i]` → charCodeAt dispatch (SSO vs heap)
+* [x] `.` dispatch in ptr.js (`.length` for all types, `.prop` for objects)
+* [x] Schema consolidation (ctx.schemas, ctx.findPropIndex, ctx.registerSchema)
+* [-] Wire stdlib.js WAT into modules — not needed, each module defines its own WAT inline
 
 ## Next: Phase 4 — Products (from plan.md)
 
