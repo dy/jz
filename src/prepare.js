@@ -51,7 +51,14 @@ function prep(node) {
   }
 
   const [op, ...args] = node
-  if (op == null) return [, args[0]]
+  if (op == null) {
+    if (typeof args[0] === 'string') {
+      includeModule('ptr')
+      includeModule('string')
+      return ['str', args[0]]  // string literal
+    }
+    return [, args[0]]  // number literal
+  }
   const handler = handlers[op]
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
@@ -75,6 +82,11 @@ function prepDecl(op, ...inits) {
   for (const i of inits) {
     if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
     const [, name, init] = i, normed = prep(init)
+    // Track object schemas for property access
+    if (typeof name === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
+      const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+      if (props.length && ctx.registerSchema) ctx.varSchemas.set(name, ctx.registerSchema(props))
+    }
     if (!defFunc(name, normed)) rest.push(['=', name, normed])
   }
   return rest.length ? [op, ...rest] : null
@@ -219,10 +231,26 @@ const handlers = {
 
   // Object literal - flatten comma, expand shorthand
   '{}'(inner) {
+    // Detect block body vs object literal
+    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch'].includes(inner[0]))
+      return ['{}', prep(inner)]  // block body, pass through
+
+    includeModule('ptr')
+    includeModule('object')
     if (inner == null) return ['{}']
-    const prop = p => typeof p === 'string' ? [':', p, p] : prep(p)
-    if (Array.isArray(inner) && inner[0] === ',') return ['{}', ...inner.slice(1).map(prop)]
-    return ['{}', prop(inner)]
+    // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
+    const prop = p => {
+      if (typeof p === 'string') return [':', p, prep(p)]
+      if (Array.isArray(p) && p[0] === ':') return [':', p[1], prep(p[2])]
+      return prep(p)
+    }
+    const result = Array.isArray(inner) && inner[0] === ','
+      ? ['{}', ...inner.slice(1).map(prop)]
+      : ['{}', prop(inner)]
+    // Register schema so property access works for function params (duck typing)
+    const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+    if (props.length && ctx.registerSchema) ctx.registerSchema(props)
+    return result
   },
 
   // For loop
@@ -234,11 +262,14 @@ const handlers = {
     return ['for', prep(head), prep(body)]
   },
 
-  // Property access - resolve namespaces
+  // Property access - resolve namespaces or object properties
   '.'(obj, prop) {
     const mod = ctx.scope[obj]
     if (typeof obj === 'string' && mod && !mod.includes('.'))
       return includeModule(mod), mod + '.' + prop
+    // Non-module property access → needs ptr + object modules
+    includeModule('ptr')
+    includeModule('object')
     return ['.', prep(obj), prop]
   },
 

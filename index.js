@@ -35,6 +35,8 @@ export default function jz(code, opts = {}) {
   ctx.exports = {}
   ctx.funcs = []
   ctx.globals = []
+  ctx.schemas = []
+  ctx.varSchemas = new Map()
 
   const ast = prepare(parse(code))
   const module = compile(ast)

@@ -86,7 +86,7 @@ function exprType(expr, locals) {
   if (op == null) return exprType(args[0], locals) // literal [, value]
 
   // Always f64
-  if (op === '/' || op === '**' || op === '[' || op === '[]') return 'f64'
+  if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === '.' || op === 'str') return 'f64'
   // Always i32
   if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
   // Preserve i32 if both operands i32
@@ -266,11 +266,23 @@ export const emitter = {
   // === Assignment ===
 
   '=': (name, val) => {
-    // Array index assignment: arr[i] = x → f64.store
+    // Array index assignment: arr[i] = x → f64.store at offset + i*8
     if (Array.isArray(name) && name[0] === '[]') {
       const [, arr, idx] = name
       const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
       return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], vv]
+    }
+    // Object property assignment: obj.prop = x → f64.store at schema index
+    if (Array.isArray(name) && name[0] === '.') {
+      const [, obj, prop] = name
+      // Delegate to '.' emitter for index calculation, but store instead of load
+      if (typeof obj === 'string' && ctx.findPropIndex) {
+        const idx = ctx.findPropIndex(obj, prop)
+        if (idx >= 0) {
+          const va = emit(obj), vv = asF64(emit(val))
+          return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], vv]
+        }
+      }
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     const v = emit(val), t = ctx.locals.get(name) || 'f64'
