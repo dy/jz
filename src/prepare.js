@@ -66,32 +66,15 @@ const PROHIBITED = {
 // Global namespaces for module auto-import
 export const GLOBALS = {
   Math: 'math',
-  Number: 'core',
-  String: 'core',
-  Boolean: 'core',
-  Array: 'core',
-  Object: 'core',
-  JSON: 'core',
-  Set: 'core',
-  Map: 'core',
-  RegExp: 'core',
-  Float64Array: 'binary',
-  Float32Array: 'binary',
-  Int8Array: 'binary',
-  Int16Array: 'binary',
-  Int32Array: 'binary',
-  Uint8Array: 'binary',
-  Uint16Array: 'binary',
-  Uint8ClampedArray: 'binary'
+  // Future: Number/String/Array/Object → 'core', TypedArrays → 'typed'
 }
 
 /** Prepare let/const declaration. */
-function prepDecl(op, mutable, ...inits) {
+function prepDecl(op, ...inits) {
   const rest = []
   for (const i of inits) {
     if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
     const [, name, init] = i, normed = prep(init)
-    if (typeof name === 'string') ctx.vars[name] = { type: type(normed), mutable }
     if (!defFunc(name, normed)) rest.push(['=', name, normed])
   }
   return rest.length ? [op, ...rest] : null
@@ -152,8 +135,8 @@ const handlers = {
 
   // Statements
   ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],
-  'let': (...inits) => prepDecl('let', true, ...inits),
-  'const': (...inits) => prepDecl('const', false, ...inits),
+  'let': (...inits) => prepDecl('let', ...inits),
+  'const': (...inits) => prepDecl('const', ...inits),
 
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
@@ -216,16 +199,18 @@ const handlers = {
     return ['()', callee, ...args.map(prep)]
   },
 
-  // Array literal/indexing — auto-include memory module
+  // Array literal/indexing — auto-include ptr + array modules
   '[]'(...args) {
     if (args.length === 1) {
       const inner = args[0]
-      includeModule('memory')
+      includeModule('ptr')
+      includeModule('array')
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',') return ['[', ...inner.slice(1).map(prep)]
       return ['[', prep(inner)]
     }
-    includeModule('memory')
+    includeModule('ptr')
+    includeModule('array')
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
@@ -273,16 +258,6 @@ function includeModule(name) {
   if (ctx.modules[name]) return
   init(ctx)
   ctx.modules[name] = true
-}
-
-function type(expr) {
-  if (typeof expr === 'number') return 'f64'
-  if (typeof expr === 'string') {
-    if (ctx.vars[expr]) return ctx.vars[expr].type
-    return 'f64'
-  }
-  if (Array.isArray(expr) && expr[0] === '=>') return 'func'
-  return 'f64'
 }
 
 function defFunc(name, node) {

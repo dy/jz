@@ -13,7 +13,6 @@ export const ctx = {
   scope: {},        // name resolution: sin → math.sin
   memory: false,    // whether memory section is needed
   modules: {},      // loaded module init guards
-  vars: {},         // variable type info
   exports: {},      // exported function names
   funcs: [],        // function defs with sig: {params, results}
   globals: [],      // WASM global declarations

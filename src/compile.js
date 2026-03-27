@@ -11,7 +11,6 @@
  * Variables are typed by pre-analysis: if any assignment is f64, local is f64.
  *
  * Per-function state on ctx: locals (Map name→type), stack (loop labels), uid (counter), sig.
- * Profile (ctx.profile) controls ABI: scalar=single return, multi=multi-value returns.
  *
  * @module compile
  */

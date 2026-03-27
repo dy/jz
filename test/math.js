@@ -325,27 +325,7 @@ test.skip('isFinite (global)', async () => {
   is(await evaluate('isFinite(NaN)'), 0)
 })
 
-test('Number.isNaN', async () => {
-  is(await evaluate('Number.isNaN(NaN)'), 1)
-  is(await evaluate('Number.isNaN(0)'), 0)
-  is(await evaluate('Number.isNaN(Infinity)'), 0)
-})
-
-test('Number.isFinite', async () => {
-  is(await evaluate('Number.isFinite(0)'), 1)
-  is(await evaluate('Number.isFinite(Infinity)'), 0)
-  is(await evaluate('Number.isFinite(NaN)'), 0)
-})
-
-test('Number.isInteger', async () => {
-  is(await evaluate('Number.isInteger(5)'), 1)
-  is(await evaluate('Number.isInteger(5.0)'), 1)
-  is(await evaluate('Number.isInteger(5.5)'), 0)
-  is(await evaluate('Number.isInteger(0)'), 1)
-  is(await evaluate('Number.isInteger(-10)'), 1)
-  is(await evaluate('Number.isInteger(Infinity)'), 0)
-  is(await evaluate('Number.isInteger(NaN)'), 0)
-})
+// Number.isNaN, Number.isFinite, Number.isInteger — needs core module (planned)
 
 // ============================================
 // Random

@@ -32,7 +32,6 @@ export default function jz(code, opts = {}) {
   ctx.scope = Object.create(GLOBALS)
   ctx.memory = false
   ctx.modules = {}
-  ctx.vars = {}
   ctx.exports = {}
   ctx.funcs = []
   ctx.globals = []
