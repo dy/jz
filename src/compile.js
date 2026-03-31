@@ -197,7 +197,8 @@ export default function compile(ast) {
     ctx.sig = sig
 
     // Pre-analyze local types from body
-    const block = Array.isArray(body) && body[0] === '{}'
+    // Block body vs object literal: object has ':' property nodes
+    const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
     ctx.locals = block ? analyzeLocals(body) : new Map()
 
     const fn = ['func', `$${name}`]
@@ -223,7 +224,7 @@ export default function compile(ast) {
       fn.push(...defaultInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
     } else if (multi && body[0] === '[') {
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...body.slice(1).map(e => emit(e)))
+      fn.push(...body.slice(1).map(e => asF64(emit(e))))
     } else {
       const ir = emit(body)
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
@@ -255,7 +256,7 @@ export default function compile(ast) {
       }
 
       // Emit body
-      const block = Array.isArray(cb.body) && cb.body[0] === '{}'
+      const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
       let bodyIR
       if (block) {
         analyzeLocals(cb.body)  // adds declared locals
@@ -312,6 +313,10 @@ export default function compile(ast) {
     sections.push(['start', '$__start'])
   }
 
+  // Custom section: embed object schemas for JS-side interop
+  if (ctx.schema.list.length)
+    sections.push(['@custom', '"jz:schema"', `"${JSON.stringify(ctx.schema.list).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
   return ['module', ...sections]
 }
 
@@ -320,7 +325,20 @@ function emitBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
-  for (const s of stmts) out.push(...flat(emit(s)))
+  for (const s of stmts) {
+    if (s == null || typeof s === 'number') continue
+    const ir = emit(s)
+    const items = flat(ir)
+    out.push(...items)
+    // Drop expression results used as statements (method calls, etc.)
+    // Skip: return, let/const, assignments, if/for/while/loop, break/continue, local.set
+    const op = Array.isArray(s) && s[0]
+    if (op && !['return', 'let', 'const', '=', '+=', '-=', '*=', '/=', '%=',
+      '_++', '++_', '_--', '--_',
+      'if', 'for', 'while', 'break', 'continue', 'switch', 'local.set'].includes(op)
+      && ir?.type && ir.type !== 'void')
+      out.push('drop')
+  }
   return out
 }
 
@@ -393,6 +411,37 @@ export const emitter = {
     const t = ctx.locals.get(name) || 'f64'
     const va = asF64(typed(['local.get', `$${name}`], t)), vb = asF64(emit(val))
     return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.rem', va, vb], 'f64') : asI32(typed(['f64.rem', va, vb], 'f64'))], t)
+  },
+
+  // === Increment/Decrement (prefix returns new, postfix returns old) ===
+
+  '_++': name => {
+    const t = ctx.locals.get(name) || 'f64'
+    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
+    return typed(['local.tee', `$${name}`, [`${t}.add`, ['local.get', `$${name}`], one]], t)
+  },
+  '++_': name => {
+    const t = ctx.locals.get(name) || 'f64'
+    const tmp = `__${ctx.uid++}`; ctx.locals.set(tmp, t)
+    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
+    return typed(['block', ['result', t],
+      ['local.set', `$${name}`, [`${t}.add`, ['local.tee', `$${tmp}`, ['local.get', `$${name}`]], one]],
+      ['local.get', `$${tmp}`]
+    ], t)
+  },
+  '_--': name => {
+    const t = ctx.locals.get(name) || 'f64'
+    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
+    return typed(['local.tee', `$${name}`, [`${t}.sub`, ['local.get', `$${name}`], one]], t)
+  },
+  '--_': name => {
+    const t = ctx.locals.get(name) || 'f64'
+    const tmp = `__${ctx.uid++}`; ctx.locals.set(tmp, t)
+    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
+    return typed(['block', ['result', t],
+      ['local.set', `$${name}`, [`${t}.sub`, ['local.tee', `$${tmp}`, ['local.get', `$${name}`]], one]],
+      ['local.get', `$${tmp}`]
+    ], t)
   },
 
   // === Arithmetic (type-preserving) ===

@@ -70,13 +70,15 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] typed.js: [-8:len][-4:cap][data...] header, aux=elemType only
 * [x] collection.js: Set/Map mutate size in memory, return same pointer
 * [x] Alias-safe: push changes len, b=a; a.push(4); b.length sees change
-* [x] 273 tests, 0 regressions
+* [x] 276 tests, 0 regressions
+* [x] JS pointer helpers: jz.ptr, jz.offset, jz.type, jz.aux, jz.array, jz.read
 
 ## Next: Phase 4 — Products (from plan.md)
 
 * [ ] 4a: floatbeat — single-page demo, waveform, preset formulas
-* [ ] 4b: color-space/wasm — compile actual conversions, publish package
-* [ ] 4c: digital-filter/wasm — compile biquad/SVF, benchmark vs JS
+* [x] 4b: color-space/wasm — validated: lrgb2xyz/xyz2lrgb compiles (606B), exact roundtrip
+* [x] 4c: digital-filter/wasm — validated: biquad.lowpass compiles (898B), matches JS output
+* [x] 4c: audio-filter/wasm — validated: moog ladder compiles (1102B), correct impulse response
 * [ ] 4d: standard JS support — string ops, array methods, WASI host imports (as needed by products)
 
 

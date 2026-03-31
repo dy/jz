@@ -224,9 +224,10 @@ const handlers = {
     return ['-', prep(a), prep(b)]
   },
 
-  // ++/-- → compound assignment (no post/pre value distinction for now)
-  '++'(a) { return ['+=', a, [, 1]] },
-  '--'(a) { return ['-=', a, [, 1]] },
+  // ++/-- prefix vs postfix: parser sends trailing null for postfix
+  // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
+  '++'(a, _post) { return _post !== undefined ? ['-', ['_++', a], [, 1]] : ['_++', a] },
+  '--'(a, _post) { return _post !== undefined ? ['+', ['_--', a], [, 1]] : ['_--', a] },
 
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
@@ -248,7 +249,7 @@ const handlers = {
       else
         callee = prep(callee)  // prep method callee (triggers . handler → module loading)
     }
-    return ['()', callee, ...args.map(prep)]
+    return ['()', callee, ...args.filter(a => a != null).map(prep)]
   },
 
   // Array literal/indexing — auto-include ptr + array modules

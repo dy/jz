@@ -1,13 +1,12 @@
 /**
  * TypedArray module — Float64Array, Float32Array, Int32Array, etc.
  *
- * Type=3 (TYPED): elem type in lower 3 bits of aux, length in upper 12 bits.
- * aux = (len << 3) | elemType. Max length: 4095 elements.
+ * Type=3 (TYPED): aux=elemType (3 bits), length in memory header [-8:len][-4:cap].
  *
  * @module typed
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asI32 } from '../src/compile.js'
 import { ctx } from '../src/ctx.js'
 
 const TYPED = 3
@@ -54,16 +53,6 @@ export default () => {
     }
   }
 
-  // TypedArray-aware indexing is handled by array module's [] emitter
-  // (which uses f64.load — works for Float64Array but not for other types)
-  // TODO: type-aware load/store dispatch based on ptr_type + elem type
-
-  // .length for typed arrays: extract from aux (len = aux >> 3)
-  // Already handled by ptr module's .length emitter (ptr_aux), but we pack len<<3|elem
-  // So we need a typed-array-specific length: aux >> 3
-
-  // Register typed-array .length override
-  ctx.stdlib['__typed_len'] = `(func $__typed_len (param $ptr f64) (result i32)
-    (i32.shr_u (call $__ptr_aux (local.get $ptr)) (i32.const 3)))`
-  ctx.includes.add('__typed_len')
+  // .length handled by ptr.js's __len (reads from memory header [-8:len])
+  // TypedArray-aware indexing: TODO type-aware load/store dispatch
 }

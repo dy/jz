@@ -146,7 +146,7 @@ The stack:
   Key properties:
   - 4GB addressable (32-bit offset), type extractable with 3 bit ops
   - **One layout per type** — no flags, no subtypes. "Parse, don't validate" for pointers.
-  - **Inline length** — ARRAY/STRING `.length` = bit extract, zero memory read, no header.
+  - **Heap length** — mutable len/cap in memory header. Aliases see mutations. C-style.
   - ATOM/STRING_SSO need zero memory allocation
   - 4 free slots for future (Promise, Iterator, ArrayBuffer, etc)
 

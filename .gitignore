@@ -127,3 +127,4 @@ dist
 .pnp.*
 /.work/backup
 /.claude
+.DS_Store
