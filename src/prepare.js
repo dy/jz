@@ -224,10 +224,13 @@ const handlers = {
     return ['-', prep(a), prep(b)]
   },
 
+  // Ternary: parser emits '?' not '?:'
+  '?'(cond, then, els) { return ['?:', prep(cond), prep(then), prep(els)] },
+
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
   // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
-  '++'(a, _post) { return _post !== undefined ? ['-', ['_++', a], [, 1]] : ['_++', a] },
-  '--'(a, _post) { return _post !== undefined ? ['+', ['_--', a], [, 1]] : ['_--', a] },
+  '++'(a, _post) { return _post !== undefined ? ['-', ['++', a], [, 1]] : ['++', a] },
+  '--'(a, _post) { return _post !== undefined ? ['+', ['--', a], [, 1]] : ['--', a] },
 
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },

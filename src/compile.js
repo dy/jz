@@ -32,14 +32,19 @@ export const asF64 = n => n.type === 'f64' ? n : typed(['f64.convert_i32_s', n],
 /** Coerce node to i32. */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_f64_s', n], 'i32')
 
-/** Coerce to i32 boolean (for br_if/if conditions). */
+/** Coerce to i32 boolean (for br_if/if conditions). NaN is falsy (like JS). */
 function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
   // Comparisons and ! already emit i32
   if (['>', '<', '>=', '<=', '==', '!=', '!'].includes(op)) return emit(node)
   const e = emit(node)
   if (e.type === 'i32') return e
-  return typed(['f64.ne', e, ['f64.const', 0]], 'i32')
+  // f64: truthy iff non-zero AND not NaN. (eq x x) is false for NaN; (ne x 0) is false for 0
+  const t = temp()
+  return typed(['i32.and',
+    ['f64.eq', ['local.tee', `$${t}`, e], ['local.get', `$${t}`]],
+    ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]
+  ], 'i32')
 }
 
 /** Allocate a temp local (always f64 for now), returns name without $. */
@@ -334,7 +339,6 @@ function emitBody(node) {
     // Skip: return, let/const, assignments, if/for/while/loop, break/continue, local.set
     const op = Array.isArray(s) && s[0]
     if (op && !['return', 'let', 'const', '=', '+=', '-=', '*=', '/=', '%=',
-      '_++', '++_', '_--', '--_',
       'if', 'for', 'while', 'break', 'continue', 'switch', 'local.set'].includes(op)
       && ir?.type && ir.type !== 'void')
       out.push('drop')
@@ -413,35 +417,18 @@ export const emitter = {
     return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.rem', va, vb], 'f64') : asI32(typed(['f64.rem', va, vb], 'f64'))], t)
   },
 
-  // === Increment/Decrement (prefix returns new, postfix returns old) ===
+  // === Increment/Decrement (local.tee: set + return new value) ===
+  // Postfix resolved in prepare: i++ → (++i) - 1
 
-  '_++': name => {
+  '++': name => {
     const t = ctx.locals.get(name) || 'f64'
     const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return typed(['local.tee', `$${name}`, [`${t}.add`, ['local.get', `$${name}`], one]], t)
   },
-  '++_': name => {
-    const t = ctx.locals.get(name) || 'f64'
-    const tmp = `__${ctx.uid++}`; ctx.locals.set(tmp, t)
-    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
-    return typed(['block', ['result', t],
-      ['local.set', `$${name}`, [`${t}.add`, ['local.tee', `$${tmp}`, ['local.get', `$${name}`]], one]],
-      ['local.get', `$${tmp}`]
-    ], t)
-  },
-  '_--': name => {
+  '--': name => {
     const t = ctx.locals.get(name) || 'f64'
     const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return typed(['local.tee', `$${name}`, [`${t}.sub`, ['local.get', `$${name}`], one]], t)
-  },
-  '--_': name => {
-    const t = ctx.locals.get(name) || 'f64'
-    const tmp = `__${ctx.uid++}`; ctx.locals.set(tmp, t)
-    const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
-    return typed(['block', ['result', t],
-      ['local.set', `$${name}`, [`${t}.sub`, ['local.tee', `$${tmp}`, ['local.get', `$${name}`]], one]],
-      ['local.get', `$${tmp}`]
-    ], t)
   },
 
   // === Arithmetic (type-preserving) ===
@@ -478,7 +465,16 @@ export const emitter = {
 
   // === Logical ===
 
-  '!': a => { const v = emit(a); return v.type === 'i32' ? typed(['i32.eqz', v], 'i32') : typed(['f64.eq', v, ['f64.const', 0]], 'i32') },
+  '!': a => {
+    const v = emit(a)
+    if (v.type === 'i32') return typed(['i32.eqz', v], 'i32')
+    // f64: truthy if zero OR NaN. (eq x 0) catches zero; (ne x x) catches NaN
+    const t = temp()
+    return typed(['i32.or',
+      ['f64.eq', ['local.tee', `$${t}`, v], ['f64.const', 0]],
+      ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]
+    ], 'i32')
+  },
 
   '?:': (a, b, c) => {
     const vb = emit(b), vc = emit(c)

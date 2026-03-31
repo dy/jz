@@ -18,7 +18,7 @@
 * [x] Statement bodies (let/const, return, assignment ops)
 * [x] if/else, for, while, break/continue
 * [x] Logical operators (&&, || with short-circuit)
-* [x] ++/-- operators
+* [x] ++/-- operators (prefix/postfix: ++i returns new, i++ returns old)
 * [x] Function signature model (sig.params, sig.results)
 * [x] Multi-value returns (profile: 'multi')
 * [x] ABI profile system (scalar, multi; memory planned)
@@ -72,6 +72,9 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] Alias-safe: push changes len, b=a; a.push(4); b.length sees change
 * [x] 276 tests, 0 regressions
 * [x] JS pointer helpers: jz.ptr, jz.offset, jz.type, jz.aux, jz.array, jz.read
+* [x] jz.mem: fill→write, Object auto-schema, TextEncoder/Decoder, lazy dv(), Object write
+* [x] NaN truthiness: if(NaN) is falsy, !NaN is true (correct JS semantics)
+* [x] Ternary in expression bodies (? → ?: normalization)
 
 ## Next: Phase 4 — Products (from plan.md)
 

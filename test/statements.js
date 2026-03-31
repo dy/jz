@@ -66,6 +66,66 @@ test('if: comparison ==', () => {
   is(f(7), 7)
 })
 
+// === Prefix/postfix increment ===
+
+test('prefix ++i returns new', () => {
+  is(run('export let f = () => { let i = 5; return ++i }').f(), 6)
+})
+
+test('postfix i++ returns old', () => {
+  is(run('export let f = () => { let i = 5; return i++ }').f(), 5)
+})
+
+test('prefix --i returns new', () => {
+  is(run('export let f = () => { let i = 5; return --i }').f(), 4)
+})
+
+test('postfix i-- returns old', () => {
+  is(run('export let f = () => { let i = 5; return i-- }').f(), 5)
+})
+
+test('assign postfix: x = i++', () => {
+  is(run('export let f = () => { let i = 5; let x = i++; return x }').f(), 5)
+})
+
+test('assign prefix: x = ++i', () => {
+  is(run('export let f = () => { let i = 5; let x = ++i; return x }').f(), 6)
+})
+
+test('postfix increments side effect', () => {
+  is(run('export let f = () => { let i = 5; i++; return i }').f(), 6)
+})
+
+test('array[i++] uses old index', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; let i = 1; return a[i++] }').f(), 20)
+})
+
+// === NaN truthiness ===
+
+test('if(NaN) is falsy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(NaN), 0)
+})
+
+test('!NaN is true', () => {
+  is(run('export let f = (x) => { if (!x) return 1; return 0 }').f(NaN), 1)
+})
+
+test('if(0) still falsy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(0), 0)
+})
+
+test('if(1) still truthy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(1), 1)
+})
+
+// === Ternary ===
+
+test('ternary: a ? b : c', () => {
+  const { f } = run('export let f = (x) => x > 0 ? x : 0')
+  is(f(5), 5)
+  is(f(-3), 0)
+})
+
 // === For loop ===
 
 test('for: sum 0..n', () => {

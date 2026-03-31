@@ -170,7 +170,6 @@ All types resolved at compile-time. No runtime dispatch.
 ### Divergences from JS
 - `null`/`undefined` → `0` (indistinguishable)
 - `==` behaves like `===` (no coercion)
-- `i++` and `++i` both increment (no value distinction yet)
 - Division always produces f64
 
 ### CLI
