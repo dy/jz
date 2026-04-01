@@ -6,4 +6,6 @@ import string from './string.js'
 import fn from './fn.js'
 import typed from './typed.js'
 import collection from './collection.js'
-export { math, ptr, array, object, string, fn, typed, collection }
+import core from './core.js'
+import symbol from './symbol.js'
+export { math, ptr, array, object, string, fn, typed, collection, core, symbol }

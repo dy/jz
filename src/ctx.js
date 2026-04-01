@@ -56,6 +56,9 @@ export function reset(proto, globals) {
   ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
   ctx.src = ''
   ctx.loc = null
+  ctx._atoms = null
+  ctx._atomNext = 0
+  ctx._hasTag = false
 }
 
 /** Throw with source location context. */

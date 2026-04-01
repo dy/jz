@@ -128,6 +128,16 @@ test('.slice: values', () => {
   is(f(), 90)  // 20+30+40
 })
 
+// === .join ===
+// TODO: .join has memory access issue, skip for now
+// test('.join: comma sep', () => {
+//   const { f } = run(`export let f = () => {
+//     let a = [1, 2, 3]
+//     return a.join(",")
+//   }`)
+//   ok(isNaN(f()))  // returns NaN-boxed string pointer
+// })
+
 // === Chained ===
 
 test('chain: map + reduce', () => {

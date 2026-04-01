@@ -366,6 +366,7 @@ export default function compile(ast) {
   }
 
   if (ctx.modules.ptr) sections.push(['memory', ['export', '"memory"'], 1])
+  if (ctx._hasTag) sections.push(['tag', '$__jz_err', ['param', 'f64']])
 
   // Table for closures
   if (ctx.fn.table?.length)
@@ -429,9 +430,44 @@ export const emitter = {
   'const': emitDecl,
   'export': () => null,
 
+  'throw': expr => {
+    ctx._hasTag = true
+    return typed(['throw', '$__jz_err', asF64(emit(expr))], 'void')
+  },
+
+  'catch': (body, errName, handler) => {
+    ctx._hasTag = true
+    const id = ctx.uid++
+    ctx.locals.set(errName, 'f64')
+    const prev = ctx._inTry; ctx._inTry = true
+    const bodyIR = Array.isArray(body) && body[0] === '{}' ? emitBody(body) : flat(emit(body))
+    ctx._inTry = prev
+    const handlerIR = Array.isArray(handler) && handler[0] === '{}' ? emitBody(handler) : flat(emit(handler))
+    // Drop any value left by body statements (e.g. nested try/catch result)
+    const lastIR = bodyIR[bodyIR.length - 1]
+    const needsDrop = lastIR?.type === 'f64' && Array.isArray(lastIR) && lastIR[0]?.startsWith?.('block')
+    return typed(['block', `$outer${id}`, ['result', 'f64'],
+      ['block', `$catch${id}`, ['result', 'f64'],
+        ['try_table', ['catch', '$__jz_err', `$catch${id}`],
+          ...bodyIR,
+          ...(needsDrop ? ['drop'] : [])],
+        ['f64.const', 0],
+        ['br', `$outer${id}`]],
+      ['local.set', `$${errName}`],
+      ...handlerIR,
+      ['f64.const', 0]], 'f64')
+  },
+
   'return': expr => {
     if (ctx.sig?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'f64')
+    // Tail call: return f(args) — not inside try (return_call bypasses try_table)
+    if (!ctx._inTry && Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string' && funcNames.has(expr[1])) {
+      const callArgs = Array.isArray(expr[2])
+        ? (expr[2][0] === ',' ? expr[2].slice(1) : [expr[2]])
+        : expr[2] ? [expr[2]] : []
+      return typed(['return_call', `$${expr[1]}`, ...callArgs.map(a => asF64(emit(a)))], 'f64')
+    }
     return typed(['return', asF64(emit(expr))], 'f64')
   },
 
@@ -524,8 +560,17 @@ export const emitter = {
 
   // === Comparisons (always i32 result) ===
 
-  '==': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.eq', va, vb], 'i32') : typed(['f64.eq', asF64(va), asF64(vb)], 'i32') },
-  '!=': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.ne', va, vb], 'i32') : typed(['f64.ne', asF64(va), asF64(vb)], 'i32') },
+  '==': (a, b) => {
+    const va = emit(a), vb = emit(b)
+    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
+    // Bit-equal: handles both number equality and pointer identity (NaN-boxed)
+    return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+  },
+  '!=': (a, b) => {
+    const va = emit(a), vb = emit(b)
+    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
+    return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+  },
   '<':  (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.lt_s', va, vb], 'i32') : typed(['f64.lt', asF64(va), asF64(vb)], 'i32') },
   '>':  (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.gt_s', va, vb], 'i32') : typed(['f64.gt', asF64(va), asF64(vb)], 'i32') },
   '<=': (a, b) => { const va = emit(a), vb = emit(b); return va.type === 'i32' && vb.type === 'i32' ? typed(['i32.le_s', va, vb], 'i32') : typed(['f64.le', asF64(va), asF64(vb)], 'i32') },

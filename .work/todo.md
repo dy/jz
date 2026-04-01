@@ -129,15 +129,17 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 ### Advanced
 
 * [ ] Regex (parser, codegen, test/exec/match/replace/split)
-* [ ] Symbol
-* [ ] Boxed primitives (Object.assign)
-* [ ] Number.isNaN, isFinite, isInteger, constants
-* [ ] Array.isArray, Array.from
-* [ ] Object.keys, values, entries
-* [ ] try/catch/throw (WASM exceptions)
-* [ ] Tail call optimization
+* [x] Symbol — type=0 (ATOM), aux=atomId. Reserved 0-15 (null, undefined, future). Symbol() unique per site, Symbol.for() interned
+* [x] Object.assign — compile-time schema cross-copy (matching property names between schemas)
+* [x] Number.isNaN, isFinite, isInteger, parseInt, parseFloat + constants (EPSILON, MAX_SAFE_INTEGER, etc.)
+* [x] Array.isArray — ptr_type === ARRAY
+* [ ] Array.from — needs iterable protocol
+* [x] Object.keys, values, entries — compile-time schema resolution, returns NaN-boxed arrays
+* [x] try/catch/throw — try_table/throw/tag (WASM EH), nested + cross-function, TCO suppressed inside try
+* [x] Tail call optimization — return_call for tail-recursive direct calls
 * [ ] SIMD auto-vectorization
 * [x] i32 type preservation — done via type coercion system
+* [x] Pointer identity — == and != use i64 bit-equality (enables Symbol/pointer comparison, NaN==NaN is true)
 
 ### Optimizations (revisit for new arch)
 

@@ -77,7 +77,10 @@ const PROHIBITED = {
 // Global namespaces for module auto-import
 export const GLOBALS = {
   Math: 'math',
-  // Future: Number/String/Array/Object → 'core', TypedArrays → 'typed'
+  Number: 'Number',
+  Array: 'Array',
+  Object: 'Object',
+  Symbol: 'Symbol',
 }
 
 /** Prepare let/const declaration. */
@@ -133,6 +136,15 @@ const handlers = {
   ':': () => err('labeled statements not supported'),
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
+
+  // try/catch/throw
+  'catch'(tryNode, errName, handler) {
+    const body = Array.isArray(tryNode) && tryNode[0] === 'try' ? tryNode[1] : tryNode
+    return ['catch', prep(body), errName, prep(handler)]
+  },
+  'try'(body) { return ['try', prep(body)] },
+  'throw'(expr) { return ['throw', prep(expr)] },
+  'finally'() { err('finally not supported: use catch') },
 
   // Template literal: [``, part, ...] → chain of str_concat calls
   '`'(...parts) {
@@ -255,6 +267,8 @@ const handlers = {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
       const resolved = ctx.scope[callee]
       if (resolved?.includes('.')) callee = resolved
+      // Bare constructor call: Symbol('foo') → include module, keep callee as-is
+      else if (resolved && !resolved.includes('.')) includeModule(resolved)
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       const mod = ctx.scope[obj]
@@ -352,12 +366,19 @@ const handlers = {
   }
 }
 
+// Namespace → module mapping (namespaces that share a module)
+const MOD_ALIAS = { Number: 'core', Array: 'core', Object: 'core', Symbol: 'symbol' }
+// Modules that must be loaded before another module
+const MOD_DEPS = { core: ['ptr'], symbol: ['ptr'] }
+
 function includeModule(name) {
-  const init = mods[name]
+  const modName = MOD_ALIAS[name] || name
+  const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
-  if (ctx.modules[name]) return
+  if (ctx.modules[modName]) return
+  for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
   init(ctx)
-  ctx.modules[name] = true
+  ctx.modules[modName] = true
 }
 
 function defFunc(name, node) {
