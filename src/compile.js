@@ -391,6 +391,11 @@ export default function compile(ast) {
   if (ctx.schema.list.length)
     sections.push(['@custom', '"jz:schema"', `"${JSON.stringify(ctx.schema.list).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
+  // Custom section: rest params for exported functions (JS-side wrapping)
+  const restParamFuncs = ctx.funcs.filter(f => f.exported && f.rest).map(f => f.name)
+  if (restParamFuncs.length)
+    sections.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
   return ['module', ...sections]
 }
 
@@ -743,8 +748,24 @@ export const emitter = {
     if (ctx.emit[callee]) return ctx.emit[callee](...argList)
 
     // Direct call if callee is a known top-level function
-    if (typeof callee === 'string' && funcNames.has(callee))
+    if (typeof callee === 'string' && funcNames.has(callee)) {
+      const func = ctx.funcs.find(f => f.name === callee)
+      const fixedParamCount = func?.rest ? func.sig.params.length - 1 : func?.sig.params.length || argList.length
+
+      // Rest param case: collect remaining args into array
+      if (func?.rest) {
+        const fixedArgs = argList.slice(0, fixedParamCount)
+        const restArgs = argList.slice(fixedParamCount)
+        // Emit array literal as an AST node: ['[', ...restArgs]
+        const restArrayAST = ['[', ...restArgs]
+        const restArrayIR = emit(restArrayAST)
+        return typed(['call', `$${callee}`,
+          ...fixedArgs.map(a => asF64(emit(a))),
+          restArrayIR], 'f64')
+      }
+
       return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
+    }
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer
     if (ctx.fn.call) return ctx.fn.call(emit(callee), argList)

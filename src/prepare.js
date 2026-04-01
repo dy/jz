@@ -390,10 +390,14 @@ function defFunc(name, node) {
   if (Array.isArray(p) && p[0] === '()') p = p[1]
   const raw = Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : p ? [p] : []
 
-  // Extract param names and defaults: 'x' or ['=', 'x', default]
-  const params = [], defaults = {}
+  // Extract param names and defaults: 'x' or ['=', 'x', default] or ['...', 'args']
+  const params = [], defaults = {}, hasRest = []
   for (const r of raw) {
-    if (Array.isArray(r) && r[0] === '=') {
+    if (Array.isArray(r) && r[0] === '...') {
+      // Rest param: ['...', 'name'] → array parameter
+      hasRest.push(r[1])
+      params.push({ name: r[1], type: 'f64', rest: true })
+    } else if (Array.isArray(r) && r[0] === '=') {
       params.push({ name: r[1], type: 'f64' })
       defaults[r[1]] = prep(r[2])
     } else {
@@ -403,7 +407,9 @@ function defFunc(name, node) {
 
   const sig = { params, results: detectResults(body) }
   const hasDefaults = Object.keys(defaults).length > 0
-  ctx.funcs.push({ name, body, exported: !!ctx.exports[name], sig, ...(hasDefaults && { defaults }) })
+  const funcInfo = { name, body, exported: !!ctx.exports[name], sig, ...(hasDefaults && { defaults }) }
+  if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
+  ctx.funcs.push(funcInfo)
   return true
 }
 

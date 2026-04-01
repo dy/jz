@@ -163,27 +163,33 @@ export default () => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
-  // Object.assign(target, source) → copy matching props from source to target, return target
-  ctx.emit['Object.assign'] = (target, source) => {
+  // Object.assign(target, ...sources) → copy matching props from each source to target, return target
+  ctx.emit['Object.assign'] = (target, ...sources) => {
     const tSchema = resolveSchema(target)
-    const sSchema = resolveSchema(source)
     if (!tSchema) err('Object.assign: target needs known schema')
-    if (!sSchema) err('Object.assign: source needs known schema')
 
     const t = `__at${ctx.uid++}`, s = `__as${ctx.uid++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(s, 'f64')
     const body = [
       ['local.set', `$${t}`, asF64(emit(target))],
-      ['local.set', `$${s}`, asF64(emit(source))],
     ]
-    // Copy matching property names: source[sIdx] → target[tIdx]
-    for (let si = 0; si < sSchema.length; si++) {
-      const ti = tSchema.indexOf(sSchema[si])
-      if (ti < 0) continue
-      body.push(['f64.store',
-        ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', ti * 8]],
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
+
+    // Copy from each source object
+    for (const source of sources) {
+      const sSchema = resolveSchema(source)
+      if (!sSchema) err('Object.assign: source needs known schema')
+
+      body.push(['local.set', `$${s}`, asF64(emit(source))])
+      // Copy matching property names: source[sIdx] → target[tIdx]
+      for (let si = 0; si < sSchema.length; si++) {
+        const ti = tSchema.indexOf(sSchema[si])
+        if (ti < 0) continue
+        body.push(['f64.store',
+          ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', ti * 8]],
+          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
+      }
     }
+
     body.push(['local.get', `$${t}`])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }

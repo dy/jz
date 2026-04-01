@@ -143,20 +143,36 @@ export default () => {
   // === Push/Pop (mutate in place) ===
 
   // .push(val) → append, increment len, return array (same pointer)
-  ctx.emit['.push'] = (arr, val) => {
-    const va = asF64(emit(arr)), vv = asF64(emit(val))
-    const t = `__pp${ctx.uid++}`, len = `__pl${ctx.uid++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(len, 'i32')
-    return typed(['block', ['result', 'f64'],
+  ctx.emit['.push'] = (arr, ...vals) => {
+    const va = asF64(emit(arr))
+    const t = `__pp${ctx.uid++}`, len = `__pl${ctx.uid++}`, i = `__pi${ctx.uid++}`
+    ctx.locals.set(t, 'f64'); ctx.locals.set(len, 'i32'); ctx.locals.set(i, 'i32')
+
+    const body = [
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
-      // Store value at offset + len*8
-      ['f64.store',
-        ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
-        vv],
-      // Increment len
-      ['call', '$__set_len', ['local.get', `$${t}`], ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]],
-      ['local.get', `$${t}`]], 'f64')
+    ]
+
+    // Store each value and increment len
+    for (const val of vals) {
+      const vv = asF64(emit(val))
+      body.push(
+        // Store value at offset + len*8
+        ['f64.store',
+          ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
+          vv],
+        // Increment len
+        ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]]
+      )
+    }
+
+    // Update array length header and return array
+    body.push(
+      ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
+      ['local.get', `$${t}`]
+    )
+
+    return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
   // .pop() → decrement len, return removed element

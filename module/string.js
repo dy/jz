@@ -513,9 +513,14 @@ export default () => {
     return typed(['call', '$__str_repeat', asF64(emit(str)), asI32(emit(n))], 'f64')
   }
 
-  ctx.emit['.concat'] = (str, other) => {
+  ctx.emit['.concat'] = (str, ...others) => {
     inc('__str_concat')
-    return typed(['call', '$__str_concat', asF64(emit(str)), asF64(emit(other))], 'f64')
+    // Chain concat for multiple args: s.concat(a, b, c) → concat(concat(concat(s, a), b), c)
+    let result = asF64(emit(str))
+    for (const other of others) {
+      result = typed(['call', '$__str_concat', result, asF64(emit(other))], 'f64')
+    }
+    return result
   }
 
   ctx.emit['.replace'] = (str, search, repl) => {
