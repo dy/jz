@@ -309,4 +309,12 @@ export default () => {
         ['br', `$loop${id}`]]],
       ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
+
+  // .join(sep) → concatenate array elements with separator string
+  ctx.emit['.join'] = (arr, sep) => {
+    ctx.includes.add('__str_join')
+    ctx.includes.add('__str_concat')
+    ctx.includes.add('__str_byteLen')
+    return typed(['call', '$__str_join', asF64(emit(arr)), asF64(emit(sep))], 'f64')
+  }
 }

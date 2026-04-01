@@ -16,9 +16,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { ctx } from './ctx.js'
-
-const err = msg => { throw Error(msg) }
+import { ctx, err } from './ctx.js'
 let funcNames  // Set<string> — known function names, set per compile()
 
 // === Type helpers ===
@@ -91,6 +89,73 @@ function emitDecl(...inits) {
 }
 
 // === Pre-analysis ===
+
+// Value types — what a variable holds (for method dispatch, schema resolution)
+export const VAL = {
+  NUMBER: 'number', ARRAY: 'array', STRING: 'string',
+  OBJECT: 'object', SET: 'set', MAP: 'map',
+  CLOSURE: 'closure', TYPED: 'typed',
+}
+
+/** Infer value type of an AST expression (without emitting). */
+export function valTypeOf(expr) {
+  if (expr == null) return null
+  if (typeof expr === 'number') return VAL.NUMBER
+  if (typeof expr === 'string') return ctx.valTypes?.get(expr) || null
+  if (!Array.isArray(expr)) return null
+
+  const [op, ...args] = expr
+  if (op == null) return VAL.NUMBER // literal
+
+  if (op === '[') return VAL.ARRAY
+  if (op === 'str') return VAL.STRING
+  if (op === '=>') return VAL.CLOSURE
+  if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+
+  if (op === '()') {
+    const callee = args[0]
+    // Constructor results
+    if (typeof callee === 'string') {
+      if (callee === 'new.Set') return VAL.SET
+      if (callee === 'new.Map') return VAL.MAP
+      if (callee.startsWith('new.')) return VAL.TYPED
+    }
+    // Method return types
+    if (Array.isArray(callee) && callee[0] === '.') {
+      const method = callee[2]
+      if (method === 'map' || method === 'filter' || method === 'slice') return VAL.ARRAY
+      if (method === 'push') return VAL.ARRAY
+      if (method === 'add' || method === 'delete') return VAL.SET
+      if (method === 'set') return VAL.MAP
+    }
+  }
+  return null
+}
+
+/**
+ * Analyze all local value types from declarations and assignments.
+ * Builds ctx.valTypes map for method dispatch and schema resolution.
+ */
+function analyzeValTypes(body) {
+  const types = ctx.valTypes
+  function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        const vt = valTypeOf(a[2])
+        if (vt) types.set(a[1], vt)
+      }
+    }
+    if (op === '=' && typeof args[0] === 'string') {
+      const vt = valTypeOf(args[1])
+      if (vt) types.set(args[0], vt)
+    }
+    for (const a of args) walk(a)
+  }
+  walk(body)
+}
 
 /**
  * Infer expression result type from AST (without emitting).
@@ -205,6 +270,8 @@ export default function compile(ast) {
     // Block body vs object literal: object has ':' property nodes
     const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
     ctx.locals = block ? analyzeLocals(body) : new Map()
+    ctx.valTypes = new Map()
+    if (block) analyzeValTypes(body)
 
     const fn = ['func', `$${name}`]
     if (exported) fn.push(['export', `"${name}"`])
@@ -245,6 +312,7 @@ export default function compile(ast) {
     for (const cb of ctx.fn.bodies) {
       // Reset per-function state for closure body
       ctx.locals = new Map()
+      ctx.valTypes = new Map()
       ctx.stack = []
       ctx.uid = Math.max(ctx.uid, 100) // avoid label collisions
       ctx.sig = { params: [{ name: '__env', type: 'f64' }, ...cb.params.map(n => ({ name: n, type: 'f64' }))], results: ['f64'] }
@@ -602,11 +670,29 @@ export const emitter = {
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
 
-    // Method call: obj.method(args) → dispatch to method emitter
+    // Method call: obj.method(args) → type-aware dispatch
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
-      const key = `.${method}`
-      if (ctx.emit[key]) return ctx.emit[key](obj, ...argList)
+      const vt = typeof obj === 'string' ? ctx.valTypes.get(obj) : valTypeOf(obj)
+      // Known type → static dispatch
+      if (vt && ctx.emit[`.${vt}:${method}`]) return ctx.emit[`.${vt}:${method}`](obj, ...argList)
+      // Unknown type, both string + generic exist → runtime dispatch by ptr type
+      const strKey = `.string:${method}`, genKey = `.${method}`
+      if (!vt && ctx.emit[strKey] && ctx.emit[genKey]) {
+        const t = `__rt${ctx.uid++}`, tt = `__rtt${ctx.uid++}`
+        ctx.locals.set(t, 'f64'); ctx.locals.set(tt, 'i32')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, asF64(emit(obj))],
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
+          ['if', ['result', 'f64'],
+            ['i32.or',
+              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 4]],   // STRING
+              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]],  // STRING_SSO
+            ['then', ctx.emit[strKey](t, ...argList)],
+            ['else', ctx.emit[genKey](t, ...argList)]]], 'f64')
+      }
+      // Generic only
+      if (ctx.emit[genKey]) return ctx.emit[genKey](obj, ...argList)
     }
 
     if (ctx.emit[callee]) return ctx.emit[callee](...argList)
@@ -632,6 +718,7 @@ export const emitter = {
  * @returns {Array} typed WASM S-expression
  */
 export function emit(node) {
+  if (Array.isArray(node) && node.loc != null) ctx.loc = node.loc
   if (node == null) return null
   if (node === true) return typed(['i32.const', 1], 'i32')
   if (node === false) return typed(['i32.const', 0], 'i32')

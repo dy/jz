@@ -93,7 +93,7 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] Optional chaining (?. and ?.[])
 * [x] typeof (returns ptr type code: -1=number, 1=array, 4=string, 5=sso, 6=object)
 * [x] Strings (literals, .length, [i] charCodeAt, SSO + heap)
-* [ ] Template literals (needs string concat)
+* [x] Template literals — desugared in prepare to .concat chain
 
 ### Data structures
 
@@ -120,10 +120,11 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 
 ### String methods
 
-* [ ] slice, substring, indexOf, includes
-* [ ] startsWith, endsWith, split, join
-* [ ] trim, padStart, padEnd, repeat
-* [ ] replace, toUpperCase, toLowerCase
+* [x] slice, substring, indexOf, includes — type-qualified dispatch (.string:slice) + runtime fallback
+* [x] startsWith, endsWith, split, join — join in array.js, split returns NaN-boxed string array
+* [x] trim, padStart, padEnd, repeat — trim handles ≤32 whitespace, pad cycles fill string
+* [x] replace, toUpperCase, toLowerCase — replace first occurrence, ASCII case conversion
+* [x] concat — __str_concat WAT, enables replace/split/join composition
 
 ### Advanced
 

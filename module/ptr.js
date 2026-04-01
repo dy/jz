@@ -10,10 +10,9 @@
  */
 
 import { emit, typed, asF64, asI32 } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, err } from '../src/ctx.js'
 
 const NAN_PREFIX = 0x7FF8
-const err = msg => { throw Error(msg) }
 const temp = () => { const n = `__t${ctx.uid++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
@@ -164,10 +163,18 @@ export default () => {
   }
 
   ctx.schema.find = (varName, prop) => {
+    // Precise: variable has known schema
     const id = ctx.schema.vars.get(varName)
-    if (id != null) { const idx = ctx.schema.list[id].indexOf(prop); if (idx >= 0) return idx }
-    for (const s of ctx.schema.list) { const idx = s.indexOf(prop); if (idx >= 0) return idx }
-    return -1
+    if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
+    // Fallback: search all schemas, require consistent index
+    let result = -1
+    for (const s of ctx.schema.list) {
+      const idx = s.indexOf(prop)
+      if (idx < 0) continue
+      if (result >= 0 && result !== idx) err(`Ambiguous property .${prop}: different offset across schemas`)
+      result = idx
+    }
+    return result
   }
 
   // Low-level pointer helpers callable from jz code

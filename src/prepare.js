@@ -14,7 +14,7 @@
  * @module prepare
  */
 
-import { ctx } from './ctx.js'
+import { ctx, err } from './ctx.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -39,6 +39,7 @@ const CONSTANTS = { 'true': 1, 'false': 0, 'null': 0, 'undefined': 0 }
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
 
 function prep(node) {
+  if (Array.isArray(node) && node.loc != null) ctx.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   if (node === true) return [, 1]
   if (node === false) return [, 0]
@@ -132,6 +133,16 @@ const handlers = {
   ':': () => err('labeled statements not supported'),
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
+
+  // Template literal: [``, part, ...] → chain of str_concat calls
+  '`'(...parts) {
+    includeModule('ptr')
+    includeModule('string')
+    const nodes = parts.map(p =>
+      Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
+    // Fold left: concat(a, b) → ['()', ['.', a, 'concat'], b]
+    return nodes.reduce((acc, n) => ['()', ['.', acc, 'concat'], n])
+  },
 
   // Import
   'import'(fromNode) {
@@ -313,7 +324,8 @@ const handlers = {
       return includeModule(mod), mod + '.' + prop
     includeModule('ptr')
     includeModule('object')
-    includeModule('array')  // for .map, .filter, .length etc
+    includeModule('array')
+    includeModule('string')
     return ['.', prep(obj), prop]
   },
 
@@ -407,5 +419,4 @@ function collectReturns(node, out) {
   for (let i = 1; i < node.length; i++) collectReturns(node[i], out)
 }
 
-const err = msg => { throw Error(msg) }
 const isLit = n => Array.isArray(n) && n[0] == null

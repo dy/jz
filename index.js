@@ -10,7 +10,7 @@
 
 import { parse } from 'subscript/jessie'
 import { compile as watrCompile, print as watrPrint } from 'watr'
-import { ctx } from './src/ctx.js'
+import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
 
@@ -202,17 +202,8 @@ jz.mem = (src) => {
 }
 
 export default function jz(code, opts = {}) {
-  ctx.emit = Object.create(emitter)
-  ctx.stdlib = {}
-  ctx.includes = new Set()
-  ctx.imports = []
-  ctx.scope = Object.create(GLOBALS)
-  ctx.modules = {}
-  ctx.exports = {}
-  ctx.funcs = []
-  ctx.globals = []
-  ctx.schema = { list: [], vars: new Map(), register: null, find: null }
-  ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
+  reset(emitter, GLOBALS)
+  ctx.src = code
 
   const ast = prepare(parse(code))
   const module = compile(ast)
