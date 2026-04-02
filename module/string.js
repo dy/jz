@@ -28,7 +28,7 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
     }
     const len = str.length
-    const t = `__str${ctx.uid++}`
+    const t = `__str${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
@@ -444,7 +444,7 @@ export default () => {
   ctx.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')
     if (end != null) return typed(['call', '$__str_slice', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `__t${ctx.uid++}`; ctx.locals.set(t, 'f64')
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_slice', ['local.get', `$${t}`], asI32(emit(start)),
@@ -466,7 +466,7 @@ export default () => {
   ctx.emit['.substring'] = (str, start, end) => {
     inc('__str_substring', '__str_slice')
     if (end != null) return typed(['call', '$__str_substring', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `__t${ctx.uid++}`; ctx.locals.set(t, 'f64')
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['local.get', `$${t}`], asI32(emit(start)),
@@ -513,7 +513,7 @@ export default () => {
     return typed(['call', '$__str_repeat', asF64(emit(str)), asI32(emit(n))], 'f64')
   }
 
-  ctx.emit['.concat'] = (str, ...others) => {
+  ctx.emit['.string:concat'] = (str, ...others) => {
     inc('__str_concat')
     // Chain concat for multiple args: s.concat(a, b, c) → concat(concat(concat(s, a), b), c)
     let result = asF64(emit(str))

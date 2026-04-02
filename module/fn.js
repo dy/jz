@@ -31,15 +31,11 @@ export default () => {
 
   /**
    * Create a closure: compile inner function as closure body, capture outer vars.
-   * Called from compile when an arrow function is used as a value (not a top-level def).
-   *
-   * @param {string[]} params - Parameter names of the inner function
-   * @param {*} body - AST body of the inner function
-   * @param {string[]} captures - Names of variables captured from outer scope
+   * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.fn.make = (params, body, captures) => {
-    const arity = params.length
+  ctx.fn.make = ({ params, body, captures, restParam }) => {
+    const arity = restParam ? 1 : params.length
     ensureType(arity)
 
     // Generate closure body function name
@@ -47,7 +43,8 @@ export default () => {
 
     // Build the closure body: (env: f64, param0: f64, ...) → f64
     // Inside the body, captured vars are loaded from env memory
-    const bodyFn = { name: fnName, params, body, captures, arity }
+    // If closure has rest params, the single param is the rest array
+    const bodyFn = { name: fnName, params, body, captures, arity, ...(restParam && { rest: restParam }) }
     ctx.fn.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)
@@ -58,7 +55,7 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
     }
 
-    const t = `__env${ctx.uid++}`
+    const t = `__env${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
 
     const block = [
@@ -84,7 +81,7 @@ export default () => {
     const arity = args.length
     ensureType(arity)
 
-    const t = `__clos${ctx.uid++}`
+    const t = `__clos${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
 
     // Args: emit if AST, pass through if already emitted WASM node

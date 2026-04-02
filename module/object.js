@@ -23,12 +23,18 @@ export default () => {
       if (Array.isArray(p) && p[0] === ':') { names.push(p[1]); values.push(p[2]) }
     }
 
-    const schemaId = ctx.schema.register(names)
-    const t = `__obj${ctx.uid++}`
+    // Use variable's merged schema if available (from Object.assign inference), else register literal schema
+    let schemaId = ctx.schema.register(names)
+    if (ctx.schema.target) {
+      const varId = ctx.schema.vars.get(ctx.schema.target)
+      if (varId != null) schemaId = varId
+    }
+    const schema = ctx.schema.list[schemaId]
+    const t = `__obj${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
 
     const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', values.length * 8]]],
+      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
     ]
     for (let i = 0; i < values.length; i++)
       body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], asF64(emit(values[i]))])

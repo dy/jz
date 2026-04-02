@@ -139,9 +139,9 @@ test('array.push: many values', () => {
   is(f(), 10)
 })
 
-// === Object.assign with multiple sources ===
+// === Object.assign: same-schema copies ===
 
-test('Object.assign: one source', () => {
+test('Object.assign: overwrite prop', () => {
   const { f } = run(`export let f = () => {
     let a = {x: 1, y: 2}
     let b = {x: 10}
@@ -159,10 +159,10 @@ test('Object.assign: two sources', () => {
     Object.assign(a, b, c)
     return a.x + a.y
   }`)
-  is(f(), 30)  // x=10 + y=20
+  is(f(), 30)
 })
 
-test('Object.assign: multiple sources order', () => {
+test('Object.assign: last source wins', () => {
   const { f } = run(`export let f = () => {
     let a = {x: 1}
     let b = {x: 2}
@@ -170,26 +170,110 @@ test('Object.assign: multiple sources order', () => {
     Object.assign(a, b, c)
     return a.x
   }`)
-  is(f(), 3)  // last source wins
+  is(f(), 3)
 })
 
-// === Edge cases ===
+// === Object.assign: schema extension ===
 
-// TODO: Spread operator (...arr) not yet supported by parser
-// test('rest: spread array', () => {
-//   const { f } = run(`export let f = () => {
-//     let arr = [1, 2, 3]
-//     let fn = (...args) => args.length
-//     return fn(...arr)
-//   }`)
-//   is(f(), 3)
-// })
+test('Object.assign: extend from variable', () => {
+  const { f } = run(`export let f = () => {
+    let a = {x: 1}
+    let b = {y: 2}
+    Object.assign(a, b)
+    return a.x + a.y
+  }`)
+  is(f(), 3)
+})
 
-// TODO: Nested rest-param closures have variable binding issue
-// test('rest: empty call', () => {
-//   const { f } = run(`export let f = () => {
-//     let count = (...args) => args.length
-//     return count()
-//   }`)
-//   is(f(), 0)
-// })
+test('Object.assign: extend from literal', () => {
+  const { f } = run(`export let f = () => {
+    let a = {x: 1}
+    Object.assign(a, {y: 2, z: 3})
+    return a.x + a.y + a.z
+  }`)
+  is(f(), 6)
+})
+
+test('Object.assign: extend from multiple sources', () => {
+  const { f } = run(`export let f = () => {
+    let a = {x: 1}
+    let b = {y: 2}
+    let c = {z: 3}
+    Object.assign(a, b, c)
+    return a.x + a.y + a.z
+  }`)
+  is(f(), 6)
+})
+
+test('Object.assign: original props unchanged', () => {
+  const { f } = run(`export let f = () => {
+    let a = {x: 10}
+    Object.assign(a, {y: 20})
+    return a.x
+  }`)
+  is(f(), 10)
+})
+
+// === Boxed primitives: Object.assign on arrays ===
+
+test('Object.assign: boxed array prop', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    Object.assign(a, {loc: 5})
+    return a.loc
+  }`)
+  is(f(), 5)
+})
+
+test('Object.assign: boxed array length', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20, 30]
+    Object.assign(a, {tag: 1})
+    return a.length
+  }`)
+  is(f(), 3)
+})
+
+test('Object.assign: boxed array indexing', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20, 30]
+    Object.assign(a, {x: 99})
+    return a[0] + a[1] + a[2]
+  }`)
+  is(f(), 60)
+})
+
+// === Object.assign in conditionals ===
+
+test('Object.assign: conditional', () => {
+  const { f } = run(`export let f = (x) => {
+    let a = {x: 1, y: 2}
+    let b = {x: 10}
+    if (x) Object.assign(a, b)
+    return a.x
+  }`)
+  is(f(0), 1)
+  is(f(1), 10)
+})
+
+// === Array.concat ===
+
+test('array.concat: two arrays', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    let b = [3, 4]
+    let c = a.concat(b)
+    return c.length
+  }`)
+  is(f(), 4)
+})
+
+test('array.concat: preserves values', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20]
+    let b = [30]
+    let c = a.concat(b)
+    return c[0] + c[1] + c[2]
+  }`)
+  is(f(), 60)
+})

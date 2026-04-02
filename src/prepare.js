@@ -93,7 +93,7 @@ function prepDecl(op, ...inits) {
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `__d${ctx.uid || 0}`; if (!ctx.uid) ctx.uid = 0; ctx.uid++
+      const tmp = `__d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
       rest.push(['=', tmp, normed])
       for (let j = 0; j < items.length; j++)
         if (items[j] != null) rest.push(['=', items[j], ['[]', tmp, [, j]]])
@@ -103,7 +103,7 @@ function prepDecl(op, ...inits) {
     // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
     if (Array.isArray(name) && name[0] === '{}') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `__d${ctx.uid || 0}`; if (!ctx.uid) ctx.uid = 0; ctx.uid++
+      const tmp = `__d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
       rest.push(['=', tmp, normed])
       for (const item of items) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
@@ -124,6 +124,13 @@ function prepDecl(op, ...inits) {
 }
 
 const handlers = {
+  // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
+  '...'(expr) {
+    // Spread is valid in arrays, calls, and objects - just prep the inner expression
+    includeModule('array')
+    return ['...', prep(expr)]
+  },
+
   // Prohibited ops
   'async': () => err('async/await not supported: WASM is synchronous'),
   'await': () => err('async/await not supported: WASM is synchronous'),
@@ -277,7 +284,35 @@ const handlers = {
       else
         callee = prep(callee)  // prep method callee (triggers . handler → module loading)
     }
-    return ['()', callee, ...args.filter(a => a != null).map(prep)]
+    const result = ['()', callee, ...args.filter(a => a != null).map(prep)]
+
+    // Object.assign(target, ...sources): merge source schemas into target
+    if (callee === 'Object.assign' && ctx.schema.register) {
+      // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
+      let assignArgs = result.slice(2)
+      if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
+        assignArgs = assignArgs[0].slice(1)
+      const [target, ...sources] = assignArgs
+      if (typeof target === 'string') {
+        const existingId = ctx.schema.vars.get(target)
+        const merged = existingId != null ? [...ctx.schema.list[existingId]] : []
+        for (const src of sources) {
+          // Source is object literal: extract props directly
+          let srcProps
+          if (Array.isArray(src) && src[0] === '{}')
+            srcProps = src.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+          // Source is variable with known schema
+          else if (typeof src === 'string') {
+            const srcId = ctx.schema.vars.get(src)
+            if (srcId != null) srcProps = ctx.schema.list[srcId]
+          }
+          if (srcProps) for (const p of srcProps) if (!merged.includes(p)) merged.push(p)
+        }
+        if (merged.length) ctx.schema.vars.set(target, ctx.schema.register(merged))
+      }
+    }
+
+    return result
   },
 
   // Array literal/indexing — auto-include ptr + array modules

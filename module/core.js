@@ -45,7 +45,7 @@ export default () => {
   // isNaN: x !== x (only NaN fails self-equality)
   ctx.emit['Number.isNaN'] = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uid++}`
+    const t = `__t${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
     return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
   }
@@ -53,7 +53,7 @@ export default () => {
   // isFinite: not NaN and not ±Infinity
   ctx.emit['Number.isFinite'] = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uid++}`
+    const t = `__t${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       // x === x (not NaN)
@@ -65,7 +65,7 @@ export default () => {
   // isInteger: x === trunc(x) && isFinite(x)
   ctx.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uid++}`
+    const t = `__t${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       ['i32.and',
@@ -85,7 +85,7 @@ export default () => {
   // Array.isArray(x): check ptr_type === ARRAY
   ctx.emit['Array.isArray'] = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uid++}`
+    const t = `__t${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       // Must be NaN (is a pointer)
@@ -110,7 +110,7 @@ export default () => {
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `__ov${ctx.uid++}`, arr = `__oa${ctx.uid++}`
+    const t = `__ov${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
@@ -133,7 +133,7 @@ export default () => {
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `__oe${ctx.uid++}`, arr = `__oa${ctx.uid++}`, pair = `__op${ctx.uid++}`
+    const t = `__oe${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`, pair = `__op${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32'); ctx.locals.set(pair, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
@@ -165,10 +165,54 @@ export default () => {
 
   // Object.assign(target, ...sources) → copy matching props from each source to target, return target
   ctx.emit['Object.assign'] = (target, ...sources) => {
+    // Non-object target (array, string, etc.) → create boxed wrapper object
+    if (typeof target === 'string') {
+      const vt = ctx.valTypes?.get(target)
+      if (vt && vt !== VAL.OBJECT) {
+        // Collect all source props
+        const allProps = []
+        for (const src of sources) {
+          const s = resolveSchema(src)
+          if (!s) err('Object.assign: source needs known schema')
+          for (const p of s) if (!allProps.includes(p)) allProps.push(p)
+        }
+        // Register boxed schema: ['__inner__', ...props]
+        const boxedSchema = ['__inner__', ...allProps]
+        const schemaId = ctx.schema.register(boxedSchema)
+        ctx.schema.vars.set(target, schemaId)
+
+        const t = `__bx${ctx.uniq++}`, s = `__bs${ctx.uniq++}`
+        ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
+        const body = [
+          // Allocate object: slot 0 = inner, remaining = props
+          ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
+          // Store inner value in slot 0
+          ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
+        ]
+        // Copy source props into remaining slots
+        for (const source of sources) {
+          const sSchema = resolveSchema(source)
+          body.push(['local.set', `$${s}`, asF64(emit(source))])
+          for (let si = 0; si < sSchema.length; si++) {
+            const ti = boxedSchema.indexOf(sSchema[si])
+            if (ti < 0) continue
+            body.push(['f64.store',
+              ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
+              ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
+          }
+        }
+        // Create object pointer and reassign variable
+        body.push(['local.set', `$${target}`,
+          ['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
+        body.push(['local.get', `$${target}`])
+        return typed(['block', ['result', 'f64'], ...body], 'f64')
+      }
+    }
+
     const tSchema = resolveSchema(target)
     if (!tSchema) err('Object.assign: target needs known schema')
 
-    const t = `__at${ctx.uid++}`, s = `__as${ctx.uid++}`
+    const t = `__at${ctx.uniq++}`, s = `__as${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(s, 'f64')
     const body = [
       ['local.set', `$${t}`, asF64(emit(target))],
@@ -180,7 +224,6 @@ export default () => {
       if (!sSchema) err('Object.assign: source needs known schema')
 
       body.push(['local.set', `$${s}`, asF64(emit(source))])
-      // Copy matching property names: source[sIdx] → target[tIdx]
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
@@ -203,6 +246,9 @@ function resolveSchema(obj) {
     const id = ctx.schema.vars.get(obj)
     if (id != null) return ctx.schema.list[id]
   }
+  // Inline object literal: ['{}', [':', 'x', ...], ...]
+  if (Array.isArray(obj) && obj[0] === '{}')
+    return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
   return null
 }
 
@@ -214,7 +260,7 @@ function emitStringLiteral(str) {
     return ['call', '$__mkptr', ['i32.const', 5], ['i32.const', str.length], ['i32.const', packed]]
   }
   const len = str.length
-  const t = `__sl${ctx.uid++}`
+  const t = `__sl${ctx.uniq++}`
   ctx.locals.set(t, 'i32')
   const body = [
     ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
@@ -230,7 +276,7 @@ function emitStringLiteral(str) {
 /** Emit an array of string pointers. */
 function emitStringArray(names) {
   const n = names.length
-  const arr = `__sa${ctx.uid++}`
+  const arr = `__sa${ctx.uniq++}`
   ctx.locals.set(arr, 'i32')
   const body = [
     ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],

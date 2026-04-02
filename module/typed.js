@@ -41,7 +41,7 @@ export default () => {
     const stride = STRIDE[elemType]
     ctx.emit[`new.${name}`] = (lenExpr) => {
       const len = asI32(emit(lenExpr))
-      const t = `__ta${ctx.uid++}`
+      const t = `__ta${ctx.uniq++}`
       ctx.locals.set(t, 'i32')
       // Header: [-8:len(i32)][-4:cap(i32)][data...]. aux=elemType only.
       return typed(['block', ['result', 'f64'],

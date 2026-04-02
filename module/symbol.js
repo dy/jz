@@ -25,19 +25,18 @@ const RESERVED = 16  // first user atom ID
 
 export default () => {
   // Intern table: name → atomId (shared across compilation)
-  if (!ctx._atoms) {
-    ctx._atoms = new Map()   // name → id (for Symbol.for)
-    ctx._atomNext = RESERVED // next available id
+  if (!ctx.atom) {
+    ctx.atom = { table: new Map(), next: RESERVED }
   }
 
   /** Allocate a new unique atom ID. */
-  const nextAtom = () => ctx._atomNext++
+  const nextAtom = () => ctx.atom.next++
 
   /** Get or create interned atom ID for name. */
   const internAtom = (name) => {
-    if (ctx._atoms.has(name)) return ctx._atoms.get(name)
+    if (ctx.atom.table.has(name)) return ctx.atom.table.get(name)
     const id = nextAtom()
-    ctx._atoms.set(name, id)
+    ctx.atom.table.set(name, id)
     return id
   }
 

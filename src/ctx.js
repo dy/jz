@@ -22,18 +22,22 @@ export const ctx = {
   locals: new Map(),    // name → 'i32' | 'f64'
   valTypes: new Map(),  // name → 'number'|'array'|'string'|'object'|'set'|'map'|'closure'|'typed'
   stack: [],            // [{brk, loop}] for break/continue
-  uid: 0,              // unique counter for labels/temps
-  sig: null,           // current function signature
+  uniq: 0,             // incrementing counter for unique temp/label names
+  sig: null,         // current function {params, results}
 
   // --- Schema (object property layouts, set by ptr module) ---
-  schema: { list: [], vars: new Map(), register: null, find: null },
+  schema: { list: [], vars: new Map(), register: null, find: null, target: null },
 
   // --- Closures (set by fn module) ---
   fn: { types: null, table: null, bodies: null, make: null, call: null },
 
+  // --- Atoms (interned symbols, set by symbol module) ---
+  atom: null,          // { table: Map<name,id>, next: number }
+
   // --- Error tracking ---
   src: '',             // source code (for error messages)
   loc: null,           // current AST node char offset (from parser .loc)
+  throws: false,       // emit WASM exception tag for throw/catch
 }
 
 /** Reset all compilation state. Called once per jz() invocation. */
@@ -50,15 +54,14 @@ export function reset(proto, globals) {
   ctx.locals = new Map()
   ctx.valTypes = new Map()
   ctx.stack = []
-  ctx.uid = 0
+  ctx.uniq = 0
   ctx.sig = null
-  ctx.schema = { list: [], vars: new Map(), register: null, find: null }
+  ctx.schema = { list: [], vars: new Map(), register: null, find: null, target: null }
   ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
   ctx.src = ''
   ctx.loc = null
-  ctx._atoms = null
-  ctx._atomNext = 0
-  ctx._hasTag = false
+  ctx.atom = null
+  ctx.throws = false
 }
 
 /** Throw with source location context. */

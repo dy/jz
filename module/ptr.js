@@ -13,7 +13,7 @@ import { emit, typed, asF64, asI32 } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 const NAN_PREFIX = 0x7FF8
-const temp = () => { const n = `__t${ctx.uid++}`; ctx.locals.set(n, 'f64'); return n }
+const temp = () => { const n = `__t${ctx.uniq++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
   // Memory section auto-enabled: compile.js checks ctx.modules.ptr
@@ -86,11 +86,24 @@ export default () => {
   // === Property dispatch (.length, .prop) ===
 
   ctx.emit['.'] = (obj, prop) => {
+    // Boxed object: delegate .length and .prop to inner value or schema
+    if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
+      if (prop === 'length') {
+        // .length → delegate to inner value (slot 0)
+        const inner = ctx.schema.emitInner(obj)
+        return typed(['f64.convert_i32_s', ['call', '$__len', inner]], 'f64')
+      }
+      // Named property → schema lookup (already handles __inner__ offset)
+      const idx = ctx.schema.find(obj, prop)
+      if (idx >= 0)
+        return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
+    }
+
     // .length → dispatch by pointer type
     // SSO (type=5): aux bits. Heap string (type=4): offset-4. Array/typed/set/map: offset-8.
     if (prop === 'length') {
       const va = asF64(emit(obj))
-      const t = `__lt${ctx.uid++}`
+      const t = `__lt${ctx.uniq++}`
       ctx.locals.set(t, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ['call', '$__ptr_type', va]],
@@ -160,6 +173,17 @@ export default () => {
     const existing = ctx.schema.list.findIndex(s => s.join(',') === key)
     if (existing >= 0) return existing
     return ctx.schema.list.push(props) - 1
+  }
+
+  /** Check if variable has a boxed schema (slot 0 = __inner__). */
+  ctx.schema.isBoxed = (varName) => {
+    const id = ctx.schema.vars.get(varName)
+    return id != null && ctx.schema.list[id]?.[0] === '__inner__'
+  }
+
+  /** Emit code to load the inner value (slot 0) of a boxed variable. */
+  ctx.schema.emitInner = (varName) => {
+    return typed(['f64.load', ['call', '$__ptr_offset', asF64(emit(varName))]], 'f64')
   }
 
   ctx.schema.find = (varName, prop) => {

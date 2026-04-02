@@ -10,7 +10,7 @@
  * Division/power always produce f64. Bitwise/comparisons always produce i32.
  * Variables are typed by pre-analysis: if any assignment is f64, local is f64.
  *
- * Per-function state on ctx: locals (Map name→type), stack (loop labels), uid (counter), sig.
+ * Per-function state on ctx: locals (Map name→type), stack (loop labels), uniq (counter), sig.
  *
  * @module compile
  */
@@ -47,7 +47,7 @@ function toBool(node) {
 
 /** Allocate a temp local (always f64 for now), returns name without $. */
 function temp() {
-  const name = `__${ctx.uid++}`
+  const name = `__${ctx.uniq++}`
   ctx.locals.set(name, 'f64')
   return name
 }
@@ -81,7 +81,10 @@ function emitDecl(...inits) {
     if (!Array.isArray(i) || i[0] !== '=') continue
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
+    // Let {} emitter use variable's merged schema (from Object.assign inference)
+    if (Array.isArray(init) && init[0] === '{}') ctx.schema.target = name
     const val = emit(init)
+    ctx.schema.target = null
     const localType = ctx.locals.get(name) || 'f64'
     result.push(typed(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)], localType))
   }
@@ -122,11 +125,16 @@ export function valTypeOf(expr) {
     }
     // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
-      const method = callee[2]
+      const [, obj, method] = callee
       if (method === 'map' || method === 'filter' || method === 'slice') return VAL.ARRAY
       if (method === 'push') return VAL.ARRAY
       if (method === 'add' || method === 'delete') return VAL.SET
       if (method === 'set') return VAL.MAP
+      // concat preserves type of object it's called on
+      if (method === 'concat') {
+        const objType = valTypeOf(obj)
+        if (objType) return objType  // string.concat → string, array.concat → array
+      }
     }
   }
   return null
@@ -242,6 +250,145 @@ function analyzeLocals(body) {
 /** Normalize emitter output to flat node array. */
 const flat = ir => ir == null ? [] : Array.isArray(ir) && ir.length && Array.isArray(ir[0]) ? ir : [ir]
 
+/**
+ * Reconstruct arguments with spreads inserted at correct positions.
+ * Example: normal=[a, c], spreads=[{pos:1, expr:arr}] → [a, __spread(arr), c]
+ */
+function reconstructArgsWithSpreads(normal, spreads) {
+  const combined = []
+  let normalIdx = 0
+  for (let targetPos = 0; targetPos <= normal.length; targetPos++) {
+    // Insert all spreads marked for this position
+    for (const spread of spreads) {
+      if (spread.pos === targetPos) {
+        combined.push(['__spread', spread.expr])
+      }
+    }
+    // Insert the next normal argument (if available)
+    if (normalIdx < normal.length) {
+      combined.push(normal[normalIdx++])
+    }
+  }
+  return combined
+}
+
+/**
+ * Build an array from items, handling ['__spread', expr] markers.
+ * Split into sections (normal arrays and spreads), then copy all into result.
+ */
+function buildArrayWithSpreads(items) {
+  const spreads = []
+  for (let i = 0; i < items.length; i++) {
+    if (Array.isArray(items[i]) && items[i][0] === '__spread') {
+      spreads.push({ pos: i, expr: items[i][1] })
+    }
+  }
+
+  // No spreads: simple array literal
+  if (spreads.length === 0) {
+    return emit(['[', ...items])
+  }
+
+  // Split into sections: [a, b, ...arr, c] → [[a,b], arr, [c]]
+  const sections = []
+  let currentArray = []
+
+  for (let i = 0; i < items.length; i++) {
+    if (Array.isArray(items[i]) && items[i][0] === '__spread') {
+      if (currentArray.length > 0) {
+        sections.push({ type: 'array', items: currentArray })
+        currentArray = []
+      }
+      sections.push({ type: 'spread', expr: items[i][1] })
+    } else {
+      currentArray.push(items[i])
+    }
+  }
+  if (currentArray.length > 0) {
+    sections.push({ type: 'array', items: currentArray })
+  }
+
+  // Single section: just emit it
+  if (sections.length === 1) {
+    const sec = sections[0]
+    return emit(sec.type === 'array' ? ['[', ...sec.items] : sec.expr)
+  }
+
+  // Multiple sections: calculate total length, allocate, copy each section
+  const result = `__arr${ctx.uniq++}`
+  const len = `__len${ctx.uniq++}`
+  const pos = `__pos${ctx.uniq++}`
+  ctx.locals.set(result, 'i32')
+  ctx.locals.set(len, 'i32')
+  ctx.locals.set(pos, 'i32')
+
+  const ir = [
+    // Calculate total length
+    ['local.set', `$${len}`, ['i32.const', 0]],
+  ]
+
+  // Emit spread expressions once, store in locals
+  for (const sec of sections) {
+    if (sec.type === 'spread') {
+      sec.local = `__sp${ctx.uniq++}`
+      ctx.locals.set(sec.local, 'f64')
+      ir.push(['local.set', `$${sec.local}`, asF64(emit(sec.expr))])
+    }
+  }
+
+  // Sum lengths of all sections
+  for (const sec of sections) {
+    if (sec.type === 'array') {
+      ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', sec.items.length]]])
+    } else {
+      ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', ['local.get', `$${sec.local}`]]]])
+    }
+  }
+
+  // Allocate result array
+  ir.push(
+    ['local.set', `$${result}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]],
+    ['i32.store', ['local.get', `$${result}`], ['local.get', `$${len}`]],
+    ['i32.store', ['i32.add', ['local.get', `$${result}`], ['i32.const', 4]], ['local.get', `$${len}`]],
+    ['local.set', `$${result}`, ['i32.add', ['local.get', `$${result}`], ['i32.const', 8]]],
+    ['local.set', `$${pos}`, ['i32.const', 0]]
+  )
+
+  // Copy each section
+  for (const sec of sections) {
+    if (sec.type === 'array') {
+      for (let i = 0; i < sec.items.length; i++) {
+        ir.push(
+          ['f64.store',
+            ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
+            asF64(emit(sec.items[i]))],
+          ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]]
+        )
+      }
+    } else {
+      const src = `__src${ctx.uniq++}`, slen = `__slen${ctx.uniq++}`, sidx = `__sidx${ctx.uniq++}`
+      ctx.locals.set(src, 'i32'); ctx.locals.set(slen, 'i32'); ctx.locals.set(sidx, 'i32')
+      const loopId = ctx.uniq++
+      ir.push(
+        ['local.set', `$${src}`, ['call', '$__ptr_offset', ['local.get', `$${sec.local}`]]],
+        ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${sec.local}`]]],
+        ['local.set', `$${sidx}`, ['i32.const', 0]],
+        ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
+          ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${slen}`]]],
+          ['f64.store',
+            ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
+            ['f64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${sidx}`], ['i32.const', 3]]]]],
+          ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
+          ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
+          ['br', `$loop${loopId}`]]]
+      )
+    }
+  }
+
+  ir.push(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${result}`]])  // 1 = ARRAY type
+  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+}
+
 // === Module compilation ===
 
 /**
@@ -263,7 +410,7 @@ export default function compile(ast) {
 
     // Reset per-function state
     ctx.stack = []
-    ctx.uid = 0
+    ctx.uniq = 0
     ctx.sig = sig
 
     // Pre-analyze local types from body
@@ -314,7 +461,7 @@ export default function compile(ast) {
       ctx.locals = new Map()
       ctx.valTypes = new Map()
       ctx.stack = []
-      ctx.uid = Math.max(ctx.uid, 100) // avoid label collisions
+      ctx.uniq = Math.max(ctx.uniq, 100) // avoid label collisions
       ctx.sig = { params: [{ name: '__env', type: 'f64' }, ...cb.params.map(n => ({ name: n, type: 'f64' }))], results: ['f64'] }
 
       const fn = ['func', `$${cb.name}`]
@@ -366,7 +513,7 @@ export default function compile(ast) {
   }
 
   if (ctx.modules.ptr) sections.push(['memory', ['export', '"memory"'], 1])
-  if (ctx._hasTag) sections.push(['tag', '$__jz_err', ['param', 'f64']])
+  if (ctx.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
 
   // Table for closures
   if (ctx.fn.table?.length)
@@ -428,6 +575,10 @@ function emitBody(node) {
  * @type {Record<string, (...args: any[]) => Array>}
  */
 export const emitter = {
+  // === Spread operator ===
+  // Note: spread is handled specially in call contexts; this catches stray uses
+  '...': expr => err('Spread (...) can only be used in function/method calls or array literals'),
+
   // === Statements ===
 
   ';': (...args) => args.map(emit).filter(x => x != null),
@@ -436,13 +587,13 @@ export const emitter = {
   'export': () => null,
 
   'throw': expr => {
-    ctx._hasTag = true
+    ctx.throws = true
     return typed(['throw', '$__jz_err', asF64(emit(expr))], 'void')
   },
 
   'catch': (body, errName, handler) => {
-    ctx._hasTag = true
-    const id = ctx.uid++
+    ctx.throws = true
+    const id = ctx.uniq++
     ctx.locals.set(errName, 'f64')
     const prev = ctx._inTry; ctx._inTry = true
     const bodyIR = Array.isArray(body) && body[0] === '{}' ? emitBody(body) : flat(emit(body))
@@ -647,13 +798,19 @@ export const emitter = {
 
   'if': (cond, then, els) => {
     const c = toBool(cond)
-    if (els != null) return ['if', c, ['then', emit(then)], ['else', emit(els)]]
-    return ['if', c, ['then', emit(then)]]
+    const t = emit(then), e = els != null ? emit(els) : null
+    // Drop expression results in then/else branches (WASM if without result can't leave values on stack)
+    const thenBody = t?.type && t.type !== 'void' ? [t, 'drop'] : [t]
+    if (e != null) {
+      const elseBody = e?.type && e.type !== 'void' ? [e, 'drop'] : [e]
+      return ['if', c, ['then', ...thenBody], ['else', ...elseBody]]
+    }
+    return ['if', c, ['then', ...thenBody]]
   },
 
   'for': (init, cond, step, body) => {
     if (body === undefined) return err('for-in/for-of not supported')
-    const id = ctx.uid++
+    const id = ctx.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
     ctx.stack.push({ brk, loop })
     const result = []
@@ -669,7 +826,7 @@ export const emitter = {
   },
 
   'switch': (discriminant, ...cases) => {
-    const disc = `__disc${ctx.uid++}`
+    const disc = `__disc${ctx.uniq++}`
     ctx.locals.set(disc, 'f64')
 
     const result = [typed(['local.set', `$${disc}`, asF64(emit(discriminant))], 'f64')]
@@ -677,7 +834,7 @@ export const emitter = {
     for (const c of cases) {
       if (c[0] === 'case') {
         const [, test, body] = c
-        const skip = `$skip${ctx.uid++}`
+        const skip = `$skip${ctx.uniq++}`
         // Block: skip if discriminant != test, otherwise execute body
         result.push(['block', skip,
           ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
@@ -700,37 +857,119 @@ export const emitter = {
   '=>': (rawParams, body) => {
     if (!ctx.fn.make) err('Closures require fn module (auto-included)')
 
-    // Extract param names
+    // Extract param names and detect rest params
     let p = rawParams
     if (Array.isArray(p) && p[0] === '()') p = p[1]
-    const params = p == null ? []
+    const raw = p == null ? []
       : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p])
       : [p]
+
+    // Extract param names, handling rest params: ['...', 'name'] → 'name'
+    const params = []
+    let restParam = null
+    for (const r of raw) {
+      if (Array.isArray(r) && r[0] === '...') {
+        restParam = r[1]
+        params.push(r[1])
+      } else {
+        params.push(r)
+      }
+    }
 
     // Find free variables in body that aren't params → captures
     const paramSet = new Set(params)
     const captures = []
     findFreeVars(body, paramSet, captures)
 
-    return ctx.fn.make(params, body, captures)
+    // Pass closure info including rest param marker
+    const closureInfo = { params, body, captures, restParam }
+    return ctx.fn.make(closureInfo)
   },
 
   '()': (callee, callArgs) => {
-    const argList = Array.isArray(callArgs)
+    let argList = Array.isArray(callArgs)
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
+
+    // Helper: expand spread arguments into flat list of normal arguments + spread markers
+    // Returns { normal: [...], spreads: [(pos, expr), ...] }
+    const parseArgs = (args) => {
+      const normal = []
+      const spreads = []
+      for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+        if (Array.isArray(arg) && arg[0] === '...') {
+          spreads.push({ pos: normal.length, expr: arg[1] })
+        } else {
+          normal.push(arg)
+        }
+      }
+      return { normal, spreads, hasSpread: spreads.length > 0 }
+    }
+
+    const parsed = parseArgs(argList)
 
     // Method call: obj.method(args) → type-aware dispatch
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
       const vt = typeof obj === 'string' ? ctx.valTypes.get(obj) : valTypeOf(obj)
+
+      // Helper to call method with arguments (handles spread expansion)
+      const callMethod = (objArg, methodEmitter) => {
+        if (!parsed.hasSpread) {
+          return methodEmitter(objArg, ...parsed.normal)
+        }
+
+        // Single spread at end: call method with normal args, then loop spread elements
+        if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length) {
+          const spreadExpr = parsed.spreads[0].expr
+          const acc = `__acc${ctx.uniq++}`, arr = `__sp${ctx.uniq++}`, len = `__splen${ctx.uniq++}`, idx = `__spidx${ctx.uniq++}`
+          ctx.locals.set(acc, 'f64'); ctx.locals.set(arr, 'f64')
+          ctx.locals.set(len, 'i32'); ctx.locals.set(idx, 'i32')
+
+          const ir = []
+          ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
+          if (parsed.normal.length > 0)
+            ir.push(['local.set', `$${acc}`, methodEmitter(objArg, ...parsed.normal)])
+
+          ir.push(['local.set', `$${arr}`, asF64(emit(spreadExpr))])
+          ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
+          ir.push(['local.set', `$${idx}`, ['i32.const', 0]])
+          ir.push(['block', `$break${ctx.uniq}`,
+            ['loop', `$continue${ctx.uniq}`,
+              ['br_if', `$break${ctx.uniq}`, ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+              ['local.set', `$${acc}`, methodEmitter(acc, ['[]', arr, idx])],
+              ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', 1]]],
+              ['br', `$continue${ctx.uniq}`]]])
+
+          ir.push(['local.get', `$${acc}`])
+          return typed(['block', ['result', 'f64'], ...ir], 'f64')
+        }
+
+        // More complex spreads - build full array and pass to method
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        const arrayIR = buildArrayWithSpreads(combined)
+        return methodEmitter(objArg, arrayIR)
+      }
+
+      // Boxed object: delegate method to inner value (slot 0)
+      if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
+        const emitter = ctx.emit[`.${vt}:${method}`] || ctx.emit[`.${method}`]
+        if (emitter) return callMethod(ctx.schema.emitInner(obj), emitter)
+      }
+
       // Known type → static dispatch
-      if (vt && ctx.emit[`.${vt}:${method}`]) return ctx.emit[`.${vt}:${method}`](obj, ...argList)
+      if (vt && ctx.emit[`.${vt}:${method}`]) {
+        return callMethod(obj, ctx.emit[`.${vt}:${method}`])
+      }
+
       // Unknown type, both string + generic exist → runtime dispatch by ptr type
       const strKey = `.string:${method}`, genKey = `.${method}`
       if (!vt && ctx.emit[strKey] && ctx.emit[genKey]) {
-        const t = `__rt${ctx.uid++}`, tt = `__rtt${ctx.uid++}`
+        const t = `__rt${ctx.uniq++}`, tt = `__rtt${ctx.uniq++}`
         ctx.locals.set(t, 'f64'); ctx.locals.set(tt, 'i32')
+        const strEmitter = ctx.emit[strKey]
+        const genEmitter = ctx.emit[genKey]
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, asF64(emit(obj))],
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
@@ -738,37 +977,56 @@ export const emitter = {
             ['i32.or',
               ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 4]],   // STRING
               ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]],  // STRING_SSO
-            ['then', ctx.emit[strKey](t, ...argList)],
-            ['else', ctx.emit[genKey](t, ...argList)]]], 'f64')
+            ['then', callMethod(t, strEmitter)],
+            ['else', callMethod(t, genEmitter)]]], 'f64')
       }
+
       // Generic only
-      if (ctx.emit[genKey]) return ctx.emit[genKey](obj, ...argList)
+      if (ctx.emit[genKey]) {
+        return callMethod(obj, ctx.emit[genKey])
+      }
     }
 
-    if (ctx.emit[callee]) return ctx.emit[callee](...argList)
+    if (ctx.emit[callee]) {
+      if (parsed.hasSpread) err(`Spread not supported in ${callee} calls`)
+      return ctx.emit[callee](...parsed.normal)
+    }
 
     // Direct call if callee is a known top-level function
     if (typeof callee === 'string' && funcNames.has(callee)) {
       const func = ctx.funcs.find(f => f.name === callee)
-      const fixedParamCount = func?.rest ? func.sig.params.length - 1 : func?.sig.params.length || argList.length
 
-      // Rest param case: collect remaining args into array
+      // Rest param case: collect all args (including expanded spreads) into array
       if (func?.rest) {
-        const fixedArgs = argList.slice(0, fixedParamCount)
-        const restArgs = argList.slice(fixedParamCount)
-        // Emit array literal as an AST node: ['[', ...restArgs]
-        const restArrayAST = ['[', ...restArgs]
-        const restArrayIR = emit(restArrayAST)
+        const fixedParamCount = func.sig.params.length - 1
+        const fixedArgs = parsed.normal.slice(0, fixedParamCount)
+
+        // Reconstruct with spreads, then take rest args
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        const restArgsFinal = combined.slice(fixedParamCount)
+
+        // Build array: emit code for normal args + code to expand spreads
+        const arrayIR = buildArrayWithSpreads(restArgsFinal)
         return typed(['call', `$${callee}`,
           ...fixedArgs.map(a => asF64(emit(a))),
-          restArrayIR], 'f64')
+          arrayIR], 'f64')
       }
 
-      return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
+      // Regular function call without rest params
+      if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
+      return typed(['call', `$${callee}`, ...parsed.normal.map(a => asF64(emit(a)))], 'f64')
     }
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer
-    if (ctx.fn.call) return ctx.fn.call(emit(callee), argList)
+    if (ctx.fn.call) {
+      if (parsed.hasSpread) {
+        // Closure with spread: assume closure expects array (rest params)
+        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        const arrayIR = buildArrayWithSpreads(combined)
+        return ctx.fn.call(emit(callee), [arrayIR])
+      }
+      return ctx.fn.call(emit(callee), parsed.normal)
+    }
 
     // Unknown callee — assume direct call
     return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')

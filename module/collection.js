@@ -30,7 +30,7 @@ export default () => {
   // new Set() → allocate table, return pointer
   // Layout: [-8:size(i32)][-4:cap(i32)][entries...]
   ctx.emit['new.Set'] = () => {
-    const t = `__set${ctx.uid++}`
+    const t = `__set${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', INIT_CAP * SET_ENTRY + 8]]],
@@ -124,7 +124,7 @@ export default () => {
   // === Map ===
 
   ctx.emit['new.Map'] = () => {
-    const t = `__map${ctx.uid++}`
+    const t = `__map${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     // Layout: [-8:size(i32)][-4:cap(i32)][entries...]
     return typed(['block', ['result', 'f64'],
