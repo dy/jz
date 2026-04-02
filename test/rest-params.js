@@ -234,6 +234,16 @@ test('Object.assign: boxed array length', () => {
   is(f(), 3)
 })
 
+test('Object.assign: boxed array write prop', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    Object.assign(a, {x: 10})
+    a.x = 42
+    return a.x
+  }`)
+  is(f(), 42)
+})
+
 test('Object.assign: boxed array indexing', () => {
   const { f } = run(`export let f = () => {
     let a = [10, 20, 30]

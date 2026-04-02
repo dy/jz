@@ -104,7 +104,8 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] Array spread — [...a, ...b], [...a, 99]
 * [x] Object literals, property access, write — schema-based NaN-boxed pointers
 * [x] Object destructuring — let {x, y} = obj, let {x: alias} = obj
-* [ ] Rest params (...args) — WASM has fixed arity, deferred
+* [x] Rest params (...args) — array-based: rest args collected into array at call boundary
+* [x] Spread operator (...arr) — in arrays, function calls, method calls
 * [x] Default params (x = 5) — NaN-based detection
 * [x] TypedArrays — new Float64Array(n), Int32Array, etc. (type=3, elem in aux)
 * [x] Set — new Set(), .add, .has, .delete, .size (type=8, open addressing)
@@ -116,7 +117,7 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] Closures — capture by value, NaN-boxed pointer (type=10, aux=funcIdx, offset=envPtr)
 * [x] First-class functions — currying, callbacks, funcref via call_indirect + function table
 * [x] Nested function definitions — depth tracking, inner arrows stay as closure values
-* [ ] Mutable capture (capture by reference) — currently errors silently, returns stale value
+* [x] Mutable capture (capture by reference) — memory cells for mutated vars, zero cost for immutable
 
 ### String methods
 
@@ -130,7 +131,7 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 
 * [ ] Regex (parser, codegen, test/exec/match/replace/split)
 * [x] Symbol — type=0 (ATOM), aux=atomId. Reserved 0-15 (null, undefined, future). Symbol() unique per site, Symbol.for() interned
-* [x] Object.assign — compile-time schema cross-copy (matching property names between schemas)
+* [x] Object.assign — schema inference + cross-copy, boxed primitives (Object.assign on arrays/strings)
 * [x] Number.isNaN, isFinite, isInteger, parseInt, parseFloat + constants (EPSILON, MAX_SAFE_INTEGER, etc.)
 * [x] Array.isArray — ptr_type === ARRAY
 * [ ] Array.from — needs iterable protocol

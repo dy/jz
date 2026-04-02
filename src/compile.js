@@ -59,19 +59,74 @@ function loopTop() {
   return top
 }
 
-/** Find free variables in AST that aren't in the given set (for closure capture). */
-function findFreeVars(node, bound, free) {
+/** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
+function findFreeVars(node, bound, free, scope) {
   if (node == null) return
   if (typeof node === 'string') {
-    // Free if: not a param of the inner function, AND exists in outer scope (locals or params)
-    const isOuterVar = ctx.locals?.has(node) || ctx.sig?.params.some(p => p.name === node)
-    if (!bound.has(node) && isOuterVar && !free.includes(node)) free.push(node)
+    const inScope = scope
+      ? scope.has(node)
+      : (ctx.locals?.has(node) || ctx.sig?.params.some(p => p.name === node))
+    if (!bound.has(node) && inScope && !free.includes(node)) free.push(node)
     return
   }
   if (!Array.isArray(node)) return
   const [op, ...args] = node
   if (op === '=>') return  // don't cross into nested arrows
-  for (const a of args) findFreeVars(a, bound, free)
+  for (const a of args) findFreeVars(a, bound, free, scope)
+}
+
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%='])
+
+/**
+ * Pre-scan function body for captured variables that are mutated.
+ * Collects outer-scope declarations, then for each arrow, finds true captures
+ * (vars declared in outer scope, not inside the closure), checks for mutations.
+ */
+function analyzeBoxedCaptures(body) {
+  // Collect outer-scope declarations (not inside arrows) + function params
+  const outerScope = new Set()
+  ;(function collectDecls(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const')
+      for (const a of args)
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') outerScope.add(a[1])
+    for (const a of args) collectDecls(a)
+  })(body)
+  if (ctx.sig?.params) for (const p of ctx.sig.params) outerScope.add(p.name)
+
+  // For each closure, find captures, check if any are mutated anywhere
+  ;(function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') {
+      let p = args[0]
+      if (Array.isArray(p) && p[0] === '()') p = p[1]
+      const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+      const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
+      const captures = []
+      findFreeVars(args[1], paramSet, captures, outerScope)
+      if (captures.length === 0) return
+      const captureSet = new Set(captures)
+      const mutated = new Set()
+      findMutations(body, captureSet, mutated)  // walks everywhere, including nested closures
+      for (const v of mutated) ctx.boxed.set(v, `__cell_${v}`)
+      return
+    }
+    for (const a of args) walk(a)
+  })(body)
+}
+
+/** Check if any of the given variable names are assigned anywhere in the AST (crosses into closures). */
+function findMutations(node, names, mutated) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
+  const [op, ...args] = node
+  if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && names.has(args[0]))
+    mutated.add(args[0])
+  if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
+    mutated.add(args[0])
+  for (const a of args) findMutations(a, names, mutated)
 }
 
 /** Emit let/const initializations as typed local.set instructions. */
@@ -85,6 +140,15 @@ function emitDecl(...inits) {
     if (Array.isArray(init) && init[0] === '{}') ctx.schema.target = name
     const val = emit(init)
     ctx.schema.target = null
+    // Boxed variable: allocate cell, store value, cell local holds pointer (i32)
+    if (ctx.boxed.has(name)) {
+      const cell = ctx.boxed.get(name)
+      ctx.locals.set(cell, 'i32')
+      result.push(
+        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', ['local.get', `$${cell}`], asF64(val)])
+      continue
+    }
     const localType = ctx.locals.get(name) || 'f64'
     result.push(typed(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)], localType))
   }
@@ -418,7 +482,11 @@ export default function compile(ast) {
     const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
     ctx.locals = block ? analyzeLocals(body) : new Map()
     ctx.valTypes = new Map()
-    if (block) analyzeValTypes(body)
+    ctx.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
+    if (block) {
+      analyzeValTypes(body)
+      analyzeBoxedCaptures(body)
+    }
 
     const fn = ['func', `$${name}`]
     if (exported) fn.push(['export', `"${name}"`])
@@ -437,17 +505,29 @@ export default function compile(ast) {
           ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
     }
 
+    // Box params that are mutably captured: allocate cell, copy param value
+    const boxedParamInits = []
+    for (const p of sig.params) {
+      if (ctx.boxed.has(p.name)) {
+        const cell = ctx.boxed.get(p.name)
+        ctx.locals.set(cell, 'i32')
+        boxedParamInits.push(
+          ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+          ['f64.store', ['local.get', `$${cell}`], asF64(typed(['local.get', `$${p.name}`], p.type))])
+      }
+    }
+
     if (block) {
       const stmts = emitBody(body)
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...defaultInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
+      fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
     } else if (multi && body[0] === '[') {
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...body.slice(1).map(e => asF64(emit(e))))
+      fn.push(...boxedParamInits, ...body.slice(1).map(e => asF64(emit(e))))
     } else {
       const ir = emit(body)
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...defaultInits, asF64(ir))
+      fn.push(...defaultInits, ...boxedParamInits, asF64(ir))
     }
 
     return fn
@@ -460,6 +540,8 @@ export default function compile(ast) {
       // Reset per-function state for closure body
       ctx.locals = new Map()
       ctx.valTypes = new Map()
+      // In closure bodies, boxed captures use the original name as both var and cell local
+      ctx.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
       ctx.stack = []
       ctx.uniq = Math.max(ctx.uniq, 100) // avoid label collisions
       ctx.sig = { params: [{ name: '__env', type: 'f64' }, ...cb.params.map(n => ({ name: n, type: 'f64' }))], results: ['f64'] }
@@ -469,10 +551,10 @@ export default function compile(ast) {
       fn.push(...cb.params.map(p => ['param', `$${p}`, 'f64']))
       fn.push(['result', 'f64'])
 
-      // Load captured variables from env memory into locals
+      // Register captured variable locals (i32 for boxed = cell pointer, f64 otherwise)
       for (let i = 0; i < cb.captures.length; i++) {
         const name = cb.captures[i]
-        ctx.locals.set(name, 'f64')
+        ctx.locals.set(name, ctx.boxed.has(name) ? 'i32' : 'f64')
       }
 
       // Emit body
@@ -488,10 +570,12 @@ export default function compile(ast) {
       // Insert locals (captures + declared)
       for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
 
-      // Load captures from env
+      // Load captures from env (cell pointer for boxed, value for immutable)
       for (let i = 0; i < cb.captures.length; i++) {
-        fn.push(['local.set', `$${cb.captures[i]}`,
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', '$__env']], ['i32.const', i * 8]]]])
+        const name = cb.captures[i]
+        const loadEnv = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', '$__env']], ['i32.const', i * 8]]]
+        fn.push(['local.set', `$${name}`,
+          ctx.boxed.has(name) ? ['i32.trunc_f64_u', loadEnv] : loadEnv])
       }
 
       fn.push(...bodyIR)
@@ -649,6 +733,9 @@ export const emitter = {
       }
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    // Boxed variable: store to memory cell
+    if (ctx.boxed?.has(name))
+      return ['f64.store', ['local.get', `$${ctx.boxed.get(name)}`], asF64(emit(val))]
     const v = emit(val), t = ctx.locals.get(name) || 'f64'
     return typed(['local.set', `$${name}`, t === 'f64' ? asF64(v) : asI32(v)], t)
   },
@@ -657,6 +744,11 @@ export const emitter = {
   ...Object.fromEntries([
     ['+=', 'add'], ['-=', 'sub'], ['*=', 'mul'],
   ].map(([op, fn]) => [op, (name, val) => {
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`
+      const va = typed(['f64.load', ['local.get', c]], 'f64'), vb = emit(val)
+      return ['f64.store', ['local.get', c], typed([`f64.${fn}`, asF64(va), asF64(vb)], 'f64')]
+    }
     const t = ctx.locals.get(name) || 'f64'
     const va = typed(['local.get', `$${name}`], t), vb = emit(val)
     const result = va.type === 'i32' && vb.type === 'i32'
@@ -666,26 +758,50 @@ export const emitter = {
   }])),
 
   '/=': (name, val) => {
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`
+      return ['f64.store', ['local.get', c], typed(['f64.div',
+        typed(['f64.load', ['local.get', c]], 'f64'), asF64(emit(val))], 'f64')]
+    }
     const t = ctx.locals.get(name) || 'f64'
     const va = asF64(typed(['local.get', `$${name}`], t)), vb = asF64(emit(val))
     return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.div', va, vb], 'f64') : asI32(typed(['f64.div', va, vb], 'f64'))], t)
   },
 
   '%=': (name, val) => {
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`
+      return ['f64.store', ['local.get', c], typed(['f64.rem',
+        typed(['f64.load', ['local.get', c]], 'f64'), asF64(emit(val))], 'f64')]
+    }
     const t = ctx.locals.get(name) || 'f64'
     const va = asF64(typed(['local.get', `$${name}`], t)), vb = asF64(emit(val))
     return typed(['local.set', `$${name}`, t === 'f64' ? typed(['f64.rem', va, vb], 'f64') : asI32(typed(['f64.rem', va, vb], 'f64'))], t)
   },
 
-  // === Increment/Decrement (local.tee: set + return new value) ===
+  // === Increment/Decrement ===
   // Postfix resolved in prepare: i++ → (++i) - 1
 
   '++': name => {
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`, t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ['f64.add', typed(['f64.load', ['local.get', c]], 'f64'), ['f64.const', 1]]],
+        ['f64.store', ['local.get', c], ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
     const t = ctx.locals.get(name) || 'f64'
     const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return typed(['local.tee', `$${name}`, [`${t}.add`, ['local.get', `$${name}`], one]], t)
   },
   '--': name => {
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`, t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ['f64.sub', typed(['f64.load', ['local.get', c]], 'f64'), ['f64.const', 1]]],
+        ['f64.store', ['local.get', c], ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
     const t = ctx.locals.get(name) || 'f64'
     const one = t === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return typed(['local.tee', `$${name}`, [`${t}.sub`, ['local.get', `$${name}`], one]], t)
@@ -1053,6 +1169,9 @@ export function emit(node) {
   }
   if (typeof node === 'string') {
     if (ctx.emit[node]) return ctx.emit[node]()
+    // Boxed variable: load from memory cell
+    if (ctx.boxed?.has(node))
+      return typed(['f64.load', ['local.get', `$${ctx.boxed.get(node)}`]], 'f64')
     const t = ctx.locals?.get(node) || ctx.sig?.params.find(p => p.name === node)?.type || 'f64'
     return typed(['local.get', `$${node}`], t)
   }

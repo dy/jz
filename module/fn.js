@@ -44,7 +44,11 @@ export default () => {
     // Build the closure body: (env: f64, param0: f64, ...) → f64
     // Inside the body, captured vars are loaded from env memory
     // If closure has rest params, the single param is the rest array
-    const bodyFn = { name: fnName, params, body, captures, arity, ...(restParam && { rest: restParam }) }
+    // Track which captures are boxed (mutable) — they get cell pointers, not values
+    const boxedCaptures = captures.filter(c => ctx.boxed?.has(c))
+    const bodyFn = { name: fnName, params, body, captures, arity,
+      ...(restParam && { rest: restParam }),
+      ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }) }
     ctx.fn.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)
@@ -61,11 +65,12 @@ export default () => {
     const block = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', captures.length * 8]]],
     ]
-    // Store each captured variable as f64 in env
+    // Store captured values (or cell pointers for boxed vars) in env
     for (let i = 0; i < captures.length; i++) {
-      block.push(['f64.store',
-        ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]],
-        asF64(emit(captures[i]))])
+      const v = ctx.boxed?.has(captures[i])
+        ? typed(['f64.convert_i32_u', ['local.get', `$${ctx.boxed.get(captures[i])}`]], 'f64')
+        : asF64(emit(captures[i]))
+      block.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], v])
     }
     block.push(['call', '$__mkptr', ['i32.const', CLOSURE], ['i32.const', tableIdx], ['local.get', `$${t}`]])
 

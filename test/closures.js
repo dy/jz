@@ -92,7 +92,7 @@ test('closure: no-capture function reference', () => {
 
 // === Closure preserves value at creation time ===
 
-test('closure: captures value, not reference', () => {
+test('closure: mutable capture (by reference)', () => {
   is(run(`
     export let test = () => {
       let n = 10
@@ -100,7 +100,76 @@ test('closure: captures value, not reference', () => {
       n = 999
       return fn(5)
     }
-  `).test(), 15)  // captures n=10, not n=999
+  `).test(), 1004)  // n=999 visible to closure (JS semantics)
+})
+
+test('closure: mutation from inside closure', () => {
+  is(run(`
+    export let test = () => {
+      let count = 0
+      let inc = () => { count += 1; return count }
+      inc()
+      inc()
+      return inc()
+    }
+  `).test(), 3)
+})
+
+test('closure: immutable capture stays fast', () => {
+  is(run(`
+    export let test = () => {
+      let x = 42
+      let fn = () => x
+      return fn()
+    }
+  `).test(), 42)
+})
+
+test('closure: two closures share mutable cell', () => {
+  is(run(`
+    export let test = () => {
+      let n = 0
+      let inc = () => { n += 1; return n }
+      let get = () => n
+      inc()
+      inc()
+      return get()
+    }
+  `).test(), 2)
+})
+
+test('closure: inner mutation visible to outer', () => {
+  is(run(`
+    export let test = () => {
+      let n = 0
+      let inc = () => { n += 1; return n }
+      inc()
+      inc()
+      return n
+    }
+  `).test(), 2)
+})
+
+test('closure: ++ on captured var', () => {
+  is(run(`
+    export let test = () => {
+      let n = 0
+      let inc = () => ++n
+      inc()
+      inc()
+      return inc()
+    }
+  `).test(), 3)
+})
+
+test('closure: captured parameter', () => {
+  is(run(`
+    export let add = (base) => {
+      let fn = (x) => base + x
+      base = 100
+      return fn(5)
+    }
+  `).add(0), 105)
 })
 
 // === Multiple closures from same factory ===
