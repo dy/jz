@@ -178,6 +178,8 @@ export function valTypeOf(expr) {
   if (op === 'str') return VAL.STRING
   if (op === '=>') return VAL.CLOSURE
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+  // Arithmetic expressions produce numbers
+  if (['+', '-', '*', '/', '%', '**', '++', '--', '~', '&', '|', '^', '<<', '>>', '>>>'].includes(op)) return VAL.NUMBER
 
   if (op === '()') {
     const callee = args[0]
@@ -213,6 +215,7 @@ function analyzeValTypes(body) {
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
+    if (op === '=>') return  // don't leak inner-closure val types
     if (op === 'let' || op === 'const') {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
@@ -304,7 +307,7 @@ function analyzeLocals(body) {
       if (locals.has(args[0])) locals.set(args[0], 'f64') // division always f64
     }
 
-    for (const a of args) walk(a)
+    if (op !== '=>') for (const a of args) walk(a)  // don't leak inner-closure locals
   }
 
   walk(body)
@@ -561,7 +564,7 @@ export default function compile(ast) {
       const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
       let bodyIR
       if (block) {
-        analyzeLocals(cb.body)  // adds declared locals
+        for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.locals.has(k)) ctx.locals.set(k, v)
         bodyIR = emitBody(cb.body)
       } else {
         bodyIR = [asF64(emit(cb.body))]
@@ -597,6 +600,8 @@ export default function compile(ast) {
   }
 
   if (ctx.modules.ptr) sections.push(['memory', ['export', '"memory"'], 1])
+  // Static data segment at address 0 (heap starts at 1024, so no conflict)
+  if (ctx.data) sections.push(['data', ['i32.const', 0], `"${ctx.data}"`])
   if (ctx.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
 
   // Table for closures

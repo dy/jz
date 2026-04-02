@@ -45,7 +45,8 @@ export default () => {
   ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
     (local $ptr i32)
     (local.set $ptr (global.get $__heap))
-    (global.set $__heap (i32.add (global.get $__heap) (local.get $bytes)))
+    ;; Align next allocation to 8 bytes
+    (global.set $__heap (i32.and (i32.add (i32.add (global.get $__heap) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
     (local.get $ptr))`
 
   ctx.stdlib['__reset'] = `(func $__reset

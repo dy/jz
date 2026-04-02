@@ -1,6 +1,7 @@
 // Test utilities
 import jz from '../index.js'
 import compile from '../index.js'
+import { wasi } from '../wasi.js'
 
 /** Evaluate a JS expression via jz → WASM. */
 export async function evaluate(code) {
@@ -17,7 +18,11 @@ export async function evaluate(code) {
 export function run(code) {
   const wasm = compile(code)
   const mod = new WebAssembly.Module(wasm)
-  const inst = new WebAssembly.Instance(mod)
+  // Provide WASI imports if module needs them (console.log, etc.)
+  const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
+  const imports = needsWasi ? wasi() : undefined
+  const inst = new WebAssembly.Instance(mod, imports)
+  if (needsWasi) imports._setMemory(inst.exports.memory)
 
   // Read jz:rest custom section to know which functions have rest params
   const restFuncs = new Set()

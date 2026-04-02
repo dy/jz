@@ -59,6 +59,7 @@ function prep(node) {
     if (typeof args[0] === 'string') {
       includeModule('ptr')
       includeModule('string')
+      includeModule('number')
       return ['str', args[0]]  // string literal
     }
     return [, args[0]]  // number literal
@@ -154,12 +155,16 @@ const handlers = {
   'finally'() { err('finally not supported: use catch') },
 
   // Template literal: [``, part, ...] → chain of str_concat calls
+  // First node is always a string (empty if template starts with ${...}) so concat dispatches correctly.
   '`'(...parts) {
     includeModule('ptr')
     includeModule('string')
+    includeModule('number')
     const nodes = parts.map(p =>
       Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
-    // Fold left: concat(a, b) → ['()', ['.', a, 'concat'], b]
+    // Ensure first element is a string so concat chain starts with string dispatch
+    if (nodes.length && !(Array.isArray(nodes[0]) && nodes[0][0] === 'str'))
+      nodes.unshift(['str', ''])
     return nodes.reduce((acc, n) => ['()', ['.', acc, 'concat'], n])
   },
 
@@ -278,12 +283,26 @@ const handlers = {
       else if (resolved && !resolved.includes('.')) includeModule(resolved)
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      const mod = ctx.scope[obj]
-      if (typeof obj === 'string' && mod && !mod.includes('.'))
-        callee = (includeModule(mod), mod + '.' + prop)
-      else
-        callee = prep(callee)  // prep method callee (triggers . handler → module loading)
+      // console.log/warn/error → WASI module
+      if (obj === 'console' && (prop === 'log' || prop === 'warn' || prop === 'error')) {
+        includeModule('ptr'); includeModule('string'); includeModule('number'); includeModule('wasi')
+        callee = `console.${prop}`
+      } else {
+        const mod = ctx.scope[obj]
+        if (typeof obj === 'string' && mod && !mod.includes('.'))
+          callee = (includeModule(mod), mod + '.' + prop)
+        else
+          callee = prep(callee)  // prep method callee (triggers . handler → module loading)
+      }
     }
+    // Auto-include number module for Number methods and String() coercion
+    if (Array.isArray(callee) && callee[0] === '.') {
+      const method = callee[2]
+      if (method === 'toString' || method === 'toFixed' || method === 'toPrecision' || method === 'toExponential') {
+        includeModule('ptr'); includeModule('string'); includeModule('number')
+      }
+    }
+    if (callee === 'String') { includeModule('ptr'); includeModule('string'); includeModule('number') }
     const result = ['()', callee, ...args.filter(a => a != null).map(prep)]
 
     // Object.assign(target, ...sources): merge source schemas into target

@@ -406,9 +406,8 @@ export default () => {
 
   // .join(sep) → concatenate array elements with separator string
   ctx.emit['.join'] = (arr, sep) => {
-    ctx.includes.add('__str_join')
-    ctx.includes.add('__str_concat')
-    ctx.includes.add('__str_byteLen')
+    for (const n of ['__str_join', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str', '__str_byteLen'])
+      ctx.includes.add(n)
     return typed(['call', '$__str_join', asF64(emit(arr)), asF64(emit(sep))], 'f64')
   }
 }

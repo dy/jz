@@ -34,6 +34,9 @@ export const ctx = {
   // --- Atoms (interned symbols, set by symbol module) ---
   atom: null,          // { table: Map<name,id>, next: number }
 
+  // --- Static data ---
+  data: null,          // string data for WASM data segment (at address 0)
+
   // --- Error tracking ---
   src: '',             // source code (for error messages)
   loc: null,           // current AST node char offset (from parser .loc)
@@ -58,6 +61,7 @@ export function reset(proto, globals) {
   ctx.sig = null
   ctx.schema = { list: [], vars: new Map(), register: null, find: null, target: null }
   ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
+  ctx.data = null
   ctx.src = ''
   ctx.loc = null
   ctx.atom = null

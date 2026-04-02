@@ -17,6 +17,7 @@ const STRING = 4, STRING_SSO = 5
 
 export default () => {
   const inc = (...names) => names.forEach(n => ctx.includes.add(n))
+  const incConcat = () => inc('__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
 
@@ -269,8 +270,21 @@ export default () => {
       (br $l1)))
     (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
 
+  // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", pointers pass through
+  ctx.stdlib['__to_str'] = `(func $__to_str (param $val f64) (result f64)
+    ;; Not NaN → number, convert
+    (if (f64.eq (local.get $val) (local.get $val))
+      (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
+    ;; Plain NaN (type=0) → "NaN" string; pointers (type>0) pass through
+    (if (i32.eqz (call $__ptr_type (local.get $val)))
+      (then (return (call $__static_str (i32.const 0)))))
+    (local.get $val))`
+
   ctx.stdlib['__str_concat'] = `(func $__str_concat (param $a f64) (param $b f64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32) (local $i i32)
+    ;; Coerce operands to strings if needed
+    (local.set $a (call $__to_str (local.get $a)))
+    (local.set $b (call $__to_str (local.get $b)))
     (local.set $alen (call $__str_byteLen (local.get $a)))
     (local.set $blen (call $__str_byteLen (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
@@ -514,7 +528,7 @@ export default () => {
   }
 
   ctx.emit['.string:concat'] = (str, ...others) => {
-    inc('__str_concat')
+    incConcat()
     // Chain concat for multiple args: s.concat(a, b, c) → concat(concat(concat(s, a), b), c)
     let result = asF64(emit(str))
     for (const other of others) {
@@ -524,7 +538,8 @@ export default () => {
   }
 
   ctx.emit['.replace'] = (str, search, repl) => {
-    inc('__str_replace', '__str_indexof', '__str_slice', '__str_concat')
+    inc('__str_replace', '__str_indexof', '__str_slice')
+    incConcat()
     return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
   }
 
@@ -545,5 +560,35 @@ export default () => {
     const vpad = pad != null ? asF64(emit(pad))
       : typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
     return typed(['call', '$__str_padEnd', asF64(emit(str)), asI32(emit(len)), vpad], 'f64')
+  }
+
+  // .charAt(i) → 1-char string from char code at index i
+  ctx.emit['.charAt'] = (str, idx) => {
+    const t = `__ch${ctx.uniq++}`
+    ctx.locals.set(t, 'i32')
+    // Get char code, create SSO string with 1 byte
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]],
+      ['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
+  }
+
+  // .charCodeAt(i) → integer char code
+  ctx.emit['.charCodeAt'] = (str, idx) => {
+    return typed(['f64.convert_i32_u', ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]], 'f64')
+  }
+
+  // .at(i) → charAt with negative index support
+  ctx.emit['.at'] = (str, idx) => {
+    const t = `__at${ctx.uniq++}`, s = `__as${ctx.uniq++}`
+    ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${t}`, asI32(emit(idx))],
+      // Negative index: t += length
+      ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
+          ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]],
+      ['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1],
+        ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]]]], 'f64')
   }
 }

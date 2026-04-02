@@ -3,9 +3,11 @@ import ptr from './ptr.js'
 import array from './array.js'
 import object from './object.js'
 import string from './string.js'
+import number from './number.js'
 import fn from './fn.js'
 import typed from './typed.js'
 import collection from './collection.js'
 import core from './core.js'
 import symbol from './symbol.js'
-export { math, ptr, array, object, string, fn, typed, collection, core, symbol }
+import wasi from './wasi.js'
+export { math, ptr, array, object, string, number, fn, typed, collection, core, symbol, wasi }

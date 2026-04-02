@@ -76,7 +76,60 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] NaN truthiness: if(NaN) is falsy, !NaN is true (correct JS semantics)
 * [x] Ternary in expression bodies (? → ?: normalization)
 
-## Next: Phase 4 — Products (from plan.md)
+## Current: Number/String methods + WASI
+
+Goal: complete standard JS type methods, then wire console.log via WASI fd_write.
+Output .wasm is standard WASI Preview 1 — runs natively on wasmtime/wasmer/deno.
+jz ships a tiny polyfill for browser/Node environments without native WASI.
+
+### Layer 1: Number→String ✓
+
+* [x] `__itoa(n, buf) → len` — integer to decimal digits in memory (WAT)
+* [x] `__ftoa(f, buf, precision, mode) → f64` — float to NaN-boxed string (WAT, uses __itoa)
+* [x] Handle sign, NaN → "NaN", Infinity → "Infinity", -0 → "0"
+* [x] `n.toString()` — emitter in module/number.js, calls __ftoa, returns NaN-boxed string
+* [x] `n.toFixed(d)` — fixed decimal places, with proper rounding
+* [x] `n.toPrecision(d)` — significant digits, auto-switches fixed/exponential
+* [x] `n.toExponential(d)` — scientific notation, integer-mantissa digit extraction
+* [x] `String(n)` coercion (pass-through for strings)
+* [x] `${n}` coercion — __str_concat auto-coerces numbers via __to_str; template starts with empty string to ensure string dispatch
+
+### Layer 2: Missing String methods ✓
+
+* [x] `.charAt(i)` — wrap existing __char_at, return 1-char SSO string
+* [x] `.charCodeAt(i)` — expose __char_at result as number
+* [x] `.at(i)` — charAt with negative index support
+* [ ] `.match()`, `.search()` — deferred until regex
+
+### Layer 3: WASI (console.log) ✓
+
+* [x] module/wasi.js — emitters for console.log/warn/error
+  * String arg → write bytes via iov struct
+  * Number arg → __ftoa then write string bytes
+  * Multiple args → space-separated, newline at end
+  * console.log → fd=1, console.warn/error → fd=2
+* [x] wasi_snapshot_preview1.fd_write import in compile
+* [x] wasi.js (package root) — polyfill for browser/Node
+  * Reads iov structs from memory, decodes bytes, calls console.log/warn
+  * proc_exit, environ stubs
+* [x] Tests: verify output in Node via polyfill
+* [x] Test .wasm runs in wasmtime/wasmer natively — both pass
+
+### Layer 4: Cleanup ✓
+
+* [x] __ftoa rewritten: integer-based digit extraction (no float drift), __pow10/__mkstr helpers
+* [x] __ftoa auto-reduces precision when scaled value exceeds i32 range
+* [x] __toExp uses same integer-mantissa approach — no double-rounding
+* [x] __alloc aligned to 8 bytes (fixes wasmtime alignment trap)
+* [x] console.log returns f64 (0) so it works in expression-body arrows
+* [x] __str_concat auto-coerces non-string operands via __to_str
+* [x] analyzeLocals/analyzeValTypes stop at `=>` — no scope leaking
+* [x] Closure body analyzeLocals merges into ctx.locals properly
+* [x] ctx.boxed Map consistent across all assignment operators
+* [x] wasi.js polyfill simplified: uses memory ref directly, browser-safe process check
+* [x] Dead code removed, stale comments cleaned
+
+## Phase 4 — Products (from plan.md)
 
 * [ ] 4a: floatbeat — single-page demo, waveform, preset formulas
 * [x] 4b: color-space/wasm — validated: lrgb2xyz/xyz2lrgb compiles (606B), exact roundtrip

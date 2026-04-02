@@ -1,19 +1,18 @@
-## [x] Vision
+## [x] Vision & goal
 
-**jz = JS as it should have been → WASM**
+> **jz = JS as it should have been → WASM**
 
-Crockford's Good Parts realized. Explicit > implicit. Functional > OOP. Compile-time > runtime. Native speed.
+> Crockford's Good Parts realized. Explicit > implicit. Functional > OOP. Compile-time > runtime. Native speed.
 
-The stack:
-```
-┌─────────────────────────────────────┐
-│  mridanga / floatbeat / piezo       │  ← offerings
-├─────────────────────────────────────┤
-│            jz                       │  ← JS done right → WASM
-├─────────────────────────────────────┤
-│     subscript │ watr                │  ← parse │ assemble
-└─────────────────────────────────────┘
-```
+Compact, clean, tight functional JS subset, compiling to minimal, meaningful, optimal WASM. Design incorporates clever, elegant and innovative, but reliable solutions. It fits in a browser and enables highly performant live compilation.
+It blocks garbage and bs from JS - historical artifacts and regrets, bad practices. It enforces good JS style by its own design, so that linters are not needed. Any JZ code is automatically good JS code. It encourages best practices by design.
+Error messages are very user friendly and guiding, failing at proper times.
+The internal implementation is clever, clean, elegant, innovative.
+The language brings feeling of performance in timeless manner.
+It enables easy gateway from JS to low-level world, not simply isolate WASM.
+Anyone who uses JZ gets access to world of low-level machinery (gateway through C or WASI I suppose?)
+
+**What would be paradigm shift that would unlock a new value?**
 
 ## [x] Name -> jz
 
@@ -22,7 +21,7 @@ The stack:
     + js zero
     + jazz
 
-## [x] Goals
+## [x] Qualities
 
   * _Lightweight_ – embed anywhere, from websites to microcontrollers.
   * _Fast_ – compiles to WASM faster than `eval` parses.
