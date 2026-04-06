@@ -1,18 +1,18 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black)
 
-Distilled JS subset → pure WASM. No runtime, no GC, no overhead.
+JS syntax → WASM. No runtime, no GC, no toolchain.
 
 ```js
 import jz from 'jz'
 
-const wasm = jz(`
-  import { sin, PI } from 'math'
-  export let tone = (freq, t, i) =>
-    sin((t + i) * freq * PI * 2 / 44100)
-`)
+const { exports } = await WebAssembly.instantiate(jz(`
+  let { sin, PI } = Math
+  export let sine = (out, freq, t) => {
+    for (let i = 0; i < out.length; i++) out[i] = sin((t + i) * freq * PI * 2 / 44100)
+  }
+`))
 
-const { tone } = (await WebAssembly.instantiate(wasm)).instance.exports
-tone(440, 0, 0)  // Real-time audio at native speed
+exports.sine(audioBuffer, 440, sampleOffset) // native speed, zero GC pauses
 ```
 
 ## Usage
@@ -20,126 +20,55 @@ tone(440, 0, 0)  // Real-time audio at native speed
 ```js
 import jz from 'jz'
 
-// Scalar return
 const wasm = jz(`export let add = (a, b) => a + b`)
 const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
-add(2, 3)  // 5
-
-// Multi-value return (just works — return array literal)
-const wasm2 = jz(`export let rgb2xyz = (r, g, b) => [
-  r * 0.4124 + g * 0.3576 + b * 0.1805,
-  r * 0.2126 + g * 0.7152 + b * 0.0722,
-  r * 0.0193 + g * 0.1192 + b * 0.9505
-]`)
-const { rgb2xyz } = (await WebAssembly.instantiate(wasm2)).instance.exports
-const [x, y, z] = rgb2xyz(1, 1, 1)
-
-// WAT output for debugging
-jz(`export let f = x => x * 2`, { wat: true })
+add(2, 3) // 5
 ```
 
-## Syntax Reference
+### CLI
 
-### Primitives
-Numbers (`0.1`, `0xff`, `0b101`, `0o77`, `1.2e+3`), `true`, `false`, `null`, `NaN`, `Infinity`
-
-### Operators
-`+ - * / % **` | `< <= > >= == !=` | `~ & | ^ << >> >>>` | `! && || ?? ?:` | `= += -= *= /= %=` | `void`
-
-Type coercion by operator: `1 + 2` stays i32 internally, `1 / 3` always f64, bitwise always i32.
-
-### Functions
-```js
-let add = (a, b) => a + b            // expression body
-let abs = (x) => {                    // block body
-  if (x < 0) return -x
-  return x
-}
-let greet = (name = 'world') => name  // default params
+```bash
+jz program.js -o program.wasm  # compile to WASM (default)
+jz program.js -o program.wat   # compile to WAT
+jz -e "1 + 2"                  # evaluate expression
 ```
 
-### Control Flow
-```js
-if (x > 0) return x; else return -x
-for (let i = 0; i < n; i++) s += i
-while (i < n) i++
-switch (x) { case 1: return 10; default: return 0 }
-```
+## Reference
 
-### Imports
-```js
-import { sin, PI } from 'math'       // named
-import { sin as s } from 'math'      // aliased
-import * as m from 'math'            // namespace
-import math from 'math'              // default (namespace)
-```
+• Numbers: `0.1`, `1.2e+3`, `0xff`, `0b101`, `0o77`
+• Strings: `"abc"`, `'abc'`
+• Values: `true`, `false`, `null`, `NaN`, `Infinity`
+• Arithmetic: `+a`, `-a`, `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`
+• Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`
+• Bitwise: `~a`, `a & b`, `a ^ b`, `a | b`, `a << b`, `a >> b`, `a >>> b`
+• Logic: `!a`, `a && b`, `a || b`, `a ?? b`, `a ? b : c`
+• Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`
+• Functions: `(a, b) => c`, `a => b`, `() => c`, default params
+• Currying: `add = x => y => x + y; add(5)(3)`
+• Closures: capture outer variables by value
+• Multi-return: `(a, b) => [b, a]` — WASM multi-value
+• Arrays: `[a, b]`, `arr[i]`, `arr.length`, `.push`, `.pop`, `.map`, `.filter`, `.reduce`, `.find`, `.indexOf`, `.includes`, `.slice`
+• Spread/destructuring: `[...a, ...b]`, `let [x, y] = a`, `let {x, y} = o`
+• Objects: `{a: b}`, `{a, b}`, `o.prop`, `o.prop = x`
+• Collections: `new Set()`, `new Map()`, `new Float64Array(n)`, `new Int32Array(n)`
+• Strings: `s.length`, `s[i]` — SSO for ≤4 chars, heap for longer
+• Control: `if`/`else`, `for`, `while`, `switch`/`case`, `return`
+• Declarations: `let`, `const`, block scope
+• Modules: `import { a } from 'b'`, `import * as m from 'b'`, `export`
+• Math: 35+ functions — `sin cos tan atan2 sqrt pow abs min max floor ceil round log exp` etc.
+• Comments: `// foo`, `/* bar */`
 
-### Math (35+ functions)
-```js
-import { sin, cos, PI } from 'math'   // explicit imports
-Math.sin(x)                            // or auto-import via Math.*
+### Excluded
 
-// Trig: sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh
-// Exp:  exp expm1 log log2 log10 log1p sqrt cbrt pow hypot
-// Round: abs sign floor ceil round trunc min max fround clz32 imul
-// Const: PI E LN2 LN10 LOG2E LOG10E SQRT2 SQRT1_2
-// Other: random
-```
+• `var`, `function` → use `let`/`const`, arrows
+• `this`, `class`, `super` → use functions & plain data
+• `async`/`await` → WASM is synchronous
+• `eval`, `arguments`, `with` → explicit is better
 
-### Multi-value Return
-```js
-// Array literal return = multi-value (JS gets real Array)
-export let swap = (a, b) => [b, a]
-export let divmod = (a, b) => { let q = a / b; return [q, a % b] }
-```
+### Divergences from JS
 
-### Arrays
-```js
-let a = [1, 2, 3]
-a[0]; a[i] = x; a.length           // read, write, length
-a.push(4); a.pop()                  // mutate in place (aliases see changes)
-a.map(fn); a.filter(fn); a.reduce(fn, 0)  // callbacks via closures
-a.forEach(fn); a.find(fn); a.indexOf(x); a.includes(x); a.slice(1, 3)
-let [x, y] = a                     // destructuring
-[...a, ...b, 99]                   // spread
-```
-
-### Objects
-```js
-let o = {x: 1, y: 2}
-o.x; o.y = 5                       // read, write (schema-based)
-let {x, y} = o; let {x: a} = o    // destructuring, alias
-```
-
-### Strings
-```js
-let s = "hi"                        // SSO (≤4 chars inline, no allocation)
-let s = "hello world"               // heap (memory allocated)
-s.length; s[0]                      // length, charCodeAt
-```
-
-### Closures
-```js
-let add = (a) => (b) => a + b      // currying (capture by value)
-let apply = (fn, x) => fn(x)       // first-class functions (call_indirect)
-arr.map((x) => x * 2)              // callbacks
-```
-
-### Collections
-```js
-let s = new Set(); s.add(1); s.has(1); s.delete(1); s.size
-let m = new Map(); m.set(k, v); m.get(k); m.size
-new Float64Array(n); new Int32Array(n)    // TypedArrays
-```
-
-### Prohibited (by design)
-`this`, `class`, `super` — use functions & composition
-`async`/`await` — WASM is synchronous
-`var`, `function` — use `let`/`const`, arrow functions
-`eval`, `arguments`, `with` — explicit is better
-
-### Not yet
-Template literals, string methods (.slice, .indexOf, etc.), rest params, regex, JSON
+• `null`/`undefined` → `0` (indistinguishable)
+• `==` behaves like `===` (no coercion)
 
 ## Module API
 
@@ -149,46 +78,33 @@ Modules extend the compiler by registering emitters on `ctx`:
 import { emit, typed, asF64 } from 'jz/src/compile.js'
 
 export default (ctx) => {
-  // Inline WASM op
   ctx.emit['mymod.double'] = (a) => typed(['f64.mul', asF64(emit(a)), ['f64.const', 2]], 'f64')
-
-  // Stdlib function (WAT included on demand)
-  ctx.emit['mymod.cube'] = (a) => (
-    ctx.includes.add('mymod.cube'),
-    typed(['call', '$mymod.cube', asF64(emit(a))], 'f64')
-  )
-  ctx.stdlib['mymod.cube'] = `(func $mymod.cube (param $x f64) (result f64)
-    (f64.mul (local.get $x) (f64.mul (local.get $x) (local.get $x))))`
 }
 ```
 
-## Limitations
+## Why?
 
-### Static Typing
-All types resolved at compile-time. No runtime dispatch.
+JS has grown complex with legacy features and niche additions. jz focuses on a minimal, modern subset that maps directly to WebAssembly.
 
-### Divergences from JS
-- `null`/`undefined` → `0` (indistinguishable)
-- `==` behaves like `===` (no coercion)
-- Division always produces f64
+### Why not [porffor](https://github.com/CanadaHonk/porffor)?
 
-### CLI
+Porffor targets full JS semantics — needs GC, runtime. jz compiles a subset with zero runtime overhead.
 
-```bash
-jz "1 + 2"                               # 3
-jz "Math.sqrt(144)"                      # 12
-jz compile program.js -o program.wat     # Compile to WAT
-jz compile program.js -o program.wasm    # Compile to WASM binary
-```
+### Why not [assemblyscript](https://github.com/AssemblyScript/assemblyscript)?
+
+AssemblyScript is a separate language with JS-like syntax. jz code is valid JS.
+
+### Why not [javy](https://github.com/nicovideo/javy)?
+
+Javy embeds a JS interpreter inside WASM. jz compiles to native WASM ops directly.
+
+### Why jz?
+
+JavaScript Zero — a return to core, stripped to essentials. Also jazz.
 
 ## Built With
 
 * [subscript](https://github.com/dy/subscript) – parser
 * [watr](https://www.npmjs.com/package/watr) – WAT to WASM
-
-## Similar
-
-* [porffor](https://github.com/CanadaHonk/porffor)
-* [jawsm](https://github.com/drogus/jawsm)
 
 <p align=center><a href="https://github.com/krishnized/license/">ॐ</a></p>

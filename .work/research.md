@@ -13,6 +13,102 @@ It enables easy gateway from JS to low-level world, not simply isolate WASM.
 Anyone who uses JZ gets access to world of low-level machinery (gateway through C or WASI I suppose?)
 
 **What would be paradigm shift that would unlock a new value?**
+Functional JS subset → minimal WASM. Fits in a browser, compiles in real-time.
+Excludes JS misfeatures (coercions, hoisting, `this`, classes). Valid jz = valid JS. No linter needed — bad patterns don't parse.
+Errors fail early with actionable messages.
+Gateway from JS to low-level: WASM, WASI, native via wasm2c.
+
+## [x] Mission
+
+  **Purpose**: Give JS developers direct access to native-speed computation without leaving their language.
+  **Activity**: Compile a functional JS subset to minimal WASM — statically, in real-time, with zero runtime.
+  **Values**: Correctness by design, transparency of execution, zero overhead.
+
+  > JS developer writes functions → gets native-speed WASM. No new language, no toolchain, no runtime.
+
+## [x] Principles (basis of reasoning)
+
+  1. **Compile-time over runtime** — resolve everything statically. No runtime dispatch, no type checks, no GC. What can be known at compile time must be.
+  2. **Explicit over implicit** — no coercions, no hoisting, no magic. Code means what it says.
+  3. **Functional over OOP** — functions are the unit of composition. No classes, no `this`, no inheritance. Data is plain, behavior is functions.
+  4. **Constraint enables performance** — every limitation unlocks a zero-cost guarantee. Document the tradeoff.
+  5. **Uniform representation** — one convention (f64 everywhere, NaN-boxing) beats type-specific optimizations. Simplicity at boundary > micro-optimization inside.
+  6. **Minimal core, extensible surface** — core compiles pure compute. Everything else (arrays, strings, objects) is a module. Capabilities grow without core growth.
+  7. **Host resolves, compiler transforms** — no I/O in compilation. Resolution is the host's job. Compilation is a pure function.
+
+## [x] Values (what matters most)
+
+  1. **Performance without ceremony** — native speed from plain JS knowledge. No annotations, no toolchains.
+  2. **Correctness by design** — bad patterns don't compile. The language is the linter.
+  3. **Transparency** — no hidden allocations, no implicit copies. What you write is what runs.
+  4. **Immediacy** — compilation is interactive, not a build step.
+  5. **Tiny footprint** — kilobytes, not megabytes. No runtime, no wrappers.
+  6. **Elegance** — compiler itself is minimal and clean. <2K lines.
+
+## [x] Key audiences (NICE)
+
+  1. **Audio/DSP developers** (primary)
+     - _Needs_: real-time processing, no GC pauses
+     - _Interests_: JS syntax for compute kernels, worklet-ready output
+     - _Concerns_: latency, deterministic execution
+     - _Expectations_: replaces hand-written DSP with JS
+
+  2. **JS developers wanting performance**
+     - _Needs_: native speed for hot paths
+     - _Interests_: no learning curve, instant compilation
+     - _Concerns_: constraints, JS divergences
+     - _Expectations_: write JS → get WASM
+
+  3. **Embedded / plugin developers**
+     - _Needs_: small sandboxed compute modules
+     - _Interests_: kilobyte output, no runtime
+     - _Concerns_: output size, security boundary
+     - _Expectations_: WASM for microcontrollers and browsers
+
+  4. **Creative / live coders**
+     - _Needs_: real-time compilation during performance
+     - _Interests_: in-browser compile, instant feedback
+     - _Concerns_: compilation speed, expressiveness
+     - _Expectations_: compile-on-keystroke
+
+## [x] Paradigm shift -> WASM as live medium, not build artifact
+
+  Current WASM workflow: write Rust/C → compile offline → load binary → deploy.
+  jz workflow: write JS → compile in browser → instant native code.
+
+  * WASM as interaction medium, not deployment format
+  * Live-coding native audio/visuals in JS
+  * User-generated native compute (sandboxed)
+  * Hot-swappable compute kernels (no reload)
+  * WASM as REPL target
+  * Scripting = compiling (same act)
+
+## [x] Anti-goals (what jz refuses to be)
+
+  * Not a general-purpose language — no DOM, no async, no event loop
+  * Not a JS runtime — no eval, no dynamic import, no reflection
+  * Not aiming for 100% JS compat — subset by design, divergences documented
+  * Not a build tool — no bundling, no tree-shaking, no source maps
+  * Not an optimizing compiler — direct translation, WASM engine optimizes
+  * Not a type system — types inferred from usage, never annotated
+
+## [x] Success criteria (how we know it works)
+
+  * Compilation < 1ms in browser for typical module
+  * Output smaller than equivalent C via emscripten
+  * Compiler < 2K lines, zero dependencies
+  * Any jz program runs identically as JS (within documented divergences)
+  * Audio worklet: zero GC pauses, stable real-time output
+  * Cold start: parse + compile + instantiate < 5ms
+
+## [x] Positioning (why jz, not alternatives)
+
+  Others compile JS (or JS-like) to WASM. jz is different in kind, not degree:
+  * **vs porffor/jawsm**: they target full JS semantics → runtime overhead, GC. jz targets a subset → zero runtime.
+  * **vs assemblyscript**: separate language with JS-like syntax. jz code IS valid JS.
+  * **vs javy**: embeds QuickJS interpreter in WASM. Interpreter overhead. jz compiles to native WASM ops.
+  * **vs emscripten**: C/C++ toolchain. Different language, massive output. jz is JS-native.
+  * The argument: jz trades JS completeness for something no alternative offers — zero-overhead WASM from JS syntax, compilable in the browser, in real-time.
 
 ## [x] Name -> jz
 

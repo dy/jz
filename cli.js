@@ -12,18 +12,20 @@ function showHelp() {
 jz - JS subset → WASM compiler
 
 Usage:
-  jz <expression>           Evaluate expression
-  jz <file.js>              Evaluate JS file
-  jz compile <file.js>      Compile to WAT (default) or WASM
+  jz <file.js>              Compile to WASM (default)
+  jz <file.js> -o out.wat   Compile to WAT
+  jz -e <expression>        Evaluate expression
+  jz -e <file.js>           Evaluate JS file
   jz --help                 Show this help
 
 Examples:
-  jz "1 + 2"
-  jz compile program.js -o program.wat
-  jz compile program.js -o program.wasm
+  jz program.js -o program.wasm
+  jz program.js -o program.wat
+  jz -e "1 + 2"
 
 Options:
   --output, -o <file>       Output file (.wat or .wasm)
+  --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
   `)
 }
@@ -37,8 +39,9 @@ async function main() {
   }
 
   try {
-    if (args[0] === 'compile') await handleCompile(args.slice(1))
-    else await handleEvaluate(args)
+    const evalIdx = args.indexOf('-e') !== -1 ? args.indexOf('-e') : args.indexOf('--eval')
+    if (evalIdx !== -1) await handleEvaluate(args.slice(evalIdx + 1))
+    else await handleCompile(args)
   } catch (error) {
     console.error('Error:', error.message)
     process.exit(1)
@@ -64,17 +67,15 @@ async function handleEvaluate(args) {
 }
 
 async function handleCompile(args) {
-  if (args.length === 0) throw new Error('No input file specified')
+  let inputFile = null, outputFile = null, wat = false
 
-  const inputFile = args[0]
-  let outputFile = null
-  let wat = false
-
-  for (let i = 1; i < args.length; i++) {
+  for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
-    if (args[i] === '--wat') wat = true
+    else if (args[i] === '--wat') wat = true
+    else if (!inputFile) inputFile = args[i]
   }
 
+  if (!inputFile) throw new Error('No input file specified')
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 
