@@ -189,6 +189,7 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] Symbol — type=0 (ATOM), aux=atomId. Reserved 0-15 (null, undefined, future). Symbol() unique per site, Symbol.for() interned
 * [x] Object.assign — schema inference + cross-copy, boxed primitives (Object.assign on arrays/strings)
 * [x] Number.isNaN, isFinite, isInteger, parseInt, parseFloat + constants (EPSILON, MAX_SAFE_INTEGER, etc.)
+* [ ] Global isNaN, isFinite — resolve as bare identifiers (currently skipped in tests)
 * [x] Array.isArray — ptr_type === ARRAY
 * [ ] Array.from — needs iterable protocol
 * [x] Object.keys, values, entries — compile-time schema resolution, returns NaN-boxed arrays
