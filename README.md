@@ -2,7 +2,7 @@
 
 Functional modern JS subset compiling to WASM. No runtime, no GC, no overhead.
 
-> `npm install jz`
+`npm install jz`
 
 ```js
 import jz from 'jz'
@@ -19,7 +19,7 @@ sine(440, 0, 0)  // native speed, zero GC
 
 ### CLI
 
-> `npm install -g jz`
+`npm install -g jz`
 
 ```sh
 # Compile to WASM binary
