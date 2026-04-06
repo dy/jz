@@ -2,33 +2,41 @@
 
 Functional modern JS subset compiling to WASM. No runtime, no GC, no overhead.
 
-```js
-import jz from 'jz'
-
-const { sine } = (await WebAssembly.instantiate(jz(`
-  let { sin, PI } = Math
-  export let sine = (freq, t, i) => sin((t + i) * freq * PI * 2 / 44100)
-`))).instance.exports
-
-sine(440, 0, 0)  // native speed, zero GC
-```
-
-## Usage
+> `npm install jz`
 
 ```js
 import jz from 'jz'
 
-const wasm = jz(`export let add = (a, b) => a + b`)
-const { add } = (await WebAssembly.instantiate(wasm)).instance.exports
+let wasm = jz(`export let add = (a, b) => a + b`)
+let { add } = (await WebAssembly.instantiate(wasm)).instance.exports
 add(2, 3)  // 5
+
+let { sine } = (await WebAssembly.instantiate(jz(`
+  export let sine = (freq, t, i) => Math.sin((t + i) * freq * Math.PI * 2 / 44100)
+`))).instance.exports
+sine(440, 0, 0)  // native speed, zero GC
 ```
 
 ### CLI
 
-```
-jz x.js -o x.wasm
-jz x.js -o x.wat
+> `npm install -g jz`
+
+```sh
+# Compile to WASM binary
+jz program.js -o program.wasm
+
+# Compile to WAT
+jz program.js -o program.wat
+
+# Evaluate expression
 jz -e "1 + 2"
+# 3
+
+# Evaluate file
+jz -e program.js
+
+# Show help
+jz --help
 ```
 
 ## Reference
