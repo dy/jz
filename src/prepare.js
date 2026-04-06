@@ -57,7 +57,7 @@ function prep(node) {
   const [op, ...args] = node
   if (op == null) {
     if (typeof args[0] === 'string') {
-      includeModule('ptr')
+      includeModule('core')
       includeModule('string')
       includeModule('number')
       return ['str', args[0]]  // string literal
@@ -82,6 +82,7 @@ export const GLOBALS = {
   Array: 'Array',
   Object: 'Object',
   Symbol: 'Symbol',
+  JSON: 'JSON',
 }
 
 /** Prepare let/const declaration. */
@@ -157,7 +158,7 @@ const handlers = {
   // Template literal: [``, part, ...] → chain of str_concat calls
   // First node is always a string (empty if template starts with ${...}) so concat dispatches correctly.
   '`'(...parts) {
-    includeModule('ptr')
+    includeModule('core')
     includeModule('string')
     includeModule('number')
     const nodes = parts.map(p =>
@@ -222,7 +223,7 @@ const handlers = {
 
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
-    if (depth > 0) { includeModule('ptr'); includeModule('fn') }
+    if (depth > 0) { includeModule('core'); includeModule('fn') }
     depth++
     const result = ['=>', params, prep(body)]
     depth--
@@ -245,9 +246,9 @@ const handlers = {
   },
 
   // Optional chaining / typeof — need ptr module
-  '?.'(obj, prop) { includeModule('ptr'); return ['?.', prep(obj), prop] },
-  '?.[]'(obj, idx) { includeModule('ptr'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
-  'typeof'(a) { includeModule('ptr'); return ['typeof', prep(a)] },
+  '?.'(obj, prop) { includeModule('core'); return ['?.', prep(obj), prop] },
+  '?.[]'(obj, idx) { includeModule('core'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
+  'typeof'(a) { includeModule('core'); return ['typeof', prep(a)] },
 
   // Unary +/- disambiguation
   '+'(a, b) {
@@ -285,7 +286,7 @@ const handlers = {
       const [, obj, prop] = callee
       // console.log/warn/error → WASI module
       if (obj === 'console' && (prop === 'log' || prop === 'warn' || prop === 'error')) {
-        includeModule('ptr'); includeModule('string'); includeModule('number'); includeModule('wasi')
+        includeModule('core'); includeModule('string'); includeModule('number'); includeModule('console')
         callee = `console.${prop}`
       } else {
         const mod = ctx.scope[obj]
@@ -299,10 +300,10 @@ const handlers = {
     if (Array.isArray(callee) && callee[0] === '.') {
       const method = callee[2]
       if (method === 'toString' || method === 'toFixed' || method === 'toPrecision' || method === 'toExponential') {
-        includeModule('ptr'); includeModule('string'); includeModule('number')
+        includeModule('core'); includeModule('string'); includeModule('number')
       }
     }
-    if (callee === 'String') { includeModule('ptr'); includeModule('string'); includeModule('number') }
+    if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
     const result = ['()', callee, ...args.filter(a => a != null).map(prep)]
 
     // Object.assign(target, ...sources): merge source schemas into target
@@ -338,13 +339,13 @@ const handlers = {
   '[]'(...args) {
     if (args.length === 1) {
       const inner = args[0]
-      includeModule('ptr')
+      includeModule('core')
       includeModule('array')
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',') return ['[', ...inner.slice(1).map(prep)]
       return ['[', prep(inner)]
     }
-    includeModule('ptr')
+    includeModule('core')
     includeModule('array')
     return ['[]', prep(args[0]), prep(args[1])]
   },
@@ -358,7 +359,7 @@ const handlers = {
     if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch'].includes(inner[0]))
       return ['{}', prep(inner)]  // block body, pass through
 
-    includeModule('ptr')
+    includeModule('core')
     includeModule('object')
     if (inner == null) return ['{}']
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
@@ -390,7 +391,7 @@ const handlers = {
     const mod = ctx.scope[obj]
     if (typeof obj === 'string' && mod && !mod.includes('.'))
       return includeModule(mod), mod + '.' + prop
-    includeModule('ptr')
+    includeModule('core')
     includeModule('object')
     includeModule('array')
     includeModule('string')
@@ -405,12 +406,12 @@ const handlers = {
     // TypedArray constructors
     const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
     if (typedArrays.includes(name)) {
-      includeModule('ptr'); includeModule('typed')
+      includeModule('core'); includeModule('typedarray')
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
     }
     // Set/Map constructors
     if (name === 'Set' || name === 'Map') {
-      includeModule('ptr'); includeModule('collection')
+      includeModule('core'); includeModule('collection')
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
     }
 
@@ -421,9 +422,15 @@ const handlers = {
 }
 
 // Namespace → module mapping (namespaces that share a module)
-const MOD_ALIAS = { Number: 'core', Array: 'core', Object: 'core', Symbol: 'symbol' }
-// Modules that must be loaded before another module
-const MOD_DEPS = { core: ['ptr'], symbol: ['ptr'] }
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json' }
+const MOD_DEPS = {
+  number: ['core', 'string'],
+  array: ['core'],
+  object: ['core'],
+  symbol: ['core'],
+  json: ['core', 'string', 'number', 'collection'],
+  console: ['core', 'string', 'number'],
+}
 
 function includeModule(name) {
   const modName = MOD_ALIAS[name] || name

@@ -59,6 +59,15 @@ function elemStore(ptr, i, val) {
 }
 
 export default () => {
+  // Array.isArray(x): check ptr_type === ARRAY
+  ctx.emit['Array.isArray'] = (x) => {
+    const v = asF64(emit(x))
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    return typed(['i32.and',
+      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', ARRAY]]], 'i32')
+  }
+
   // === Array literal ===
 
   ctx.emit['['] = (...elems) => {

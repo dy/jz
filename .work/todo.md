@@ -99,7 +99,8 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] `.charAt(i)` — wrap existing __char_at, return 1-char SSO string
 * [x] `.charCodeAt(i)` — expose __char_at result as number
 * [x] `.at(i)` — charAt with negative index support
-* [ ] `.match()`, `.search()` — deferred until regex
+* [x] `.search(str)` — indexOf wrapper
+* [x] `.match(str)` — returns [match] array or 0 (null)
 
 ### Layer 3: WASI (console.log) ✓
 
@@ -135,7 +136,7 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] 4b: color-space/wasm — validated: lrgb2xyz/xyz2lrgb compiles (606B), exact roundtrip
 * [x] 4c: digital-filter/wasm — validated: biquad.lowpass compiles (898B), matches JS output
 * [x] 4c: audio-filter/wasm — validated: moog ladder compiles (1102B), correct impulse response
-* [ ] 4d: standard JS support — string ops, array methods, WASI host imports (as needed by products)
+* [x] 4d: standard JS support — Number methods, String methods, JSON, WASI console.log, HASH type
 
 
 
@@ -163,7 +164,9 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] TypedArrays — new Float64Array(n), Int32Array, etc. (type=3, elem in aux)
 * [x] Set — new Set(), .add, .has, .delete, .size (type=8, open addressing)
 * [x] Map — new Map(), .set, .get, .has, .size (type=9, open addressing)
-* [ ] JSON.stringify, JSON.parse
+* [x] JSON.stringify — recursive type dispatch, string escaping, nested arrays, Infinity→null
+* [x] JSON.parse — recursive descent, objects→HASH (type=7), dot access via __hash_get
+* [x] HASH type (type=7) — dynamic string-keyed object, FNV-1a content hash, SSO-safe equality
 
 ### Functions
 

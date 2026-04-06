@@ -1,291 +1,217 @@
 /**
- * Core module — Number, Array, Object static methods and constants.
+ * Core module — NaN-boxing, bump allocator, property dispatch.
  *
- * Number.isNaN(x)           → x !== x
- * Number.isFinite(x)        → abs(x) < Infinity && x === x
- * Number.isInteger(x)       → trunc(x) === x && isFinite(x)
- * Number.parseInt(x)        → trunc(x)
- * Number.parseFloat(x)      → x (identity, already f64)
- * Number.MAX_SAFE_INTEGER   → 2^53 - 1
- * Number.MIN_SAFE_INTEGER   → -(2^53 - 1)
- * Number.EPSILON            → 2^-52
- * Number.MAX_VALUE          → 1.7976931348623157e+308
- * Number.MIN_VALUE          → 5e-324
- * Number.POSITIVE_INFINITY  → Infinity
- * Number.NEGATIVE_INFINITY  → -Infinity
+ * Foundation for all heap types. Every module depends on this.
+ * NaN-boxing: quiet NaN (0x7FF8) + 51-bit payload [type:4][aux:15][offset:32]
  *
- * Array.isArray(x)          → ptr_type(x) === 1
+ * Auto-included by array/object/string modules.
  *
- * Object.keys(obj)          → string array from schema (compile-time)
- * Object.values(obj)        → f64 array from schema (compile-time)
- * Object.entries(obj)       → array of [key, val] pairs (compile-time)
- *
- * @module core
+ * @module ptr
  */
 
-import { emit, typed, asF64, valTypeOf, VAL } from '../src/compile.js'
+import { emit, typed, asF64, asI32 } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
-const ARRAY = 1, STRING = 4, STRING_SSO = 5, OBJECT = 6
+const NAN_PREFIX = 0x7FF8
+const temp = () => { const n = `__t${ctx.uniq++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
-  // === Number constants ===
+  // Memory section auto-enabled: compile.js checks ctx.modules.ptr
 
-  ctx.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
-  ctx.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
-  ctx.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
-  ctx.emit['Number.MAX_VALUE'] = () => typed(['f64.const', 1.7976931348623157e+308], 'f64')
-  ctx.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
-  ctx.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
-  ctx.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
-  ctx.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
+  // === NaN-boxing: encode/decode ===
 
-  // === Number methods ===
+  ctx.stdlib['__mkptr'] = `(func $__mkptr (param $type i32) (param $aux i32) (param $offset i32) (result f64)
+    (f64.reinterpret_i64 (i64.or
+      (i64.shl (i64.const ${NAN_PREFIX}) (i64.const 48))
+      (i64.or
+        (i64.shl (i64.and (i64.extend_i32_u (local.get $type)) (i64.const 0xF)) (i64.const 47))
+        (i64.or
+          (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const 0x7FFF)) (i64.const 32))
+          (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const 0xFFFFFFFF)))))))`
 
-  // isNaN: x !== x (only NaN fails self-equality)
-  ctx.emit['Number.isNaN'] = (x) => {
-    const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`
-    ctx.locals.set(t, 'f64')
-    return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
-  }
+  ctx.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr f64) (result i32)
+    (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))`
 
-  // isFinite: not NaN and not ±Infinity
-  ctx.emit['Number.isFinite'] = (x) => {
-    const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`
-    ctx.locals.set(t, 'f64')
-    return typed(['i32.and',
-      // x === x (not NaN)
-      ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      // abs(x) < infinity
-      ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
-  }
+  ctx.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr f64) (result i32)
+    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 32)) (i64.const 0x7FFF))))`
 
-  // isInteger: x === trunc(x) && isFinite(x)
-  ctx.emit['Number.isInteger'] = (x) => {
-    const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`
-    ctx.locals.set(t, 'f64')
-    return typed(['i32.and',
-      ['i32.and',
-        ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]],
-      ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
-  }
+  ctx.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr f64) (result i32)
+    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 47)) (i64.const 0xF))))`
 
-  // parseInt: trunc to integer
-  ctx.emit['Number.parseInt'] = (x) => typed(['f64.trunc', asF64(emit(x))], 'f64')
+  // === Bump allocator ===
 
-  // parseFloat: identity (already f64)
-  ctx.emit['Number.parseFloat'] = (x) => asF64(emit(x))
+  ctx.globals.push('(global $__heap (mut i32) (i32.const 1024))')
 
-  // === Array static methods ===
+  ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $__heap))
+    ;; Align next allocation to 8 bytes
+    (global.set $__heap (i32.and (i32.add (i32.add (global.get $__heap) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+    (local.get $ptr))`
 
-  // Array.isArray(x): check ptr_type === ARRAY
-  ctx.emit['Array.isArray'] = (x) => {
-    const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`
-    ctx.locals.set(t, 'f64')
-    return typed(['i32.and',
-      // Must be NaN (is a pointer)
-      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', ARRAY]]], 'i32')
-  }
+  ctx.stdlib['__reset'] = `(func $__reset
+    (global.set $__heap (i32.const 1024)))`
 
-  // === Object static methods ===
+  // === Memory-based length/cap helpers (C-style headers) ===
 
-  // Object.keys(obj) → array of string pointers (compile-time schema resolution)
-  ctx.emit['Object.keys'] = (obj) => {
-    const schema = resolveSchema(obj)
-    if (!schema) err('Object.keys requires object with known schema')
-    // Emit array of string literals
-    const va = asF64(emit(obj))
-    return emitStringArray(schema)
-  }
+  // Array/TypedArray: [-8:len(i32)][-4:cap(i32)][data...]
+  ctx.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))`
 
-  // Object.values(obj) → array of f64 values
-  ctx.emit['Object.values'] = (obj) => {
-    const schema = resolveSchema(obj)
-    if (!schema) err('Object.values requires object with known schema')
-    const va = asF64(emit(obj))
-    const n = schema.length
-    const t = `__ov${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32')
-    const body = [
-      ['local.set', `$${t}`, va],
-      ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-      ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-      ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-      ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
-    ]
-    for (let i = 0; i < n; i++)
-      body.push(['f64.store',
-        ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]])
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
-  }
+  ctx.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
 
-  // Object.entries(obj) → array of [key, value] pairs
-  ctx.emit['Object.entries'] = (obj) => {
-    const schema = resolveSchema(obj)
-    if (!schema) err('Object.entries requires object with known schema')
-    const va = asF64(emit(obj))
-    const n = schema.length
-    const t = `__oe${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`, pair = `__op${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32'); ctx.locals.set(pair, 'i32')
-    const body = [
-      ['local.set', `$${t}`, va],
-      // Outer array: n pairs
-      ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-      ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-      ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-      ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
-    ]
-    for (let i = 0; i < n; i++) {
-      // Each pair: [key_string_ptr, value]
-      body.push(
-        ['local.set', `$${pair}`, ['call', '$__alloc', ['i32.const', 24]]],  // header(8) + 2*f64(16)
-        ['i32.store', ['local.get', `$${pair}`], ['i32.const', 2]],
-        ['i32.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 4]], ['i32.const', 2]],
-        ['local.set', `$${pair}`, ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]],
-        // pair[0] = key string
-        ['f64.store', ['local.get', `$${pair}`], emitStringLiteral(schema[i])],
-        // pair[1] = value
-        ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]],
-        // Store pair pointer in outer array
-        ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
-          ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
+  // String (heap): [-4:len(i32)][chars...]
+  ctx.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
+    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
+
+  // Set len in memory (for push/pop)
+  ctx.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
+    (i32.store (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)) (local.get $len)))`
+
+  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len'])
+    ctx.includes.add(name)
+
+  // Export allocator
+  ctx.funcs.push({
+    name: '_alloc', body: null, exported: true,
+    sig: { params: [{ name: 'bytes', type: 'i32' }], results: ['i32'] },
+    raw: '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))'
+  })
+  ctx.funcs.push({
+    name: '_reset', body: null, exported: true,
+    sig: { params: [], results: [] },
+    raw: '(func (export "_reset") (call $__reset))'
+  })
+
+  // === Property dispatch (.length, .prop) ===
+
+  ctx.emit['.'] = (obj, prop) => {
+    // Boxed object: delegate .length and .prop to inner value or schema
+    if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
+      if (prop === 'length') {
+        // .length → delegate to inner value (slot 0)
+        const inner = ctx.schema.emitInner(obj)
+        return typed(['f64.convert_i32_s', ['call', '$__len', inner]], 'f64')
+      }
+      // Named property → schema lookup (already handles __inner__ offset)
+      const idx = ctx.schema.find(obj, prop)
+      if (idx >= 0)
+        return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
     }
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
-  }
 
-  // Object.assign(target, ...sources) → copy matching props from each source to target, return target
-  ctx.emit['Object.assign'] = (target, ...sources) => {
-    // Non-object target (array, string, etc.) → create boxed wrapper object
-    if (typeof target === 'string') {
-      const vt = ctx.valTypes?.get(target)
-      if (vt && vt !== VAL.OBJECT) {
-        // Collect all source props
-        const allProps = []
-        for (const src of sources) {
-          const s = resolveSchema(src)
-          if (!s) err('Object.assign: source needs known schema')
-          for (const p of s) if (!allProps.includes(p)) allProps.push(p)
-        }
-        // Register boxed schema: ['__inner__', ...props]
-        const boxedSchema = ['__inner__', ...allProps]
-        const schemaId = ctx.schema.register(boxedSchema)
-        ctx.schema.vars.set(target, schemaId)
+    // .length → dispatch by pointer type
+    // SSO (type=5): aux bits. Heap string (type=4): offset-4. Array/typed/set/map: offset-8.
+    if (prop === 'length') {
+      const va = asF64(emit(obj))
+      const t = `__lt${ctx.uniq++}`
+      ctx.locals.set(t, 'i32')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, ['call', '$__ptr_type', va]],
+        ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 5]],
+          ['then', ['f64.convert_i32_s', ['call', '$__ptr_aux', va]]],
+          ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 4]],
+            ['then', ['f64.convert_i32_s', ['call', '$__str_len', va]]],
+            ['else', ['f64.convert_i32_s', ['call', '$__len', va]]]]]]], 'f64')
+    }
 
-        const t = `__bx${ctx.uniq++}`, s = `__bs${ctx.uniq++}`
-        ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
-        const body = [
-          // Allocate object: slot 0 = inner, remaining = props
-          ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
-          // Store inner value in slot 0
-          ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
-        ]
-        // Copy source props into remaining slots
-        for (const source of sources) {
-          const sSchema = resolveSchema(source)
-          body.push(['local.set', `$${s}`, asF64(emit(source))])
-          for (let si = 0; si < sSchema.length; si++) {
-            const ti = boxedSchema.indexOf(sSchema[si])
-            if (ti < 0) continue
-            body.push(['f64.store',
-              ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
-              ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
-          }
-        }
-        // Create object pointer and reassign variable
-        body.push(['local.set', `$${target}`,
-          ['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
-        body.push(['local.get', `$${target}`])
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
+    // Module-registered property emitter (.size, etc.)
+    const propKey = `.${prop}`
+    if (ctx.emit[propKey]) return ctx.emit[propKey](obj)
+
+    // Object property → schema lookup
+    if (typeof obj === 'string') {
+      const idx = ctx.schema.find(obj, prop)
+      if (idx >= 0) {
+        const va = emit(obj)
+        return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]]], 'f64')
       }
     }
 
-    const tSchema = resolveSchema(target)
-    if (!tSchema) err('Object.assign: target needs known schema')
-
-    const t = `__at${ctx.uniq++}`, s = `__as${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(s, 'f64')
-    const body = [
-      ['local.set', `$${t}`, asF64(emit(target))],
-    ]
-
-    // Copy from each source object
-    for (const source of sources) {
-      const sSchema = resolveSchema(source)
-      if (!sSchema) err('Object.assign: source needs known schema')
-
-      body.push(['local.set', `$${s}`, asF64(emit(source))])
-      for (let si = 0; si < sSchema.length; si++) {
-        const ti = tSchema.indexOf(sSchema[si])
-        if (ti < 0) continue
-        body.push(['f64.store',
-          ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', ti * 8]],
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
-      }
+    // HASH (dynamic object) → runtime string-key lookup
+    // Only emit if type is unknown; known non-object types should error at compile time
+    if (typeof obj === 'string') {
+      const vt = ctx.valTypes?.get(obj)
+      if (vt && vt !== 'object') err(`Unknown property: .${prop} on ${vt}`)
     }
-
-    body.push(['local.get', `$${t}`])
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
+    ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    return typed(['call', '$__hash_get', asF64(emit(obj)), asF64(emit(['str', prop]))], 'f64')
   }
-}
 
-// --- Helpers ---
-
-/** Resolve schema for a variable or expression. */
-function resolveSchema(obj) {
-  if (typeof obj === 'string') {
-    const id = ctx.schema.vars.get(obj)
-    if (id != null) return ctx.schema.list[id]
+  // Optional chaining: obj?.prop → 0 if obj is 0/null, else obj.prop
+  ctx.emit['?.'] = (obj, prop) => {
+    const t = temp()
+    const va = asF64(emit(obj))
+    // Resolve property index at compile time
+    const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
+    const access = prop === 'length'
+      ? ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]
+      : propIdx >= 0
+        ? ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
+        : ['f64.const', 0]
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, va], ['f64.const', 0]],
+      ['then', access],
+      ['else', ['f64.const', 0]]], 'f64')
   }
-  // Inline object literal: ['{}', [':', 'x', ...], ...]
-  if (Array.isArray(obj) && obj[0] === '{}')
-    return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-  return null
-}
 
-/** Emit a string literal as NaN-boxed pointer (SSO or heap). */
-function emitStringLiteral(str) {
-  if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
-    let packed = 0
-    for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-    return ['call', '$__mkptr', ['i32.const', 5], ['i32.const', str.length], ['i32.const', packed]]
+  // Optional index: arr?.[i] → 0 if arr is 0 (null), else arr[i]
+  ctx.emit['?.[]'] = (arr, idx) => {
+    const t = temp()
+    return typed(['if', ['result', 'f64'],
+      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(arr))], ['f64.const', 0]],
+      ['then', ctx.emit['[]']?.(arr, idx) || typed(['f64.const', 0], 'f64')],
+      ['else', ['f64.const', 0]]], 'f64')
   }
-  const len = str.length
-  const t = `__sl${ctx.uniq++}`
-  ctx.locals.set(t, 'i32')
-  const body = [
-    ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
-    ['i32.store', ['local.get', `$${t}`], ['i32.const', len]],
-    ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
-  ]
-  for (let i = 0; i < len; i++)
-    body.push(['i32.store8', ['i32.add', ['local.get', `$${t}`], ['i32.const', i]], ['i32.const', str.charCodeAt(i)]])
-  body.push(['call', '$__mkptr', ['i32.const', 4], ['i32.const', 0], ['local.get', `$${t}`]])
-  return ['block', ['result', 'f64'], ...body]
-}
 
-/** Emit an array of string pointers. */
-function emitStringArray(names) {
-  const n = names.length
-  const arr = `__sa${ctx.uniq++}`
-  ctx.locals.set(arr, 'i32')
-  const body = [
-    ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-    ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-    ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-    ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
-  ]
-  for (let i = 0; i < n; i++)
-    body.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]], emitStringLiteral(names[i])])
-  body.push(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${arr}`]])
-  return typed(['block', ['result', 'f64'], ...body], 'f64')
+  // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
+  ctx.emit['typeof'] = (a) => {
+    const t = temp()
+    return typed(['if', ['result', 'f64'],
+      // NaN check: val != val means it's a NaN-boxed pointer
+      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(a))], ['local.get', `$${t}`]],
+      ['then', ['f64.convert_i32_s', ['call', '$__ptr_type', ['local.get', `$${t}`]]]],
+      ['else', ['f64.const', -1]]], 'f64') // -1 = plain number
+  }
+
+  // === Schema helpers (shared via ctx, used by object module + prepare) ===
+
+  ctx.schema.register = (props) => {
+    const key = props.join(',')
+    const existing = ctx.schema.list.findIndex(s => s.join(',') === key)
+    if (existing >= 0) return existing
+    return ctx.schema.list.push(props) - 1
+  }
+
+  /** Check if variable has a boxed schema (slot 0 = __inner__). */
+  ctx.schema.isBoxed = (varName) => {
+    const id = ctx.schema.vars.get(varName)
+    return id != null && ctx.schema.list[id]?.[0] === '__inner__'
+  }
+
+  /** Emit code to load the inner value (slot 0) of a boxed variable. */
+  ctx.schema.emitInner = (varName) => {
+    return typed(['f64.load', ['call', '$__ptr_offset', asF64(emit(varName))]], 'f64')
+  }
+
+  ctx.schema.find = (varName, prop) => {
+    // Precise: variable has known schema
+    const id = ctx.schema.vars.get(varName)
+    if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
+    // Fallback: search all schemas, require consistent index
+    let result = -1
+    for (const s of ctx.schema.list) {
+      const idx = s.indexOf(prop)
+      if (idx < 0) continue
+      if (result >= 0 && result !== idx) err(`Ambiguous property .${prop}: different offset across schemas`)
+      result = idx
+    }
+    return result
+  }
+
+  // Low-level pointer helpers callable from jz code
+  ctx.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')
+  ctx.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asF64(emit(p))]], 'f64')
+  ctx.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asF64(emit(p))]], 'f64')
+  ctx.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asF64(emit(p))]], 'f64')
 }

@@ -254,7 +254,47 @@ export default () => {
   // "NaN" "Infinity" "-Infinity" "true" "false" "null" "undefined" "[Array]" "[Object]"
   ctx.data = (ctx.data || '') + 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
 
-  // === Emitters ===
+  // === Number constants ===
+
+  ctx.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
+  ctx.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
+  ctx.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
+  ctx.emit['Number.MAX_VALUE'] = () => typed(['f64.const', 1.7976931348623157e+308], 'f64')
+  ctx.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
+  ctx.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
+  ctx.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
+  ctx.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
+
+  // === Number static methods ===
+
+  ctx.emit['Number.isNaN'] = (x) => {
+    const v = asF64(emit(x))
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
+  }
+
+  ctx.emit['Number.isFinite'] = (x) => {
+    const v = asF64(emit(x))
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    return typed(['i32.and',
+      ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
+  }
+
+  ctx.emit['Number.isInteger'] = (x) => {
+    const v = asF64(emit(x))
+    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    return typed(['i32.and',
+      ['i32.and',
+        ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]],
+      ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
+  }
+
+  ctx.emit['Number.parseInt'] = (x) => typed(['f64.trunc', asF64(emit(x))], 'f64')
+  ctx.emit['Number.parseFloat'] = (x) => asF64(emit(x))
+
+  // === Instance method emitters ===
 
   const incNum = () => inc('__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
 

@@ -599,7 +599,7 @@ export default function compile(ast) {
     }
   }
 
-  if (ctx.modules.ptr) sections.push(['memory', ['export', '"memory"'], 1])
+  if (ctx.modules.core) sections.push(['memory', ['export', '"memory"'], 1])
   // Static data segment at address 0 (heap starts at 1024, so no conflict)
   if (ctx.data) sections.push(['data', ['i32.const', 0], `"${ctx.data}"`])
   if (ctx.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
@@ -725,10 +725,10 @@ export const emitter = {
       const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
       return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], vv]
     }
-    // Object property assignment: obj.prop = x → f64.store at schema index
+    // Object property assignment: obj.prop = x
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
-      // Delegate to '.' emitter for index calculation, but store instead of load
+      // Schema-based object → f64.store at fixed offset
       if (typeof obj === 'string' && ctx.schema.find) {
         const idx = ctx.schema.find(obj, prop)
         if (idx >= 0) {
@@ -736,6 +736,12 @@ export const emitter = {
           return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], vv]
         }
       }
+      // HASH (dynamic object) → __hash_set (may return new pointer after grow)
+      ctx.includes.add('__hash_set'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+      const setCall = typed(['call', '$__hash_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+      // Update variable if obj is a local (pointer may change after hash table grow)
+      if (typeof obj === 'string') return ['local.set', `$${obj}`, setCall]
+      return setCall
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     // Boxed variable: store to memory cell

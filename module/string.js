@@ -591,4 +591,40 @@ export default () => {
       ['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1],
         ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]]]], 'f64')
   }
+
+  // .search(str) → indexOf (same as indexOf for string args)
+  ctx.emit['.search'] = (str, search) => {
+    inc('__str_indexof')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
+  }
+
+  // .match(str) → [match] array if found, or 0 (null) if not
+  // For string args, returns single-element array with the matched substring
+  ctx.emit['.match'] = (str, search) => {
+    inc('__str_indexof', '__str_slice', '__wrap1')
+    const s = `__ms${ctx.uniq++}`, q = `__mq${ctx.uniq++}`, idx = `__mi${ctx.uniq++}`
+    ctx.locals.set(s, 'f64'); ctx.locals.set(q, 'f64'); ctx.locals.set(idx, 'i32')
+    // indexOf, then if >= 0, create 1-element array with the match slice
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(str))],
+      ['local.set', `$${q}`, asF64(emit(search))],
+      ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`]]],
+      ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
+        ['then', ['f64.const', 0]],  // null
+        ['else',
+          // Build 1-element array containing the search string
+          ['call', '$__wrap1',
+            ['call', '$__str_slice', ['local.get', `$${s}`],
+              ['local.get', `$${idx}`],
+              ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
+  }
+
+  // __wrap1(val: f64) → f64 — create 1-element array [val]
+  ctx.stdlib['__wrap1'] = `(func $__wrap1 (param $val f64) (result f64)
+    (local $ptr i32)
+    (local.set $ptr (call $__alloc (i32.const 16)))
+    (i32.store (local.get $ptr) (i32.const 1))
+    (i32.store (i32.add (local.get $ptr) (i32.const 4)) (i32.const 1))
+    (f64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
+    (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`
 }

@@ -30,6 +30,6 @@
   ],
   "devDependencies": {
     "tst": "^9.2.0",
-    "watr": "^4.2.1"
+    "watr": "^4.3.1"
   }
 }
