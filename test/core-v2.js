@@ -59,6 +59,24 @@ test('precedence', async () => {
   is(run('export let f = x => x * 2 + 1').f(3), 7)   // 6 + 1
 })
 
+// README hero examples
+test('readme: add', async () => {
+  const { add } = run('export let add = (a, b) => a + b')
+  is(add(2, 3), 5)
+})
+
+test('readme: sine', async () => {
+  const { sine } = run(`
+    export let sine = (freq, t, i) => Math.sin((t + i) * freq * Math.PI * 2 / 44100)
+  `)
+  // freq=440, t=0, i=0 → sin(0) = 0
+  is(sine(440, 0, 0), 0)
+  // freq=440, t=0, i=25 → matches JS result
+  almost(sine(440, 0, 25), Math.sin(440 * 25 * Math.PI * 2 / 44100), 1e-6)
+  // verify non-zero for non-zero input
+  ok(sine(440, 0, 100) !== 0)
+})
+
 test('math module: wasm ops', async () => {
   const opts = { modules: [math] }
   is(run('export let f = x => Math.sqrt(x)', opts).f(16), 4)

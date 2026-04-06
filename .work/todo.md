@@ -185,11 +185,11 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 
 ### Advanced
 
-* [ ] Regex (parser, codegen, test/exec/match/replace/split)
+* [x] Regex (parser, codegen, test/exec/match/replace/split) — module/regex.js: parseRegex→AST, compileRegex→WAT, search wrapper; .test/.exec/.search/.match/.replace/.split
 * [x] Symbol — type=0 (ATOM), aux=atomId. Reserved 0-15 (null, undefined, future). Symbol() unique per site, Symbol.for() interned
 * [x] Object.assign — schema inference + cross-copy, boxed primitives (Object.assign on arrays/strings)
 * [x] Number.isNaN, isFinite, isInteger, parseInt, parseFloat + constants (EPSILON, MAX_SAFE_INTEGER, etc.)
-* [ ] Global isNaN, isFinite — resolve as bare identifiers (currently skipped in tests)
+* [x] Global isNaN, isFinite — bare identifiers resolved via GLOBALS → number module, same impl as Number.isNaN/isFinite
 * [x] Array.isArray — ptr_type === ARRAY
 * [ ] Array.from — needs iterable protocol
 * [x] Object.keys, values, entries — compile-time schema resolution, returns NaN-boxed arrays

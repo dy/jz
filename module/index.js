@@ -10,4 +10,5 @@ import collection from './collection.js'
 import symbol from './symbol.js'
 import console from './console.js'
 import json from './json.js'
-export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json }
+import regex from './regex.js'
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex }

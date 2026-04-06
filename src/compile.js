@@ -161,7 +161,7 @@ function emitDecl(...inits) {
 export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',
   OBJECT: 'object', SET: 'set', MAP: 'map',
-  CLOSURE: 'closure', TYPED: 'typed',
+  CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
 }
 
 /** Infer value type of an AST expression (without emitting). */
@@ -177,6 +177,7 @@ export function valTypeOf(expr) {
   if (op === '[') return VAL.ARRAY
   if (op === 'str') return VAL.STRING
   if (op === '=>') return VAL.CLOSURE
+  if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
   // Arithmetic expressions produce numbers
   if (['+', '-', '*', '/', '%', '**', '++', '--', '~', '&', '|', '^', '<<', '>>', '>>>'].includes(op)) return VAL.NUMBER
@@ -212,6 +213,9 @@ export function valTypeOf(expr) {
  */
 function analyzeValTypes(body) {
   const types = ctx.valTypes
+  function trackRegex(name, rhs) {
+    if (ctx.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.regex.vars.set(name, rhs)
+  }
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -221,11 +225,13 @@ function analyzeValTypes(body) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         const vt = valTypeOf(a[2])
         if (vt) types.set(a[1], vt)
+        if (vt === VAL.REGEX) trackRegex(a[1], a[2])
       }
     }
     if (op === '=' && typeof args[0] === 'string') {
       const vt = valTypeOf(args[1])
       if (vt) types.set(args[0], vt)
+      if (vt === VAL.REGEX) trackRegex(args[0], args[1])
     }
     for (const a of args) walk(a)
   }

@@ -1,4 +1,4 @@
-# jz ![stability](https://img.shields.io/badge/stability-experimental-black)
+# jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
 Functional modern JS subset compiling to WASM. No runtime, no GC, no overhead.
 
@@ -67,10 +67,10 @@ jz --help
 
 ## Why?
 
-JS became complex with legacy and regrets (coercions, hoisting, `this`, classes, precision loss).
+JS has become complex and and with regrets (coercions, hoisting, `this`, classes, precision loss).
 Ongoing proposals shape language into something unappealing.
 
-_jz_ is (jazzy) javascript zero – keeps only minimal functional JS best practices mapping to WASM.
+_jz_ (javascript zero) – keeps minimal functional JS best practices, drops the rest.
 Initially conceived for bytebeats, inspired by [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
 

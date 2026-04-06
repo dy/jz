@@ -267,19 +267,26 @@ export default () => {
 
   // === Number static methods ===
 
-  ctx.emit['Number.isNaN'] = (x) => {
+  const emitIsNaN = (x) => {
     const v = asF64(emit(x))
     const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
   }
 
-  ctx.emit['Number.isFinite'] = (x) => {
+  const emitIsFinite = (x) => {
     const v = asF64(emit(x))
     const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
   }
+
+  ctx.emit['Number.isNaN'] = emitIsNaN
+  ctx.emit['Number.isFinite'] = emitIsFinite
+
+  // Global isNaN/isFinite — same semantics (jz has no type coercion)
+  ctx.emit['isNaN'] = emitIsNaN
+  ctx.emit['isFinite'] = emitIsFinite
 
   ctx.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))

@@ -308,7 +308,7 @@ test('Math.imul', async () => {
 // Type check functions
 // ============================================
 
-test.skip('isNaN (global)', async () => {
+test('isNaN (global)', async () => {
   is(await evaluate('isNaN(NaN)'), 1)
   is(await evaluate('isNaN(0)'), 0)
   is(await evaluate('isNaN(1)'), 0)
@@ -316,7 +316,7 @@ test.skip('isNaN (global)', async () => {
   is(await evaluate('isNaN(-Infinity)'), 0)
 })
 
-test.skip('isFinite (global)', async () => {
+test('isFinite (global)', async () => {
   is(await evaluate('isFinite(0)'), 1)
   is(await evaluate('isFinite(1)'), 1)
   is(await evaluate('isFinite(-1)'), 1)
@@ -325,7 +325,23 @@ test.skip('isFinite (global)', async () => {
   is(await evaluate('isFinite(NaN)'), 0)
 })
 
-// Number.isNaN, Number.isFinite, Number.isInteger — needs core module (planned)
+test('Number.isNaN', async () => {
+  is(await evaluate('Number.isNaN(NaN)'), 1)
+  is(await evaluate('Number.isNaN(0)'), 0)
+  is(await evaluate('Number.isNaN(1)'), 0)
+})
+
+test('Number.isFinite', async () => {
+  is(await evaluate('Number.isFinite(0)'), 1)
+  is(await evaluate('Number.isFinite(Infinity)'), 0)
+  is(await evaluate('Number.isFinite(NaN)'), 0)
+})
+
+test('Number.isInteger', async () => {
+  is(await evaluate('Number.isInteger(1)'), 1)
+  is(await evaluate('Number.isInteger(1.5)'), 0)
+  is(await evaluate('Number.isInteger(0)'), 1)
+})
 
 // ============================================
 // Random

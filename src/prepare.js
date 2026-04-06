@@ -83,6 +83,8 @@ export const GLOBALS = {
   Object: 'Object',
   Symbol: 'Symbol',
   JSON: 'JSON',
+  isNaN: 'number',
+  isFinite: 'number',
 }
 
 /** Prepare let/const declaration. */
@@ -268,6 +270,12 @@ const handlers = {
   '++'(a, _post) { return _post !== undefined ? ['-', ['++', a], [, 1]] : ['++', a] },
   '--'(a, _post) { return _post !== undefined ? ['+', ['--', a], [, 1]] : ['--', a] },
 
+  // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
+  '//'(pattern, flags) {
+    includeModule('core'); includeModule('string'); includeModule('regex')
+    return ['//', pattern, flags]
+  },
+
   // auto-include math for ** operator
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
 
@@ -430,6 +438,7 @@ const MOD_DEPS = {
   symbol: ['core'],
   json: ['core', 'string', 'number', 'collection'],
   console: ['core', 'string', 'number'],
+  regex: ['core', 'string', 'array'],
 }
 
 function includeModule(name) {
