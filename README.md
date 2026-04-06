@@ -2,6 +2,8 @@
 
 Functional modern JS subset compiling to WASM. No runtime, no GC, no overhead.
 
+## Usage
+
 `npm install jz`
 
 ```js
@@ -17,7 +19,7 @@ let { sine } = (await WebAssembly.instantiate(jz(`
 sine(440, 0, 0)  // native speed, zero GC
 ```
 
-### CLI
+## CLI
 
 `npm install -g jz`
 
