@@ -39,6 +39,50 @@ const UNDEF_NAN = '0x7FF8000000000001'
 
 // === Constant folding helpers ===
 
+/** Emit typeof comparison: typeof x == typeCode → type-aware check. */
+function emitTypeofCmp(a, b, cmpOp) {
+  let typeofExpr, code
+  if (Array.isArray(a) && a[0] === 'typeof' && typeof b === 'number') { typeofExpr = a[1]; code = b }
+  else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null) { typeofExpr = a[1]; code = b[1] }
+  else return null
+  if (typeof code !== 'number') return null
+
+  const t = temp()
+  const va = asF64(emit(typeofExpr))
+  const eq = cmpOp === 'eq'
+
+  if (code === -1) {
+    // 'number' → x === x (not NaN-boxed pointer, not NaN)
+    return typed(eq
+      ? ['f64.eq', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+      : ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
+  }
+  if (code === -2) {
+    // 'string' → is NaN-boxed AND ptr_type is 4 (heap) or 5 (SSO)
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const tt = `${T}${ctx.uniq++}`; ctx.locals.set(tt, 'i32')
+    const isStr = ['i32.or',
+      ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', 4]],
+      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]]
+    return typed(eq ? ['i32.and', isPtr, isStr]
+      : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
+  }
+  if (code === -3) {
+    // 'undefined' → x is 0 (null in jz)
+    return typed(eq ? ['f64.eq', va, ['f64.const', 0]] : ['f64.ne', va, ['f64.const', 0]], 'i32')
+  }
+  if (code === -4) {
+    // 'boolean' → always false (no boolean type in jz)
+    return typed(['i32.const', eq ? 0 : 1], 'i32')
+  }
+  // Direct type code (6=object, 1=array, 8=set, etc.)
+  if (code >= 0) {
+    const check = ['i32.eq', ['call', '$__ptr_type', va], ['i32.const', code]]
+    return typed(eq ? check : ['i32.eqz', check], 'i32')
+  }
+  return null
+}
+
 /** Check if emitted node is a compile-time constant. */
 const isLit = n => (n[0] === 'i32.const' || n[0] === 'f64.const') && typeof n[1] === 'number'
 const litVal = n => n[1]
@@ -882,8 +926,13 @@ export const emitter = {
   'return': expr => {
     if (ctx.sig?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'f64')
-    // Emit the expression normally (handles defaults, rest, closures), then return
-    return typed(['return', asF64(emit(expr))], 'f64')
+    // Emit the expression normally (handles defaults, rest, closures)
+    const ir = asF64(emit(expr))
+    // Tail call optimization: return call $f(...) → return_call $f(...)
+    // Only for direct calls (not closures), and not inside try blocks
+    if (!ctx._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
+      return typed(['return_call', ...ir.slice(1)], 'f64')
+    return typed(['return', ir], 'f64')
   },
 
   // === Assignment ===
@@ -1077,12 +1126,14 @@ export const emitter = {
   // === Comparisons (always i32 result) ===
 
   '==': (a, b) => {
+    // typeof x == 'string' → compile-time type check (prepare rewrites string to type code)
+    const tc = emitTypeofCmp(a, b, 'eq'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
-    // Bit-equal: handles both number equality and pointer identity (NaN-boxed)
     return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
   },
   '!=': (a, b) => {
+    const tc = emitTypeofCmp(a, b, 'ne'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
     return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')

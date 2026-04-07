@@ -13,7 +13,7 @@ import jz, { compile } from 'jz'
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
 add(2, 3)  // 5
 
-// Template tag — interpolate numbers, functions, strings, arrays, numeric objects
+// Template tag — interpolate numbers, functions, strings, arrays, objects
 const { exports: { sine } } = jz`
   export let sine = (freq, t, i) => ${Math.sin}((t + i) * freq * ${Math.PI} * 2 / 44100)
 `
@@ -67,8 +67,12 @@ jz --help
 * Spread: `[...a, ...b]`, `let [x, y] = a`, `let {x, y} = o`
 * Objects: `{a: b}`, `{a, b}`, `o.prop`, `o.prop = x`
 * Collections: `new Set()`, `new Map()`, `new Float64Array(n)`, `new Int32Array(n)`
-* Modules: `import { a } from 'b'`, `export`
+* Loops: `for...of` arrays, `for...in` objects (compile-time unrolled)
+* Modules: `import { a } from 'b'`, `export`, source bundling, host imports
 * Math: `sin cos tan atan2 sqrt pow abs min max floor ceil round log exp` ...
+* Time: `Date.now()`, `performance.now()` (WASI)
+* IO: `console.log/warn/error` (WASI)
+* typeof: `typeof x === 'string'` (compile-time type checks)
 * Comments: `// foo`, `/* bar */`
 * No `var`, `function`, `this`, `class`, `async`, `eval`, `with`, `arguments`
 * `==` is `===`, `null` is `0`
@@ -154,20 +158,17 @@ c.instance.exports.len(a.mem.String('hello'))  // 5
 
 All modules sharing a memory use a single bump allocator (heap pointer stored in the memory itself). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-#### Why can't I interpolate objects with string/array values?
+#### How does object interpolation work?
 
-Object interpolation emits a jz object literal at compile time. String and array values need WASM memory allocation, which requires the instance — but the instance doesn't exist until compilation finishes. Numeric values inline directly:
+Objects with all-numeric values are emitted as jz object literals at compile time. Objects with strings, arrays, or mixed values are allocated via `mem.Object` after instantiation — the template tag handles this automatically:
 
 ```js
-// Works: all values are numbers
-jz`export let f = () => ${{x: 1, y: 2}}.x`         // 1
+// Numeric: compile-time literal
+jz`export let f = () => ${{x: 1, y: 2}}.x`             // 1
 
-// For objects with strings: use mem.Object (auto-wraps strings/arrays)
-const { exports, mem } = jz('export let f = (o) => o.name.length')
-exports.f(mem.Object({ name: 'jz' }))               // 2
-
-// Or interpolate strings separately
-jz`export let f = () => ${'hello'}.length`           // 5
+// Mixed: auto-allocated post-instantiation
+const { exports, mem } = jz`export let f = () => ${{name: 'jz', count: 3}}.name`
+mem.read(exports.f())                                    // 'jz'
 ```
 
 #### How does everything fit in f64?

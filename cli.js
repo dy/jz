@@ -4,7 +4,8 @@
  * JZ CLI - Command-line interface for JZ compiler
  */
 
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { dirname, resolve, join } from 'path'
 import jz, { compile } from './index.js'
 
 function showHelp() {
@@ -78,7 +79,35 @@ async function handleCompile(args) {
   if (outputFile.endsWith('.wat')) wat = true
 
   const code = readFileSync(inputFile, 'utf8')
-  const result = compile(code, { wat })
+
+  // Resolve imports: jz.json map (if present) + inline import specifiers
+  const dir = dirname(resolve(inputFile))
+  const modules = {}
+
+  // Load import map from package.json "imports" field (Node/Deno convention)
+  const pkgFile = join(dir, 'package.json')
+  if (existsSync(pkgFile)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
+      if (pkg.imports) for (const [spec, path] of Object.entries(pkg.imports)) {
+        const full = resolve(dir, path)
+        try { modules[spec] = readFileSync(full, 'utf8') } catch {}
+      }
+    } catch {}
+  }
+
+  // Also resolve relative imports found in source
+  const importRe = /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g
+  let m; while ((m = importRe.exec(code)) !== null) {
+    const spec = m[1]
+    if (!modules[spec] && (spec.startsWith('./') || spec.startsWith('../'))) {
+      const full = resolve(dir, spec)
+      try { modules[spec] = readFileSync(full, 'utf8') }
+      catch { try { modules[spec] = readFileSync(full + '.js', 'utf8') } catch {} }
+    }
+  }
+
+  const result = compile(code, { wat, ...(Object.keys(modules).length && { modules }) })
 
   if (wat) {
     writeFileSync(outputFile, result)

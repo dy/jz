@@ -14,6 +14,7 @@
  * @module prepare
  */
 
+import { parse } from 'subscript/jessie'
 import { ctx, err } from './ctx.js'
 import { T } from './compile.js'
 import * as mods from '../module/index.js'
@@ -51,6 +52,23 @@ function resolveScope(name) {
 /** Check if name is declared in any current scope level. */
 function isDeclared(name) {
   return scopes.some(s => s.has(name))
+}
+
+/** Map JS typeof strings to jz type checks. */
+const TYPEOF_MAP = { 'number': -1, 'string': -2, 'object': 6, 'undefined': -3, 'boolean': -4 }
+function resolveTypeof(node) {
+  const [op, a, b] = node
+  // typeof x == 'string' → type check
+  if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null && typeof b[1] === 'string') {
+    const code = TYPEOF_MAP[b[1]]
+    if (code != null) return [op, ['typeof', a[1]], [, code]]
+  }
+  // 'string' == typeof x
+  if (Array.isArray(b) && b[0] === 'typeof' && Array.isArray(a) && a[0] == null && typeof a[1] === 'string') {
+    const code = TYPEOF_MAP[a[1]]
+    if (code != null) return [op, ['typeof', b[1]], [, code]]
+  }
+  return node
 }
 
 function prep(node) {
@@ -218,34 +236,74 @@ const handlers = {
   'from'(specifiers, source) {
     const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err('Invalid import source')
-    includeModule(mod)
 
-    const bind = (name, alias) => {
-      const key = mod + '.' + name
-      if (!ctx.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
-      ctx.scope[alias || name] = key
-    }
-
-    if (typeof specifiers === 'string') {
-      ctx.scope[specifiers] = mod
-      return null
-    }
-    if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
-      ctx.scope[specifiers[2]] = mod
-      return null
-    }
-    if (Array.isArray(specifiers) && specifiers[0] === '{}') {
-      const inner = specifiers[1]
-      if (inner == null) return null
-      const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
-      for (const item of items) {
-        if (typeof item === 'string') bind(item)
-        else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
-        else err(`Invalid import specifier: ${JSON.stringify(item)}`)
+    // Tier 1: Built-in module
+    if (mods[MOD_ALIAS[mod] || mod]) {
+      includeModule(mod)
+      const bind = (name, alias) => {
+        const key = mod + '.' + name
+        if (!ctx.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
+        ctx.scope[alias || name] = key
       }
+      if (typeof specifiers === 'string') { ctx.scope[specifiers] = mod; return null }
+      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') { ctx.scope[specifiers[2]] = mod; return null }
+      if (Array.isArray(specifiers) && specifiers[0] === '{}') {
+        const inner = specifiers[1]
+        if (inner == null) return null
+        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        for (const item of items)
+          if (typeof item === 'string') bind(item)
+          else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
+          else err(`Invalid import specifier: ${JSON.stringify(item)}`)
+      }
+      return null
     }
-    return null
+
+    // Tier 2: Source module (bundling)
+    if (ctx.importSources?.[mod]) {
+      const resolved = prepareModule(mod, ctx.importSources[mod])
+      // Bind imported names to mangled names
+      if (Array.isArray(specifiers) && specifiers[0] === '{}') {
+        const inner = specifiers[1]
+        if (inner == null) return null
+        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        for (const item of items) {
+          const name = typeof item === 'string' ? item : item[1]
+          const alias = typeof item === 'string' ? item : item[2]
+          const mangled = resolved.exports.get(name)
+          if (!mangled) err(`'${name}' is not exported from '${mod}'`)
+          ctx.scope[alias] = mangled
+        }
+      }
+      return null
+    }
+
+    // Tier 3: Host imports
+    if (ctx.hostImports?.[mod]) {
+      const hostMod = ctx.hostImports[mod]
+      if (Array.isArray(specifiers) && specifiers[0] === '{}') {
+        const inner = specifiers[1]
+        if (inner == null) return null
+        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        for (const item of items) {
+          const name = typeof item === 'string' ? item : item[1]
+          const alias = typeof item === 'string' ? item : item[2]
+          const spec = hostMod[name]
+          if (!spec) err(`'${name}' not declared in host module '${mod}'`)
+          const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
+          const params = Array(nParams).fill(['param', 'f64'])
+          ctx.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
+        }
+      }
+      return null
+    }
+
+    err(`Unknown module '${mod}'. Provide it via { modules: { '${mod}': source } } or { imports: { '${mod}': {...} } }`)
   },
+
+  // === is == in jz (all comparisons are strict). Also handle typeof x === 'type' patterns.
+  '==='(a, b) { return prep(resolveTypeof(['==', a, b])) },
+  '!=='(a, b) { return prep(resolveTypeof(['!=', a, b])) },
 
   // Statements
   ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],
@@ -348,6 +406,8 @@ const handlers = {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
       const resolved = ctx.scope[callee]
       if (resolved?.includes('.')) callee = resolved
+      // Bundled import: resolved name is a known function → use as callee directly
+      else if (resolved && ctx.funcs.some(f => f.name === resolved)) callee = resolved
       // Bare constructor call: Symbol('foo') → include module, keep callee as-is
       else if (resolved && !resolved.includes('.')) includeModule(resolved)
       // Calling an unknown name inside a function body (e.g. a parameter) → needs call_indirect
@@ -360,6 +420,10 @@ const handlers = {
       if (obj === 'console' && (prop === 'log' || prop === 'warn' || prop === 'error')) {
         includeModule('core'); includeModule('string'); includeModule('number'); includeModule('console')
         callee = `console.${prop}`
+      // Date.now / performance.now → WASI clock_time_get
+      } else if ((obj === 'Date' && prop === 'now') || (obj === 'performance' && prop === 'now')) {
+        includeModule('core'); includeModule('console')
+        callee = `${obj}.${prop}`
       } else {
         const mod = ctx.scope[obj]
         if (typeof obj === 'string' && mod && !mod.includes('.'))
@@ -471,6 +535,34 @@ const handlers = {
     if (Array.isArray(head) && head[0] === ';') {
       const [, init, cond, step] = head
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
+    } else if (Array.isArray(head) && head[0] === 'of') {
+      // for (let x of arr) → for (let __i=0; __i<arr.length; __i++) { let x = arr[__i]; body }
+      const [, decl, src] = head
+      const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
+      const idx = `${T}i${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const init = ['let', ['=', idx, [, 0]]]
+      const cond = ['<', idx, ['.', src, 'length']]
+      const step = ['++', idx]
+      const inner = [';', ['let', ['=', varName, ['[]', src, idx]]], body]
+      r = prep(['for', [';', init, cond, step], inner])
+    } else if (Array.isArray(head) && head[0] === 'in') {
+      // for (let k in obj) → unroll at compile time with string keys
+      const [, decl, src] = head
+      const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
+      const sid = typeof src === 'string' && ctx.schema.vars.get(src)
+      if (sid == null) err(`for...in requires a known object schema — declare the shape first`)
+      const keys = ctx.schema.list[sid]
+      if (!keys || !keys.length) { scopes.pop(); return null }
+      includeModule('core'); includeModule('string')
+      // Unroll: for each key, bind k as string, execute body
+      const stmts = []
+      for (let i = 0; i < keys.length; i++) {
+        stmts.push(i === 0
+          ? ['let', ['=', varName, [, keys[i]]]]  // string literal
+          : ['=', varName, [, keys[i]]])
+        stmts.push(body)
+      }
+      r = prep([';', ...stmts])
     } else {
       r = ['for', prep(head), prep(body)]
     }
@@ -608,3 +700,55 @@ function collectReturns(node, out) {
 }
 
 const isLit = n => Array.isArray(n) && n[0] == null
+
+/** Compile-time bundling: parse + prepare an imported module, collect exports. */
+function prepareModule(specifier, source) {
+  // Cycle detection
+  if (ctx.moduleStack.includes(specifier))
+    err(`Circular import: ${ctx.moduleStack.join(' -> ')} -> ${specifier}`)
+  // Already resolved
+  if (ctx.resolvedModules.has(specifier)) return ctx.resolvedModules.get(specifier)
+
+  ctx.moduleStack.push(specifier)
+
+  // Name mangling prefix: ./math.jz → _math_jz
+  const prefix = specifier.replace(/[^a-zA-Z0-9]/g, '_')
+
+  // Save caller state
+  const savedScope = ctx.scope, savedExports = ctx.exports
+  ctx.scope = Object.create(savedScope)  // inherit parent scope
+  ctx.exports = {}
+
+  // Parse + prepare imported source (may trigger recursive imports)
+  const ast = parse(source)
+  const savedDepth = depth; depth = 0
+  prep(ast)
+  depth = savedDepth
+
+  // Collect exports: rename exported funcs with prefix
+  const moduleExports = new Map()
+  for (const name of Object.keys(ctx.exports)) {
+    const mangled = `${prefix}$${name}`
+    moduleExports.set(name, mangled)
+    // Rename the function in ctx.funcs
+    const func = ctx.funcs.find(f => f.name === name)
+    if (func) func.name = mangled
+    // Rename globals
+    if (ctx.globals.has(name)) {
+      const wat = ctx.globals.get(name).replace(`$${name}`, `$${mangled}`)
+      ctx.globals.delete(name)
+      ctx.globals.set(mangled, wat)
+      if (ctx.userGlobals.has(name)) { ctx.userGlobals.delete(name); ctx.userGlobals.add(mangled) }
+      if (ctx.globalTypes.has(name)) { ctx.globalTypes.set(mangled, ctx.globalTypes.get(name)); ctx.globalTypes.delete(name) }
+    }
+  }
+
+  // Restore caller state
+  ctx.scope = savedScope
+  ctx.exports = savedExports
+  ctx.moduleStack.pop()
+
+  const result = { exports: moduleExports }
+  ctx.resolvedModules.set(specifier, result)
+  return result
+}

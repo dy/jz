@@ -142,6 +142,48 @@ test('void returns 0', () => {
   is(run('export let f = () => void 42').f(), 0)
 })
 
+// === for...of ===
+
+test('for...of: sum array', () => {
+  is(run('export let f = () => { let s = 0; for (let x of [1, 2, 3]) s += x; return s }').f(), 6)
+})
+
+test('for...of: named array', () => {
+  is(run('export let f = () => { let a = [5, 10, 15]; let s = 0; for (let x of a) s += x; return s }').f(), 30)
+})
+
+test('for...of: early return', () => {
+  is(run('export let f = () => { for (let x of [1, 2, 3]) { if (x > 1) return x }; return 0 }').f(), 2)
+})
+
+// === for...in ===
+
+// === typeof string comparisons ===
+
+test('typeof: number check', () => {
+  is(run('export let f = (x) => typeof x === "number"').f(42), 1)
+  is(run('export let f = () => typeof "hello" === "number"').f(), 0)
+})
+
+test('typeof: string check', () => {
+  is(run('export let f = () => typeof "hello" === "string"').f(), 1)
+  is(run('export let f = () => typeof 42 === "string"').f(), 0)
+})
+
+test('typeof: undefined check', () => {
+  is(run('export let f = () => typeof null === "undefined"').f(), 1)
+  is(run('export let f = () => typeof 1 === "undefined"').f(), 0)
+})
+
+test('=== alias for ==', () => {
+  is(run('export let f = (a, b) => a === b').f(3, 3), 1)
+  is(run('export let f = (a, b) => a !== b').f(3, 4), 1)
+})
+
+test('for...in: count keys', () => {
+  is(run('export let f = () => { let o = {x: 1, y: 2, z: 3}; let c = 0; for (let k in o) c++; return c }').f(), 3)
+})
+
 test('if(0) still falsy', () => {
   is(run('export let f = (x) => { if (x) return 1; return 0 }').f(0), 0)
 })

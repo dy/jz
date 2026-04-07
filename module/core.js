@@ -136,13 +136,11 @@ export default () => {
     const propKey = `.${prop}`
     if (ctx.emit[propKey]) return ctx.emit[propKey](obj)
 
-    // Object property → schema lookup
-    if (typeof obj === 'string') {
-      const idx = ctx.schema.find(obj, prop)
-      if (idx >= 0) {
-        const va = emit(obj)
-        return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]]], 'f64')
-      }
+    // Object property → schema lookup (named variable or expression)
+    const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
+    if (schemaIdx >= 0) {
+      const va = emit(obj)
+      return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', schemaIdx * 8]]], 'f64')
     }
 
     // HASH (dynamic object) → runtime string-key lookup

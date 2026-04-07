@@ -206,26 +206,40 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] Dead code elimination — if(true)/if(false) elide dead branches, ternary constant folding, &&/||/?? short-circuit on literals
 * [x] Constant folding
 
+### Language features (current priority)
+
+* [x] `for...of` on arrays — desugared to indexed for loop in prepare
+* [x] `for...in` on objects — compile-time unrolled over schema keys
+* [x] `typeof x === 'string'` — `===`/`!==` aliased, typeof comparisons → static ptr_type checks
+* [x] Object interpolation with non-numeric values — dummy hoist for schema + mem.Object getter post-instantiation
+* [x] Tail-call optimization — restored: emit(expr) first, then return_call if result is direct call
+* [x] Date.now, performance.now — WASI clock_time_get, polyfill in wasi.js
+
 ### Build & tooling
 
 * [ ] make sure static strings are data fields, not mem pointers
 * [ ] Clean source from `this`, `Object.create`
-* [ ] console.log/warn/error
-* [ ] Date.now, performance.now
-* [ ] Import model (bundle/resolve static-time)
+* [x] console.log/warn/error
+* [x] Date.now, performance.now
+* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
+* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
+* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
+* [x] Custom imports — host functions via { imports: { mod: { fn } } }
+* [x] Shared memory — { memory } option, cross-module pointer sharing
 * [ ] Source maps
 * [ ] Memory size configuration
-* [ ] Custom imports
-* [ ] Template tag
+* [x] Template tag
 
 ### Validation & quality
 
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
-* [ ] Benchmarks vs porffor, assemblyscript, quickjs
+* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
+* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
 * [ ] test262 basics
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
+* [ ] wasm2c / w2c2 integration test
 
 ### Future
 

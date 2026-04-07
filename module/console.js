@@ -105,4 +105,26 @@ export default () => {
   makeConsole('log', 1)
   makeConsole('warn', 2)
   makeConsole('error', 2)
+
+  // === Date.now / performance.now via WASI clock_time_get ===
+
+  ctx.imports.push(
+    ['import', '"wasi_snapshot_preview1"', '"clock_time_get"',
+      ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']]])
+
+  // __time_ms(clock_id) → f64 milliseconds
+  // clock_time_get writes i64 nanoseconds to memory, we convert to f64 ms
+  ctx.stdlib['__time_ms'] = `(func $__time_ms (param $clock i32) (result f64)
+    (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
+    (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
+
+  ctx.emit['Date.now'] = () => {
+    ctx.includes.add('__time_ms')
+    return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')  // clock 0 = realtime
+  }
+
+  ctx.emit['performance.now'] = () => {
+    ctx.includes.add('__time_ms')
+    return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')  // clock 1 = monotonic
+  }
 }

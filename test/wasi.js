@@ -32,6 +32,19 @@ test('WASI: wasmtime native', () => {
   ok(out.includes('jz-wasmtime'))
 })
 
+// === Date.now / performance.now ===
+
+test('Date.now: returns reasonable timestamp', () => {
+  const t = run('export let f = () => Date.now()').f()
+  ok(t > 1700000000000 && t < 2000000000000, `Date.now ${t} in range`)
+})
+
+test('performance.now: monotonic', () => {
+  const { f } = run('export let f = () => performance.now()')
+  const a = f(), b = f()
+  ok(b >= a, `${b} >= ${a}`)
+})
+
 test('WASI: wasmer native', () => {
   if (!hasCmd('wasmer')) return
   const wasm = compile(`export let _start = () => { console.log("jz-wasmer"); return 0 }`)

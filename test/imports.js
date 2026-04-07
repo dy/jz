@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 // Helper: compile and run
 function run(code) {
@@ -123,4 +123,62 @@ test('import math from math', () => {
     export let f = x => math.sqrt(x)
   `)
   is(f(16), 4)
+})
+
+// ============================================
+// Source module bundling (Tier 2)
+// ============================================
+
+test('import: source module basic', () => {
+  const { exports } = jz(
+    'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
+    { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
+  )
+  is(exports.f(3, 4), 7)
+})
+
+test('import: source module multiple exports', () => {
+  const math = 'export let add = (a, b) => a + b; export let mul = (a, b) => a * b'
+  const { exports } = jz(
+    'import { add, mul } from "./m.jz"; export let f = (a, b) => add(a, b) + mul(a, b)',
+    { modules: { './m.jz': math } }
+  )
+  is(exports.f(3, 4), 19)  // 7 + 12
+})
+
+test('import: transitive imports', () => {
+  const base = 'export let base = (x) => x * 2'
+  const mid = 'import { base } from "./base.jz"; export let ext = (x) => base(x) + 1'
+  const { exports } = jz(
+    'import { ext } from "./mid.jz"; export let f = (x) => ext(x)',
+    { modules: { './mid.jz': mid, './base.jz': base } }
+  )
+  is(exports.f(5), 11)  // 5*2 + 1
+})
+
+test('import: unknown export errors', () => {
+  throws(() => jz(
+    'import { nope } from "./m.jz"; export let f = () => nope()',
+    { modules: { './m.jz': 'export let add = (a, b) => a + b' } }
+  ), /not exported/)
+})
+
+// ============================================
+// Host imports (Tier 3)
+// ============================================
+
+test('import: host function', () => {
+  const { exports } = jz(
+    'import { double } from "host"; export let f = (x) => double(x) + 1',
+    { imports: { host: { double: (x) => x * 2 } } }
+  )
+  is(exports.f(5), 11)
+})
+
+test('import: multiple host functions', () => {
+  const { exports } = jz(
+    'import { a, b } from "mylib"; export let f = (x) => a(x) + b(x)',
+    { imports: { mylib: { a: (x) => x + 1, b: (x) => x * 10 } } }
+  )
+  is(exports.f(3), 34)  // 4 + 30
 })

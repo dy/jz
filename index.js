@@ -277,6 +277,12 @@ jz.instantiate = (code, opts = {}) => {
   const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
+  // Host imports: provide actual functions at instantiation
+  if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
+    if (!imports[modName]) imports[modName] = {}
+    for (const [name, spec] of Object.entries(fns))
+      if (typeof spec === 'function') imports[modName][name] = spec
+  }
   // Shared memory: pass as import, initialize heap pointer if first module
   if (opts.memory) {
     if (!imports.env) imports.env = {}
@@ -307,6 +313,8 @@ jz.compile = (code, opts = {}) => {
   ctx.src = code
 
   if (opts.memory) ctx.sharedMemory = true
+  if (opts.modules) ctx.importSources = opts.modules
+  if (opts.imports) ctx.hostImports = opts.imports
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -328,7 +336,7 @@ jz.compile = (code, opts = {}) => {
  * @returns {{exports, mem, instance, module}}
  */
 export default function jz(code, ...args) {
-  // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, numeric objects
+  // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, objects
   if (Array.isArray(code)) {
     const interp = {}, data = {}, hoisted = []
     let src = code[0]
@@ -349,17 +357,32 @@ export default function jz(code, ...args) {
         data[key] = { val: v, ref }; interp[key] = () => ref.ptr
         src += `${key}()`
       } else if (typeof v === 'object' && v !== null) {
-        // Object → hoist as module-scope let with literal shape (binds schema to name)
-        // All values go through import getters (even numbers) so they're available at init
+        // Object → emit literal with property values as inline or getter imports
         const key = `$$${i}`
+        let hasNonNumeric = false
         const props = Object.keys(v).map(k => {
           const val = v[k]
           if (typeof val === 'number') return `${k}: ${val}`
           if (typeof val === 'boolean') return `${k}: ${val ? 1 : 0}`
-          throw Error(`jz template: object property '${k}' must be a number (got ${typeof val}). Use separate interpolation for complex values.`)
+          hasNonNumeric = true
+          const pk = `${key}_${k}`, ref = { ptr: 0 }
+          data[pk] = { val, ref }; interp[pk] = () => ref.ptr
+          return `${k}: ${pk}()`
         })
-        hoisted.push(`let ${key} = {${props.join(', ')}}`)
-        src += key
+        const literal = `{${props.join(', ')}}`
+        if (!hasNonNumeric) {
+          // All numeric: hoist to module scope (safe at __start time)
+          hoisted.push(`let ${key} = ${literal}`)
+          src += key
+        } else {
+          // Has non-numeric: hoist dummy to register schema, use getter for real value
+          const dummy = Object.keys(v).map(k => `${k}: 0`).join(', ')
+          hoisted.push(`let ${key} = {${dummy}}`)
+          const ref = { ptr: 0 }
+          data[key] = { val: v, ref }; interp[key] = () => ref.ptr
+          // Replace hoisted var with getter value at call time
+          src += `${key}()`
+        }
       } else {
         throw Error(`jz template: cannot interpolate ${typeof v}`)
       }

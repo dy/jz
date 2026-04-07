@@ -39,6 +39,14 @@ export function wasi(opts = {}) {
         dv.setUint32(nwritten, written, true)
         return 0
       },
+      clock_time_get(clock_id, precision, result_ptr) {
+        const dv = new DataView(mem.buffer)
+        const now = clock_id === 0
+          ? BigInt(Math.round(Date.now() * 1e6))       // realtime: ms → ns
+          : BigInt(Math.round(performance.now() * 1e6)) // monotonic: ms → ns
+        dv.setBigInt64(result_ptr, now, true)
+        return 0
+      },
       proc_exit() {},
       environ_sizes_get(count_ptr, size_ptr) {
         const dv = new DataView(mem.buffer)

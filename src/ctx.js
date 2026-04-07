@@ -54,6 +54,10 @@ export const ctx = {
 
   // --- Options ---
   sharedMemory: false,   // true when memory is imported (shared across modules)
+  importSources: null,   // {specifier: source} for import resolution (set by compile opts)
+  hostImports: null,     // Map<module, {name: {params}|fn}> for host-provided imports
+  moduleStack: [],       // import cycle detection
+  resolvedModules: null, // Map<specifier, {exports: Map<name, mangledName>}>
 
   // --- Error tracking ---
   src: '',             // source code (for error messages)
@@ -86,6 +90,10 @@ export function reset(proto, globals) {
   ctx.regex = null
   ctx._inTry = false
   ctx.sharedMemory = false
+  ctx.importSources = null
+  ctx.hostImports = null
+  ctx.moduleStack = []
+  ctx.resolvedModules = new Map()
   ctx.consts = null
   ctx.data = null
   ctx.src = ''
