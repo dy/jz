@@ -1,7 +1,7 @@
 // Array methods: map, filter, reduce, forEach, find, indexOf, includes, slice
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -129,14 +129,14 @@ test('.slice: values', () => {
 })
 
 // === .join ===
-// TODO: .join has memory access issue, skip for now
-// test('.join: comma sep', () => {
-//   const { f } = run(`export let f = () => {
-//     let a = [1, 2, 3]
-//     return a.join(",")
-//   }`)
-//   ok(isNaN(f()))  // returns NaN-boxed string pointer
-// })
+
+test('.join: comma sep', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    return a.join(",")
+  }`)
+  ok(isNaN(f()))  // returns NaN-boxed string pointer
+})
 
 // === Chained ===
 

@@ -1,12 +1,27 @@
 // Type coercion: i32/f64 by operator, bitwise ops, named constants
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
+
+// Sentinel NaN for "undefined/missing arg" — matches compile.js UNDEF_NAN
+const _b = new ArrayBuffer(8), _u = new Uint32Array(_b), _f = new Float64Array(_b)
+_u[1] = 0x7FF80000; _u[0] = 1; const UNDEF_NAN = _f[0]
+const coerce = v => v === undefined ? UNDEF_NAN : v
 
 function run(code, opts) {
   const wasm = compile(code, opts)
   const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  const raw = new WebAssembly.Instance(mod).exports
+  const wrapped = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'function') {
+      wrapped[k] = (...a) => {
+        while (a.length < v.length) a.push(undefined)
+        return v.apply(null, a.map(coerce))
+      }
+    } else wrapped[k] = v
+  }
+  return wrapped
 }
 
 // === Integer preservation ===

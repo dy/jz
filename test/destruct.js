@@ -1,7 +1,7 @@
 // Destructuring, optional chaining, typeof
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -99,6 +99,56 @@ test('optional: ?.[i] on null returns 0', () => {
     return a?.[0]
   }`)
   is(f(), 0)
+})
+
+test('optional: ?.[i] on string returns char code', () => {
+  const { f } = run(`export let f = () => {
+    let s = "ab"
+    return s?.[1]
+  }`)
+  is(f(), 98)  // 'b' = 98
+})
+
+test('optional: ?.length on array', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    return a?.length
+  }`)
+  is(f(), 3)
+})
+
+test('optional: ?.length on string', () => {
+  const { f } = run(`export let f = () => {
+    let s = "abc"
+    return s?.length
+  }`)
+  is(f(), 3)
+})
+
+test('optional: ?.length on null returns 0', () => {
+  const { f } = run(`export let f = () => {
+    let a = null
+    return a?.length
+  }`)
+  is(f(), 0)
+})
+
+test('optional: ?.[i] evaluates base once', () => {
+  // Base expression should not be re-evaluated in the then branch
+  const { f } = run(`export let f = () => {
+    let c = 0
+    let a = [100, 200]
+    let r = a?.[c]
+    return r
+  }`)
+  is(f(), 100)
+})
+
+test('optional: ?.prop on dynamic HASH object', () => {
+  is(run(`export let f = () => {
+    let o = JSON.parse('{"x":1}')
+    return o?.x
+  }`).f(), 1)
 })
 
 // ============================================

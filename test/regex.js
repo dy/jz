@@ -2,11 +2,11 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
 import { evaluate } from './util.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 /** Compile + run, read result via jz.mem (for string-returning expressions) */
 function evalStr(code) {
-  const wasm = jz(`export let main = () => ${code}`)
+  const wasm = compile(`export let main = () => ${code}`)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
   const m = jz.mem({ module: mod, instance: inst })
@@ -257,9 +257,9 @@ test('regex: escape sequences', async () => {
 })
 
 test('regex: stored in variable', () => {
-  const wasm1 = jz('export let test = () => { let r = /abc/; return r.test("xabcy") }')
+  const wasm1 = compile('export let test = () => { let r = /abc/; return r.test("xabcy") }')
   is(new WebAssembly.Instance(new WebAssembly.Module(wasm1)).exports.test(), 1)
-  const wasm2 = jz('export let test = () => { let r = /xyz/; return r.test("abc") }')
+  const wasm2 = compile('export let test = () => { let r = /xyz/; return r.test("abc") }')
   is(new WebAssembly.Instance(new WebAssembly.Module(wasm2)).exports.test(), 0)
 })
 

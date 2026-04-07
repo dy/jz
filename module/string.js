@@ -10,7 +10,7 @@
  * @module string
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T } from '../src/compile.js'
 import { ctx } from '../src/ctx.js'
 
 const STRING = 4, STRING_SSO = 5
@@ -29,7 +29,7 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
     }
     const len = str.length
-    const t = `__str${ctx.uniq++}`
+    const t = `${T}str${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
@@ -458,7 +458,7 @@ export default () => {
   ctx.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')
     if (end != null) return typed(['call', '$__str_slice', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_slice', ['local.get', `$${t}`], asI32(emit(start)),
@@ -480,7 +480,7 @@ export default () => {
   ctx.emit['.substring'] = (str, start, end) => {
     inc('__str_substring', '__str_slice')
     if (end != null) return typed(['call', '$__str_substring', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['local.get', `$${t}`], asI32(emit(start)),
@@ -564,7 +564,7 @@ export default () => {
 
   // .charAt(i) → 1-char string from char code at index i
   ctx.emit['.charAt'] = (str, idx) => {
-    const t = `__ch${ctx.uniq++}`
+    const t = `${T}ch${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
@@ -579,7 +579,7 @@ export default () => {
 
   // .at(i) → charAt with negative index support
   ctx.emit['.at'] = (str, idx) => {
-    const t = `__at${ctx.uniq++}`, s = `__as${ctx.uniq++}`
+    const t = `${T}at${ctx.uniq++}`, s = `${T}as${ctx.uniq++}`
     ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -602,7 +602,7 @@ export default () => {
   // For string args, returns single-element array with the matched substring
   ctx.emit['.match'] = (str, search) => {
     inc('__str_indexof', '__str_slice', '__wrap1')
-    const s = `__ms${ctx.uniq++}`, q = `__mq${ctx.uniq++}`, idx = `__mi${ctx.uniq++}`
+    const s = `${T}ms${ctx.uniq++}`, q = `${T}mq${ctx.uniq++}`, idx = `${T}mi${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(q, 'f64'); ctx.locals.set(idx, 'i32')
     // indexOf, then if >= 0, create 1-element array with the match slice
     return typed(['block', ['result', 'f64'],

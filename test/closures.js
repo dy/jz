@@ -1,7 +1,7 @@
 // Closures: capture by value, currying, callbacks, first-class functions
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -185,4 +185,39 @@ test('closure: multiple instances', () => {
     }
   `)
   is(test(), 75)  // 10 + 15 + 50
+})
+
+// === Expression-valued closures ===
+
+test('closure: returned closure with default', () => {
+  is(run(`
+    let mk = () => (x = 1) => x
+    export let test = () => mk()()
+  `).test(), 1)
+})
+
+test('closure: returned closure with args', () => {
+  is(run(`
+    let mk = () => (a, b) => a + b
+    export let test = () => mk()(3, 4)
+  `).test(), 7)
+})
+
+test('closure: returned closure with rest', () => {
+  is(run(`
+    let mk = () => (...args) => args.length
+    export let test = () => mk()(1, 2, 3)
+  `).test(), 3)
+})
+
+// === Top-level higher-order functions ===
+
+test('HOF: top-level function as argument', async () => {
+  const wasm = compile('let k = () => 7; let use = (g) => g(); export let f = () => use(k)')
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 7)
+})
+
+test('HOF: top-level function with args', async () => {
+  const wasm = compile('let add = (a, b) => a + b; let apply = (g, x, y) => g(x, y); export let f = () => apply(add, 3, 4)')
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 7)
 })

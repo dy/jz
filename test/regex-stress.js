@@ -10,10 +10,10 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { evaluate } from './util.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 function evalStr(code) {
-  const wasm = jz(`export let main = () => ${code}`)
+  const wasm = compile(`export let main = () => ${code}`)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
   return jz.mem({ module: mod, instance: inst }).read(inst.exports.main())

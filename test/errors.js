@@ -1,6 +1,11 @@
 import test from 'tst'
-import { ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { is, ok } from 'tst/assert.js'
+import jz from '../index.js'
+import { compile } from '../index.js'
+
+function run(code) {
+  return new WebAssembly.Instance(new WebAssembly.Module(compile(code))).exports
+}
 
 const throws = (code, match, msg) => {
   let error
@@ -31,5 +36,141 @@ test('prohibited: instanceof', () => throws('x instanceof Array', 'instanceof', 
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
 test('prohibited: var', () => throws('var x = 1', 'var', 'var should error'))
 test('prohibited: function', () => throws('function f() {}', 'function', 'function should error'))
+
+// ============================================================================
+// Const enforcement
+// ============================================================================
+
+test('prohibited: const reassignment', () => throws('const x = 1; export let f = () => { x = 2; return x }', "const 'x'", 'const reassign should error'))
+test('prohibited: const +=', () => throws('const x = 1; export let f = () => { x += 1; return x }', "const 'x'", 'const += should error'))
+test('prohibited: const ++', () => throws('const x = 1; export let f = () => { x++; return x }', "const 'x'", 'const ++ should error'))
+
+// ============================================================================
+// Const shadowing — nested scopes can shadow outer const
+// ============================================================================
+
+test('const: param shadows outer const', () => {
+  is(run('const x = 1; export let f = () => { let g = (x) => { x = 3; return x }; return g(9) }').f(), 3)
+})
+
+test('const: inner let shadows outer const', () => {
+  is(run('const x = 1; export let f = () => { let x = 10; x = 20; return x }').f(), 20)
+})
+
+// ============================================================================
+// Temp name hygiene — compiler internals don't collide with user names
+// ============================================================================
+
+test('hygiene: __d0 does not collide with destruct temp', () => {
+  is(run('export let f = () => { let __d0 = [9, 9]; let [a, b] = [1, 2]; return __d0[0] + a + b }').f(), 12)
+})
+
+test('hygiene: __d0 object destruct', () => {
+  is(run('export let f = () => { let __d0 = {x: 9}; let {x} = {x: 1}; return __d0.x + x }').f(), 10)
+})
+
+test('hygiene: __arr0 does not collide with array temp', () => {
+  is(run('export let f = () => { let __arr0 = 5; return [1][0] + __arr0 }').f(), 6)
+})
+
+// ============================================================================
+// Block scoping — let/const are block-scoped
+// ============================================================================
+
+test('block scope: if shadow', () => {
+  is(run('export let f = () => { let x = 1; if (1) { let x = 2; x = 3 }; return x }').f(), 1)
+})
+
+test('block scope: for shadow', () => {
+  is(run('export let f = () => { let i = 99; for (let i = 0; i < 3; i++) {}; return i }').f(), 99)
+})
+
+test('block scope: while shadow', () => {
+  is(run('export let f = () => { let x = 5; let c = 0; while (c < 1) { let x = 99; c++ }; return x }').f(), 5)
+})
+
+test('block scope: nested if', () => {
+  is(run('export let f = () => { let x = 1; if (1) { let x = 2; if (1) { let x = 3 } }; return x }').f(), 1)
+})
+
+test('block scope: else shadow', () => {
+  is(run('export let f = (c) => { let x = 1; if (c) { let x = 10 } else { let x = 20; x = 30 }; return x }').f(0), 1)
+})
+
+// ============================================================================
+// Default params — internal calls
+// ============================================================================
+
+test('default: internal call with omitted arg', () => {
+  is(run('let g = (x = 42) => x; export let f = () => g()').f(), 42)
+})
+
+test('default: internal call with provided arg', () => {
+  is(run('let g = (x = 42) => x; export let f = () => g(7)').f(), 7)
+})
+
+// ============================================================================
+// Side-effect preservation in optimizations
+// ============================================================================
+
+test('optimizer: *0 preserves side effects', () => {
+  const { f, h } = run('let c = 0; let g = () => { c += 1; return 7 }; export let f = () => 0 * g(); export let h = () => c')
+  f()
+  is(h(), 1)  // g() must execute even though result is 0
+})
+
+// ============================================================================
+// Closure default params
+// ============================================================================
+
+test('closure: default param used', () => {
+  is(run('export let f = () => { let g = (x = 42) => x; return g() }').f(), 42)
+})
+
+test('closure: default param not used', () => {
+  is(run('export let f = () => { let g = (x = 42) => x; return g(9) }').f(), 9)
+})
+
+// ============================================================================
+// Tail-call with defaults and rest params
+// ============================================================================
+
+test('tail-call: return with default param', () => {
+  is(run('let g = (x = 5) => x; export let f = () => { return g() }').f(), 5)
+})
+
+test('tail-call: return with rest params', () => {
+  is(run('let g = (a, ...rest) => a + rest.length; export let f = () => { return g(10,1,2,3) }').f(), 13)
+})
+
+test('variadic: omitted fixed + default', () => {
+  is(run('let g = (x = 5, ...rest) => x + rest.length; export let f = () => g()').f(), 5)
+})
+
+// ============================================================================
+// Bare block scoping
+// ============================================================================
+
+test('block scope: bare block', () => {
+  is(run('export let f = () => { let x = 1; { let x = 2; x = 3 }; return x }').f(), 1)
+})
+
+// ============================================================================
+// Runtime global conflicts
+// ============================================================================
+
+test('prohibited: __heap conflicts with runtime', () =>
+  throws('let __heap = 5; let a = [1]; export let f = () => __heap', 'compiler internal', '__heap should conflict'))
+
+// ============================================================================
+// Template tag — function aliasing
+// ============================================================================
+
+test('template: distinct functions with same name', () => {
+  const a = Object.defineProperty(x => x + 1, 'name', { value: 'same' })
+  const b = Object.defineProperty(x => x * 100, 'name', { value: 'same' })
+  const { exports: { f } } = jz`export let f = (x) => ${a}(x) + ${b}(x)`
+  is(f(1), 102) // (1+1) + (1*100) = 102
+})
 
 // Constructor/namespace validation deferred to emit/modules

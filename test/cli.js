@@ -102,6 +102,14 @@ test('cli: compile default output name', () => {
   unlinkSync(output)
 })
 
+test('cli: -e with console.log (WASI)', () => {
+  const file = join(tmp, 'wasi-eval.js')
+  writeFileSync(file, 'export let main = () => { console.log(42); return 0 }')
+  // Should not crash — CLI provides WASI imports
+  const out = cli('-e', file)
+  ok(out.includes('42') || out.includes('main'), 'WASI eval produces output')
+})
+
 test('cli: bad input exits 1', () => {
   const { status } = cliFail('-e', '???:::')
   is(status, 1)
@@ -114,6 +122,7 @@ test('cli: missing file exits 1', () => {
 
 // Cleanup temp files
 test('cli: cleanup', () => {
+  try { unlinkSync(join(tmp, 'wasi-eval.js')) } catch {}
   try { unlinkSync(join(tmp, 'eval.js')) } catch {}
   try { unlinkSync(join(tmp, 'add.js')) } catch {}
   try { unlinkSync(join(tmp, 'mul.js')) } catch {}

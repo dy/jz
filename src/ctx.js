@@ -16,11 +16,14 @@ export const ctx = {
   // --- Functions ---
   exports: {},          // exported names (lookahead for prepare)
   funcs: [],            // function defs: {name, body, exported, sig, defaults?, raw?}
-  globals: [],          // WASM global declarations (WAT strings)
+  globals: new Map(),    // name → WAT string. .has(name) for module-scope var checks.
+  globalTypes: new Map(), // name → 'i32'|'f64' for optimized globals (default f64)
+  userGlobals: new Set(), // user-declared module-scope names (for runtime collision check)
 
   // --- Per-function (reset per function in compile) ---
   locals: new Map(),    // name → 'i32' | 'f64'
   valTypes: new Map(),  // name → 'number'|'array'|'string'|'object'|'set'|'map'|'closure'|'typed'
+  boxed: new Map(),     // name → cell local name (i32) for mutably-captured variables
   stack: [],            // [{brk, loop}] for break/continue
   uniq: 0,             // incrementing counter for unique temp/label names
   sig: null,         // current function {params, results}
@@ -34,8 +37,23 @@ export const ctx = {
   // --- Atoms (interned symbols, set by symbol module) ---
   atom: null,          // { table: Map<name,id>, next: number }
 
+  // --- TypedArray tracking (set by compile analyzeValTypes) ---
+  typedElem: null,     // Map<varName, ctorName> e.g. 'buf' → 'new.Float64Array'
+
+  // --- Regex (set by regex module) ---
+  regex: null,         // { count, vars: Map, compiled: Map }
+
+  // --- Try/catch state ---
+  _inTry: false,       // true inside try block (disables tail call optimization)
+
   // --- Static data ---
   data: null,          // string data for WASM data segment (at address 0)
+
+  // --- Const tracking ---
+  consts: null,          // Set<string> — const-declared names (reject reassignment)
+
+  // --- Options ---
+  sharedMemory: false,   // true when memory is imported (shared across modules)
 
   // --- Error tracking ---
   src: '',             // source code (for error messages)
@@ -53,14 +71,22 @@ export function reset(proto, globals) {
   ctx.modules = {}
   ctx.exports = {}
   ctx.funcs = []
-  ctx.globals = []
+  ctx.globals = new Map()
+  ctx.globalTypes = new Map()
+  ctx.userGlobals = new Set()
   ctx.locals = new Map()
   ctx.valTypes = new Map()
+  ctx.boxed = new Map()
   ctx.stack = []
   ctx.uniq = 0
   ctx.sig = null
   ctx.schema = { list: [], vars: new Map(), register: null, find: null, target: null }
   ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
+  ctx.typedElem = null
+  ctx.regex = null
+  ctx._inTry = false
+  ctx.sharedMemory = false
+  ctx.consts = null
   ctx.data = null
   ctx.src = ''
   ctx.loc = null

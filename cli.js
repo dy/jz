@@ -5,7 +5,7 @@
  */
 
 import { readFileSync, writeFileSync } from 'fs'
-import jz from './index.js'
+import jz, { compile } from './index.js'
 
 function showHelp() {
   console.log(`
@@ -57,13 +57,11 @@ async function handleEvaluate(args) {
   else
     code = `export let _ = () => ${input}`
 
-  const wasm = jz(code)
-  const mod = new WebAssembly.Module(wasm)
-  const inst = new WebAssembly.Instance(mod)
+  const { exports } = jz(code)
 
   // If there's an exported _ (expression eval), call it
-  if (inst.exports._) console.log(inst.exports._())
-  else console.log(inst.exports)
+  if (exports._) console.log(exports._())
+  else console.log(exports)
 }
 
 async function handleCompile(args) {
@@ -80,7 +78,7 @@ async function handleCompile(args) {
   if (outputFile.endsWith('.wat')) wat = true
 
   const code = readFileSync(inputFile, 'utf8')
-  const result = jz(code, { wat })
+  const result = compile(code, { wat })
 
   if (wat) {
     writeFileSync(outputFile, result)

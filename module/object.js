@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, VAL } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, VAL, T } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 const ARRAY = 1, STRING = 4, STRING_SSO = 5, OBJECT = 6
@@ -30,7 +30,7 @@ export default () => {
       if (varId != null) schemaId = varId
     }
     const schema = ctx.schema.list[schemaId]
-    const t = `__obj${ctx.uniq++}`
+    const t = `${T}obj${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
 
     const body = [
@@ -56,7 +56,7 @@ export default () => {
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `__ov${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`
+    const t = `${T}ov${ctx.uniq++}`, arr = `${T}oa${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
@@ -78,7 +78,7 @@ export default () => {
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `__oe${ctx.uniq++}`, arr = `__oa${ctx.uniq++}`, pair = `__op${ctx.uniq++}`
+    const t = `${T}oe${ctx.uniq++}`, arr = `${T}oa${ctx.uniq++}`, pair = `${T}op${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32'); ctx.locals.set(pair, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
@@ -116,7 +116,7 @@ export default () => {
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
         ctx.schema.vars.set(target, schemaId)
-        const t = `__bx${ctx.uniq++}`, s = `__bs${ctx.uniq++}`
+        const t = `${T}bx${ctx.uniq++}`, s = `${T}bs${ctx.uniq++}`
         ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
         const body = [
           ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
@@ -141,7 +141,7 @@ export default () => {
     }
     const tSchema = resolveSchema(target)
     if (!tSchema) err('Object.assign: target needs known schema')
-    const t = `__at${ctx.uniq++}`, s = `__as${ctx.uniq++}`
+    const t = `${T}at${ctx.uniq++}`, s = `${T}as${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(s, 'f64')
     const body = [['local.set', `$${t}`, asF64(emit(target))]]
     for (const source of sources) {
@@ -179,7 +179,7 @@ function emitStringLiteral(str) {
     for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
     return ['call', '$__mkptr', ['i32.const', 5], ['i32.const', str.length], ['i32.const', packed]]
   }
-  const len = str.length, t = `__sl${ctx.uniq++}`
+  const len = str.length, t = `${T}sl${ctx.uniq++}`
   ctx.locals.set(t, 'i32')
   const body = [
     ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
@@ -193,7 +193,7 @@ function emitStringLiteral(str) {
 }
 
 function emitStringArray(names) {
-  const n = names.length, arr = `__sa${ctx.uniq++}`
+  const n = names.length, arr = `${T}sa${ctx.uniq++}`
   ctx.locals.set(arr, 'i32')
   const body = [
     ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],

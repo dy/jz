@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { emit, typed, asF64, asI32, valTypeOf } from '../src/compile.js'
+import { emit, typed, asF64, T } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 // === Parser ===
@@ -683,7 +683,7 @@ export default () => {
   ctx.emit['.regex:test'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.test requires a known regex')
-    const s = `__rt${ctx.uniq++}`, mstart = `__rms${ctx.uniq++}`, mend = `__rme${ctx.uniq++}`
+    const s = `${T}rt${ctx.uniq++}`, mstart = `${T}rms${ctx.uniq++}`, mend = `${T}rme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(mstart, 'i32'); ctx.locals.set(mend, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -700,7 +700,7 @@ export default () => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
     inc('__str_slice', '__wrap1')
-    const s = `__re${ctx.uniq++}`, ms = `__rems${ctx.uniq++}`, me = `__reme${ctx.uniq++}`
+    const s = `${T}re${ctx.uniq++}`, ms = `${T}rems${ctx.uniq++}`, me = `${T}reme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -722,7 +722,7 @@ export default () => {
       inc('__str_indexof')
       return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
     }
-    const s = `__ss${ctx.uniq++}`, ms = `__ssms${ctx.uniq++}`, me = `__ssme${ctx.uniq++}`
+    const s = `${T}ss${ctx.uniq++}`, ms = `${T}ssms${ctx.uniq++}`, me = `${T}ssme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -737,7 +737,7 @@ export default () => {
     if (id == null) {
       // Fall back to string match
       inc('__str_indexof', '__str_slice', '__wrap1')
-      const s = `__ms${ctx.uniq++}`, q = `__mq${ctx.uniq++}`, idx = `__mi${ctx.uniq++}`
+      const s = `${T}ms${ctx.uniq++}`, q = `${T}mq${ctx.uniq++}`, idx = `${T}mi${ctx.uniq++}`
       ctx.locals.set(s, 'f64'); ctx.locals.set(q, 'f64'); ctx.locals.set(idx, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
@@ -752,7 +752,7 @@ export default () => {
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
     }
     inc('__str_slice', '__wrap1')
-    const s = `__sm${ctx.uniq++}`, ms = `__smms${ctx.uniq++}`, me = `__smme${ctx.uniq++}`
+    const s = `${T}sm${ctx.uniq++}`, ms = `${T}smms${ctx.uniq++}`, me = `${T}smme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -775,7 +775,7 @@ export default () => {
       return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
-    const s = `__sr${ctx.uniq++}`, r = `__srr${ctx.uniq++}`, ms = `__srms${ctx.uniq++}`, me = `__srme${ctx.uniq++}`
+    const s = `${T}sr${ctx.uniq++}`, r = `${T}srr${ctx.uniq++}`, ms = `${T}srms${ctx.uniq++}`, me = `${T}srme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(r, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],

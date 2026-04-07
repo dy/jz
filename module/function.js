@@ -10,18 +10,18 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T } from '../src/compile.js'
 import { ctx } from '../src/ctx.js'
 
 const CLOSURE = 10
 
 export default () => {
-  // Function type registry: arity → type name
+  // Uniform closure convention: all closures use (env: f64, args: f64) → f64
   if (!ctx.fn.types) ctx.fn.types = new Set()
   if (!ctx.fn.table) ctx.fn.table = []
   if (!ctx.fn.bodies) ctx.fn.bodies = []
 
-  const ensureType = (arity) => ctx.fn.types.add(arity)
+  ctx.fn.types.add(1) // single type: (env, args_array) → f64
 
   const addToTable = (name) => {
     let idx = ctx.fn.table.indexOf(name)
@@ -34,20 +34,16 @@ export default () => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.fn.make = ({ params, body, captures, restParam }) => {
-    const arity = restParam ? 1 : params.length
-    ensureType(arity)
-
+  ctx.fn.make = ({ params, body, captures, restParam, defaults }) => {
     // Generate closure body function name
-    const fnName = `__closure${ctx.fn.table.length}`
+    const fnName = `${T}closure${ctx.fn.table.length}`
 
-    // Build the closure body: (env: f64, param0: f64, ...) → f64
-    // Inside the body, captured vars are loaded from env memory
-    // If closure has rest params, the single param is the rest array
-    // Track which captures are boxed (mutable) — they get cell pointers, not values
+    // All closures use uniform convention: (env: f64, args_array: f64) → f64
+    // The body unpacks individual params from the args array
     const boxedCaptures = captures.filter(c => ctx.boxed?.has(c))
-    const bodyFn = { name: fnName, params, body, captures, arity,
+    const bodyFn = { name: fnName, params, body, captures, arity: 1,
       ...(restParam && { rest: restParam }),
+      ...(defaults && { defaults }),
       ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }) }
     ctx.fn.bodies.push(bodyFn)
 
@@ -59,7 +55,7 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
     }
 
-    const t = `__env${ctx.uniq++}`
+    const t = `${T}env${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
 
     const block = [
@@ -82,21 +78,37 @@ export default () => {
    * @param {WasmNode} closureExpr - Already-emitted closure pointer expression
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
    */
-  ctx.fn.call = (closureExpr, args) => {
-    const arity = args.length
-    ensureType(arity)
-
-    const t = `__clos${ctx.uniq++}`
+  ctx.fn.call = (closureExpr, args, prebuiltArray) => {
+    const t = `${T}clos${ctx.uniq++}`
     ctx.locals.set(t, 'f64')
 
-    // Args: emit if AST, pass through if already emitted WASM node
-    const emittedArgs = args.map(a => asF64(a?.type ? a : emit(a)))
+    let argsPtr, setup = []
+    if (prebuiltArray) {
+      // Args already packed as a single array expression
+      argsPtr = asF64(args[0])
+    } else {
+      // Pack all args into a heap array (uniform calling convention)
+      const emittedArgs = args.map(a => asF64(a?.type ? a : emit(a)))
+      const arrT = `${T}ca${ctx.uniq++}`
+      ctx.locals.set(arrT, 'i32')
+      const n = emittedArgs.length
+      setup = [
+        ['local.set', `$${arrT}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
+        ['i32.store', ['local.get', `$${arrT}`], ['i32.const', n]],
+        ['i32.store', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', 4]], ['i32.const', n]],
+        ['local.set', `$${arrT}`, ['i32.add', ['local.get', `$${arrT}`], ['i32.const', 8]]],
+      ]
+      for (let i = 0; i < n; i++)
+        setup.push(['f64.store', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]], emittedArgs[i]])
+      argsPtr = typed(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${arrT}`]], 'f64')
+    }
 
     return typed(['block', ['result', 'f64'],
+      ...setup,
       ['local.set', `$${t}`, asF64(closureExpr)],
-      ['call_indirect', ['type', `$ft${arity}`],
+      ['call_indirect', ['type', '$ft1'],
         ['local.get', `$${t}`],
-        ...emittedArgs,
+        argsPtr,
         ['call', '$__ptr_aux', ['local.get', `$${t}`]]]], 'f64')
   }
 }

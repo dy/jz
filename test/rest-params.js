@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
+import jz from '../index.js'
 
 // ============================================
 // REST PARAMS
@@ -51,22 +52,20 @@ test('rest: reduce over rest', () => {
 
 // === Mixed rest with fixed params ===
 
-// TODO: Mixed fixed + rest params have memory layout issue
-// test('rest: (a, ...rest) => a + rest.length', () => {
-//   const { f } = run(`export let f = (a, ...rest) => a + rest.length`)
-//   is(f(10), 10)
-//   is(f(10, 1, 2, 3), 13)
-//   is(f(5, 1, 1, 1, 1), 9)
-// })
+test('rest: (a, ...rest) => a + rest.length', () => {
+  const { f } = run(`export let f = (a, ...rest) => a + rest.length`)
+  is(f(10), 10)
+  is(f(10, 1, 2, 3), 13)
+  is(f(5, 1, 1, 1, 1), 9)
+})
 
-// TODO: Mixed fixed + rest params have memory layout issue
-// test('rest: (a, b, ...rest) => a + b + rest[0]', () => {
-//   const { f } = run(`export let f = (a, b, ...rest) => {
-//     return a + b + rest[0]
-//   }`)
-//   is(f(10, 20, 30), 60)
-//   is(f(1, 2, 3, 4, 5), 6)
-// })
+test('rest: (a, b, ...rest) => a + b + rest[0]', () => {
+  const { f } = run(`export let f = (a, b, ...rest) => {
+    return a + b + rest[0]
+  }`)
+  is(f(10, 20, 30), 60)
+  is(f(1, 2, 3, 4, 5), 6)
+})
 
 test('rest: variadic product', () => {
   const { f } = run(`export let f = (...nums) => {
@@ -286,4 +285,20 @@ test('array.concat: preserves values', () => {
     return c[0] + c[1] + c[2]
   }`)
   is(f(), 60)
+})
+
+// === Public API: jz.instantiate wraps rest params ===
+
+test('jz.instantiate: rest-only params', () => {
+  const { exports } = jz.instantiate(`export let sum = (...args) => {
+    let s = 0
+    for (let i = 0; i < args.length; i++) s += args[i]
+    return s
+  }`)
+  is(exports.sum(1, 2, 3), 6)
+})
+
+test('jz.instantiate: fixed + rest params', () => {
+  const { exports } = jz.instantiate(`export let f = (a, ...rest) => a + rest.length`)
+  is(exports.f(10, 1, 2, 3), 13)
 })

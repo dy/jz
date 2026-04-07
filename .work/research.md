@@ -35,6 +35,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   5. **Uniform representation** — one convention (f64 everywhere, NaN-boxing) beats type-specific optimizations. Simplicity at boundary > micro-optimization inside.
   6. **Minimal core, extensible surface** — core compiles pure compute. Everything else (arrays, strings, objects) is a module. Capabilities grow without core growth.
   7. **Host resolves, compiler transforms** — no I/O in compilation. Resolution is the host's job. Compilation is a pure function.
+  8. JS compat - reduced boundary friction.
 
 ## [x] Values (what matters most)
 
@@ -124,7 +125,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * _Tiny output_ – no runtime, no heap, no wrappers.
   * _Zero overhead_ – no runtime type checks, monomorphized per call-site.
   * _JS interop_ – export/import, preserve func signatures at WASM boundary.
-  * _JS compat_ – any jz is valid js (with [limitations](./docs.md#limitations-divergences))
+  * _JS compat_ – any jz is valid js with limitations.
   * Simple, but extensible (like subscript)
   * Lightweight, but versatile
   * Transparent, but clever

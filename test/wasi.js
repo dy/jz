@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 

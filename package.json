@@ -4,6 +4,18 @@
   "description": "Minimal modern functional JS subset that compiles to WebAssembly",
   "main": "index.js",
   "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./wasi": "./wasi.js"
+  },
+  "files": [
+    "index.js",
+    "cli.js",
+    "wasi.js",
+    "src",
+    "module",
+    "README.md"
+  ],
   "bin": {
     "jz": "cli.js"
   },
@@ -18,7 +30,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.2.0"
+    "subscript": "^10.2.0",
+    "watr": "^4.3.1"
   },
   "keywords": [
     "javascript",
@@ -29,7 +42,6 @@
     "wasm"
   ],
   "devDependencies": {
-    "tst": "^9.2.0",
-    "watr": "^4.3.1"
+    "tst": "^9.2.0"
   }
 }

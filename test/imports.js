@@ -1,7 +1,7 @@
 // Import statement tests
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 // Helper: compile and run
 function run(code) {

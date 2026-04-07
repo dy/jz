@@ -1,7 +1,7 @@
 // New core tests for jz v2
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 import math from '../module/math.js'
 
 // Helper: compile and run

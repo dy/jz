@@ -1,7 +1,7 @@
 // Symbol tests: unique identities, interning
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)

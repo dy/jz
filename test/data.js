@@ -2,7 +2,7 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -215,6 +215,25 @@ test('object: multiple instances same schema', () => {
     export let f = () => dist({x: 0, y: 0}, {x: 3, y: 4})
   `)
   is(f(), 25)
+})
+
+test('object: param schema via default value', () => {
+  is(run(`
+    let getX = (v={x:0,y:0}) => v.x
+    export let f = () => getX({x: 42, y: 0})
+  `).f(), 42)
+})
+
+test('object: param schema default resolves ambiguity', () => {
+  // {x,y} has x at offset 0; {z,x} has x at offset 1.
+  // Default value declares v's schema as [x,y], so v.x = offset 0.
+  is(run(`
+    let getX = (v={x:0,y:0}) => v.x
+    export let f = () => {
+      let unrelated = {z: 0, x: 0}
+      return getX({x: 7, y: 0}) + unrelated.z
+    }
+  `).f(), 7)
 })
 
 // ============================================
@@ -453,6 +472,35 @@ test('array: push preserves existing', () => {
   is(f(), 30)  // original elements unchanged
 })
 
+test('array: push beyond capacity triggers grow', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    a = a.push(3)
+    a = a.push(4)
+    a = a.push(5)
+    a = a.push(6)
+    let b = [100]
+    return a[4] + a[5] + b[0]
+  }`)
+  is(f(), 111)  // 5+6+100 — no heap corruption
+})
+
+test('array: push many beyond initial cap', () => {
+  const { f } = run(`export let f = () => {
+    let a = []
+    a = a.push(1)
+    a = a.push(2)
+    a = a.push(3)
+    a = a.push(4)
+    a = a.push(5)
+    a = a.push(6)
+    a = a.push(7)
+    a = a.push(8)
+    return a.length + a[7]
+  }`)
+  is(f(), 16)  // length=8, a[7]=8
+})
+
 test('array: pop on single element', () => {
   const { f } = run(`export let f = () => {
     let a = [42]
@@ -460,4 +508,75 @@ test('array: pop on single element', () => {
     return v + a.length
   }`)
   is(f(), 42)  // v=42, length=0
+})
+
+// ============================================
+// Module-scope initialization (__start)
+// ============================================
+
+test('module-scope: let with expression', () => {
+  is(run(`
+    let q = 1 + 2
+    export let f = () => q
+  `).f(), 3)
+})
+
+test('module-scope: array init', () => {
+  is(run(`
+    let a = [10, 20, 30]
+    export let f = () => a[1]
+  `).f(), 20)
+})
+
+test('module-scope: object init', () => {
+  is(run(`
+    let o = {x: 5, y: 10}
+    export let f = () => o.x + o.y
+  `).f(), 15)
+})
+
+test('module-scope: string init', () => {
+  is(run(`
+    let s = "hello"
+    export let f = () => s.length
+  `).f(), 5)
+})
+
+test('module-scope: const folded to immutable i32', () => {
+  is(run(`
+    const N = 100
+    export let f = () => N * 2
+  `).f(), 200)
+})
+
+test('module-scope: const expr folded', () => {
+  is(run(`
+    const N = 2 + 3
+    export let f = () => N
+  `).f(), 5)
+})
+
+test('module-scope: const float immutable', () => {
+  const r = run(`
+    const PI = 3.14159
+    export let f = () => PI
+  `).f()
+  ok(Math.abs(r - 3.14159) < 0.0001)
+})
+
+test('module-scope: param shadows global', () => {
+  is(run(`
+    let x = 7
+    export let f = (x) => x
+  `).f(3), 3)
+})
+
+test('module-scope: local shadows global', () => {
+  const { f, g } = run(`
+    let x = 7
+    export let f = () => { let x = 3; return x }
+    export let g = () => x
+  `)
+  is(f(), 3)
+  is(g(), 7)  // global x unchanged
 })

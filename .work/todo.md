@@ -191,34 +191,31 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] Number.isNaN, isFinite, isInteger, parseInt, parseFloat + constants (EPSILON, MAX_SAFE_INTEGER, etc.)
 * [x] Global isNaN, isFinite — bare identifiers resolved via GLOBALS → number module, same impl as Number.isNaN/isFinite
 * [x] Array.isArray — ptr_type === ARRAY
-* [ ] Array.from — needs iterable protocol
+* [x] Array.from — shallow copy via memory.copy (iterable protocol not needed for array source)
 * [x] Object.keys, values, entries — compile-time schema resolution, returns NaN-boxed arrays
 * [x] try/catch/throw — try_table/throw/tag (WASM EH), nested + cross-function, TCO suppressed inside try
 * [x] Tail call optimization — return_call for tail-recursive direct calls
-* [ ] SIMD auto-vectorization
+* [x] SIMD auto-vectorization — TypedArray.map() detects patterns (x*c, x+c, x&c, Math.abs, etc.), emits f64x2/f32x4/i32x4 with scalar remainder. Type-aware indexing for Int32/Float32/Uint32Array.
 * [x] i32 type preservation — done via type coercion system
 * [x] Pointer identity — == and != use i64 bit-equality (enables Symbol/pointer comparison, NaN==NaN is true)
 
 ### Optimizations (revisit for new arch)
 
-* [ ] Monomorphization (static typing, zero dispatch)
-* [ ] Internal i32 calling convention (box only at JS boundary)
-* [ ] Compile-time rational simplification
-* [ ] Dead code elimination
-* [ ] Constant folding
+* [x] Monomorphization — .length, [] indexing, method dispatch skip runtime type checks when valTypes known. valTypeOf tracks string-returning methods, slice/concat preserve caller type.
+* [x] Compile-time constant folding — arithmetic (+,-,*,/,%), bitwise (&,|,^,~,<<,>>), comparisons (<,>,<=,>=). Identity elimination: x+0→x, x*1→x, x*0→0, x-0→x, x/1→x
+* [x] Dead code elimination — if(true)/if(false) elide dead branches, ternary constant folding, &&/||/?? short-circuit on literals
+* [x] Constant folding
 
 ### Build & tooling
 
+* [ ] make sure static strings are data fields, not mem pointers
 * [ ] Clean source from `this`, `Object.create`
-* [ ] Compile binary right away, expose wat string
-* [ ] console.log/warn/error (host import stubs)
-* [ ] Date.now, performance.now (host imports)
+* [ ] console.log/warn/error
+* [ ] Date.now, performance.now
 * [ ] Import model (bundle/resolve static-time)
 * [ ] Source maps
 * [ ] Memory size configuration
 * [ ] Custom imports
-* [ ] CLI: jz run
-* [ ] Component interface (wit)
 * [ ] Template tag
 
 ### Validation & quality
@@ -232,11 +229,12 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 
 ### Future
 
+* [ ] metacircularity (jz compiling jz)
+* [ ] Component interface (wit)
 * [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
 * [ ] memory64 (>4GB)
 * [ ] relaxed SIMD
 * [ ] WebGPU compute shaders
-* [ ] metacircularity (jz compiling jz)
 
 ## Offering
 

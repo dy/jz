@@ -1,11 +1,10 @@
 // jz.mem API tests: JS↔WASM interop constructors, read, write
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 async function run(code) {
-  const wasm = jz(code)
-  return WebAssembly.instantiate(wasm)
+  return WebAssembly.instantiate(compile(code))
 }
 
 // ============================================
@@ -148,6 +147,23 @@ test('mem.Object: key order independence', async () => {
   is(r.instance.exports.getY(ptr), 10)
 })
 
+test('mem.Object: ambiguous schemas throws', async () => {
+  const r = await run(`export let f = () => {
+    let a = {x: 1, y: 2}
+    let b = {y: 3, x: 4}
+    return a.x + b.y
+  }`)
+  const m = jz.mem(r)
+  // Exact order match works
+  is(r.instance.exports.f(), 4)  // a.x=1 + b.y=3
+  const ptrA = m.Object({ x: 10, y: 20 })
+  is(m.read(ptrA).x, 10)
+  // Ambiguous key set (both [x,y] and [y,x] exist) — must pass in schema order
+  let threw = false
+  try { m.Object({ a: 1, b: 2 }) } catch { threw = true }
+  ok(threw, 'unknown schema throws')
+})
+
 test('mem.Object: unknown schema throws', async () => {
   const r = await run(`export let f = () => { let o = {x: 1}; return o.x }`)
   const m = jz.mem(r)
@@ -208,12 +224,12 @@ test('mem.Float64Array: write roundtrip', async () => {
   almost(r.instance.exports.get(ptr, 2), 30)
 })
 
-test('mem.read: WASM TypedArray → JS array', async () => {
+test('mem.read: WASM TypedArray → JS typed array', async () => {
   const r = await run(`export let make = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; return a }`)
   const m = jz.mem(r)
   const ptr = r.instance.exports.make()
   const arr = m.read(ptr)
-  ok(Array.isArray(arr))
+  ok(arr instanceof Float64Array, 'returns Float64Array')
   is(arr.length, 3)
   almost(arr[0], 1); almost(arr[1], 2); almost(arr[2], 3)
 })

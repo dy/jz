@@ -1,7 +1,7 @@
 // Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 import math from '../module/math.js'
 
 function run(code, opts) {
@@ -108,6 +108,38 @@ test('if(NaN) is falsy', () => {
 
 test('!NaN is true', () => {
   is(run('export let f = (x) => { if (!x) return 1; return 0 }').f(NaN), 1)
+})
+
+test('NaN && 1 returns NaN (falsy short-circuit)', () => {
+  ok(isNaN(run('export let f = (x) => x && 1').f(NaN)))
+})
+
+test('NaN || 1 returns 1 (falsy fallthrough)', () => {
+  is(run('export let f = (x) => x || 1').f(NaN), 1)
+})
+
+test('1 && NaN returns NaN (truthy passes through)', () => {
+  ok(isNaN(run('export let f = (x) => 1 && x').f(NaN)))
+})
+
+test('1 || NaN returns 1 (truthy short-circuit)', () => {
+  is(run('export let f = (x) => 1 || x').f(NaN), 1)
+})
+
+test('NaN ?: constant-folded correctly', () => {
+  is(run('export let f = () => NaN ? 1 : 2').f(), 2)
+})
+
+test('if(NaN) constant-folded correctly', () => {
+  is(run('export let f = () => { if (NaN) return 1; return 2 }').f(), 2)
+})
+
+test('void preserves side effects', () => {
+  is(run('export let f = () => { let x = 0; void (x = 5); return x }').f(), 5)
+})
+
+test('void returns 0', () => {
+  is(run('export let f = () => void 42').f(), 0)
 })
 
 test('if(0) still falsy', () => {

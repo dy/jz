@@ -1,7 +1,7 @@
 // NaN-boxing pointer encoding tests + multi-value threshold
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code, opts) {
   const wasm = compile(code, opts)

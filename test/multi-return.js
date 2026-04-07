@@ -1,7 +1,7 @@
 // Phase 2: Multi-value return tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code, opts) {
   const wasm = compile(code, opts)

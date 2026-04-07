@@ -1,7 +1,7 @@
 // Spread, destruct alias, TypedArrays, Set, Map
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 
 function run(code) {
   return new WebAssembly.Instance(new WebAssembly.Module(compile(code))).exports

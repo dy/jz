@@ -15,9 +15,11 @@
  */
 
 import { ctx, err } from './ctx.js'
+import { T } from './compile.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
+let scopes = []  // block scope stack: [{names: Set, renames: Map}]
 
 /**
  * @typedef {null|number|string|ASTNode[]} ASTNode
@@ -30,6 +32,7 @@ let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
  */
 export default function prepare(node) {
   depth = 0
+  scopes = []
   return prep(node)
 }
 
@@ -37,6 +40,18 @@ export default function prepare(node) {
 const CONSTANTS = { 'true': 1, 'false': 0, 'null': 0, 'undefined': 0 }
 // NaN/Infinity stay as special f64 values in emit()
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
+
+/** Resolve variable name through block scope chain (innermost rename wins). */
+function resolveScope(name) {
+  for (let i = scopes.length - 1; i >= 0; i--)
+    if (scopes[i].has(name)) return scopes[i].get(name)
+  return name
+}
+
+/** Check if name is declared in any current scope level. */
+function isDeclared(name) {
+  return scopes.some(s => s.has(name))
+}
 
 function prep(node) {
   if (Array.isArray(node) && node.loc != null) ctx.loc = node.loc
@@ -50,6 +65,8 @@ function prep(node) {
       if (PROHIBITED[node]) err(PROHIBITED[node])
       const resolved = ctx.scope[node]
       if (resolved?.includes('.')) return resolved
+      // Block scope: resolve renames
+      if (scopes.length) return resolveScope(node)
     }
     return node
   }
@@ -97,7 +114,7 @@ function prepDecl(op, ...inits) {
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `__d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const tmp = `${T}d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
       rest.push(['=', tmp, normed])
       for (let j = 0; j < items.length; j++)
         if (items[j] != null) rest.push(['=', items[j], ['[]', tmp, [, j]]])
@@ -107,7 +124,7 @@ function prepDecl(op, ...inits) {
     // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
     if (Array.isArray(name) && name[0] === '{}') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `__d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const tmp = `${T}d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
       rest.push(['=', tmp, normed])
       for (const item of items) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
@@ -117,12 +134,32 @@ function prepDecl(op, ...inits) {
       continue
     }
 
-    // Track object schemas for property access
-    if (typeof name === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
-      const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-      if (props.length && ctx.schema.register) ctx.schema.vars.set(name, ctx.schema.register(props))
+    if (!defFunc(name, normed)) {
+      let declName = name
+      // Block scope: rename if shadowing an outer declaration
+      if (typeof name === 'string' && scopes.length > 0 && isDeclared(name)) {
+        declName = `${name}${T}${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+        scopes[scopes.length - 1].set(name, declName)
+      } else if (typeof name === 'string' && scopes.length > 0) {
+        scopes[scopes.length - 1].set(name, name)
+      }
+      // Track object schemas
+      if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
+        const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
+      }
+      // Track const for reassignment checks
+      if (op === 'const' && typeof declName === 'string') {
+        if (!ctx.consts) ctx.consts = new Set()
+        ctx.consts.add(declName)
+      }
+      // Module-scope variable → WASM global (mark as user-declared)
+      if (depth === 0 && typeof declName === 'string') {
+        ctx.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
+        ctx.userGlobals.add(declName)
+      }
+      rest.push(['=', declName, normed])
     }
-    if (!defFunc(name, normed)) rest.push(['=', name, normed])
   }
   return rest.length ? [op, ...rest] : null
 }
@@ -215,6 +252,19 @@ const handlers = {
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),
 
+  // Block-scoped control flow: push scope for bodies so inner let/const shadows correctly
+  'if': (cond, then, els) => {
+    const c = prep(cond)
+    scopes.push(new Map()); const t = prep(then); scopes.pop()
+    if (els != null) { scopes.push(new Map()); const e = prep(els); scopes.pop(); return ['if', c, t, e] }
+    return ['if', c, t]
+  },
+  'while': (cond, body) => {
+    const c = prep(cond)
+    scopes.push(new Map()); const b = prep(body); scopes.pop()
+    return ['while', c, b]
+  },
+
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
@@ -227,7 +277,17 @@ const handlers = {
   '=>': (params, body) => {
     if (depth > 0) { includeModule('core'); includeModule('fn') }
     depth++
+    // Push function scope with param names
+    const fnScope = new Map()
+    const rawP = Array.isArray(params) && params[0] === '()' ? params[1] : params
+    const pList = rawP == null ? [] : Array.isArray(rawP) ? (rawP[0] === ',' ? rawP.slice(1) : [rawP]) : [rawP]
+    for (const p of pList) {
+      const name = Array.isArray(p) && p[0] === '=' ? p[1] : Array.isArray(p) && p[0] === '...' ? p[1] : p
+      if (typeof name === 'string') fnScope.set(name, name)
+    }
+    scopes.push(fnScope)
     const result = ['=>', params, prep(body)]
+    scopes.pop()
     depth--
     return result
   },
@@ -248,7 +308,7 @@ const handlers = {
   },
 
   // Optional chaining / typeof — need ptr module
-  '?.'(obj, prop) { includeModule('core'); return ['?.', prep(obj), prop] },
+  '?.'(obj, prop) { includeModule('core'); includeModule('string'); includeModule('collection'); return ['?.', prep(obj), prop] },
   '?.[]'(obj, idx) { includeModule('core'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
   'typeof'(a) { includeModule('core'); return ['typeof', prep(a)] },
 
@@ -267,8 +327,8 @@ const handlers = {
 
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
   // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
-  '++'(a, _post) { return _post !== undefined ? ['-', ['++', a], [, 1]] : ['++', a] },
-  '--'(a, _post) { return _post !== undefined ? ['+', ['--', a], [, 1]] : ['--', a] },
+  '++'(a, _post) { const n = prep(a); return _post !== undefined ? ['-', ['++', n], [, 1]] : ['++', n] },
+  '--'(a, _post) { const n = prep(a); return _post !== undefined ? ['+', ['--', n], [, 1]] : ['--', n] },
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
   '//'(pattern, flags) {
@@ -290,6 +350,10 @@ const handlers = {
       if (resolved?.includes('.')) callee = resolved
       // Bare constructor call: Symbol('foo') → include module, keep callee as-is
       else if (resolved && !resolved.includes('.')) includeModule(resolved)
+      // Calling an unknown name inside a function body (e.g. a parameter) → needs call_indirect
+      else if (depth > 0 && !resolved && !ctx.exports[callee]
+        && !ctx.imports.some(i => i[3]?.[1] === `$${callee}`))
+        { includeModule('core'); includeModule('fn') }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       // console.log/warn/error → WASI module
@@ -312,7 +376,12 @@ const handlers = {
       }
     }
     if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
-    const result = ['()', callee, ...args.filter(a => a != null).map(prep)]
+    const preppedArgs = args.filter(a => a != null).map(prep)
+    // If any argument is a known top-level function name, include fn module for call_indirect
+    for (const a of preppedArgs)
+      if (typeof a === 'string' && ctx.funcs.some(f => f.name === a))
+        { includeModule('core'); includeModule('fn'); break }
+    const result = ['()', callee, ...preppedArgs]
 
     // Object.assign(target, ...sources): merge source schemas into target
     if (callee === 'Object.assign' && ctx.schema.register) {
@@ -358,14 +427,24 @@ const handlers = {
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
-  // Block statement
-  '{'(inner) { return ['{', prep(inner)] },
+  // Bare block statement: push scope for let/const shadowing
+  '{'(inner) {
+    scopes.push(new Map())
+    const result = ['{', prep(inner)]
+    scopes.pop()
+    return result
+  },
 
   // Object literal - flatten comma, expand shorthand
   '{}'(inner) {
     // Detect block body vs object literal
-    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch'].includes(inner[0]))
-      return ['{}', prep(inner)]  // block body, pass through
+    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch'].includes(inner[0])) {
+      // Block body: push block scope for let/const shadowing
+      scopes.push(new Map())
+      const result = ['{}', prep(inner)]
+      scopes.pop()
+      return result
+    }
 
     includeModule('core')
     includeModule('object')
@@ -387,11 +466,16 @@ const handlers = {
 
   // For loop
   'for'(head, body) {
+    scopes.push(new Map())
+    let r
     if (Array.isArray(head) && head[0] === ';') {
       const [, init, cond, step] = head
-      return ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
+      r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
+    } else {
+      r = ['for', prep(head), prep(body)]
     }
-    return ['for', prep(head), prep(body)]
+    scopes.pop()
+    return r
   },
 
   // Property access - resolve namespaces or object/array properties
@@ -403,6 +487,7 @@ const handlers = {
     includeModule('object')
     includeModule('array')
     includeModule('string')
+    includeModule('collection')
     return ['.', prep(obj), prop]
   },
 
@@ -469,7 +554,13 @@ function defFunc(name, node) {
       params.push({ name: r[1], type: 'f64', rest: true })
     } else if (Array.isArray(r) && r[0] === '=') {
       params.push({ name: r[1], type: 'f64' })
-      defaults[r[1]] = prep(r[2])
+      const defVal = prep(r[2])
+      defaults[r[1]] = defVal
+      // Object literal default → register schema for param (explicit shape declaration)
+      if (Array.isArray(defVal) && defVal[0] === '{}' && defVal.length > 1 && ctx.schema.register) {
+        const props = defVal.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        if (props.length) ctx.schema.vars.set(r[1], ctx.schema.register(props))
+      }
     } else {
       params.push({ name: r, type: 'f64' })
     }

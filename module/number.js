@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T } from '../src/compile.js'
 import { ctx } from '../src/ctx.js'
 
 const STRING = 4
@@ -269,13 +269,13 @@ export default () => {
 
   const emitIsNaN = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
   }
 
   const emitIsFinite = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
@@ -290,7 +290,7 @@ export default () => {
 
   ctx.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))
-    const t = `__t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       ['i32.and',
         ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
@@ -322,7 +322,7 @@ export default () => {
 
   ctx.emit['.number:toPrecision'] = (n, p) => {
     incNum(); inc('__toExp')
-    const val = `__pv${ctx.uniq++}`, t = `__tp${ctx.uniq++}`, exp = `__te${ctx.uniq++}`, pr = `__pp${ctx.uniq++}`
+    const val = `${T}pv${ctx.uniq++}`, t = `${T}tp${ctx.uniq++}`, exp = `${T}te${ctx.uniq++}`, pr = `${T}pp${ctx.uniq++}`
     ctx.locals.set(val, 'f64'); ctx.locals.set(t, 'f64'); ctx.locals.set(exp, 'i32'); ctx.locals.set(pr, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${val}`, asF64(emit(n))],

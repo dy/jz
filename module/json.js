@@ -21,9 +21,9 @@ export default () => {
   // Scratch buffer approach: __json_buf is a growable output buffer.
   // Functions append bytes to it, __json_pos tracks current write position.
 
-  ctx.globals.push('(global $__jbuf (mut i32) (i32.const 0))')
-  ctx.globals.push('(global $__jpos (mut i32) (i32.const 0))')
-  ctx.globals.push('(global $__jcap (mut i32) (i32.const 0))')
+  ctx.globals.set('__jbuf', '(global $__jbuf (mut i32) (i32.const 0))')
+  ctx.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
+  ctx.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
 
   // __jput(byte: i32) — append one byte to output buffer
   ctx.stdlib['__jput'] = `(func $__jput (param $b i32)
@@ -129,9 +129,9 @@ export default () => {
 
   // === JSON.parse ===
 
-  ctx.globals.push('(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
-  ctx.globals.push('(global $__jplen (mut i32) (i32.const 0))')  // input length
-  ctx.globals.push('(global $__jppos (mut i32) (i32.const 0))')  // current parse position
+  ctx.globals.set('__jpstr', '(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
+  ctx.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
+  ctx.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
 
   ctx.stdlib['__jp_peek'] = `(func $__jp_peek (result i32)
     (if (result i32) (i32.ge_s (global.get $__jppos) (global.get $__jplen))

@@ -352,6 +352,5 @@ export default (ctx) => {
     (f64.div (f64.convert_i32_u (i32.and (local.get $s) (i32.const 0x7FFFFFFF))) (f64.const 2147483647.0)))`
 
   // Global for random state
-  ctx.globals = ctx.globals || []
-  ctx.globals.push('(global $math.rng_state (mut i32) (i32.const 12345))')
+  ctx.globals.set('math.rng_state', '(global $math.rng_state (mut i32) (i32.const 12345))')
 }

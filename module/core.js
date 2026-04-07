@@ -9,11 +9,11 @@
  * @module ptr
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 const NAN_PREFIX = 0x7FF8
-const temp = () => { const n = `__t${ctx.uniq++}`; ctx.locals.set(n, 'f64'); return n }
+const temp = () => { const n = `${T}t${ctx.uniq++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
   // Memory section auto-enabled: compile.js checks ctx.modules.ptr
@@ -40,17 +40,27 @@ export default () => {
 
   // === Bump allocator ===
 
-  ctx.globals.push('(global $__heap (mut i32) (i32.const 1024))')
-
-  ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-    (local $ptr i32)
-    (local.set $ptr (global.get $__heap))
-    ;; Align next allocation to 8 bytes
-    (global.set $__heap (i32.and (i32.add (i32.add (global.get $__heap) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-    (local.get $ptr))`
-
-  ctx.stdlib['__reset'] = `(func $__reset
-    (global.set $__heap (i32.const 1024)))`
+  if (ctx.sharedMemory) {
+    // Shared memory: heap offset stored at memory[1020] (i32), just before heap start at 1024
+    ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
+      (local $ptr i32)
+      (local.set $ptr (i32.load (i32.const 1020)))
+      (i32.store (i32.const 1020) (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (local.get $ptr))`
+    ctx.stdlib['__reset'] = `(func $__reset
+      (i32.store (i32.const 1020) (i32.const 1024)))`
+  } else {
+    // Own memory: heap offset in a global
+    ctx.globals.set('__heap', '(global $__heap (mut i32) (i32.const 1024))')
+    ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
+      (local $ptr i32)
+      (local.set $ptr (global.get $__heap))
+      ;; Align next allocation to 8 bytes
+      (global.set $__heap (i32.and (i32.add (i32.add (global.get $__heap) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (local.get $ptr))`
+    ctx.stdlib['__reset'] = `(func $__reset
+      (global.set $__heap (i32.const 1024)))`
+  }
 
   // === Memory-based length/cap helpers (C-style headers) ===
 
@@ -100,11 +110,18 @@ export default () => {
         return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
     }
 
-    // .length → dispatch by pointer type
-    // SSO (type=5): aux bits. Heap string (type=4): offset-4. Array/typed/set/map: offset-8.
+    // .length → monomorphize when type is known, else runtime dispatch
     if (prop === 'length') {
+      const vt = typeof obj === 'string' ? ctx.valTypes?.get(obj) : valTypeOf(obj)
       const va = asF64(emit(obj))
-      const t = `__lt${ctx.uniq++}`
+      // Known array/typed/set/map → direct header read
+      if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
+        return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
+      // Known string → byteLen (handles SSO + heap)
+      if (vt === VAL.STRING)
+        return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
+      // Unknown → runtime dispatch
+      const t = `${T}lt${ctx.uniq++}`
       ctx.locals.set(t, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ['call', '$__ptr_type', va]],
@@ -142,13 +159,36 @@ export default () => {
   ctx.emit['?.'] = (obj, prop) => {
     const t = temp()
     const va = asF64(emit(obj))
-    // Resolve property index at compile time
-    const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
-    const access = prop === 'length'
-      ? ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]
-      : propIdx >= 0
-        ? ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
-        : ['f64.const', 0]
+    let access
+    if (prop === 'length') {
+      // Type-aware dispatch matching `.length`
+      const vt = typeof obj === 'string' ? ctx.valTypes?.get(obj) : valTypeOf(obj)
+      if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
+        access = ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]
+      else if (vt === VAL.STRING)
+        access = ['f64.convert_i32_s', ['call', '$__str_byteLen', ['local.get', `$${t}`]]]
+      else {
+        // Unknown → runtime dispatch (SSO=5 → aux, heap string=4 → str_len, else → len)
+        const tt = `${T}lt${ctx.uniq++}`
+        ctx.locals.set(tt, 'i32')
+        access = ['block', ['result', 'f64'],
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
+          ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]],
+            ['then', ['f64.convert_i32_s', ['call', '$__ptr_aux', ['local.get', `$${t}`]]]],
+            ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 4]],
+              ['then', ['f64.convert_i32_s', ['call', '$__str_len', ['local.get', `$${t}`]]]],
+              ['else', ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]]]]]]
+      }
+    } else {
+      const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
+      if (propIdx >= 0)
+        access = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
+      else {
+        // HASH fallback for dynamic objects (same as `.` handler)
+        ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+        access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+      }
+    }
     return typed(['if', ['result', 'f64'],
       ['f64.ne', ['local.tee', `$${t}`, va], ['f64.const', 0]],
       ['then', access],
@@ -156,12 +196,24 @@ export default () => {
   }
 
   // Optional index: arr?.[i] → 0 if arr is 0 (null), else arr[i]
+  // Cache base in temp, propagate valType so []'s type dispatch works
   ctx.emit['?.[]'] = (arr, idx) => {
     const t = temp()
-    return typed(['if', ['result', 'f64'],
-      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(arr))], ['f64.const', 0]],
-      ['then', ctx.emit['[]']?.(arr, idx) || typed(['f64.const', 0], 'f64')],
-      ['else', ['f64.const', 0]]], 'f64')
+    const va = asF64(emit(arr))
+    // Propagate source type to temp so [] dispatch (string, typed, etc.) works
+    const srcType = typeof arr === 'string' ? ctx.valTypes?.get(arr) : null
+    if (srcType) ctx.valTypes.set(t, srcType)
+    if (typeof arr === 'string' && ctx.typedElem?.has(arr)) {
+      if (!ctx.typedElem) ctx.typedElem = new Map()
+      ctx.typedElem.set(t, ctx.typedElem.get(arr))
+    }
+    // Emit: tee base into temp, null-check, then use normal [] on temp
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
+        ['then', asF64(ctx.emit['[]'](t, idx))],
+        ['else', ['f64.const', 0]]]], 'f64')
   }
 
   // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
@@ -198,7 +250,9 @@ export default () => {
     // Precise: variable has known schema
     const id = ctx.schema.vars.get(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
-    // Fallback: search all schemas, require consistent index
+    // Structural subtyping: scan all schemas, require consistent offset.
+    // This is the mechanism for schema objects passed through function parameters.
+    // Falls through to HASH when no schema has the property.
     let result = -1
     for (const s of ctx.schema.list) {
       const idx = s.indexOf(prop)

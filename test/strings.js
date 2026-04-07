@@ -1,7 +1,7 @@
 // Comprehensive string method tests
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import compile from '../index.js'
+import { compile } from '../index.js'
 import compile_mem from '../index.js'
 
 function run(code) {
