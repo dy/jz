@@ -159,7 +159,7 @@ function findFreeVars(node, bound, free, scope) {
   for (const a of args) findFreeVars(a, bound, free, scope)
 }
 
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&='])
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 /**
  * Pre-scan function body for captured variables that are mutated.
@@ -252,7 +252,11 @@ function emitDecl(...inits) {
         inc('__alloc', '__mkptr')
         const bt = `${T}bx${ctx.uniq++}`
         ctx.locals.set(bt, 'i32')
+        // Save original value as inner temp for method delegation
+        const innerName = `${name}${T}inner`
+        ctx.locals.set(innerName, 'f64')
         result.push(
+          ['local.set', `$${innerName}`, ['local.get', `$${name}`]],  // save inner before boxing
           ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
           ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
           ...schema.slice(1).map((_, j) =>
@@ -1253,6 +1257,20 @@ export const emitter = {
     return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
   },
 
+  // Nullish compound assignment: a ??= b → if (a is null) a = b
+  '??=': (name, val) => {
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    const t = temp()
+    const va = isGlobal(name) ? typed(['global.get', `$${name}`], 'f64') : typed(['local.get', `$${name}`], ctx.locals.get(name) || 'f64')
+    const result = typed(['if', ['result', 'f64'],
+      ['i64.eq', ['i64.reinterpret_f64', ['local.tee', `$${t}`, asF64(va)]], ['i64.const', NULL_NAN]],
+      ['then', asF64(emit(val))],
+      ['else', ['local.get', `$${t}`]]], 'f64')
+    if (isGlobal(name)) return ['global.set', `$${name}`, result]
+    const lt = ctx.locals.get(name) || 'f64'
+    return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
+  },
+
   // === Increment/Decrement ===
   // Postfix resolved in prepare: i++ → (++i) - 1
 
@@ -1672,8 +1690,16 @@ export const emitter = {
 
       // Boxed object: delegate method to inner value (slot 0)
       if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
-        const emitter = ctx.emit[`.${vt}:${method}`] || ctx.emit[`.${method}`]
-        if (emitter) return callMethod(ctx.schema.emitInner(obj), emitter)
+        const innerVt = ctx.valTypes?.get(obj)
+        const emitter = ctx.emit[`.${innerVt}:${method}`] || ctx.emit[`.${method}`]
+        if (emitter) {
+          // Use the inner temp local created during boxing (in emitDecl)
+          const innerName = `${obj}${T}inner`
+          if (!ctx.locals.has(innerName)) {
+            ctx.locals.set(innerName, 'f64')
+          }
+          return callMethod(innerName, emitter)
+        }
       }
 
       // Known type → static dispatch

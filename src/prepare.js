@@ -124,6 +124,8 @@ export const GLOBALS = {
   parseInt: 'number',
   Error: 'Error',
   BigInt: 'BigInt',
+  TextEncoder: 'TextEncoder',
+  TextDecoder: 'TextDecoder',
 }
 
 /** Prepare let/const declaration. */
@@ -483,6 +485,7 @@ const handlers = {
     }
     if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
     if (callee === 'Number') { includeModule('number') }
+    if (callee === 'TextEncoder' || callee === 'TextDecoder') { includeModule('core'); includeModule('string') }
     if (callee === 'Error') { includeModule('core'); includeModule('string') }
     if (callee === 'BigInt') { includeModule('number') }
     // String.fromCharCode / fromCodePoint → include string module
@@ -671,7 +674,7 @@ const handlers = {
 }
 
 // Namespace → module mapping (namespaces that share a module)
-const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core' }
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
 const MOD_DEPS = {
   number: ['core', 'string'],
   string: ['core', 'number'],

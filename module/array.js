@@ -9,7 +9,7 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc } from '../src/ctx.js'
 
 const ARRAY = 1, STRING = 4, STRING_SSO = 5
 
@@ -229,20 +229,21 @@ export default () => {
     for (const val of vals) {
       const vv = asF64(emit(val))
       body.push(
-        // Store value at offset + len*8
         ['f64.store',
           ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
           vv],
-        // Increment len
         ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]]
       )
     }
 
-    // Update array length header and return array
-    body.push(
-      ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
-      ['local.get', `$${t}`]
-    )
+    // Update length header, update source variable (pointer may have changed from grow), return new length
+    body.push(['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]])
+    // Update the source variable if it's a named variable (so arr still points to valid memory)
+    if (typeof arr === 'string') {
+      const isGlob = ctx.globals.has(arr) && !ctx.locals?.has(arr)
+      body.push([isGlob ? 'global.set' : 'local.set', `$${arr}`, ['local.get', `$${t}`]])
+    }
+    body.push(['f64.convert_i32_s', ['local.get', `$${len}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -258,6 +259,110 @@ export default () => {
       ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
       ['f64.load',
         ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
+  }
+
+  // .shift() → remove first element, shift remaining left, return removed
+  ctx.emit['.shift'] = (arr) => {
+    inc('__arr_shift')
+    return typed(['call', '$__arr_shift', asF64(emit(arr))], 'f64')
+  }
+
+  ctx.stdlib['__arr_shift'] = `(func $__arr_shift (param $arr f64) (result f64)
+    (local $off i32) (local $len i32) (local $val f64)
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
+    (if (result f64) (i32.le_s (local.get $len) (i32.const 0))
+      (then (f64.const 0))
+      (else
+        (local.set $val (f64.load (local.get $off)))
+        (memory.copy
+          (local.get $off)
+          (i32.add (local.get $off) (i32.const 8))
+          (i32.shl (i32.sub (local.get $len) (i32.const 1)) (i32.const 3)))
+        (call $__set_len (local.get $arr) (i32.sub (local.get $len) (i32.const 1)))
+        (local.get $val))))`
+
+  // .unshift(val) → prepend element, shift existing right
+  ctx.emit['.unshift'] = (arr, val) => {
+    inc('__arr_unshift')
+    return typed(['call', '$__arr_unshift', asF64(emit(arr)), asF64(emit(val))], 'f64')
+  }
+
+  ctx.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
+    (local $off i32) (local $len i32)
+    (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
+    (memory.copy
+      (i32.add (local.get $off) (i32.const 8))
+      (local.get $off)
+      (i32.shl (local.get $len) (i32.const 3)))
+    (f64.store (local.get $off) (local.get $val))
+    (call $__set_len (local.get $arr) (i32.add (local.get $len) (i32.const 1)))
+    (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
+
+  // .some(fn) → return 1 if any element passes, else 0
+  ctx.emit['.some'] = (arr, fn) => {
+    const va = emit(arr)
+    const id = ctx.uniq++
+    const loop = arrayLoop(va, (ptr, _len, i) => [
+      ['br_if', `$brk${id}`,
+        ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]]]
+    ])
+    const t = temp()
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, ['f64.const', 0]],
+      ...loop.slice(0, -1),
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${loop[3][1].slice(1)}`], ['local.get', `$${loop[2][1].slice(1)}`]]],
+        ...loop[3][2].slice(2)]], // skip br_if/body from loop, embed directly
+      ['local.get', `$${t}`]], 'f64')
+  }
+
+  // Actually, let me use a simpler stdlib approach for .some/.every/.findIndex:
+
+  ctx.emit['.some'] = (arr, fn) => {
+    const va = emit(arr), vf = emit(fn)
+    const t = `${T}sm${ctx.uniq++}`, r = `${T}sr${ctx.uniq++}`
+    ctx.locals.set(t, 'f64'); ctx.locals.set(r, 'f64')
+    const loop = arrayLoop(va, (ptr, _len, i) => [
+      ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+        ['then', ['local.set', `$${r}`, ['f64.const', 1]]]]
+    ])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${r}`, ['f64.const', 0]],
+      ...loop,
+      ['local.get', `$${r}`]], 'f64')
+  }
+
+  // .every(fn) → return 1 if all elements pass, else 0
+  ctx.emit['.every'] = (arr, fn) => {
+    const va = emit(arr), vf = emit(fn)
+    const r = `${T}ev${ctx.uniq++}`
+    ctx.locals.set(r, 'f64')
+    const loop = arrayLoop(va, (ptr, _len, i) => [
+      ['if', ['f64.eq', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+        ['then', ['local.set', `$${r}`, ['f64.const', 0]]]]
+    ])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${r}`, ['f64.const', 1]],
+      ...loop,
+      ['local.get', `$${r}`]], 'f64')
+  }
+
+  // .findIndex(fn) → return index of first matching element, or -1
+  ctx.emit['.findIndex'] = (arr, fn) => {
+    const va = emit(arr), vf = emit(fn)
+    const r = `${T}fi${ctx.uniq++}`
+    ctx.locals.set(r, 'f64')
+    const loop = arrayLoop(va, (ptr, _len, i) => [
+      ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+        ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]
+    ])
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${r}`, ['f64.const', -1]],
+      ...loop,
+      ['local.get', `$${r}`]], 'f64')
   }
 
   // === Array methods ===

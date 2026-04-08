@@ -327,7 +327,9 @@ jz.compile = (code, opts = {}) => {
   if (opts.memoryPages) ctx.memoryPages = opts.memoryPages
   if (opts.modules) ctx.importSources = opts.modules
   if (opts.imports) ctx.hostImports = opts.imports
-  if (opts.jzify) ctx.jzify = jzify
+  // pure: true → strict jz. pure: false → auto-jzify. unset → no transform (compat)
+  const useJzify = opts.jzify || opts.pure === false
+  if (useJzify) ctx.jzify = jzify
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -336,12 +338,13 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  // Enforce mandatory semicolons when strict: true (default for .jz files)
+  // pure: true → strict jz (mandatory ;, no function/var/switch)
+  // default → lenient (ASI allowed, auto-jzify if needed)
   const savedAsi = parse.asi
-  if (opts.strict) parse.asi = null
+  if (opts.pure) parse.asi = null
   let parsed
   try { parsed = parse(code) } finally { parse.asi = savedAsi }
-  if (opts.jzify) parsed = jzify(parsed)
+  if (useJzify) parsed = jzify(parsed)
   const ast = prepare(parsed)
   const module = compile(ast)
 

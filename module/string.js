@@ -697,4 +697,48 @@ export default () => {
     (i32.store (i32.add (local.get $ptr) (i32.const 4)) (i32.const 1))
     (f64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
     (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`
+
+  // TextEncoder() / TextDecoder() → dummy values (methods do the work)
+  ctx.emit['TextEncoder'] = () => typed(['f64.const', 1], 'f64')
+  ctx.emit['TextDecoder'] = () => typed(['f64.const', 2], 'f64')
+
+  // .encode(str) → Uint8Array of string's UTF-8 bytes
+  // Copies bytes from string (SSO or heap) into a new Uint8Array
+  ctx.stdlib['__str_encode'] = `(func $__str_encode (param $str f64) (result f64)
+    (local $len i32) (local $dst i32) (local $i i32)
+    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $len))))
+    (i32.store (local.get $dst) (local.get $len))
+    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))
+    (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
+    ;; Copy bytes using char_at (handles both SSO and heap)
+    (local.set $i (i32.const 0))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
+      (i32.store8 (i32.add (local.get $dst) (local.get $i))
+        (call $__char_at (local.get $str) (local.get $i)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`
+
+  ctx.emit['.encode'] = (obj, str) => {
+    inc('__str_encode', '__str_byteLen', '__char_at')
+    return typed(['call', '$__str_encode', asF64(emit(str))], 'f64')
+  }
+
+  // .decode(uint8arr) → string from byte data
+  ctx.stdlib['__bytes_decode'] = `(func $__bytes_decode (param $arr f64) (result f64)
+    (local $off i32) (local $len i32) (local $dst i32)
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
+    (local.set $dst (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (i32.store (local.get $dst) (local.get $len))
+    (local.set $dst (i32.add (local.get $dst) (i32.const 4)))
+    (memory.copy (local.get $dst) (local.get $off) (local.get $len))
+    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $dst)))`
+
+  ctx.emit['.decode'] = (obj, arr) => {
+    inc('__bytes_decode')
+    return typed(['call', '$__bytes_decode', asF64(emit(arr))], 'f64')
+  }
 }

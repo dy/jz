@@ -32,7 +32,6 @@ Options:
   --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
-  --strict                  Enforce mandatory semicolons
   `)
 }
 
@@ -82,12 +81,11 @@ async function handleJzify(args) {
 }
 
 async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false, strict = false
+  let inputFile = null, outputFile = null, wat = false
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
-    else if (args[i] === '--strict') strict = true
     else if (!inputFile) inputFile = args[i]
   }
 
@@ -95,10 +93,9 @@ async function handleCompile(args) {
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 
-  // .jz = strict jz (mandatory ;), .js = auto-jzify
+  // .js = auto-jzify (function→arrow, var→let, ASI allowed)
+  // .jz = strict jz (mandatory ;, no function/var/switch)
   const isJs = inputFile.endsWith('.js')
-  const isJz = inputFile.endsWith('.jz')
-  if (isJz) strict = true
 
   const code = readFileSync(inputFile, 'utf8')
 
@@ -129,8 +126,7 @@ async function handleCompile(args) {
 
   const opts = {
     wat,
-    ...(strict && { strict: true }),
-    ...(isJs && { jzify: true }),
+    pure: isJs ? false : true,  // .js → auto-jzify, .jz → pure (mandatory ;)
     ...(Object.keys(modules).length && { modules }),
   }
 

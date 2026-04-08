@@ -105,7 +105,7 @@ test('string.concat: chaining', () => {
 test('array.push: single', () => {
   const { f } = run(`export let f = () => {
     let a = [1, 2]
-    a = a.push(3)
+    a.push(3)
     return a.length
   }`)
   is(f(), 3)
@@ -114,7 +114,7 @@ test('array.push: single', () => {
 test('array.push: multiple', () => {
   const { f } = run(`export let f = () => {
     let a = [1, 2]
-    a = a.push(3, 4, 5)
+    a.push(3, 4, 5)
     return a.length
   }`)
   is(f(), 5)
@@ -123,7 +123,7 @@ test('array.push: multiple', () => {
 test('array.push: multiple preserves order', () => {
   const { f } = run(`export let f = () => {
     let a = [1]
-    a = a.push(2, 3, 4)
+    a.push(2, 3, 4)
     return a[1] + a[2] + a[3]
   }`)
   is(f(), 9)  // 2+3+4
@@ -132,7 +132,7 @@ test('array.push: multiple preserves order', () => {
 test('array.push: many values', () => {
   const { f } = run(`export let f = () => {
     let a = []
-    a = a.push(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    a.push(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
     return a.length
   }`)
   is(f(), 10)

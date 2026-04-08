@@ -49,7 +49,7 @@ test('spread: [...arr] creates new array', () => {
   const { f } = run(`export let f = () => {
     let a = [1, 2]
     let b = [...a]
-    b = b.push(3)
+    b.push(3)
     return a.length
   }`)
   is(f(), 2)  // original unchanged
@@ -112,7 +112,7 @@ test('spread in WASM call: mixed', () => {
 test('spread: .push(...values)', () => {
   const { f } = run(`export let f = () => {
     let a = [1]
-    a = a.push(2, 3, 4)
+    a.push(2, 3, 4)
     return a.length
   }`)
   is(f(), 4)
@@ -121,7 +121,7 @@ test('spread: .push(...values)', () => {
 test('spread: [...a].length after push', () => {
   const { f } = run(`export let f = () => {
     let a = [1]
-    a = a.push(2, 3)
+    a.push(2, 3)
     let b = [...a]
     return b.length
   }`)
