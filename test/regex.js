@@ -222,6 +222,13 @@ test('regex: basic test()', async () => {
   is(await evaluate('/abc/.test("hello xyz world")'), 0)
 })
 
+test('regex: module-level variable test()', () => {
+  const r = jz('const re = /abc/; export let f = (s) => re.test(s)')
+  const m = r.mem
+  is(r.exports.f(m.String('xabcx')), 1)
+  is(r.exports.f(m.String('xyz')), 0)
+})
+
 test('regex: anchors', async () => {
   is(await evaluate('/^hello/.test("hello world")'), 1)
   is(await evaluate('/^world/.test("hello world")'), 0)

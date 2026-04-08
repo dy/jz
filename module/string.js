@@ -332,6 +332,24 @@ export default () => {
           (call $__str_slice (local.get $str) (i32.add (local.get $idx) (local.get $slen))
             (call $__str_byteLen (local.get $str)))))))`
 
+  ctx.stdlib['__str_replaceall'] = `(func $__str_replaceall (param $str f64) (param $search f64) (param $repl f64) (result f64)
+    (local $idx i32) (local $slen i32) (local $pos i32) (local $result f64)
+    (local.set $slen (call $__str_byteLen (local.get $search)))
+    (local.set $result (local.get $str))
+    (local.set $pos (i32.const 0))
+    (block $done (loop $next
+      (local.set $idx (call $__str_indexof (local.get $result) (local.get $search) (local.get $pos)))
+      (br_if $done (i32.lt_s (local.get $idx) (i32.const 0)))
+      (local.set $result (call $__str_concat
+        (call $__str_concat
+          (call $__str_slice (local.get $result) (i32.const 0) (local.get $idx))
+          (local.get $repl))
+        (call $__str_slice (local.get $result) (i32.add (local.get $idx) (local.get $slen))
+          (call $__str_byteLen (local.get $result)))))
+      (local.set $pos (i32.add (local.get $idx) (call $__str_byteLen (local.get $repl))))
+      (br $next)))
+    (local.get $result))`
+
   ctx.stdlib['__str_split'] = `(func $__str_split (param $str f64) (param $sep f64) (result f64)
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
@@ -552,6 +570,12 @@ export default () => {
     return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
   }
 
+  ctx.emit['.replaceAll'] = (str, search, repl) => {
+    inc('__str_replaceall', '__str_indexof', '__str_slice')
+    incConcat()
+    return typed(['call', '$__str_replaceall', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
+  }
+
   ctx.emit['.split'] = (str, sep) => {
     inc('__str_split', '__str_slice')
     return typed(['call', '$__str_split', asF64(emit(str)), asF64(emit(sep))], 'f64')
@@ -589,6 +613,38 @@ export default () => {
   // String.fromCharCode(code) → 1-char SSO string
   ctx.emit['String.fromCharCode'] = (code) => {
     return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], asI32(emit(code))], 'f64')
+  }
+
+  // String.fromCodePoint(cp) → UTF-8 encoded string
+  ctx.stdlib['__fromCodePoint'] = `(func $__fromCodePoint (param $cp i32) (result f64)
+    (local $off i32) (local $len i32)
+    ;; ASCII: 1 byte SSO
+    (if (i32.lt_u (local.get $cp) (i32.const 128))
+      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 1) (local.get $cp)))))
+    ;; 2-byte: 0x80-0x7FF → SSO
+    (if (i32.lt_u (local.get $cp) (i32.const 0x800))
+      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 2)
+        (i32.or
+          (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6)))
+          (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 8)))))))
+    ;; 3-byte: 0x800-0xFFFF → SSO (3 bytes fits)
+    (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
+      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 3)
+        (i32.or (i32.or
+          (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12)))
+          (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 8)))
+          (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 16)))))))
+    ;; 4-byte: 0x10000-0x10FFFF → SSO (4 bytes fits)
+    (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 4)
+      (i32.or (i32.or (i32.or
+        (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18)))
+        (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))) (i32.const 8)))
+        (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 16)))
+        (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))))`
+
+  ctx.emit['String.fromCodePoint'] = (code) => {
+    inc('__fromCodePoint')
+    return typed(['call', '$__fromCodePoint', asI32(emit(code))], 'f64')
   }
 
   // .at(i) → charAt with negative index support

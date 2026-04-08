@@ -6,28 +6,33 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { dirname, resolve, join } from 'path'
+import { parse } from 'subscript/jessie'
 import jz, { compile } from './index.js'
+import jzifyFn, { codegen } from './src/jzify.js'
 
 function showHelp() {
   console.log(`
-jz - JS subset → WASM compiler
+jz - JS subset → WASM compiler (Crockford-aligned)
 
 Usage:
-  jz <file.js>              Compile to WASM (default)
-  jz <file.js> -o out.wat   Compile to WAT
+  jz <file.jz>              Compile jz to WASM
+  jz <file.js>              Auto-jzify JS, then compile to WASM
+  jz --jzify <file.js>      Transform JS → jz (output to stdout)
   jz -e <expression>        Evaluate expression
-  jz -e <file.js>           Evaluate JS file
   jz --help                 Show this help
 
 Examples:
-  jz program.js -o program.wasm
-  jz program.js -o program.wat
+  jz program.jz -o program.wasm
+  jz program.js -o program.wasm     # auto-jzify
+  jz --jzify lib.js > lib.jz        # transform only
   jz -e "1 + 2"
 
 Options:
   --output, -o <file>       Output file (.wat or .wasm)
+  --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
+  --strict                  Enforce mandatory semicolons
   `)
 }
 
@@ -41,7 +46,9 @@ async function main() {
 
   try {
     const evalIdx = args.indexOf('-e') !== -1 ? args.indexOf('-e') : args.indexOf('--eval')
-    if (evalIdx !== -1) await handleEvaluate(args.slice(evalIdx + 1))
+    const jzifyIdx = args.indexOf('--jzify')
+    if (jzifyIdx !== -1) await handleJzify(args.slice(jzifyIdx + 1))
+    else if (evalIdx !== -1) await handleEvaluate(args.slice(evalIdx + 1))
     else await handleCompile(args)
   } catch (error) {
     console.error('Error:', error.message)
@@ -65,12 +72,22 @@ async function handleEvaluate(args) {
   else console.log(exports)
 }
 
+async function handleJzify(args) {
+  const inputFile = args[0]
+  if (!inputFile) throw new Error('No input file specified')
+  const code = readFileSync(inputFile, 'utf8')
+  const ast = parse(code)
+  const transformed = jzifyFn(ast)
+  process.stdout.write(codegen(transformed) + '\n')
+}
+
 async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false
+  let inputFile = null, outputFile = null, wat = false, strict = false
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
+    else if (args[i] === '--strict') strict = true
     else if (!inputFile) inputFile = args[i]
   }
 
@@ -78,13 +95,17 @@ async function handleCompile(args) {
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 
+  // .jz = strict jz (mandatory ;), .js = auto-jzify
+  const isJs = inputFile.endsWith('.js')
+  const isJz = inputFile.endsWith('.jz')
+  if (isJz) strict = true
+
   const code = readFileSync(inputFile, 'utf8')
 
-  // Resolve imports: jz.json map (if present) + inline import specifiers
+  // Resolve imports
   const dir = dirname(resolve(inputFile))
   const modules = {}
 
-  // Load import map from package.json "imports" field (Node/Deno convention)
   const pkgFile = join(dir, 'package.json')
   if (existsSync(pkgFile)) {
     try {
@@ -96,7 +117,6 @@ async function handleCompile(args) {
     } catch {}
   }
 
-  // Also resolve relative imports found in source
   const importRe = /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g
   let m; while ((m = importRe.exec(code)) !== null) {
     const spec = m[1]
@@ -107,7 +127,14 @@ async function handleCompile(args) {
     }
   }
 
-  const result = compile(code, { wat, ...(Object.keys(modules).length && { modules }) })
+  const opts = {
+    wat,
+    ...(strict && { strict: true }),
+    ...(isJs && { jzify: true }),
+    ...(Object.keys(modules).length && { modules }),
+  }
+
+  const result = compile(code, opts)
 
   if (wat) {
     writeFileSync(outputFile, result)

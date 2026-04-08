@@ -1,3 +1,68 @@
+
+### Build & tooling
+
+* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
+* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
+* [ ] Metacircularity: watr compilation — remaining: arr.flat/flatMap ✓, str.indexOf(from) ✓, String.fromCharCode ✓, parseInt ✓, str + concat ✓. Still need: Uint8Array.from, regex .test on strings, fn property assignment (boxing)
+* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
+* [x] console.log/warn/error
+* [x] Date.now, performance.now
+* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
+* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
+* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
+* [x] Custom imports — host functions via { imports: { mod: { fn } } }
+* [x] Shared memory — { memory } option, cross-module pointer sharing
+* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
+* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
+* [x] Template tag
+* [ ] jzify script converting any JZ
+* [ ] align with Crockford practices
+
+### Validation & quality
+
+* [ ] color-space converter (validates multi profile)
+* [ ] digital-filter biquad (validates memory profile)
+* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
+* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
+* [ ] test262 basics
+* [ ] Warn/error on hitting memory limits
+* [ ] Excellent WASM output
+* [ ] wasm2c / w2c2 integration test
+
+### Future
+
+* [ ] metacircularity (jz compiling jz)
+* [ ] Component interface (wit)
+* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] memory64 (>4GB)
+* [ ] relaxed SIMD
+* [ ] WebGPU compute shaders
+
+## Offering
+
+* [ ] Clear, fully transparent and understood codebase
+* [ ] Completed: docs, readme, code, tests, repl
+* [ ] Integrations (floatbeat, color-space, digital-filter)
+* [ ] Benchmarks
+* [ ] Pick ONE use case, make jz undeniable for it
+* [ ] Ship something someone uses
+
+## Floatbeat playground
+
+* [ ] Syntax highlighter
+* [ ] Waveform renderer
+* [ ] Database + recipe book
+* [ ] Samples collection
+
+## REPL
+
+* [ ] Auto-convert var→let, function→arrow on paste
+* [ ] Auto-import implicit globals
+* [ ] Show produced WAT
+* [ ] Document interop
+
+
+
 ## Done (scratch branch)
 
 * [x] Parser (subscript/jessie)
@@ -214,63 +279,3 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] Object interpolation with non-numeric values — dummy hoist for schema + mem.Object getter post-instantiation
 * [x] Tail-call optimization — restored: emit(expr) first, then return_call if result is direct call
 * [x] Date.now, performance.now — WASI clock_time_get, polyfill in wasi.js
-
-### Build & tooling
-
-* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
-* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
-* [ ] Metacircularity: watr compilation — remaining: arr.flat/flatMap ✓, str.indexOf(from) ✓, String.fromCharCode ✓, parseInt ✓, str + concat ✓. Still need: Uint8Array.from, regex .test on strings, fn property assignment (boxing)
-* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
-* [x] console.log/warn/error
-* [x] Date.now, performance.now
-* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
-* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
-* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
-* [x] Custom imports — host functions via { imports: { mod: { fn } } }
-* [x] Shared memory — { memory } option, cross-module pointer sharing
-* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
-* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
-* [x] Template tag
-
-### Validation & quality
-
-* [ ] color-space converter (validates multi profile)
-* [ ] digital-filter biquad (validates memory profile)
-* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
-* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
-* [ ] test262 basics
-* [ ] Warn/error on hitting memory limits
-* [ ] Excellent WASM output
-* [ ] wasm2c / w2c2 integration test
-
-### Future
-
-* [ ] metacircularity (jz compiling jz)
-* [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
-
-## Offering
-
-* [ ] Clear, fully transparent and understood codebase
-* [ ] Completed: docs, readme, code, tests, repl
-* [ ] Integrations (floatbeat, color-space, digital-filter)
-* [ ] Benchmarks
-* [ ] Pick ONE use case, make jz undeniable for it
-* [ ] Ship something someone uses
-
-## Floatbeat playground
-
-* [ ] Syntax highlighter
-* [ ] Waveform renderer
-* [ ] Database + recipe book
-* [ ] Samples collection
-
-## REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop

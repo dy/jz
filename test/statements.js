@@ -46,6 +46,158 @@ test('assignment: /=', () => {
   is(run('export let f = (x) => { let y = 20; y /= x; return y }').f(4), 5)
 })
 
+test('assignment: >>=', () => {
+  is(run('export let f = () => { let a = 256; a >>= 4; return a }').f(), 16)
+})
+
+test('assignment: <<=', () => {
+  is(run('export let f = () => { let a = 1; a <<= 4; return a }').f(), 16)
+})
+
+test('assignment: &=', () => {
+  is(run('export let f = () => { let a = 255; a &= 0x0F; return a }').f(), 15)
+})
+
+test('assignment: |=', () => {
+  is(run('export let f = () => { let a = 0; a |= 5; return a }').f(), 5)
+})
+
+test('assignment: ^=', () => {
+  is(run('export let f = () => { let a = 0xFF; a ^= 0x0F; return a }').f(), 240)
+})
+
+test('assignment: >>>=', () => {
+  is(run('export let f = () => { let a = -1; a >>>= 24; return a }').f(), 255)
+})
+
+test('assignment: ||= on falsy', () => {
+  is(run('export let f = () => { let a = 0; a ||= 42; return a }').f(), 42)
+})
+
+test('assignment: ||= on truthy', () => {
+  is(run('export let f = () => { let a = 5; a ||= 42; return a }').f(), 5)
+})
+
+test('assignment: &&= on truthy', () => {
+  is(run('export let f = () => { let a = 5; a &&= 42; return a }').f(), 42)
+})
+
+test('assignment: &&= on falsy', () => {
+  is(run('export let f = () => { let a = 0; a &&= 42; return a }').f(), 0)
+})
+
+// === Comma operator ===
+
+test('comma: returns last value', () => {
+  is(run('export let f = () => { let a = (1, 2, 3); return a }').f(), 3)
+})
+
+test('comma: side effects', () => {
+  is(run('export let f = () => { let i = 0; i++, i++; return i }').f(), 2)
+})
+
+// === BigInt ===
+
+test('bigint: literal + Number()', () => {
+  is(run('export let f = () => Number(7n)').f(), 7)
+})
+
+test('bigint: arithmetic', () => {
+  is(run('export let f = () => Number(3n + 4n)').f(), 7)
+  is(run('export let f = () => Number(10n - 3n)').f(), 7)
+  is(run('export let f = () => Number(6n * 7n)').f(), 42)
+  is(run('export let f = () => Number(42n / 6n)').f(), 7)
+  is(run('export let f = () => Number(17n % 10n)').f(), 7)
+})
+
+test('bigint: bitwise', () => {
+  is(run('export let f = () => Number(255n & 0x7Fn)').f(), 127)
+  is(run('export let f = () => Number(0n | 5n)').f(), 5)
+  is(run('export let f = () => Number(256n >> 4n)').f(), 16)
+  is(run('export let f = () => Number(1n << 7n)').f(), 128)
+})
+
+test('bigint: hex literal', () => {
+  is(run('export let f = () => Number(0xFFn)').f(), 255)
+})
+
+test('bigint: negative literal', () => {
+  is(run('export let f = () => Number(-1n)').f(), -1)
+})
+
+test('bigint: BigInt.asIntN', () => {
+  is(run('export let f = () => Number(BigInt.asIntN(32, 0xFFFFFFFFn))').f(), -1)
+})
+
+test('bigint: BigInt.asUintN', () => {
+  is(run('export let f = () => Number(BigInt.asUintN(32, -1n))').f(), 4294967295)
+})
+
+// === Number/Error builtins ===
+
+test('Number(): identity', () => {
+  is(run('export let f = (x) => Number(x)').f(42), 42)
+})
+
+test('Error(): throw', () => {
+  throws(() => run('export let f = () => { throw Error("test") }').f())
+})
+
+// === Auto-boxing: property assignment ===
+
+test('fn.prop: auto-box write + read', () => {
+  const { g } = run(`
+    export let f = (x) => x
+    f.loc = 42
+    export let g = () => f.loc
+  `)
+  is(g(), 42)
+})
+
+test('fn.prop: auto-box write/read from functions', () => {
+  const { set, get } = run(`
+    export let err = (msg) => { throw msg }
+    err.loc = 0
+    export let set = (v) => { err.loc = v }
+    export let get = () => err.loc
+  `)
+  is(get(), 0)
+  set(42)
+  is(get(), 42)
+})
+
+test('fn.prop: function still callable after boxing', () => {
+  is(run(`
+    export let f = (x) => x + 1
+    f.tag = 0
+    export let g = () => f(41)
+  `).g(), 42)
+})
+
+test('fn.prop: arrow extraction + direct call', () => {
+  is(run(`
+    export let i32 = (n) => n + 1
+    i32.parse = (s) => s * 2
+    export let f = () => i32.parse(21)
+  `).f(), 42)
+})
+
+test('auto-box: local array property', () => {
+  is(run('export let f = () => { let a = [1, 2, 3]; a.x = 99; return a.x }').f(), 99)
+})
+
+test('auto-box: local array .length after boxing', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a.length }').f(), 3)
+})
+
+test('auto-box: local array indexing after boxing', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }').f(), 60)
+})
+
+test('auto-box: arrow property call (valueOf pattern)', () => {
+  is(run('export let f = () => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }').f(), 99)
+})
+
 // === If/else ===
 
 test('if: early return', () => {

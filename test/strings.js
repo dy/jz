@@ -164,6 +164,16 @@ test('string: .replace first only', () => {
   is(run(`export let f = () => "hello hello".replace("hello", "hi").length`).f(), 8)  // "hi hello"
 })
 
+// === .replaceAll ===
+
+test('string: .replaceAll', () => {
+  is(run(`export let f = () => "a_b_c".replaceAll("_", "-").length`).f(), 5)  // "a-b-c"
+})
+
+test('string: .replaceAll removes all', () => {
+  is(run(`export let f = () => "a__b__c".replaceAll("__", "").length`).f(), 3)  // "abc"
+})
+
 // === .split ===
 
 test('string: .split basic', () => {

@@ -51,6 +51,7 @@ export const ctx = {
 
   // --- Const tracking ---
   consts: null,          // Set<string> — const-declared names (reject reassignment)
+  globalValTypes: null,  // Map<string, string> — module-scope value types for method dispatch
 
   // --- Options ---
   sharedMemory: false,   // true when memory is imported (shared across modules)
@@ -105,6 +106,9 @@ export function reset(proto, globals) {
   ctx.moduleStack = []
   ctx.resolvedModules = new Map()
   ctx.consts = null
+  ctx.globalValTypes = null
+  ctx.autoBox = null
+  ctx.jzify = null
   ctx.data = null
   ctx.src = ''
   ctx.loc = null

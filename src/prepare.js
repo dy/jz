@@ -122,6 +122,8 @@ export const GLOBALS = {
   isNaN: 'number',
   isFinite: 'number',
   parseInt: 'number',
+  Error: 'Error',
+  BigInt: 'BigInt',
 }
 
 /** Prepare let/const declaration. */
@@ -150,6 +152,9 @@ function prepDecl(op, ...inits) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
         // Alias: {x: a} → a = tmp.x
         else if (Array.isArray(item) && item[0] === ':') rest.push(['=', item[2], ['.', tmp, item[1]]])
+        // Default: {x = val} → x = tmp.x ?? val (use nullish coalescing)
+        else if (Array.isArray(item) && item[0] === '=' && typeof item[1] === 'string')
+          rest.push(['=', item[1], ['??', ['.', tmp, item[1]], item[2]]])
       }
       continue
     }
@@ -204,6 +209,16 @@ const handlers = {
   ':': () => err('labeled statements not supported'),
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
+
+  // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
+  '='(lhs, rhs) {
+    if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
+      && ctx.funcs.some(f => f.name === lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
+      const name = `${lhs[1]}$${lhs[2]}`
+      if (defFunc(name, prep(rhs))) return null  // extracted as function, no assignment needed
+    }
+    return ['=', prep(lhs), prep(rhs)]
+  },
 
   // try/catch/throw
   'catch'(tryNode, errName, handler) {
@@ -264,7 +279,14 @@ const handlers = {
     // Tier 2: Source module (bundling)
     if (ctx.importSources?.[mod]) {
       const resolved = prepareModule(mod, ctx.importSources[mod])
-      // Bind imported names to mangled names
+      // Default import: import name from 'mod' → bind to default export
+      if (typeof specifiers === 'string') {
+        const mangled = resolved.exports.get('default')
+        if (!mangled) err(`'${mod}' has no default export`)
+        ctx.scope[specifiers] = mangled
+        return null
+      }
+      // Named imports: import { a, b } from 'mod'
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
@@ -330,6 +352,24 @@ const handlers = {
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
           ctx.exports[i[1]] = true
+    // export default expr → mark 'default' export, rewrite to assignment
+    if (Array.isArray(decl) && decl[0] === 'default') {
+      const val = decl[1]
+      // export default name → export existing name as 'default'
+      if (typeof val === 'string' && (ctx.funcs.some(f => f.name === val) || ctx.globals.has(val))) {
+        ctx.exports['default'] = val  // alias
+        return null
+      }
+      // export default arrow → create function named 'default'
+      ctx.exports['default'] = true
+      if (Array.isArray(val) && val[0] === '=>') {
+        if (defFunc('default', val)) return null
+      }
+      // export default expr → create global 'default'
+      ctx.globals.set('default', `(global $default (mut f64) (f64.const 0))`)
+      ctx.userGlobals.add('default')
+      return ['=', 'default', prep(val)]
+    }
     return prep(decl)
   },
 
@@ -442,10 +482,19 @@ const handlers = {
       }
     }
     if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
-    // String.fromCharCode → include string module
-    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'String' && callee[2] === 'fromCharCode') {
+    if (callee === 'Number') { includeModule('number') }
+    if (callee === 'Error') { includeModule('core'); includeModule('string') }
+    if (callee === 'BigInt') { includeModule('number') }
+    // String.fromCharCode / fromCodePoint → include string module
+    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'String'
+      && (callee[2] === 'fromCharCode' || callee[2] === 'fromCodePoint')) {
       includeModule('core'); includeModule('string')
-      callee = 'String.fromCharCode'
+      callee = `String.${callee[2]}`
+    }
+    // BigInt.asIntN / BigInt.asUintN → include number module
+    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'BigInt' && (callee[2] === 'asIntN' || callee[2] === 'asUintN')) {
+      includeModule('number')
+      callee = `BigInt.${callee[2]}`
     }
     // TypedArray.from → include typedarray module
     if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'from') {
@@ -622,7 +671,7 @@ const handlers = {
 }
 
 // Namespace → module mapping (namespaces that share a module)
-const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json' }
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core' }
 const MOD_DEPS = {
   number: ['core', 'string'],
   string: ['core', 'number'],
@@ -736,7 +785,8 @@ function prepareModule(specifier, source) {
   ctx.exports = {}
 
   // Parse + prepare imported source (may trigger recursive imports)
-  const ast = parse(source)
+  let ast = parse(source)
+  if (ctx.jzify) ast = ctx.jzify(ast)
   const savedDepth = depth; depth = 0
   prep(ast)
   depth = savedDepth
@@ -744,6 +794,12 @@ function prepareModule(specifier, source) {
   // Collect exports: rename exported funcs with prefix
   const moduleExports = new Map()
   for (const name of Object.keys(ctx.exports)) {
+    const val = ctx.exports[name]
+    // Default export alias: export default existingName → map 'default' to that name's mangled form
+    if (name === 'default' && typeof val === 'string') {
+      // Will resolve after all named exports are mangled
+      continue
+    }
     const mangled = `${prefix}$${name}`
     moduleExports.set(name, mangled)
     // Rename the function in ctx.funcs
@@ -756,6 +812,26 @@ function prepareModule(specifier, source) {
       ctx.globals.set(mangled, wat)
       if (ctx.userGlobals.has(name)) { ctx.userGlobals.delete(name); ctx.userGlobals.add(mangled) }
       if (ctx.globalTypes.has(name)) { ctx.globalTypes.set(mangled, ctx.globalTypes.get(name)); ctx.globalTypes.delete(name) }
+    }
+  }
+  // Resolve default export alias after named exports are mangled
+  if (typeof ctx.exports['default'] === 'string') {
+    const alias = ctx.exports['default']
+    if (moduleExports.has(alias)) {
+      // Already renamed as a named export
+      moduleExports.set('default', moduleExports.get(alias))
+    } else {
+      // Not a named export — rename the function/global
+      const mangled = `${prefix}$${alias}`
+      moduleExports.set('default', mangled)
+      const func = ctx.funcs.find(f => f.name === alias)
+      if (func) func.name = mangled
+      if (ctx.globals.has(alias)) {
+        const wat = ctx.globals.get(alias).replace(`$${alias}`, `$${mangled}`)
+        ctx.globals.delete(alias)
+        ctx.globals.set(mangled, wat)
+        if (ctx.userGlobals.has(alias)) { ctx.userGlobals.delete(alias); ctx.userGlobals.add(mangled) }
+      }
     }
   }
 

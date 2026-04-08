@@ -271,4 +271,7 @@ export default () => {
   ctx.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asF64(emit(p))]], 'f64')
   ctx.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asF64(emit(p))]], 'f64')
   ctx.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asF64(emit(p))]], 'f64')
+
+  // Error(msg) — passthrough (throw handles any value)
+  ctx.emit['Error'] = (msg) => asF64(emit(msg))
 }

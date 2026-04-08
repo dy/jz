@@ -163,6 +163,37 @@ test('import: unknown export errors', () => {
   ), /not exported/)
 })
 
+// === export default + default import ===
+
+test('export default: arrow function', () => {
+  const wasm = compile('export default (x) => x + 1')
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
+  is(inst.exports.default(41), 42)
+})
+
+test('export default: alias existing function', () => {
+  const wasm = compile('export let add = (a, b) => a + b; export default add')
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
+  is(inst.exports.default(20, 22), 42)
+  is(inst.exports.add(1, 2), 3)
+})
+
+test('import default: bundled module', () => {
+  const { exports: { f } } = jz(
+    'import add from "./m.jz"; export let f = () => add(20, 22)',
+    { modules: { './m.jz': 'const add = (a, b) => a + b; export default add' } }
+  )
+  is(f(), 42)
+})
+
+test('import default: bundled arrow', () => {
+  const { exports: { f } } = jz(
+    'import dbl from "./d.jz"; export let f = (x) => dbl(x)',
+    { modules: { './d.jz': 'export default (x) => x * 2' } }
+  )
+  is(f(21), 42)
+})
+
 // ============================================
 // Host imports (Tier 3)
 // ============================================

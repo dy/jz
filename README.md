@@ -32,18 +32,21 @@ const wat = compile('export let f = (x) => x * 2', { wat: true })
 `npm install -g jz`
 
 ```sh
-# Compile to WASM binary
+# Compile jz to WASM
+jz program.jz -o program.wasm
+
+# Compile any JS (auto-jzify: function→arrow, var→let, switch→if/else)
 jz program.js -o program.wasm
 
+# Transform JS to jz (no compilation)
+jz --jzify lib.js > lib.jz
+
 # Compile to WAT
-jz program.js -o program.wat
+jz program.jz -o program.wat
 
 # Evaluate expression
 jz -e "1 + 2"
 # 3
-
-# Evaluate file
-jz -e program.js
 
 # Show help
 jz --help
@@ -83,14 +86,17 @@ JS has become complex and with regrets (coercions, hoisting, `this`, classes, `n
 Ongoing proposals shape language into something unappealing.
 
 _jz_ (javascript zero) – keeps minimal functional JS best practices, drops the rest.
+Aligned with [Crockford's Good Parts](https://www.crockford.com/) and [Jessie](https://github.com/endojs/Jessie): class-free, `this`-free, coercion-free.
 Initially conceived for bytebeats, inspired by [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
 ### Principles
 
+* **Crockford-aligned** — no `var`, `this`, `class`, `switch`, `==`. Mandatory `;`. The Good Parts, enforced by the compiler.
 * **Compile-time over runtime** — types inferred from usage, no annotations. All dispatch resolved statically. No GC, no runtime checks.
 * **Explicit over implicit** — no coercions, no hoisting, no magic. `==` is strict. `null` is distinct from `0`. `??` works correctly. Code means what it says.
 * **Functional over OOP** — functions are the unit of composition. No `class`, no `this`, no inheritance. Data is plain, behavior is functions.
 * **Valid jz = valid js** — every jz program runs as normal javascript. The subset enforces good style by design — no linter needed.
+* **jzify** — any JS file compiles to WASM via automatic transform: `function` → arrow, `var` → `let`, `switch` → if/else, `new` → call. `jz file.js` just works.
 * **Uniform f64 representation** — all values are f64. Heap types use [NaN-boxing](https://articlems.com/nan-boxing-in-javascript): arrays, strings, objects are pointers encoded in quiet NaN bits. One convention beats type-specific complexity.
 * **Minimal core, extensible surface** — core compiles pure compute (~2K lines). Arrays, strings, objects, Math — each is a module. Capabilities grow without core growth.
 * **Live compilation** — compiles in-browser in <1ms. WASM as interactive medium, not build artifact.
@@ -242,11 +248,13 @@ Not ideal for: DOM manipulation, async I/O, heavy string processing.
 | `var`, `function` | Hoisting. Use `let`/`const` and arrows. |
 | `class`, `this`, `super` | OOP. Use plain objects and functions. |
 | `async`/`await` | WASM is synchronous. Use host callbacks. |
+| `do`...`while` | Use `while` or `for`. |
 | `eval`, `with` | Dynamic scope. Not compilable. |
 | `arguments` | Implicit. Use rest params `...args`. |
 | `typeof` (string result) | `typeof x === 'string'` works as compile-time check. |
 | `null` vs `undefined` | One nullish value. No debate. `??` just works. |
 | Implicit coercions | `==` is strict. `null` is distinct from `0`. No surprises. |
+| `switch` | Use `if`/`else` chains. |
 
 #### What's the difference between `jz()` and `compile()`?
 

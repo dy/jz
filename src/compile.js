@@ -16,7 +16,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { ctx, err } from './ctx.js'
+import { ctx, err, inc } from './ctx.js'
 let funcNames  // Set<string> — known function names, set per compile()
 let funcMap    // Map<string, func> — name → func info, set per compile()
 
@@ -30,6 +30,12 @@ export const asF64 = n => n.type === 'f64' ? n : typed(['f64.convert_i32_s', n],
 
 /** Coerce node to i32. */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_f64_s', n], 'i32')
+
+/** Extract i64 from BigInt-as-f64. */
+export const asI64 = n => typed(['i64.reinterpret_f64', asF64(n)], 'i64')
+
+/** Wrap i64 result back to BigInt-as-f64. */
+const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
 
 /** Compiler temp prefix — PUA character, impossible in user JS source. */
 export const T = '\uE000'
@@ -153,7 +159,7 @@ function findFreeVars(node, bound, free, scope) {
   for (const a of args) findFreeVars(a, bound, free, scope)
 }
 
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%='])
+const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&='])
 
 /**
  * Pre-scan function body for captured variables that are mutated.
@@ -237,6 +243,23 @@ function emitDecl(...inits) {
     }
     const localType = ctx.locals.get(name) || 'f64'
     result.push(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)])
+
+    // Auto-box local variable if it has property assignments
+    if (ctx._localProps?.has(name) && ctx.schema.vars.has(name)) {
+      const schemaId = ctx.schema.vars.get(name)
+      const schema = ctx.schema.list[schemaId]
+      if (schema?.[0] === '__inner__') {
+        inc('__alloc', '__mkptr')
+        const bt = `${T}bx${ctx.uniq++}`
+        ctx.locals.set(bt, 'i32')
+        result.push(
+          ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+          ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
+          ...schema.slice(1).map((_, j) =>
+            ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], ['f64.const', 0]]),
+          ['local.set', `$${name}`, ['call', '$__mkptr', ['i32.const', 6], ['i32.const', schemaId], ['local.get', `$${bt}`]]])
+      }
+    }
   }
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }
@@ -248,28 +271,36 @@ export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',
   OBJECT: 'object', SET: 'set', MAP: 'map',
   CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
+  BIGINT: 'bigint',
 }
 
 /** Infer value type of an AST expression (without emitting). */
 export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
-  if (typeof expr === 'string') return ctx.valTypes?.get(expr) || null
+  if (typeof expr === 'bigint') return VAL.BIGINT
+  if (typeof expr === 'string') return ctx.valTypes?.get(expr) || ctx.globalValTypes?.get(expr) || null
   if (!Array.isArray(expr)) return null
 
   const [op, ...args] = expr
-  if (op == null) return VAL.NUMBER // literal
+  if (op == null) return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER // literal
 
   if (op === '[') return VAL.ARRAY
   if (op === 'str') return VAL.STRING
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
-  // Arithmetic expressions produce numbers
-  if (['-', '*', '/', '%', '**', '++', '--', '~', '&', '|', '^', '<<', '>>', '>>>'].includes(op)) return VAL.NUMBER
+  // Arithmetic expressions: BigInt if either operand is BigInt, else number
+  if (['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
+    if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
+    return VAL.NUMBER
+  }
+  if (['**', '++', '--', '~', '>>>', 'u+'].includes(op)) return VAL.NUMBER
   if (op === '+') {
     const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
-    return (ta === VAL.STRING || tb === VAL.STRING) ? VAL.STRING : VAL.NUMBER
+    if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+    return VAL.NUMBER
   }
 
   if (op === '()') {
@@ -280,6 +311,7 @@ export function valTypeOf(expr) {
       if (callee === 'new.Map') return VAL.MAP
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
+      if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
     }
     // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
@@ -348,9 +380,29 @@ function analyzeValTypes(body) {
       if (vt === VAL.TYPED) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
     }
+    // Track property assignments for auto-boxing: x.prop = val
+    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && typeof args[0][1] === 'string') {
+      const [, obj, prop] = args[0]
+      // Only auto-box known non-object types (array, closure, typed, string, number)
+      const vt = types.get(obj)
+      if (vt && vt !== VAL.OBJECT && ctx.locals?.has(obj) && ctx.schema.register) {
+        if (!ctx._localProps) ctx._localProps = new Map()
+        if (!ctx._localProps.has(obj)) ctx._localProps.set(obj, new Set())
+        ctx._localProps.get(obj).add(prop)
+      }
+    }
     for (const a of args) walk(a)
   }
   walk(body)
+
+  // Register boxed schemas for local variables with property assignments
+  if (ctx._localProps) {
+    for (const [name, props] of ctx._localProps) {
+      if (ctx.schema.vars.has(name)) continue
+      const schema = ['__inner__', ...props]
+      ctx.schema.vars.set(name, ctx.schema.register(schema))
+    }
+  }
 }
 
 /**
@@ -405,6 +457,8 @@ function analyzeLocals(body) {
     // let/const declarations
     if (op === 'let' || op === 'const') {
       for (const a of args) {
+        // Bare declaration: let x; → default f64
+        if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         const name = a[1], t = exprType(a[2], locals)
         if (!locals.has(name)) locals.set(name, t)
@@ -633,6 +687,60 @@ export default function compile(ast) {
     }
   }
 
+  // Pre-scan module-scope value types so functions can dispatch methods on globals
+  if (ast) {
+    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1) : [ast]
+    for (const s of stmts) {
+      if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let')) continue
+      for (const decl of s.slice(1)) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const vt = valTypeOf(decl[2])
+        if (vt) {
+          if (!ctx.globalValTypes) ctx.globalValTypes = new Map()
+          ctx.globalValTypes.set(decl[1], vt)
+          if (vt === VAL.REGEX && ctx.regex) ctx.regex.vars.set(decl[1], decl[2])
+        }
+      }
+    }
+  }
+
+  // Pre-scan property assignments (x.prop = val) → auto-box variables with schemas
+  if (ast && ctx.schema.register) {
+    const propMap = new Map() // varName → Set<propName>
+    const scan = (node) => {
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === ';' || op === '{}') { for (const a of args) scan(a); return }
+      if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, prop] = args[0]
+        if (typeof obj === 'string' && (ctx.globals.has(obj) || funcNames.has(obj))) {
+          if (!propMap.has(obj)) propMap.set(obj, new Set())
+          propMap.get(obj).add(prop)
+        }
+      }
+      for (const a of args) if (Array.isArray(a)) scan(a)
+    }
+    scan(ast)
+    for (const [name, props] of propMap) {
+      // Skip if variable already has a schema (e.g. from Object.assign in prepare)
+      if (ctx.schema.vars.has(name)) continue
+      // Skip props that are extracted as functions (fn.prop = arrow)
+      const valueProps = [...props].filter(p => !funcNames.has(`${name}$${p}`))
+      if (!valueProps.length) continue
+      // Include extracted fn props in schema too (so schema is complete)
+      const allProps = [...props]
+      const schema = ['__inner__', ...allProps]
+      const schemaId = ctx.schema.register(schema)
+      ctx.schema.vars.set(name, schemaId)
+      // For function variables, ensure a global exists for property storage
+      if (funcNames.has(name) && !ctx.globals.has(name))
+        ctx.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+      // Mark for boxing emission in __start
+      if (!ctx.autoBox) ctx.autoBox = new Map()
+      ctx.autoBox.set(name, { schemaId, schema })
+    }
+  }
+
   const funcs = ctx.funcs.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
     if (func.raw) return parseWat(func.raw)
@@ -652,6 +760,7 @@ export default function compile(ast) {
     ctx.locals = block ? analyzeLocals(body) : new Map()
     ctx.valTypes = new Map()
     ctx.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
+    ctx._localProps = null  // reset per function
     if (block) {
       analyzeValTypes(body)
       analyzeBoxedCaptures(body)
@@ -825,11 +934,33 @@ export default function compile(ast) {
   ctx.boxed = new Map()
   ctx.stack = []
   ctx.sig = { params: [], results: [] }
+  analyzeValTypes(ast)
   const init = emit(ast)
-  if (init?.length) {
+
+  // Auto-boxing: emit boxing code for variables with property assignments
+  const boxInit = []
+  if (ctx.autoBox) {
+    const bt = `${T}box`
+    ctx.locals.set(bt, 'i32')
+    for (const [name, { schemaId, schema }] of ctx.autoBox) {
+      inc('__alloc', '__mkptr')
+      boxInit.push(
+        ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+        // Store inner value (slot 0) — 0 for functions (calls go direct), current val for others
+        ['f64.store', ['local.get', `$${bt}`],
+          funcNames.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+        // Initialize property slots to 0
+        ...schema.slice(1).map((_, i) =>
+          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
+        // Create boxed OBJECT pointer and store back
+        ['global.set', `$${name}`, ['call', '$__mkptr', ['i32.const', 6], ['i32.const', schemaId], ['local.get', `$${bt}`]]])
+    }
+  }
+
+  if (init?.length || boxInit.length) {
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...init)
+    startFn.push(...boxInit, ...init)
     sections.push(startFn)
     sections.push(['start', '$__start'])
   }
@@ -859,6 +990,12 @@ export default function compile(ast) {
     .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
   if (restParamFuncs.length)
     sections.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // Default export alias: export default name → (export "default" (func $name))
+  if (typeof ctx.exports['default'] === 'string') {
+    const alias = ctx.exports['default']
+    sections.push(['export', '"default"', ['func', `$${alias}`]])
+  }
 
   return ['module', ...sections]
 }
@@ -914,6 +1051,14 @@ export const emitter = {
 
   ';': (...args) => args.map(emit).filter(x => x != null),
   '{': (...args) => args.map(emit).filter(x => x != null),
+  ',': (...args) => {
+    const results = args.map(emit).filter(x => x != null)
+    if (results.length === 0) return null
+    if (results.length === 1) return results[0]
+    const last = results[results.length - 1]
+    const t = last.type || 'f64'
+    return typed(['block', ['result', t], ...results.slice(0, -1).map(r => r.type ? ['drop', r] : r), last], t)
+  },
   'let': emitDecl,
   'const': emitDecl,
   'export': () => null,
@@ -1059,6 +1204,55 @@ export const emitter = {
     return ['local.set', `$${name}`, t === 'f64' ? typed(['f64.rem', va, vb], 'f64') : asI32(typed(['f64.rem', va, vb], 'f64'))]
   },
 
+  // Bitwise compound assignments: read-modify-write in i32
+  ...Object.fromEntries([
+    ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
+    ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
+  ].map(([op, fn]) => [op, (name, val) => {
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    if (ctx.boxed?.has(name)) {
+      const c = `$${ctx.boxed.get(name)}`
+      const va = asI32(typed(['f64.load', ['local.get', c]], 'f64')), vb = asI32(emit(val))
+      return ['f64.store', ['local.get', c], asF64(typed([`i32.${fn}`, va, vb], 'i32'))]
+    }
+    if (isGlobal(name)) {
+      const va = asI32(typed(['global.get', `$${name}`], 'f64')), vb = asI32(emit(val))
+      return ['global.set', `$${name}`, asF64(typed([`i32.${fn}`, va, vb], 'i32'))]
+    }
+    const t = ctx.locals.get(name) || 'f64'
+    const va = asI32(typed(['local.get', `$${name}`], t)), vb = asI32(emit(val))
+    const result = typed([`i32.${fn}`, va, vb], 'i32')
+    return ['local.set', `$${name}`, t === 'f64' ? asF64(result) : result]
+  }])),
+
+  // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
+  '||=': (name, val) => {
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    const t = temp()
+    const result = typed(['if', ['result', 'f64'],
+      ['i32.and',
+        ['f64.eq', ['local.tee', `$${t}`, asF64(emit(name))], ['local.get', `$${t}`]],
+        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]],
+      ['then', ['local.get', `$${t}`]],
+      ['else', asF64(emit(val))]], 'f64')
+    if (isGlobal(name)) return ['global.set', `$${name}`, result]
+    const lt = ctx.locals.get(name) || 'f64'
+    return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
+  },
+  '&&=': (name, val) => {
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    const t = temp()
+    const result = typed(['if', ['result', 'f64'],
+      ['i32.and',
+        ['f64.eq', ['local.tee', `$${t}`, asF64(emit(name))], ['local.get', `$${t}`]],
+        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]],
+      ['then', asF64(emit(val))],
+      ['else', ['local.get', `$${t}`]]], 'f64')
+    if (isGlobal(name)) return ['global.set', `$${name}`, result]
+    const lt = ctx.locals.get(name) || 'f64'
+    return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
+  },
+
   // === Increment/Decrement ===
   // Postfix resolved in prepare: i++ → (++i) - 1
 
@@ -1107,14 +1301,16 @@ export const emitter = {
 
   '+': (a, b) => {
     // String concatenation: if either operand is known string, use __str_concat
-    const vtA = typeof a === 'string' ? ctx.valTypes?.get(a) : valTypeOf(a)
-    const vtB = typeof b === 'string' ? ctx.valTypes?.get(b) : valTypeOf(b)
+    const vtA = typeof a === 'string' ? (ctx.valTypes?.get(a) || ctx.globalValTypes?.get(a)) : valTypeOf(a)
+    const vtB = typeof b === 'string' ? (ctx.valTypes?.get(b) || ctx.globalValTypes?.get(b)) : valTypeOf(b)
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       ctx.includes.add('__str_concat'); ctx.includes.add('__to_str')
       ctx.includes.add('__ftoa'); ctx.includes.add('__itoa'); ctx.includes.add('__pow10')
       ctx.includes.add('__mkstr'); ctx.includes.add('__static_str'); ctx.includes.add('__str_byteLen')
       return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
     }
+    if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
+      return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) + litVal(vb))
     if (isLit(vb) && litVal(vb) === 0) return va
@@ -1123,6 +1319,10 @@ export const emitter = {
     return typed(['f64.add', asF64(va), asF64(vb)], 'f64')
   },
   '-': (a, b) => {
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      return b === undefined
+        ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+        : fromI64(['i64.sub', asI64(emit(a)), asI64(emit(b))])
     if (b === undefined) { const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64') }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) - litVal(vb))
@@ -1131,25 +1331,33 @@ export const emitter = {
     return typed(['f64.sub', asF64(va), asF64(vb)], 'f64')
   },
   'u+': a => emit(a),
-  'u-': a => { const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64') },
+  'u-': a => {
+    if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+    const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64')
+  },
   '*': (a, b) => {
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      return fromI64(['i64.mul', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) * litVal(vb))
     if (isLit(vb) && litVal(vb) === 1) return va
     if (isLit(va) && litVal(va) === 1) return vb
-    // x*0 → include x for side effects, then 0. Only skip if x is also a literal.
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
     if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.mul', va, vb], 'i32')
     return typed(['f64.mul', asF64(va), asF64(vb)], 'f64')
   },
   '/': (a, b) => {
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      return fromI64(['i64.div_s', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) / litVal(vb))
     if (isLit(vb) && litVal(vb) === 1) return asF64(va)
     return typed(['f64.div', asF64(va), asF64(vb)], 'f64')
   },
   '%': (a, b) => {
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      return fromI64(['i64.rem_s', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) % litVal(vb))
     return typed(['f64.rem', asF64(va), asF64(vb)], 'f64')
@@ -1254,14 +1462,23 @@ export const emitter = {
 
   '(': a => emit(a),
 
-  // === Bitwise (always i32) ===
+  // === Bitwise (i32 for numbers, i64 for BigInt) ===
 
   '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', asI32(v), typed(['i32.const', -1], 'i32')], 'i32') },
-  '&':   (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) & litVal(vb)) : typed(['i32.and', asI32(va), asI32(vb)], 'i32') },
-  '|':   (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) | litVal(vb)) : typed(['i32.or', asI32(va), asI32(vb)], 'i32') },
-  '^':   (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) ^ litVal(vb)) : typed(['i32.xor', asI32(va), asI32(vb)], 'i32') },
-  '<<':  (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) << litVal(vb)) : typed(['i32.shl', asI32(va), asI32(vb)], 'i32') },
-  '>>':  (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) >> litVal(vb)) : typed(['i32.shr_s', asI32(va), asI32(vb)], 'i32') },
+  ...Object.fromEntries([
+    ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
+  ].map(([op, fn]) => [op, (a, b) => {
+    if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
+      return fromI64([`i64.${fn}`, asI64(emit(a)), asI64(emit(b))])
+    const va = emit(a), vb = emit(b)
+    if (isLit(va) && isLit(vb)) {
+      const la = litVal(va), lb = litVal(vb)
+      if (op === '&') return emitNum(la & lb); if (op === '|') return emitNum(la | lb)
+      if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
+      if (op === '>>') return emitNum(la >> lb)
+    }
+    return typed([`i32.${fn}`, asI32(va), asI32(vb)], 'i32')
+  }])),
   '>>>': (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) >>> litVal(vb)) : typed(['i32.shr_u', asI32(va), asI32(vb)], 'i32') },
 
   // === Control flow ===
@@ -1400,7 +1617,20 @@ export const emitter = {
     // Method call: obj.method(args) → type-aware dispatch
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
-      const vt = typeof obj === 'string' ? ctx.valTypes.get(obj) : valTypeOf(obj)
+
+      // Function property call: fn.prop(args) → direct call to fn$prop
+      if (typeof obj === 'string' && funcNames.has(obj)) {
+        const fname = `${obj}$${method}`
+        if (funcNames.has(fname)) {
+          const func = funcMap.get(fname)
+          const emittedArgs = parsed.normal.map(a => asF64(emit(a)))
+          while (emittedArgs.length < func.sig.params.length)
+            emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+          return typed(['call', `$${fname}`, ...emittedArgs], 'f64')
+        }
+      }
+
+      const vt = typeof obj === 'string' ? (ctx.valTypes.get(obj) || ctx.globalValTypes?.get(obj)) : valTypeOf(obj)
 
       // Helper to call method with arguments (handles spread expansion)
       const callMethod = (objArg, methodEmitter) => {
@@ -1467,6 +1697,15 @@ export const emitter = {
               ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]],  // STRING_SSO
             ['then', callMethod(t, strEmitter)],
             ['else', callMethod(t, genEmitter)]]], 'f64')
+      }
+
+      // Schema property function call: x.prop(args) where prop is a closure in boxed schema
+      if (typeof obj === 'string' && ctx.schema.find && ctx.fn.call && ctx.schema.isBoxed?.(obj)) {
+        const idx = ctx.schema.find(obj, method)
+        if (idx >= 0) {
+          const propRead = typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
+          return ctx.fn.call(propRead, parsed.normal)
+        }
       }
 
       // Generic only
@@ -1546,6 +1785,11 @@ export function emit(node) {
   if (node === false) return typed(['i32.const', 0], 'i32')
   if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
     return typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')
+  if (typeof node === 'bigint') {
+    // Convert to hex string for i64.const — watr expects string for large values
+    const hex = node < 0n ? '-0x' + (-node).toString(16) : '0x' + node.toString(16)
+    return typed(['f64.reinterpret_i64', ['i64.const', hex]], 'f64')
+  }
   if (typeof node === 'number') {
     if (Number.isInteger(node) && node >= -2147483648 && node <= 2147483647)
       return typed(['i32.const', node], 'i32')

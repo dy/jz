@@ -14,6 +14,7 @@ import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
 import { wasi } from './wasi.js'
+import jzify from './src/jzify.js'
 
 /**
  * jz — JS subset → WASM compiler.
@@ -326,6 +327,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.memoryPages) ctx.memoryPages = opts.memoryPages
   if (opts.modules) ctx.importSources = opts.modules
   if (opts.imports) ctx.hostImports = opts.imports
+  if (opts.jzify) ctx.jzify = jzify
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -334,7 +336,13 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  const ast = prepare(parse(code))
+  // Enforce mandatory semicolons when strict: true (default for .jz files)
+  const savedAsi = parse.asi
+  if (opts.strict) parse.asi = null
+  let parsed
+  try { parsed = parse(code) } finally { parse.asi = savedAsi }
+  if (opts.jzify) parsed = jzify(parsed)
+  const ast = prepare(parsed)
   const module = compile(ast)
 
   return opts.wat ? watrPrint(module) : watrCompile(module)

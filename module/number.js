@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, asI64, T, valTypeOf, VAL } from '../src/compile.js'
 import { ctx, inc } from '../src/ctx.js'
 
 const STRING = 4
@@ -407,5 +407,37 @@ export default () => {
     incNum()
     if (Array.isArray(x) && x[0] === 'str') return emit(x)
     return typed(['call', '$__ftoa', asF64(emit(x)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+  }
+
+  // Number(x) — identity for numbers, i64→f64 conversion for BigInt
+  ctx.emit['Number'] = (x) => {
+    if (valTypeOf(x) === VAL.BIGINT)
+      return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
+    return asF64(emit(x))
+  }
+
+  // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64)
+  ctx.emit['BigInt'] = (x) => {
+    if (valTypeOf(x) === VAL.BIGINT) return emit(x)
+    return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
+  }
+
+  // BigInt.asIntN(bits, bigint) — truncate to signed N-bit
+  ctx.emit['BigInt.asIntN'] = (bits, val) => {
+    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    // (val << (64 - bits)) >> (64 - bits)  — arithmetic shift for sign extension
+    const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
+    const t = `${T}bi${ctx.uniq++}`; ctx.locals.set(t, 'i64')
+    return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],
+      ['local.set', `$${t}`, shift],
+      ['i64.shr_s', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')
+  }
+
+  // BigInt.asUintN(bits, bigint) — truncate to unsigned N-bit
+  ctx.emit['BigInt.asUintN'] = (bits, val) => {
+    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    // val & ((1 << bits) - 1)
+    return typed(['f64.reinterpret_i64',
+      ['i64.and', vval, ['i64.sub', ['i64.shl', ['i64.const', 1], ['i64.extend_i32_s', vbits]], ['i64.const', 1]]]], 'f64')
   }
 }
