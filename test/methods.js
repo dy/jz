@@ -140,6 +140,28 @@ test('.join: comma sep', () => {
 
 // === Chained ===
 
+// === .flat ===
+
+test('.flat: nested arrays', () => {
+  is(run(`export let f = () => [[1,2],[3,4],[5]].flat().length`).f(), 5)
+})
+
+test('.flat: mixed', () => {
+  is(run(`export let f = () => { let a = [[10, 20], 30, [40]].flat(); return a[0] + a[1] + a[2] + a[3] }`).f(), 100)
+})
+
+// === .flatMap ===
+
+test('.flatMap: expand', () => {
+  is(run(`export let f = () => [1, 2, 3].flatMap((x) => [x, x * 2]).length`).f(), 6)
+})
+
+test('.flatMap: values', () => {
+  is(run(`export let f = () => { let a = [1, 2].flatMap((x) => [x, x * 10]); return a[0] + a[1] + a[2] + a[3] }`).f(), 33)
+})
+
+// === Chained ===
+
 test('chain: map + reduce', () => {
   is(run(`export let f = () => [1, 2, 3].map((x) => x * x).reduce((s, x) => s + x, 0)`).f(), 14)
 })

@@ -76,13 +76,12 @@ test('optional: ?.prop on valid object', () => {
   is(f(), 42)
 })
 
-test('optional: ?.prop on null returns 0', () => {
-  // null is 0 in jz — ?.prop should return 0
+test('optional: ?.prop on null returns null', () => {
   const { f } = run(`export let f = () => {
     let o = null
     return o?.x
   }`)
-  is(f(), 0)
+  ok(isNaN(f()), '?.prop on null returns null NaN')
 })
 
 test('optional: ?.[i] on valid array', () => {
@@ -93,12 +92,12 @@ test('optional: ?.[i] on valid array', () => {
   is(f(), 20)
 })
 
-test('optional: ?.[i] on null returns 0', () => {
+test('optional: ?.[i] on null returns null', () => {
   const { f } = run(`export let f = () => {
     let a = null
     return a?.[0]
   }`)
-  is(f(), 0)
+  ok(isNaN(f()), '?.[i] on null returns null NaN')
 })
 
 test('optional: ?.[i] on string returns char code', () => {
@@ -125,12 +124,12 @@ test('optional: ?.length on string', () => {
   is(f(), 3)
 })
 
-test('optional: ?.length on null returns 0', () => {
+test('optional: ?.length on null returns null', () => {
   const { f } = run(`export let f = () => {
     let a = null
     return a?.length
   }`)
-  is(f(), 0)
+  ok(isNaN(f()), '?.length on null returns null NaN')
 })
 
 test('optional: ?.[i] evaluates base once', () => {

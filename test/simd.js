@@ -156,6 +156,30 @@ test('Float32Array - type-aware read/write', () => {
   ok(Math.abs(r - 4) < 0.01, `Expected ~4, got ${r}`)
 })
 
+// === TypedArray.from ===
+
+test('Uint8Array.from: basic', () => {
+  is(run(`export let main = () => {
+    let a = Uint8Array.from([65, 66, 67])
+    return a[0] + a[1] + a[2]
+  }`).main(), 198)
+})
+
+test('Int32Array.from: basic', () => {
+  is(run(`export let main = () => {
+    let a = Int32Array.from([10, 20, 30])
+    return a.length
+  }`).main(), 3)
+})
+
+test('Float64Array.from: preserves values', () => {
+  const r = run(`export let main = () => {
+    let a = Float64Array.from([1.5, 2.5, 3.5])
+    return a[0] + a[2]
+  }`).main()
+  ok(Math.abs(r - 5) < 0.01)
+})
+
 // === Uint32Array full range ===
 
 test('Uint32Array - large values (> 2^31)', () => {

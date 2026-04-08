@@ -4,8 +4,8 @@
  * Type=0 (ATOM): aux=atomId, offset=0.
  *
  * Reserved atom IDs (0-15):
- *   0 = null    (reserved for future distinct-null semantics)
- *   1 = undefined (reserved)
+ *   0 = reserved
+ *   1 = null/undefined (type=0, aux=1, offset=0 — the nullish NaN sentinel)
  *   2-15 = reserved
  *
  * User symbols start at ID 16.

@@ -11,12 +11,11 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc } from '../src/ctx.js'
 
 const STRING = 4, STRING_SSO = 5
 
 export default () => {
-  const inc = (...names) => names.forEach(n => ctx.includes.add(n))
   const incConcat = () => inc('__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
@@ -29,6 +28,16 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
     }
     const len = str.length
+    if (!ctx.sharedMemory) {
+      // Own memory: place in static data segment (no runtime allocation)
+      if (!ctx.data) ctx.data = ''
+      while (ctx.data.length % 4 !== 0) ctx.data += '\0'
+      const offset = ctx.data.length
+      ctx.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
+      for (let i = 0; i < len; i++) ctx.data += String.fromCharCode(str.charCodeAt(i))
+      return typed(['call', '$__mkptr', ['i32.const', STRING], ['i32.const', 0], ['i32.const', offset + 4]], 'f64')
+    }
+    // Shared memory: heap-allocate (data segment would collide across modules)
     const t = `${T}str${ctx.uniq++}`
     ctx.locals.set(t, 'i32')
     const body = [
@@ -112,13 +121,13 @@ export default () => {
         (local.set $end (local.get $tmp))))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
 
-  ctx.stdlib['__str_indexof'] = `(func $__str_indexof (param $hay f64) (param $ndl f64) (result i32)
+  ctx.stdlib['__str_indexof'] = `(func $__str_indexof (param $hay f64) (param $ndl f64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
-    (if (i32.eqz (local.get $nlen)) (then (return (i32.const 0))))
+    (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
     (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
-    (local.set $i (i32.const 0))
+    (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
     (block $done (loop $outer
       (br_if $done (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (local.get $nlen))))
       (local.set $match (i32.const 1))
@@ -311,7 +320,7 @@ export default () => {
 
   ctx.stdlib['__str_replace'] = `(func $__str_replace (param $str f64) (param $search f64) (param $repl f64) (result f64)
     (local $idx i32) (local $slen i32)
-    (local.set $idx (call $__str_indexof (local.get $str) (local.get $search)))
+    (local.set $idx (call $__str_indexof (local.get $str) (local.get $search) (i32.const 0)))
     (if (result f64) (i32.lt_s (local.get $idx) (i32.const 0))
       (then (local.get $str))
       (else
@@ -465,15 +474,15 @@ export default () => {
         ['call', '$__str_byteLen', ['local.get', `$${t}`]]]], 'f64')
   }
 
-  ctx.emit['.string:indexOf'] = (str, search) => {
+  ctx.emit['.string:indexOf'] = (str, search, from) => {
     inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), from ? asI32(emit(from)) : ['i32.const', 0]]], 'f64')
   }
 
   ctx.emit['.string:includes'] = (str, search) => {
     inc('__str_indexof')
     return typed(['f64.convert_i32_s',
-      ['i32.ge_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))], ['i32.const', 0]]], 'f64')
+      ['i32.ge_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), ['i32.const', 0]], ['i32.const', 0]]], 'f64')
   }
 
   // Generic (no collision)
@@ -577,6 +586,11 @@ export default () => {
     return typed(['f64.convert_i32_u', ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]], 'f64')
   }
 
+  // String.fromCharCode(code) → 1-char SSO string
+  ctx.emit['String.fromCharCode'] = (code) => {
+    return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], asI32(emit(code))], 'f64')
+  }
+
   // .at(i) → charAt with negative index support
   ctx.emit['.at'] = (str, idx) => {
     const t = `${T}at${ctx.uniq++}`, s = `${T}as${ctx.uniq++}`
@@ -595,7 +609,7 @@ export default () => {
   // .search(str) → indexOf (same as indexOf for string args)
   ctx.emit['.search'] = (str, search) => {
     inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), ['i32.const', 0]]], 'f64')
   }
 
   // .match(str) → [match] array if found, or 0 (null) if not
@@ -608,7 +622,7 @@ export default () => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${q}`, asF64(emit(search))],
-      ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`]]],
+      ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`], ['i32.const', 0]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],  // null
         ['else',

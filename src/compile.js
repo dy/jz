@@ -34,8 +34,10 @@ export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_f64_s', n], '
 /** Compiler temp prefix — PUA character, impossible in user JS source. */
 export const T = '\uE000'
 
-/** Sentinel NaN for "undefined/missing arg" — distinct from JS NaN (0x7FF8000000000000). */
-const UNDEF_NAN = '0x7FF8000000000001'
+/** Null/undefined: one nullish value inside jz. NaN-boxed ATOM (type=0, aux=1, offset=0).
+ *  Distinct from 0, NaN, and all pointers. Triggers default params.
+ *  At the JS boundary, null and undefined preserve their identity for interop. */
+export const NULL_NAN = '0x7FF8000100000000'
 
 // === Constant folding helpers ===
 
@@ -68,8 +70,10 @@ function emitTypeofCmp(a, b, cmpOp) {
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
   if (code === -3) {
-    // 'undefined' → x is 0 (null in jz)
-    return typed(eq ? ['f64.eq', va, ['f64.const', 0]] : ['f64.ne', va, ['f64.const', 0]], 'i32')
+    // 'undefined' → check for null NaN
+    return typed(eq
+      ? ['i64.eq', ['i64.reinterpret_f64', va], ['i64.const', NULL_NAN]]
+      : ['i64.ne', ['i64.reinterpret_f64', va], ['i64.const', NULL_NAN]], 'i32')
   }
   if (code === -4) {
     // 'boolean' → always false (no boolean type in jz)
@@ -120,7 +124,7 @@ function isConst(name) {
 }
 
 /** Allocate a temp local (always f64 for now), returns name without $. */
-function temp() {
+export function temp() {
   const name = `${T}${ctx.uniq++}`
   ctx.locals.set(name, 'f64')
   return name
@@ -262,7 +266,11 @@ export function valTypeOf(expr) {
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
   // Arithmetic expressions produce numbers
-  if (['+', '-', '*', '/', '%', '**', '++', '--', '~', '&', '|', '^', '<<', '>>', '>>>'].includes(op)) return VAL.NUMBER
+  if (['-', '*', '/', '%', '**', '++', '--', '~', '&', '|', '^', '<<', '>>', '>>>'].includes(op)) return VAL.NUMBER
+  if (op === '+') {
+    const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
+    return (ta === VAL.STRING || tb === VAL.STRING) ? VAL.STRING : VAL.NUMBER
+  }
 
   if (op === '()') {
     const callee = args[0]
@@ -271,6 +279,7 @@ export function valTypeOf(expr) {
       if (callee === 'new.Set') return VAL.SET
       if (callee === 'new.Map') return VAL.MAP
       if (callee.startsWith('new.')) return VAL.TYPED
+      if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
     }
     // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
@@ -660,10 +669,11 @@ export default function compile(ast) {
     for (const [pname, defVal] of Object.entries(defaults)) {
       const p = sig.params.find(p => p.name === pname)
       const t = p?.type || 'f64'
+      // Trigger default on any nullish value (NULL_NAN or UNDEF_NAN — both are type-0 ATOMs)
       defaultInits.push(
-        ['if', ['i64.eq',
-          ['i64.reinterpret_f64', typed(['local.get', `$${pname}`], 'f64')],
-          ['i64.const', UNDEF_NAN]],
+        ['if', ['i32.or',
+          ['i64.eq', ['i64.reinterpret_f64', typed(['local.get', `$${pname}`], 'f64')], ['i64.const', NULL_NAN]],
+          ['i64.eq', ['i64.reinterpret_f64', typed(['local.get', `$${pname}`], 'f64')], ['i64.const', '0x7FF8000000000001']]],
           ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
     }
 
@@ -755,16 +765,16 @@ export default function compile(ast) {
             ['if', ['result', 'f64'],
               ['i32.gt_s', ['call', '$__len', ['local.get', argsPtr]], ['i32.const', i]],
               ['then', ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', argsPtr]], ['i32.const', i * 8]]]],
-              ['else', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]])
+              ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]])
         }
       }
 
       // Default params for closures (check sentinel after unpack)
       if (cb.defaults) {
         for (const [pname, defVal] of Object.entries(cb.defaults)) {
-          fn.push(['if', ['i64.eq',
-            ['i64.reinterpret_f64', ['local.get', `$${pname}`]],
-            ['i64.const', UNDEF_NAN]],
+          fn.push(['if', ['i32.or',
+            ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${pname}`]], ['i64.const', NULL_NAN]],
+            ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${pname}`]], ['i64.const', '0x7FF8000000000001']]],
             ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
         }
       }
@@ -787,11 +797,12 @@ export default function compile(ast) {
   }
 
   if (ctx.modules.core) {
-    if (ctx.sharedMemory) sections.push(['import', '"env"', '"memory"', ['memory', 1]])
-    else sections.push(['memory', ['export', '"memory"'], 1])
+    const pages = ctx.memoryPages || 1
+    if (ctx.sharedMemory) sections.push(['import', '"env"', '"memory"', ['memory', pages]])
+    else sections.push(['memory', ['export', '"memory"'], pages])
   }
-  // Static data segment at address 0 (heap starts at 1024, so no conflict)
-  if (ctx.data) sections.push(['data', ['i32.const', 0], `"${ctx.data}"`])
+  // Data segment placeholder — filled after emit (string literals append to ctx.data during emit)
+  const dataIdx = sections.length
   if (ctx.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
 
   // Table for closures
@@ -825,6 +836,18 @@ export default function compile(ast) {
 
   // Insert globals at correct position (after __start may have folded consts)
   sections.splice(globalsIdx, 0, ...[...ctx.globals.values()].map(g => parseWat(g)))
+
+  // Insert data segment (after emit — string literals append to ctx.data during emit)
+  // Skip for shared memory — data at address 0 would overwrite other modules' data
+  if (ctx.data && !ctx.sharedMemory) {
+    let esc = ''
+    for (let i = 0; i < ctx.data.length; i++) {
+      const c = ctx.data.charCodeAt(i)
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += ctx.data[i]
+      else esc += '\\' + c.toString(16).padStart(2, '0')
+    }
+    sections.splice(dataIdx, 0, ['data', ['i32.const', 0], '"' + esc + '"'])
+  }
 
   // Custom section: embed object schemas for JS-side interop
   if (ctx.schema.list.length)
@@ -1083,6 +1106,15 @@ export const emitter = {
   // === Arithmetic (type-preserving) ===
 
   '+': (a, b) => {
+    // String concatenation: if either operand is known string, use __str_concat
+    const vtA = typeof a === 'string' ? ctx.valTypes?.get(a) : valTypeOf(a)
+    const vtB = typeof b === 'string' ? ctx.valTypes?.get(b) : valTypeOf(b)
+    if (vtA === VAL.STRING || vtB === VAL.STRING) {
+      ctx.includes.add('__str_concat'); ctx.includes.add('__to_str')
+      ctx.includes.add('__ftoa'); ctx.includes.add('__itoa'); ctx.includes.add('__pow10')
+      ctx.includes.add('__mkstr'); ctx.includes.add('__static_str'); ctx.includes.add('__str_byteLen')
+      return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
+    }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) + litVal(vb))
     if (isLit(vb) && litVal(vb) === 0) return va
@@ -1194,12 +1226,13 @@ export const emitter = {
   },
 
   // a ?? b: in f64 world null=0, same as || (revisit when null is distinct from 0)
+  // a ?? b: returns b only if a is null (NaN-boxed null), NOT for 0/""/false
   '??': (a, b) => {
     const va = emit(a)
-    if (isLit(va)) return litVal(va) !== 0 ? va : emit(b)
     const t = temp()
     return typed(['if', ['result', 'f64'],
-      ['f64.ne', ['local.tee', `$${t}`, asF64(va)], ['f64.const', 0]],
+      // Check: is a NOT the null NaN?
+      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, asF64(va)]], ['i64.const', NULL_NAN]],
       ['then', ['local.get', `$${t}`]],
       ['else', asF64(emit(b))]], 'f64')
   },
@@ -1458,7 +1491,7 @@ export const emitter = {
         // Pad missing fixed args with sentinel for defaults
         const emittedFixed = fixedArgs.map(a => asF64(emit(a)))
         while (emittedFixed.length < fixedParamCount)
-          emittedFixed.push(typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64'))
+          emittedFixed.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
 
         // Reconstruct with spreads, then take rest args
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -1476,7 +1509,7 @@ export const emitter = {
       // Pad missing args with canonical NaN (triggers default param init)
       const args = parsed.normal.map(a => asF64(emit(a)))
       const expected = func?.sig.params.length || args.length
-      while (args.length < expected) args.push(typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64'))
+      while (args.length < expected) args.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
       return typed(['call', `$${callee}`, ...args], 'f64')
     }
 
@@ -1511,6 +1544,8 @@ export function emit(node) {
   if (node == null) return null
   if (node === true) return typed(['i32.const', 1], 'i32')
   if (node === false) return typed(['i32.const', 0], 'i32')
+  if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
+    return typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')
   if (typeof node === 'number') {
     if (Number.isInteger(node) && node >= -2147483648 && node <= 2147483647)
       return typed(['i32.const', node], 'i32')
@@ -1549,7 +1584,7 @@ export function emit(node) {
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
     const v = args[0]
-    return v == null ? typed(['f64.const', 0], 'f64') : emit(v)
+    return v == null ? typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64') : emit(v)
   }
 
   const handler = ctx.emit[op]

@@ -6,14 +6,13 @@
  *
  * Auto-included by array/object/string modules.
  *
- * @module ptr
+ * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, temp } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 const NAN_PREFIX = 0x7FF8
-const temp = () => { const n = `${T}t${ctx.uniq++}`; ctx.locals.set(n, 'f64'); return n }
 
 export default () => {
   // Memory section auto-enabled: compile.js checks ctx.modules.ptr
@@ -50,13 +49,19 @@ export default () => {
     ctx.stdlib['__reset'] = `(func $__reset
       (i32.store (i32.const 1020) (i32.const 1024)))`
   } else {
-    // Own memory: heap offset in a global
+    // Own memory: heap offset in a global, auto-grow when needed
     ctx.globals.set('__heap', '(global $__heap (mut i32) (i32.const 1024))')
     ctx.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-      (local $ptr i32)
+      (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))
       ;; Align next allocation to 8 bytes
-      (global.set $__heap (i32.and (i32.add (i32.add (global.get $__heap) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      ;; Grow memory if needed (each page = 65536 bytes)
+      (if (i32.gt_u (local.get $next) (i32.mul (memory.size) (i32.const 65536)))
+        (then (if (i32.eq (memory.grow
+          (i32.shr_u (i32.add (i32.sub (local.get $next) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
+          (i32.const -1)) (then (unreachable)))))
+      (global.set $__heap (local.get $next))
       (local.get $ptr))`
     ctx.stdlib['__reset'] = `(func $__reset
       (global.set $__heap (i32.const 1024)))`
@@ -153,7 +158,7 @@ export default () => {
     return typed(['call', '$__hash_get', asF64(emit(obj)), asF64(emit(['str', prop]))], 'f64')
   }
 
-  // Optional chaining: obj?.prop → 0 if obj is 0/null, else obj.prop
+  // Optional chaining: obj?.prop → null if obj is null, else obj.prop
   ctx.emit['?.'] = (obj, prop) => {
     const t = temp()
     const va = asF64(emit(obj))
@@ -188,12 +193,12 @@ export default () => {
       }
     }
     return typed(['if', ['result', 'f64'],
-      ['f64.ne', ['local.tee', `$${t}`, va], ['f64.const', 0]],
+      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, va]], ['i64.const', NULL_NAN]],
       ['then', access],
-      ['else', ['f64.const', 0]]], 'f64')
+      ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }
 
-  // Optional index: arr?.[i] → 0 if arr is 0 (null), else arr[i]
+  // Optional index: arr?.[i] → null if arr is null, else arr[i]
   // Cache base in temp, propagate valType so []'s type dispatch works
   ctx.emit['?.[]'] = (arr, idx) => {
     const t = temp()
@@ -209,9 +214,9 @@ export default () => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['if', ['result', 'f64'],
-        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
+        ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', NULL_NAN]],
         ['then', asF64(ctx.emit['[]'](t, idx))],
-        ['else', ['f64.const', 0]]]], 'f64')
+        ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]], 'f64')
   }
 
   // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number

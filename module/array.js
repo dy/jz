@@ -469,6 +469,66 @@ export default () => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
+  // .flat() → flatten one level of nested arrays
+  ctx.stdlib['__arr_flat'] = `(func $__arr_flat (param $src f64) (result f64)
+    (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
+    (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
+    (local.set $off (call $__ptr_offset (local.get $src)))
+    (local.set $len (call $__len (local.get $src)))
+    ;; First pass: count total elements
+    (local.set $total (i32.const 0)) (local.set $i (i32.const 0))
+    (block $c1 (loop $cl1
+      (br_if $c1 (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
+        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${ARRAY})))
+        (then (local.set $total (i32.add (local.get $total) (call $__len (local.get $elem)))))
+        (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cl1)))
+    ;; Allocate result
+    (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $total) (i32.const 3)))))
+    (i32.store (local.get $dst) (local.get $total))
+    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $total))
+    (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
+    ;; Second pass: copy
+    (local.set $pos (i32.const 0)) (local.set $i (i32.const 0))
+    (block $c2 (loop $cl2
+      (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
+        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${ARRAY})))
+        (then
+          (local.set $subOff (call $__ptr_offset (local.get $elem)))
+          (local.set $subLen (call $__len (local.get $elem)))
+          (local.set $j (i32.const 0))
+          (block $s (loop $sl
+            (br_if $s (i32.ge_s (local.get $j) (local.get $subLen)))
+            (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3)))
+              (f64.load (i32.add (local.get $subOff) (i32.shl (local.get $j) (i32.const 3)))))
+            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
+            (br $sl))))
+        (else
+          (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3))) (local.get $elem))
+          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cl2)))
+    (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $dst)))`
+
+  ctx.emit['.flat'] = (arr) => {
+    ctx.includes.add('__arr_flat')
+    return typed(['call', '$__arr_flat', asF64(emit(arr))], 'f64')
+  }
+
+  // .flatMap(fn) → map then flatten
+  ctx.emit['.flatMap'] = (arr, fn) => {
+    // Desugar: arr.map(fn).flat()
+    const mapped = ctx.emit['.map'](arr, fn)
+    ctx.includes.add('__arr_flat')
+    return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')
+  }
+
   // .join(sep) → concatenate array elements with separator string
   ctx.emit['.join'] = (arr, sep) => {
     for (const n of ['__str_join', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str', '__str_byteLen'])

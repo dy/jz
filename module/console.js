@@ -13,12 +13,11 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc } from '../src/ctx.js'
 
 const STRING = 4, STRING_SSO = 5
 
 export default () => {
-  const inc = (...names) => names.forEach(n => ctx.includes.add(n))
 
   // Import fd_write from WASI
   ctx.imports.push(

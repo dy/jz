@@ -172,6 +172,32 @@ test('mem.Object: unknown schema throws', async () => {
   ok(threw)
 })
 
+// === Null through mem bridge ===
+
+test('mem.Array: null elements preserved', async () => {
+  const r = await run('export let f = (a) => a[0]')
+  const m = jz.mem(r)
+  const ptr = m.Array([null, 1, 2])
+  // null element should be NaN-boxed null, not 0
+  const result = r.instance.exports.f(ptr)
+  ok(isNaN(result), 'null element is NaN-boxed')
+})
+
+// === Shared memory: no data collision ===
+
+test('shared memory: no static string collision', async () => {
+  const memory = new WebAssembly.Memory({ initial: 1 })
+  const a = jz('export let f = () => "hello"', { memory })
+  const aPtr = a.instance.exports.f()
+  const aVal = a.mem.read(aPtr)
+  is(aVal, 'hello')
+
+  // Instantiate B on same memory — should not corrupt A's string
+  const b = jz('export let f = () => "world"', { memory })
+  // Re-read A's pointer — should still be "hello"
+  is(a.mem.read(aPtr), 'hello')
+})
+
 test('mem.read: WASM object → JS object', async () => {
   const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
   const m = jz.mem(r)

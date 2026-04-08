@@ -10,12 +10,11 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc } from '../src/ctx.js'
 
 const STRING = 4
 
 export default () => {
-  const inc = (...names) => names.forEach(n => ctx.includes.add(n))
 
   // __pow10(n: i32) → f64 — compute 10^n via loop
   ctx.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
@@ -298,7 +297,60 @@ export default () => {
       ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
   }
 
-  ctx.emit['Number.parseInt'] = (x) => typed(['f64.trunc', asF64(emit(x))], 'f64')
+  // parseInt(str, radix) — parse string to integer
+  ctx.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
+    (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
+    (local $result f64) (local $digit i32)
+    ;; If input is a number, just truncate
+    (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
+    (local.set $off (call $__ptr_offset (local.get $str)))
+    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $i (i32.const 0))
+    ;; Skip whitespace
+    (block $ws (loop $wsl
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $str) (local.get $i)) (i32.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $wsl)))
+    ;; Sign
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 45)))
+      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 43)))
+      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; 0x prefix → radix 16
+    (if (i32.and (i32.eqz (local.get $radix))
+      (i32.and (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+        (i32.and (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 48))
+          (i32.or (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+            (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 88))))))
+      (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
+    (if (i32.eqz (local.get $radix)) (then (local.set $radix (i32.const 10))))
+    ;; Parse digits
+    (local.set $result (f64.const 0))
+    (block $done (loop $lp
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+      ;; Digit value
+      (local.set $digit (i32.const -1))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 48)))))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 122)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 87)))))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
+      (br_if $done (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix))))
+      (local.set $result (f64.add (f64.mul (local.get $result) (f64.convert_i32_s (local.get $radix))) (f64.convert_i32_s (local.get $digit))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $lp)))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+
+  ctx.emit['Number.parseInt'] = (x, radix) => {
+    inc('__parseInt', '__char_at', '__str_byteLen')
+    return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
+  }
+  ctx.emit['parseInt'] = ctx.emit['Number.parseInt']
   ctx.emit['Number.parseFloat'] = (x) => asF64(emit(x))
 
   // === Instance method emitters ===

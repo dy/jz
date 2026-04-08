@@ -1,12 +1,10 @@
 // Type coercion: i32/f64 by operator, bitwise ops, named constants
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
-// Sentinel NaN for "undefined/missing arg" — matches compile.js UNDEF_NAN
-const _b = new ArrayBuffer(8), _u = new Uint32Array(_b), _f = new Float64Array(_b)
-_u[1] = 0x7FF80000; _u[0] = 1; const UNDEF_NAN = _f[0]
-const coerce = v => v === undefined ? UNDEF_NAN : v
+const { UNDEF_NAN, NULL_NAN } = jz
+const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
 function run(code, opts) {
   const wasm = compile(code, opts)
@@ -99,7 +97,7 @@ test('constant: false', () => {
 })
 
 test('constant: null', () => {
-  is(run('export let f = () => null').f(), 0)
+  ok(isNaN(run('export let f = () => null').f()), 'null is NaN-boxed')
 })
 
 test('constant: NaN', () => {
@@ -126,8 +124,12 @@ test('??: returns left if truthy', () => {
   is(run('export let f = (a, b) => a ?? b').f(5, 10), 5)
 })
 
-test('??: returns right if left is 0', () => {
-  is(run('export let f = (a, b) => a ?? b').f(0, 10), 10)
+test('??: 0 is NOT nullish (returns 0)', () => {
+  is(run('export let f = (a, b) => a ?? b').f(0, 10), 0)
+})
+
+test('??: null IS nullish (returns right)', () => {
+  is(run('export let f = () => null ?? 42').f(), 42)
 })
 
 // === void ===

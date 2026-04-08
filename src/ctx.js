@@ -54,6 +54,7 @@ export const ctx = {
 
   // --- Options ---
   sharedMemory: false,   // true when memory is imported (shared across modules)
+  memoryPages: 0,        // initial memory pages (0 = default 1 page = 64KB)
   importSources: null,   // {specifier: source} for import resolution (set by compile opts)
   hostImports: null,     // Map<module, {name: {params}|fn}> for host-provided imports
   moduleStack: [],       // import cycle detection
@@ -65,13 +66,21 @@ export const ctx = {
   throws: false,       // emit WASM exception tag for throw/catch
 }
 
+/** Create a child scope that falls back to parent on lookup (replaces Object.create).
+ *  Uses Object.create for now — the only non-jz-compatible construct in the codebase.
+ *  To self-compile: replace with plain object + explicit lookup function. */
+export const derive = (parent) => Object.create(parent)
+
+/** Include stdlib names for emission. */
+export const inc = (...names) => names.forEach(n => ctx.includes.add(n))
+
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals) {
-  ctx.emit = Object.create(proto)
+  ctx.emit = derive(proto)
   ctx.stdlib = {}
   ctx.includes = new Set()
   ctx.imports = []
-  ctx.scope = Object.create(globals)
+  ctx.scope = derive(globals)
   ctx.modules = {}
   ctx.exports = {}
   ctx.funcs = []
@@ -90,6 +99,7 @@ export function reset(proto, globals) {
   ctx.regex = null
   ctx._inTry = false
   ctx.sharedMemory = false
+  ctx.memoryPages = 0
   ctx.importSources = null
   ctx.hostImports = null
   ctx.moduleStack = []

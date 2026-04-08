@@ -14,6 +14,44 @@ function run(code) {
 // STRING METHODS
 // ============================================
 
+// === String.fromCharCode ===
+
+test('String.fromCharCode: A', () => {
+  is(run('export let f = () => String.fromCharCode(65).length').f(), 1)
+})
+
+// === + operator on strings ===
+
+test('string +: concat', () => {
+  is(run('export let f = () => ("hello" + " world").length').f(), 11)
+})
+
+test('string +=: append', () => {
+  is(run('export let f = () => { let s = "a"; s = s + "bc"; return s.length }').f(), 3)
+})
+
+// === parseInt ===
+
+test('parseInt: decimal', () => {
+  is(run('export let f = () => parseInt("42")').f(), 42)
+})
+
+test('parseInt: hex 0x', () => {
+  is(run('export let f = () => parseInt("0xff")').f(), 255)
+})
+
+test('parseInt: radix 16', () => {
+  is(run('export let f = () => parseInt("ff", 16)').f(), 255)
+})
+
+test('parseInt: negative', () => {
+  is(run('export let f = () => parseInt("-123")').f(), -123)
+})
+
+test('parseInt: number passthrough', () => {
+  is(run('export let f = () => parseInt(3.14)').f(), 3)
+})
+
 // === .concat ===
 
 test('string: .concat single', () => {

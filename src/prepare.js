@@ -15,7 +15,7 @@
  */
 
 import { parse } from 'subscript/jessie'
-import { ctx, err } from './ctx.js'
+import { ctx, err, derive } from './ctx.js'
 import { T } from './compile.js'
 import * as mods from '../module/index.js'
 
@@ -38,7 +38,8 @@ export default function prepare(node) {
 }
 
 // Named constants → numeric literals
-const CONSTANTS = { 'true': 1, 'false': 0, 'null': 0, 'undefined': 0 }
+export const JZ_NULL = Symbol('null')
+const CONSTANTS = { 'true': 1, 'false': 0, 'null': JZ_NULL, 'undefined': JZ_NULL }
 // NaN/Infinity stay as special f64 values in emit()
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
 
@@ -120,6 +121,7 @@ export const GLOBALS = {
   JSON: 'JSON',
   isNaN: 'number',
   isFinite: 'number',
+  parseInt: 'number',
 }
 
 /** Prepare let/const declaration. */
@@ -132,7 +134,7 @@ function prepDecl(op, ...inits) {
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `${T}d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
       for (let j = 0; j < items.length; j++)
         if (items[j] != null) rest.push(['=', items[j], ['[]', tmp, [, j]]])
@@ -142,7 +144,7 @@ function prepDecl(op, ...inits) {
     // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
     if (Array.isArray(name) && name[0] === '{}') {
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `${T}d${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
       for (const item of items) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
@@ -156,7 +158,7 @@ function prepDecl(op, ...inits) {
       let declName = name
       // Block scope: rename if shadowing an outer declaration
       if (typeof name === 'string' && scopes.length > 0 && isDeclared(name)) {
-        declName = `${name}${T}${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+        declName = `${name}${T}${ctx.uniq++}`
         scopes[scopes.length - 1].set(name, declName)
       } else if (typeof name === 'string' && scopes.length > 0) {
         scopes[scopes.length - 1].set(name, name)
@@ -440,6 +442,19 @@ const handlers = {
       }
     }
     if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
+    // String.fromCharCode → include string module
+    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'String' && callee[2] === 'fromCharCode') {
+      includeModule('core'); includeModule('string')
+      callee = 'String.fromCharCode'
+    }
+    // TypedArray.from → include typedarray module
+    if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'from') {
+      const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
+      if (typedArrays.includes(callee[1])) {
+        includeModule('core'); includeModule('typedarray'); includeModule('array')
+        callee = `${callee[1]}.from`
+      }
+    }
     const preppedArgs = args.filter(a => a != null).map(prep)
     // If any argument is a known top-level function name, include fn module for call_indirect
     for (const a of preppedArgs)
@@ -539,7 +554,7 @@ const handlers = {
       // for (let x of arr) → for (let __i=0; __i<arr.length; __i++) { let x = arr[__i]; body }
       const [, decl, src] = head
       const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
-      const idx = `${T}i${ctx.uniq || 0}`; if (!ctx.uniq) ctx.uniq = 0; ctx.uniq++
+      const idx = `${T}i${ctx.uniq++}`
       const init = ['let', ['=', idx, [, 0]]]
       const cond = ['<', idx, ['.', src, 'length']]
       const step = ['++', idx]
@@ -610,6 +625,7 @@ const handlers = {
 const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json' }
 const MOD_DEPS = {
   number: ['core', 'string'],
+  string: ['core', 'number'],
   array: ['core'],
   object: ['core'],
   symbol: ['core'],
@@ -623,9 +639,9 @@ function includeModule(name) {
   const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
   if (ctx.modules[modName]) return
+  ctx.modules[modName] = true  // guard before deps (prevents circular)
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
   init(ctx)
-  ctx.modules[modName] = true
 }
 
 function defFunc(name, node) {
@@ -716,7 +732,7 @@ function prepareModule(specifier, source) {
 
   // Save caller state
   const savedScope = ctx.scope, savedExports = ctx.exports
-  ctx.scope = Object.create(savedScope)  // inherit parent scope
+  ctx.scope = derive(savedScope)  // inherit parent scope
   ctx.exports = {}
 
   // Parse + prepare imported source (may trigger recursive imports)

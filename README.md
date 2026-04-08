@@ -75,11 +75,11 @@ jz --help
 * typeof: `typeof x === 'string'` (compile-time type checks)
 * Comments: `// foo`, `/* bar */`
 * No `var`, `function`, `this`, `class`, `async`, `eval`, `with`, `arguments`
-* `==` is `===`, `null` is `0`
+* `==` is `===`, `null` is a distinct value (not `0`), `??` works correctly
 
 ## Why?
 
-JS has become complex and with regrets (coercions, hoisting, `this`, classes, precision loss).
+JS has become complex and with regrets (coercions, hoisting, `this`, classes, `null` vs `undefined`, precision loss).
 Ongoing proposals shape language into something unappealing.
 
 _jz_ (javascript zero) – keeps minimal functional JS best practices, drops the rest.
@@ -88,7 +88,7 @@ Initially conceived for bytebeats, inspired by [porf](https://github.com/CanadaH
 ### Principles
 
 * **Compile-time over runtime** — types inferred from usage, no annotations. All dispatch resolved statically. No GC, no runtime checks.
-* **Explicit over implicit** — no coercions, no hoisting, no magic. `==` is strict. `null` is `0`. Code means what it says.
+* **Explicit over implicit** — no coercions, no hoisting, no magic. `==` is strict. `null` is distinct from `0`. `??` works correctly. Code means what it says.
 * **Functional over OOP** — functions are the unit of composition. No `class`, no `this`, no inheritance. Data is plain, behavior is functions.
 * **Valid jz = valid js** — every jz program runs as normal javascript. The subset enforces good style by design — no linter needed.
 * **Uniform f64 representation** — all values are f64. Heap types use [NaN-boxing](https://articlems.com/nan-boxing-in-javascript): arrays, strings, objects are pointers encoded in quiet NaN bits. One convention beats type-specific complexity.
@@ -171,9 +171,37 @@ const { exports, mem } = jz`export let f = () => ${{name: 'jz', count: 3}}.name`
 mem.read(exports.f())                                    // 'jz'
 ```
 
+#### Does it support imports?
+
+Yes — standard ES `import` syntax, bundled at compile time into a single WASM module.
+
+```js
+// Source modules: provide source strings, jz bundles them
+const { exports } = jz(
+  'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
+  { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
+)
+
+// Host functions: import JS functions into WASM
+const { exports } = jz(
+  'import { log } from "host"; export let f = (x) => { log(x); return x }',
+  { imports: { host: { log: console.log } } }
+)
+```
+
+**CLI** resolves imports automatically — relative paths from the filesystem, bare specifiers from `package.json` `"imports"` field:
+
+```sh
+jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
+```
+
+**Browser**: pass resolved sources via `{ modules }`. No filesystem access needed — the host fetches sources and provides them. The compiler stays synchronous and pure.
+
+**How it works**: imported modules are parsed, prepared, and merged into the main module's function table during compilation. The output is always one WASM binary — no multi-module linking, no runtime resolution. Transitive imports work (A imports B which imports C). Circular imports error at compile time.
+
 #### How does everything fit in f64?
 
-All values are IEEE 754 f64. Integers up to 2^53 are exact. Heap types (arrays, strings, objects) use [NaN-boxing](https://sean.cm/a/nan-boxing): a quiet NaN with type + pointer packed in the payload bits. One representation, no type tags, no boxing overhead.
+All values are IEEE 754 f64. Integers up to 2^53 are exact. Heap types (arrays, strings, objects) use [NaN-boxing](https://sean.cm/a/nan-boxing): a quiet NaN with type + pointer packed in the payload bits. `null` is a reserved NaN pattern (distinct from `0` and `NaN`), so `??` and `?.` work correctly. One representation, no type tags, no boxing overhead.
 
 #### How do I run compiled WASM outside the browser?
 
@@ -216,9 +244,9 @@ Not ideal for: DOM manipulation, async I/O, heavy string processing.
 | `async`/`await` | WASM is synchronous. Use host callbacks. |
 | `eval`, `with` | Dynamic scope. Not compilable. |
 | `arguments` | Implicit. Use rest params `...args`. |
-| `for...in`, `for...of` | Use `for` loops with index. |
-| `typeof` (string result) | Returns type code (number), not string. |
-| Implicit coercions | `==` is strict. `null` is `0`. No surprises. |
+| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. |
+| `null` vs `undefined` | One nullish value. No debate. `??` just works. |
+| Implicit coercions | `==` is strict. `null` is distinct from `0`. No surprises. |
 
 #### What's the difference between `jz()` and `compile()`?
 

@@ -8,7 +8,7 @@
  */
 
 import { emit, typed, asF64, T } from '../src/compile.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, inc } from '../src/ctx.js'
 
 // === Parser ===
 
@@ -610,7 +610,6 @@ const patternMinLen = node => {
 // === Module init ===
 
 export default () => {
-  const inc = (...names) => names.forEach(n => ctx.includes.add(n))
 
   ctx.regex = { count: 0, vars: new Map(), compiled: new Map() }
 

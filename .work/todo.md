@@ -217,8 +217,10 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 
 ### Build & tooling
 
-* [ ] make sure static strings are data fields, not mem pointers
-* [ ] Clean source from `this`, `Object.create`
+* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
+* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
+* [ ] Metacircularity: watr compilation — remaining: arr.flat/flatMap ✓, str.indexOf(from) ✓, String.fromCharCode ✓, parseInt ✓, str + concat ✓. Still need: Uint8Array.from, regex .test on strings, fn property assignment (boxing)
+* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
 * [x] console.log/warn/error
 * [x] Date.now, performance.now
 * [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
@@ -226,8 +228,8 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
 * [x] Custom imports — host functions via { imports: { mod: { fn } } }
 * [x] Shared memory — { memory } option, cross-module pointer sharing
-* [ ] Source maps
-* [ ] Memory size configuration
+* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
+* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
 * [x] Template tag
 
 ### Validation & quality

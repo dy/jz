@@ -214,6 +214,41 @@ export default () => {
     }
   }
 
+  // TypedArray.from(arr) — convert regular array to typed array
+  for (const [name, elemType] of Object.entries(ELEM)) {
+    const stride = STRIDE[elemType], store = STORE[elemType]
+    ctx.emit[`${name}.from`] = (src) => {
+      const va = asF64(emit(src))
+      const t = `${T}tf${ctx.uniq++}`, len = `${T}tfl${ctx.uniq++}`, i = `${T}tfi${ctx.uniq++}`, off = `${T}tfo${ctx.uniq++}`
+      ctx.locals.set(t, 'i32'); ctx.locals.set(len, 'i32'); ctx.locals.set(i, 'i32'); ctx.locals.set(off, 'i32')
+      const id = ctx.uniq++
+      const storeExpr = elemType === 7 ? ['f64.store',
+          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
+          ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]
+        : elemType === 6 ? ['f32.store',
+          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
+          ['f32.demote_f64', ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
+        : [store,
+          ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
+          [(elemType & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s',
+            ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
+        ['local.set', `$${len}`, ['call', '$__len', va]],
+        ['local.set', `$${t}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]]]]],
+        ['i32.store', ['local.get', `$${t}`], ['local.get', `$${len}`]],
+        ['i32.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]], ['local.get', `$${len}`]],
+        ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          storeExpr,
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+    }
+  }
+
   // .length handled by ptr.js's __len (reads from memory header [-8:len])
 
   /** Resolve element type for a known TypedArray variable. Returns ELEM id or null. */

@@ -32,6 +32,10 @@ import { wasi } from './wasi.js'
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
 // Sentinel NaN for "undefined/missing arg" (payload=1, distinct from JS NaN payload=0)
 _u32[1] = 0x7FF80000; _u32[0] = 1; const UNDEF_NAN = _f64[0]
+// Null NaN: type=0 (ATOM), aux=1, offset=0 — distinct from 0, NaN, and UNDEF_NAN
+_u32[1] = 0x7FF80001; _u32[0] = 0; const NULL_NAN = _f64[0]
+jz.UNDEF_NAN = UNDEF_NAN
+jz.NULL_NAN = NULL_NAN
 jz.ptr = (type, aux, offset) => {
   _u32[1] = (0x7FF80000 | ((type & 0xF) << 15) | (aux & 0x7FFF)) >>> 0
   _u32[0] = offset >>> 0; return _f64[0]
@@ -81,11 +85,14 @@ jz.mem = (src) => {
     return raw + 8
   }
 
+  // Coerce JS values for WASM memory: null → NULL_NAN, undefined → UNDEF_NAN
+  const memCoerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
+
   const mem = {
     // Array: [-8:len][-4:cap][f64 elems...]
     Array(data) {
       const n = data.length, off = hdr(n, n, n * 8), m = dv()
-      for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, data[i], true)
+      for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
       return jz.ptr(1, 0, off)
     },
 
@@ -120,9 +127,10 @@ jz.mem = (src) => {
       }
       const schema = schemas[sid], n = schema.length, raw = alloc(n * 8), m = dv()
       for (let i = 0; i < n; i++) {
-        let v = obj[schema[i]] ?? 0
+        let v = obj[schema[i]]
         // Auto-wrap JS values to NaN-boxed pointers
-        if (typeof v === 'string') v = mem.String(v)
+        if (v === null || v === undefined) v = memCoerce(v)
+        else if (typeof v === 'string') v = mem.String(v)
         else if (Array.isArray(v)) v = mem.Array(v)
         m.setFloat64(raw + i * 8, v, true)
       }
@@ -132,7 +140,9 @@ jz.mem = (src) => {
     // Read: auto-dispatch by pointer type → JS value
     read(ptr) {
       if (ptr === ptr) return ptr  // regular number passthrough (NaN fails ===)
-      const type = jz.type(ptr), off = jz.offset(ptr)
+      const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
+      if (type === 0 && aux === 1 && off === 0) return null       // NULL_NAN → JS null
+      if (type === 0 && aux === 0 && off === 1) return undefined  // UNDEF_NAN → JS undefined
       if (type === 1) {  // ARRAY
         const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
         for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
@@ -188,7 +198,7 @@ jz.mem = (src) => {
         const cap = m.getInt32(off - 4, true)
         if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
         m.setInt32(off - 8, data.length, true)
-        for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, data[i], true)
+        for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
       } else if (type === 3) {
         const elem = jz.aux(ptr), cap = m.getInt32(off - 4, true)
         const [, stride, , setter] = ELEM_BY_ID[elem]
@@ -200,7 +210,7 @@ jz.mem = (src) => {
         if (!schema) throw Error(`write: unknown schema`)
         for (const key of Object.keys(data)) {
           const i = schema.indexOf(key)
-          if (i >= 0) m.setFloat64(off + i * 8, data[key] ?? 0, true)
+          if (i >= 0) m.setFloat64(off + i * 8, memCoerce(data[key]), true)
         }
       } else {
         throw Error(`write: unsupported type ${type}`)
@@ -232,7 +242,7 @@ jz.mem = (src) => {
  * @returns {object} Wrapped exports
  */
 jz.wrap = (mod, inst) => {
-  const coerce = v => v === undefined ? UNDEF_NAN : v
+  const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
   const restFuncs = new Map()
   const restSecs = WebAssembly.Module.customSections(mod, 'jz:rest')
   if (restSecs.length) {
@@ -313,6 +323,7 @@ jz.compile = (code, opts = {}) => {
   ctx.src = code
 
   if (opts.memory) ctx.sharedMemory = true
+  if (opts.memoryPages) ctx.memoryPages = opts.memoryPages
   if (opts.modules) ctx.importSources = opts.modules
   if (opts.imports) ctx.hostImports = opts.imports
 

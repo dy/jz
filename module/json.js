@@ -9,12 +9,11 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc } from '../src/ctx.js'
 
 const ARRAY = 1, STRING = 4, STRING_SSO = 5, OBJECT = 6, HASH = 7, MAP = 9
 
 export default () => {
-  const inc = (...names) => names.forEach(n => ctx.includes.add(n))
 
   // === JSON.stringify ===
 
