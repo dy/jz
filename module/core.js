@@ -11,6 +11,7 @@
 
 import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, temp } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
+import { initSchema } from './schema.js'
 
 const NAN_PREFIX = 0x7FF8
 
@@ -84,7 +85,15 @@ export default () => {
   ctx.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
     (i32.store (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)) (local.get $len)))`
 
-  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len'])
+  // Alloc header(8) + data(cap*stride), store len+cap, return data offset (past header)
+  ctx.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (local.get $stride)))))
+    (i32.store (local.get $ptr) (local.get $len))
+    (i32.store (i32.add (local.get $ptr) (i32.const 4)) (local.get $cap))
+    (i32.add (local.get $ptr) (i32.const 8)))`
+
+  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len', '__alloc_hdr'])
     ctx.includes.add(name)
 
   // Export allocator
@@ -99,95 +108,80 @@ export default () => {
     raw: '(func (export "_reset") (call $__reset))'
   })
 
+  // === Shared dispatch helpers ===
+
+  /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch. */
+  function emitLengthAccess(va, vt) {
+    // Known array/typed/set/map → direct header read
+    if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
+      return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
+    // Known string → byteLen (handles SSO + heap)
+    if (vt === VAL.STRING)
+      return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
+    // Unknown → runtime dispatch via stdlib (avoids block nesting issues in statement context)
+    ctx.includes.add('__length')
+    return typed(['call', '$__length', va], 'f64')
+  }
+
+  /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
+  function emitPropAccess(va, obj, prop) {
+    const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
+    if (schemaIdx >= 0)
+      return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', schemaIdx * 8]]], 'f64')
+    // HASH (dynamic object) → runtime string-key lookup (fallback for any unresolved property)
+    ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    return typed(['call', '$__hash_get', asF64(va), asF64(emit(['str', prop]))], 'f64')
+  }
+
+  // Runtime .length dispatch as a stdlib function (avoids block nesting issues)
+  ctx.stdlib['__length'] = `(func $__length (param $v f64) (result f64)
+    (local $t i32)
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (result f64) (i32.eq (local.get $t) (i32.const 5))
+      (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
+      (else (if (result f64) (i32.eq (local.get $t) (i32.const 4))
+        (then (f64.convert_i32_s (call $__str_len (local.get $v))))
+        (else (f64.convert_i32_s (call $__len (local.get $v))))))))`
+
   // === Property dispatch (.length, .prop) ===
 
   ctx.emit['.'] = (obj, prop) => {
     // Boxed object: delegate .length and .prop to inner value or schema
     if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
       if (prop === 'length') {
-        // .length → delegate to inner value (slot 0)
         const inner = ctx.schema.emitInner(obj)
         return typed(['f64.convert_i32_s', ['call', '$__len', inner]], 'f64')
       }
-      // Named property → schema lookup (already handles __inner__ offset)
       const idx = ctx.schema.find(obj, prop)
       if (idx >= 0)
         return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
     }
 
-    // .length → monomorphize when type is known, else runtime dispatch
     if (prop === 'length') {
       const vt = typeof obj === 'string' ? ctx.valTypes?.get(obj) : valTypeOf(obj)
-      const va = asF64(emit(obj))
-      // Known array/typed/set/map → direct header read
-      if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
-        return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
-      // Known string → byteLen (handles SSO + heap)
-      if (vt === VAL.STRING)
-        return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
-      // Unknown → runtime dispatch
-      const t = `${T}lt${ctx.uniq++}`
-      ctx.locals.set(t, 'i32')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, ['call', '$__ptr_type', va]],
-        ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 5]],
-          ['then', ['f64.convert_i32_s', ['call', '$__ptr_aux', va]]],
-          ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${t}`], ['i32.const', 4]],
-            ['then', ['f64.convert_i32_s', ['call', '$__str_len', va]]],
-            ['else', ['f64.convert_i32_s', ['call', '$__len', va]]]]]]], 'f64')
+      return emitLengthAccess(asF64(emit(obj)), vt)
     }
 
     // Module-registered property emitter (.size, etc.)
     const propKey = `.${prop}`
     if (ctx.emit[propKey]) return ctx.emit[propKey](obj)
 
-    // Object property → schema lookup (named variable or expression)
-    const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
-    if (schemaIdx >= 0) {
-      const va = emit(obj)
-      return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', schemaIdx * 8]]], 'f64')
-    }
-
-    // HASH (dynamic object) → runtime string-key lookup
-    // Only emit if type is unknown; known non-object types should error at compile time
-    if (typeof obj === 'string') {
-      const vt = ctx.valTypes?.get(obj)
-      if (vt && vt !== 'object') err(`Unknown property: .${prop} on ${vt}`)
-    }
-    ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
-    return typed(['call', '$__hash_get', asF64(emit(obj)), asF64(emit(['str', prop]))], 'f64')
+    return emitPropAccess(emit(obj), obj, prop)
   }
 
   // Optional chaining: obj?.prop → null if obj is null, else obj.prop
   ctx.emit['?.'] = (obj, prop) => {
     const t = temp()
     const va = asF64(emit(obj))
+    const vt = typeof obj === 'string' ? ctx.valTypes?.get(obj) : valTypeOf(obj)
     let access
     if (prop === 'length') {
-      // Type-aware dispatch matching `.length`
-      const vt = typeof obj === 'string' ? ctx.valTypes?.get(obj) : valTypeOf(obj)
-      if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
-        access = ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]
-      else if (vt === VAL.STRING)
-        access = ['f64.convert_i32_s', ['call', '$__str_byteLen', ['local.get', `$${t}`]]]
-      else {
-        // Unknown → runtime dispatch (SSO=5 → aux, heap string=4 → str_len, else → len)
-        const tt = `${T}lt${ctx.uniq++}`
-        ctx.locals.set(tt, 'i32')
-        access = ['block', ['result', 'f64'],
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
-          ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]],
-            ['then', ['f64.convert_i32_s', ['call', '$__ptr_aux', ['local.get', `$${t}`]]]],
-            ['else', ['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 4]],
-              ['then', ['f64.convert_i32_s', ['call', '$__str_len', ['local.get', `$${t}`]]]],
-              ['else', ['f64.convert_i32_s', ['call', '$__len', ['local.get', `$${t}`]]]]]]]]
-      }
+      access = emitLengthAccess(['local.get', `$${t}`], vt)
     } else {
       const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
       if (propIdx >= 0)
         access = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
       else {
-        // HASH fallback for dynamic objects (same as `.` handler)
         ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
         access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
       }
@@ -219,6 +213,19 @@ export default () => {
         ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]], 'f64')
   }
 
+  // Optional call: fn?.(...args) → null if fn is null, else call fn
+  ctx.emit['?.()'] = (callee, ...args) => {
+    const t = temp()
+    const va = asF64(emit(callee))
+    // If nullish → return NULL_NAN, else call via fn.call
+    if (!ctx.fn.call) err('Optional call requires fn module')
+    const callResult = ctx.fn.call(typed(['local.get', `$${t}`], 'f64'), args)
+    return typed(['if', ['result', 'f64'],
+      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, va]], ['i64.const', NULL_NAN]],
+      ['then', asF64(callResult)],
+      ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
+  }
+
   // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
   ctx.emit['typeof'] = (a) => {
     const t = temp()
@@ -229,42 +236,8 @@ export default () => {
       ['else', ['f64.const', -1]]], 'f64') // -1 = plain number
   }
 
-  // === Schema helpers (shared via ctx, used by object module + prepare) ===
-
-  ctx.schema.register = (props) => {
-    const key = props.join(',')
-    const existing = ctx.schema.list.findIndex(s => s.join(',') === key)
-    if (existing >= 0) return existing
-    return ctx.schema.list.push(props) - 1
-  }
-
-  /** Check if variable has a boxed schema (slot 0 = __inner__). */
-  ctx.schema.isBoxed = (varName) => {
-    const id = ctx.schema.vars.get(varName)
-    return id != null && ctx.schema.list[id]?.[0] === '__inner__'
-  }
-
-  /** Emit code to load the inner value (slot 0) of a boxed variable. */
-  ctx.schema.emitInner = (varName) => {
-    return typed(['f64.load', ['call', '$__ptr_offset', asF64(emit(varName))]], 'f64')
-  }
-
-  ctx.schema.find = (varName, prop) => {
-    // Precise: variable has known schema
-    const id = ctx.schema.vars.get(varName)
-    if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
-    // Structural subtyping: scan all schemas, require consistent offset.
-    // This is the mechanism for schema objects passed through function parameters.
-    // Falls through to HASH when no schema has the property.
-    let result = -1
-    for (const s of ctx.schema.list) {
-      const idx = s.indexOf(prop)
-      if (idx < 0) continue
-      if (result >= 0 && result !== idx) err(`Ambiguous property .${prop}: different offset across schemas`)
-      result = idx
-    }
-    return result
-  }
+  // === Schema helpers (centralized in module/schema.js) ===
+  initSchema()
 
   // Low-level pointer helpers callable from jz code
   ctx.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')

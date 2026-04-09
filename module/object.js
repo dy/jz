@@ -60,10 +60,7 @@ export default () => {
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
-      ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-      ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-      ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-      ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
+      ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
     ]
     for (let i = 0; i < n; i++)
       body.push(['f64.store',
@@ -82,17 +79,11 @@ export default () => {
     ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32'); ctx.locals.set(pair, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
-      ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-      ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-      ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-      ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
+      ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
     ]
     for (let i = 0; i < n; i++) {
       body.push(
-        ['local.set', `$${pair}`, ['call', '$__alloc', ['i32.const', 24]]],
-        ['i32.store', ['local.get', `$${pair}`], ['i32.const', 2]],
-        ['i32.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 4]], ['i32.const', 2]],
-        ['local.set', `$${pair}`, ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]],
+        ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${pair}`], emitStringLiteral(schema[i])],
         ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
           ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]],
@@ -159,6 +150,55 @@ export default () => {
     body.push(['local.get', `$${t}`])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
+
+  // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs
+  ctx.emit['Object.fromEntries'] = (arr) => {
+    ctx.includes.add('__hash_new'); ctx.includes.add('__hash_set')
+    ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    const va = asF64(emit(arr))
+    const t = `${T}fe${ctx.uniq++}`, ptr = `${T}fp${ctx.uniq++}`, len = `${T}fl${ctx.uniq++}`
+    const i = `${T}fi${ctx.uniq++}`, pair = `${T}fv${ctx.uniq++}`
+    ctx.locals.set(t, 'f64'); ctx.locals.set(ptr, 'i32'); ctx.locals.set(len, 'i32')
+    ctx.locals.set(i, 'i32'); ctx.locals.set(pair, 'i32')
+    const id = ctx.uniq++
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, ['call', '$__hash_new']],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', va]],
+      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        // Load pair (array of 2): pair = ptr_offset(arr[i])
+        ['local.set', `$${pair}`, ['call', '$__ptr_offset',
+          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
+        // hash_set(result, pair[0], pair[1])
+        ['local.set', `$${t}`, ['call', '$__hash_set', ['local.get', `$${t}`],
+          ['f64.load', ['local.get', `$${pair}`]],
+          ['f64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      ['local.get', `$${t}`]], 'f64')
+  }
+
+  // Object.create(proto) → shallow copy of object (same schema, copied properties)
+  ctx.emit['Object.create'] = (proto) => {
+    const schema = resolveSchema(proto)
+    if (!schema) err('Object.create requires object with known schema')
+    const n = schema.length
+    const schemaId = ctx.schema.register(schema)
+    const t = `${T}oc${ctx.uniq++}`, s = `${T}os${ctx.uniq++}`
+    ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
+    const body = [
+      ['local.set', `$${s}`, asF64(emit(proto))],
+      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', n * 8]]],
+    ]
+    // Copy all properties from proto
+    for (let i = 0; i < n; i++)
+      body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]],
+        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', i * 8]]]])
+    body.push(['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
+    return typed(['block', ['result', 'f64'], ...body], 'f64')
+  }
 }
 
 // --- Helpers ---
@@ -174,32 +214,14 @@ function resolveSchema(obj) {
 }
 
 function emitStringLiteral(str) {
-  if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
-    let packed = 0
-    for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-    return ['call', '$__mkptr', ['i32.const', 5], ['i32.const', str.length], ['i32.const', packed]]
-  }
-  const len = str.length, t = `${T}sl${ctx.uniq++}`
-  ctx.locals.set(t, 'i32')
-  const body = [
-    ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
-    ['i32.store', ['local.get', `$${t}`], ['i32.const', len]],
-    ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
-  ]
-  for (let i = 0; i < len; i++)
-    body.push(['i32.store8', ['i32.add', ['local.get', `$${t}`], ['i32.const', i]], ['i32.const', str.charCodeAt(i)]])
-  body.push(['call', '$__mkptr', ['i32.const', 4], ['i32.const', 0], ['local.get', `$${t}`]])
-  return ['block', ['result', 'f64'], ...body]
+  return emit(['str', str])
 }
 
 function emitStringArray(names) {
   const n = names.length, arr = `${T}sa${ctx.uniq++}`
   ctx.locals.set(arr, 'i32')
   const body = [
-    ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-    ['i32.store', ['local.get', `$${arr}`], ['i32.const', n]],
-    ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', n]],
-    ['local.set', `$${arr}`, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]],
+    ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
   ]
   for (let i = 0; i < n; i++)
     body.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]], emitStringLiteral(names[i])])

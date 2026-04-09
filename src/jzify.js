@@ -53,7 +53,10 @@ function transformScope(node) {
         rest.push(t)
       }
     }
-    const all = [...hoisted, ...rest]
+    // Hoist functions AFTER imports (imports must be processed first for scope resolution)
+    const imports = rest.filter(s => Array.isArray(s) && s[0] === 'import')
+    const nonImports = rest.filter(s => !(Array.isArray(s) && s[0] === 'import'))
+    const all = [...imports, ...hoisted, ...nonImports]
     return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
   }
 
@@ -74,7 +77,9 @@ function transform(node) {
   // Named: function name(params) { body } → const name = (params) => { body }
   if (op === 'function') {
     const [name, params, body] = args
-    const arrow = ['=>', params, transformScope(body)]
+    // Wrap body in {} block (parser gives [';', ...] for function bodies, arrows need ['{}', [';', ...]])
+    const tBody = transformScope(body)
+    const arrow = ['=>', params, Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : tBody]
     if (name) {
       const decl = ['const', ['=', name, arrow]]
       decl._hoisted = true // mark for hoisting
@@ -128,16 +133,25 @@ function transform(node) {
   if (op === '{}') return ['{}', ...args.map(a => transformScope(a) ?? a)]
 
   // --- Export: recurse into exported declaration ---
-  if (op === 'export') return ['export', transform(args[0])]
+  if (op === 'export') {
+    const inner = args[0]
+    // export default function name(...) { body } → const name = arrow + export default name
+    if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
+      const decl = transform(inner[1]) // → ['const', ['=', name, arrow]] with _hoisted
+      return [';', decl, ['export', ['default', inner[1][1]]]]
+    }
+    return ['export', transform(inner)]
+  }
 
   // --- Default recursion ---
   return [op, ...args.map(transform)]
 }
 
 /** Transform switch statement to if/else chain. */
+let swIdx = 0
 function transformSwitch(discriminant, cases) {
   const disc = transform(discriminant)
-  const tmp = `\uE000sw${Math.random().toString(36).slice(2, 6)}`
+  const tmp = `\uE000sw${swIdx++}`
 
   // Collect case/default
   const stmts = [['let', ['=', tmp, disc]]]

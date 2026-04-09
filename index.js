@@ -35,6 +35,8 @@ const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float6
 _u32[1] = 0x7FF80000; _u32[0] = 1; const UNDEF_NAN = _f64[0]
 // Null NaN: type=0 (ATOM), aux=1, offset=0 — distinct from 0, NaN, and UNDEF_NAN
 _u32[1] = 0x7FF80001; _u32[0] = 0; const NULL_NAN = _f64[0]
+// Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
+const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
 jz.UNDEF_NAN = UNDEF_NAN
 jz.NULL_NAN = NULL_NAN
 jz.ptr = (type, aux, offset) => {
@@ -87,7 +89,7 @@ jz.mem = (src) => {
   }
 
   // Coerce JS values for WASM memory: null → NULL_NAN, undefined → UNDEF_NAN
-  const memCoerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
+  const memCoerce = coerce
 
   const mem = {
     // Array: [-8:len][-4:cap][f64 elems...]
@@ -170,6 +172,19 @@ jz.mem = (src) => {
         for (let i = 0; i < keys.length; i++) obj[keys[i]] = this.read(m.getFloat64(off + i * 8, true))
         return obj
       }
+      if (type === 7) {  // HASH (dynamic string-keyed object)
+        const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
+        const obj = {}
+        for (let i = 0, found = 0; i < cap && found < size; i++) {
+          const hash = m.getFloat64(off + i * 24, true)
+          if (hash !== 0) {
+            const key = this.read(m.getFloat64(off + i * 24 + 8, true))
+            obj[key] = this.read(m.getFloat64(off + i * 24 + 16, true))
+            found++
+          }
+        }
+        return obj
+      }
       if (type === 8) {  // SET
         const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
         const set = new Set()
@@ -243,7 +258,7 @@ jz.mem = (src) => {
  * @returns {object} Wrapped exports
  */
 jz.wrap = (mod, inst) => {
-  const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
+  // Use shared coerce (null/undefined → NaN sentinels)
   const restFuncs = new Map()
   const restSecs = WebAssembly.Module.customSections(mod, 'jz:rest')
   if (restSecs.length) {
@@ -339,7 +354,8 @@ jz.compile = (code, opts = {}) => {
   }
 
   // pure: true → strict jz (mandatory ;, no function/var/switch)
-  // default → lenient (ASI allowed, auto-jzify if needed)
+  // default → lenient (ASI: subscript handles `}` before keywords, jz handles `}\n[` ambiguity)
+  if (!opts.pure) code = code.replace(/\}\s*\n(\s*)\[/g, '};\n$1[')
   const savedAsi = parse.asi
   if (opts.pure) parse.asi = null
   let parsed

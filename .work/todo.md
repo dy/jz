@@ -3,7 +3,9 @@
 
 * [x] Static string literals → data segment (own memory); heap-allocate for shared memory
 * [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
-* [ ] Metacircularity: watr compilation — remaining: arr.flat/flatMap ✓, str.indexOf(from) ✓, String.fromCharCode ✓, parseInt ✓, str + concat ✓. Still need: Uint8Array.from, regex .test on strings, fn property assignment (boxing)
+* [x] Metacircularity: watr compilation — 8/8 WAT, 7/8 WASM binary, 1/8 valid (const.js)
+* [ ] Metacircularity: watr WASM validation — 6 files fail: boxed capture i32/f64 mismatch, Uint8Array(arr) constructor
+* [ ] Metacircularity: watr WASM execution — run compiled watr against watr test suite
 * [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
 * [x] console.log/warn/error
 * [x] Date.now, performance.now
@@ -17,6 +19,13 @@
 * [x] Template tag
 * [ ] jzify script converting any JZ
 * [ ] align with Crockford practices
+
+## Phase 14: Internal Parser (Future)
+- Extract minimal jz parser from subscript features
+- jzify uses jessie, pure jz uses internal parser
+- True metacircular bootstrap
+- **Risk**: High, multi-sprint
+
 
 ### Validation & quality
 

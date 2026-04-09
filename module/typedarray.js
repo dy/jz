@@ -197,20 +197,100 @@ function genSimdMap(name, elemType, pattern) {
 
 
 export default () => {
-  // Constructor: new Float64Array(len)
+  // Constructor: new Float64Array(len) or new Uint8Array(buffer, offset, len)
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType]
-    ctx.emit[`new.${name}`] = (lenExpr) => {
+    ctx.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
+      // View on existing buffer: TypedArray(buffer, offset, len) → typed ptr at buffer+offset
+      if (offsetExpr != null && lenExpr2 != null) {
+        const buf = ['call', '$__ptr_offset', asF64(emit(lenExpr))]  // extract i32 offset from f64 ptr
+        const off = asI32(emit(offsetExpr))
+        const len = asI32(emit(lenExpr2))
+        const t = `${T}ta${ctx.uniq++}`
+        ctx.locals.set(t, 'i32')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, ['i32.add', buf, off]],
+          ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 8]], len],
+          ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 4]], len],
+          ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+      }
+      // Single arg: if source is known array type, use .from() conversion
+      if (typeof lenExpr === 'string' && ctx.valTypes?.get(lenExpr) === 'array' && ctx.emit[`${name}.from`])
+        return ctx.emit[`${name}.from`](lenExpr)
+      // Normal: allocate fresh typed array (lenExpr is numeric size)
       const len = asI32(emit(lenExpr))
       const t = `${T}ta${ctx.uniq++}`
       ctx.locals.set(t, 'i32')
-      // Header: [-8:len(i32)][-4:cap(i32)][data...]. aux=elemType only.
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${t}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.mul', len, ['i32.const', stride]]]]],
-        ['i32.store', ['local.get', `$${t}`], len],  // len
-        ['i32.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]], len],  // cap
-        ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]],  // skip header
+        ['local.set', `$${t}`, ['call', '$__alloc_hdr', len, len, ['i32.const', stride]]],
         ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+    }
+  }
+
+  // === ArrayBuffer/DataView — low-level memory for type-punning ===
+  // All values are f64 (NaN-boxed). ArrayBuffer/DataView use Uint8Array ptr (type=3, elemType=1).
+
+  // ArrayBuffer(n) → allocate n bytes, return as Uint8Array pointer
+  ctx.emit['ArrayBuffer'] = (sizeExpr) => {
+    const n = asI32(emit(sizeExpr))
+    const t = `${T}ab${ctx.uniq++}`
+    ctx.locals.set(t, 'i32')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', n, n, ['i32.const', 1]]],
+      ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
+  }
+
+  // DataView(buffer) → passthrough (same f64 pointer)
+  ctx.emit['DataView'] = (bufExpr) => asF64(emit(bufExpr))
+
+  // BigInt64Array(buffer) → reinterpret same memory as Float64Array (elemType=7)
+  ctx.emit['BigInt64Array'] = (bufExpr) => {
+    const va = asF64(emit(bufExpr))
+    return typed(['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', 7],
+      ['call', '$__ptr_offset', va]], 'f64')
+  }
+
+  // .buffer property → return same pointer (ArrayBuffer/DataView share memory)
+  ctx.emit['.buffer'] = (expr) => asF64(emit(expr))
+
+  // DataView set methods: extract i32 offset from f64 ptr, store value
+  const DV_SET = {
+    setInt8: 'i32.store8', setUint8: 'i32.store8',
+    setInt16: 'i32.store16', setUint16: 'i32.store16',
+    setInt32: 'i32.store', setUint32: 'i32.store',
+    setFloat32: 'f32.store', setFloat64: 'f64.store',
+    setBigInt64: 'i64.store', setBigUint64: 'i64.store',
+  }
+  for (const [method, storeOp] of Object.entries(DV_SET)) {
+    ctx.emit[`.${method}`] = (dv, off, val, _le) => {
+      const dvOff = ['call', '$__ptr_offset', asF64(emit(dv))]
+      const addr = ['i32.add', dvOff, asI32(emit(off))]
+      let v = emit(val)
+      if (method.includes('BigInt') || method.includes('BigUint'))
+        v = typed(['i64.reinterpret_f64', asF64(v)], 'i64')
+      else if (method.includes('Float64')) v = asF64(v)
+      else if (method.includes('Float32')) v = typed(['f32.demote_f64', asF64(v)], 'f32')
+      else v = asI32(v)
+      return [storeOp, addr, v]
+    }
+  }
+
+  // DataView get methods: extract i32 offset, load value, return as f64
+  const DV_GET = {
+    getInt8: ['i32.load8_s', 'i32'], getUint8: ['i32.load8_u', 'i32'],
+    getInt16: ['i32.load16_s', 'i32'], getUint16: ['i32.load16_u', 'i32'],
+    getInt32: ['i32.load', 'i32'], getUint32: ['i32.load', 'i32'],
+    getFloat32: ['f32.load', 'f32'], getFloat64: ['f64.load', 'f64'],
+    getBigInt64: ['i64.load', 'i64'], getBigUint64: ['i64.load', 'i64'],
+  }
+  for (const [method, [loadOp, resultType]] of Object.entries(DV_GET)) {
+    ctx.emit[`.${method}`] = (dv, off, _le) => {
+      const addr = ['i32.add', ['call', '$__ptr_offset', asF64(emit(dv))], asI32(emit(off))]
+      const raw = typed([loadOp, addr], resultType)
+      if (resultType === 'f64') return raw
+      if (resultType === 'f32') return typed(['f64.promote_f32', raw], 'f64')
+      if (resultType === 'i64') return typed(['f64.reinterpret_i64', raw], 'f64')
+      return typed(['f64.convert_i32_s', raw], 'f64')
     }
   }
 
@@ -235,10 +315,7 @@ export default () => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
         ['local.set', `$${len}`, ['call', '$__len', va]],
-        ['local.set', `$${t}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]]]]],
-        ['i32.store', ['local.get', `$${t}`], ['local.get', `$${len}`]],
-        ['i32.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]], ['local.get', `$${len}`]],
-        ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]],
+        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['local.get', `$${len}`], ['local.get', `$${len}`], ['i32.const', stride]]],
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
@@ -355,11 +432,7 @@ export default () => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(va)]],
         ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
-        ['local.set', `$${out}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8],
-          ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]]]]],
-        ['i32.store', ['local.get', `$${out}`], ['local.get', `$${len}`]],
-        ['i32.store', ['i32.add', ['local.get', `$${out}`], ['i32.const', 4]], ['local.get', `$${len}`]],
-        ['local.set', `$${out}`, ['i32.add', ['local.get', `$${out}`], ['i32.const', 8]]],
+        ['local.set', `$${out}`, ['call', '$__alloc_hdr', ['local.get', `$${len}`], ['local.get', `$${len}`], ['i32.const', stride]]],
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],

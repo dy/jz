@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate } from './util.js'
+import { evaluate, run } from './util.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
 
@@ -375,4 +375,27 @@ test('Math expressions - combined', async () => {
 
   // Complex expression
   almost(await evaluate('Math.sqrt(Math.pow(3, 2) + Math.pow(4, 2))'), 5, 1e-6)
+})
+
+// ============================================
+// Modulo (%) operator
+// ============================================
+
+test('modulo - f64', async () => {
+  is(await evaluate('10.5 % 3'), 10.5 % 3)
+  is(await evaluate('7.0 % 2.0'), 7.0 % 2.0)
+  is(await evaluate('5.5 % 1.5'), 5.5 % 1.5)
+  is(await evaluate('-7.0 % 3.0'), -7.0 % 3.0)
+})
+
+test('modulo - integer', async () => {
+  is(await evaluate('10 % 3'), 1)
+  is(await evaluate('7 % 2'), 1)
+  is(await evaluate('100 % 10'), 0)
+  is(await evaluate('-7 % 3'), -1)
+})
+
+test('modulo - compound assignment (%=)', () => {
+  is(run('export let f = () => { let x = 10.5; x %= 3; return x }').f(), 10.5 % 3)
+  is(run('export let f = () => { let x = 10; x %= 3; return x }').f(), 1)
 })

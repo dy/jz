@@ -32,14 +32,43 @@ export default (ctx) => {
   ctx.emit['math.SQRT2'] = () => typed(['f64.const', Math.SQRT2], 'f64')
   ctx.emit['math.SQRT1_2'] = () => typed(['f64.const', Math.SQRT1_2], 'f64')
 
+  const T = '\uE000'
+
+  /** Emit array reduce with a WASM binary op (for Math.max(...arr), Math.min(...arr)) */
+  function emitArrayReduce(wasmOp, arrExpr, initVal) {
+    const va = asF64(emit(arrExpr))
+    const acc = `${T}mr${ctx.uniq++}`, ptr = `${T}mp${ctx.uniq++}`, len = `${T}ml${ctx.uniq++}`, i = `${T}mi${ctx.uniq++}`
+    ctx.locals.set(acc, 'f64'); ctx.locals.set(ptr, 'i32'); ctx.locals.set(len, 'i32'); ctx.locals.set(i, 'i32')
+    const id = ctx.uniq++
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${acc}`, ['f64.const', initVal]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', va]],
+      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${acc}`, [wasmOp, ['local.get', `$${acc}`],
+          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      ['local.get', `$${acc}`]], 'f64')
+  }
+
   // Built-in WASM ops
   ctx.emit['math.sqrt'] = a => f('f64.sqrt', a)
   ctx.emit['math.abs'] = a => f('f64.abs', a)
   ctx.emit['math.floor'] = a => f('f64.floor', a)
   ctx.emit['math.ceil'] = a => f('f64.ceil', a)
   ctx.emit['math.trunc'] = a => f('f64.trunc', a)
-  ctx.emit['math.min'] = (a, b) => f2('f64.min', a, b)
-  ctx.emit['math.max'] = (a, b) => f2('f64.max', a, b)
+  ctx.emit['math.min'] = (a, b, ...rest) => {
+    // Spread: Math.min(...arr) — iterate array to find min
+    if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.min', a[1], Infinity)
+    return f2('f64.min', a, b)
+  }
+  ctx.emit['math.max'] = (a, b, ...rest) => {
+    if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.max', a[1], -Infinity)
+    return f2('f64.max', a, b)
+  }
   ctx.emit['math.round'] = a => f('f64.nearest', a)
   ctx.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
 

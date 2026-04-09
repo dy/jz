@@ -16,7 +16,7 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T } from './compile.js'
+import { T, extractParams, collectParamNames } from './compile.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -82,8 +82,12 @@ function prep(node) {
       if (node in CONSTANTS) return [, CONSTANTS[node]]
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (PROHIBITED[node]) err(PROHIBITED[node])
+      // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
+      if (node === 'Boolean' || node === 'Number') { includeModule('core'); includeModule('fn'); return ['=>', 'x', 'x'] }
       const resolved = ctx.scope[node]
       if (resolved?.includes('.')) return resolved
+      // Cross-module import: mangled name (e.g. __util_js$clone)
+      if (resolved && resolved !== node) return resolved
       // Block scope: resolve renames
       if (scopes.length) return resolveScope(node)
     }
@@ -111,7 +115,7 @@ const PROHIBITED = {
   'eval': '`eval` not supported'
 }
 
-// Global namespaces for module auto-import
+// Global namespaces for scope resolution (value = scope alias used in ctx.emit[])
 export const GLOBALS = {
   Math: 'math',
   Number: 'Number',
@@ -122,6 +126,7 @@ export const GLOBALS = {
   isNaN: 'number',
   isFinite: 'number',
   parseInt: 'number',
+  parseFloat: 'number',
   Error: 'Error',
   BigInt: 'BigInt',
   TextEncoder: 'TextEncoder',
@@ -137,16 +142,27 @@ function prepDecl(op, ...inits) {
 
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
+      includeModule('core'); includeModule('array')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
-      for (let j = 0; j < items.length; j++)
-        if (items[j] != null) rest.push(['=', items[j], ['[]', tmp, [, j]]])
+      for (let j = 0; j < items.length; j++) {
+        if (items[j] == null) continue
+        // Default: [a = val] → a = __tmp[j] ?? val
+        if (Array.isArray(items[j]) && items[j][0] === '=' && typeof items[j][1] === 'string')
+          rest.push(['=', items[j][1], ['??', ['[]', tmp, [, j]], prep(items[j][2])]])
+        // Rest: [...a] → a = __tmp.slice(j)
+        else if (Array.isArray(items[j]) && items[j][0] === '...')
+          rest.push(['=', items[j][1], ['()', ['.', tmp, 'slice'], [, j]]])
+        else
+          rest.push(['=', items[j], ['[]', tmp, [, j]]])
+      }
       continue
     }
 
     // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
     if (Array.isArray(name) && name[0] === '{}') {
+      includeModule('core'); includeModule('object'); includeModule('string'); includeModule('collection')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
@@ -156,7 +172,7 @@ function prepDecl(op, ...inits) {
         else if (Array.isArray(item) && item[0] === ':') rest.push(['=', item[2], ['.', tmp, item[1]]])
         // Default: {x = val} → x = tmp.x ?? val (use nullish coalescing)
         else if (Array.isArray(item) && item[0] === '=' && typeof item[1] === 'string')
-          rest.push(['=', item[1], ['??', ['.', tmp, item[1]], item[2]]])
+          rest.push(['=', item[1], ['??', ['.', tmp, item[1]], prep(item[2])]])
       }
       continue
     }
@@ -175,10 +191,14 @@ function prepDecl(op, ...inits) {
         const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
         if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
       }
-      // Track const for reassignment checks
-      if (op === 'const' && typeof declName === 'string') {
-        if (!ctx.consts) ctx.consts = new Set()
-        ctx.consts.add(declName)
+      // Track const for reassignment checks (let shadows const)
+      if (typeof declName === 'string') {
+        if (op === 'const') {
+          if (!ctx.consts) ctx.consts = new Set()
+          ctx.consts.add(declName)
+        } else if (op === 'let' && ctx.consts?.has(declName)) {
+          ctx.consts.delete(declName)
+        }
       }
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
@@ -205,15 +225,33 @@ const handlers = {
   'class': () => err('class not supported: use object literals'),
   'yield': () => err('generators not supported: use loops'),
   'delete': () => err('delete not supported: object shape is fixed'),
-  'in': () => err('`in` not supported: use optional chaining'),
+  'in'(key, obj) { includeModule('core'); includeModule('collection'); includeModule('string'); return ['in', prep(key), prep(obj)] },
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
   ':': () => err('labeled statements not supported'),
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
 
-  // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
+  // Destructuring assignment: [a, ...b] = expr or {x, y} = expr
   '='(lhs, rhs) {
+    // Array destructuring assignment: [a, b, ...rest] = expr (not arr[idx] = val)
+    // Distinguishing: destructuring has ['[]', [',', ...items]] or ['[]', name], index has ['[]', arr, idx]
+    if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 2) {
+      includeModule('core'); includeModule('array')
+      const items = lhs[1]?.[0] === ',' ? lhs[1].slice(1) : [lhs[1]]
+      const normed = prep(rhs)
+      const tmp = `${T}d${ctx.uniq++}`
+      const stmts = [['let', ['=', tmp, normed]]]
+      for (let j = 0; j < items.length; j++) {
+        if (items[j] == null) continue
+        if (Array.isArray(items[j]) && items[j][0] === '...')
+          stmts.push(['=', items[j][1], ['()', ['.', tmp, 'slice'], [, j]]])
+        else
+          stmts.push(['=', items[j], ['[]', tmp, [, j]]])
+      }
+      return prep([';', ...stmts])
+    }
+    // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
       && ctx.funcs.some(f => f.name === lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
       const name = `${lhs[1]}$${lhs[2]}`
@@ -365,7 +403,7 @@ const handlers = {
       // export default arrow → create function named 'default'
       ctx.exports['default'] = true
       if (Array.isArray(val) && val[0] === '=>') {
-        if (defFunc('default', val)) return null
+        if (defFunc('default', prep(val))) return null
       }
       // export default expr → create global 'default'
       ctx.globals.set('default', `(global $default (mut f64) (f64.const 0))`)
@@ -381,12 +419,7 @@ const handlers = {
     depth++
     // Push function scope with param names
     const fnScope = new Map()
-    const rawP = Array.isArray(params) && params[0] === '()' ? params[1] : params
-    const pList = rawP == null ? [] : Array.isArray(rawP) ? (rawP[0] === ',' ? rawP.slice(1) : [rawP]) : [rawP]
-    for (const p of pList) {
-      const name = Array.isArray(p) && p[0] === '=' ? p[1] : Array.isArray(p) && p[0] === '...' ? p[1] : p
-      if (typeof name === 'string') fnScope.set(name, name)
-    }
+    for (const n of collectParamNames(extractParams(params))) fnScope.set(n, n)
     scopes.push(fnScope)
     const result = ['=>', params, prep(body)]
     scopes.pop()
@@ -412,6 +445,7 @@ const handlers = {
   // Optional chaining / typeof — need ptr module
   '?.'(obj, prop) { includeModule('core'); includeModule('string'); includeModule('collection'); return ['?.', prep(obj), prop] },
   '?.[]'(obj, idx) { includeModule('core'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
+  '?.()'(callee, ...args) { includeModule('core'); return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
   'typeof'(a) { includeModule('core'); return ['typeof', prep(a)] },
 
   // Unary +/- disambiguation
@@ -429,8 +463,17 @@ const handlers = {
 
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
   // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
-  '++'(a, _post) { const n = prep(a); return _post !== undefined ? ['-', ['++', n], [, 1]] : ['++', n] },
-  '--'(a, _post) { const n = prep(a); return _post !== undefined ? ['+', ['--', n], [, 1]] : ['--', n] },
+  // Property increment: obj.prop++ → obj.prop = obj.prop + 1
+  '++'(a, _post) {
+    const n = prep(a)
+    if (Array.isArray(n) && (n[0] === '.' || n[0] === '[]')) return ['=', n, ['+', n, [, 1]]]
+    return _post !== undefined ? ['-', ['++', n], [, 1]] : ['++', n]
+  },
+  '--'(a, _post) {
+    const n = prep(a)
+    if (Array.isArray(n) && (n[0] === '.' || n[0] === '[]')) return ['=', n, ['-', n, [, 1]]]
+    return _post !== undefined ? ['+', ['--', n], [, 1]] : ['--', n]
+  },
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
   '//'(pattern, flags) {
@@ -443,11 +486,33 @@ const handlers = {
 
   // Function call or grouping parens
   '()'(callee, ...args) {
-    // Grouping parens: (expr) with no args, callee is an expression not a name
-    if (!args.length && typeof callee !== 'string') return prep(callee)
+    // Grouping parens: (expr) with no args, callee is a non-callable expression
+    // But (arrow)() is a call, not grouping — detect IIFE pattern
+    // Don't treat method calls (callee[0] === '.') as grouping — they need full '()' processing
+    const hasRealArgs = args.some(a => a != null)
+    if (!hasRealArgs && typeof callee !== 'string'
+      && !(Array.isArray(callee) && callee[0] === '.')) {
+      // (callable)() — IIFE: callee is ['()', ...] or ['=>', ...]
+      if (Array.isArray(callee) && (callee[0] === '()' || callee[0] === '=>')) {
+        const c = prep(callee)
+        includeModule('core'); includeModule('fn')
+        return ['()', c]
+      }
+      return prep(callee)
+    }
 
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
+      // TypedArray/Set/Map constructor without new (jzify strips new) → route through new handler
+      const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Set','Map']
+      if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
+      // ArrayBuffer/DataView/BigInt64Array — auto-include typedarray, emit directly
+      if (callee === 'ArrayBuffer' || callee === 'DataView' || callee === 'BigInt64Array' || callee === 'BigUint64Array') {
+        includeModule('core'); includeModule('typedarray')
+        return ['()', callee, ...args.filter(a => a != null).map(prep)]
+      }
+      // Global functions that need their module loaded
+      if (callee === 'parseFloat' || callee === 'parseInt') { includeModule('number') }
       const resolved = ctx.scope[callee]
       if (resolved?.includes('.')) callee = resolved
       // Bundled import: resolved name is a known function → use as callee directly
@@ -470,7 +535,7 @@ const handlers = {
         callee = `${obj}.${prop}`
       } else {
         const mod = ctx.scope[obj]
-        if (typeof obj === 'string' && mod && !mod.includes('.'))
+        if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
           callee = (includeModule(mod), mod + '.' + prop)
         else
           callee = prep(callee)  // prep method callee (triggers . handler → module loading)
@@ -484,7 +549,7 @@ const handlers = {
       }
     }
     if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
-    if (callee === 'Number') { includeModule('number') }
+    if (callee === 'Number' || callee === 'Boolean') { includeModule('number') }
     if (callee === 'TextEncoder' || callee === 'TextDecoder') { includeModule('core'); includeModule('string') }
     if (callee === 'Error') { includeModule('core'); includeModule('string') }
     if (callee === 'BigInt') { includeModule('number') }
@@ -513,6 +578,10 @@ const handlers = {
       if (typeof a === 'string' && ctx.funcs.some(f => f.name === a))
         { includeModule('core'); includeModule('fn'); break }
     const result = ['()', callee, ...preppedArgs]
+
+    // Object.fromEntries → needs collection + string modules for HASH
+    if (callee === 'Object.fromEntries') { includeModule('collection'); includeModule('string') }
+    if (callee === 'Object.keys' || callee === 'Object.entries') { includeModule('string') }
 
     // Object.assign(target, ...sources): merge source schemas into target
     if (callee === 'Object.assign' && ctx.schema.register) {
@@ -569,7 +638,7 @@ const handlers = {
   // Object literal - flatten comma, expand shorthand
   '{}'(inner) {
     // Detect block body vs object literal
-    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch'].includes(inner[0])) {
+    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch', 'throw', 'try', 'catch', '=', '+=', '-=', '*=', '/=', '%=', '++', '--'].includes(inner[0])) {
       // Block body: push block scope for let/const shadowing
       scopes.push(new Map())
       const result = ['{}', prep(inner)]
@@ -605,7 +674,7 @@ const handlers = {
     } else if (Array.isArray(head) && head[0] === 'of') {
       // for (let x of arr) → for (let __i=0; __i<arr.length; __i++) { let x = arr[__i]; body }
       const [, decl, src] = head
-      const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
+      const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
       const idx = `${T}i${ctx.uniq++}`
       const init = ['let', ['=', idx, [, 0]]]
       const cond = ['<', idx, ['.', src, 'length']]
@@ -613,23 +682,28 @@ const handlers = {
       const inner = [';', ['let', ['=', varName, ['[]', src, idx]]], body]
       r = prep(['for', [';', init, cond, step], inner])
     } else if (Array.isArray(head) && head[0] === 'in') {
-      // for (let k in obj) → unroll at compile time with string keys
+      // for (let k in obj) → unroll at compile time when schema known, else HASH runtime iteration
       const [, decl, src] = head
       const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
       const sid = typeof src === 'string' && ctx.schema.vars.get(src)
-      if (sid == null) err(`for...in requires a known object schema — declare the shape first`)
-      const keys = ctx.schema.list[sid]
-      if (!keys || !keys.length) { scopes.pop(); return null }
-      includeModule('core'); includeModule('string')
-      // Unroll: for each key, bind k as string, execute body
-      const stmts = []
-      for (let i = 0; i < keys.length; i++) {
-        stmts.push(i === 0
-          ? ['let', ['=', varName, [, keys[i]]]]  // string literal
-          : ['=', varName, [, keys[i]]])
-        stmts.push(body)
+      if (sid != null) {
+        // Known schema → compile-time unrolling with string keys
+        const keys = ctx.schema.list[sid]
+        if (!keys || !keys.length) { scopes.pop(); return null }
+        includeModule('core'); includeModule('string')
+        const stmts = []
+        for (let i = 0; i < keys.length; i++) {
+          stmts.push(i === 0
+            ? ['let', ['=', varName, [, keys[i]]]]
+            : ['=', varName, [, keys[i]]])
+          stmts.push(body)
+        }
+        r = prep([';', ...stmts])
+      } else {
+        // Dynamic object → HASH runtime iteration
+        includeModule('core'); includeModule('string'); includeModule('collection')
+        r = ['for-in', varName, prep(src), prep(body)]
       }
-      r = prep([';', ...stmts])
     } else {
       r = ['for', prep(head), prep(body)]
     }
@@ -640,7 +714,8 @@ const handlers = {
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     const mod = ctx.scope[obj]
-    if (typeof obj === 'string' && mod && !mod.includes('.'))
+    // Only treat as module namespace if it's a known built-in module (not a mangled import name)
+    if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
       return includeModule(mod), mod + '.' + prop
     includeModule('core')
     includeModule('object')
@@ -654,6 +729,9 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
+    // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
+    if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
+      ctorArgs = ctorArgs[0].slice(1)
 
     // TypedArray constructors
     const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
@@ -669,6 +747,8 @@ const handlers = {
 
     const mod = ctx.scope[name]
     if (typeof name === 'string' && mod && !mod.includes('.')) includeModule(mod)
+    // Unknown constructor: treat as function call (jzify already strips new for known safe ones)
+    if (typeof name === 'string') return ['()', name, ...ctorArgs.map(prep)]
     return ['new', prep(ctor), ...args.map(prep)]
   }
 }
@@ -700,30 +780,52 @@ function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   // Only extract top-level functions, not nested (closures stay as values)
   if (depth > 0) return false
-  const [, rawParams, body] = node
-  let p = rawParams
-  if (Array.isArray(p) && p[0] === '()') p = p[1]
-  const raw = Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : p ? [p] : []
+  let [, rawParams, body] = node
+  const raw = extractParams(rawParams)
 
   // Extract param names and defaults: 'x' or ['=', 'x', default] or ['...', 'args']
-  const params = [], defaults = {}, hasRest = []
+  // Also desugar destructured params: ([a, b], ctx) → (__p0, ctx) + let [a, b] = __p0
+  const params = [], defaults = {}, hasRest = [], bodyPrefix = []
   for (const r of raw) {
     if (Array.isArray(r) && r[0] === '...') {
       // Rest param: ['...', 'name'] → array parameter
       hasRest.push(r[1])
       params.push({ name: r[1], type: 'f64', rest: true })
     } else if (Array.isArray(r) && r[0] === '=') {
-      params.push({ name: r[1], type: 'f64' })
-      const defVal = prep(r[2])
-      defaults[r[1]] = defVal
-      // Object literal default → register schema for param (explicit shape declaration)
-      if (Array.isArray(defVal) && defVal[0] === '{}' && defVal.length > 1 && ctx.schema.register) {
-        const props = defVal.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-        if (props.length) ctx.schema.vars.set(r[1], ctx.schema.register(props))
+      // Default: could be destructured default like {x=1, y=2} = opts
+      if (typeof r[1] !== 'string') {
+        const tmp = `${T}p${ctx.uniq++}`
+        params.push({ name: tmp, type: 'f64' })
+        defaults[tmp] = prep(r[2])
+        bodyPrefix.push(['let', ['=', r[1], tmp]])
+      } else {
+        params.push({ name: r[1], type: 'f64' })
+        const defVal = prep(r[2])
+        defaults[r[1]] = defVal
+        if (Array.isArray(defVal) && defVal[0] === '{}' && defVal.length > 1 && ctx.schema.register) {
+          const props = defVal.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+          if (props.length) ctx.schema.vars.set(r[1], ctx.schema.register(props))
+        }
       }
+    } else if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
+      // Destructured param: ([a, b], ctx) → (__p, ctx) + let [a, b] = __p
+      const tmp = `${T}p${ctx.uniq++}`
+      params.push({ name: tmp, type: 'f64' })
+      bodyPrefix.push(['let', ['=', r, tmp]])
     } else {
       params.push({ name: r, type: 'f64' })
     }
+  }
+
+  // Prepend destructuring to body (body is already prepped, so prefix needs prep too)
+  if (bodyPrefix.length) {
+    const preppedPrefix = bodyPrefix.map(prep).filter(x => x != null)
+    if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';')
+      body = ['{}', [';', ...preppedPrefix, ...body[1].slice(1)]]
+    else if (Array.isArray(body) && body[0] === '{}')
+      body = ['{}', [';', ...preppedPrefix, body[1]]]
+    else
+      body = ['{}', [';', ...preppedPrefix, ['return', body]]]
   }
 
   const sig = { params, results: detectResults(body) }
@@ -739,8 +841,8 @@ const MAX_MULTI = 8
 
 /** Detect return arity from function body. */
 function detectResults(body) {
-  // Expression body: [e1, e2, ...] → multi-return if ≤ threshold
-  if (Array.isArray(body) && body[0] === '[' && body.length > 2) {
+  // Expression body: [e1, e2, ...] → multi-return if ≤ threshold and no spreads
+  if (Array.isArray(body) && body[0] === '[' && body.length > 2 && !body.some(e => Array.isArray(e) && e[0] === '...')) {
     const n = body.length - 1
     if (n <= MAX_MULTI) return Array(n).fill('f64')
   }
@@ -761,7 +863,10 @@ function collectReturns(node, out) {
   if (!Array.isArray(node)) return
   if (node[0] === 'return') {
     const val = node[1]
-    out.push(Array.isArray(val) && val[0] === '[' && val.length > 2 ? val.length - 1 : 1)
+    // Array return: count elements, but only if no spreads (spreads → runtime array, not multi-value)
+    if (Array.isArray(val) && val[0] === '[' && val.length > 2 && !val.some(e => Array.isArray(e) && e[0] === '...'))
+      out.push(val.length - 1)
+    else out.push(1)
     return
   }
   for (let i = 1; i < node.length; i++) collectReturns(node[i], out)
@@ -784,6 +889,7 @@ function prepareModule(specifier, source) {
 
   // Save caller state
   const savedScope = ctx.scope, savedExports = ctx.exports
+  const savedFuncCount = ctx.funcs.length  // track new funcs from this module
   ctx.scope = derive(savedScope)  // inherit parent scope
   ctx.exports = {}
 
@@ -835,6 +941,40 @@ function prepareModule(specifier, source) {
         ctx.globals.set(mangled, wat)
         if (ctx.userGlobals.has(alias)) { ctx.userGlobals.delete(alias); ctx.userGlobals.add(mangled) }
       }
+    }
+  }
+
+  // Rename ALL non-exported functions created during this module's prep
+  // (fn property assignments like f32.parse, internal helpers like cleanInt)
+  for (let i = savedFuncCount; i < ctx.funcs.length; i++) {
+    const func = ctx.funcs[i]
+    if (func.raw || func.name.startsWith(prefix + '$')) continue
+    // Skip functions from sub-imports (already prefixed with another module's prefix)
+    if (func.name.includes('__') && func.name.includes('$')) continue
+    const mangled = `${prefix}$${func.name}`
+    moduleExports.set(func.name, mangled)
+    func.name = mangled
+  }
+
+  // Rename references in function bodies — walk ALL functions created during this module's prep
+  if (moduleExports.size) {
+    const walk = (node, skip) => {
+      if (!Array.isArray(node)) return typeof node === 'string' && !skip?.has(node) && moduleExports.has(node) ? moduleExports.get(node) : node
+      if (node[0] === 'str' || node[0] == null || node[0] === '`' || node[0] === '//') return node
+      if (node[0] === ':') { node[2] = walk(node[2], skip); return node }
+      if (node[0] === '=>') {
+        node[2] = walk(node[2], collectParamNames(extractParams(node[1]), new Set(skip)))
+        return node
+      }
+      for (let j = 0; j < node.length; j++) node[j] = walk(node[j], skip)
+      return node
+    }
+    for (let i = savedFuncCount; i < ctx.funcs.length; i++) {
+      const func = ctx.funcs[i]
+      if (!func.body) continue
+      const funcParams = new Set(func.sig?.params?.map(p => p.name) || [])
+      walk(func.body, funcParams)
+      if (func.defaults) for (const [k, v] of Object.entries(func.defaults)) func.defaults[k] = walk(v, funcParams)
     }
   }
 

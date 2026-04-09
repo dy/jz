@@ -352,6 +352,13 @@ export default () => {
   }
   ctx.emit['parseInt'] = ctx.emit['Number.parseInt']
   ctx.emit['Number.parseFloat'] = (x) => asF64(emit(x))
+  ctx.emit['parseFloat'] = ctx.emit['Number.parseFloat']
+
+  // Boolean(x) → truthiness (non-zero → 1, zero → 0)
+  ctx.emit['Boolean'] = (x) => {
+    const v = asF64(emit(x))
+    return typed(['if', ['result', 'f64'], ['f64.ne', v, ['f64.const', 0]], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
+  }
 
   // === Instance method emitters ===
 

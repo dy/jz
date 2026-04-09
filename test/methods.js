@@ -87,7 +87,7 @@ test('.find: found', () => {
 })
 
 test('.find: not found', () => {
-  is(run(`export let f = () => [1, 2, 3].find((x) => x > 10)`).f(), 0)
+  ok(Number.isNaN(run(`export let f = () => [1, 2, 3].find((x) => x > 10)`).f()))
 })
 
 // === .indexOf ===

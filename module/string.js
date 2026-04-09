@@ -177,7 +177,7 @@ export default () => {
       (br $loop)))
     (i32.const 1))`
 
-  ctx.stdlib['__str_upper'] = `(func $__str_upper (param $ptr f64) (result f64)
+  ctx.stdlib['__str_case'] = `(func $__str_case (param $ptr f64) (param $lo i32) (param $hi i32) (param $delta i32) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $c i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.eqz (local.get $len))
@@ -189,27 +189,8 @@ export default () => {
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $c (call $__char_at (local.get $ptr) (local.get $i)))
-      (if (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122)))
-        (then (local.set $c (i32.sub (local.get $c) (i32.const 32)))))
-      (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
-
-  ctx.stdlib['__str_lower'] = `(func $__str_lower (param $ptr f64) (result f64)
-    (local $len i32) (local $off i32) (local $i i32) (local $c i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
-    (if (i32.eqz (local.get $len))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
-    (i32.store (local.get $off) (local.get $len))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $i (i32.const 0))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (local.get $ptr) (local.get $i)))
-      (if (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
-        (then (local.set $c (i32.add (local.get $c) (i32.const 32)))))
+      (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
+        (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
       (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
@@ -423,8 +404,9 @@ export default () => {
       (br $loop)))
     (local.get $result))`
 
-  ctx.stdlib['__str_padStart'] = `(func $__str_padStart (param $str f64) (param $target i32) (param $pad f64) (result f64)
+  ctx.stdlib['__str_pad'] = `(func $__str_pad (param $str f64) (param $target i32) (param $pad f64) (param $before i32) (result f64)
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
+    (local $str_off i32) (local $pad_off i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (local.get $str))))
@@ -433,43 +415,19 @@ export default () => {
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $target))))
     (i32.store (local.get $off) (local.get $target))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $i (i32.const 0))
-    (block $d1 (loop $l1
-      (br_if $d1 (i32.ge_s (local.get $i) (local.get $fill)))
-      (i32.store8 (i32.add (local.get $off) (local.get $i))
-        (call $__char_at (local.get $pad) (i32.rem_u (local.get $i) (local.get $plen))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l1)))
-    (local.set $i (i32.const 0))
-    (block $d2 (loop $l2
-      (br_if $d2 (i32.ge_s (local.get $i) (local.get $slen)))
-      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $fill) (local.get $i)))
-        (call $__char_at (local.get $str) (local.get $i)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l2)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
-
-  ctx.stdlib['__str_padEnd'] = `(func $__str_padEnd (param $str f64) (param $target i32) (param $pad f64) (result f64)
-    (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
-    (if (i32.ge_s (local.get $slen) (local.get $target))
-      (then (return (local.get $str))))
-    (local.set $plen (call $__str_byteLen (local.get $pad)))
-    (local.set $fill (i32.sub (local.get $target) (local.get $slen)))
-    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $target))))
-    (i32.store (local.get $off) (local.get $target))
-    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (local.set $str_off (select (local.get $fill) (i32.const 0) (local.get $before)))
+    (local.set $pad_off (select (i32.const 0) (local.get $slen) (local.get $before)))
     (local.set $i (i32.const 0))
     (block $d1 (loop $l1
       (br_if $d1 (i32.ge_s (local.get $i) (local.get $slen)))
-      (i32.store8 (i32.add (local.get $off) (local.get $i))
+      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $str_off) (local.get $i)))
         (call $__char_at (local.get $str) (local.get $i)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l1)))
     (local.set $i (i32.const 0))
     (block $d2 (loop $l2
       (br_if $d2 (i32.ge_s (local.get $i) (local.get $fill)))
-      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $slen) (local.get $i)))
+      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $pad_off) (local.get $i)))
         (call $__char_at (local.get $pad) (i32.rem_u (local.get $i) (local.get $plen))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
@@ -525,13 +483,13 @@ export default () => {
   }
 
   ctx.emit['.toUpperCase'] = (str) => {
-    inc('__str_upper')
-    return typed(['call', '$__str_upper', asF64(emit(str))], 'f64')
+    inc('__str_case')
+    return typed(['call', '$__str_case', asF64(emit(str)), ['i32.const', 97], ['i32.const', 122], ['i32.const', -32]], 'f64')
   }
 
   ctx.emit['.toLowerCase'] = (str) => {
-    inc('__str_lower')
-    return typed(['call', '$__str_lower', asF64(emit(str))], 'f64')
+    inc('__str_case')
+    return typed(['call', '$__str_case', asF64(emit(str)), ['i32.const', 65], ['i32.const', 90], ['i32.const', 32]], 'f64')
   }
 
   ctx.emit['.trim'] = (str) => {
@@ -582,17 +540,17 @@ export default () => {
   }
 
   ctx.emit['.padStart'] = (str, len, pad) => {
-    inc('__str_padStart')
+    inc('__str_pad')
     const vpad = pad != null ? asF64(emit(pad))
       : typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
-    return typed(['call', '$__str_padStart', asF64(emit(str)), asI32(emit(len)), vpad], 'f64')
+    return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
   }
 
   ctx.emit['.padEnd'] = (str, len, pad) => {
-    inc('__str_padEnd')
+    inc('__str_pad')
     const vpad = pad != null ? asF64(emit(pad))
       : typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
-    return typed(['call', '$__str_padEnd', asF64(emit(str)), asI32(emit(len)), vpad], 'f64')
+    return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
   }
 
   // .charAt(i) → 1-char string from char code at index i

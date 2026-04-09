@@ -31,7 +31,7 @@ test('prohibited: await', () => throws('export let f = async () => await x', 'as
 test('prohibited: class', () => throws('class Foo {}', 'class', 'class should error'))
 test('prohibited: yield', () => throws('function* f() { yield 1 }', 'generator', 'yield should error'))
 test('prohibited: delete', () => throws('delete obj.x', 'delete', 'delete should error'))
-test('prohibited: in', () => throws('"x" in obj', 'in', 'in should error'))
+// 'in' operator now supported for HASH key existence checks
 test('prohibited: instanceof', () => throws('x instanceof Array', 'instanceof', 'instanceof should error'))
 test('prohibited: with', () => throws('with (obj) {}', 'with', 'with should error'))
 test('prohibited: var', () => throws('var x = 1', 'var', 'var should error'))

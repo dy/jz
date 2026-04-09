@@ -8,25 +8,23 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, NULL_NAN } from '../src/compile.js'
 import { ctx, inc } from '../src/ctx.js'
 
 const ARRAY = 1, STRING = 4, STRING_SSO = 5
 
-/** Allocate array: 8-byte header (len+cap) + n*8 data. Returns offset to data start. */
+/** Allocate array: 8-byte header (len+cap) + n*8 data via __alloc_hdr. Returns offset to data start. */
 function allocArray(len, cap) {
   if (cap == null) cap = len
   const t = `${T}arr${ctx.uniq++}`
   ctx.locals.set(t, 'i32')
-  // Alloc header(8) + data(cap*8), store len+cap, return data start
   return {
     local: t,
     setup: [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', (typeof cap === 'number' ? cap : 0) * 8 + 8]]],
-      ['i32.store', ['local.get', `$${t}`], typeof len === 'number' ? ['i32.const', len] : len],  // len
-      ['i32.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]],
-        typeof cap === 'number' ? ['i32.const', cap] : cap],  // cap
-      ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]],  // skip header
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr',
+        typeof len === 'number' ? ['i32.const', len] : len,
+        typeof cap === 'number' ? ['i32.const', cap] : cap,
+        ['i32.const', 8]]],
     ],
   }
 }
@@ -70,15 +68,10 @@ export default () => {
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
   ctx.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
-    (local $len i32) (local $bytes i32) (local $dst i32) (local $srcOff i32)
+    (local $len i32) (local $dst i32)
     (local.set $len (call $__len (local.get $src)))
-    (local.set $bytes (i32.shl (local.get $len) (i32.const 3)))
-    (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $bytes))))
-    (i32.store (local.get $dst) (local.get $len))
-    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))
-    (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
-    (local.set $srcOff (call $__ptr_offset (local.get $src)))
-    (memory.copy (local.get $dst) (local.get $srcOff) (local.get $bytes))
+    (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
+    (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $dst)))`
 
   ctx.emit['Array.from'] = (src) => {
@@ -98,10 +91,7 @@ export default () => {
       (i32.shl (local.get $oldCap) (i32.const 1))
       (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newOff (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $newCap) (i32.const 3)))))
-    (i32.store (local.get $newOff) (local.get $len))
-    (i32.store (i32.add (local.get $newOff) (i32.const 4)) (local.get $newCap))
-    (local.set $newOff (i32.add (local.get $newOff) (i32.const 8)))
+    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $newOff)))`
 
@@ -240,8 +230,14 @@ export default () => {
     body.push(['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]])
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
-      const isGlob = ctx.globals.has(arr) && !ctx.locals?.has(arr)
-      body.push([isGlob ? 'global.set' : 'local.set', `$${arr}`, ['local.get', `$${t}`]])
+      if (ctx.boxed?.has(arr)) {
+        const cell = `$${ctx.boxed.get(arr)}`, ct = ctx.locals?.get(ctx.boxed.get(arr)) || 'i32'
+        body.push(['f64.store', ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', cell]] : ['local.get', cell], ['local.get', `$${t}`]])
+      }
+      else if (ctx.globals.has(arr) && !ctx.locals?.has(arr))
+        body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])
+      else
+        body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
     }
     body.push(['f64.convert_i32_s', ['local.get', `$${len}`]])
 
@@ -301,67 +297,51 @@ export default () => {
     (call $__set_len (local.get $arr) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
-  // .some(fn) → return 1 if any element passes, else 0
-  ctx.emit['.some'] = (arr, fn) => {
-    const va = emit(arr)
-    const id = ctx.uniq++
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['br_if', `$brk${id}`,
-        ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]]]
-    ])
-    const t = temp()
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['f64.const', 0]],
-      ...loop.slice(0, -1),
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${loop[3][1].slice(1)}`], ['local.get', `$${loop[2][1].slice(1)}`]]],
-        ...loop[3][2].slice(2)]], // skip br_if/body from loop, embed directly
-      ['local.get', `$${t}`]], 'f64')
-  }
-
-  // Actually, let me use a simpler stdlib approach for .some/.every/.findIndex:
-
+  // .some(fn) → return 1 if any element passes, else 0 (early exit)
   ctx.emit['.some'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
-    const t = `${T}sm${ctx.uniq++}`, r = `${T}sr${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(r, 'f64')
+    const r = `${T}sr${ctx.uniq++}`
+    ctx.locals.set(r, 'f64')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
-        ['then', ['local.set', `$${r}`, ['f64.const', 1]]]]
+        ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${r}`, ['f64.const', 0]],
-      ...loop,
+      ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
   }
 
-  // .every(fn) → return 1 if all elements pass, else 0
+  // .every(fn) → return 1 if all elements pass, else 0 (early exit)
   ctx.emit['.every'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
     const r = `${T}ev${ctx.uniq++}`
     ctx.locals.set(r, 'f64')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.eq', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
-        ['then', ['local.set', `$${r}`, ['f64.const', 0]]]]
+        ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${r}`, ['f64.const', 1]],
-      ...loop,
+      ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
   }
 
-  // .findIndex(fn) → return index of first matching element, or -1
+  // .findIndex(fn) → return index of first matching element, or -1 (early exit)
   ctx.emit['.findIndex'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
     const r = `${T}fi${ctx.uniq++}`
     ctx.locals.set(r, 'f64')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
-        ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]
+        ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${r}`, ['f64.const', -1]],
-      ...loop,
+      ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
   }
 
@@ -433,20 +413,16 @@ export default () => {
 
   ctx.emit['.find'] = (arr, fn) => {
     const va = emit(arr)
-    const result = `${T}ff${ctx.uniq++}`, found = `${T}fd${ctx.uniq++}`
-    ctx.locals.set(result, 'f64'); ctx.locals.set(found, 'i32')
+    const result = `${T}ff${ctx.uniq++}`
+    ctx.locals.set(result, 'f64')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['i32.eqz', ['local.get', `$${found}`]],
-        ['then',
-          ['if', ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
-            ['then',
-              ['local.set', `$${result}`, elemLoad(ptr, i)],
-              ['local.set', `$${found}`, ['i32.const', 1]]]]]]
+      ['if', ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+        ['then', ['local.set', `$${result}`, elemLoad(ptr, i)], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${result}`, ['f64.const', 0]],
-      ['local.set', `$${found}`, ['i32.const', 0]],
-      ...loop,
+      ['local.set', `$${result}`, ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]],
+      ['block', exit, ...loop],
       ['local.get', `$${result}`]], 'f64')
   }
 
@@ -454,13 +430,14 @@ export default () => {
     const va = emit(arr), vv = asF64(emit(val))
     const result = `${T}ix${ctx.uniq++}`
     ctx.locals.set(result, 'i32')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.eq', elemLoad(ptr, i), vv],
-        ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]]]]
+        ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${result}`, ['i32.const', -1]],
-      ...loop,
+      ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
@@ -468,14 +445,30 @@ export default () => {
     const va = emit(arr), vv = asF64(emit(val))
     const result = `${T}ic${ctx.uniq++}`
     ctx.locals.set(result, 'i32')
+    const exit = `$exit${ctx.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.eq', elemLoad(ptr, i), vv],
-        ['then', ['local.set', `$${result}`, ['i32.const', 1]]]]
+        ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${result}`, ['i32.const', 0]],
-      ...loop,
+      ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
+  }
+
+  // .at(i) → array element with negative index support
+  ctx.emit['.array:at'] = (arr, idx) => {
+    const t = `${T}ai${ctx.uniq++}`, a = `${T}aa${ctx.uniq++}`
+    ctx.locals.set(t, 'i32'); ctx.locals.set(a, 'f64')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${a}`, asF64(emit(arr))],
+      ['local.set', `$${t}`, asI32(emit(idx))],
+      // Negative index: t += length
+      ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
+          ['call', '$__len', ['local.get', `$${a}`]]]]]],
+      ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${a}`]],
+        ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
   }
 
   ctx.emit['.slice'] = (arr, start, end) => {
