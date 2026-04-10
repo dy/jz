@@ -72,14 +72,32 @@ function transform(node) {
   // Literal: [, value]
   if (op == null) return node
 
+  // --- Named IIFE: (function name(params) { body })(args) ---
+  // → let name = (params) => { body }; name(args)
+  if (op === '()') {
+    const callee = args[0]
+    // (function name(p){b})(a) — callee is ['()', ['function', name, p, b]]
+    if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
+      const [, name, params, body] = callee[1]
+      const callArgs = args.slice(1)
+      const tBody = transformScope(body)
+      const wrappedBody = Array.isArray(tBody) && tBody[0] === '{}' ? tBody
+        : Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : ['{}', tBody]
+      const arrow = ['=>', params, wrappedBody]
+      return [';', ['let', ['=', name, arrow]], ['()', name, ...callArgs.map(transform)]]
+    }
+  }
+
   // --- function → arrow ---
   // function(params) { body } → (params) => { body }
   // Named: function name(params) { body } → const name = (params) => { body }
   if (op === 'function') {
     const [name, params, body] = args
-    // Wrap body in {} block (parser gives [';', ...] for function bodies, arrows need ['{}', [';', ...]])
+    // Wrap body in {} block (parser gives [';', ...] for function bodies, arrows need ['{}', ...])
     const tBody = transformScope(body)
-    const arrow = ['=>', params, Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : tBody]
+    const wrappedBody = Array.isArray(tBody) && tBody[0] === '{}' ? tBody
+      : Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : ['{}', tBody]
+    const arrow = ['=>', params, wrappedBody]
     if (name) {
       const decl = ['const', ['=', name, arrow]]
       decl._hoisted = true // mark for hoisting

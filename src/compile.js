@@ -138,6 +138,47 @@ export function temp() {
   return name
 }
 
+/** Check if a call expression targets a multi-value function. Returns result count or 0. */
+export function multiCount(callNode) {
+  if (!Array.isArray(callNode) || callNode[0] !== '()') return 0
+  const name = callNode[1]
+  if (typeof name !== 'string') return 0
+  const func = funcMap?.get(name)
+  return func?.sig.results.length > 1 ? func.sig.results.length : 0
+}
+
+/**
+ * Materialize a multi-value function call as a heap array.
+ * Call → store each result in temp → copy to allocated array → return pointer.
+ * callNode is AST: ['()', name, commaOrArgs...]
+ */
+export function materializeMulti(callNode) {
+  const name = callNode[1]
+  const func = funcMap.get(name)
+  const n = func.sig.results.length
+  // Unpack args (may be comma-grouped)
+  const rawArgs = callNode.slice(2)
+  const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
+    ? rawArgs[0].slice(1) : rawArgs
+  const emittedArgs = argList.map(a => asF64(emit(a)))
+  // Pad missing args with sentinel NaN (triggers default param init)
+  while (emittedArgs.length < func.sig.params.length)
+    emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+  const temps = Array.from({ length: n }, () => temp())
+  const arrLocal = `${T}marr${ctx.uniq++}`
+  ctx.locals.set(arrLocal, 'i32')
+  ctx.includes.add('__alloc_hdr'); ctx.includes.add('__mkptr')
+  const ir = [
+    ['local.set', `$${arrLocal}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
+    ['call', `$${name}`, ...emittedArgs],
+  ]
+  for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
+  for (let k = 0; k < n; k++)
+    ir.push(['f64.store', ['i32.add', ['local.get', `$${arrLocal}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
+  ir.push(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${arrLocal}`]])
+  return typed(['block', ['result', 'f64'], ...ir], 'f64')
+}
+
 /** Get current loop labels or throw. */
 function loopTop() {
   const top = ctx.stack.at(-1)
@@ -187,10 +228,15 @@ function findFreeVars(node, bound, free, scope) {
     findFreeVars(args[1], innerBound, free, scope)
     return
   }
-  // Track let/const/for declarations so nested closures see loop-scoped vars
-  if ((op === 'let' || op === 'const') && scope) collectParamNames(args, scope)
-  if (op === 'for' && scope && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const'))
-    collectParamNames(args[0].slice(1), scope)
+  // Track let/const/for declarations: add to bound (shadows captures) and scope (visible to nested closures)
+  if (op === 'let' || op === 'const') {
+    collectParamNames(args, bound)
+    if (scope) collectParamNames(args, scope)
+  }
+  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
+    collectParamNames(args[0].slice(1), bound)
+    if (scope) collectParamNames(args[0].slice(1), scope)
+  }
   for (const a of args) findFreeVars(a, bound, free, scope)
 }
 
@@ -620,11 +666,13 @@ function buildArrayWithSpreads(items) {
   ]
 
   // Emit spread expressions once, store in locals
+  // Multi-value function calls get materialized as heap arrays
   for (const sec of sections) {
     if (sec.type === 'spread') {
       sec.local = `${T}sp${ctx.uniq++}`
       ctx.locals.set(sec.local, 'f64')
-      ir.push(['local.set', `$${sec.local}`, asF64(emit(sec.expr))])
+      const n = multiCount(sec.expr)
+      ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
     }
   }
 
@@ -1055,34 +1103,26 @@ export default function compile(ast) {
 /** Check if node is a block body (statement list, not object literal/expression) */
 const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch', '=',
   '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
-  'throw', 'try', 'catch', '++', '--'])
+  'throw', 'try', 'catch', '++', '--', '()'])
 const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && Array.isArray(n[1]) && STMT_OPS.has(n[1]?.[0])
 
-/** Emit any node as flat instruction list, routing block bodies through emitBody. */
-function emitFlat(node) { return isBlockBody(node) ? emitBody(node) : flat(emit(node)) }
+/** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
+function emitFlat(node) {
+  if (isBlockBody(node)) return emitBody(node)
+  const ir = emit(node)
+  const items = flat(ir)
+  if (ir?.type && ir.type !== 'void') items.push('drop')
+  return items
+}
 
-/** Emit block body as flat list of WASM instructions. */
+/** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitFlat per statement. */
 function emitBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
   for (const s of stmts) {
     if (s == null || typeof s === 'number') continue
-    // Bare block statement: recurse into emitBody
-    if (isBlockBody(s)) {
-      out.push(...emitBody(s))
-      continue
-    }
-    const ir = emit(s)
-    const items = flat(ir)
-    out.push(...items)
-    // Drop expression results used as statements (method calls, etc.)
-    // Skip: return, let/const, assignments, if/for/while/loop, break/continue, local.set
-    const op = Array.isArray(s) && s[0]
-    if (op && !['return', 'let', 'const', '=', '+=', '-=', '*=', '/=', '%=',
-      'if', 'for', 'while', 'break', 'continue', 'switch', 'local.set'].includes(op)
-      && ir?.type && ir.type !== 'void')
-      out.push('drop')
+    out.push(...emitFlat(s))
   }
   return out
 }
@@ -1113,20 +1153,28 @@ function boxedAddr(name) {
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
   if (ctx.boxed?.has(name)) {
-    const addr = boxedAddr(name)
-    return ['f64.store', addr, f64op(typed(['f64.load', addr], 'f64'), asF64(emit(val)))]
+    const addr = boxedAddr(name), t = temp()
+    const v = f64op(typed(['f64.load', addr], 'f64'), asF64(emit(val)))
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, v],
+      ['f64.store', addr, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]], 'f64')
   }
   if (isGlobal(name)) {
-    return ['global.set', `$${name}`, f64op(typed(['global.get', `$${name}`], 'f64'), asF64(emit(val)))]
+    const v = f64op(typed(['global.get', `$${name}`], 'f64'), asF64(emit(val))), t = temp()
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, v],
+      ['global.set', `$${name}`, ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]], 'f64')
   }
   const t = ctx.locals.get(name) || 'f64'
   const va = typed(['local.get', `$${name}`], t), vb = emit(val)
   if (i32op && va.type === 'i32' && vb.type === 'i32') {
     const result = i32op(va, vb)
-    return ['local.set', `$${name}`, t === 'f64' ? asF64(result) : result]
+    return typed(['local.tee', `$${name}`, t === 'f64' ? asF64(result) : result], t)
   }
   const result = f64op(asF64(va), asF64(vb))
-  return ['local.set', `$${name}`, t === 'f64' ? result : asI32(result)]
+  return typed(['local.tee', `$${name}`, t === 'f64' ? result : asI32(result)], t)
 }
 
 export const emitter = {
@@ -1142,6 +1190,7 @@ export const emitter = {
       const r = emit(a)
       if (r == null) continue
       out.push(...flat(r))
+      if (r?.type && r.type !== 'void') out.push('drop')
     }
     return out
   },
@@ -1151,22 +1200,26 @@ export const emitter = {
     if (results.length === 0) return null
     if (results.length === 1) return results[0]
     const last = results[results.length - 1]
+    // Flatten: multi-instruction arrays (from ';') need spreading, typed nodes need drop
+    const spread = r => Array.isArray(r) && Array.isArray(r[0]) ? r : [r]
+    const dropSpread = r => r.type ? [['drop', r]] : spread(r)
     // If last expression is void (store, etc.), add explicit return value
     if (!last.type) {
       return typed(['block', ['result', 'f64'],
-        ...results.map(r => r.type ? ['drop', r] : r),
+        ...results.flatMap(dropSpread),
         ['f64.const', 0]], 'f64')
     }
     return typed(['block', ['result', last.type],
-      ...results.slice(0, -1).map(r => r.type ? ['drop', r] : r), last], last.type)
+      ...results.slice(0, -1).flatMap(dropSpread), last], last.type)
   },
   'let': emitDecl,
   'const': emitDecl,
   'export': () => null,
   // 'block' can appear from jzify transforming labeled blocks or as WASM block IR
   'block': (...args) => {
-    // WASM block IR: first arg is ['result', type] → pass through as-is
-    if (Array.isArray(args[0]) && args[0][0] === 'result') return ['block', ...args]
+    // WASM block IR: first arg is ['result', type] → pass through, preserve type
+    if (Array.isArray(args[0]) && args[0][0] === 'result')
+      return typed(['block', ...args], args[0][1])
     const inner = args.length === 1 ? args[0] : [';', ...args]
     return emitFlat(['{}', inner])
   },
@@ -1181,17 +1234,13 @@ export const emitter = {
     const id = ctx.uniq++
     ctx.locals.set(errName, 'f64')
     const prev = ctx._inTry; ctx._inTry = true
-    const bodyIR = Array.isArray(body) && body[0] === '{}' ? emitBody(body) : flat(emit(body))
+    const bodyIR = emitFlat(body)
     ctx._inTry = prev
-    const handlerIR = Array.isArray(handler) && handler[0] === '{}' ? emitBody(handler) : flat(emit(handler))
-    // Drop any value left by body statements (e.g. nested try/catch result)
-    const lastIR = bodyIR[bodyIR.length - 1]
-    const needsDrop = lastIR?.type === 'f64' && Array.isArray(lastIR) && lastIR[0]?.startsWith?.('block')
+    const handlerIR = emitFlat(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
         ['try_table', ['catch', '$__jz_err', `$catch${id}`],
-          ...bodyIR,
-          ...(needsDrop ? ['drop'] : [])],
+          ...bodyIR],
         ['f64.const', 0],
         ['br', `$outer${id}`]],
       ['local.set', `$${errName}`],
@@ -1201,16 +1250,12 @@ export const emitter = {
 
   'return': expr => {
     if (ctx.sig?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
-      return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'f64')
-    // Bare return → return null
-    if (expr == null) return typed(['return', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]], 'f64')
-    // Emit the expression normally (handles defaults, rest, closures)
+      return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
+    if (expr == null) return typed(['return', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]], 'void')
     const ir = asF64(emit(expr))
-    // Tail call optimization: return call $f(...) → return_call $f(...)
-    // Only for direct calls (not closures), and not inside try blocks
     if (!ctx._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
-      return typed(['return_call', ...ir.slice(1)], 'f64')
-    return typed(['return', ir], 'f64')
+      return typed(['return_call', ...ir.slice(1)], 'void')
+    return typed(['return', ir], 'void')
   },
 
   // === Assignment ===
@@ -1220,13 +1265,15 @@ export const emitter = {
     // Array index assignment: arr[i] = x
     if (Array.isArray(name) && name[0] === '[]') {
       const [, arr, idx] = name
-      // TypedArray: type-aware store
       if (typeof arr === 'string' && ctx.valTypes?.get(arr) === 'typed' && ctx.emit['.typed:[]=']) {
         const r = ctx.emit['.typed:[]=']?.(arr, idx, val)
         if (r) return r
       }
-      const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
-      return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], vv]
+      const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val)), t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, vv],
+        ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
     }
     // Object property assignment: obj.prop = x
     if (Array.isArray(name) && name[0] === '.') {
@@ -1235,29 +1282,42 @@ export const emitter = {
       if (typeof obj === 'string' && ctx.schema.find) {
         const idx = ctx.schema.find(obj, prop)
         if (idx >= 0) {
-          const va = emit(obj), vv = asF64(emit(val))
-          return ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], vv]
+          const va = emit(obj), vv = asF64(emit(val)), t = temp()
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${t}`, vv],
+            ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], ['local.get', `$${t}`]],
+            ['local.get', `$${t}`]], 'f64')
         }
       }
-      // HASH (dynamic object) → __hash_set (may return new pointer after grow)
+      // HASH (dynamic object) → __hash_set (returns new pointer)
       ctx.includes.add('__hash_set'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
       const setCall = typed(['call', '$__hash_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
-      // Update variable (pointer may change after hash table grow)
       if (typeof obj === 'string') {
-        if (isGlobal(obj)) return ['global.set', `$${obj}`, setCall]
-        return ['local.set', `$${obj}`, setCall]
+        if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
+          ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
+        return typed(['local.tee', `$${obj}`, setCall], 'f64')
       }
       return setCall
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
-    // Boxed variable: store to memory cell
-    if (ctx.boxed?.has(name))
-      return ['f64.store', boxedAddr(name), asF64(emit(val))]
+    // Boxed variable: store to memory cell (tee value for expression context)
+    if (ctx.boxed?.has(name)) {
+      const addr = boxedAddr(name), v = asF64(emit(val)), t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, v],
+        ['f64.store', addr, ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
     // Module-scope variable → WASM global (only if not shadowed)
-    if (isGlobal(name))
-      return ['global.set', `$${name}`, asF64(emit(val))]
+    if (isGlobal(name)) {
+      const v = asF64(emit(val)), t = temp()
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, v],
+        ['global.set', `$${name}`, ['local.get', `$${t}`]],
+        ['local.get', `$${t}`]], 'f64')
+    }
     const v = emit(val), t = ctx.locals.get(name) || 'f64'
-    return ['local.set', `$${name}`, t === 'f64' ? asF64(v) : asI32(v)]
+    return typed(['local.tee', `$${name}`, t === 'f64' ? asF64(v) : asI32(v)], t)
   },
 
   // Compound assignments: read-modify-write with type coercion
@@ -1526,20 +1586,14 @@ export const emitter = {
     const ce = emit(cond)
     if (isLit(ce)) {
       const v = litVal(ce), truthy = v !== 0 && v === v
-      if (truthy) { const t = emit(then); return t?.type && t.type !== 'void' ? [t, 'drop'] : t }
-      if (els != null) { const e = emit(els); return e?.type && e.type !== 'void' ? [e, 'drop'] : e }
+      if (truthy) return emitFlat(then)
+      if (els != null) return emitFlat(els)
       return null
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
-    // Drop trailing value-producing instruction (WASM stack balance)
-    const dropBody = items => {
-      const last = items[items.length - 1]
-      if (last?.type && last.type !== 'void') items.push('drop')
-      return items
-    }
-    const thenBody = dropBody(emitFlat(then))
+    const thenBody = emitFlat(then)
     if (els != null)
-      return ['if', c, ['then', ...thenBody], ['else', ...dropBody(emitFlat(els))]]
+      return ['if', c, ['then', ...thenBody], ['else', ...emitFlat(els)]]
     return ['if', c, ['then', ...thenBody]]
   },
 
@@ -1549,11 +1603,11 @@ export const emitter = {
     const brk = `$brk${id}`, loop = `$loop${id}`
     ctx.stack.push({ brk, loop })
     const result = []
-    if (init != null) result.push(...flat(emit(init)))
+    if (init != null) result.push(...emitFlat(init))
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
     loopBody.push(...emitFlat(body))
-    if (step) loopBody.push(...flat(emit(step)))
+    if (step) loopBody.push(...emitFlat(step))
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])
     ctx.stack.pop()
@@ -1696,7 +1750,8 @@ export const emitter = {
             ir.push(mutating ? ['drop', r] : ['local.set', `$${acc}`, r])
           }
 
-          ir.push(['local.set', `$${arr}`, asF64(emit(spreadExpr))])
+          const n = multiCount(spreadExpr)
+          ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
           ir.push(['local.set', `$${idx}`, ['i32.const', 0]])
           const loopId = ctx.uniq++
@@ -1823,6 +1878,8 @@ export const emitter = {
       const args = parsed.normal.map(a => asF64(emit(a)))
       const expected = func?.sig.params.length || args.length
       while (args.length < expected) args.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+      // Multi-value return: materialize as heap array (caller expects single pointer)
+      if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
       return typed(['call', `$${callee}`, ...args], 'f64')
     }
 

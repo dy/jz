@@ -64,7 +64,12 @@ export default () => {
     // Store captured values (or cell pointers for boxed vars) in env
     for (let i = 0; i < captures.length; i++) {
       const v = ctx.boxed?.has(captures[i])
-        ? typed(['f64.convert_i32_u', ['local.get', `$${ctx.boxed.get(captures[i])}`]], 'f64')
+        ? (() => {
+            const cell = ctx.boxed.get(captures[i])
+            const ct = ctx.locals?.get(cell) || 'i32'
+            return ct === 'f64' ? typed(['local.get', `$${cell}`], 'f64')
+              : typed(['f64.convert_i32_u', ['local.get', `$${cell}`]], 'f64')
+          })()
         : asF64(emit(captures[i]))
       block.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], v])
     }

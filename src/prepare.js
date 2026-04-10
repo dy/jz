@@ -191,8 +191,8 @@ function prepDecl(op, ...inits) {
         const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
         if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
       }
-      // Track const for reassignment checks (let shadows const)
-      if (typeof declName === 'string') {
+      // Track const for reassignment checks — only module-scope consts (depth 0)
+      if (typeof declName === 'string' && depth === 0) {
         if (op === 'const') {
           if (!ctx.consts) ctx.consts = new Set()
           ctx.consts.add(declName)
@@ -324,6 +324,14 @@ const handlers = {
         const mangled = resolved.exports.get('default')
         if (!mangled) err(`'${mod}' has no default export`)
         ctx.scope[specifiers] = mangled
+        return null
+      }
+      // Namespace import: import * as X from 'mod' → bind X.prop to mangled names
+      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
+        const alias = specifiers[2]
+        // Store namespace mapping so '.' handler can resolve X.prop → mangled name
+        if (!ctx.namespaces) ctx.namespaces = {}
+        ctx.namespaces[alias] = resolved.exports
         return null
       }
       // Named imports: import { a, b } from 'mod'
@@ -717,6 +725,11 @@ const handlers = {
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
     if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
       return includeModule(mod), mod + '.' + prop
+    // Source module namespace: import * as X → X.prop resolved to mangled name
+    if (typeof obj === 'string' && ctx.namespaces?.[obj]) {
+      const mangled = ctx.namespaces[obj].get(prop)
+      if (mangled) return mangled
+    }
     includeModule('core')
     includeModule('object')
     includeModule('array')

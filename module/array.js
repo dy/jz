@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, T, NULL_NAN } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, NULL_NAN, temp, multiCount, materializeMulti } from '../src/compile.js'
 import { ctx, inc } from '../src/ctx.js'
 
 const ARRAY = 1, STRING = 4, STRING_SSO = 5
@@ -111,14 +111,28 @@ export default () => {
     }
 
     // Spread: compute total, alloc, copy
+    // Pre-materialize multi-value calls into locals
+    const spreadLocals = new Map()
+    for (const e of elems) {
+      if (Array.isArray(e) && e[0] === '...' && multiCount(e[1])) {
+        const sl = `${T}ss${ctx.uniq++}`
+        ctx.locals.set(sl, 'f64')
+        spreadLocals.set(e, sl)
+      }
+    }
+
     const out = `${T}sa${ctx.uniq++}`, pos = `${T}sp${ctx.uniq++}`, total = `${T}st${ctx.uniq++}`
     ctx.locals.set(out, 'i32'); ctx.locals.set(pos, 'i32'); ctx.locals.set(total, 'i32')
 
     const lenCalc = [['local.set', `$${total}`, ['i32.const', 0]]]
+    // Materialize multi-value spreads first
+    for (const [e, sl] of spreadLocals)
+      lenCalc.push(['local.set', `$${sl}`, materializeMulti(e[1])])
     for (const e of elems) {
-      if (Array.isArray(e) && e[0] === '...')
-        lenCalc.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['call', '$__len', asF64(emit(e[1]))]]])
-      else
+      if (Array.isArray(e) && e[0] === '...') {
+        const src = spreadLocals.has(e) ? typed(['local.get', `$${spreadLocals.get(e)}`], 'f64') : asF64(emit(e[1]))
+        lenCalc.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['call', '$__len', src]]])
+      } else
         lenCalc.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['i32.const', 1]]])
     }
 
@@ -136,9 +150,10 @@ export default () => {
         const src = `${T}ss${ctx.uniq++}`, slen = `${T}sl${ctx.uniq++}`, si = `${T}si${ctx.uniq++}`
         ctx.locals.set(src, 'i32'); ctx.locals.set(slen, 'i32'); ctx.locals.set(si, 'i32')
         const id = ctx.uniq++
+        const spreadVal = spreadLocals.has(e) ? typed(['local.get', `$${spreadLocals.get(e)}`], 'f64') : asF64(emit(e[1]))
         body.push(
-          ['local.set', `$${src}`, ['call', '$__ptr_offset', asF64(emit(e[1]))]],
-          ['local.set', `$${slen}`, ['call', '$__len', asF64(emit(e[1]))]],
+          ['local.set', `$${src}`, ['call', '$__ptr_offset', spreadVal]],
+          ['local.set', `$${slen}`, ['call', '$__len', spreadVal]],
           ['local.set', `$${si}`, ['i32.const', 0]],
           ['block', `$brk${id}`, ['loop', `$loop${id}`,
             ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
@@ -174,6 +189,8 @@ export default () => {
         ['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]]],
         'f64')
     }
+    // Multi-value calls are materialized at call site (see '()' handler), so
+    // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
     const vt = typeof arr === 'string' ? ctx.valTypes?.get(arr) : null
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
