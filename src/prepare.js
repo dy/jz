@@ -73,7 +73,6 @@ function resolveTypeof(node) {
   return node
 }
 
-// FIXME: I think we can merge all these into a single table
 const OP_MODULES = {
   '.': ['core', 'object', 'array', 'string', 'collection'],
   '?.': ['core', 'string', 'collection'],
@@ -105,33 +104,34 @@ const BUILTIN_MODULES = {
   'Object.entries': ['string']
 }
 
-const STATIC_METHOD_MODULES = {
-  'console': { 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] },
-  'Object': { 'fromEntries': ['collection', 'string'], 'keys': ['string'], 'entries': ['string'] },
-  'Date': { 'now': ['core', 'console'] },
-  'performance': { 'now': ['core', 'console'] },
-  'String': { 'fromCharCode': ['core', 'string'], 'fromCodePoint': ['core', 'string'] },
-  'BigInt': { 'asIntN': ['number'], 'asUintN': ['number'] },
-  'Float64Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Float32Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Int32Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Uint32Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Int16Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Uint16Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Int8Array': { 'from': ['core', 'typedarray', 'array'] },
-  'Uint8Array': { 'from': ['core', 'typedarray', 'array'] }
-}
+const dict = obj => Object.assign(Object.create(null), obj)
 
-const GENERIC_METHOD_MODULES = {
+const STATIC_METHOD_MODULES = dict({
+  'console': dict({ 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] }),
+  'Object': dict({ 'fromEntries': ['collection', 'string'], 'keys': ['string'], 'entries': ['string'] }),
+  'Date': dict({ 'now': ['core', 'console'] }),
+  'performance': dict({ 'now': ['core', 'console'] }),
+  'String': dict({ 'fromCharCode': ['core', 'string'], 'fromCodePoint': ['core', 'string'] }),
+  'BigInt': dict({ 'asIntN': ['number'], 'asUintN': ['number'] }),
+  'Float64Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Float32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Int32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Uint32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Int16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Uint16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Int8Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'Uint8Array': dict({ 'from': ['core', 'typedarray', 'array'] })
+})
+
+const GENERIC_METHOD_MODULES = dict({
   'toString': ['core', 'string', 'number'],
   'toFixed': ['core', 'string', 'number'],
   'toPrecision': ['core', 'string', 'number'],
   'toExponential': ['core', 'string', 'number'],
-}
+})
 
 const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Set','Map']
 
-// FIXME: we need to add comments to all funcs explaining the purpose
 function prep(node) {
   if (Array.isArray(node) && OP_MODULES[node[0]]) includeMods(...OP_MODULES[node[0]])
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
@@ -167,8 +167,7 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// FIXME: I think there's more prohibited things, like with, isn't it?
-const PROHIBITED = {
+const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not supported', 'yield': '`yield` not supported',
   'this': '`this` not supported: use explicit parameter',
   'super': '`super` not supported: no class inheritance',
   'arguments': '`arguments` not supported: use rest params',
@@ -585,10 +584,10 @@ const handlers = {
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      if (typeof obj === 'string' && Object.hasOwn(STATIC_METHOD_MODULES, obj) && Object.hasOwn(STATIC_METHOD_MODULES[obj], prop)) {
+      if (STATIC_METHOD_MODULES[obj]?.[prop]) {
         includeMods(...STATIC_METHOD_MODULES[obj][prop])
         callee = `${obj}.${prop}`
-      } else if (typeof prop === 'string' && Object.hasOwn(GENERIC_METHOD_MODULES, prop)) {
+      } else if (GENERIC_METHOD_MODULES[prop]) {
         includeMods(...GENERIC_METHOD_MODULES[prop])
         callee = prep(callee)
       } else {
