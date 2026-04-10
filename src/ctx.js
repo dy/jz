@@ -119,6 +119,7 @@ export function reset(proto, globals) {
     includes: new Set(),
   }
 
+  // FIXME: we can make (sub)context names shorter
   ctx.module = {
     imports: [],
     modules: {},

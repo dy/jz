@@ -34,6 +34,7 @@ let scopes = []  // block scope stack: [{names: Set, renames: Map}]
 export default function prepare(node) {
   depth = 0
   scopes = []
+  includeModule('core')
   return prep(node)
 }
 
@@ -72,7 +73,67 @@ function resolveTypeof(node) {
   return node
 }
 
+// FIXME: I think we can merge all these into a single table
+const OP_MODULES = {
+  '.': ['core', 'object', 'array', 'string', 'collection'],
+  '?.': ['core', 'string', 'collection'],
+  '?.[]': ['core', 'array'],
+  '?.()': ['core'],
+  'in': ['core', 'collection', 'string'],
+  'typeof': ['core'],
+  '[': ['core', 'array'],
+  '{': ['core', 'object', 'string', 'collection'],
+  '//': ['core', 'string', 'regex'],
+}
+
+const BUILTIN_MODULES = {
+  'ArrayBuffer': ['core', 'typedarray'],
+  'DataView': ['core', 'typedarray'],
+  'BigInt64Array': ['core', 'typedarray'],
+  'BigUint64Array': ['core', 'typedarray'],
+  'parseFloat': ['number'],
+  'parseInt': ['number'],
+  'String': ['core', 'string', 'number'],
+  'Number': ['number'],
+  'Boolean': ['number'],
+  'TextEncoder': ['core', 'string'],
+  'TextDecoder': ['core', 'string'],
+  'Error': ['core', 'string'],
+  'BigInt': ['number'],
+  'Object.fromEntries': ['collection', 'string'],
+  'Object.keys': ['string'],
+  'Object.entries': ['string']
+}
+
+const STATIC_METHOD_MODULES = {
+  'console': { 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] },
+  'Object': { 'fromEntries': ['collection', 'string'], 'keys': ['string'], 'entries': ['string'] },
+  'Date': { 'now': ['core', 'console'] },
+  'performance': { 'now': ['core', 'console'] },
+  'String': { 'fromCharCode': ['core', 'string'], 'fromCodePoint': ['core', 'string'] },
+  'BigInt': { 'asIntN': ['number'], 'asUintN': ['number'] },
+  'Float64Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Float32Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Int32Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Uint32Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Int16Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Uint16Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Int8Array': { 'from': ['core', 'typedarray', 'array'] },
+  'Uint8Array': { 'from': ['core', 'typedarray', 'array'] }
+}
+
+const GENERIC_METHOD_MODULES = {
+  'toString': ['core', 'string', 'number'],
+  'toFixed': ['core', 'string', 'number'],
+  'toPrecision': ['core', 'string', 'number'],
+  'toExponential': ['core', 'string', 'number'],
+}
+
+const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Set','Map']
+
+// FIXME: we need to add comments to all funcs explaining the purpose
 function prep(node) {
+  if (Array.isArray(node) && OP_MODULES[node[0]]) includeMods(...OP_MODULES[node[0]])
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   if (node === true) return [, 1]
@@ -106,6 +167,7 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
+// FIXME: I think there's more prohibited things, like with, isn't it?
 const PROHIBITED = {
   'this': '`this` not supported: use explicit parameter',
   'super': '`super` not supported: no class inheritance',
@@ -200,6 +262,7 @@ function prepDecl(op, ...inits) {
       }
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
+        if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
         ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
         ctx.scope.userGlobals.add(declName)
       }
@@ -223,7 +286,7 @@ const handlers = {
   'class': () => err('class not supported: use object literals'),
   'yield': () => err('generators not supported: use loops'),
   'delete': () => err('delete not supported: object shape is fixed'),
-  'in'(key, obj) { includeMods('core', 'collection', 'string'); return ['in', prep(key), prep(obj)] },
+  'in'(key, obj) { return ['in', prep(key), prep(obj)] },
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
   ':': () => err('labeled statements not supported'),
@@ -449,10 +512,10 @@ const handlers = {
   },
 
   // Optional chaining / typeof — need ptr module
-  '?.'(obj, prop) { includeMods('core', 'string', 'collection'); return ['?.', prep(obj), prop] },
-  '?.[]'(obj, idx) { includeMods('core', 'array'); return ['?.[]', prep(obj), prep(idx)] },
-  '?.()'(callee, ...args) { includeMods('core'); return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
-  'typeof'(a) { includeMods('core'); return ['typeof', prep(a)] },
+  '?.'(obj, prop) { return ['?.', prep(obj), prop] },
+  '?.[]'(obj, idx) { return ['?.[]', prep(obj), prep(idx)] },
+  '?.()'(callee, ...args) { return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
+  'typeof'(a) { return ['typeof', prep(a)] },
 
   // Unary +/- disambiguation
   '+'(a, b) {
@@ -483,7 +546,6 @@ const handlers = {
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
   '//'(pattern, flags) {
-    includeMods('core', 'string', 'regex')
     return ['//', pattern, flags]
   },
 
@@ -491,14 +553,9 @@ const handlers = {
   '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
 
   // Function call or grouping parens
-  '()'(callee, ...args) {
-    // Grouping parens: (expr) with no args, callee is a non-callable expression
-    // But (arrow)() is a call, not grouping — detect IIFE pattern
-    // Don't treat method calls (callee[0] === '.') as grouping — they need full '()' processing
+'()'(callee, ...args) {
     const hasRealArgs = args.some(a => a != null)
-    if (!hasRealArgs && typeof callee !== 'string'
-      && !(Array.isArray(callee) && callee[0] === '.')) {
-      // (callable)() — IIFE: callee is ['()', ...] or ['=>', ...]
+    if (!hasRealArgs && typeof callee !== 'string' && !(Array.isArray(callee) && callee[0] === '.')) {
       if (Array.isArray(callee) && (callee[0] === '()' || callee[0] === '=>')) {
         const c = prep(callee)
         includeMods('core', 'fn')
@@ -509,88 +566,51 @@ const handlers = {
 
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
-      // TypedArray/Set/Map constructor without new (jzify strips new) → route through new handler
-      const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Set','Map']
       if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
-      // ArrayBuffer/DataView/BigInt64Array — auto-include typedarray, emit directly
-      if (callee === 'ArrayBuffer' || callee === 'DataView' || callee === 'BigInt64Array' || callee === 'BigUint64Array') {
-        includeMods('core', 'typedarray')
-        return ['()', callee, ...args.filter(a => a != null).map(prep)]
+
+      const builtin = BUILTIN_MODULES[callee]
+      if (builtin) {
+        includeMods(...builtin)
+        if (callee === 'ArrayBuffer' || callee === 'DataView' || callee === 'BigInt64Array' || callee === 'BigUint64Array') {
+          return ['()', callee, ...args.filter(a => a != null).map(prep)]
+        }
       }
-      // Global functions that need their module loaded
-      if (callee === 'parseFloat' || callee === 'parseInt') { includeModule('number') }
+
       const resolved = ctx.scope.chain[callee]
       if (resolved?.includes('.')) callee = resolved
-      // Bundled import: resolved name is a known function → use as callee directly
       else if (resolved && ctx.func.list.some(f => f.name === resolved)) callee = resolved
-      // Bare constructor call: Symbol('foo') → include module, keep callee as-is
       else if (resolved && !resolved.includes('.')) includeModule(resolved)
-      // Calling an unknown name inside a function body (e.g. a parameter) → needs call_indirect
-      else if (depth > 0 && !resolved && !ctx.func.exports[callee]
-        && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
-        { includeMods('core', 'fn') }
+      else if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`)) {
+        includeMods('core', 'fn')
+      }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      // console.log/warn/error → WASI module
-      if (obj === 'console' && (prop === 'log' || prop === 'warn' || prop === 'error')) {
-        includeMods('core', 'string', 'number', 'console')
-        callee = `console.${prop}`
-      // Date.now / performance.now → WASI clock_time_get
-      } else if ((obj === 'Date' && prop === 'now') || (obj === 'performance' && prop === 'now')) {
-        includeMods('core', 'console')
+      if (STATIC_METHOD_MODULES[obj]?.[prop]) {
+        includeMods(...STATIC_METHOD_MODULES[obj][prop])
         callee = `${obj}.${prop}`
+      } else if (GENERIC_METHOD_MODULES[prop]) {
+        includeMods(...GENERIC_METHOD_MODULES[prop])
+        callee = prep(callee)
       } else {
         const mod = ctx.scope.chain[obj]
-        if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
+        if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod]) {
           callee = (includeModule(mod), mod + '.' + prop)
-        else
-          callee = prep(callee)  // prep method callee (triggers . handler → module loading)
+        } else {
+          callee = prep(callee)
+        }
       }
     }
-    // Auto-include number module for Number methods and String() coercion
-    if (Array.isArray(callee) && callee[0] === '.') {
-      const method = callee[2]
-      if (method === 'toString' || method === 'toFixed' || method === 'toPrecision' || method === 'toExponential') {
-        includeMods('core', 'string', 'number')
-      }
-    }
-    if (callee === 'String') { includeMods('core', 'string', 'number') }
-    if (callee === 'Number' || callee === 'Boolean') { includeModule('number') }
-    if (callee === 'TextEncoder' || callee === 'TextDecoder') { includeMods('core', 'string') }
-    if (callee === 'Error') { includeMods('core', 'string') }
-    if (callee === 'BigInt') { includeModule('number') }
-    // String.fromCharCode / fromCodePoint → include string module
-    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'String'
-      && (callee[2] === 'fromCharCode' || callee[2] === 'fromCodePoint')) {
-      includeMods('core', 'string')
-      callee = `String.${callee[2]}`
-    }
-    // BigInt.asIntN / BigInt.asUintN → include number module
-    if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'BigInt' && (callee[2] === 'asIntN' || callee[2] === 'asUintN')) {
-      includeModule('number')
-      callee = `BigInt.${callee[2]}`
-    }
-    // TypedArray.from → include typedarray module
-    if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'from') {
-      const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
-      if (typedArrays.includes(callee[1])) {
-        includeMods('core', 'typedarray', 'array')
-        callee = `${callee[1]}.from`
-      }
-    }
+
     const preppedArgs = args.filter(a => a != null).map(prep)
-    // If any argument is a known top-level function name, include fn module for call_indirect
-    for (const a of preppedArgs)
-      if (typeof a === 'string' && ctx.func.list.some(f => f.name === a))
-        { includeMods('core', 'fn'); break }
+    for (const a of preppedArgs) {
+      if (typeof a === 'string' && ctx.func.list.some(f => f.name === a)) {
+        includeMods('core', 'fn'); break
+      }
+    }
     const result = ['()', callee, ...preppedArgs]
 
-    // Object.fromEntries → needs collection + string modules for HASH
-    if (callee === 'Object.fromEntries') { includeMods('collection', 'string') }
-    if (callee === 'Object.keys' || callee === 'Object.entries') { includeMods('string') }
-
-    // Object.assign(target, ...sources): merge source schemas into target
     if (callee === 'Object.assign' && ctx.schema.register) {
+
       // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
       let assignArgs = result.slice(2)
       if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
@@ -725,7 +745,6 @@ const handlers = {
       const mangled = ctx.module.namespaces[obj].get(prop)
       if (mangled) return mangled
     }
-    includeMods('core', 'object', 'array', 'string', 'collection')
     return ['.', prep(obj), prop]
   },
 

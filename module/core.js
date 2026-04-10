@@ -16,6 +16,14 @@ import { initSchema } from './schema.js'
 const NAN_PREFIX = 0x7FF8
 
 export default () => {
+  ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v f64) (result i32)
+    (i32.or
+      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000))
+      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000001))))`
+
+  ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v f64) (result i32)
+    (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000)))`
+
   // Memory section auto-enabled: compile.js checks ctx.module.modules.ptr
 
   // === NaN-boxing: encode/decode ===
@@ -107,8 +115,11 @@ export default () => {
     raw: '(func (export "_reset") (call $__reset))'
   })
 
-  // Not-null check: f64 WAT node is not NULL_NAN
-  const notNull = v => ['i64.ne', ['i64.reinterpret_f64', v], ['i64.const', NULL_NAN]]
+  // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN
+  const notNullish = v => {
+    inc('__is_nullish')
+    return ['i32.eqz', ['call', '$__is_nullish', v]]
+  }
 
   // === Shared dispatch helpers ===
 
@@ -189,7 +200,7 @@ export default () => {
       }
     }
     return typed(['if', ['result', 'f64'],
-      notNull(['local.tee', `$${t}`, va]),
+      notNullish(['local.tee', `$${t}`, va]),
       ['then', access],
       ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }
@@ -210,7 +221,7 @@ export default () => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['if', ['result', 'f64'],
-        notNull(['local.get', `$${t}`]),
+        notNullish(['local.get', `$${t}`]),
         ['then', asF64(ctx.core.emit['[]'](t, idx))],
         ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]], 'f64')
   }
@@ -223,7 +234,7 @@ export default () => {
     if (!ctx.closure.call) err('Optional call requires fn module')
     const callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
     return typed(['if', ['result', 'f64'],
-      notNull(['local.tee', `$${t}`, va]),
+      notNullish(['local.tee', `$${t}`, va]),
       ['then', asF64(callResult)],
       ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }

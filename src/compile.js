@@ -183,9 +183,7 @@ function writeVar(name, valIR) {
 }
 
 /** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32. */
-const isNullish = (f64expr) => typed(['i32.or',
-  ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', NULL_NAN]],
-  ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]]], 'i32')
+const isNullish = (f64expr) => { inc('__is_nullish'); return typed(['call', '$__is_nullish', f64expr], 'i32') }
 
 /** Check if a call expression targets a multi-value function. Returns result count or 0. */
 export function multiCount(callNode) {
@@ -1371,7 +1369,7 @@ export const emitter = {
     const va = readVar(name)
     // Condition: ||= → truthy check, &&= → truthy check, ??= → nullish check
     const cond = op === '??='
-      ? ['i64.eq', ['i64.reinterpret_f64', ['local.tee', `$${t}`, asF64(va)]], ['i64.const', NULL_NAN]]
+      ? isNullish(['local.tee', `$${t}`, asF64(va)])
       : ['i32.and',
           ['f64.eq', ['local.tee', `$${t}`, asF64(va)], ['local.get', `$${t}`]],
           ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]]
@@ -1540,14 +1538,13 @@ export const emitter = {
       ['else', asF64(emit(b))]], 'f64')
   },
 
-  // a ?? b: in f64 world null=0, same as || (revisit when null is distinct from 0)
-  // a ?? b: returns b only if a is null (NaN-boxed null), NOT for 0/""/false
+  // a ?? b: returns b only if a is nullish
   '??': (a, b) => {
     const va = emit(a)
     const t = temp()
     return typed(['if', ['result', 'f64'],
-      // Check: is a NOT the null NaN?
-      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, asF64(va)]], ['i64.const', NULL_NAN]],
+      // Check: is a NOT nullish?
+      ['i32.eqz', isNullish(['local.tee', `$${t}`, asF64(va)])],
       ['then', ['local.get', `$${t}`]],
       ['else', asF64(emit(b))]], 'f64')
   },
