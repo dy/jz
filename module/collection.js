@@ -20,7 +20,7 @@ const f64Eq = '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (loc
 const strEq = '(call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
 /** Generate upsert (add/set) probe function. hasVal: store value at slot+16. */
-function genUpsert(name, entrySize, hashFn, eqExpr, hasVal) {
+function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
   const valParam = hasVal ? '(param $val f64) ' : ''
   const storeVal = hasVal ? `\n          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))` : ''
   const onMatch = hasVal
@@ -29,6 +29,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, hasVal) {
 
   return `(func $${name} (param $coll f64) (param $key f64) ${valParam}(result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
+    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (local.get $coll))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -51,7 +52,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, hasVal) {
 /** Generate lookup probe function.
  *  wantValue=true: return slot value, missing => NULL_NAN sentinel.
  *  wantValue=false: return i32 0/1 existence flag. */
-function genLookup(name, entrySize, hashFn, eqExpr, wantValue) {
+function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue) {
   const rt = wantValue ? 'f64' : 'i32'
   const onEmpty = wantValue
     ? `(return (f64.reinterpret_i64 (i64.const ${NULL_NAN})))`
@@ -65,6 +66,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, wantValue) {
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then ${onEmpty}))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -81,9 +83,10 @@ function genLookup(name, entrySize, hashFn, eqExpr, wantValue) {
 }
 
 /** Generate delete probe function. Zero out entry on match. */
-function genDelete(name, entrySize, hashFn, eqExpr) {
+function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
   return `(func $${name} (param $coll f64) (param $key f64) (result i32)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -109,6 +112,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32)
+    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (return (local.get $obj))))
     (local.set $off (call $__ptr_offset (local.get $obj)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
@@ -207,9 +211,9 @@ export default () => {
   }
 
   // Generated Set probe functions
-  ctx.core.stdlib['__set_add'] = genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, false)
-  ctx.core.stdlib['__set_has'] = genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, false)
-  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq)
+  ctx.core.stdlib['__set_add'] = genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false)
+  ctx.core.stdlib['__set_has'] = genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false)
+  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq, PTR.SET)
 
   // === Map ===
 
@@ -232,8 +236,8 @@ export default () => {
   }
 
   // Generated Map probe functions
-  ctx.core.stdlib['__map_set'] = genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, true)
-  ctx.core.stdlib['__map_get'] = genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, true)
+  ctx.core.stdlib['__map_set'] = genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true)
+  ctx.core.stdlib['__map_get'] = genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true)
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
@@ -278,8 +282,8 @@ export default () => {
 
   // Generated HASH probe functions
   ctx.core.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, true)
-  ctx.core.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, false)
+  ctx.core.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
+  ctx.core.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false)
 
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {

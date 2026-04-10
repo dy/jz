@@ -74,8 +74,8 @@ export const STDLIB_DEPS = {
   __str_to_buf: ['__str_byteLen', '__char_at'],
 
   // hash operations
-  __hash_set: ['__str_hash', '__str_eq'],
-  __hash_get: ['__str_hash', '__str_eq'],
+  __hash_set: ['__str_hash', '__str_eq', '__ptr_type'],
+  __hash_get: ['__str_hash', '__str_eq', '__ptr_type'],
   __hash_new: ['__alloc_hdr'],
 
   // console

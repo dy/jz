@@ -585,10 +585,10 @@ const handlers = {
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      if (STATIC_METHOD_MODULES[obj]?.[prop]) {
+      if (typeof obj === 'string' && Object.hasOwn(STATIC_METHOD_MODULES, obj) && Object.hasOwn(STATIC_METHOD_MODULES[obj], prop)) {
         includeMods(...STATIC_METHOD_MODULES[obj][prop])
         callee = `${obj}.${prop}`
-      } else if (GENERIC_METHOD_MODULES[prop]) {
+      } else if (typeof prop === 'string' && Object.hasOwn(GENERIC_METHOD_MODULES, prop)) {
         includeMods(...GENERIC_METHOD_MODULES[prop])
         callee = prep(callee)
       } else {
