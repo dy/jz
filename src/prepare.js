@@ -910,7 +910,7 @@ function prepareModule(specifier, source) {
   let ast = parse(source)
   if (ctx.jzify) ast = ctx.jzify(ast)
   const savedDepth = depth; depth = 0
-  prep(ast)
+  const moduleInit = prep(ast)
   depth = savedDepth
 
   // Collect exports: rename exported funcs with prefix
@@ -989,6 +989,14 @@ function prepareModule(specifier, source) {
       walk(func.body, funcParams)
       if (func.defaults) for (const [k, v] of Object.entries(func.defaults)) func.defaults[k] = walk(v, funcParams)
     }
+    // Also rename init code AST
+    if (moduleInit) walk(moduleInit)
+  }
+
+  // Collect sub-module init code (variable initializations) for __start
+  if (moduleInit) {
+    if (!ctx.moduleInits) ctx.moduleInits = []
+    ctx.moduleInits.push(moduleInit)
   }
 
   // Restore caller state

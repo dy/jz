@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, emitFlat, typed, asF64, asI32, T } from '../src/compile.js'
 import { ctx } from '../src/ctx.js'
 
 const HASH = 7, SET = 8, MAP = 9
@@ -294,15 +294,7 @@ export default () => {
     if (!ctx.locals.has(varName)) ctx.locals.set(varName, 'f64')
     const id = ctx.uniq++
     const va = asF64(emit(src))
-    const bodyWasm = emit(body)
-    // Flatten: single instruction → [instr], multiple → already array of arrays
-    const bodyFlat = Array.isArray(bodyWasm) && typeof bodyWasm[0] === 'string' ? [bodyWasm] : (bodyWasm || [])
-    // Drop value-producing body expressions (method calls etc. that leave values on stack)
-    const bodyOp = Array.isArray(body) && body[0]
-    if (bodyWasm?.type && bodyWasm.type !== 'void'
-      && !['return', 'let', 'const', '=', '+=', '-=', '*=', '/=', '%=',
-            'if', 'for', 'while', 'break', 'continue', 'switch'].includes(bodyOp))
-      bodyFlat.push('drop')
+    const bodyFlat = emitFlat(body)
     return [
       ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
       ['local.set', `$${cap}`, ['call', '$__cap', va]],

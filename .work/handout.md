@@ -1,10 +1,9 @@
 # jz Session Handout — Watr WASM Execution
 
 ## Status
-- **8/8 WAT**, **8/8 WASM binary**, **8/8 valid WASM**, **704 jz tests pass**
-- All watr source files compile to valid WASM modules
-- 3/8 instantiate at runtime (const.js, parse.js, print.js); 5 fail with memory/table OOB during __start
-- Next: debug runtime initialization, then run watr test suite
+- **8/8 WAT**, **8/8 WASM binary**, **8/8 valid WASM**, **8/8 instantiate**, **704 jz tests pass**
+- All watr source files compile, validate, and instantiate
+- Runtime: calling jz-compiled watr functions hits memory OOB — needs runtime debugging of bundled module interactions
 - watr `vec()` section encoding bug fixed for large function indices (>127)
 
 ## What Was Done (across 3 sessions)

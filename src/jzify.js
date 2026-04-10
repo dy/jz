@@ -144,6 +144,8 @@ function transform(node) {
     // Keep new for TypedArrays and ArrayBuffer
     if (typeof ctor === 'string' && typedArrays.includes(ctor)) return [op, ...args.map(transform)]
     // Strip new for others: new X(args) → X(args)
+    // ctor is already ['()', name, args] from the parser, just transform it
+    if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
     return ['()', transform(ctor), ...cargs.map(transform)]
   }
 

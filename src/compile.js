@@ -822,8 +822,18 @@ export default function compile(ast) {
     // Also scan function bodies (property assignments like err.loc = pos happen inside functions)
     for (const func of ctx.funcs) if (func.body) scan(func.body)
     for (const [name, props] of propMap) {
-      // Skip if variable already has a schema (e.g. from Object.assign in prepare)
-      if (ctx.schema.vars.has(name)) continue
+      // Merge new properties into existing schema if needed
+      if (ctx.schema.vars.has(name)) {
+        const existingId = ctx.schema.vars.get(name)
+        const existing = ctx.schema.list[existingId]
+        const newProps = [...props].filter(p => !existing.includes(p))
+        if (newProps.length) {
+          const merged = [...existing, ...newProps]
+          const mergedId = ctx.schema.register(merged)
+          ctx.schema.vars.set(name, mergedId)
+        }
+        continue
+      }
       // Skip props that are extracted as functions (fn.prop = arrow)
       const valueProps = [...props].filter(p => !funcNames.has(`${name}$${p}`))
       if (!valueProps.length) continue
@@ -1035,6 +1045,15 @@ export default function compile(ast) {
   ctx.stack = []
   ctx.sig = { params: [], results: [] }
   analyzeValTypes(ast)
+  // Emit sub-module init code first (imports must be initialized before main module)
+  const moduleInits = []
+  if (ctx.moduleInits) {
+    for (const mi of ctx.moduleInits) {
+      analyzeValTypes(mi)
+      const ir = emit(mi)
+      if (ir?.length) moduleInits.push(...ir)
+    }
+  }
   const init = emit(ast)
 
   // Auto-boxing: emit boxing code for variables with property assignments
@@ -1057,10 +1076,10 @@ export default function compile(ast) {
     }
   }
 
-  if (init?.length || boxInit.length) {
+  if (moduleInits.length || init?.length || boxInit.length) {
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...boxInit, ...init)
+    startFn.push(...boxInit, ...moduleInits, ...init)
     sections.push(startFn)
     sections.push(['start', '$__start'])
   }
@@ -1107,7 +1126,7 @@ const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 
 const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && Array.isArray(n[1]) && STMT_OPS.has(n[1]?.[0])
 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
-function emitFlat(node) {
+export function emitFlat(node) {
   if (isBlockBody(node)) return emitBody(node)
   const ir = emit(node)
   const items = flat(ir)
@@ -1618,7 +1637,7 @@ export const emitter = {
     const disc = `${T}disc${ctx.uniq++}`
     ctx.locals.set(disc, 'f64')
 
-    const result = [typed(['local.set', `$${disc}`, asF64(emit(discriminant))], 'f64')]
+    const result = [['local.set', `$${disc}`, asF64(emit(discriminant))]]
 
     for (const c of cases) {
       if (c[0] === 'case') {
@@ -1627,9 +1646,9 @@ export const emitter = {
         // Block: skip if discriminant != test, otherwise execute body
         result.push(['block', skip,
           ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
-          ...flat(emit(body))])
+          ...emitFlat(body)])
       } else if (c[0] === 'default') {
-        result.push(...flat(emit(c[1])))
+        result.push(...emitFlat(c[1]))
       }
     }
 
