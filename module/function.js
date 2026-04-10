@@ -1,7 +1,7 @@
 /**
  * Function module — closures, first-class functions, call_indirect.
  *
- * Closures are NaN-boxed pointers: type=10 (CLOSURE), aux=funcIdx, offset=envPtr.
+ * Closures are NaN-boxed pointers: type=10 (PTR.CLOSURE), aux=funcIdx, offset=envPtr.
  * Closure body: (env: f64, ...params: f64) → f64 — env is pointer to captured values.
  * Captured variables stored as f64 in memory at envPtr.
  *
@@ -11,9 +11,8 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, PTR } from '../src/ctx.js'
 
-const CLOSURE = 10
 
 export default () => {
   // Uniform closure convention: all closures use (env: f64, args: f64) → f64
@@ -52,7 +51,7 @@ export default () => {
     // At call site: allocate env, store captured values, return NaN-boxed pointer
     if (captures.length === 0) {
       // No captures — just a function reference
-      return typed(['call', '$__mkptr', ['i32.const', CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
+      return typed(['call', '$__mkptr', ['i32.const', PTR.CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
     }
 
     const t = `${T}env${ctx.uniq++}`
@@ -73,7 +72,7 @@ export default () => {
         : asF64(emit(captures[i]))
       block.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], v])
     }
-    block.push(['call', '$__mkptr', ['i32.const', CLOSURE], ['i32.const', tableIdx], ['local.get', `$${t}`]])
+    block.push(['call', '$__mkptr', ['i32.const', PTR.CLOSURE], ['i32.const', tableIdx], ['local.get', `$${t}`]])
 
     return typed(['block', ['result', 'f64'], ...block], 'f64')
   }

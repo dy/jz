@@ -8,9 +8,8 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc, PTR } from '../src/ctx.js'
 
-const TYPED = 3
 
 // Element types and their byte sizes
 const ELEM = {
@@ -192,7 +191,7 @@ function genSimdMap(name, elemType, pattern) {
       ${scalarStoreExpr}
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $rloop)))
-    (call $__mkptr (i32.const ${TYPED}) (i32.const ${elemType}) (local.get $dstOff)))`
+    (call $__mkptr (i32.const ${PTR.TYPED}) (i32.const ${elemType}) (local.get $dstOff)))`
 }
 
 
@@ -212,7 +211,7 @@ export default () => {
           ['local.set', `$${t}`, ['i32.add', buf, off]],
           ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 8]], len],
           ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 4]], len],
-          ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+          ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
       }
       // Single arg: if source is known array type, use .from() conversion
       if (typeof lenExpr === 'string' && ctx.valTypes?.get(lenExpr) === 'array' && ctx.emit[`${name}.from`])
@@ -223,7 +222,7 @@ export default () => {
       ctx.locals.set(t, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ['call', '$__alloc_hdr', len, len, ['i32.const', stride]]],
-        ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
     }
   }
 
@@ -237,7 +236,7 @@ export default () => {
     ctx.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', n, n, ['i32.const', 1]]],
-      ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
   }
 
   // DataView(buffer) → passthrough (same f64 pointer)
@@ -246,7 +245,7 @@ export default () => {
   // BigInt64Array(buffer) → reinterpret same memory as Float64Array (elemType=7)
   ctx.emit['BigInt64Array'] = (bufExpr) => {
     const va = asF64(emit(bufExpr))
-    return typed(['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', 7],
+    return typed(['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', 7],
       ['call', '$__ptr_offset', va]], 'f64')
   }
 
@@ -322,7 +321,7 @@ export default () => {
           storeExpr,
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
-        ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
     }
   }
 
@@ -339,7 +338,7 @@ export default () => {
   ctx.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${TYPED}))
+    (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
       (then
         (local.set $et (call $__ptr_aux (local.get $ptr)))
         (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
@@ -402,7 +401,7 @@ export default () => {
         const wat = genSimdMap(funcName, elemType, pattern)
         if (wat) {
           ctx.stdlib[funcName] = wat
-          ctx.includes.add(funcName)
+          inc(funcName)
           return typed(['call', `$${funcName}`, asF64(emit(arr))], 'f64')
         }
       }
@@ -439,7 +438,7 @@ export default () => {
           storeElem(asF64(ctx.fn.call(vf, [loadElem()]))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
-        ['call', '$__mkptr', ['i32.const', TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]], 'f64')
+        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]], 'f64')
     }
 
     // Unknown typed array type: fall back to generic array .map

@@ -11,12 +11,10 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
+import { ctx, inc, PTR } from '../src/ctx.js'
 
-const STRING = 4, STRING_SSO = 5
 
 export default () => {
-  const incConcat = () => inc('__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
 
@@ -25,7 +23,7 @@ export default () => {
     if (str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
+      return typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
     }
     const len = str.length
     if (!ctx.sharedMemory) {
@@ -35,7 +33,7 @@ export default () => {
       const offset = ctx.data.length
       ctx.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
       for (let i = 0; i < len; i++) ctx.data += String.fromCharCode(str.charCodeAt(i))
-      return typed(['call', '$__mkptr', ['i32.const', STRING], ['i32.const', 0], ['i32.const', offset + 4]], 'f64')
+      return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['i32.const', offset + 4]], 'f64')
     }
     // Shared memory: heap-allocate (data segment would collide across modules)
     const t = `${T}str${ctx.uniq++}`
@@ -47,7 +45,7 @@ export default () => {
     ]
     for (let i = 0; i < len; i++)
       body.push(['i32.store8', ['i32.add', ['local.get', `$${t}`], ['i32.const', i]], ['i32.const', str.charCodeAt(i)]])
-    body.push(['call', '$__mkptr', ['i32.const', STRING], ['i32.const', 0], ['local.get', `$${t}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['local.get', `$${t}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -60,14 +58,14 @@ export default () => {
     (i32.load8_u (i32.add (call $__ptr_offset (local.get $ptr)) (local.get $i))))`
 
   ctx.stdlib['__char_at'] = `(func $__char_at (param $ptr f64) (param $i i32) (result i32)
-    (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${STRING_SSO}))
+    (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.SSO}))
       (then (call $__sso_char (local.get $ptr) (local.get $i)))
       (else (call $__str_char (local.get $ptr) (local.get $i)))))`
 
   // === WAT: unified byte length (SSO → aux, heap → header) ===
 
   ctx.stdlib['__str_byteLen'] = `(func $__str_byteLen (param $ptr f64) (result i32)
-    (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${STRING_SSO}))
+    (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.SSO}))
       (then (call $__ptr_aux (local.get $ptr)))
       (else (call $__str_len (local.get $ptr)))))`
 
@@ -89,7 +87,7 @@ export default () => {
     (if (i32.gt_s (local.get $end) (local.get $len))
       (then (local.set $end (local.get $len))))
     (if (i32.ge_s (local.get $start) (local.get $end))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $nlen (i32.sub (local.get $end) (local.get $start)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $nlen))))
     (i32.store (local.get $off) (local.get $nlen))
@@ -101,7 +99,7 @@ export default () => {
         (call $__char_at (local.get $ptr) (i32.add (local.get $start) (local.get $i))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.stdlib['__str_substring'] = `(func $__str_substring (param $ptr f64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $tmp i32)
@@ -181,7 +179,7 @@ export default () => {
     (local $len i32) (local $off i32) (local $i i32) (local $c i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.eqz (local.get $len))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
@@ -194,7 +192,7 @@ export default () => {
       (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.stdlib['__str_trim'] = `(func $__str_trim (param $ptr f64) (result f64)
     (local $len i32) (local $start i32) (local $end i32)
@@ -239,7 +237,7 @@ export default () => {
     (local $len i32) (local $total i32) (local $off i32) (local $i i32) (local $j i32) (local $pos i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.or (i32.eqz (local.get $n)) (i32.eqz (local.get $len)))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $total (i32.mul (local.get $len) (local.get $n)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
@@ -258,7 +256,7 @@ export default () => {
         (br $l2)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l1)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", pointers pass through
   ctx.stdlib['__to_str'] = `(func $__to_str (param $val f64) (result f64)
@@ -279,7 +277,7 @@ export default () => {
     (local.set $blen (call $__str_byteLen (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
@@ -297,7 +295,7 @@ export default () => {
         (call $__char_at (local.get $b) (local.get $i)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.stdlib['__str_replace'] = `(func $__str_replace (param $str f64) (param $search f64) (param $repl f64) (result f64)
     (local $idx i32) (local $slen i32)
@@ -392,7 +390,7 @@ export default () => {
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (local.set $len (call $__len (local.get $arr)))
     (if (i32.eqz (local.get $len))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 0) (i32.const 0)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $result (f64.load (local.get $off)))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
@@ -431,11 +429,10 @@ export default () => {
         (call $__char_at (local.get $pad) (i32.rem_u (local.get $i) (local.get $plen))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // Always include base helpers
-  for (const name of ['__sso_char', '__str_char', '__char_at', '__str_byteLen'])
-    ctx.includes.add(name)
+  inc('__sso_char', '__str_char', '__char_at', '__str_byteLen')
 
   // === Method emitters ===
 
@@ -463,7 +460,7 @@ export default () => {
 
   // Generic (no collision)
   ctx.emit['.substring'] = (str, start, end) => {
-    inc('__str_substring', '__str_slice')
+    inc('__str_substring')
     if (end != null) return typed(['call', '$__str_substring', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
     const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['block', ['result', 'f64'],
@@ -472,15 +469,24 @@ export default () => {
         ['call', '$__str_byteLen', ['local.get', `$${t}`]]]], 'f64')
   }
 
-  ctx.emit['.startsWith'] = (str, pfx) => {
-    inc('__str_startswith')
-    return typed(['f64.convert_i32_s', ['call', '$__str_startswith', asF64(emit(str)), asF64(emit(pfx))]], 'f64')
+  // Factory for simple str→call patterns: [emitKey, stdlibName, argCoercions, i32Result?]
+  const coerce = { f: asF64, i: asI32 }
+  const strMethod = (name, args, i32Result) => (str, ...params) => {
+    inc(name)
+    const call = ['call', `$${name}`, asF64(emit(str)), ...params.map((p, i) => coerce[args[i]](emit(p)))]
+    return typed(i32Result ? ['f64.convert_i32_s', call] : call, 'f64')
   }
 
-  ctx.emit['.endsWith'] = (str, sfx) => {
-    inc('__str_endswith')
-    return typed(['f64.convert_i32_s', ['call', '$__str_endswith', asF64(emit(str)), asF64(emit(sfx))]], 'f64')
-  }
+  // Simple str methods: [emitKey, stdlibName, argCoercions, i32Result?]
+  ctx.emit['.startsWith'] = strMethod('__str_startswith', ['f'], true)
+  ctx.emit['.endsWith'] = strMethod('__str_endswith', ['f'], true)
+  ctx.emit['.trim'] = strMethod('__str_trim', [])
+  ctx.emit['.trimStart'] = strMethod('__str_trimStart', [])
+  ctx.emit['.trimEnd'] = strMethod('__str_trimEnd', [])
+  ctx.emit['.repeat'] = strMethod('__str_repeat', ['i'])
+  ctx.emit['.split'] = strMethod('__str_split', ['f'])
+  ctx.emit['.replace'] = strMethod('__str_replace', ['f', 'f'])
+  ctx.emit['.replaceAll'] = strMethod('__str_replaceall', ['f', 'f'])
 
   ctx.emit['.toUpperCase'] = (str) => {
     inc('__str_case')
@@ -492,64 +498,24 @@ export default () => {
     return typed(['call', '$__str_case', asF64(emit(str)), ['i32.const', 65], ['i32.const', 90], ['i32.const', 32]], 'f64')
   }
 
-  ctx.emit['.trim'] = (str) => {
-    inc('__str_trim', '__str_slice')
-    return typed(['call', '$__str_trim', asF64(emit(str))], 'f64')
-  }
-
-  ctx.emit['.trimStart'] = (str) => {
-    inc('__str_trimStart', '__str_slice')
-    return typed(['call', '$__str_trimStart', asF64(emit(str))], 'f64')
-  }
-
-  ctx.emit['.trimEnd'] = (str) => {
-    inc('__str_trimEnd', '__str_slice')
-    return typed(['call', '$__str_trimEnd', asF64(emit(str))], 'f64')
-  }
-
-  ctx.emit['.repeat'] = (str, n) => {
-    inc('__str_repeat')
-    return typed(['call', '$__str_repeat', asF64(emit(str)), asI32(emit(n))], 'f64')
-  }
-
   ctx.emit['.string:concat'] = (str, ...others) => {
-    incConcat()
-    // Chain concat for multiple args: s.concat(a, b, c) → concat(concat(concat(s, a), b), c)
+    inc('__str_concat')
     let result = asF64(emit(str))
-    for (const other of others) {
-      result = typed(['call', '$__str_concat', result, asF64(emit(other))], 'f64')
-    }
+    for (const other of others) result = typed(['call', '$__str_concat', result, asF64(emit(other))], 'f64')
     return result
-  }
-
-  ctx.emit['.replace'] = (str, search, repl) => {
-    inc('__str_replace', '__str_indexof', '__str_slice')
-    incConcat()
-    return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
-  }
-
-  ctx.emit['.replaceAll'] = (str, search, repl) => {
-    inc('__str_replaceall', '__str_indexof', '__str_slice')
-    incConcat()
-    return typed(['call', '$__str_replaceall', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
-  }
-
-  ctx.emit['.split'] = (str, sep) => {
-    inc('__str_split', '__str_slice')
-    return typed(['call', '$__str_split', asF64(emit(str)), asF64(emit(sep))], 'f64')
   }
 
   ctx.emit['.padStart'] = (str, len, pad) => {
     inc('__str_pad')
     const vpad = pad != null ? asF64(emit(pad))
-      : typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
+      : typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
     return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
   }
 
   ctx.emit['.padEnd'] = (str, len, pad) => {
     inc('__str_pad')
     const vpad = pad != null ? asF64(emit(pad))
-      : typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
+      : typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
     return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
   }
 
@@ -560,7 +526,7 @@ export default () => {
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]],
-      ['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
   }
 
   // .charCodeAt(i) → integer char code
@@ -570,7 +536,7 @@ export default () => {
 
   // String.fromCharCode(code) → 1-char SSO string
   ctx.emit['String.fromCharCode'] = (code) => {
-    return typed(['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1], asI32(emit(code))], 'f64')
+    return typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], asI32(emit(code))], 'f64')
   }
 
   // String.fromCodePoint(cp) → UTF-8 encoded string
@@ -578,22 +544,22 @@ export default () => {
     (local $off i32) (local $len i32)
     ;; ASCII: 1 byte SSO
     (if (i32.lt_u (local.get $cp) (i32.const 128))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 1) (local.get $cp)))))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (local.get $cp)))))
     ;; 2-byte: 0x80-0x7FF → SSO
     (if (i32.lt_u (local.get $cp) (i32.const 0x800))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 2)
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 2)
         (i32.or
           (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6)))
           (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 8)))))))
     ;; 3-byte: 0x800-0xFFFF → SSO (3 bytes fits)
     (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
-      (then (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 3)
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 3)
         (i32.or (i32.or
           (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12)))
           (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 8)))
           (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 16)))))))
     ;; 4-byte: 0x10000-0x10FFFF → SSO (4 bytes fits)
-    (return (call $__mkptr (i32.const ${STRING_SSO}) (i32.const 4)
+    (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 4)
       (i32.or (i32.or (i32.or
         (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18)))
         (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))) (i32.const 8)))
@@ -616,7 +582,7 @@ export default () => {
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
           ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]],
-      ['call', '$__mkptr', ['i32.const', STRING_SSO], ['i32.const', 1],
+      ['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1],
         ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]]]], 'f64')
   }
 
@@ -680,7 +646,7 @@ export default () => {
     (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`
 
   ctx.emit['.encode'] = (obj, str) => {
-    inc('__str_encode', '__str_byteLen', '__char_at')
+    inc('__str_encode')
     return typed(['call', '$__str_encode', asF64(emit(str))], 'f64')
   }
 
@@ -693,7 +659,7 @@ export default () => {
     (i32.store (local.get $dst) (local.get $len))
     (local.set $dst (i32.add (local.get $dst) (i32.const 4)))
     (memory.copy (local.get $dst) (local.get $off) (local.get $len))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $dst)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst)))`
 
   ctx.emit['.decode'] = (obj, arr) => {
     inc('__bytes_decode')

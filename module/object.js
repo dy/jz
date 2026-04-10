@@ -8,15 +8,14 @@
  */
 
 import { emit, typed, asF64, valTypeOf, VAL, T } from '../src/compile.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, inc, PTR } from '../src/ctx.js'
 
-const ARRAY = 1, STRING = 4, STRING_SSO = 5, OBJECT = 6
 
 export default () => {
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
   ctx.emit['{}'] = (...props) => {
     if (props.length === 0)
-      return typed(['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', 0], ['i32.const', 0]], 'f64')
+      return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['i32.const', 0]], 'f64')
 
     const names = [], values = []
     for (const p of props) {
@@ -38,7 +37,7 @@ export default () => {
     ]
     for (let i = 0; i < values.length; i++)
       body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], asF64(emit(values[i]))])
-    body.push(['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -66,7 +65,7 @@ export default () => {
       body.push(['f64.store',
         ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
         ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]])
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -84,13 +83,13 @@ export default () => {
     for (let i = 0; i < n; i++) {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
-        ['f64.store', ['local.get', `$${pair}`], emitStringLiteral(schema[i])],
+        ['f64.store', ['local.get', `$${pair}`], emit(['str', schema[i]])],
         ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
           ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]],
         ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
-          ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
+          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
     }
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -125,7 +124,7 @@ export default () => {
           }
         }
         body.push(['local.set', `$${target}`,
-          ['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
+          ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
         body.push(['local.get', `$${target}`])
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
@@ -153,8 +152,8 @@ export default () => {
 
   // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs
   ctx.emit['Object.fromEntries'] = (arr) => {
-    ctx.includes.add('__hash_new'); ctx.includes.add('__hash_set')
-    ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    inc('__hash_new', '__hash_set')
+    inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
     const t = `${T}fe${ctx.uniq++}`, ptr = `${T}fp${ctx.uniq++}`, len = `${T}fl${ctx.uniq++}`
     const i = `${T}fi${ctx.uniq++}`, pair = `${T}fv${ctx.uniq++}`
@@ -196,7 +195,7 @@ export default () => {
     for (let i = 0; i < n; i++)
       body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]],
         ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', i * 8]]]])
-    body.push(['call', '$__mkptr', ['i32.const', OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 }
@@ -213,10 +212,6 @@ function resolveSchema(obj) {
   return null
 }
 
-function emitStringLiteral(str) {
-  return emit(['str', str])
-}
-
 function emitStringArray(names) {
   const n = names.length, arr = `${T}sa${ctx.uniq++}`
   ctx.locals.set(arr, 'i32')
@@ -224,7 +219,7 @@ function emitStringArray(names) {
     ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
   ]
   for (let i = 0; i < n; i++)
-    body.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]], emitStringLiteral(names[i])])
-  body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]], emit(['str', names[i]])])
+  body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }

@@ -75,6 +75,76 @@ export const derive = (parent) => Object.create(parent)
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.includes.add(n))
 
+/** NaN-boxing pointer type codes: [type:4 bits] in the quiet NaN payload. */
+export const PTR = { ATOM: 0, ARRAY: 1, TYPED: 3, STRING: 4, SSO: 5, OBJECT: 6, HASH: 7, SET: 8, MAP: 9, CLOSURE: 10 }
+
+/** Stdlib call-dependency graph: fn → fns it calls internally.
+ *  resolveIncludes() expands transitively before WASM assembly. */
+export const STDLIB_DEPS = {
+  // number → string conversion chain
+  __mkstr: ['__alloc'],
+  __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+  __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+  __to_str: ['__ftoa', '__static_str'],
+
+  // string operations
+  __str_concat: ['__to_str', '__str_byteLen', '__char_at', '__alloc'],
+  __str_slice: ['__char_at', '__str_byteLen', '__alloc'],
+  __str_indexof: ['__str_byteLen', '__char_at'],
+  __str_substring: ['__str_slice'],
+  __str_startswith: ['__str_byteLen', '__char_at'],
+  __str_endswith: ['__str_byteLen', '__char_at'],
+  __str_case: ['__str_byteLen', '__char_at', '__alloc'],
+  __str_trim: ['__str_slice'],
+  __str_trimStart: ['__str_slice'],
+  __str_trimEnd: ['__str_slice'],
+  __str_repeat: ['__str_byteLen', '__char_at', '__alloc'],
+  __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
+  __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
+  __str_split: ['__str_slice'],
+  __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
+  __str_join: ['__str_concat', '__to_str', '__str_byteLen'],
+  __str_encode: ['__str_byteLen', '__char_at'],
+  __str_to_buf: ['__str_byteLen', '__char_at'],
+
+  // hash operations
+  __hash_set: ['__str_hash', '__str_eq'],
+  __hash_get: ['__str_hash', '__str_eq'],
+  __hash_new: ['__alloc_hdr'],
+
+  // console
+  __write_val: ['__write_str', '__write_num', '__write_byte', '__static_str'],
+  __write_num: ['__ftoa'],
+  __write_str: ['__sso_char', '__str_len'],
+
+  // JSON stringify
+  __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num'],
+  __jput_num: ['__ftoa'],
+  __jput_str: ['__char_at', '__str_byteLen'],
+
+  // JSON parse
+  __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws'],
+  __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
+  __jp_num: ['__pow10'],
+  __jp_arr: ['__jp_val'],
+  __jp_obj: ['__jp_val', '__hash_new', '__hash_set'],
+
+  // number
+  __parseInt: ['__char_at', '__str_byteLen'],
+}
+
+/** Expand ctx.includes transitively via STDLIB_DEPS. Call before WASM assembly. */
+export function resolveIncludes() {
+  const queue = [...ctx.includes]
+  while (queue.length) {
+    const name = queue.pop()
+    const deps = STDLIB_DEPS[name]
+    if (deps) for (const dep of deps) {
+      if (!ctx.includes.has(dep)) { ctx.includes.add(dep); queue.push(dep) }
+    }
+  }
+}
+
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals) {
   ctx.emit = derive(proto)
@@ -98,6 +168,7 @@ export function reset(proto, globals) {
   ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
   ctx.typedElem = null
   ctx.regex = null
+  ctx._localProps = null
   ctx._inTry = false
   ctx.sharedMemory = false
   ctx.memoryPages = 0

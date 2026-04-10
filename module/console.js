@@ -13,9 +13,7 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
-
-const STRING = 4, STRING_SSO = 5
+import { ctx, inc, PTR } from '../src/ctx.js'
 
 export default () => {
 
@@ -31,7 +29,7 @@ export default () => {
     ;; Allocate iov (8 bytes: ptr + len) + nwritten (4 bytes)
     (local.set $iov (call $__alloc (i32.const 12)))
     (local.set $type (call $__ptr_type (local.get $ptr)))
-    (if (i32.eq (local.get $type) (i32.const ${STRING_SSO}))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
       (then
         ;; SSO: unpack chars to memory buffer, then write
         (local.set $len (call $__ptr_aux (local.get $ptr)))
@@ -77,8 +75,8 @@ export default () => {
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 0))) (return)))
     ;; String pointer
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${STRING}))
-                (i32.eq (local.get $type) (i32.const ${STRING_SSO})))
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
       (then (call $__write_str (local.get $fd) (local.get $val)) (return)))
     ;; Array/Object placeholder
     (call $__write_str (local.get $fd) (call $__static_str
@@ -88,8 +86,7 @@ export default () => {
   // console.log(...args) — variadic, each arg separated by space, followed by newline
   const makeConsole = (method, fd) => {
     ctx.emit[`console.${method}`] = (...args) => {
-      inc('__write_val', '__write_str', '__write_num', '__write_byte',
-          '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str', '__sso_char', '__str_len')
+      inc('__write_val')
       const ir = []
       for (let i = 0; i < args.length; i++) {
         if (i > 0) ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]])  // space
@@ -118,12 +115,12 @@ export default () => {
     (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
 
   ctx.emit['Date.now'] = () => {
-    ctx.includes.add('__time_ms')
+    inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')  // clock 0 = realtime
   }
 
   ctx.emit['performance.now'] = () => {
-    ctx.includes.add('__time_ms')
+    inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')  // clock 1 = monotonic
   }
 }

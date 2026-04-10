@@ -9,9 +9,8 @@
  */
 
 import { emit, typed, asF64, asI32, T, NULL_NAN, temp, multiCount, materializeMulti } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
+import { ctx, inc, PTR } from '../src/ctx.js'
 
-const ARRAY = 1, STRING = 4, STRING_SSO = 5
 
 /** Allocate array: 8-byte header (len+cap) + n*8 data via __alloc_hdr. Returns offset to data start. */
 function allocArray(len, cap) {
@@ -57,13 +56,13 @@ function elemStore(ptr, i, val) {
 }
 
 export default () => {
-  // Array.isArray(x): check ptr_type === ARRAY
+  // Array.isArray(x): check ptr_type === PTR.ARRAY
   ctx.emit['Array.isArray'] = (x) => {
     const v = asF64(emit(x))
     const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', ARRAY]]], 'i32')
+      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
@@ -72,10 +71,10 @@ export default () => {
     (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
     (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
-    (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $dst)))`
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
   ctx.emit['Array.from'] = (src) => {
-    ctx.includes.add('__arr_from')
+    inc('__arr_from')
     return typed(['call', '$__arr_from', asF64(emit(src))], 'f64')
   }
 
@@ -93,7 +92,7 @@ export default () => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
-    (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $newOff)))`
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
 
   // === Array literal ===
 
@@ -106,7 +105,7 @@ export default () => {
       const body = [...setup]
       for (let i = 0; i < len; i++)
         body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], asF64(emit(elems[i]))])
-      body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${t}`]])
+      body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${t}`]])
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
 
@@ -170,7 +169,7 @@ export default () => {
       }
     }
 
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${out}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -203,12 +202,12 @@ export default () => {
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     // Use __typed_idx when typedarray module loaded (handles typed + array via runtime dispatch)
     const arrayLoad = ctx.modules['typedarray']
-      ? (ctx.includes.add('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
+      ? (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
       : ['f64.load', ['i32.add', ['call', '$__ptr_offset', ptrExpr], ['i32.shl', vi, ['i32.const', 3]]]]
     if (ctx.modules['string'])
       return typed(
         ['if', ['result', 'f64'],
-          ['i32.ge_u', ['call', '$__ptr_type', ptrExpr], ['i32.const', STRING]],
+          ['i32.ge_u', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
           ['then', ['f64.convert_i32_u', ['call', '$__char_at', ptrExpr, vi]]],
           ['else', arrayLoad]],
         'f64')
@@ -219,7 +218,7 @@ export default () => {
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
   ctx.emit['.push'] = (arr, ...vals) => {
-    ctx.includes.add('__arr_grow')
+    inc('__arr_grow')
     const va = asF64(emit(arr))
     const t = `${T}pp${ctx.uniq++}`, len = `${T}pl${ctx.uniq++}`
     ctx.locals.set(t, 'f64'); ctx.locals.set(len, 'i32')
@@ -379,7 +378,7 @@ export default () => {
       ['i32.store', ['i32.add', ['local.get', `$${out}`], ['i32.const', 4]], ['local.get', `$${len}`]],  // cap
       ['local.set', `$${out}`, ['i32.add', ['local.get', `$${out}`], ['i32.const', 8]]],
       ...loop,
-      ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
 
   ctx.emit['.filter'] = (arr, fn) => {
@@ -402,7 +401,7 @@ export default () => {
       ...loop,
       // Set actual length
       ['i32.store', ['i32.sub', ['local.get', `$${out}`], ['i32.const', 8]], ['local.get', `$${count}`]],
-      ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
 
   ctx.emit['.reduce'] = (arr, fn, init) => {
@@ -510,7 +509,7 @@ export default () => {
           ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['i32.add', vs, ['local.get', `$${j}`]], ['i32.const', 3]]]]],
         ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
-      ['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
 
   // .concat(...others) → concatenate arrays
@@ -580,7 +579,7 @@ export default () => {
       )
     }
 
-    body.push(['call', '$__mkptr', ['i32.const', ARRAY], ['i32.const', 0], ['local.get', `$${result}`]])
+    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${result}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -596,7 +595,7 @@ export default () => {
       (br_if $c1 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${ARRAY})))
+        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
         (then (local.set $total (i32.add (local.get $total) (call $__len (local.get $elem)))))
         (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -612,7 +611,7 @@ export default () => {
       (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${ARRAY})))
+        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
         (then
           (local.set $subOff (call $__ptr_offset (local.get $elem)))
           (local.set $subLen (call $__len (local.get $elem)))
@@ -629,10 +628,10 @@ export default () => {
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl2)))
-    (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $dst)))`
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
   ctx.emit['.flat'] = (arr) => {
-    ctx.includes.add('__arr_flat')
+    inc('__arr_flat')
     return typed(['call', '$__arr_flat', asF64(emit(arr))], 'f64')
   }
 
@@ -640,14 +639,13 @@ export default () => {
   ctx.emit['.flatMap'] = (arr, fn) => {
     // Desugar: arr.map(fn).flat()
     const mapped = ctx.emit['.map'](arr, fn)
-    ctx.includes.add('__arr_flat')
+    inc('__arr_flat')
     return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')
   }
 
   // .join(sep) → concatenate array elements with separator string
   ctx.emit['.join'] = (arr, sep) => {
-    for (const n of ['__str_join', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str', '__str_byteLen'])
-      ctx.includes.add(n)
+    inc('__str_join')
     return typed(['call', '$__str_join', asF64(emit(arr)), asF64(emit(sep))], 'f64')
   }
 }

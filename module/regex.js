@@ -8,7 +8,7 @@
  */
 
 import { emit, typed, asF64, T } from '../src/compile.js'
-import { ctx, err, inc } from '../src/ctx.js'
+import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 // === Parser ===
 
@@ -656,7 +656,7 @@ export default () => {
         (br $next)))
       (i32.const -1) (i32.const -1))`
 
-    inc(funcName, searchName, '__str_to_buf', '__str_byteLen')
+    inc(funcName, searchName, '__str_to_buf')
     ctx.regex.compiled.set(key, id)
     return id
   }
@@ -770,10 +770,10 @@ export default () => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string replace
-      inc('__str_replace', '__str_indexof', '__str_slice', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
+      inc('__str_replace')
       return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
     }
-    inc('__str_slice', '__str_concat', '__to_str', '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
+    inc('__str_slice', '__str_concat')
     const s = `${T}sr${ctx.uniq++}`, r = `${T}srr${ctx.uniq++}`, ms = `${T}srms${ctx.uniq++}`, me = `${T}srme${ctx.uniq++}`
     ctx.locals.set(s, 'f64'); ctx.locals.set(r, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
@@ -797,14 +797,14 @@ export default () => {
     const id = resolveRegex(sep)
     if (id == null) {
       // Fall back to string split
-      inc('__str_split', '__str_slice')
+      inc('__str_split')
       return typed(['call', '$__str_split', asF64(emit(str)), asF64(emit(sep))], 'f64')
     }
 
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
     if (!ctx.stdlib[splitName]) {
-      inc('__str_to_buf', '__str_byteLen', '__str_slice')
+      inc('__str_to_buf', '__str_slice')
       ctx.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
@@ -842,8 +842,8 @@ export default () => {
         ;; Write array header (len + cap at arrOff)
         (i32.store (local.get $arrOff) (local.get $count))
         (i32.store (i32.add (local.get $arrOff) (i32.const 4)) (local.get $cap))
-        (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $arrOff) (i32.const 8))))`
-      ctx.includes.add(splitName)
+        (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (i32.add (local.get $arrOff) (i32.const 8))))`
+      inc(splitName)
     }
 
     return typed(['call', `$${splitName}`, asF64(emit(str))], 'f64')

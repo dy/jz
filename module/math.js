@@ -13,14 +13,15 @@
  * @module math
  */
 
-import { emit, typed, asF64, asI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { ctx, inc } from '../src/ctx.js'
 
-export default (ctx) => {
+export default () => {
   // Helpers: all math ops take f64 and return f64
   const f = (op, a) => typed([op, asF64(emit(a))], 'f64')
   const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')
-  const call = (name, ...args) => (ctx.includes.add(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
-  const inc = (deps, name, ...args) => { for (const d of deps) ctx.includes.add(d); return call(name, ...args) }
+  const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
+  const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))
 
   // Constants
   ctx.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
@@ -31,8 +32,6 @@ export default (ctx) => {
   ctx.emit['math.LOG10E'] = () => typed(['f64.const', Math.LOG10E], 'f64')
   ctx.emit['math.SQRT2'] = () => typed(['f64.const', Math.SQRT2], 'f64')
   ctx.emit['math.SQRT1_2'] = () => typed(['f64.const', Math.SQRT1_2], 'f64')
-
-  const T = '\uE000'
 
   /** Emit array reduce with a WASM binary op (for Math.max(...arr), Math.min(...arr)) */
   function emitArrayReduce(wasmOp, arrExpr, initVal) {
@@ -78,36 +77,36 @@ export default (ctx) => {
   // Trig
   ctx.emit['math.sin'] = a => call('math.sin', a)
   ctx.emit['math.cos'] = a => call('math.cos', a)
-  ctx.emit['math.tan'] = a => inc(['math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
+  ctx.emit['math.tan'] = a => callDeps(['math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
 
   // Inverse trig
-  ctx.emit['math.asin'] = a => inc(['math.atan', 'math.asin'], 'math.asin', a)
-  ctx.emit['math.acos'] = a => inc(['math.atan', 'math.asin', 'math.acos'], 'math.acos', a)
+  ctx.emit['math.asin'] = a => callDeps(['math.atan', 'math.asin'], 'math.asin', a)
+  ctx.emit['math.acos'] = a => callDeps(['math.atan', 'math.asin', 'math.acos'], 'math.acos', a)
   ctx.emit['math.atan'] = a => call('math.atan', a)
-  ctx.emit['math.atan2'] = (a, b) => inc(['math.atan', 'math.atan2'], 'math.atan2', a, b)
+  ctx.emit['math.atan2'] = (a, b) => callDeps(['math.atan', 'math.atan2'], 'math.atan2', a, b)
 
   // Hyperbolic
-  ctx.emit['math.sinh'] = a => inc(['math.exp', 'math.sinh'], 'math.sinh', a)
-  ctx.emit['math.cosh'] = a => inc(['math.exp', 'math.cosh'], 'math.cosh', a)
-  ctx.emit['math.tanh'] = a => inc(['math.exp', 'math.tanh'], 'math.tanh', a)
+  ctx.emit['math.sinh'] = a => callDeps(['math.exp', 'math.sinh'], 'math.sinh', a)
+  ctx.emit['math.cosh'] = a => callDeps(['math.exp', 'math.cosh'], 'math.cosh', a)
+  ctx.emit['math.tanh'] = a => callDeps(['math.exp', 'math.tanh'], 'math.tanh', a)
 
   // Inverse hyperbolic
-  ctx.emit['math.asinh'] = a => inc(['math.log', 'math.asinh'], 'math.asinh', a)
-  ctx.emit['math.acosh'] = a => inc(['math.log', 'math.acosh'], 'math.acosh', a)
-  ctx.emit['math.atanh'] = a => inc(['math.log', 'math.atanh'], 'math.atanh', a)
+  ctx.emit['math.asinh'] = a => callDeps(['math.log', 'math.asinh'], 'math.asinh', a)
+  ctx.emit['math.acosh'] = a => callDeps(['math.log', 'math.acosh'], 'math.acosh', a)
+  ctx.emit['math.atanh'] = a => callDeps(['math.log', 'math.atanh'], 'math.atanh', a)
 
   // Exponential and logarithmic
   ctx.emit['math.exp'] = a => call('math.exp', a)
-  ctx.emit['math.expm1'] = a => inc(['math.exp', 'math.expm1'], 'math.expm1', a)
+  ctx.emit['math.expm1'] = a => callDeps(['math.exp', 'math.expm1'], 'math.expm1', a)
   ctx.emit['math.log'] = a => call('math.log', a)
-  ctx.emit['math.log2'] = a => inc(['math.log', 'math.log2'], 'math.log2', a)
-  ctx.emit['math.log10'] = a => inc(['math.log', 'math.log10'], 'math.log10', a)
-  ctx.emit['math.log1p'] = a => inc(['math.log', 'math.log1p'], 'math.log1p', a)
+  ctx.emit['math.log2'] = a => callDeps(['math.log', 'math.log2'], 'math.log2', a)
+  ctx.emit['math.log10'] = a => callDeps(['math.log', 'math.log10'], 'math.log10', a)
+  ctx.emit['math.log1p'] = a => callDeps(['math.log', 'math.log1p'], 'math.log1p', a)
 
   // Power
-  ctx.emit['math.pow'] = (a, b) => inc(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
+  ctx.emit['math.pow'] = (a, b) => callDeps(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
   ctx.emit['**'] = ctx.emit['math.pow']
-  ctx.emit['math.cbrt'] = a => inc(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
+  ctx.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
   ctx.emit['math.hypot'] = (a, b) => call('math.hypot', a, b)
 
   // Integer/bit operations (coerce to i32 internally, return f64)
@@ -115,7 +114,7 @@ export default (ctx) => {
   ctx.emit['math.imul'] = (a, b) => typed(['f64.convert_i32_s', ['i32.mul', asI32(emit(a)), asI32(emit(b))]], 'f64')
 
   // Random
-  ctx.emit['math.random'] = () => (ctx.includes.add('math.random'), typed(['call', '$math.random'], 'f64'))
+  ctx.emit['math.random'] = () => (inc('math.random'), typed(['call', '$math.random'], 'f64'))
 
   // ============================================
   // WAT stdlib implementations

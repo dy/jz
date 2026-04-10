@@ -9,9 +9,7 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
-
-const ARRAY = 1, STRING = 4, STRING_SSO = 5, OBJECT = 6, HASH = 7, MAP = 9
+import { ctx, inc, PTR } from '../src/ctx.js'
 
 export default () => {
 
@@ -83,14 +81,14 @@ export default () => {
         (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
         (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
     ;; String
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${STRING}))
-                (i32.eq (local.get $type) (i32.const ${STRING_SSO})))
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
       (then
         (call $__jput (i32.const 34))
         (call $__jput_str (local.get $val))
         (call $__jput (i32.const 34)) (return)))
     ;; Array
-    (if (i32.eq (local.get $type) (i32.const ${ARRAY}))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (call $__jput (i32.const 91))  ;; [
         (local.set $len (call $__len (local.get $val)))
@@ -105,9 +103,9 @@ export default () => {
         (call $__jput (i32.const 93))  ;; ]
         (return)))
     ;; Object/Map/Hash → {}
-    (if (i32.or (i32.or (i32.eq (local.get $type) (i32.const ${OBJECT}))
-                        (i32.eq (local.get $type) (i32.const ${HASH})))
-                (i32.eq (local.get $type) (i32.const ${MAP})))
+    (if (i32.or (i32.or (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                        (i32.eq (local.get $type) (i32.const ${PTR.HASH})))
+                (i32.eq (local.get $type) (i32.const ${PTR.MAP})))
       (then
         (call $__jput (i32.const 123))
         (call $__jput (i32.const 125))
@@ -194,7 +192,7 @@ export default () => {
     (call $__jp_adv (i32.const 1))  ;; skip closing "
     ;; Store actual length in header
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // Parse number
   ctx.stdlib['__jp_num'] = `(func $__jp_num (result f64)
@@ -250,7 +248,7 @@ export default () => {
       (then (call $__jp_adv (i32.const 1))
         (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (i32.const 0))
         (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
-        (return (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $ptr)))))
+        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))))
     (block $d (loop $l
       (call $__jp_ws)
       ;; Grow if needed
@@ -271,7 +269,7 @@ export default () => {
     (call $__jp_adv (i32.const 1))
     (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (local.get $len))
     (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
-    (call $__mkptr (i32.const ${ARRAY}) (i32.const 0) (local.get $ptr)))`
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
 
   // Parse object → HASH (dynamic string-keyed object)
   ctx.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
@@ -325,7 +323,7 @@ export default () => {
     (local $len i32) (local $buf i32) (local $i i32)
     (local.set $len (call $__str_byteLen (local.get $str)))
     ;; SSO: unpack to heap buffer
-    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${STRING_SSO}))
+    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
       (then
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $i (i32.const 0))
@@ -344,19 +342,13 @@ export default () => {
 
   // === Emitters ===
 
-  const STRINGIFY_DEPS = ['__stringify', '__json_val', '__jput', '__jput_str', '__jput_num',
-    '__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str', '__str_byteLen', '__char_at']
-  const PARSE_DEPS = ['__jp', '__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj',
-    '__jp_peek', '__jp_adv', '__jp_ws', '__pow10', '__str_byteLen', '__char_at', '__sso_char',
-    '__hash_new', '__hash_set', '__str_hash', '__str_eq']
-
   ctx.emit['JSON.stringify'] = (x) => {
-    inc(...STRINGIFY_DEPS)
+    inc('__stringify')
     return typed(['call', '$__stringify', asF64(emit(x))], 'f64')
   }
 
   ctx.emit['JSON.parse'] = (x) => {
-    inc(...PARSE_DEPS)
+    inc('__jp')
     return typed(['call', '$__jp', asF64(emit(x))], 'f64')
   }
 }

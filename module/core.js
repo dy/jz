@@ -10,7 +10,7 @@
  */
 
 import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, temp } from '../src/compile.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, inc } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
 const NAN_PREFIX = 0x7FF8
@@ -93,8 +93,7 @@ export default () => {
     (i32.store (i32.add (local.get $ptr) (i32.const 4)) (local.get $cap))
     (i32.add (local.get $ptr) (i32.const 8)))`
 
-  for (const name of ['__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len', '__alloc_hdr'])
-    ctx.includes.add(name)
+  inc('__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len', '__alloc_hdr')
 
   // Export allocator
   ctx.funcs.push({
@@ -108,6 +107,9 @@ export default () => {
     raw: '(func (export "_reset") (call $__reset))'
   })
 
+  // Not-null check: f64 WAT node is not NULL_NAN
+  const notNull = v => ['i64.ne', ['i64.reinterpret_f64', v], ['i64.const', NULL_NAN]]
+
   // === Shared dispatch helpers ===
 
   /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch. */
@@ -119,7 +121,7 @@ export default () => {
     if (vt === VAL.STRING)
       return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
     // Unknown → runtime dispatch via stdlib (avoids block nesting issues in statement context)
-    ctx.includes.add('__length')
+    inc('__length')
     return typed(['call', '$__length', va], 'f64')
   }
 
@@ -129,7 +131,7 @@ export default () => {
     if (schemaIdx >= 0)
       return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', schemaIdx * 8]]], 'f64')
     // HASH (dynamic object) → runtime string-key lookup (fallback for any unresolved property)
-    ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    inc('__hash_get', '__str_hash', '__str_eq')
     return typed(['call', '$__hash_get', asF64(va), asF64(emit(['str', prop]))], 'f64')
   }
 
@@ -182,12 +184,12 @@ export default () => {
       if (propIdx >= 0)
         access = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
       else {
-        ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+        inc('__hash_get', '__str_hash', '__str_eq')
         access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
       }
     }
     return typed(['if', ['result', 'f64'],
-      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, va]], ['i64.const', NULL_NAN]],
+      notNull(['local.tee', `$${t}`, va]),
       ['then', access],
       ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }
@@ -208,7 +210,7 @@ export default () => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['if', ['result', 'f64'],
-        ['i64.ne', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', NULL_NAN]],
+        notNull(['local.get', `$${t}`]),
         ['then', asF64(ctx.emit['[]'](t, idx))],
         ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]], 'f64')
   }
@@ -221,7 +223,7 @@ export default () => {
     if (!ctx.fn.call) err('Optional call requires fn module')
     const callResult = ctx.fn.call(typed(['local.get', `$${t}`], 'f64'), args)
     return typed(['if', ['result', 'f64'],
-      ['i64.ne', ['i64.reinterpret_f64', ['local.tee', `$${t}`, va]], ['i64.const', NULL_NAN]],
+      notNull(['local.tee', `$${t}`, va]),
       ['then', asF64(callResult)],
       ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }

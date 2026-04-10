@@ -18,9 +18,8 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, PTR } from '../src/ctx.js'
 
-const ATOM = 0
 const RESERVED = 16  // first user atom ID
 
 export default () => {
@@ -43,7 +42,7 @@ export default () => {
   // Symbol('name') → unique atom (each call site gets a different ID)
   ctx.emit['Symbol'] = (nameExpr) => {
     const id = nextAtom()
-    return typed(['call', '$__mkptr', ['i32.const', ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
+    return typed(['call', '$__mkptr', ['i32.const', PTR.ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
   }
 
   // Symbol.for('name') → interned atom (same name = same ID)
@@ -53,6 +52,6 @@ export default () => {
       err('Symbol.for requires a string literal')
     const name = nameExpr[1]
     const id = internAtom(name)
-    return typed(['call', '$__mkptr', ['i32.const', ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
+    return typed(['call', '$__mkptr', ['i32.const', PTR.ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
   }
 }

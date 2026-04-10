@@ -10,9 +10,7 @@
  */
 
 import { emit, typed, asF64, asI32, asI64, T, valTypeOf, VAL } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
-
-const STRING = 4
+import { ctx, inc, PTR } from '../src/ctx.js'
 
 export default () => {
 
@@ -66,7 +64,7 @@ export default () => {
         (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
-    (call $__mkptr (i32.const ${STRING}) (i32.const 0) (local.get $off)))`
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string)
   // mode 0: default (shortest repr, strip trailing zeros)
@@ -347,7 +345,7 @@ export default () => {
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
   ctx.emit['Number.parseInt'] = (x, radix) => {
-    inc('__parseInt', '__char_at', '__str_byteLen')
+    inc('__parseInt')
     return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.emit['parseInt'] = ctx.emit['Number.parseInt']
@@ -362,25 +360,23 @@ export default () => {
 
   // === Instance method emitters ===
 
-  const incNum = () => inc('__ftoa', '__itoa', '__pow10', '__mkstr', '__static_str')
-
   ctx.emit['.number:toString'] = (n) => {
-    incNum()
+    inc('__ftoa')
     return typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64')
   }
 
   ctx.emit['.number:toFixed'] = (n, d) => {
-    incNum()
+    inc('__ftoa')
     return typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64')
   }
 
   ctx.emit['.number:toExponential'] = (n, d) => {
-    inc('__toExp', '__itoa', '__pow10', '__mkstr', '__static_str')
+    inc('__toExp')
     return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0]))], 'f64')
   }
 
   ctx.emit['.number:toPrecision'] = (n, p) => {
-    incNum(); inc('__toExp')
+    inc('__ftoa', '__toExp')
     const val = `${T}pv${ctx.uniq++}`, t = `${T}tp${ctx.uniq++}`, exp = `${T}te${ctx.uniq++}`, pr = `${T}pp${ctx.uniq++}`
     ctx.locals.set(val, 'f64'); ctx.locals.set(t, 'f64'); ctx.locals.set(exp, 'i32'); ctx.locals.set(pr, 'i32')
     return typed(['block', ['result', 'f64'],
@@ -411,7 +407,7 @@ export default () => {
   }
 
   ctx.emit['String'] = (x) => {
-    incNum()
+    inc('__ftoa')
     if (Array.isArray(x) && x[0] === 'str') return emit(x)
     return typed(['call', '$__ftoa', asF64(emit(x)), ['i32.const', 0], ['i32.const', 0]], 'f64')
   }

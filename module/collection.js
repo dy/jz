@@ -9,9 +9,8 @@
  */
 
 import { emit, emitFlat, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, inc, PTR } from '../src/ctx.js'
 
-const HASH = 7, SET = 8, MAP = 9
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
 const INIT_CAP = 8    // initial capacity (must be power of 2)
@@ -165,11 +164,11 @@ export default () => {
     (i32.wrap_i64 (i64.xor
       (i64.reinterpret_f64 (local.get $v))
       (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))))`
-  ctx.includes.add('__hash')
+  inc('__hash')
 
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.stdlib['__map_new'] = `(func $__map_new (result f64)
-    (call $__mkptr (i32.const ${MAP}) (i32.const 0)
+    (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // === Set ===
@@ -179,21 +178,21 @@ export default () => {
     ctx.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', SET_ENTRY]]],
-      ['call', '$__mkptr', ['i32.const', SET], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.SET], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
   }
 
   ctx.emit['.add'] = (setExpr, val) => {
-    ctx.includes.add('__set_add')
+    inc('__set_add')
     return typed(['call', '$__set_add', asF64(emit(setExpr)), asF64(emit(val))], 'f64')
   }
 
   ctx.emit['.has'] = (setExpr, val) => {
-    ctx.includes.add('__set_has')
+    inc('__set_has')
     return typed(['f64.convert_i32_s', ['call', '$__set_has', asF64(emit(setExpr)), asF64(emit(val))]], 'f64')
   }
 
   ctx.emit['.delete'] = (setExpr, val) => {
-    ctx.includes.add('__set_delete')
+    inc('__set_delete')
     return typed(['f64.convert_i32_s', ['call', '$__set_delete', asF64(emit(setExpr)), asF64(emit(val))]], 'f64')
   }
 
@@ -213,16 +212,16 @@ export default () => {
     ctx.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', MAP_ENTRY]]],
-      ['call', '$__mkptr', ['i32.const', MAP], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
+      ['call', '$__mkptr', ['i32.const', PTR.MAP], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
   }
 
   ctx.emit['.set'] = (mapExpr, key, val) => {
-    ctx.includes.add('__map_set')
+    inc('__map_set')
     return typed(['call', '$__map_set', asF64(emit(mapExpr)), asF64(emit(key)), asF64(emit(val))], 'f64')
   }
 
   ctx.emit['.get'] = (mapExpr, key) => {
-    ctx.includes.add('__map_get')
+    inc('__map_get')
     return typed(['call', '$__map_get', asF64(emit(mapExpr)), asF64(emit(key))], 'f64')
   }
 
@@ -268,16 +267,16 @@ export default () => {
     (i32.const 1))`
 
   ctx.stdlib['__hash_new'] = `(func $__hash_new (result f64)
-    (call $__mkptr (i32.const ${HASH}) (i32.const 0)
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // Generated HASH probe functions
-  ctx.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, HASH)
+  ctx.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, true)
 
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.emit['in'] = (key, obj) => {
-    ctx.includes.add('__hash_get'); ctx.includes.add('__str_hash'); ctx.includes.add('__str_eq')
+    inc('__hash_get')
     return typed(['f64.ne',
       ['call', '$__hash_get', asF64(emit(obj)), asF64(emit(key))],
       ['f64.const', 0]], 'i32')
