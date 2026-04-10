@@ -3,68 +3,37 @@
  *
  * Everything is f64. Scalars are regular numbers. Pointers are NaN-boxed f64.
  * Memory auto-enabled when arrays/objects/strings are used.
+ *
+ * Refactored into focused sub-contexts for better maintainability.
  */
+
+// === NaN-boxing pointer type codes ===
+export const PTR = {
+  ATOM: 0,      // null, undefined, booleans
+  ARRAY: 1,     // heap-allocated arrays
+  TYPED: 3,     // TypedArrays (Float64Array, etc.)
+  STRING: 4,    // heap-allocated strings
+  SSO: 5,       // short string optimization (≤4 ASCII chars inline)
+  OBJECT: 6,    // plain objects
+  HASH: 7,      // dynamic objects (Map-like)
+  SET: 8,       // Set collections
+  MAP: 9,       // Map collections
+  CLOSURE: 10,  // first-class functions
+}
+
+// === Global context with nested sub-contexts ===
 export const ctx = {
-  // --- Core ---
-  emit: {},             // emitter table: op → (args) => WasmNode (prototype: emitter)
-  stdlib: {},           // WAT function defs: name → string (included on demand)
-  includes: new Set(),  // stdlib names to include in output
-  imports: [],          // WASM import declarations
-  scope: {},            // name resolution: sin → math.sin (prototype: GLOBALS)
-  modules: {},          // loaded module init guards: name → true
-
-  // --- Functions ---
-  exports: {},          // exported names (lookahead for prepare)
-  funcs: [],            // function defs: {name, body, exported, sig, defaults?, raw?}
-  globals: new Map(),    // name → WAT string. .has(name) for module-scope var checks.
-  globalTypes: new Map(), // name → 'i32'|'f64' for optimized globals (default f64)
-  userGlobals: new Set(), // user-declared module-scope names (for runtime collision check)
-
-  // --- Per-function (reset per function in compile) ---
-  locals: new Map(),    // name → 'i32' | 'f64'
-  valTypes: new Map(),  // name → 'number'|'array'|'string'|'object'|'set'|'map'|'closure'|'typed'
-  boxed: new Map(),     // name → cell local name (i32) for mutably-captured variables
-  stack: [],            // [{brk, loop}] for break/continue
-  uniq: 0,             // incrementing counter for unique temp/label names
-  sig: null,         // current function {params, results}
-
-  // --- Schema (object property layouts, set by ptr module) ---
-  schema: { list: [], vars: new Map(), register: null, find: null, target: null },
-
-  // --- Closures (set by fn module) ---
-  fn: { types: null, table: null, bodies: null, make: null, call: null },
-
-  // --- Atoms (interned symbols, set by symbol module) ---
-  atom: null,          // { table: Map<name,id>, next: number }
-
-  // --- TypedArray tracking (set by compile analyzeValTypes) ---
-  typedElem: null,     // Map<varName, ctorName> e.g. 'buf' → 'new.Float64Array'
-
-  // --- Regex (set by regex module) ---
-  regex: null,         // { count, vars: Map, compiled: Map }
-
-  // --- Try/catch state ---
-  _inTry: false,       // true inside try block (disables tail call optimization)
-
-  // --- Static data ---
-  data: null,          // string data for WASM data segment (at address 0)
-
-  // --- Const tracking ---
-  consts: null,          // Set<string> — const-declared names (reject reassignment)
-  globalValTypes: null,  // Map<string, string> — module-scope value types for method dispatch
-
-  // --- Options ---
-  sharedMemory: false,   // true when memory is imported (shared across modules)
-  memoryPages: 0,        // initial memory pages (0 = default 1 page = 64KB)
-  importSources: null,   // {specifier: source} for import resolution (set by compile opts)
-  hostImports: null,     // Map<module, {name: {params}|fn}> for host-provided imports
-  moduleStack: [],       // import cycle detection
-  resolvedModules: null, // Map<specifier, {exports: Map<name, mangledName>}>
-
-  // --- Error tracking ---
-  src: '',             // source code (for error messages)
-  loc: null,           // current AST node char offset (from parser .loc)
-  throws: false,       // emit WASM exception tag for throw/catch
+  core: {},       // Core Compilation (rarely reset)
+  module: {},     // Module Resolution (per-compile reset)
+  scope: {},      // Scope & Bindings (per-compile reset)
+  func: {},       // Function State (per-function reset)
+  types: {},      // Type System (per-function reset)
+  schema: {},     // Object Schema (per-compile reset)
+  closure: {},    // Closures (initialized once, used per-compile)
+  runtime: {},    // Runtime Support (initialized once)
+  memory: {},     // Memory Configuration (per-compile)
+  error: {},      // Error Context (set during compilation)
+  transform: {},  // Transform State
 }
 
 /** Create a child scope that falls back to parent on lookup (replaces Object.create).
@@ -73,10 +42,7 @@ export const ctx = {
 export const derive = (parent) => Object.create(parent)
 
 /** Include stdlib names for emission. */
-export const inc = (...names) => names.forEach(n => ctx.includes.add(n))
-
-/** NaN-boxing pointer type codes: [type:4 bits] in the quiet NaN payload. */
-export const PTR = { ATOM: 0, ARRAY: 1, TYPED: 3, STRING: 4, SSO: 5, OBJECT: 6, HASH: 7, SET: 8, MAP: 9, CLOSURE: 10 }
+export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 
 /** Stdlib call-dependency graph: fn → fns it calls internally.
  *  resolveIncludes() expands transitively before WASM assembly. */
@@ -133,67 +99,108 @@ export const STDLIB_DEPS = {
   __parseInt: ['__char_at', '__str_byteLen'],
 }
 
-/** Expand ctx.includes transitively via STDLIB_DEPS. Call before WASM assembly. */
+/** Expand ctx.core.includes transitively via STDLIB_DEPS. Call before WASM assembly. */
 export function resolveIncludes() {
-  const queue = [...ctx.includes]
+  const queue = [...ctx.core.includes]
   while (queue.length) {
     const name = queue.pop()
     const deps = STDLIB_DEPS[name]
     if (deps) for (const dep of deps) {
-      if (!ctx.includes.has(dep)) { ctx.includes.add(dep); queue.push(dep) }
+      if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); queue.push(dep) }
     }
   }
 }
 
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals) {
-  ctx.emit = derive(proto)
-  ctx.stdlib = {}
-  ctx.includes = new Set()
-  ctx.imports = []
-  ctx.scope = derive(globals)
-  ctx.modules = {}
-  ctx.exports = {}
-  ctx.funcs = []
-  ctx.globals = new Map()
-  ctx.globalTypes = new Map()
-  ctx.userGlobals = new Set()
-  ctx.locals = new Map()
-  ctx.valTypes = new Map()
-  ctx.boxed = new Map()
-  ctx.stack = []
-  ctx.uniq = 0
-  ctx.sig = null
-  ctx.schema = { list: [], vars: new Map(), register: null, find: null, target: null }
-  ctx.fn = { types: null, table: null, bodies: null, make: null, call: null }
-  ctx.typedElem = null
-  ctx.regex = null
-  ctx._localProps = null
-  ctx._inTry = false
-  ctx.sharedMemory = false
-  ctx.memoryPages = 0
-  ctx.importSources = null
-  ctx.hostImports = null
-  ctx.moduleStack = []
-  ctx.resolvedModules = new Map()
-  ctx.consts = null
-  ctx.globalValTypes = null
-  ctx.autoBox = null
-  ctx.jzify = null
-  ctx.data = null
-  ctx.src = ''
-  ctx.loc = null
-  ctx.atom = null
-  ctx.throws = false
+  ctx.core = {
+    emit: derive(proto),
+    stdlib: {},
+    includes: new Set(),
+  }
+
+  ctx.module = {
+    imports: [],
+    modules: {},
+    importSources: null,
+    hostImports: null,
+    resolvedModules: new Map(),
+    moduleStack: [],
+    moduleInits: [],
+  }
+
+  ctx.scope = {
+    chain: derive(globals),
+    globals: new Map(),
+    userGlobals: new Set(),
+    globalTypes: new Map(),
+    globalValTypes: null,
+    consts: null,
+  }
+
+  ctx.func = {
+    list: [],
+    exports: {},
+    current: null,
+    locals: new Map(),
+    valTypes: new Map(),
+    boxed: new Map(),
+    stack: [],
+    uniq: 0,
+  }
+
+  ctx.types = {
+    typedElem: null,
+    _localProps: null,
+  }
+
+  ctx.schema = {
+    list: [],
+    vars: new Map(),
+    register: null,
+    find: null,
+    target: null,
+    autoBox: null,
+  }
+
+  ctx.closure = {
+    types: null,
+    table: null,
+    bodies: null,
+    make: null,
+    call: null,
+  }
+
+  ctx.runtime = {
+    atom: null,
+    regex: null,
+    data: null,
+    throws: false,
+    _inTry: false,
+  }
+
+  ctx.memory = {
+    shared: false,
+    pages: 0,
+  }
+
+  ctx.error = {
+    src: '',
+    loc: null,
+  }
+
+  ctx.transform = {
+    jzify: null,
+  }
 }
 
 /** Throw with source location context. */
 export function err(msg) {
-  if (ctx.loc != null && ctx.src) {
-    const before = ctx.src.slice(0, ctx.loc)
+  if (ctx.error.loc != null && ctx.error.src) {
+    const before = ctx.error.src.slice(0, ctx.error.loc)
     const line = before.split('\n').length
-    const col = ctx.loc - before.lastIndexOf('\n')
-    const src = ctx.src.split('\n')[line - 1]
+    const col = ctx.error.loc - before.lastIndexOf('\n')
+    const src = ctx.error.src.split('\n')[line - 1]
     throw Error(`${msg}\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`)
   }
   throw Error(msg)

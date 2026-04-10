@@ -166,79 +166,79 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
 
 export default () => {
   // Hash function: simple f64 → i32 hash
-  ctx.stdlib['__hash'] = `(func $__hash (param $v f64) (result i32)
+  ctx.core.stdlib['__hash'] = `(func $__hash (param $v f64) (result i32)
     (i32.wrap_i64 (i64.xor
       (i64.reinterpret_f64 (local.get $v))
       (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))))`
   inc('__hash')
 
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
-  ctx.stdlib['__map_new'] = `(func $__map_new (result f64)
+  ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // === Set ===
 
-  ctx.emit['new.Set'] = () => {
-    const t = `${T}set${ctx.uniq++}`
-    ctx.locals.set(t, 'i32')
+  ctx.core.emit['new.Set'] = () => {
+    const t = `${T}set${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', SET_ENTRY]]],
       ['call', '$__mkptr', ['i32.const', PTR.SET], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
   }
 
-  ctx.emit['.add'] = (setExpr, val) => {
+  ctx.core.emit['.add'] = (setExpr, val) => {
     inc('__set_add')
     return typed(['call', '$__set_add', asF64(emit(setExpr)), asF64(emit(val))], 'f64')
   }
 
-  ctx.emit['.has'] = (setExpr, val) => {
+  ctx.core.emit['.has'] = (setExpr, val) => {
     inc('__set_has')
     return typed(['f64.convert_i32_s', ['call', '$__set_has', asF64(emit(setExpr)), asF64(emit(val))]], 'f64')
   }
 
-  ctx.emit['.delete'] = (setExpr, val) => {
+  ctx.core.emit['.delete'] = (setExpr, val) => {
     inc('__set_delete')
     return typed(['f64.convert_i32_s', ['call', '$__set_delete', asF64(emit(setExpr)), asF64(emit(val))]], 'f64')
   }
 
-  ctx.emit['.size'] = (expr) => {
+  ctx.core.emit['.size'] = (expr) => {
     return typed(['f64.convert_i32_s', ['call', '$__len', asF64(emit(expr))]], 'f64')
   }
 
   // Generated Set probe functions
-  ctx.stdlib['__set_add'] = genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, false)
-  ctx.stdlib['__set_has'] = genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, false)
-  ctx.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq)
+  ctx.core.stdlib['__set_add'] = genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, false)
+  ctx.core.stdlib['__set_has'] = genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, false)
+  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq)
 
   // === Map ===
 
-  ctx.emit['new.Map'] = () => {
-    const t = `${T}map${ctx.uniq++}`
-    ctx.locals.set(t, 'i32')
+  ctx.core.emit['new.Map'] = () => {
+    const t = `${T}map${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', MAP_ENTRY]]],
       ['call', '$__mkptr', ['i32.const', PTR.MAP], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
   }
 
-  ctx.emit['.set'] = (mapExpr, key, val) => {
+  ctx.core.emit['.set'] = (mapExpr, key, val) => {
     inc('__map_set')
     return typed(['call', '$__map_set', asF64(emit(mapExpr)), asF64(emit(key)), asF64(emit(val))], 'f64')
   }
 
-  ctx.emit['.get'] = (mapExpr, key) => {
+  ctx.core.emit['.get'] = (mapExpr, key) => {
     inc('__map_get')
     return typed(['call', '$__map_get', asF64(emit(mapExpr)), asF64(emit(key))], 'f64')
   }
 
   // Generated Map probe functions
-  ctx.stdlib['__map_set'] = genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, true)
-  ctx.stdlib['__map_get'] = genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, true)
+  ctx.core.stdlib['__map_set'] = genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, true)
+  ctx.core.stdlib['__map_get'] = genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, true)
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
   // FNV-1a hash of string content (works on both SSO and heap strings)
-  ctx.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
+  ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
     (local $h i32) (local $len i32) (local $i i32)
     (local.set $h (i32.const 0x811c9dc5))
     (local.set $len (call $__str_byteLen (local.get $s)))
@@ -252,7 +252,7 @@ export default () => {
       (then (i32.add (local.get $h) (i32.const 2))) (else (local.get $h))))`
 
   // String content equality (handles SSO vs heap cross-comparison)
-  ctx.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
+  ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
     (local $len i32) (local $i i32)
     ;; Fast path: bitwise equal
     (if (i64.eq (i64.reinterpret_f64 (local.get $a)) (i64.reinterpret_f64 (local.get $b)))
@@ -272,17 +272,17 @@ export default () => {
       (br $l)))
     (i32.const 1))`
 
-  ctx.stdlib['__hash_new'] = `(func $__hash_new (result f64)
+  ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // Generated HASH probe functions
-  ctx.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
-  ctx.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, true)
-  ctx.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, false)
+  ctx.core.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
+  ctx.core.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, true)
+  ctx.core.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, false)
 
   // === `in` operator: key in obj → HASH key existence check ===
-  ctx.emit['in'] = (key, obj) => {
+  ctx.core.emit['in'] = (key, obj) => {
     inc('__hash_has')
     return typed(['call', '$__hash_has', asF64(emit(obj)), asF64(emit(key))], 'i32')
   }
@@ -290,13 +290,13 @@ export default () => {
   // === for...in on dynamic objects (HASH iteration) ===
 
   // for-in: iterate HASH entries, binding key string to loop variable
-  ctx.emit['for-in'] = (varName, src, body) => {
-    const off = `${T}ho${ctx.uniq++}`, cap = `${T}hc${ctx.uniq++}`
-    const i = `${T}hi${ctx.uniq++}`, slot = `${T}hs${ctx.uniq++}`
-    ctx.locals.set(off, 'i32'); ctx.locals.set(cap, 'i32')
-    ctx.locals.set(i, 'i32'); ctx.locals.set(slot, 'i32')
-    if (!ctx.locals.has(varName)) ctx.locals.set(varName, 'f64')
-    const id = ctx.uniq++
+  ctx.core.emit['for-in'] = (varName, src, body) => {
+    const off = `${T}ho${ctx.func.uniq++}`, cap = `${T}hc${ctx.func.uniq++}`
+    const i = `${T}hi${ctx.func.uniq++}`, slot = `${T}hs${ctx.func.uniq++}`
+    ctx.func.locals.set(off, 'i32'); ctx.func.locals.set(cap, 'i32')
+    ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(slot, 'i32')
+    if (!ctx.func.locals.has(varName)) ctx.func.locals.set(varName, 'f64')
+    const id = ctx.func.uniq++
     const va = asF64(emit(src))
     const bodyFlat = emitFlat(body)
     return [

@@ -199,14 +199,14 @@ export default () => {
   // Constructor: new Float64Array(len) or new Uint8Array(buffer, offset, len)
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType]
-    ctx.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
+    ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
       // View on existing buffer: TypedArray(buffer, offset, len) → typed ptr at buffer+offset
       if (offsetExpr != null && lenExpr2 != null) {
         const buf = ['call', '$__ptr_offset', asF64(emit(lenExpr))]  // extract i32 offset from f64 ptr
         const off = asI32(emit(offsetExpr))
         const len = asI32(emit(lenExpr2))
-        const t = `${T}ta${ctx.uniq++}`
-        ctx.locals.set(t, 'i32')
+        const t = `${T}ta${ctx.func.uniq++}`
+        ctx.func.locals.set(t, 'i32')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, ['i32.add', buf, off]],
           ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 8]], len],
@@ -214,12 +214,12 @@ export default () => {
           ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
       }
       // Single arg: if source is known array type, use .from() conversion
-      if (typeof lenExpr === 'string' && ctx.valTypes?.get(lenExpr) === 'array' && ctx.emit[`${name}.from`])
-        return ctx.emit[`${name}.from`](lenExpr)
+      if (typeof lenExpr === 'string' && ctx.func.valTypes?.get(lenExpr) === 'array' && ctx.core.emit[`${name}.from`])
+        return ctx.core.emit[`${name}.from`](lenExpr)
       // Normal: allocate fresh typed array (lenExpr is numeric size)
       const len = asI32(emit(lenExpr))
-      const t = `${T}ta${ctx.uniq++}`
-      ctx.locals.set(t, 'i32')
+      const t = `${T}ta${ctx.func.uniq++}`
+      ctx.func.locals.set(t, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ['call', '$__alloc_hdr', len, len, ['i32.const', stride]]],
         ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
@@ -230,27 +230,27 @@ export default () => {
   // All values are f64 (NaN-boxed). ArrayBuffer/DataView use Uint8Array ptr (type=3, elemType=1).
 
   // ArrayBuffer(n) → allocate n bytes, return as Uint8Array pointer
-  ctx.emit['ArrayBuffer'] = (sizeExpr) => {
+  ctx.core.emit['ArrayBuffer'] = (sizeExpr) => {
     const n = asI32(emit(sizeExpr))
-    const t = `${T}ab${ctx.uniq++}`
-    ctx.locals.set(t, 'i32')
+    const t = `${T}ab${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', n, n, ['i32.const', 1]]],
       ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
   }
 
   // DataView(buffer) → passthrough (same f64 pointer)
-  ctx.emit['DataView'] = (bufExpr) => asF64(emit(bufExpr))
+  ctx.core.emit['DataView'] = (bufExpr) => asF64(emit(bufExpr))
 
   // BigInt64Array(buffer) → reinterpret same memory as Float64Array (elemType=7)
-  ctx.emit['BigInt64Array'] = (bufExpr) => {
+  ctx.core.emit['BigInt64Array'] = (bufExpr) => {
     const va = asF64(emit(bufExpr))
     return typed(['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', 7],
       ['call', '$__ptr_offset', va]], 'f64')
   }
 
   // .buffer property → return same pointer (ArrayBuffer/DataView share memory)
-  ctx.emit['.buffer'] = (expr) => asF64(emit(expr))
+  ctx.core.emit['.buffer'] = (expr) => asF64(emit(expr))
 
   // DataView set methods: extract i32 offset from f64 ptr, store value
   const DV_SET = {
@@ -261,7 +261,7 @@ export default () => {
     setBigInt64: 'i64.store', setBigUint64: 'i64.store',
   }
   for (const [method, storeOp] of Object.entries(DV_SET)) {
-    ctx.emit[`.${method}`] = (dv, off, val, _le) => {
+    ctx.core.emit[`.${method}`] = (dv, off, val, _le) => {
       const dvOff = ['call', '$__ptr_offset', asF64(emit(dv))]
       const addr = ['i32.add', dvOff, asI32(emit(off))]
       let v = emit(val)
@@ -283,7 +283,7 @@ export default () => {
     getBigInt64: ['i64.load', 'i64'], getBigUint64: ['i64.load', 'i64'],
   }
   for (const [method, [loadOp, resultType]] of Object.entries(DV_GET)) {
-    ctx.emit[`.${method}`] = (dv, off, _le) => {
+    ctx.core.emit[`.${method}`] = (dv, off, _le) => {
       const addr = ['i32.add', ['call', '$__ptr_offset', asF64(emit(dv))], asI32(emit(off))]
       const raw = typed([loadOp, addr], resultType)
       if (resultType === 'f64') return raw
@@ -296,11 +296,11 @@ export default () => {
   // TypedArray.from(arr) — convert regular array to typed array
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType], store = STORE[elemType]
-    ctx.emit[`${name}.from`] = (src) => {
+    ctx.core.emit[`${name}.from`] = (src) => {
       const va = asF64(emit(src))
-      const t = `${T}tf${ctx.uniq++}`, len = `${T}tfl${ctx.uniq++}`, i = `${T}tfi${ctx.uniq++}`, off = `${T}tfo${ctx.uniq++}`
-      ctx.locals.set(t, 'i32'); ctx.locals.set(len, 'i32'); ctx.locals.set(i, 'i32'); ctx.locals.set(off, 'i32')
-      const id = ctx.uniq++
+      const t = `${T}tf${ctx.func.uniq++}`, len = `${T}tfl${ctx.func.uniq++}`, i = `${T}tfi${ctx.func.uniq++}`, off = `${T}tfo${ctx.func.uniq++}`
+      ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(off, 'i32')
+      const id = ctx.func.uniq++
       const storeExpr = elemType === 7 ? ['f64.store',
           ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
           ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]
@@ -329,13 +329,13 @@ export default () => {
 
   /** Resolve element type for a known TypedArray variable. Returns ELEM id or null. */
   const resolveElem = (arr) => {
-    const ctor = typeof arr === 'string' && ctx.typedElem?.get(arr)
+    const ctor = typeof arr === 'string' && ctx.types.typedElem?.get(arr)
     if (!ctor) return null
     return ELEM[ctor.slice(4)] ?? null
   }
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride
-  ctx.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+  ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
@@ -359,7 +359,7 @@ export default () => {
       (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))`
 
   // Type-aware TypedArray read: arr[i]
-  ctx.emit['.typed:[]'] = (arr, idx) => {
+  ctx.core.emit['.typed:[]'] = (arr, idx) => {
     const et = resolveElem(arr)
     if (et == null) return null // unknown type, fallback to generic
     const va = asF64(emit(arr)), vi = asI32(emit(idx))
@@ -371,7 +371,7 @@ export default () => {
   }
 
   // Type-aware TypedArray write: arr[i] = val
-  ctx.emit['.typed:[]='] = (arr, idx, val) => {
+  ctx.core.emit['.typed:[]='] = (arr, idx, val) => {
     const et = resolveElem(arr)
     if (et == null) return null
     const va = asF64(emit(arr)), vi = asI32(emit(idx)), vv = asF64(emit(val))
@@ -383,9 +383,9 @@ export default () => {
   }
 
   // .map() on TypedArrays — SIMD auto-vectorization when pattern detected
-  ctx.emit['.typed:map'] = (arr, fn) => {
+  ctx.core.emit['.typed:map'] = (arr, fn) => {
     // Resolve element type from variable tracking
-    const ctor = typeof arr === 'string' && ctx.typedElem?.get(arr)
+    const ctor = typeof arr === 'string' && ctx.types.typedElem?.get(arr)
     const elemName = ctor?.slice(4) // 'new.Float64Array' → 'Float64Array'
     const elemType = elemName && ELEM[elemName]
 
@@ -396,11 +396,11 @@ export default () => {
       const pattern = analyzeSimd(body, param)
 
       if (pattern) {
-        const id = ctx.uniq++
+        const id = ctx.func.uniq++
         const funcName = `__simd_map_${id}`
         const wat = genSimdMap(funcName, elemType, pattern)
         if (wat) {
-          ctx.stdlib[funcName] = wat
+          ctx.core.stdlib[funcName] = wat
           inc(funcName)
           return typed(['call', `$${funcName}`, asF64(emit(arr))], 'f64')
         }
@@ -410,8 +410,8 @@ export default () => {
     // Scalar fallback: proper typed-array map (preserves element type)
     if (elemType != null) {
       const va = emit(arr), vf = emit(fn)
-      const out = `${T}tmo${ctx.uniq++}`, len = `${T}tml${ctx.uniq++}`, ptr = `${T}tmp${ctx.uniq++}`, i = `${T}tmi${ctx.uniq++}`
-      ctx.locals.set(out, 'i32'); ctx.locals.set(len, 'i32'); ctx.locals.set(ptr, 'i32'); ctx.locals.set(i, 'i32')
+      const out = `${T}tmo${ctx.func.uniq++}`, len = `${T}tml${ctx.func.uniq++}`, ptr = `${T}tmp${ctx.func.uniq++}`, i = `${T}tmi${ctx.func.uniq++}`
+      ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(i, 'i32')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
 
       const loadElem = () => {
@@ -427,7 +427,7 @@ export default () => {
         return [STORE[elemType], off, [(elemType & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
       }
 
-      const id = ctx.uniq++
+      const id = ctx.func.uniq++
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(va)]],
         ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
@@ -435,14 +435,14 @@ export default () => {
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          storeElem(asF64(ctx.fn.call(vf, [loadElem()]))),
+          storeElem(asF64(ctx.closure.call(vf, [loadElem()]))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
         ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]], 'f64')
     }
 
     // Unknown typed array type: fall back to generic array .map
-    if (ctx.emit['.map']) return ctx.emit['.map'](arr, fn)
+    if (ctx.core.emit['.map']) return ctx.core.emit['.map'](arr, fn)
     return null
   }
 }

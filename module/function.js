@@ -16,15 +16,15 @@ import { ctx, PTR } from '../src/ctx.js'
 
 export default () => {
   // Uniform closure convention: all closures use (env: f64, args: f64) → f64
-  if (!ctx.fn.types) ctx.fn.types = new Set()
-  if (!ctx.fn.table) ctx.fn.table = []
-  if (!ctx.fn.bodies) ctx.fn.bodies = []
+  if (!ctx.closure.types) ctx.closure.types = new Set()
+  if (!ctx.closure.table) ctx.closure.table = []
+  if (!ctx.closure.bodies) ctx.closure.bodies = []
 
-  ctx.fn.types.add(1) // single type: (env, args_array) → f64
+  ctx.closure.types.add(1) // single type: (env, args_array) → f64
 
   const addToTable = (name) => {
-    let idx = ctx.fn.table.indexOf(name)
-    if (idx === -1) { idx = ctx.fn.table.length; ctx.fn.table.push(name) }
+    let idx = ctx.closure.table.indexOf(name)
+    if (idx === -1) { idx = ctx.closure.table.length; ctx.closure.table.push(name) }
     return idx
   }
 
@@ -33,18 +33,18 @@ export default () => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.fn.make = ({ params, body, captures, restParam, defaults }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults }) => {
     // Generate closure body function name
-    const fnName = `${T}closure${ctx.fn.table.length}`
+    const fnName = `${T}closure${ctx.closure.table.length}`
 
     // All closures use uniform convention: (env: f64, args_array: f64) → f64
     // The body unpacks individual params from the args array
-    const boxedCaptures = captures.filter(c => ctx.boxed?.has(c))
+    const boxedCaptures = captures.filter(c => ctx.func.boxed?.has(c))
     const bodyFn = { name: fnName, params, body, captures, arity: 1,
       ...(restParam && { rest: restParam }),
       ...(defaults && { defaults }),
       ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }) }
-    ctx.fn.bodies.push(bodyFn)
+    ctx.closure.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)
 
@@ -54,18 +54,18 @@ export default () => {
       return typed(['call', '$__mkptr', ['i32.const', PTR.CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
     }
 
-    const t = `${T}env${ctx.uniq++}`
-    ctx.locals.set(t, 'i32')
+    const t = `${T}env${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32')
 
     const block = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', captures.length * 8]]],
     ]
     // Store captured values (or cell pointers for boxed vars) in env
     for (let i = 0; i < captures.length; i++) {
-      const v = ctx.boxed?.has(captures[i])
+      const v = ctx.func.boxed?.has(captures[i])
         ? (() => {
-            const cell = ctx.boxed.get(captures[i])
-            const ct = ctx.locals?.get(cell) || 'i32'
+            const cell = ctx.func.boxed.get(captures[i])
+            const ct = ctx.func.locals?.get(cell) || 'i32'
             return ct === 'f64' ? typed(['local.get', `$${cell}`], 'f64')
               : typed(['f64.convert_i32_u', ['local.get', `$${cell}`]], 'f64')
           })()
@@ -82,9 +82,9 @@ export default () => {
    * @param {WasmNode} closureExpr - Already-emitted closure pointer expression
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
    */
-  ctx.fn.call = (closureExpr, args, prebuiltArray) => {
-    const t = `${T}clos${ctx.uniq++}`
-    ctx.locals.set(t, 'f64')
+  ctx.closure.call = (closureExpr, args, prebuiltArray) => {
+    const t = `${T}clos${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64')
 
     let argsPtr, setup = []
     if (prebuiltArray) {
@@ -93,8 +93,8 @@ export default () => {
     } else {
       // Pack all args into a heap array (uniform calling convention)
       const emittedArgs = args.map(a => asF64(a?.type ? a : emit(a)))
-      const arrT = `${T}ca${ctx.uniq++}`
-      ctx.locals.set(arrT, 'i32')
+      const arrT = `${T}ca${ctx.func.uniq++}`
+      ctx.func.locals.set(arrT, 'i32')
       const n = emittedArgs.length
       setup = [
         ['local.set', `$${arrT}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],

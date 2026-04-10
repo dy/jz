@@ -611,10 +611,10 @@ const patternMinLen = node => {
 
 export default () => {
 
-  ctx.regex = { count: 0, vars: new Map(), compiled: new Map() }
+  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map() }
 
   // SSO → heap normalizer: returns data offset (i32) for direct byte access
-  ctx.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
+  ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
     (local $type i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
     (local.set $type (call $__ptr_type (local.get $ptr)))
     (if (i32.eq (local.get $type) (i32.const 4))
@@ -634,15 +634,15 @@ export default () => {
   /** Compile regex pattern to WASM function, return regex ID */
   const compileRegexToStdlib = (pattern, flags) => {
     const key = pattern + ':' + (flags || '')
-    if (ctx.regex.compiled.has(key)) return ctx.regex.compiled.get(key)
-    const id = ctx.regex.count++
+    if (ctx.runtime.regex.compiled.has(key)) return ctx.runtime.regex.compiled.get(key)
+    const id = ctx.runtime.regex.count++
     const ast = parseRegex(pattern, flags)
     const funcName = `__regex_${id}`
-    ctx.stdlib[funcName] = compileRegex(ast, funcName)
+    ctx.core.stdlib[funcName] = compileRegex(ast, funcName)
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
     const searchName = `__regex_search_${id}`
-    ctx.stdlib[searchName] = `(func $${searchName} (param $str f64) (result i32 i32)
+    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str f64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
       (local.set $len (call $__str_byteLen (local.get $str)))
@@ -657,33 +657,33 @@ export default () => {
       (i32.const -1) (i32.const -1))`
 
     inc(funcName, searchName, '__str_to_buf')
-    ctx.regex.compiled.set(key, id)
+    ctx.runtime.regex.compiled.set(key, id)
     return id
   }
 
   /** Resolve regex ID from AST node (inline regex or variable) */
   const resolveRegex = (obj) => {
     if (Array.isArray(obj) && obj[0] === '//') return compileRegexToStdlib(obj[1], obj[2])
-    if (typeof obj === 'string' && ctx.regex.vars.has(obj)) {
-      const ast = ctx.regex.vars.get(obj)
+    if (typeof obj === 'string' && ctx.runtime.regex.vars.has(obj)) {
+      const ast = ctx.runtime.regex.vars.get(obj)
       return compileRegexToStdlib(ast[1], ast[2])
     }
     return null
   }
 
   // Regex literal: ['//','pattern','flags?'] → compile + store
-  ctx.emit['//'] = (pattern, flags) => {
+  ctx.core.emit['//'] = (pattern, flags) => {
     const id = compileRegexToStdlib(pattern, flags)
-    ctx.regex._lastId = id // for variable tracking
+    ctx.runtime.regex._lastId = id // for variable tracking
     return typed(['i32.const', id], 'i32')
   }
 
   // regex.test(str) → search, return 1/0
-  ctx.emit['.regex:test'] = (obj, str) => {
+  ctx.core.emit['.regex:test'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.test requires a known regex')
-    const s = `${T}rt${ctx.uniq++}`, mstart = `${T}rms${ctx.uniq++}`, mend = `${T}rme${ctx.uniq++}`
-    ctx.locals.set(s, 'f64'); ctx.locals.set(mstart, 'i32'); ctx.locals.set(mend, 'i32')
+    const s = `${T}rt${ctx.func.uniq++}`, mstart = `${T}rms${ctx.func.uniq++}`, mend = `${T}rme${ctx.func.uniq++}`
+    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(mstart, 'i32'); ctx.func.locals.set(mend, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
@@ -695,12 +695,12 @@ export default () => {
   }
 
   // regex.exec(str) → [match_text] array or 0 (null)
-  ctx.emit['.regex:exec'] = (obj, str) => {
+  ctx.core.emit['.regex:exec'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
     inc('__str_slice', '__wrap1')
-    const s = `${T}re${ctx.uniq++}`, ms = `${T}rems${ctx.uniq++}`, me = `${T}reme${ctx.uniq++}`
-    ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
+    const s = `${T}re${ctx.func.uniq++}`, ms = `${T}rems${ctx.func.uniq++}`, me = `${T}reme${ctx.func.uniq++}`
+    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -714,15 +714,15 @@ export default () => {
   }
 
   // str.search(/re/) → first match position or -1
-  ctx.emit['.string:search'] = (str, search) => {
+  ctx.core.emit['.string:search'] = (str, search) => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string search (indexOf)
       inc('__str_indexof')
       return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
     }
-    const s = `${T}ss${ctx.uniq++}`, ms = `${T}ssms${ctx.uniq++}`, me = `${T}ssme${ctx.uniq++}`
-    ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
+    const s = `${T}ss${ctx.func.uniq++}`, ms = `${T}ssms${ctx.func.uniq++}`, me = `${T}ssme${ctx.func.uniq++}`
+    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -731,13 +731,13 @@ export default () => {
   }
 
   // str.match(/re/) → [match_text] or 0
-  ctx.emit['.string:match'] = (str, search) => {
+  ctx.core.emit['.string:match'] = (str, search) => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string match
       inc('__str_indexof', '__str_slice', '__wrap1')
-      const s = `${T}ms${ctx.uniq++}`, q = `${T}mq${ctx.uniq++}`, idx = `${T}mi${ctx.uniq++}`
-      ctx.locals.set(s, 'f64'); ctx.locals.set(q, 'f64'); ctx.locals.set(idx, 'i32')
+      const s = `${T}ms${ctx.func.uniq++}`, q = `${T}mq${ctx.func.uniq++}`, idx = `${T}mi${ctx.func.uniq++}`
+      ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(q, 'f64'); ctx.func.locals.set(idx, 'i32')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${q}`, asF64(emit(search))],
@@ -751,8 +751,8 @@ export default () => {
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
     }
     inc('__str_slice', '__wrap1')
-    const s = `${T}sm${ctx.uniq++}`, ms = `${T}smms${ctx.uniq++}`, me = `${T}smme${ctx.uniq++}`
-    ctx.locals.set(s, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
+    const s = `${T}sm${ctx.func.uniq++}`, ms = `${T}smms${ctx.func.uniq++}`, me = `${T}smme${ctx.func.uniq++}`
+    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -766,7 +766,7 @@ export default () => {
   }
 
   // str.replace(/re/, repl) → replaced string
-  ctx.emit['.string:replace'] = (str, search, repl) => {
+  ctx.core.emit['.string:replace'] = (str, search, repl) => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string replace
@@ -774,8 +774,8 @@ export default () => {
       return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat')
-    const s = `${T}sr${ctx.uniq++}`, r = `${T}srr${ctx.uniq++}`, ms = `${T}srms${ctx.uniq++}`, me = `${T}srme${ctx.uniq++}`
-    ctx.locals.set(s, 'f64'); ctx.locals.set(r, 'f64'); ctx.locals.set(ms, 'i32'); ctx.locals.set(me, 'i32')
+    const s = `${T}sr${ctx.func.uniq++}`, r = `${T}srr${ctx.func.uniq++}`, ms = `${T}srms${ctx.func.uniq++}`, me = `${T}srme${ctx.func.uniq++}`
+    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(r, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${r}`, asF64(emit(repl))],
@@ -793,7 +793,7 @@ export default () => {
   }
 
   // str.split(/re/) → array of substrings
-  ctx.emit['.string:split'] = (str, sep) => {
+  ctx.core.emit['.string:split'] = (str, sep) => {
     const id = resolveRegex(sep)
     if (id == null) {
       // Fall back to string split
@@ -803,9 +803,9 @@ export default () => {
 
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
-    if (!ctx.stdlib[splitName]) {
+    if (!ctx.core.stdlib[splitName]) {
       inc('__str_to_buf', '__str_slice')
-      ctx.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
+      ctx.core.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
         (local $arrOff i32) (local $count i32) (local $cap i32)

@@ -18,12 +18,12 @@ export default () => {
   // Scratch buffer approach: __json_buf is a growable output buffer.
   // Functions append bytes to it, __json_pos tracks current write position.
 
-  ctx.globals.set('__jbuf', '(global $__jbuf (mut i32) (i32.const 0))')
-  ctx.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
-  ctx.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jbuf', '(global $__jbuf (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
 
   // __jput(byte: i32) — append one byte to output buffer
-  ctx.stdlib['__jput'] = `(func $__jput (param $b i32)
+  ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
     (local $new i32)
     (if (i32.ge_s (global.get $__jpos) (global.get $__jcap))
       (then
@@ -35,7 +35,7 @@ export default () => {
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
 
   // __jput_str(ptr: f64) — append string chars (without quotes) to buffer
-  ctx.stdlib['__jput_str'] = `(func $__jput_str (param $ptr f64)
+  ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr f64)
     (local $len i32) (local $i i32) (local $ch i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (local.set $i (i32.const 0))
@@ -59,11 +59,11 @@ export default () => {
       (br $l))))`
 
   // __jput_num(val: f64) — convert number to string, append bytes to buffer
-  ctx.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
+  ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
     (call $__jput_str (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
 
   // __json_val(val: f64) — stringify any value, append to buffer
-  ctx.stdlib['__json_val'] = `(func $__json_val (param $val f64)
+  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val f64)
     (local $type i32) (local $len i32) (local $i i32) (local $off i32)
     ;; Number (not NaN) — but Infinity must be null per JSON spec
     (if (f64.eq (local.get $val) (local.get $val))
@@ -115,7 +115,7 @@ export default () => {
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
 
   // __stringify(val: f64) → f64 (NaN-boxed string)
-  ctx.stdlib['__stringify'] = `(func $__stringify (param $val f64) (result f64)
+  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val f64) (result f64)
     ;; Reset output buffer
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
@@ -126,19 +126,19 @@ export default () => {
 
   // === JSON.parse ===
 
-  ctx.globals.set('__jpstr', '(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
-  ctx.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
-  ctx.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
+  ctx.scope.globals.set('__jpstr', '(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
+  ctx.scope.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
+  ctx.scope.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
 
-  ctx.stdlib['__jp_peek'] = `(func $__jp_peek (result i32)
+  ctx.core.stdlib['__jp_peek'] = `(func $__jp_peek (result i32)
     (if (result i32) (i32.ge_s (global.get $__jppos) (global.get $__jplen))
       (then (i32.const -1))
       (else (i32.load8_u (i32.add (global.get $__jpstr) (global.get $__jppos))))))`
 
-  ctx.stdlib['__jp_adv'] = `(func $__jp_adv (param $n i32)
+  ctx.core.stdlib['__jp_adv'] = `(func $__jp_adv (param $n i32)
     (global.set $__jppos (i32.add (global.get $__jppos) (local.get $n))))`
 
-  ctx.stdlib['__jp_ws'] = `(func $__jp_ws
+  ctx.core.stdlib['__jp_ws'] = `(func $__jp_ws
     (local $ch i32)
     (block $d (loop $l
       (local.set $ch (call $__jp_peek))
@@ -150,7 +150,7 @@ export default () => {
       (br $l))))`
 
   // Parse string (after opening " consumed)
-  ctx.stdlib['__jp_str'] = `(func $__jp_str (result f64)
+  ctx.core.stdlib['__jp_str'] = `(func $__jp_str (result f64)
     (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32)
     (local.set $start (global.get $__jppos))
     ;; Scan to closing quote
@@ -195,7 +195,7 @@ export default () => {
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // Parse number
-  ctx.stdlib['__jp_num'] = `(func $__jp_num (result f64)
+  ctx.core.stdlib['__jp_num'] = `(func $__jp_num (result f64)
     (local $neg i32) (local $val f64) (local $scale f64) (local $ch i32)
     (local $exp i32) (local $expNeg i32)
     (if (i32.eq (call $__jp_peek) (i32.const 45))
@@ -238,7 +238,7 @@ export default () => {
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $val))) (else (local.get $val))))`
 
   // Parse array
-  ctx.stdlib['__jp_arr'] = `(func $__jp_arr (result f64)
+  ctx.core.stdlib['__jp_arr'] = `(func $__jp_arr (result f64)
     (local $ptr i32) (local $len i32) (local $cap i32) (local $new i32) (local $ch i32)
     (local.set $cap (i32.const 8))
     (local.set $ptr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $cap) (i32.const 3)))))
@@ -272,7 +272,7 @@ export default () => {
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
 
   // Parse object → HASH (dynamic string-keyed object)
-  ctx.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
+  ctx.core.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
     (local $obj f64) (local $key f64) (local $ch i32)
     (local.set $obj (call $__hash_new))
     (call $__jp_ws)
@@ -297,7 +297,7 @@ export default () => {
     (local.get $obj))`
 
   // Main value dispatcher
-  ctx.stdlib['__jp_val'] = `(func $__jp_val (result f64)
+  ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)
     (local $ch i32)
     (call $__jp_ws)
     (local.set $ch (call $__jp_peek))
@@ -319,7 +319,7 @@ export default () => {
     (f64.const 0))`
 
   // Entry point — converts SSO to heap first so __jp_peek works uniformly
-  ctx.stdlib['__jp'] = `(func $__jp (param $str f64) (result f64)
+  ctx.core.stdlib['__jp'] = `(func $__jp (param $str f64) (result f64)
     (local $len i32) (local $buf i32) (local $i i32)
     (local.set $len (call $__str_byteLen (local.get $str)))
     ;; SSO: unpack to heap buffer
@@ -342,12 +342,12 @@ export default () => {
 
   // === Emitters ===
 
-  ctx.emit['JSON.stringify'] = (x) => {
+  ctx.core.emit['JSON.stringify'] = (x) => {
     inc('__stringify')
     return typed(['call', '$__stringify', asF64(emit(x))], 'f64')
   }
 
-  ctx.emit['JSON.parse'] = (x) => {
+  ctx.core.emit['JSON.parse'] = (x) => {
     inc('__jp')
     return typed(['call', '$__jp', asF64(emit(x))], 'f64')
   }

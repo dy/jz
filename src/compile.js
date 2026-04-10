@@ -1,9 +1,9 @@
 /**
  * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
- * Core abstraction: emitter table (ctx.emit) maps AST ops → WASM nodes.
+ * Core abstraction: emitter table (ctx.core.emit) maps AST ops → WASM nodes.
  * Base operators defined in `emitter` export, modules extend via prototype chain.
- * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.emit[op].
+ * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.core.emit[op].
  *
  * Type system: every emitted node carries .type ('i32' | 'f64').
  * Operators preserve i32 when both operands are i32.
@@ -69,7 +69,7 @@ function emitTypeofCmp(a, b, cmpOp) {
   if (code === -2) {
     // 'string' → is NaN-boxed AND ptr_type is STRING (heap) or SSO.
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const tt = `${T}${ctx.uniq++}`; ctx.locals.set(tt, 'i32')
+    const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const isStr = ['i32.or',
       ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]]
@@ -124,18 +124,18 @@ function toBool(node) {
 
 /** Check if name is a module-scope global (not shadowed by local/param). */
 function isGlobal(name) {
-  return ctx.globals.has(name) && !ctx.locals?.has(name) && !ctx.sig?.params?.some(p => p.name === name)
+  return ctx.scope.globals.has(name) && !ctx.func.locals?.has(name) && !ctx.func.current?.params?.some(p => p.name === name)
 }
 
 /** Check if assigning to name would violate const. Only applies when not shadowed. */
 function isConst(name) {
-  return ctx.consts?.has(name) && !ctx.locals?.has(name) && !ctx.sig?.params?.some(p => p.name === name)
+  return ctx.scope.consts?.has(name) && !ctx.func.locals?.has(name) && !ctx.func.current?.params?.some(p => p.name === name)
 }
 
 /** Allocate a temp local (always f64 for now), returns name without $. */
 export function temp() {
-  const name = `${T}${ctx.uniq++}`
-  ctx.locals.set(name, 'f64')
+  const name = `${T}${ctx.func.uniq++}`
+  ctx.func.locals.set(name, 'f64')
   return name
 }
 
@@ -144,25 +144,25 @@ export function temp() {
 
 /** Get i32 memory address for a boxed variable's cell. Handles f64→i32 conversion for closure captures. */
 function boxedAddr(name) {
-  const c = `$${ctx.boxed.get(name)}`
-  const ct = ctx.locals?.get(ctx.boxed.get(name)) || 'i32'
+  const c = `$${ctx.func.boxed.get(name)}`
+  const ct = ctx.func.locals?.get(ctx.func.boxed.get(name)) || 'i32'
   return ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', c]] : ['local.get', c]
 }
 
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get. */
 function readVar(name) {
-  if (ctx.boxed?.has(name))
+  if (ctx.func.boxed?.has(name))
     return typed(['f64.load', boxedAddr(name)], 'f64')
   if (isGlobal(name))
-    return typed(['global.get', `$${name}`], ctx.globalTypes.get(name) || 'f64')
-  const t = ctx.locals?.get(name) || ctx.sig?.params?.find(p => p.name === name)?.type || 'f64'
+    return typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
+  const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
   return typed(['local.get', `$${name}`], t)
 }
 
 /** Write variable value with tee semantics (returns the written value).
  *  valIR is raw emit result — coerced to f64 for boxed/global, to local type for locals. */
 function writeVar(name, valIR) {
-  if (ctx.boxed?.has(name)) {
+  if (ctx.func.boxed?.has(name)) {
     const addr = boxedAddr(name), t = temp()
     const v = asF64(valIR)
     return typed(['block', ['result', 'f64'],
@@ -178,7 +178,7 @@ function writeVar(name, valIR) {
       ['global.set', `$${name}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], 'f64')
   }
-  const t = ctx.locals.get(name) || 'f64'
+  const t = ctx.func.locals.get(name) || 'f64'
   return typed(['local.tee', `$${name}`, t === 'f64' ? asF64(valIR) : asI32(valIR)], t)
 }
 
@@ -214,8 +214,8 @@ export function materializeMulti(callNode) {
   while (emittedArgs.length < func.sig.params.length)
     emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
   const temps = Array.from({ length: n }, () => temp())
-  const arrLocal = `${T}marr${ctx.uniq++}`
-  ctx.locals.set(arrLocal, 'i32')
+  const arrLocal = `${T}marr${ctx.func.uniq++}`
+  ctx.func.locals.set(arrLocal, 'i32')
   inc('__alloc_hdr', '__mkptr')
   const ir = [
     ['local.set', `$${arrLocal}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
@@ -230,7 +230,7 @@ export function materializeMulti(callNode) {
 
 /** Get current loop labels or throw. */
 function loopTop() {
-  const top = ctx.stack.at(-1)
+  const top = ctx.func.stack.at(-1)
   if (!top) err('break/continue outside loop')
   return top
 }
@@ -264,7 +264,7 @@ function findFreeVars(node, bound, free, scope) {
     // Check if in outer scope — locals, params, or scope-tracked vars
     const inScope = scope
       ? scope.has(node)
-      : (ctx.locals?.has(node) || ctx.sig?.params.some(p => p.name === node))
+      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
     if (inScope) free.push(node)
     return
   }
@@ -308,7 +308,7 @@ function analyzeBoxedCaptures(body) {
         if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') outerScope.add(a[1])
     for (const a of args) collectDecls(a)
   })(body)
-  if (ctx.sig?.params) for (const p of ctx.sig.params) outerScope.add(p.name)
+  if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
 
   // For each closure, find captures, check if any are mutated anywhere
   ;(function walk(node) {
@@ -325,7 +325,7 @@ function analyzeBoxedCaptures(body) {
       const captureSet = new Set(captures)
       const mutated = new Set()
       findMutations(body, captureSet, mutated)  // walks everywhere, including nested closures
-      for (const v of mutated) ctx.boxed.set(v, `${T}cell_${v}`)
+      for (const v of mutated) ctx.func.boxed.set(v, `${T}cell_${v}`)
       return
     }
     for (const a of args) walk(a)
@@ -355,9 +355,9 @@ function emitDecl(...inits) {
     const val = emit(init)
     ctx.schema.target = null
     // Boxed variable: allocate cell, store value, cell local holds pointer (i32)
-    if (ctx.boxed.has(name)) {
-      const cell = ctx.boxed.get(name)
-      ctx.locals.set(cell, 'i32')
+    if (ctx.func.boxed.has(name)) {
+      const cell = ctx.func.boxed.get(name)
+      ctx.func.locals.set(cell, 'i32')
       result.push(
         ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${cell}`], asF64(val)])
@@ -366,25 +366,25 @@ function emitDecl(...inits) {
     // Module-scope variable → WASM global (only if not shadowed by local/param)
     if (isGlobal(name)) {
       // Already folded to immutable global in pre-fold pass → skip init
-      if (ctx.globalTypes.has(name)) continue
+      if (ctx.scope.globalTypes.has(name)) continue
       // Non-constant or non-foldable const → mutable global, init in __start
       result.push(['global.set', `$${name}`, asF64(val)])
       continue
     }
-    const localType = ctx.locals.get(name) || 'f64'
+    const localType = ctx.func.locals.get(name) || 'f64'
     result.push(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)])
 
     // Auto-box local variable if it has property assignments
-    if (ctx._localProps?.has(name) && ctx.schema.vars.has(name)) {
+    if (ctx.types._localProps?.has(name) && ctx.schema.vars.has(name)) {
       const schemaId = ctx.schema.vars.get(name)
       const schema = ctx.schema.list[schemaId]
       if (schema?.[0] === '__inner__') {
         inc('__alloc', '__mkptr')
-        const bt = `${T}bx${ctx.uniq++}`
-        ctx.locals.set(bt, 'i32')
+        const bt = `${T}bx${ctx.func.uniq++}`
+        ctx.func.locals.set(bt, 'i32')
         // Save original value as inner temp for method delegation
         const innerName = `${name}${T}inner`
-        ctx.locals.set(innerName, 'f64')
+        ctx.func.locals.set(innerName, 'f64')
         result.push(
           ['local.set', `$${innerName}`, ['local.get', `$${name}`]],  // save inner before boxing
           ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
@@ -413,7 +413,7 @@ export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
   if (typeof expr === 'bigint') return VAL.BIGINT
-  if (typeof expr === 'string') return ctx.valTypes?.get(expr) || ctx.globalValTypes?.get(expr) || null
+  if (typeof expr === 'string') return ctx.func.valTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
   if (!Array.isArray(expr)) return null
 
   const [op, ...args] = expr
@@ -470,17 +470,17 @@ export function valTypeOf(expr) {
 
 /**
  * Analyze all local value types from declarations and assignments.
- * Builds ctx.valTypes map for method dispatch and schema resolution.
+ * Builds ctx.func.valTypes map for method dispatch and schema resolution.
  */
 function analyzeValTypes(body) {
-  const types = ctx.valTypes
+  const types = ctx.func.valTypes
   function trackRegex(name, rhs) {
-    if (ctx.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.regex.vars.set(name, rhs)
+    if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
   function trackTyped(name, rhs) {
-    if (!ctx.typedElem) ctx.typedElem = new Map() // first use in this function scope
+    if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && rhs[1].startsWith('new.'))
-      ctx.typedElem.set(name, rhs[1]) // e.g. 'new.Float64Array'
+      ctx.types.typedElem.set(name, rhs[1]) // e.g. 'new.Float64Array'
   }
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -494,7 +494,7 @@ function analyzeValTypes(body) {
       const src = callee[1], method = callee[2]
       if (typeof src === 'string' && types.get(src) === VAL.TYPED && method === 'map') {
         types.set(name, VAL.TYPED)
-        if (ctx.typedElem?.has(src)) ctx.typedElem.set(name, ctx.typedElem.get(src))
+        if (ctx.types.typedElem?.has(src)) ctx.types.typedElem.set(name, ctx.types.typedElem.get(src))
       }
     }
     if (op === 'let' || op === 'const') {
@@ -519,10 +519,10 @@ function analyzeValTypes(body) {
       const [, obj, prop] = args[0]
       // Only auto-box known non-object types (array, closure, typed, string, number)
       const vt = types.get(obj)
-      if (vt && vt !== VAL.OBJECT && ctx.locals?.has(obj) && ctx.schema.register) {
-        if (!ctx._localProps) ctx._localProps = new Map()
-        if (!ctx._localProps.has(obj)) ctx._localProps.set(obj, new Set())
-        ctx._localProps.get(obj).add(prop)
+      if (vt && vt !== VAL.OBJECT && ctx.func.locals?.has(obj) && ctx.schema.register) {
+        if (!ctx.types._localProps) ctx.types._localProps = new Map()
+        if (!ctx.types._localProps.has(obj)) ctx.types._localProps.set(obj, new Set())
+        ctx.types._localProps.get(obj).add(prop)
       }
     }
     for (const a of args) walk(a)
@@ -530,8 +530,8 @@ function analyzeValTypes(body) {
   walk(body)
 
   // Register boxed schemas for local variables with property assignments
-  if (ctx._localProps) {
-    for (const [name, props] of ctx._localProps) {
+  if (ctx.types._localProps) {
+    for (const [name, props] of ctx.types._localProps) {
       if (ctx.schema.vars.has(name)) continue
       const schema = ['__inner__', ...props]
       ctx.schema.vars.set(name, ctx.schema.register(schema))
@@ -701,12 +701,12 @@ function buildArrayWithSpreads(items) {
   }
 
   // Multiple sections: calculate total length, allocate, copy each section
-  const result = `${T}arr${ctx.uniq++}`
-  const len = `${T}len${ctx.uniq++}`
-  const pos = `${T}pos${ctx.uniq++}`
-  ctx.locals.set(result, 'i32')
-  ctx.locals.set(len, 'i32')
-  ctx.locals.set(pos, 'i32')
+  const result = `${T}arr${ctx.func.uniq++}`
+  const len = `${T}len${ctx.func.uniq++}`
+  const pos = `${T}pos${ctx.func.uniq++}`
+  ctx.func.locals.set(result, 'i32')
+  ctx.func.locals.set(len, 'i32')
+  ctx.func.locals.set(pos, 'i32')
 
   const ir = [
     // Calculate total length
@@ -717,8 +717,8 @@ function buildArrayWithSpreads(items) {
   // Multi-value function calls get materialized as heap arrays
   for (const sec of sections) {
     if (sec.type === 'spread') {
-      sec.local = `${T}sp${ctx.uniq++}`
-      ctx.locals.set(sec.local, 'f64')
+      sec.local = `${T}sp${ctx.func.uniq++}`
+      ctx.func.locals.set(sec.local, 'f64')
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
     }
@@ -754,9 +754,9 @@ function buildArrayWithSpreads(items) {
         )
       }
     } else {
-      const src = `${T}src${ctx.uniq++}`, slen = `${T}slen${ctx.uniq++}`, sidx = `${T}sidx${ctx.uniq++}`
-      ctx.locals.set(src, 'i32'); ctx.locals.set(slen, 'i32'); ctx.locals.set(sidx, 'i32')
-      const loopId = ctx.uniq++
+      const src = `${T}src${ctx.func.uniq++}`, slen = `${T}slen${ctx.func.uniq++}`, sidx = `${T}sidx${ctx.func.uniq++}`
+      ctx.func.locals.set(src, 'i32'); ctx.func.locals.set(slen, 'i32'); ctx.func.locals.set(sidx, 'i32')
+      const loopId = ctx.func.uniq++
       ir.push(
         ['local.set', `$${src}`, ['call', '$__ptr_offset', ['local.get', `$${sec.local}`]]],
         ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${sec.local}`]]],
@@ -786,12 +786,12 @@ function buildArrayWithSpreads(items) {
  */
 export default function compile(ast) {
   // Known function names + lookup map for direct call detection
-  funcNames = new Set(ctx.funcs.map(f => f.name))
-  funcMap = new Map(ctx.funcs.map(f => [f.name, f]))
+  funcNames = new Set(ctx.func.list.map(f => f.name))
+  funcMap = new Map(ctx.func.list.map(f => [f.name, f]))
 
   // Check user globals don't conflict with runtime globals (modules loaded after user decls)
-  for (const name of ctx.userGlobals)
-    if (!ctx.globals.get(name)?.includes('mut f64'))
+  for (const name of ctx.scope.userGlobals)
+    if (!ctx.scope.globals.get(name)?.includes('mut f64'))
       err(`'${name}' conflicts with a compiler internal — choose a different name`)
 
   // Pre-fold const globals: evaluate constant initializers before function compilation
@@ -821,14 +821,14 @@ export default function compile(ast) {
       for (const decl of s.slice(1)) {
         if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
         const [, name, init] = decl
-        if (!ctx.globals.has(name) || !ctx.consts?.has(name)) continue
+        if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
         const v = evalConst(init)
         if (v == null || !isFinite(v)) continue
         const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
-        ctx.globals.set(name, isInt
+        ctx.scope.globals.set(name, isInt
           ? `(global $${name} i32 (i32.const ${v}))`
           : `(global $${name} f64 (f64.const ${v}))`)
-        ctx.globalTypes.set(name, isInt ? 'i32' : 'f64')
+        ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
       }
     }
   }
@@ -842,9 +842,9 @@ export default function compile(ast) {
         if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
         const vt = valTypeOf(decl[2])
         if (vt) {
-          if (!ctx.globalValTypes) ctx.globalValTypes = new Map()
-          ctx.globalValTypes.set(decl[1], vt)
-          if (vt === VAL.REGEX && ctx.regex) ctx.regex.vars.set(decl[1], decl[2])
+          if (!ctx.scope.globalValTypes) ctx.scope.globalValTypes = new Map()
+          ctx.scope.globalValTypes.set(decl[1], vt)
+          if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(decl[1], decl[2])
         }
       }
     }
@@ -859,7 +859,7 @@ export default function compile(ast) {
       if (op === ';' || op === '{}') { for (const a of args) scan(a); return }
       if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
         const [, obj, prop] = args[0]
-        if (typeof obj === 'string' && (ctx.globals.has(obj) || funcNames.has(obj))) {
+        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || funcNames.has(obj))) {
           if (!propMap.has(obj)) propMap.set(obj, new Set())
           propMap.get(obj).add(prop)
         }
@@ -868,7 +868,7 @@ export default function compile(ast) {
     }
     scan(ast)
     // Also scan function bodies (property assignments like err.loc = pos happen inside functions)
-    for (const func of ctx.funcs) if (func.body) scan(func.body)
+    for (const func of ctx.func.list) if (func.body) scan(func.body)
     for (const [name, props] of propMap) {
       // Merge new properties into existing schema if needed
       if (ctx.schema.vars.has(name)) {
@@ -891,15 +891,15 @@ export default function compile(ast) {
       const schemaId = ctx.schema.register(schema)
       ctx.schema.vars.set(name, schemaId)
       // For function variables, ensure a global exists for property storage
-      if (funcNames.has(name) && !ctx.globals.has(name))
-        ctx.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+      if (funcNames.has(name) && !ctx.scope.globals.has(name))
+        ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
       // Mark for boxing emission in __start
-      if (!ctx.autoBox) ctx.autoBox = new Map()
-      ctx.autoBox.set(name, { schemaId, schema })
+      if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
+      ctx.schema.autoBox.set(name, { schemaId, schema })
     }
   }
 
-  const funcs = ctx.funcs.map(func => {
+  const funcs = ctx.func.list.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
     if (func.raw) return parseWat(func.raw)
 
@@ -908,17 +908,17 @@ export default function compile(ast) {
     const multi = sig.results.length > 1
 
     // Reset per-function state
-    ctx.stack = []
-    ctx.uniq = 0
-    ctx.sig = sig
+    ctx.func.stack = []
+    ctx.func.uniq = 0
+    ctx.func.current = sig
 
     // Pre-analyze local types from body
     // Block body vs object literal: object has ':' property nodes
     const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
-    ctx.locals = block ? analyzeLocals(body) : new Map()
-    ctx.valTypes = new Map()
-    ctx.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
-    ctx._localProps = null  // reset per function
+    ctx.func.locals = block ? analyzeLocals(body) : new Map()
+    ctx.func.valTypes = new Map()
+    ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
+    ctx.types._localProps = null  // reset per function
     if (block) {
       analyzeValTypes(body)
       analyzeBoxedCaptures(body)
@@ -944,9 +944,9 @@ export default function compile(ast) {
     // Box params that are mutably captured: allocate cell, copy param value
     const boxedParamInits = []
     for (const p of sig.params) {
-      if (ctx.boxed.has(p.name)) {
-        const cell = ctx.boxed.get(p.name)
-        ctx.locals.set(cell, 'i32')
+      if (ctx.func.boxed.has(p.name)) {
+        const cell = ctx.func.boxed.get(p.name)
+        ctx.func.locals.set(cell, 'i32')
         boxedParamInits.push(
           ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
           ['f64.store', ['local.get', `$${cell}`], asF64(typed(['local.get', `$${p.name}`], p.type))])
@@ -955,14 +955,14 @@ export default function compile(ast) {
 
     if (block) {
       const stmts = emitBody(body)
-      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
       fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
     } else if (multi && body[0] === '[') {
-      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
       fn.push(...boxedParamInits, ...body.slice(1).map(e => asF64(emit(e))))
     } else {
       const ir = emit(body)
-      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
       fn.push(...defaultInits, ...boxedParamInits, asF64(ir))
     }
 
@@ -971,17 +971,17 @@ export default function compile(ast) {
 
   // Compile closure bodies (generated during emit phase)
   const closureFuncs = []
-  if (ctx.fn.bodies) {
-    for (const cb of ctx.fn.bodies) {
+  if (ctx.closure.bodies) {
+    for (const cb of ctx.closure.bodies) {
       // Reset per-function state for closure body
-      ctx.locals = new Map()
-      ctx.valTypes = new Map()
+      ctx.func.locals = new Map()
+      ctx.func.valTypes = new Map()
       // In closure bodies, boxed captures use the original name as both var and cell local
-      ctx.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
-      ctx.stack = []
-      ctx.uniq = Math.max(ctx.uniq, 100) // avoid label collisions
+      ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+      ctx.func.stack = []
+      ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
       // Uniform convention: (env: f64, __args: f64) → f64
-      ctx.sig = { params: [{ name: '__env', type: 'f64' }, { name: `${T}args`, type: 'f64' }], results: ['f64'] }
+      ctx.func.current = { params: [{ name: '__env', type: 'f64' }, { name: `${T}args`, type: 'f64' }], results: ['f64'] }
 
       const fn = ['func', `$${cb.name}`]
       fn.push(['param', '$__env', 'f64'])
@@ -989,27 +989,27 @@ export default function compile(ast) {
       fn.push(['result', 'f64'])
 
       // Params are locals unpacked from args array
-      for (const p of cb.params) ctx.locals.set(p, 'f64')
+      for (const p of cb.params) ctx.func.locals.set(p, 'f64')
 
       // Register captured variable locals (i32 for boxed = cell pointer, f64 otherwise)
       for (let i = 0; i < cb.captures.length; i++) {
         const name = cb.captures[i]
         // All captures are f64 — boxed ones store cell pointer as f64 (convert to i32 on use)
-        ctx.locals.set(name, 'f64')
+        ctx.func.locals.set(name, 'f64')
       }
 
       // Emit body
       const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
       let bodyIR
       if (block) {
-        for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.locals.has(k)) ctx.locals.set(k, v)
+        for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
         bodyIR = emitBody(cb.body)
       } else {
         bodyIR = [asF64(emit(cb.body))]
       }
 
       // Insert locals (captures + params + declared)
-      for (const [l, t] of ctx.locals) fn.push(['local', `$${l}`, t])
+      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
       // Load captures from env (cell pointer for boxed, value for immutable)
       for (let i = 0; i < cb.captures.length; i++) {
@@ -1047,52 +1047,52 @@ export default function compile(ast) {
   }
 
   // Build module sections
-  const sections = [...ctx.imports]
+  const sections = [...ctx.module.imports]
 
   // Function types for call_indirect (one per arity)
-  if (ctx.fn.types) {
-    for (const arity of ctx.fn.types) {
+  if (ctx.closure.types) {
+    for (const arity of ctx.closure.types) {
       const params = [['param', 'f64']] // env
       for (let i = 0; i < arity; i++) params.push(['param', 'f64'])
       sections.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
     }
   }
 
-  if (ctx.modules.core) {
-    const pages = ctx.memoryPages || 1
-    if (ctx.sharedMemory) sections.push(['import', '"env"', '"memory"', ['memory', pages]])
+  if (ctx.module.modules.core) {
+    const pages = ctx.memory.pages || 1
+    if (ctx.memory.shared) sections.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sections.push(['memory', ['export', '"memory"'], pages])
   }
-  // Data segment placeholder — filled after emit (string literals append to ctx.data during emit)
+  // Data segment placeholder — filled after emit (string literals append to ctx.runtime.data during emit)
   const dataIdx = sections.length
-  if (ctx.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
+  if (ctx.runtime.throws) sections.push(['tag', '$__jz_err', ['param', 'f64']])
 
   // Table for closures
-  if (ctx.fn.table?.length)
-    sections.push(['table', ctx.fn.table.length, 'funcref'])
+  if (ctx.closure.table?.length)
+    sections.push(['table', ctx.closure.table.length, 'funcref'])
 
   // Globals placeholder — filled after __start (const folding may update declarations)
   const globalsIdx = sections.length
   resolveIncludes()
-  sections.push(...[...ctx.includes].map(n => parseWat(ctx.stdlib[n])))
+  sections.push(...[...ctx.core.includes].map(n => parseWat(ctx.core.stdlib[n])))
   sections.push(...closureFuncs)
   sections.push(...funcs)
 
   // Element section: populate function table
-  if (ctx.fn.table?.length)
-    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.fn.table.map(n => `$${n}`)])
+  if (ctx.closure.table?.length)
+    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
   // Module-scope init code (__start): reset per-function state, emit, collect locals
-  ctx.locals = new Map()
-  ctx.valTypes = new Map()
-  ctx.boxed = new Map()
-  ctx.stack = []
-  ctx.sig = { params: [], results: [] }
+  ctx.func.locals = new Map()
+  ctx.func.valTypes = new Map()
+  ctx.func.boxed = new Map()
+  ctx.func.stack = []
+  ctx.func.current = { params: [], results: [] }
   analyzeValTypes(ast)
   // Emit sub-module init code first (imports must be initialized before main module)
   const moduleInits = []
-  if (ctx.moduleInits) {
-    for (const mi of ctx.moduleInits) {
+  if (ctx.module.moduleInits) {
+    for (const mi of ctx.module.moduleInits) {
       analyzeValTypes(mi)
       const ir = emit(mi)
       if (ir?.length) moduleInits.push(...ir)
@@ -1102,10 +1102,10 @@ export default function compile(ast) {
 
   // Auto-boxing: emit boxing code for variables with property assignments
   const boxInit = []
-  if (ctx.autoBox) {
+  if (ctx.schema.autoBox) {
     const bt = `${T}box`
-    ctx.locals.set(bt, 'i32')
-    for (const [name, { schemaId, schema }] of ctx.autoBox) {
+    ctx.func.locals.set(bt, 'i32')
+    for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
       inc('__alloc', '__mkptr')
       boxInit.push(
         ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
@@ -1122,22 +1122,22 @@ export default function compile(ast) {
 
   if (moduleInits.length || init?.length || boxInit.length) {
     const startFn = ['func', '$__start']
-    for (const [l, t] of ctx.locals) startFn.push(['local', `$${l}`, t])
+    for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
     startFn.push(...boxInit, ...moduleInits, ...init)
     sections.push(startFn)
     sections.push(['start', '$__start'])
   }
 
   // Insert globals at correct position (after __start may have folded consts)
-  sections.splice(globalsIdx, 0, ...[...ctx.globals.values()].map(g => parseWat(g)))
+  sections.splice(globalsIdx, 0, ...[...ctx.scope.globals.values()].map(g => parseWat(g)))
 
-  // Insert data segment (after emit — string literals append to ctx.data during emit)
+  // Insert data segment (after emit — string literals append to ctx.runtime.data during emit)
   // Skip for shared memory — data at address 0 would overwrite other modules' data
-  if (ctx.data && !ctx.sharedMemory) {
+  if (ctx.runtime.data && !ctx.memory.shared) {
     let esc = ''
-    for (let i = 0; i < ctx.data.length; i++) {
-      const c = ctx.data.charCodeAt(i)
-      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += ctx.data[i]
+    for (let i = 0; i < ctx.runtime.data.length; i++) {
+      const c = ctx.runtime.data.charCodeAt(i)
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += ctx.runtime.data[i]
       else esc += '\\' + c.toString(16).padStart(2, '0')
     }
     sections.splice(dataIdx, 0, ['data', ['i32.const', 0], '"' + esc + '"'])
@@ -1149,14 +1149,14 @@ export default function compile(ast) {
 
   // Custom section: rest params for exported functions (JS-side wrapping)
   // Format: [{name, fixed}] where fixed = number of non-rest params
-  const restParamFuncs = ctx.funcs.filter(f => f.exported && f.rest)
+  const restParamFuncs = ctx.func.list.filter(f => f.exported && f.rest)
     .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
   if (restParamFuncs.length)
     sections.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Default export alias: export default name → (export "default" (func $name))
-  if (typeof ctx.exports['default'] === 'string') {
-    const alias = ctx.exports['default']
+  if (typeof ctx.func.exports['default'] === 'string') {
+    const alias = ctx.func.exports['default']
     sections.push(['export', '"default"', ['func', `$${alias}`]])
   }
 
@@ -1193,7 +1193,7 @@ function emitBody(node) {
 
 /**
  * Core emitter table. Maps AST ops to WASM IR generators.
- * Modules extend ctx.emit (inherits from emitter) for custom ops.
+ * Modules extend ctx.core.emit (inherits from emitter) for custom ops.
  * @type {Record<string, (...args: any[]) => Array>}
  */
 /** Comparison op factory with constant folding. */
@@ -1261,17 +1261,17 @@ export const emitter = {
   },
 
   'throw': expr => {
-    ctx.throws = true
+    ctx.runtime.throws = true
     return typed(['throw', '$__jz_err', asF64(emit(expr))], 'void')
   },
 
   'catch': (body, errName, handler) => {
-    ctx.throws = true
-    const id = ctx.uniq++
-    ctx.locals.set(errName, 'f64')
-    const prev = ctx._inTry; ctx._inTry = true
+    ctx.runtime.throws = true
+    const id = ctx.func.uniq++
+    ctx.func.locals.set(errName, 'f64')
+    const prev = ctx.runtime._inTry; ctx.runtime._inTry = true
     const bodyIR = emitFlat(body)
-    ctx._inTry = prev
+    ctx.runtime._inTry = prev
     const handlerIR = emitFlat(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
@@ -1285,11 +1285,11 @@ export const emitter = {
   },
 
   'return': expr => {
-    if (ctx.sig?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
+    if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
     if (expr == null) return typed(['return', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]], 'void')
     const ir = asF64(emit(expr))
-    if (!ctx._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
+    if (!ctx.runtime._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
     return typed(['return', ir], 'void')
   },
@@ -1301,8 +1301,8 @@ export const emitter = {
     // Array index assignment: arr[i] = x
     if (Array.isArray(name) && name[0] === '[]') {
       const [, arr, idx] = name
-      if (typeof arr === 'string' && ctx.valTypes?.get(arr) === 'typed' && ctx.emit['.typed:[]=']) {
-        const r = ctx.emit['.typed:[]=']?.(arr, idx, val)
+      if (typeof arr === 'string' && ctx.func.valTypes?.get(arr) === 'typed' && ctx.core.emit['.typed:[]=']) {
+        const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val)
         if (r) return r
       }
       const va = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val)), t = temp()
@@ -1383,7 +1383,7 @@ export const emitter = {
         : [['local.get', `$${t}`], asF64(emit(val))]
     const result = typed(['if', ['result', 'f64'], cond, ['then', thenExpr], ['else', elseExpr]], 'f64')
     // Write back (handles boxed/global/local)
-    if (ctx.boxed?.has(name)) {
+    if (ctx.func.boxed?.has(name)) {
       const bt = temp()
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${bt}`, result],
@@ -1391,7 +1391,7 @@ export const emitter = {
         ['local.get', `$${bt}`]], 'f64')
     }
     if (isGlobal(name)) return ['global.set', `$${name}`, result]
-    const lt = ctx.locals.get(name) || 'f64'
+    const lt = ctx.func.locals.get(name) || 'f64'
     return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
   }])),
 
@@ -1409,8 +1409,8 @@ export const emitter = {
 
   '+': (a, b) => {
     // String concatenation: if either operand is known string, use __str_concat
-    const vtA = typeof a === 'string' ? (ctx.valTypes?.get(a) || ctx.globalValTypes?.get(a)) : valTypeOf(a)
-    const vtB = typeof b === 'string' ? (ctx.valTypes?.get(b) || ctx.globalValTypes?.get(b)) : valTypeOf(b)
+    const vtA = typeof a === 'string' ? (ctx.func.valTypes?.get(a) || ctx.scope.globalValTypes?.get(a)) : valTypeOf(a)
+    const vtB = typeof b === 'string' ? (ctx.func.valTypes?.get(b) || ctx.scope.globalValTypes?.get(b)) : valTypeOf(b)
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       inc('__str_concat')
       return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
@@ -1608,9 +1608,9 @@ export const emitter = {
 
   'for': (init, cond, step, body) => {
     if (body === undefined) return err('for-in/for-of not supported')
-    const id = ctx.uniq++
+    const id = ctx.func.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
-    ctx.stack.push({ brk, loop })
+    ctx.func.stack.push({ brk, loop })
     const result = []
     if (init != null) result.push(...emitFlat(init))
     const loopBody = []
@@ -1619,20 +1619,20 @@ export const emitter = {
     if (step) loopBody.push(...emitFlat(step))
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])
-    ctx.stack.pop()
+    ctx.func.stack.pop()
     return result.length === 1 ? result[0] : result
   },
 
   'switch': (discriminant, ...cases) => {
-    const disc = `${T}disc${ctx.uniq++}`
-    ctx.locals.set(disc, 'f64')
+    const disc = `${T}disc${ctx.func.uniq++}`
+    ctx.func.locals.set(disc, 'f64')
 
     const result = [['local.set', `$${disc}`, asF64(emit(discriminant))]]
 
     for (const c of cases) {
       if (c[0] === 'case') {
         const [, test, body] = c
-        const skip = `$skip${ctx.uniq++}`
+        const skip = `$skip${ctx.func.uniq++}`
         // Block: skip if discriminant != test, otherwise execute body
         result.push(['block', skip,
           ['br_if', skip, typed(['f64.ne', typed(['local.get', `$${disc}`], 'f64'), asF64(emit(test))], 'i32')],
@@ -1653,7 +1653,7 @@ export const emitter = {
 
   // Arrow as value → closure
   '=>': (rawParams, body) => {
-    if (!ctx.fn.make) err('Closures require fn module (auto-included)')
+    if (!ctx.closure.make) err('Closures require fn module (auto-included)')
 
     const raw = extractParams(rawParams)
     const params = [], defaults = {}
@@ -1664,11 +1664,11 @@ export const emitter = {
         params.push(r[1])
       } else if (Array.isArray(r) && r[0] === '=') {
         if (typeof r[1] !== 'string') {
-          const tmp = `${T}p${ctx.uniq++}`; params.push(tmp)
+          const tmp = `${T}p${ctx.func.uniq++}`; params.push(tmp)
           defaults[tmp] = r[2]; bodyPrefix.push(['let', ['=', r[1], tmp]])
         } else { params.push(r[1]); defaults[r[1]] = r[2] }
       } else if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
-        const tmp = `${T}p${ctx.uniq++}`; params.push(tmp)
+        const tmp = `${T}p${ctx.func.uniq++}`; params.push(tmp)
         bodyPrefix.push(['let', ['=', r, tmp]])
       } else {
         params.push(r)
@@ -1693,7 +1693,7 @@ export const emitter = {
     // Pass closure info including rest param and defaults
     const closureInfo = { params, body, captures, restParam }
     if (Object.keys(defaults).length) closureInfo.defaults = defaults
-    return ctx.fn.make(closureInfo)
+    return ctx.closure.make(closureInfo)
   },
 
   '()': (callee, callArgs) => {
@@ -1735,7 +1735,7 @@ export const emitter = {
         }
       }
 
-      const vt = typeof obj === 'string' ? (ctx.valTypes.get(obj) || ctx.globalValTypes?.get(obj)) : valTypeOf(obj)
+      const vt = typeof obj === 'string' ? (ctx.func.valTypes.get(obj) || ctx.scope.globalValTypes?.get(obj)) : valTypeOf(obj)
 
       // Helper to call method with arguments (handles spread expansion)
       const callMethod = (objArg, methodEmitter) => {
@@ -1746,9 +1746,9 @@ export const emitter = {
         // Single spread at end: call method with normal args, then loop spread elements
         if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length) {
           const spreadExpr = parsed.spreads[0].expr
-          const acc = `${T}acc${ctx.uniq++}`, arr = `${T}sp${ctx.uniq++}`, len = `${T}splen${ctx.uniq++}`, idx = `${T}spidx${ctx.uniq++}`
-          ctx.locals.set(acc, 'f64'); ctx.locals.set(arr, 'f64')
-          ctx.locals.set(len, 'i32'); ctx.locals.set(idx, 'i32')
+          const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
+          ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
+          ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
 
           // Mutating methods (push/add/set) modify in-place; accumulating methods (concat) return new values
           const mutating = ['push', 'add', 'set', 'unshift'].includes(method)
@@ -1763,7 +1763,7 @@ export const emitter = {
           ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
           ir.push(['local.set', `$${idx}`, ['i32.const', 0]])
-          const loopId = ctx.uniq++
+          const loopId = ctx.func.uniq++
           const loopBody = asF64(methodEmitter(acc, ['[]', arr, idx]))
           ir.push(['block', `$break${loopId}`,
             ['loop', `$continue${loopId}`,
@@ -1784,11 +1784,11 @@ export const emitter = {
 
       // Boxed object: delegate method to inner value (slot 0)
       if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
-        const innerVt = ctx.valTypes?.get(obj)
-        const emitter = ctx.emit[`.${innerVt}:${method}`] || ctx.emit[`.${method}`]
+        const innerVt = ctx.func.valTypes?.get(obj)
+        const emitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
         if (emitter) {
           const innerName = `${obj}${T}inner`
-          if (!ctx.locals.has(innerName)) ctx.locals.set(innerName, 'f64')
+          if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
           // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
           const loadInner = ['local.set', `$${innerName}`,
             ['f64.load', ['call', '$__ptr_offset', asF64(emit(obj))]]]
@@ -1805,17 +1805,17 @@ export const emitter = {
       }
 
       // Known type → static dispatch
-      if (vt && ctx.emit[`.${vt}:${method}`]) {
-        return callMethod(obj, ctx.emit[`.${vt}:${method}`])
+      if (vt && ctx.core.emit[`.${vt}:${method}`]) {
+        return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
       }
 
       // Unknown type, both string + generic exist → runtime dispatch by ptr type
       const strKey = `.string:${method}`, genKey = `.${method}`
-      if (!vt && ctx.emit[strKey] && ctx.emit[genKey]) {
-        const t = `${T}rt${ctx.uniq++}`, tt = `${T}rtt${ctx.uniq++}`
-        ctx.locals.set(t, 'f64'); ctx.locals.set(tt, 'i32')
-        const strEmitter = ctx.emit[strKey]
-        const genEmitter = ctx.emit[genKey]
+      if (!vt && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+        const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
+        ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
+        const strEmitter = ctx.core.emit[strKey]
+        const genEmitter = ctx.core.emit[genKey]
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, asF64(emit(obj))],
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
@@ -1828,21 +1828,21 @@ export const emitter = {
       }
 
       // Schema property function call: x.prop(args) where prop is a closure in boxed schema
-      if (typeof obj === 'string' && ctx.schema.find && ctx.fn.call && ctx.schema.isBoxed?.(obj)) {
+      if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
         const idx = ctx.schema.find(obj, method)
         if (idx >= 0) {
           const propRead = typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
-          return ctx.fn.call(propRead, parsed.normal)
+          return ctx.closure.call(propRead, parsed.normal)
         }
       }
 
       // Generic only
-      if (ctx.emit[genKey]) {
-        return callMethod(obj, ctx.emit[genKey])
+      if (ctx.core.emit[genKey]) {
+        return callMethod(obj, ctx.core.emit[genKey])
       }
     }
 
-    if (ctx.emit[callee]) {
+    if (ctx.core.emit[callee]) {
       // Pass spread args through to emitter (e.g. Math.max(...arr))
       if (parsed.hasSpread) {
         const allArgs = []
@@ -1852,9 +1852,9 @@ export const emitter = {
           allArgs.push(['...', s.expr])
         }
         while (ni < parsed.normal.length) allArgs.push(parsed.normal[ni++])
-        return ctx.emit[callee](...allArgs)
+        return ctx.core.emit[callee](...allArgs)
       }
-      return ctx.emit[callee](...parsed.normal)
+      return ctx.core.emit[callee](...parsed.normal)
     }
 
     // Direct call if callee is a known top-level function
@@ -1894,15 +1894,15 @@ export const emitter = {
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer
     // Uniform convention: fn.call packs all args into an array
-    if (ctx.fn.call) {
+    if (ctx.closure.call) {
       if (parsed.hasSpread) {
         // Spread: build the args array directly (handles __spread markers)
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
         const arrayIR = buildArrayWithSpreads(combined)
         // Pass pre-built array as single already-emitted arg
-        return ctx.fn.call(emit(callee), [arrayIR], true)
+        return ctx.closure.call(emit(callee), [arrayIR], true)
       }
-      return ctx.fn.call(emit(callee), parsed.normal)
+      return ctx.closure.call(emit(callee), parsed.normal)
     }
 
     // Unknown callee — assume direct call
@@ -1919,7 +1919,7 @@ export const emitter = {
  * @returns {Array} typed WASM S-expression
  */
 export function emit(node) {
-  if (Array.isArray(node) && node.loc != null) ctx.loc = node.loc
+  if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return null
   if (node === true) return typed(['i32.const', 1], 'i32')
   if (node === false) return typed(['i32.const', 0], 'i32')
@@ -1940,34 +1940,34 @@ export function emit(node) {
   }
   if (typeof node === 'string') {
     // Variable read: boxed / local / param / global (check before emitter table to avoid name collisions)
-    if (ctx.boxed?.has(node) || ctx.locals?.has(node) || ctx.sig?.params?.some(p => p.name === node) || isGlobal(node))
+    if (ctx.func.boxed?.has(node) || ctx.func.locals?.has(node) || ctx.func.current?.params?.some(p => p.name === node) || isGlobal(node))
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
-    if (funcNames.has(node) && !ctx.locals?.has(node) && !ctx.sig?.params?.some(p => p.name === node) && ctx.fn.table) {
+    if (funcNames.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && ctx.closure.table) {
       // Generate trampoline: (env, __args) → unpack args, call $func(p0, p1, ...)
       const func = funcMap.get(node)
       const trampolineName = `${T}tramp_${node}`
-      if (!ctx.stdlib[trampolineName]) {
+      if (!ctx.core.stdlib[trampolineName]) {
         const fwd = func?.sig.params.map((_, i) =>
           `(f64.load (i32.add (call $__ptr_offset (local.get $${T}args)) (i32.const ${i * 8})))`
         ).join(' ') || ''
-        ctx.stdlib[trampolineName] = `(func $${trampolineName} (param $__env f64) (param $${T}args f64) (result f64) (call $${node} ${fwd}))`
+        ctx.core.stdlib[trampolineName] = `(func $${trampolineName} (param $__env f64) (param $${T}args f64) (result f64) (call $${node} ${fwd}))`
         inc(trampolineName)
       }
-      let idx = ctx.fn.table.indexOf(trampolineName)
-      if (idx < 0) { idx = ctx.fn.table.length; ctx.fn.table.push(trampolineName) }
+      let idx = ctx.closure.table.indexOf(trampolineName)
+      if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }
       return typed(['call', '$__mkptr', ['i32.const', 10], ['i32.const', idx], ['i32.const', 0]], 'f64')
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision
-    if (node.includes('.') && ctx.emit[node]) return ctx.emit[node]()
-    const t = ctx.locals?.get(node) || ctx.sig?.params.find(p => p.name === node)?.type || 'f64'
+    if (node.includes('.') && ctx.core.emit[node]) return ctx.core.emit[node]()
+    const t = ctx.func.locals?.get(node) || ctx.func.current?.params.find(p => p.name === node)?.type || 'f64'
     return typed(['local.get', `$${node}`], t)
   }
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 
   const [op, ...args] = node
   // WASM IR passthrough: if an instruction node reaches emit() (from statement flattening), pass through
-  if (typeof op === 'string' && !ctx.emit[op] && /^[a-z]/.test(op)) return node
+  if (typeof op === 'string' && !ctx.core.emit[op] && /^[a-z]/.test(op)) return node
 
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
@@ -1975,7 +1975,7 @@ export function emit(node) {
     return v == null ? typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64') : emit(v)
   }
 
-  const handler = ctx.emit[op]
+  const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
   return handler(...args)
 }

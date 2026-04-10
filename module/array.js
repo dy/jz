@@ -15,8 +15,8 @@ import { ctx, inc, PTR } from '../src/ctx.js'
 /** Allocate array: 8-byte header (len+cap) + n*8 data via __alloc_hdr. Returns offset to data start. */
 function allocArray(len, cap) {
   if (cap == null) cap = len
-  const t = `${T}arr${ctx.uniq++}`
-  ctx.locals.set(t, 'i32')
+  const t = `${T}arr${ctx.func.uniq++}`
+  ctx.func.locals.set(t, 'i32')
   return {
     local: t,
     setup: [
@@ -30,11 +30,11 @@ function allocArray(len, cap) {
 
 /** Emit a loop that iterates over array elements. Helper for methods. */
 function arrayLoop(arrExpr, bodyFn) {
-  const ptr = `${T}ap${ctx.uniq++}`, len = `${T}al${ctx.uniq++}`, i = `${T}ai${ctx.uniq++}`
-  ctx.locals.set(ptr, 'i32')
-  ctx.locals.set(len, 'i32')
-  ctx.locals.set(i, 'i32')
-  const id = ctx.uniq++
+  const ptr = `${T}ap${ctx.func.uniq++}`, len = `${T}al${ctx.func.uniq++}`, i = `${T}ai${ctx.func.uniq++}`
+  ctx.func.locals.set(ptr, 'i32')
+  ctx.func.locals.set(len, 'i32')
+  ctx.func.locals.set(i, 'i32')
+  const id = ctx.func.uniq++
   return [
     ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(arrExpr)]],
     ['local.set', `$${len}`, ['call', '$__len', asF64(arrExpr)]],
@@ -57,29 +57,29 @@ function elemStore(ptr, i, val) {
 
 export default () => {
   // Array.isArray(x): check ptr_type === PTR.ARRAY
-  ctx.emit['Array.isArray'] = (x) => {
+  ctx.core.emit['Array.isArray'] = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
-  ctx.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
     (local $len i32) (local $dst i32)
     (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
     (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.emit['Array.from'] = (src) => {
+  ctx.core.emit['Array.from'] = (src) => {
     inc('__arr_from')
     return typed(['call', '$__arr_from', asF64(emit(src))], 'f64')
   }
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
-  ctx.stdlib['__arr_grow'] = `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow'] = `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
     (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -96,7 +96,7 @@ export default () => {
 
   // === Array literal ===
 
-  ctx.emit['['] = (...elems) => {
+  ctx.core.emit['['] = (...elems) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
 
     if (!hasSpread) {
@@ -114,14 +114,14 @@ export default () => {
     const spreadLocals = new Map()
     for (const e of elems) {
       if (Array.isArray(e) && e[0] === '...' && multiCount(e[1])) {
-        const sl = `${T}ss${ctx.uniq++}`
-        ctx.locals.set(sl, 'f64')
+        const sl = `${T}ss${ctx.func.uniq++}`
+        ctx.func.locals.set(sl, 'f64')
         spreadLocals.set(e, sl)
       }
     }
 
-    const out = `${T}sa${ctx.uniq++}`, pos = `${T}sp${ctx.uniq++}`, total = `${T}st${ctx.uniq++}`
-    ctx.locals.set(out, 'i32'); ctx.locals.set(pos, 'i32'); ctx.locals.set(total, 'i32')
+    const out = `${T}sa${ctx.func.uniq++}`, pos = `${T}sp${ctx.func.uniq++}`, total = `${T}st${ctx.func.uniq++}`
+    ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(pos, 'i32'); ctx.func.locals.set(total, 'i32')
 
     const lenCalc = [['local.set', `$${total}`, ['i32.const', 0]]]
     // Materialize multi-value spreads first
@@ -146,9 +146,9 @@ export default () => {
 
     for (const e of elems) {
       if (Array.isArray(e) && e[0] === '...') {
-        const src = `${T}ss${ctx.uniq++}`, slen = `${T}sl${ctx.uniq++}`, si = `${T}si${ctx.uniq++}`
-        ctx.locals.set(src, 'i32'); ctx.locals.set(slen, 'i32'); ctx.locals.set(si, 'i32')
-        const id = ctx.uniq++
+        const src = `${T}ss${ctx.func.uniq++}`, slen = `${T}sl${ctx.func.uniq++}`, si = `${T}si${ctx.func.uniq++}`
+        ctx.func.locals.set(src, 'i32'); ctx.func.locals.set(slen, 'i32'); ctx.func.locals.set(si, 'i32')
+        const id = ctx.func.uniq++
         const spreadVal = spreadLocals.has(e) ? typed(['local.get', `$${spreadLocals.get(e)}`], 'f64') : asF64(emit(e[1]))
         body.push(
           ['local.set', `$${src}`, ['call', '$__ptr_offset', spreadVal]],
@@ -175,10 +175,10 @@ export default () => {
 
   // === Index read ===
 
-  ctx.emit['[]'] = (arr, idx) => {
+  ctx.core.emit['[]'] = (arr, idx) => {
     // TypedArray: type-aware load
-    if (typeof arr === 'string' && ctx.valTypes?.get(arr) === 'typed' && ctx.emit['.typed:[]']) {
-      const r = ctx.emit['.typed:[]'](arr, idx)
+    if (typeof arr === 'string' && ctx.func.valTypes?.get(arr) === 'typed' && ctx.core.emit['.typed:[]']) {
+      const r = ctx.core.emit['.typed:[]'](arr, idx)
       if (r) return r
     }
     // Boxed object: index the inner value (slot 0)
@@ -190,7 +190,7 @@ export default () => {
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
-    const vt = typeof arr === 'string' ? ctx.valTypes?.get(arr) : null
+    const vt = typeof arr === 'string' ? ctx.func.valTypes?.get(arr) : null
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
     // Known array → direct f64 element load, skip string check
@@ -201,10 +201,10 @@ export default () => {
       return typed(['f64.convert_i32_u', ['call', '$__char_at', ptrExpr, vi]], 'f64')
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     // Use __typed_idx when typedarray module loaded (handles typed + array via runtime dispatch)
-    const arrayLoad = ctx.modules['typedarray']
+    const arrayLoad = ctx.module.modules['typedarray']
       ? (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
       : ['f64.load', ['i32.add', ['call', '$__ptr_offset', ptrExpr], ['i32.shl', vi, ['i32.const', 3]]]]
-    if (ctx.modules['string'])
+    if (ctx.module.modules['string'])
       return typed(
         ['if', ['result', 'f64'],
           ['i32.ge_u', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
@@ -217,11 +217,11 @@ export default () => {
   // === Push/Pop (mutate in place) ===
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
-  ctx.emit['.push'] = (arr, ...vals) => {
+  ctx.core.emit['.push'] = (arr, ...vals) => {
     inc('__arr_grow')
     const va = asF64(emit(arr))
-    const t = `${T}pp${ctx.uniq++}`, len = `${T}pl${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(len, 'i32')
+    const t = `${T}pp${ctx.func.uniq++}`, len = `${T}pl${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(len, 'i32')
 
     const body = [
       ['local.set', `$${t}`, va],
@@ -246,11 +246,11 @@ export default () => {
     body.push(['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]])
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
-      if (ctx.boxed?.has(arr)) {
-        const cell = `$${ctx.boxed.get(arr)}`, ct = ctx.locals?.get(ctx.boxed.get(arr)) || 'i32'
+      if (ctx.func.boxed?.has(arr)) {
+        const cell = `$${ctx.func.boxed.get(arr)}`, ct = ctx.func.locals?.get(ctx.func.boxed.get(arr)) || 'i32'
         body.push(['f64.store', ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', cell]] : ['local.get', cell], ['local.get', `$${t}`]])
       }
-      else if (ctx.globals.has(arr) && !ctx.locals?.has(arr))
+      else if (ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr))
         body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])
       else
         body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
@@ -261,10 +261,10 @@ export default () => {
   }
 
   // .pop() → decrement len, return removed element
-  ctx.emit['.pop'] = (arr) => {
+  ctx.core.emit['.pop'] = (arr) => {
     const va = asF64(emit(arr))
-    const t = `${T}po${ctx.uniq++}`, len = `${T}pl${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(len, 'i32')
+    const t = `${T}po${ctx.func.uniq++}`, len = `${T}pl${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(len, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, ['i32.sub', ['call', '$__len', ['local.get', `$${t}`]], ['i32.const', 1]]],
@@ -274,12 +274,12 @@ export default () => {
   }
 
   // .shift() → remove first element, shift remaining left, return removed
-  ctx.emit['.shift'] = (arr) => {
+  ctx.core.emit['.shift'] = (arr) => {
     inc('__arr_shift')
     return typed(['call', '$__arr_shift', asF64(emit(arr))], 'f64')
   }
 
-  ctx.stdlib['__arr_shift'] = `(func $__arr_shift (param $arr f64) (result f64)
+  ctx.core.stdlib['__arr_shift'] = `(func $__arr_shift (param $arr f64) (result f64)
     (local $off i32) (local $len i32) (local $val f64)
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (local.set $len (call $__len (local.get $arr)))
@@ -295,12 +295,12 @@ export default () => {
         (local.get $val))))`
 
   // .unshift(val) → prepend element, shift existing right
-  ctx.emit['.unshift'] = (arr, val) => {
+  ctx.core.emit['.unshift'] = (arr, val) => {
     inc('__arr_unshift')
     return typed(['call', '$__arr_unshift', asF64(emit(arr)), asF64(emit(val))], 'f64')
   }
 
-  ctx.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
+  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
     (local $off i32) (local $len i32)
     (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
@@ -314,13 +314,13 @@ export default () => {
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)
-  ctx.emit['.some'] = (arr, fn) => {
+  ctx.core.emit['.some'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
-    const r = `${T}sr${ctx.uniq++}`
-    ctx.locals.set(r, 'f64')
-    const exit = `$exit${ctx.uniq++}`
+    const r = `${T}sr${ctx.func.uniq++}`
+    ctx.func.locals.set(r, 'f64')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+      ['if', ['f64.ne', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
         ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -330,13 +330,13 @@ export default () => {
   }
 
   // .every(fn) → return 1 if all elements pass, else 0 (early exit)
-  ctx.emit['.every'] = (arr, fn) => {
+  ctx.core.emit['.every'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
-    const r = `${T}ev${ctx.uniq++}`
-    ctx.locals.set(r, 'f64')
-    const exit = `$exit${ctx.uniq++}`
+    const r = `${T}ev${ctx.func.uniq++}`
+    ctx.func.locals.set(r, 'f64')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.eq', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+      ['if', ['f64.eq', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
         ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -346,13 +346,13 @@ export default () => {
   }
 
   // .findIndex(fn) → return index of first matching element, or -1 (early exit)
-  ctx.emit['.findIndex'] = (arr, fn) => {
+  ctx.core.emit['.findIndex'] = (arr, fn) => {
     const va = emit(arr), vf = emit(fn)
-    const r = `${T}fi${ctx.uniq++}`
-    ctx.locals.set(r, 'f64')
-    const exit = `$exit${ctx.uniq++}`
+    const r = `${T}fi${ctx.func.uniq++}`
+    ctx.func.locals.set(r, 'f64')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.fn.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+      ['if', ['f64.ne', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
         ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -363,12 +363,12 @@ export default () => {
 
   // === Array methods ===
 
-  ctx.emit['.map'] = (arr, fn) => {
+  ctx.core.emit['.map'] = (arr, fn) => {
     const va = emit(arr)
-    const out = `${T}mo${ctx.uniq++}`, len = `${T}ml${ctx.uniq++}`
-    ctx.locals.set(out, 'i32'); ctx.locals.set(len, 'i32')
+    const out = `${T}mo${ctx.func.uniq++}`, len = `${T}ml${ctx.func.uniq++}`
+    ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32')
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      elemStore(out, i, asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])))
+      elemStore(out, i, asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])))
     ])
     // Allocate header + data for result
     return typed(['block', ['result', 'f64'],
@@ -381,12 +381,12 @@ export default () => {
       ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
 
-  ctx.emit['.filter'] = (arr, fn) => {
+  ctx.core.emit['.filter'] = (arr, fn) => {
     const va = emit(arr)
-    const out = `${T}fo${ctx.uniq++}`, count = `${T}fc${ctx.uniq++}`, maxLen = `${T}fm${ctx.uniq++}`
-    ctx.locals.set(out, 'i32'); ctx.locals.set(count, 'i32'); ctx.locals.set(maxLen, 'i32')
+    const out = `${T}fo${ctx.func.uniq++}`, count = `${T}fc${ctx.func.uniq++}`, maxLen = `${T}fm${ctx.func.uniq++}`
+    ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(count, 'i32'); ctx.func.locals.set(maxLen, 'i32')
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+      ['if', ['f64.ne', asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
         ['then',
           ['f64.store', ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], elemLoad(ptr, i)],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -404,12 +404,12 @@ export default () => {
       ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]]], 'f64')
   }
 
-  ctx.emit['.reduce'] = (arr, fn, init) => {
+  ctx.core.emit['.reduce'] = (arr, fn, init) => {
     const va = emit(arr)
-    const acc = `${T}ra${ctx.uniq++}`
-    ctx.locals.set(acc, 'f64')
+    const acc = `${T}ra${ctx.func.uniq++}`
+    ctx.func.locals.set(acc, 'f64')
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['local.set', `$${acc}`, asF64(ctx.fn.call(emit(fn), [typed(['local.get', `$${acc}`], 'f64'), typed(elemLoad(ptr, i), 'f64')]))]
+      ['local.set', `$${acc}`, asF64(ctx.closure.call(emit(fn), [typed(['local.get', `$${acc}`], 'f64'), typed(elemLoad(ptr, i), 'f64')]))]
     ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${acc}`, init ? asF64(emit(init)) : ['f64.const', 0]],
@@ -417,23 +417,23 @@ export default () => {
       ['local.get', `$${acc}`]], 'f64')
   }
 
-  ctx.emit['.forEach'] = (arr, fn) => {
+  ctx.core.emit['.forEach'] = (arr, fn) => {
     const va = emit(arr)
-    const tmp = `${T}ft${ctx.uniq++}`
-    ctx.locals.set(tmp, 'f64')
+    const tmp = `${T}ft${ctx.func.uniq++}`
+    ctx.func.locals.set(tmp, 'f64')
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['local.set', `$${tmp}`, asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')]))]
+      ['local.set', `$${tmp}`, asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')]))]
     ])
     return typed(['block', ['result', 'f64'], ...loop, ['f64.const', 0]], 'f64')
   }
 
-  ctx.emit['.find'] = (arr, fn) => {
+  ctx.core.emit['.find'] = (arr, fn) => {
     const va = emit(arr)
-    const result = `${T}ff${ctx.uniq++}`
-    ctx.locals.set(result, 'f64')
-    const exit = `$exit${ctx.uniq++}`
+    const result = `${T}ff${ctx.func.uniq++}`
+    ctx.func.locals.set(result, 'f64')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.fn.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+      ['if', ['f64.ne', asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
         ['then', ['local.set', `$${result}`, elemLoad(ptr, i)], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -442,11 +442,11 @@ export default () => {
       ['local.get', `$${result}`]], 'f64')
   }
 
-  ctx.emit['.indexOf'] = (arr, val) => {
+  ctx.core.emit['.indexOf'] = (arr, val) => {
     const va = emit(arr), vv = asF64(emit(val))
-    const result = `${T}ix${ctx.uniq++}`
-    ctx.locals.set(result, 'i32')
-    const exit = `$exit${ctx.uniq++}`
+    const result = `${T}ix${ctx.func.uniq++}`
+    ctx.func.locals.set(result, 'i32')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.eq', elemLoad(ptr, i), vv],
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
@@ -457,11 +457,11 @@ export default () => {
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
-  ctx.emit['.includes'] = (arr, val) => {
+  ctx.core.emit['.includes'] = (arr, val) => {
     const va = emit(arr), vv = asF64(emit(val))
-    const result = `${T}ic${ctx.uniq++}`
-    ctx.locals.set(result, 'i32')
-    const exit = `$exit${ctx.uniq++}`
+    const result = `${T}ic${ctx.func.uniq++}`
+    ctx.func.locals.set(result, 'i32')
+    const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(va, (ptr, _len, i) => [
       ['if', ['f64.eq', elemLoad(ptr, i), vv],
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
@@ -473,9 +473,9 @@ export default () => {
   }
 
   // .at(i) → array element with negative index support
-  ctx.emit['.array:at'] = (arr, idx) => {
-    const t = `${T}ai${ctx.uniq++}`, a = `${T}aa${ctx.uniq++}`
-    ctx.locals.set(t, 'i32'); ctx.locals.set(a, 'f64')
+  ctx.core.emit['.array:at'] = (arr, idx) => {
+    const t = `${T}ai${ctx.func.uniq++}`, a = `${T}aa${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(a, 'f64')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${a}`, asF64(emit(arr))],
       ['local.set', `$${t}`, asI32(emit(idx))],
@@ -487,12 +487,12 @@ export default () => {
         ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
   }
 
-  ctx.emit['.slice'] = (arr, start, end) => {
+  ctx.core.emit['.slice'] = (arr, start, end) => {
     const va = emit(arr), vs = asI32(emit(start))
     const ve = end ? asI32(emit(end)) : ['call', '$__len', asF64(va)]
-    const out = `${T}so${ctx.uniq++}`, len = `${T}sl${ctx.uniq++}`, j = `${T}sj${ctx.uniq++}`, ptr = `${T}sp${ctx.uniq++}`
-    ctx.locals.set(out, 'i32'); ctx.locals.set(len, 'i32'); ctx.locals.set(j, 'i32'); ctx.locals.set(ptr, 'i32')
-    const id = ctx.uniq++
+    const out = `${T}so${ctx.func.uniq++}`, len = `${T}sl${ctx.func.uniq++}`, j = `${T}sj${ctx.func.uniq++}`, ptr = `${T}sp${ctx.func.uniq++}`
+    ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(j, 'i32'); ctx.func.locals.set(ptr, 'i32')
+    const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(va)]],
       ['local.set', `$${len}`, ['i32.sub', ve, vs]],
@@ -513,11 +513,11 @@ export default () => {
   }
 
   // .concat(...others) → concatenate arrays
-  ctx.emit['.array:concat'] = (arr, ...others) => {
-    const result = `${T}res${ctx.uniq++}`, len = `${T}len${ctx.uniq++}`, pos = `${T}pos${ctx.uniq++}`
-    ctx.locals.set(result, 'i32')
-    ctx.locals.set(len, 'i32')
-    ctx.locals.set(pos, 'i32')
+  ctx.core.emit['.array:concat'] = (arr, ...others) => {
+    const result = `${T}res${ctx.func.uniq++}`, len = `${T}len${ctx.func.uniq++}`, pos = `${T}pos${ctx.func.uniq++}`
+    ctx.func.locals.set(result, 'i32')
+    ctx.func.locals.set(len, 'i32')
+    ctx.func.locals.set(pos, 'i32')
 
     const va = asF64(emit(arr))
 
@@ -546,7 +546,7 @@ export default () => {
       ['local.set', `$${pos}`, ['i32.const', 0]],
       ['local.set', `$${len}`, ['call', '$__len', va]]
     )
-    const id = ctx.uniq++
+    const id = ctx.func.uniq++
     body.push(
       ['block', `$done${id}`, ['loop', `$loop${id}`,
         ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
@@ -558,13 +558,13 @@ export default () => {
     )
 
     // Copy each other array
-    let offset = `${T}off${ctx.uniq++}`
-    ctx.locals.set(offset, 'i32')
+    let offset = `${T}off${ctx.func.uniq++}`
+    ctx.func.locals.set(offset, 'i32')
     body.push(['local.set', `$${offset}`, ['call', '$__len', va]])
 
     for (let i = 0; i < otherVals.length; i++) {
       const vo = otherVals[i]
-      const id2 = ctx.uniq++
+      const id2 = ctx.func.uniq++
       body.push(
         ['local.set', `$${pos}`, ['i32.const', 0]],
         ['local.set', `$${len}`, ['call', '$__len', vo]],
@@ -584,7 +584,7 @@ export default () => {
   }
 
   // .flat() → flatten one level of nested arrays
-  ctx.stdlib['__arr_flat'] = `(func $__arr_flat (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src f64) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
     (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
     (local.set $off (call $__ptr_offset (local.get $src)))
@@ -630,21 +630,21 @@ export default () => {
       (br $cl2)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.emit['.flat'] = (arr) => {
+  ctx.core.emit['.flat'] = (arr) => {
     inc('__arr_flat')
     return typed(['call', '$__arr_flat', asF64(emit(arr))], 'f64')
   }
 
   // .flatMap(fn) → map then flatten
-  ctx.emit['.flatMap'] = (arr, fn) => {
+  ctx.core.emit['.flatMap'] = (arr, fn) => {
     // Desugar: arr.map(fn).flat()
-    const mapped = ctx.emit['.map'](arr, fn)
+    const mapped = ctx.core.emit['.map'](arr, fn)
     inc('__arr_flat')
     return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')
   }
 
   // .join(sep) → concatenate array elements with separator string
-  ctx.emit['.join'] = (arr, sep) => {
+  ctx.core.emit['.join'] = (arr, sep) => {
     inc('__str_join')
     return typed(['call', '$__str_join', asF64(emit(arr)), asF64(emit(sep))], 'f64')
   }

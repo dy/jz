@@ -3,7 +3,7 @@
  *
  * Pipeline: parse(subscript) → prepare(AST) → compile(AST) → watr → binary
  * State: shared ctx object (src/ctx.js), reset per call
- * Extension: modules register emitters on ctx.emit (see module/)
+ * Extension: modules register emitters on ctx.core.emit (see module/)
  *
  * @module jz
  */
@@ -336,20 +336,20 @@ jz.instantiate = (code, opts = {}) => {
  */
 jz.compile = (code, opts = {}) => {
   reset(emitter, GLOBALS)
-  ctx.src = code
+  ctx.error.src = code
 
-  if (opts.memory) ctx.sharedMemory = true
-  if (opts.memoryPages) ctx.memoryPages = opts.memoryPages
-  if (opts.modules) ctx.importSources = opts.modules
-  if (opts.imports) ctx.hostImports = opts.imports
+  if (opts.memory) ctx.memory.shared = true
+  if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
+  if (opts.modules) ctx.module.importSources = opts.modules
+  if (opts.imports) ctx.module.hostImports = opts.imports
   // pure: true → strict jz. pure: false → auto-jzify. unset → no transform (compat)
   const useJzify = opts.jzify || opts.pure === false
-  if (useJzify) ctx.jzify = jzify
+  if (useJzify) ctx.transform.jzify = jzify
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       const params = Array(fn.length).fill(['param', 'f64'])
-      ctx.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
+      ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
     }
   }
 

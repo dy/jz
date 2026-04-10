@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Validate: reject prohibited features (this, class, async, var...)
  * - Resolve: Math.sin → math.sin, import bindings → module.name
- * - Extract: arrow functions → ctx.funcs with sig (params, results)
+ * - Extract: arrow functions → ctx.func.list with sig (params, results)
  * - Normalize: ++/-- → +=/-=, unary ± disambiguation, for head flattening
  * - Auto-import: Math/Array/etc usage triggers module loading
  *
@@ -73,7 +73,7 @@ function resolveTypeof(node) {
 }
 
 function prep(node) {
-  if (Array.isArray(node) && node.loc != null) ctx.loc = node.loc
+  if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   if (node === true) return [, 1]
   if (node === false) return [, 0]
@@ -84,7 +84,7 @@ function prep(node) {
       if (PROHIBITED[node]) err(PROHIBITED[node])
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeMods('core', 'fn'); return ['=>', 'x', 'x'] }
-      const resolved = ctx.scope[node]
+      const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
       if (resolved && resolved !== node) return resolved
@@ -113,7 +113,7 @@ const PROHIBITED = {
   'eval': '`eval` not supported'
 }
 
-// Global namespaces for scope resolution (value = scope alias used in ctx.emit[])
+// Global namespaces for scope resolution (value = scope alias used in ctx.core.emit[])
 export const GLOBALS = {
   Math: 'math',
   Number: 'Number',
@@ -142,7 +142,7 @@ function prepDecl(op, ...inits) {
     if (Array.isArray(name) && name[0] === '[]') {
       includeMods('core', 'array')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `${T}d${ctx.uniq++}`
+      const tmp = `${T}d${ctx.func.uniq++}`
       rest.push(['=', tmp, normed])
       for (let j = 0; j < items.length; j++) {
         if (items[j] == null) continue
@@ -162,7 +162,7 @@ function prepDecl(op, ...inits) {
     if (Array.isArray(name) && name[0] === '{}') {
       includeMods('core', 'object', 'string', 'collection')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `${T}d${ctx.uniq++}`
+      const tmp = `${T}d${ctx.func.uniq++}`
       rest.push(['=', tmp, normed])
       for (const item of items) {
         if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
@@ -179,7 +179,7 @@ function prepDecl(op, ...inits) {
       let declName = name
       // Block scope: rename if shadowing an outer declaration
       if (typeof name === 'string' && scopes.length > 0 && isDeclared(name)) {
-        declName = `${name}${T}${ctx.uniq++}`
+        declName = `${name}${T}${ctx.func.uniq++}`
         scopes[scopes.length - 1].set(name, declName)
       } else if (typeof name === 'string' && scopes.length > 0) {
         scopes[scopes.length - 1].set(name, name)
@@ -192,16 +192,16 @@ function prepDecl(op, ...inits) {
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
         if (op === 'const') {
-          if (!ctx.consts) ctx.consts = new Set()
-          ctx.consts.add(declName)
-        } else if (op === 'let' && ctx.consts?.has(declName)) {
-          ctx.consts.delete(declName)
+          if (!ctx.scope.consts) ctx.scope.consts = new Set()
+          ctx.scope.consts.add(declName)
+        } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
+          ctx.scope.consts.delete(declName)
         }
       }
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
-        ctx.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
-        ctx.userGlobals.add(declName)
+        ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
+        ctx.scope.userGlobals.add(declName)
       }
       rest.push(['=', declName, normed])
     }
@@ -238,7 +238,7 @@ const handlers = {
       includeMods('core', 'array')
       const items = lhs[1]?.[0] === ',' ? lhs[1].slice(1) : [lhs[1]]
       const normed = prep(rhs)
-      const tmp = `${T}d${ctx.uniq++}`
+      const tmp = `${T}d${ctx.func.uniq++}`
       const stmts = [['let', ['=', tmp, normed]]]
       for (let j = 0; j < items.length; j++) {
         if (items[j] == null) continue
@@ -251,7 +251,7 @@ const handlers = {
     }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
-      && ctx.funcs.some(f => f.name === lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
+      && ctx.func.list.some(f => f.name === lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
       const name = `${lhs[1]}$${lhs[2]}`
       if (defFunc(name, prep(rhs))) return null  // extracted as function, no assignment needed
     }
@@ -295,11 +295,13 @@ const handlers = {
       includeModule(mod)
       const bind = (name, alias) => {
         const key = mod + '.' + name
-        if (!ctx.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
-        ctx.scope[alias || name] = key
+        if (!ctx.core.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
+        ctx.scope.chain[alias || name] = key
       }
-      if (typeof specifiers === 'string') { ctx.scope[specifiers] = mod; return null }
-      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') { ctx.scope[specifiers[2]] = mod; return null }
+
+      if (typeof specifiers === 'string') { ctx.scope.chain[specifiers] = mod; return null }
+      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') { ctx.scope.chain[specifiers[2]] = mod; return null }
+
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
@@ -313,21 +315,21 @@ const handlers = {
     }
 
     // Tier 2: Source module (bundling)
-    if (ctx.importSources?.[mod]) {
-      const resolved = prepareModule(mod, ctx.importSources[mod])
+    if (ctx.module.importSources?.[mod]) {
+      const resolved = prepareModule(mod, ctx.module.importSources[mod])
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
         if (!mangled) err(`'${mod}' has no default export`)
-        ctx.scope[specifiers] = mangled
+        ctx.scope.chain[specifiers] = mangled
         return null
       }
       // Namespace import: import * as X from 'mod' → bind X.prop to mangled names
       if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
         const alias = specifiers[2]
         // Store namespace mapping so '.' handler can resolve X.prop → mangled name
-        if (!ctx.namespaces) ctx.namespaces = {}
-        ctx.namespaces[alias] = resolved.exports
+        if (!ctx.module.namespaces) ctx.module.namespaces = {}
+        ctx.module.namespaces[alias] = resolved.exports
         return null
       }
       // Named imports: import { a, b } from 'mod'
@@ -340,15 +342,15 @@ const handlers = {
           const alias = typeof item === 'string' ? item : item[2]
           const mangled = resolved.exports.get(name)
           if (!mangled) err(`'${name}' is not exported from '${mod}'`)
-          ctx.scope[alias] = mangled
+          ctx.scope.chain[alias] = mangled
         }
       }
       return null
     }
 
     // Tier 3: Host imports
-    if (ctx.hostImports?.[mod]) {
-      const hostMod = ctx.hostImports[mod]
+    if (ctx.module.hostImports?.[mod]) {
+      const hostMod = ctx.module.hostImports[mod]
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
@@ -360,7 +362,7 @@ const handlers = {
           if (!spec) err(`'${name}' not declared in host module '${mod}'`)
           const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
           const params = Array(nParams).fill(['param', 'f64'])
-          ctx.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
+          ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
         }
       }
       return null
@@ -395,23 +397,23 @@ const handlers = {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
-          ctx.exports[i[1]] = true
+          ctx.func.exports[i[1]] = true
     // export default expr → mark 'default' export, rewrite to assignment
     if (Array.isArray(decl) && decl[0] === 'default') {
       const val = decl[1]
       // export default name → export existing name as 'default'
-      if (typeof val === 'string' && (ctx.funcs.some(f => f.name === val) || ctx.globals.has(val))) {
-        ctx.exports['default'] = val  // alias
+      if (typeof val === 'string' && (ctx.func.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
+        ctx.func.exports['default'] = val  // alias
         return null
       }
       // export default arrow → create function named 'default'
-      ctx.exports['default'] = true
+      ctx.func.exports['default'] = true
       if (Array.isArray(val) && val[0] === '=>') {
         if (defFunc('default', prep(val))) return null
       }
       // export default expr → create global 'default'
-      ctx.globals.set('default', `(global $default (mut f64) (f64.const 0))`)
-      ctx.userGlobals.add('default')
+      ctx.scope.globals.set('default', `(global $default (mut f64) (f64.const 0))`)
+      ctx.scope.userGlobals.add('default')
       return ['=', 'default', prep(val)]
     }
     return prep(decl)
@@ -517,15 +519,15 @@ const handlers = {
       }
       // Global functions that need their module loaded
       if (callee === 'parseFloat' || callee === 'parseInt') { includeModule('number') }
-      const resolved = ctx.scope[callee]
+      const resolved = ctx.scope.chain[callee]
       if (resolved?.includes('.')) callee = resolved
       // Bundled import: resolved name is a known function → use as callee directly
-      else if (resolved && ctx.funcs.some(f => f.name === resolved)) callee = resolved
+      else if (resolved && ctx.func.list.some(f => f.name === resolved)) callee = resolved
       // Bare constructor call: Symbol('foo') → include module, keep callee as-is
       else if (resolved && !resolved.includes('.')) includeModule(resolved)
       // Calling an unknown name inside a function body (e.g. a parameter) → needs call_indirect
-      else if (depth > 0 && !resolved && !ctx.exports[callee]
-        && !ctx.imports.some(i => i[3]?.[1] === `$${callee}`))
+      else if (depth > 0 && !resolved && !ctx.func.exports[callee]
+        && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
         { includeMods('core', 'fn') }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
@@ -538,7 +540,7 @@ const handlers = {
         includeMods('core', 'console')
         callee = `${obj}.${prop}`
       } else {
-        const mod = ctx.scope[obj]
+        const mod = ctx.scope.chain[obj]
         if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
           callee = (includeModule(mod), mod + '.' + prop)
         else
@@ -579,7 +581,7 @@ const handlers = {
     const preppedArgs = args.filter(a => a != null).map(prep)
     // If any argument is a known top-level function name, include fn module for call_indirect
     for (const a of preppedArgs)
-      if (typeof a === 'string' && ctx.funcs.some(f => f.name === a))
+      if (typeof a === 'string' && ctx.func.list.some(f => f.name === a))
         { includeMods('core', 'fn'); break }
     const result = ['()', callee, ...preppedArgs]
 
@@ -676,7 +678,7 @@ const handlers = {
       // for (let x of arr) → for (let __i=0; __i<arr.length; __i++) { let x = arr[__i]; body }
       const [, decl, src] = head
       const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
-      const idx = `${T}i${ctx.uniq++}`
+      const idx = `${T}i${ctx.func.uniq++}`
       const init = ['let', ['=', idx, [, 0]]]
       const cond = ['<', idx, ['.', src, 'length']]
       const step = ['++', idx]
@@ -714,13 +716,13 @@ const handlers = {
 
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
-    const mod = ctx.scope[obj]
+    const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
     if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
       return includeModule(mod), mod + '.' + prop
     // Source module namespace: import * as X → X.prop resolved to mangled name
-    if (typeof obj === 'string' && ctx.namespaces?.[obj]) {
-      const mangled = ctx.namespaces[obj].get(prop)
+    if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
+      const mangled = ctx.module.namespaces[obj].get(prop)
       if (mangled) return mangled
     }
     includeMods('core', 'object', 'array', 'string', 'collection')
@@ -747,7 +749,7 @@ const handlers = {
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
     }
 
-    const mod = ctx.scope[name]
+    const mod = ctx.scope.chain[name]
     if (typeof name === 'string' && mod && !mod.includes('.')) includeModule(mod)
     // Unknown constructor: treat as function call (jzify already strips new for known safe ones)
     if (typeof name === 'string') return ['()', name, ...ctorArgs.map(prep)]
@@ -774,8 +776,8 @@ function includeModule(name) {
   const modName = MOD_ALIAS[name] || name
   const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
-  if (ctx.modules[modName]) return
-  ctx.modules[modName] = true  // guard before deps (prevents circular)
+  if (ctx.module.modules[modName]) return
+  ctx.module.modules[modName] = true  // guard before deps (prevents circular)
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
   init(ctx)
 }
@@ -798,7 +800,7 @@ function defFunc(name, node) {
     } else if (Array.isArray(r) && r[0] === '=') {
       // Default: could be destructured default like {x=1, y=2} = opts
       if (typeof r[1] !== 'string') {
-        const tmp = `${T}p${ctx.uniq++}`
+        const tmp = `${T}p${ctx.func.uniq++}`
         params.push({ name: tmp, type: 'f64' })
         defaults[tmp] = prep(r[2])
         bodyPrefix.push(['let', ['=', r[1], tmp]])
@@ -813,7 +815,7 @@ function defFunc(name, node) {
       }
     } else if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
       // Destructured param: ([a, b], ctx) → (__p, ctx) + let [a, b] = __p
-      const tmp = `${T}p${ctx.uniq++}`
+      const tmp = `${T}p${ctx.func.uniq++}`
       params.push({ name: tmp, type: 'f64' })
       bodyPrefix.push(['let', ['=', r, tmp]])
     } else {
@@ -834,9 +836,9 @@ function defFunc(name, node) {
 
   const sig = { params, results: detectResults(body) }
   const hasDefaults = Object.keys(defaults).length > 0
-  const funcInfo = { name, body, exported: !!ctx.exports[name], sig, ...(hasDefaults && { defaults }) }
+  const funcInfo = { name, body, exported: !!ctx.func.exports[name], sig, ...(hasDefaults && { defaults }) }
   if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
-  ctx.funcs.push(funcInfo)
+  ctx.func.list.push(funcInfo)
   return true
 }
 
@@ -880,34 +882,35 @@ const isLit = n => Array.isArray(n) && n[0] == null
 
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
 function prepareModule(specifier, source) {
+  includeModule('core')
   // Cycle detection
-  if (ctx.moduleStack.includes(specifier))
-    err(`Circular import: ${ctx.moduleStack.join(' -> ')} -> ${specifier}`)
+  if (ctx.module.moduleStack.includes(specifier))
+    err(`Circular import: ${ctx.module.moduleStack.join(' -> ')} -> ${specifier}`)
   // Already resolved
-  if (ctx.resolvedModules.has(specifier)) return ctx.resolvedModules.get(specifier)
+  if (ctx.module.resolvedModules.has(specifier)) return ctx.module.resolvedModules.get(specifier)
 
-  ctx.moduleStack.push(specifier)
+  ctx.module.moduleStack.push(specifier)
 
   // Name mangling prefix: ./math.jz → _math_jz
   const prefix = specifier.replace(/[^a-zA-Z0-9]/g, '_')
 
   // Save caller state
-  const savedScope = ctx.scope, savedExports = ctx.exports
-  const savedFuncCount = ctx.funcs.length  // track new funcs from this module
-  ctx.scope = derive(savedScope)  // inherit parent scope
-  ctx.exports = {}
+  const savedScope = ctx.scope.chain, savedExports = ctx.func.exports
+  const savedFuncCount = ctx.func.list.length  // track new funcs from this module
+  ctx.scope.chain = derive(savedScope)  // inherit parent scope
+  ctx.func.exports = {}
 
   // Parse + prepare imported source (may trigger recursive imports)
   let ast = parse(source)
-  if (ctx.jzify) ast = ctx.jzify(ast)
+  if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
   const moduleInit = prep(ast)
   depth = savedDepth
 
   // Collect exports: rename exported funcs with prefix
   const moduleExports = new Map()
-  for (const name of Object.keys(ctx.exports)) {
-    const val = ctx.exports[name]
+  for (const name of Object.keys(ctx.func.exports)) {
+    const val = ctx.func.exports[name]
     // Default export alias: export default existingName → map 'default' to that name's mangled form
     if (name === 'default' && typeof val === 'string') {
       // Will resolve after all named exports are mangled
@@ -915,21 +918,21 @@ function prepareModule(specifier, source) {
     }
     const mangled = `${prefix}$${name}`
     moduleExports.set(name, mangled)
-    // Rename the function in ctx.funcs
-    const func = ctx.funcs.find(f => f.name === name)
+    // Rename the function in ctx.func.list
+    const func = ctx.func.list.find(f => f.name === name)
     if (func) func.name = mangled
     // Rename globals
-    if (ctx.globals.has(name)) {
-      const wat = ctx.globals.get(name).replace(`$${name}`, `$${mangled}`)
-      ctx.globals.delete(name)
-      ctx.globals.set(mangled, wat)
-      if (ctx.userGlobals.has(name)) { ctx.userGlobals.delete(name); ctx.userGlobals.add(mangled) }
-      if (ctx.globalTypes.has(name)) { ctx.globalTypes.set(mangled, ctx.globalTypes.get(name)); ctx.globalTypes.delete(name) }
+    if (ctx.scope.globals.has(name)) {
+      const wat = ctx.scope.globals.get(name).replace(`$${name}`, `$${mangled}`)
+      ctx.scope.globals.delete(name)
+      ctx.scope.globals.set(mangled, wat)
+      if (ctx.scope.userGlobals.has(name)) { ctx.scope.userGlobals.delete(name); ctx.scope.userGlobals.add(mangled) }
+      if (ctx.scope.globalTypes.has(name)) { ctx.scope.globalTypes.set(mangled, ctx.scope.globalTypes.get(name)); ctx.scope.globalTypes.delete(name) }
     }
   }
   // Resolve default export alias after named exports are mangled
-  if (typeof ctx.exports['default'] === 'string') {
-    const alias = ctx.exports['default']
+  if (typeof ctx.func.exports['default'] === 'string') {
+    const alias = ctx.func.exports['default']
     if (moduleExports.has(alias)) {
       // Already renamed as a named export
       moduleExports.set('default', moduleExports.get(alias))
@@ -937,21 +940,21 @@ function prepareModule(specifier, source) {
       // Not a named export — rename the function/global
       const mangled = `${prefix}$${alias}`
       moduleExports.set('default', mangled)
-      const func = ctx.funcs.find(f => f.name === alias)
+      const func = ctx.func.list.find(f => f.name === alias)
       if (func) func.name = mangled
-      if (ctx.globals.has(alias)) {
-        const wat = ctx.globals.get(alias).replace(`$${alias}`, `$${mangled}`)
-        ctx.globals.delete(alias)
-        ctx.globals.set(mangled, wat)
-        if (ctx.userGlobals.has(alias)) { ctx.userGlobals.delete(alias); ctx.userGlobals.add(mangled) }
+      if (ctx.scope.globals.has(alias)) {
+        const wat = ctx.scope.globals.get(alias).replace(`$${alias}`, `$${mangled}`)
+        ctx.scope.globals.delete(alias)
+        ctx.scope.globals.set(mangled, wat)
+        if (ctx.scope.userGlobals.has(alias)) { ctx.scope.userGlobals.delete(alias); ctx.scope.userGlobals.add(mangled) }
       }
     }
   }
 
   // Rename ALL non-exported functions created during this module's prep
   // (fn property assignments like f32.parse, internal helpers like cleanInt)
-  for (let i = savedFuncCount; i < ctx.funcs.length; i++) {
-    const func = ctx.funcs[i]
+  for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
+    const func = ctx.func.list[i]
     if (func.raw || func.name.startsWith(prefix + '$')) continue
     // Skip functions from sub-imports (already prefixed with another module's prefix)
     if (func.name.includes('__') && func.name.includes('$')) continue
@@ -973,8 +976,8 @@ function prepareModule(specifier, source) {
       for (let j = 0; j < node.length; j++) node[j] = walk(node[j], skip)
       return node
     }
-    for (let i = savedFuncCount; i < ctx.funcs.length; i++) {
-      const func = ctx.funcs[i]
+    for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
+      const func = ctx.func.list[i]
       if (!func.body) continue
       const funcParams = new Set(func.sig?.params?.map(p => p.name) || [])
       walk(func.body, funcParams)
@@ -986,16 +989,16 @@ function prepareModule(specifier, source) {
 
   // Collect sub-module init code (variable initializations) for __start
   if (moduleInit) {
-    if (!ctx.moduleInits) ctx.moduleInits = []
-    ctx.moduleInits.push(moduleInit)
+    if (!ctx.module.moduleInits) ctx.module.moduleInits = []
+    ctx.module.moduleInits.push(moduleInit)
   }
 
   // Restore caller state
-  ctx.scope = savedScope
-  ctx.exports = savedExports
-  ctx.moduleStack.pop()
+  ctx.scope.chain = savedScope
+  ctx.func.exports = savedExports
+  ctx.module.moduleStack.pop()
 
   const result = { exports: moduleExports }
-  ctx.resolvedModules.set(specifier, result)
+  ctx.module.resolvedModules.set(specifier, result)
   return result
 }

@@ -24,29 +24,29 @@ const RESERVED = 16  // first user atom ID
 
 export default () => {
   // Intern table: name → atomId (shared across compilation)
-  if (!ctx.atom) {
-    ctx.atom = { table: new Map(), next: RESERVED }
+  if (!ctx.runtime.atom) {
+    ctx.runtime.atom = { table: new Map(), next: RESERVED }
   }
 
   /** Allocate a new unique atom ID. */
-  const nextAtom = () => ctx.atom.next++
+  const nextAtom = () => ctx.runtime.atom.next++
 
   /** Get or create interned atom ID for name. */
   const internAtom = (name) => {
-    if (ctx.atom.table.has(name)) return ctx.atom.table.get(name)
+    if (ctx.runtime.atom.table.has(name)) return ctx.runtime.atom.table.get(name)
     const id = nextAtom()
-    ctx.atom.table.set(name, id)
+    ctx.runtime.atom.table.set(name, id)
     return id
   }
 
   // Symbol('name') → unique atom (each call site gets a different ID)
-  ctx.emit['Symbol'] = (nameExpr) => {
+  ctx.core.emit['Symbol'] = (nameExpr) => {
     const id = nextAtom()
     return typed(['call', '$__mkptr', ['i32.const', PTR.ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
   }
 
   // Symbol.for('name') → interned atom (same name = same ID)
-  ctx.emit['Symbol.for'] = (nameExpr) => {
+  ctx.core.emit['Symbol.for'] = (nameExpr) => {
     // Name must be a string literal at compile time
     if (!Array.isArray(nameExpr) || nameExpr[0] !== 'str')
       err('Symbol.for requires a string literal')

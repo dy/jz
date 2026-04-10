@@ -13,7 +13,7 @@ import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 export default () => {
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
-  ctx.emit['{}'] = (...props) => {
+  ctx.core.emit['{}'] = (...props) => {
     if (props.length === 0)
       return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['i32.const', 0]], 'f64')
 
@@ -29,8 +29,8 @@ export default () => {
       if (varId != null) schemaId = varId
     }
     const schema = ctx.schema.list[schemaId]
-    const t = `${T}obj${ctx.uniq++}`
-    ctx.locals.set(t, 'i32')
+    const t = `${T}obj${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32')
 
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
@@ -44,19 +44,19 @@ export default () => {
 
   // === Object static methods ===
 
-  ctx.emit['Object.keys'] = (obj) => {
+  ctx.core.emit['Object.keys'] = (obj) => {
     const schema = resolveSchema(obj)
     if (!schema) err('Object.keys requires object with known schema')
     return emitStringArray(schema)
   }
 
-  ctx.emit['Object.values'] = (obj) => {
+  ctx.core.emit['Object.values'] = (obj) => {
     const schema = resolveSchema(obj)
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}ov${ctx.uniq++}`, arr = `${T}oa${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32')
+    const t = `${T}ov${ctx.func.uniq++}`, arr = `${T}oa${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(arr, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
       ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
@@ -69,13 +69,13 @@ export default () => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
-  ctx.emit['Object.entries'] = (obj) => {
+  ctx.core.emit['Object.entries'] = (obj) => {
     const schema = resolveSchema(obj)
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}oe${ctx.uniq++}`, arr = `${T}oa${ctx.uniq++}`, pair = `${T}op${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(arr, 'i32'); ctx.locals.set(pair, 'i32')
+    const t = `${T}oe${ctx.func.uniq++}`, arr = `${T}oa${ctx.func.uniq++}`, pair = `${T}op${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(arr, 'i32'); ctx.func.locals.set(pair, 'i32')
     const body = [
       ['local.set', `$${t}`, va],
       ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
@@ -93,9 +93,9 @@ export default () => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
-  ctx.emit['Object.assign'] = (target, ...sources) => {
+  ctx.core.emit['Object.assign'] = (target, ...sources) => {
     if (typeof target === 'string') {
-      const vt = ctx.valTypes?.get(target)
+      const vt = ctx.func.valTypes?.get(target)
       if (vt && vt !== VAL.OBJECT) {
         const allProps = []
         for (const src of sources) {
@@ -106,8 +106,8 @@ export default () => {
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
         ctx.schema.vars.set(target, schemaId)
-        const t = `${T}bx${ctx.uniq++}`, s = `${T}bs${ctx.uniq++}`
-        ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
+        const t = `${T}bx${ctx.func.uniq++}`, s = `${T}bs${ctx.func.uniq++}`
+        ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
         const body = [
           ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
           ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
@@ -131,8 +131,8 @@ export default () => {
     }
     const tSchema = resolveSchema(target)
     if (!tSchema) err('Object.assign: target needs known schema')
-    const t = `${T}at${ctx.uniq++}`, s = `${T}as${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(s, 'f64')
+    const t = `${T}at${ctx.func.uniq++}`, s = `${T}as${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(s, 'f64')
     const body = [['local.set', `$${t}`, asF64(emit(target))]]
     for (const source of sources) {
       const sSchema = resolveSchema(source)
@@ -151,15 +151,15 @@ export default () => {
   }
 
   // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs
-  ctx.emit['Object.fromEntries'] = (arr) => {
+  ctx.core.emit['Object.fromEntries'] = (arr) => {
     inc('__hash_new', '__hash_set')
     inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
-    const t = `${T}fe${ctx.uniq++}`, ptr = `${T}fp${ctx.uniq++}`, len = `${T}fl${ctx.uniq++}`
-    const i = `${T}fi${ctx.uniq++}`, pair = `${T}fv${ctx.uniq++}`
-    ctx.locals.set(t, 'f64'); ctx.locals.set(ptr, 'i32'); ctx.locals.set(len, 'i32')
-    ctx.locals.set(i, 'i32'); ctx.locals.set(pair, 'i32')
-    const id = ctx.uniq++
+    const t = `${T}fe${ctx.func.uniq++}`, ptr = `${T}fp${ctx.func.uniq++}`, len = `${T}fl${ctx.func.uniq++}`
+    const i = `${T}fi${ctx.func.uniq++}`, pair = `${T}fv${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(len, 'i32')
+    ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(pair, 'i32')
+    const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', va]],
@@ -180,13 +180,13 @@ export default () => {
   }
 
   // Object.create(proto) → shallow copy of object (same schema, copied properties)
-  ctx.emit['Object.create'] = (proto) => {
+  ctx.core.emit['Object.create'] = (proto) => {
     const schema = resolveSchema(proto)
     if (!schema) err('Object.create requires object with known schema')
     const n = schema.length
     const schemaId = ctx.schema.register(schema)
-    const t = `${T}oc${ctx.uniq++}`, s = `${T}os${ctx.uniq++}`
-    ctx.locals.set(t, 'i32'); ctx.locals.set(s, 'f64')
+    const t = `${T}oc${ctx.func.uniq++}`, s = `${T}os${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', n * 8]]],
@@ -213,8 +213,8 @@ function resolveSchema(obj) {
 }
 
 function emitStringArray(names) {
-  const n = names.length, arr = `${T}sa${ctx.uniq++}`
-  ctx.locals.set(arr, 'i32')
+  const n = names.length, arr = `${T}sa${ctx.func.uniq++}`
+  ctx.func.locals.set(arr, 'i32')
   const body = [
     ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
   ]

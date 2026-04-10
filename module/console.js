@@ -18,13 +18,13 @@ import { ctx, inc, PTR } from '../src/ctx.js'
 export default () => {
 
   // Import fd_write from WASI
-  ctx.imports.push(
+  ctx.module.imports.push(
     ['import', '"wasi_snapshot_preview1"', '"fd_write"',
       ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']]])
 
   // __write_str(fd: i32, ptr: f64) — write a NaN-boxed string to fd via iov
   // Handles both SSO and heap strings
-  ctx.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr f64)
+  ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr f64)
     (local $iov i32) (local $type i32) (local $len i32) (local $off i32) (local $buf i32)
     ;; Allocate iov (8 bytes: ptr + len) + nwritten (4 bytes)
     (local.set $iov (call $__alloc (i32.const 12)))
@@ -51,7 +51,7 @@ export default () => {
       (i32.add (local.get $iov) (i32.const 8)))))`
 
   // __write_byte(fd: i32, byte: i32) — write a single byte (space, newline)
-  ctx.stdlib['__write_byte'] = `(func $__write_byte (param $fd i32) (param $byte i32)
+  ctx.core.stdlib['__write_byte'] = `(func $__write_byte (param $fd i32) (param $byte i32)
     (local $iov i32)
     (local.set $iov (call $__alloc (i32.const 13)))
     (i32.store8 (i32.add (local.get $iov) (i32.const 12)) (local.get $byte))
@@ -61,11 +61,11 @@ export default () => {
       (i32.add (local.get $iov) (i32.const 8)))))`
 
   // __write_num(fd: i32, val: f64) — convert number to string, write to fd
-  ctx.stdlib['__write_num'] = `(func $__write_num (param $fd i32) (param $val f64)
+  ctx.core.stdlib['__write_num'] = `(func $__write_num (param $fd i32) (param $val f64)
     (call $__write_str (local.get $fd) (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
 
   // __write_val(fd: i32, val: f64) — write any value, auto-detecting type
-  ctx.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
+  ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
     (local $type i32)
     ;; Not NaN → plain number
     (if (f64.eq (local.get $val) (local.get $val))
@@ -85,7 +85,7 @@ export default () => {
 
   // console.log(...args) — variadic, each arg separated by space, followed by newline
   const makeConsole = (method, fd) => {
-    ctx.emit[`console.${method}`] = (...args) => {
+    ctx.core.emit[`console.${method}`] = (...args) => {
       inc('__write_val')
       const ir = []
       for (let i = 0; i < args.length; i++) {
@@ -104,22 +104,22 @@ export default () => {
 
   // === Date.now / performance.now via WASI clock_time_get ===
 
-  ctx.imports.push(
+  ctx.module.imports.push(
     ['import', '"wasi_snapshot_preview1"', '"clock_time_get"',
       ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']]])
 
   // __time_ms(clock_id) → f64 milliseconds
   // clock_time_get writes i64 nanoseconds to memory, we convert to f64 ms
-  ctx.stdlib['__time_ms'] = `(func $__time_ms (param $clock i32) (result f64)
+  ctx.core.stdlib['__time_ms'] = `(func $__time_ms (param $clock i32) (result f64)
     (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
     (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
 
-  ctx.emit['Date.now'] = () => {
+  ctx.core.emit['Date.now'] = () => {
     inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')  // clock 0 = realtime
   }
 
-  ctx.emit['performance.now'] = () => {
+  ctx.core.emit['performance.now'] = () => {
     inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')  // clock 1 = monotonic
   }

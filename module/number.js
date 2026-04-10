@@ -15,7 +15,7 @@ import { ctx, inc, PTR } from '../src/ctx.js'
 export default () => {
 
   // __pow10(n: i32) → f64 — compute 10^n via loop
-  ctx.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
+  ctx.core.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
     (local $r f64)
     (local.set $r (f64.const 1))
     (block $d (loop $l
@@ -26,7 +26,7 @@ export default () => {
     (local.get $r))`
 
   // __itoa(val: i32, buf: i32) → i32 (digit count). Writes decimal digits to buf.
-  ctx.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
+  ctx.core.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
     (local $len i32) (local $i i32) (local $j i32) (local $tmp i32)
     (if (i32.eqz (local.get $val))
       (then (i32.store8 (local.get $buf) (i32.const 48)) (return (i32.const 1))))
@@ -52,7 +52,7 @@ export default () => {
     (local.get $len))`
 
   // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string
-  ctx.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
+  ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
     (local $off i32) (local $i i32)
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
@@ -70,7 +70,7 @@ export default () => {
   // mode 0: default (shortest repr, strip trailing zeros)
   // mode 1: fixed (exactly prec decimal places)
   // Uses integer-scaled digit extraction to avoid float drift.
-  ctx.stdlib['__ftoa'] = `(func $__ftoa (param $val f64) (param $prec i32) (param $mode i32) (result f64)
+  ctx.core.stdlib['__ftoa'] = `(func $__ftoa (param $val f64) (param $prec i32) (param $mode i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32)
     (local $abs f64) (local $scale f64) (local $scaled f64)
     (local $int i32) (local $frac i32) (local $ilen i32) (local $flen i32)
@@ -167,7 +167,7 @@ export default () => {
 
   // __toExp(val: f64, prec: i32) → f64 (NaN-boxed string)
   // Format: [-]d.ddd...e[+/-]dd — integer-based digit extraction
-  ctx.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (result f64)
+  ctx.core.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $exp i32)
     (local $len i32) (local $i i32) (local $j i32)
     (local $mantissa f64) (local $scale f64)
@@ -233,7 +233,7 @@ export default () => {
 
   // __static_str(id: i32) → f64 — create heap string from data segment
   // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
-  ctx.stdlib['__static_str'] = `(func $__static_str (param $id i32) (result f64)
+  ctx.core.stdlib['__static_str'] = `(func $__static_str (param $id i32) (result f64)
     (local $src i32) (local $len i32)
     (local.set $src (i32.const 0)) (local.set $len (i32.const 0))
     (if (i32.eqz (local.get $id))                   (then (local.set $len (i32.const 3))))
@@ -249,45 +249,45 @@ export default () => {
 
   // Data segment: static strings at address 0 (heap starts at 1024)
   // "NaN" "Infinity" "-Infinity" "true" "false" "null" "undefined" "[Array]" "[Object]"
-  ctx.data = (ctx.data || '') + 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
+  ctx.runtime.data = (ctx.runtime.data || '') + 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
 
   // === Number constants ===
 
-  ctx.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
-  ctx.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
-  ctx.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
-  ctx.emit['Number.MAX_VALUE'] = () => typed(['f64.const', 1.7976931348623157e+308], 'f64')
-  ctx.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
-  ctx.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
-  ctx.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
-  ctx.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
+  ctx.core.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
+  ctx.core.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
+  ctx.core.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
+  ctx.core.emit['Number.MAX_VALUE'] = () => typed(['f64.const', 1.7976931348623157e+308], 'f64')
+  ctx.core.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
+  ctx.core.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
+  ctx.core.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
+  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
 
   // === Number static methods ===
 
   const emitIsNaN = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
     return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
   }
 
   const emitIsFinite = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
     return typed(['i32.and',
       ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
   }
 
-  ctx.emit['Number.isNaN'] = emitIsNaN
-  ctx.emit['Number.isFinite'] = emitIsFinite
+  ctx.core.emit['Number.isNaN'] = emitIsNaN
+  ctx.core.emit['Number.isFinite'] = emitIsFinite
 
   // Global isNaN/isFinite — same semantics (jz has no type coercion)
-  ctx.emit['isNaN'] = emitIsNaN
-  ctx.emit['isFinite'] = emitIsFinite
+  ctx.core.emit['isNaN'] = emitIsNaN
+  ctx.core.emit['isFinite'] = emitIsFinite
 
-  ctx.emit['Number.isInteger'] = (x) => {
+  ctx.core.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.uniq++}`; ctx.locals.set(t, 'f64')
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
     return typed(['i32.and',
       ['i32.and',
         ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
@@ -296,7 +296,7 @@ export default () => {
   }
 
   // parseInt(str, radix) — parse string to integer
-  ctx.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
+  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $result f64) (local $digit i32)
     ;; If input is a number, just truncate
@@ -344,41 +344,41 @@ export default () => {
       (br $lp)))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
-  ctx.emit['Number.parseInt'] = (x, radix) => {
+  ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
     return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
-  ctx.emit['parseInt'] = ctx.emit['Number.parseInt']
-  ctx.emit['Number.parseFloat'] = (x) => asF64(emit(x))
-  ctx.emit['parseFloat'] = ctx.emit['Number.parseFloat']
+  ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
+  ctx.core.emit['Number.parseFloat'] = (x) => asF64(emit(x))
+  ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 
   // Boolean(x) → truthiness (non-zero → 1, zero → 0)
-  ctx.emit['Boolean'] = (x) => {
+  ctx.core.emit['Boolean'] = (x) => {
     const v = asF64(emit(x))
     return typed(['if', ['result', 'f64'], ['f64.ne', v, ['f64.const', 0]], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
   }
 
   // === Instance method emitters ===
 
-  ctx.emit['.number:toString'] = (n) => {
+  ctx.core.emit['.number:toString'] = (n) => {
     inc('__ftoa')
     return typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64')
   }
 
-  ctx.emit['.number:toFixed'] = (n, d) => {
+  ctx.core.emit['.number:toFixed'] = (n, d) => {
     inc('__ftoa')
     return typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64')
   }
 
-  ctx.emit['.number:toExponential'] = (n, d) => {
+  ctx.core.emit['.number:toExponential'] = (n, d) => {
     inc('__toExp')
     return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0]))], 'f64')
   }
 
-  ctx.emit['.number:toPrecision'] = (n, p) => {
+  ctx.core.emit['.number:toPrecision'] = (n, p) => {
     inc('__ftoa', '__toExp')
-    const val = `${T}pv${ctx.uniq++}`, t = `${T}tp${ctx.uniq++}`, exp = `${T}te${ctx.uniq++}`, pr = `${T}pp${ctx.uniq++}`
-    ctx.locals.set(val, 'f64'); ctx.locals.set(t, 'f64'); ctx.locals.set(exp, 'i32'); ctx.locals.set(pr, 'i32')
+    const val = `${T}pv${ctx.func.uniq++}`, t = `${T}tp${ctx.func.uniq++}`, exp = `${T}te${ctx.func.uniq++}`, pr = `${T}pp${ctx.func.uniq++}`
+    ctx.func.locals.set(val, 'f64'); ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(exp, 'i32'); ctx.func.locals.set(pr, 'i32')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${val}`, asF64(emit(n))],
       ['local.set', `$${pr}`, asI32(emit(p))],
@@ -406,38 +406,38 @@ export default () => {
           ['i32.const', 1]]]]], 'f64')
   }
 
-  ctx.emit['String'] = (x) => {
+  ctx.core.emit['String'] = (x) => {
     inc('__ftoa')
     if (Array.isArray(x) && x[0] === 'str') return emit(x)
     return typed(['call', '$__ftoa', asF64(emit(x)), ['i32.const', 0], ['i32.const', 0]], 'f64')
   }
 
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt
-  ctx.emit['Number'] = (x) => {
+  ctx.core.emit['Number'] = (x) => {
     if (valTypeOf(x) === VAL.BIGINT)
       return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
     return asF64(emit(x))
   }
 
   // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64)
-  ctx.emit['BigInt'] = (x) => {
+  ctx.core.emit['BigInt'] = (x) => {
     if (valTypeOf(x) === VAL.BIGINT) return emit(x)
     return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
   }
 
   // BigInt.asIntN(bits, bigint) — truncate to signed N-bit
-  ctx.emit['BigInt.asIntN'] = (bits, val) => {
+  ctx.core.emit['BigInt.asIntN'] = (bits, val) => {
     const vbits = asI32(emit(bits)), vval = asI64(emit(val))
     // (val << (64 - bits)) >> (64 - bits)  — arithmetic shift for sign extension
     const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
-    const t = `${T}bi${ctx.uniq++}`; ctx.locals.set(t, 'i64')
+    const t = `${T}bi${ctx.func.uniq++}`; ctx.func.locals.set(t, 'i64')
     return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],
       ['local.set', `$${t}`, shift],
       ['i64.shr_s', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')
   }
 
   // BigInt.asUintN(bits, bigint) — truncate to unsigned N-bit
-  ctx.emit['BigInt.asUintN'] = (bits, val) => {
+  ctx.core.emit['BigInt.asUintN'] = (bits, val) => {
     const vbits = asI32(emit(bits)), vval = asI64(emit(val))
     // val & ((1 << bits) - 1)
     return typed(['f64.reinterpret_i64',
