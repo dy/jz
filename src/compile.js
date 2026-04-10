@@ -16,7 +16,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { ctx, err, inc, resolveIncludes } from './ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 let funcNames  // Set<string> — known function names, set per compile()
 let funcMap    // Map<string, func> — name → func info, set per compile()
 
@@ -44,6 +44,7 @@ export const T = '\uE000'
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = '0x7FF8000100000000'
+export const UNDEF_NAN = '0x7FF8000000000001'
 
 // === Constant folding helpers ===
 
@@ -66,12 +67,12 @@ function emitTypeofCmp(a, b, cmpOp) {
       : ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
   }
   if (code === -2) {
-    // 'string' → is NaN-boxed AND ptr_type is 4 (heap) or 5 (SSO)
+    // 'string' → is NaN-boxed AND ptr_type is STRING (heap) or SSO.
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.uniq++}`; ctx.locals.set(tt, 'i32')
     const isStr = ['i32.or',
-      ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', 4]],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]]
+      ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
+      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]]
     return typed(eq ? ['i32.and', isPtr, isStr]
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
@@ -184,7 +185,7 @@ function writeVar(name, valIR) {
 /** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32. */
 const isNullish = (f64expr) => typed(['i32.or',
   ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', NULL_NAN]],
-  ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', '0x7FF8000000000001']]], 'i32')
+  ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]]], 'i32')
 
 /** Check if a call expression targets a multi-value function. Returns result count or 0. */
 export function multiCount(callNode) {
@@ -1820,8 +1821,8 @@ export const emitter = {
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
           ['if', ['result', 'f64'],
             ['i32.or',
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 4]],   // STRING
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', 5]]],  // STRING_SSO
+              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
             ['then', callMethod(t, strEmitter)],
             ['else', callMethod(t, genEmitter)]]], 'f64')
       }

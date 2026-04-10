@@ -129,13 +129,13 @@ test('Map: set + get', () => {
   is(f(), 300)
 })
 
-test('Map: get missing', () => {
+test('Map: get missing returns nullish', () => {
   const { f } = run(`export let f = () => {
     let m = new Map()
     m = m.set(1, 100)
     return m.get(99)
   }`)
-  is(f(), 0)
+  ok(Number.isNaN(f()))
 })
 
 test('Map: overwrite', () => {

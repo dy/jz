@@ -15,7 +15,7 @@
  */
 
 import { parse } from 'subscript/jessie'
-import { ctx, err, derive } from './ctx.js'
+import { ctx, err, derive, PTR } from './ctx.js'
 import { T, extractParams, collectParamNames } from './compile.js'
 import * as mods from '../module/index.js'
 
@@ -56,7 +56,7 @@ function isDeclared(name) {
 }
 
 /** Map JS typeof strings to jz type checks. */
-const TYPEOF_MAP = { 'number': -1, 'string': -2, 'object': 6, 'undefined': -3, 'boolean': -4 }
+const TYPEOF_MAP = { 'number': -1, 'string': -2, 'object': PTR.OBJECT, 'undefined': -3, 'boolean': -4 }
 function resolveTypeof(node) {
   const [op, a, b] = node
   // typeof x == 'string' → type check
@@ -83,7 +83,7 @@ function prep(node) {
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (PROHIBITED[node]) err(PROHIBITED[node])
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
-      if (node === 'Boolean' || node === 'Number') { includeModule('core'); includeModule('fn'); return ['=>', 'x', 'x'] }
+      if (node === 'Boolean' || node === 'Number') { includeMods('core', 'fn'); return ['=>', 'x', 'x'] }
       const resolved = ctx.scope[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -97,9 +97,7 @@ function prep(node) {
   const [op, ...args] = node
   if (op == null) {
     if (typeof args[0] === 'string') {
-      includeModule('core')
-      includeModule('string')
-      includeModule('number')
+      includeMods('core', 'string', 'number')
       return ['str', args[0]]  // string literal
     }
     return [, args[0]]  // number literal
@@ -142,7 +140,7 @@ function prepDecl(op, ...inits) {
 
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
-      includeModule('core'); includeModule('array')
+      includeMods('core', 'array')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
@@ -162,7 +160,7 @@ function prepDecl(op, ...inits) {
 
     // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
     if (Array.isArray(name) && name[0] === '{}') {
-      includeModule('core'); includeModule('object'); includeModule('string'); includeModule('collection')
+      includeMods('core', 'object', 'string', 'collection')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `${T}d${ctx.uniq++}`
       rest.push(['=', tmp, normed])
@@ -225,7 +223,7 @@ const handlers = {
   'class': () => err('class not supported: use object literals'),
   'yield': () => err('generators not supported: use loops'),
   'delete': () => err('delete not supported: object shape is fixed'),
-  'in'(key, obj) { includeModule('core'); includeModule('collection'); includeModule('string'); return ['in', prep(key), prep(obj)] },
+  'in'(key, obj) { includeMods('core', 'collection', 'string'); return ['in', prep(key), prep(obj)] },
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
   ':': () => err('labeled statements not supported'),
@@ -237,7 +235,7 @@ const handlers = {
     // Array destructuring assignment: [a, b, ...rest] = expr (not arr[idx] = val)
     // Distinguishing: destructuring has ['[]', [',', ...items]] or ['[]', name], index has ['[]', arr, idx]
     if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 2) {
-      includeModule('core'); includeModule('array')
+      includeMods('core', 'array')
       const items = lhs[1]?.[0] === ',' ? lhs[1].slice(1) : [lhs[1]]
       const normed = prep(rhs)
       const tmp = `${T}d${ctx.uniq++}`
@@ -272,9 +270,7 @@ const handlers = {
   // Template literal: [``, part, ...] → chain of str_concat calls
   // First node is always a string (empty if template starts with ${...}) so concat dispatches correctly.
   '`'(...parts) {
-    includeModule('core')
-    includeModule('string')
-    includeModule('number')
+    includeMods('core', 'string', 'number')
     const nodes = parts.map(p =>
       Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
     // Ensure first element is a string so concat chain starts with string dispatch
@@ -423,7 +419,7 @@ const handlers = {
 
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
-    if (depth > 0) { includeModule('core'); includeModule('fn') }
+    if (depth > 0) { includeMods('core', 'fn') }
     depth++
     // Push function scope with param names
     const fnScope = new Map()
@@ -451,10 +447,10 @@ const handlers = {
   },
 
   // Optional chaining / typeof — need ptr module
-  '?.'(obj, prop) { includeModule('core'); includeModule('string'); includeModule('collection'); return ['?.', prep(obj), prop] },
-  '?.[]'(obj, idx) { includeModule('core'); includeModule('array'); return ['?.[]', prep(obj), prep(idx)] },
-  '?.()'(callee, ...args) { includeModule('core'); return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
-  'typeof'(a) { includeModule('core'); return ['typeof', prep(a)] },
+  '?.'(obj, prop) { includeMods('core', 'string', 'collection'); return ['?.', prep(obj), prop] },
+  '?.[]'(obj, idx) { includeMods('core', 'array'); return ['?.[]', prep(obj), prep(idx)] },
+  '?.()'(callee, ...args) { includeMods('core'); return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
+  'typeof'(a) { includeMods('core'); return ['typeof', prep(a)] },
 
   // Unary +/- disambiguation
   '+'(a, b) {
@@ -485,7 +481,7 @@ const handlers = {
 
   // Regex literal: ['//','pattern','flags?'] → include regex module, pass through
   '//'(pattern, flags) {
-    includeModule('core'); includeModule('string'); includeModule('regex')
+    includeMods('core', 'string', 'regex')
     return ['//', pattern, flags]
   },
 
@@ -503,7 +499,7 @@ const handlers = {
       // (callable)() — IIFE: callee is ['()', ...] or ['=>', ...]
       if (Array.isArray(callee) && (callee[0] === '()' || callee[0] === '=>')) {
         const c = prep(callee)
-        includeModule('core'); includeModule('fn')
+        includeMods('core', 'fn')
         return ['()', c]
       }
       return prep(callee)
@@ -516,7 +512,7 @@ const handlers = {
       if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
       // ArrayBuffer/DataView/BigInt64Array — auto-include typedarray, emit directly
       if (callee === 'ArrayBuffer' || callee === 'DataView' || callee === 'BigInt64Array' || callee === 'BigUint64Array') {
-        includeModule('core'); includeModule('typedarray')
+        includeMods('core', 'typedarray')
         return ['()', callee, ...args.filter(a => a != null).map(prep)]
       }
       // Global functions that need their module loaded
@@ -530,16 +526,16 @@ const handlers = {
       // Calling an unknown name inside a function body (e.g. a parameter) → needs call_indirect
       else if (depth > 0 && !resolved && !ctx.exports[callee]
         && !ctx.imports.some(i => i[3]?.[1] === `$${callee}`))
-        { includeModule('core'); includeModule('fn') }
+        { includeMods('core', 'fn') }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       // console.log/warn/error → WASI module
       if (obj === 'console' && (prop === 'log' || prop === 'warn' || prop === 'error')) {
-        includeModule('core'); includeModule('string'); includeModule('number'); includeModule('console')
+        includeMods('core', 'string', 'number', 'console')
         callee = `console.${prop}`
       // Date.now / performance.now → WASI clock_time_get
       } else if ((obj === 'Date' && prop === 'now') || (obj === 'performance' && prop === 'now')) {
-        includeModule('core'); includeModule('console')
+        includeMods('core', 'console')
         callee = `${obj}.${prop}`
       } else {
         const mod = ctx.scope[obj]
@@ -553,18 +549,18 @@ const handlers = {
     if (Array.isArray(callee) && callee[0] === '.') {
       const method = callee[2]
       if (method === 'toString' || method === 'toFixed' || method === 'toPrecision' || method === 'toExponential') {
-        includeModule('core'); includeModule('string'); includeModule('number')
+        includeMods('core', 'string', 'number')
       }
     }
-    if (callee === 'String') { includeModule('core'); includeModule('string'); includeModule('number') }
+    if (callee === 'String') { includeMods('core', 'string', 'number') }
     if (callee === 'Number' || callee === 'Boolean') { includeModule('number') }
-    if (callee === 'TextEncoder' || callee === 'TextDecoder') { includeModule('core'); includeModule('string') }
-    if (callee === 'Error') { includeModule('core'); includeModule('string') }
+    if (callee === 'TextEncoder' || callee === 'TextDecoder') { includeMods('core', 'string') }
+    if (callee === 'Error') { includeMods('core', 'string') }
     if (callee === 'BigInt') { includeModule('number') }
     // String.fromCharCode / fromCodePoint → include string module
     if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'String'
       && (callee[2] === 'fromCharCode' || callee[2] === 'fromCodePoint')) {
-      includeModule('core'); includeModule('string')
+      includeMods('core', 'string')
       callee = `String.${callee[2]}`
     }
     // BigInt.asIntN / BigInt.asUintN → include number module
@@ -576,7 +572,7 @@ const handlers = {
     if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'from') {
       const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
       if (typedArrays.includes(callee[1])) {
-        includeModule('core'); includeModule('typedarray'); includeModule('array')
+        includeMods('core', 'typedarray', 'array')
         callee = `${callee[1]}.from`
       }
     }
@@ -584,12 +580,12 @@ const handlers = {
     // If any argument is a known top-level function name, include fn module for call_indirect
     for (const a of preppedArgs)
       if (typeof a === 'string' && ctx.funcs.some(f => f.name === a))
-        { includeModule('core'); includeModule('fn'); break }
+        { includeMods('core', 'fn'); break }
     const result = ['()', callee, ...preppedArgs]
 
     // Object.fromEntries → needs collection + string modules for HASH
-    if (callee === 'Object.fromEntries') { includeModule('collection'); includeModule('string') }
-    if (callee === 'Object.keys' || callee === 'Object.entries') { includeModule('string') }
+    if (callee === 'Object.fromEntries') { includeMods('collection', 'string') }
+    if (callee === 'Object.keys' || callee === 'Object.entries') { includeMods('string') }
 
     // Object.assign(target, ...sources): merge source schemas into target
     if (callee === 'Object.assign' && ctx.schema.register) {
@@ -624,14 +620,12 @@ const handlers = {
   '[]'(...args) {
     if (args.length === 1) {
       const inner = args[0]
-      includeModule('core')
-      includeModule('array')
+      includeMods('core', 'array')
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',') return ['[', ...inner.slice(1).map(prep)]
       return ['[', prep(inner)]
     }
-    includeModule('core')
-    includeModule('array')
+    includeMods('core', 'array')
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
@@ -654,8 +648,7 @@ const handlers = {
       return result
     }
 
-    includeModule('core')
-    includeModule('object')
+    includeMods('core', 'object')
     if (inner == null) return ['{}']
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
@@ -698,7 +691,7 @@ const handlers = {
         // Known schema → compile-time unrolling with string keys
         const keys = ctx.schema.list[sid]
         if (!keys || !keys.length) { scopes.pop(); return null }
-        includeModule('core'); includeModule('string')
+        includeMods('core', 'string')
         const stmts = []
         for (let i = 0; i < keys.length; i++) {
           stmts.push(i === 0
@@ -709,7 +702,7 @@ const handlers = {
         r = prep([';', ...stmts])
       } else {
         // Dynamic object → HASH runtime iteration
-        includeModule('core'); includeModule('string'); includeModule('collection')
+        includeMods('core', 'string', 'collection')
         r = ['for-in', varName, prep(src), prep(body)]
       }
     } else {
@@ -730,11 +723,7 @@ const handlers = {
       const mangled = ctx.namespaces[obj].get(prop)
       if (mangled) return mangled
     }
-    includeModule('core')
-    includeModule('object')
-    includeModule('array')
-    includeModule('string')
-    includeModule('collection')
+    includeMods('core', 'object', 'array', 'string', 'collection')
     return ['.', prep(obj), prop]
   },
 
@@ -749,12 +738,12 @@ const handlers = {
     // TypedArray constructors
     const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
     if (typedArrays.includes(name)) {
-      includeModule('core'); includeModule('typedarray')
+      includeMods('core', 'typedarray')
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
     }
     // Set/Map constructors
     if (name === 'Set' || name === 'Map') {
-      includeModule('core'); includeModule('collection')
+      includeMods('core', 'collection')
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
     }
 
@@ -778,6 +767,8 @@ const MOD_DEPS = {
   console: ['core', 'string', 'number'],
   regex: ['core', 'string', 'array'],
 }
+
+const includeMods = (...names) => names.forEach(includeModule)
 
 function includeModule(name) {
   const modName = MOD_ALIAS[name] || name

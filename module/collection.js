@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { emit, emitFlat, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, emitFlat, typed, asF64, asI32, T, NULL_NAN } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -48,14 +48,20 @@ function genUpsert(name, entrySize, hashFn, eqExpr, hasVal) {
     (local.get $coll))`
 }
 
-/** Generate lookup probe function. returnVal: return f64 at slot+16, else return i32 0/1. */
-function genLookup(name, entrySize, hashFn, eqExpr, returnVal) {
-  const rt = returnVal ? 'f64' : 'i32'
-  const onEmpty = returnVal ? '(return (f64.const 0))' : '(return (i32.const 0))'
-  const onFound = returnVal
+/** Generate lookup probe function.
+ *  wantValue=true: return slot value, missing => NULL_NAN sentinel.
+ *  wantValue=false: return i32 0/1 existence flag. */
+function genLookup(name, entrySize, hashFn, eqExpr, wantValue) {
+  const rt = wantValue ? 'f64' : 'i32'
+  const onEmpty = wantValue
+    ? `(return (f64.reinterpret_i64 (i64.const ${NULL_NAN})))`
+    : '(return (i32.const 0))'
+  const onFound = wantValue
     ? '(return (f64.load (i32.add (local.get $slot) (i32.const 16))))'
     : '(return (i32.const 1))'
-  const notFound = returnVal ? '(f64.const 0)' : '(i32.const 0)'
+  const notFound = wantValue
+    ? `(f64.reinterpret_i64 (i64.const ${NULL_NAN}))`
+    : '(i32.const 0)'
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
@@ -273,13 +279,12 @@ export default () => {
   // Generated HASH probe functions
   ctx.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, true)
+  ctx.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, false)
 
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.emit['in'] = (key, obj) => {
-    inc('__hash_get')
-    return typed(['f64.ne',
-      ['call', '$__hash_get', asF64(emit(obj)), asF64(emit(key))],
-      ['f64.const', 0]], 'i32')
+    inc('__hash_has')
+    return typed(['call', '$__hash_has', asF64(emit(obj)), asF64(emit(key))], 'i32')
   }
 
   // === for...in on dynamic objects (HASH iteration) ===

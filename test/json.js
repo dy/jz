@@ -1,6 +1,6 @@
 // JSON.stringify and JSON.parse tests
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
 
 // === JSON.stringify ===
@@ -92,8 +92,9 @@ test('JSON.parse: many keys (grow)', () => {
   }`).f(), 10)
 })
 
-test('JSON.parse: missing key returns 0', () => {
-  is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); return o.z }`).f(), 0)
+test('JSON.parse: missing key returns nullish', () => {
+  const v = run(`export let f = () => { let o = JSON.parse('{"x":1}'); return o.z }`).f()
+  ok(Number.isNaN(v))
 })
 
 test('JSON.parse: string value access', () => {
