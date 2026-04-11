@@ -3,8 +3,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 
+const interp = { __ext_prop:()=>0, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0 }
 function run(code) {
-  return new WebAssembly.Instance(new WebAssembly.Module(compile(code))).exports
+  return new WebAssembly.Instance(new WebAssembly.Module(compile(code)), { env: interp }).exports
 }
 
 // === Object destruct alias ===

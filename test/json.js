@@ -94,7 +94,7 @@ test('JSON.parse: many keys (grow)', () => {
 
 test('JSON.parse: missing key returns nullish', () => {
   const v = run(`export let f = () => { let o = JSON.parse('{"x":1}'); return o.z }`).f()
-  ok(Number.isNaN(v))
+  ok(v === null || v === undefined)
 })
 
 test('JSON.parse: string value access', () => {

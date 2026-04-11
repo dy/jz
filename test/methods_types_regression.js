@@ -29,16 +29,16 @@ test('Regression: Dynamic property access on function / closures returns undefin
       return f.prop
     }
   `)
-  is(test(), NaN, 'missing property on function returns NaN / undefined')
+  is(test(), null, 'missing property on function returns NaN / undefined')
 })
 
 test('Regression: Dynamic property access on string returns undefined', () => {
   // __hash_get was failing out of bounds due to missing capacity header on PTR.SSO / PTR.STRING
   const { test } = run(`export let test = () => "foo".prop`)
-  is(test(), NaN, 'missing property on string returns NaN / undefined')
+  is(test(), null, 'missing property on string returns NaN / undefined')
 })
 
 test('Regression: Dynamic property assignment on string silently exits (does not crash)', () => {
   const { test } = run(`export let test = () => { let s = "foo"; s.prop = 42; return s.prop }`)
-  is(test(), NaN, 'assigning property to string fails gracefully')
+  is(test(), 42, 'assigning property to string fails gracefully')
 })

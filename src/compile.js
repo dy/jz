@@ -88,8 +88,9 @@ function emitTypeofCmp(a, b, cmpOp) {
   }
   // Direct type code (6=object, 1=array, 8=set, etc.)
   if (code >= 0) {
-    const check = ['i32.eq', ['call', '$__ptr_type', va], ['i32.const', code]]
-    return typed(eq ? check : ['i32.eqz', check], 'i32')
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const check = ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', code]]
+    return typed(eq ? ['i32.and', isPtr, check] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', check]], 'i32')
   }
   return null
 }
@@ -786,6 +787,9 @@ export default function compile(ast) {
   // Known function names + lookup map for direct call detection
   funcNames = new Set(ctx.func.list.map(f => f.name))
   funcMap = new Map(ctx.func.list.map(f => [f.name, f]))
+  // Include imported functions for call resolution (e.g. template interpolations)
+  for (const imp of ctx.module.imports)
+    if (imp[3]?.[0] === 'func') funcNames.add(imp[3][1].replace(/^\$/, ''))
 
   // Check user globals don't conflict with runtime globals (modules loaded after user decls)
   for (const name of ctx.scope.userGlobals)
@@ -1071,7 +1075,13 @@ export default function compile(ast) {
 
   // Globals placeholder — filled after __start (const folding may update declarations)
   const globalsIdx = sections.length
-  resolveIncludes()
+  resolveIncludes(); 
+  for (const [name, fnStr] of Object.entries(ctx.core.stdlib)) {
+    if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
+      const parsed = parseWat(fnStr); sections.splice(0, 0, parsed[0] === "module" ? parsed[1] : parsed)
+      ctx.core.includes.delete(name)
+    }
+  }
   sections.push(...[...ctx.core.includes].map(n => parseWat(ctx.core.stdlib[n])))
   sections.push(...closureFuncs)
   sections.push(...funcs)
@@ -1837,6 +1847,12 @@ export const emitter = {
       if (ctx.core.emit[genKey]) {
         return callMethod(obj, ctx.core.emit[genKey])
       }
+
+      // Unknown callee - assume external method
+      inc('__ext_call')
+      const combined = typeof reconstructArgsWithSpreads !== 'undefined' ? reconstructArgsWithSpreads(parsed.normal, parsed.spreads) : parsed.normal;
+      const arrayIR = typeof buildArrayWithSpreads !== 'undefined' ? buildArrayWithSpreads(combined) : asF64(emit(['[', ...combined]));
+      return typed(['call', '$__ext_call', asF64(emit(obj)), asF64(emit(['str', method])), arrayIR], 'f64');
     }
 
     if (ctx.core.emit[callee]) {

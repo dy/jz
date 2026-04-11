@@ -47,6 +47,12 @@ export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 /** Stdlib call-dependency graph: fn → fns it calls internally.
  *  resolveIncludes() expands transitively before WASM assembly. */
 export const STDLIB_DEPS = {
+  __set_has: ['__ext_has'],
+  __set_delete: [],
+  __map_set: ['__ext_set'],
+  __map_get: ['__ext_prop', '__map_set'],
+  __map_delete: [],
+
   // number → string conversion chain
   __mkstr: ['__alloc'],
   __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
@@ -74,8 +80,8 @@ export const STDLIB_DEPS = {
   __str_to_buf: ['__str_byteLen', '__char_at'],
 
   // hash operations
-  __hash_set: ['__str_hash', '__str_eq', '__ptr_type'],
-  __hash_get: ['__str_hash', '__str_eq', '__ptr_type'],
+  __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set'],
+  __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
   __hash_new: ['__alloc_hdr'],
 
   // console

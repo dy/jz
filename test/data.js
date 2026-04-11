@@ -7,7 +7,8 @@ import { compile } from '../index.js'
 function run(code) {
   const wasm = compile(code)
   const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  const interp = { __ext_prop:()=>0, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0 }
+  return new WebAssembly.Instance(mod, { env: interp }).exports
 }
 
 // ============================================

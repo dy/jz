@@ -9,7 +9,7 @@
  */
 
 import { parse } from 'subscript/jessie'
-import { compile as watrCompile, print as watrPrint } from 'watr'
+import { compile as watrCompile, print as watrPrint } from "watr";
 import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
@@ -116,6 +116,21 @@ jz.mem = (src) => {
 
     // Object: [prop0:f64, prop1:f64, ...] — schema matched by key identity
     // Exact key-order match preferred; set-based fallback only if unambiguous
+    wrapVal(v) {
+      if (v === null || v === undefined) return memCoerce(v)
+      if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
+      if (typeof v === 'string') return mem.String(v)
+      if (Array.isArray(v)) return mem.Array(v)
+      if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
+      return UNDEF_NAN
+    },
+    External(obj) {
+      if (obj === null || obj === undefined) return memCoerce(obj)
+      let id = src.extMap.indexOf(obj)
+      if (id === -1) { id = src.extMap.length; src.extMap.push(obj) }
+      return jz.ptr(2, 0, id)
+    },
+
     Object(obj) {
       const objKeys = Object.keys(obj)
       const key = objKeys.join(',')
@@ -126,7 +141,7 @@ jz.mem = (src) => {
           (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
         if (matches.length === 1) sid = matches[0]
         else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
-        else throw Error(`No schema for {${key}}`)
+        else return mem.External(obj)
       }
       const schema = schemas[sid], n = schema.length, raw = alloc(n * 8), m = dv()
       for (let i = 0; i < n; i++) {
@@ -146,6 +161,7 @@ jz.mem = (src) => {
       const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
       if (type === 0 && aux === 1 && off === 0) return null       // NULL_NAN → JS null
       if (type === 0 && aux === 0 && off === 1) return undefined  // UNDEF_NAN → JS undefined
+      if (type === 2 && src.extMap) return src.extMap[off]
       if (type === 1) {  // ARRAY
         const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
         for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
@@ -257,10 +273,10 @@ jz.mem = (src) => {
  * @param {WebAssembly.Instance} inst
  * @returns {object} Wrapped exports
  */
-jz.wrap = (mod, inst) => {
+jz.wrap = (memSrc, inst) => {
   // Use shared coerce (null/undefined → NaN sentinels)
   const restFuncs = new Map()
-  const restSecs = WebAssembly.Module.customSections(mod, 'jz:rest')
+  const mod = inst ? memSrc : memSrc.module||memSrc; const realInst = inst || memSrc.instance||memSrc; const restSecs = WebAssembly.Module.customSections(mod, 'jz:rest')
   if (restSecs.length) {
     try {
       for (const entry of JSON.parse(new TextDecoder().decode(restSecs[0])))
@@ -268,21 +284,21 @@ jz.wrap = (mod, inst) => {
     } catch (e) { /* ignore */ }
   }
 
-  const mem = jz.mem({ module: mod, instance: inst })
+  const mem = jz.mem(memSrc)
   const exports = {}
-  for (const [name, fn] of Object.entries(inst.exports)) {
+  for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(coerce)
+        const a = args.slice(0, fixed).map(x => mem.wrapVal(x))
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
-        return fn.apply(null, a)
+        return mem.read(fn.apply(null, a))
       }
     } else if (typeof fn === 'function') {
       exports[name] = (...args) => {
         while (args.length < fn.length) args.push(undefined)
-        return fn.apply(null, args.map(coerce))
+        return mem.read(fn.apply(null, args.map(x => mem.wrapVal(x))))
       }
     } else {
       exports[name] = fn
@@ -298,7 +314,30 @@ jz.wrap = (mod, inst) => {
  * @returns {{exports, mem, instance, module}} Wrapped exports + memory helper
  */
 jz.instantiate = (code, opts = {}) => {
+  const extMap = [null]
+  let mem = null
+  opts._interp = opts._interp || {}
+  opts._interp.__ext_prop = (objPtr, propPtr) => {
+    const obj = extMap[jz.offset(objPtr)]
+    const prop = mem.read(propPtr)
+    return mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop])
+  }
+  opts._interp.__ext_has = (objPtr, propPtr) => {
+    return (mem.read(propPtr) in extMap[jz.offset(objPtr)]) ? 1 : 0
+  }
+  opts._interp.__ext_set = (objPtr, propPtr, valPtr) => { 
+    extMap[jz.offset(objPtr)][mem.read(propPtr)] = mem.read(valPtr)
+    return 1
+  }
+  opts._interp.__ext_call = (objPtr, propPtr, argsPtr) => { 
+    const obj = extMap[jz.offset(objPtr)]
+    const prop = mem.read(propPtr)
+    const args = mem.read(argsPtr)
+    return mem.wrapVal(obj[prop].apply(obj, args))
+  }
+
   const wasm = jz.compile(code, opts)
+  opts.extMap = extMap
   const mod = new WebAssembly.Module(wasm)
   const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
   const imports = needsWasi ? wasi(opts) : {}
@@ -323,8 +362,9 @@ jz.instantiate = (code, opts = {}) => {
 
   // For shared memory, resolve memory from import; for own memory, from export
   const memory = opts.memory || inst.exports.memory
-  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory } }
-  return { exports: jz.wrap(mod, inst), mem: jz.mem(memSrc), instance: inst, module: mod, memory }
+  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory }, extMap }
+  mem = jz.mem(memSrc)
+  return { exports: jz.wrap(memSrc), mem, instance: inst, module: mod, memory }
 }
 
 /**
@@ -348,6 +388,7 @@ jz.compile = (code, opts = {}) => {
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
+      if (name.startsWith('__ext_')) continue;
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
     }

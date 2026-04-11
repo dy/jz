@@ -3,10 +3,11 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 
+const interp = { __ext_prop:()=>0, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0 }
 function run(code) {
   const wasm = compile(code)
   const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return new WebAssembly.Instance(mod, { env: interp }).exports
 }
 
 // ============================================

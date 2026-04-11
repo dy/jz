@@ -199,7 +199,7 @@ export default () => {
   // Constructor: new Float64Array(len) or new Uint8Array(buffer, offset, len)
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType]
-    ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
+    ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => { console.log(`NEW ${name} len=${JSON.stringify(lenExpr)} off=${JSON.stringify(offsetExpr)} len2=${JSON.stringify(lenExpr2)}`);
       // View on existing buffer: TypedArray(buffer, offset, len) → typed ptr at buffer+offset
       if (offsetExpr != null && lenExpr2 != null) {
         const buf = ['call', '$__ptr_offset', asF64(emit(lenExpr))]  // extract i32 offset from f64 ptr

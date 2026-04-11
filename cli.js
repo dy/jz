@@ -50,7 +50,7 @@ async function main() {
     else if (evalIdx !== -1) await handleEvaluate(args.slice(evalIdx + 1))
     else await handleCompile(args)
   } catch (error) {
-    console.error('Error:', error.message)
+    console.error(error)
     process.exit(1)
   }
 }
@@ -142,6 +142,6 @@ async function handleCompile(args) {
 }
 
 main().catch(error => {
-  console.error('Error:', error.message)
+  console.error(error)
   process.exit(1)
 })

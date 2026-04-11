@@ -27,9 +27,12 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
     ? `(then\n          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))\n          (br $done))`
     : `(then (br $done))`
 
+  const extBranch = hasVal
+    ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
+    : '(then (nop))'
   return `(func $${name} (param $coll f64) (param $key f64) ${valParam}(result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (local.get $coll))))
+    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const 2)) ${extBranch}) (return (local.get $coll))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -66,7 +69,9 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue) {
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then ${onEmpty}))
+    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const 2))
+        (then (return (call $__ext_${wantValue ? 'prop' : 'has'} (local.get $coll) (local.get $key))))
+        (else ${onEmpty}))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -112,7 +117,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32)
-    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (return (local.get $obj))))
+    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const 2)) (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)) (return (local.get $obj))))
     (local.set $off (call $__ptr_offset (local.get $obj)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
@@ -169,6 +174,10 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
 
 
 export default () => {
+  ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param f64 f64) (result f64)))'
+  ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param f64 f64) (result i32)))'
+  ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param f64 f64 f64) (result i32)))'
+  ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param f64 f64 f64) (result f64)))'
   // Hash function: simple f64 → i32 hash
   ctx.core.stdlib['__hash'] = `(func $__hash (param $v f64) (result i32)
     (i32.wrap_i64 (i64.xor
