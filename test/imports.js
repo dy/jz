@@ -156,6 +156,24 @@ test('import: transitive imports', () => {
   is(exports.f(5), 11)  // 5*2 + 1
 })
 
+test('import: bundled module newline ! after comment', () => {
+  const mod = `
+    export let f = () => {
+      let a
+      a ??= 41
+
+      // keep separate statement
+      !0 && (a += 1)
+      return a
+    }
+  `
+  const { exports } = jz(
+    'import { f } from "./m.jz"; export let g = () => f()',
+    { modules: { './m.jz': mod } }
+  )
+  is(exports.g(), 42)
+})
+
 test('import: unknown export errors', () => {
   throws(() => jz(
     'import { nope } from "./m.jz"; export let f = () => nope()',

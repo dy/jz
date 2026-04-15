@@ -30,14 +30,23 @@ export default () => {
     }
     const schema = ctx.schema.list[schemaId]
     const t = `${T}obj${ctx.func.uniq++}`
+    const ptr = `${T}objp${ctx.func.uniq++}`
     ctx.func.locals.set(t, 'i32')
+    ctx.func.locals.set(ptr, 'f64')
 
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
     ]
     for (let i = 0; i < values.length; i++)
       body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], asF64(emit(values[i]))])
-    body.push(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
+    body.push(['local.set', `$${ptr}`, ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
+    if (ctx.module.modules.collection) {
+      inc('__dyn_set')
+      for (let i = 0; i < schema.length; i++)
+        body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
+          ['f64.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]]]])
+    }
+    body.push(['local.get', `$${ptr}`])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -181,8 +190,28 @@ export default () => {
 
   // Object.create(proto) → shallow copy of object (same schema, copied properties)
   ctx.core.emit['Object.create'] = (proto) => {
+    const protoType = typeof proto === 'string'
+      ? (ctx.func.valTypes?.get(proto) || ctx.scope.globalValTypes?.get(proto))
+      : valTypeOf(proto)
+    if (protoType === VAL.ARRAY) {
+      inc('__arr_from')
+      return typed(['call', '$__arr_from', asF64(emit(proto))], 'f64')
+    }
     const schema = resolveSchema(proto)
-    if (!schema) err('Object.create requires object with known schema')
+    if (!schema) {
+      if (protoType == null) {
+        const value = `${T}ocr${ctx.func.uniq++}`
+        ctx.func.locals.set(value, 'f64')
+        inc('__arr_from')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${value}`, asF64(emit(proto))],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${value}`]], ['i32.const', PTR.ARRAY]],
+            ['then', ['call', '$__arr_from', ['local.get', `$${value}`]]],
+            ['else', ['local.get', `$${value}`]]]] , 'f64')
+      }
+      err('Object.create requires object with known schema')
+    }
     const n = schema.length
     const schemaId = ctx.schema.register(schema)
     const t = `${T}oc${ctx.func.uniq++}`, s = `${T}os${ctx.func.uniq++}`

@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, T, NULL_NAN, temp, multiCount, materializeMulti } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, multiCount, materializeMulti } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -30,18 +30,22 @@ function allocArray(len, cap) {
 
 /** Emit a loop that iterates over array elements. Helper for methods. */
 function arrayLoop(arrExpr, bodyFn) {
-  const ptr = `${T}ap${ctx.func.uniq++}`, len = `${T}al${ctx.func.uniq++}`, i = `${T}ai${ctx.func.uniq++}`
+  const arr = `${T}aa${ctx.func.uniq++}`, ptr = `${T}ap${ctx.func.uniq++}`, len = `${T}al${ctx.func.uniq++}`, i = `${T}ai${ctx.func.uniq++}`, item = `${T}av${ctx.func.uniq++}`
+  ctx.func.locals.set(arr, 'f64')
   ctx.func.locals.set(ptr, 'i32')
   ctx.func.locals.set(len, 'i32')
   ctx.func.locals.set(i, 'i32')
+  ctx.func.locals.set(item, 'f64')
   const id = ctx.func.uniq++
   return [
-    ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(arrExpr)]],
-    ['local.set', `$${len}`, ['call', '$__len', asF64(arrExpr)]],
+    ['local.set', `$${arr}`, asF64(arrExpr)],
+    ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
+    ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
       ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-      ...bodyFn(ptr, len, i),
+      ['local.set', `$${item}`, elemLoad(ptr, i)],
+      ...bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64')),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$loop${id}`]]],
   ]
@@ -55,6 +59,24 @@ function elemStore(ptr, i, val) {
   return ['f64.store', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]], val]
 }
 
+function hoistCallback(fn) {
+  const cb = `${T}af${ctx.func.uniq++}`
+  ctx.func.locals.set(cb, 'f64')
+  return {
+    setup: ['local.set', `$${cb}`, asF64(emit(fn))],
+    value: typed(['local.get', `$${cb}`], 'f64'),
+  }
+}
+
+function hoistArrayValue(arr) {
+  const recv = `${T}ar${ctx.func.uniq++}`
+  ctx.func.locals.set(recv, 'f64')
+  return {
+    setup: ['local.set', `$${recv}`, asF64(emit(arr))],
+    value: typed(['local.get', `$${recv}`], 'f64'),
+  }
+}
+
 export default () => {
   // Array.isArray(x): check ptr_type === PTR.ARRAY
   ctx.core.emit['Array.isArray'] = (x) => {
@@ -64,6 +86,48 @@ export default () => {
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
+
+  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr f64) (param $i i32) (result f64)
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (call $__len (local.get $ptr))))
+      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (else
+        (f64.load
+          (i32.add
+            (call $__ptr_offset (local.get $ptr))
+            (i32.shl (local.get $i) (i32.const 3)))))))`
+
+  ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+    (local $off i32) (local $et i32) (local $len i32)
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (else
+        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+          (then
+            (local.set $et (call $__ptr_aux (local.get $ptr)))
+            (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
+              (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
+                (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+                (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+              (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
+                (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                  (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+                  (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+                (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
+                  (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
+                  (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
+                    (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
+          (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
   ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
@@ -79,9 +143,21 @@ export default () => {
   }
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
+  // Old storage is left behind as a forwarding header so existing aliases keep
+  // seeing the current backing store after growth.
   ctx.core.stdlib['__arr_grow'] = `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
-    (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+    (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+    (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
+    ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
+    (if
+      (i32.or
+        (i32.ne (local.get $t) (i32.const ${PTR.ARRAY}))
+        (i32.lt_u (local.get $off) (i32.const 8)))
+      (then
+        (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_s (local.get $minCap) (i32.const 4))))
+        (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap) (i32.const 8)))
+        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
       (then (return (local.get $ptr))))
@@ -92,7 +168,24 @@ export default () => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    (call $__dyn_move (local.get $off) (local.get $newOff))
+    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
+    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+
+  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr f64) (param $i i32) (param $val f64) (result f64)
+    (local $len i32)
+    (if (i32.lt_s (local.get $i) (i32.const 0))
+      (then (return (local.get $ptr))))
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (i32.ge_u (local.get $i) (local.get $len))
+      (then
+        (local.set $ptr (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
+        (call $__set_len (local.get $ptr) (i32.add (local.get $i) (i32.const 1)))))
+    (f64.store
+      (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))
+      (local.get $val))
+    (local.get $ptr))`
 
   // === Array literal ===
 
@@ -109,106 +202,140 @@ export default () => {
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
 
-    // Spread: compute total, alloc, copy
-    // Pre-materialize multi-value calls into locals
-    const spreadLocals = new Map()
-    for (const e of elems) {
-      if (Array.isArray(e) && e[0] === '...' && multiCount(e[1])) {
-        const sl = `${T}ss${ctx.func.uniq++}`
-        ctx.func.locals.set(sl, 'f64')
-        spreadLocals.set(e, sl)
-      }
-    }
+    const { local: off, setup } = allocArray(0, Math.max(elems.length, 4))
+    const out = `${T}sa${ctx.func.uniq++}`, pos = `${T}sp${ctx.func.uniq++}`
+    ctx.func.locals.set(out, 'f64'); ctx.func.locals.set(pos, 'i32')
+    inc('__arr_set_idx_ptr')
 
-    const out = `${T}sa${ctx.func.uniq++}`, pos = `${T}sp${ctx.func.uniq++}`, total = `${T}st${ctx.func.uniq++}`
-    ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(pos, 'i32'); ctx.func.locals.set(total, 'i32')
-
-    const lenCalc = [['local.set', `$${total}`, ['i32.const', 0]]]
-    // Materialize multi-value spreads first
-    for (const [e, sl] of spreadLocals)
-      lenCalc.push(['local.set', `$${sl}`, materializeMulti(e[1])])
-    for (const e of elems) {
-      if (Array.isArray(e) && e[0] === '...') {
-        const src = spreadLocals.has(e) ? typed(['local.get', `$${spreadLocals.get(e)}`], 'f64') : asF64(emit(e[1]))
-        lenCalc.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['call', '$__len', src]]])
-      } else
-        lenCalc.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['i32.const', 1]]])
-    }
-
-    const body = [...lenCalc,
-      // Alloc header + data
-      ['local.set', `$${out}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${total}`], ['i32.const', 3]]]]],
-      ['i32.store', ['local.get', `$${out}`], ['local.get', `$${total}`]],  // len
-      ['i32.store', ['i32.add', ['local.get', `$${out}`], ['i32.const', 4]], ['local.get', `$${total}`]],  // cap=len
-      ['local.set', `$${out}`, ['i32.add', ['local.get', `$${out}`], ['i32.const', 8]]],  // skip header
+    const body = [
+      ...setup,
+      ['local.set', `$${out}`, ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${off}`]]],
       ['local.set', `$${pos}`, ['i32.const', 0]],
     ]
 
     for (const e of elems) {
       if (Array.isArray(e) && e[0] === '...') {
         const src = `${T}ss${ctx.func.uniq++}`, slen = `${T}sl${ctx.func.uniq++}`, si = `${T}si${ctx.func.uniq++}`
-        ctx.func.locals.set(src, 'i32'); ctx.func.locals.set(slen, 'i32'); ctx.func.locals.set(si, 'i32')
+        ctx.func.locals.set(src, 'f64'); ctx.func.locals.set(slen, 'i32'); ctx.func.locals.set(si, 'i32')
         const id = ctx.func.uniq++
-        const spreadVal = spreadLocals.has(e) ? typed(['local.get', `$${spreadLocals.get(e)}`], 'f64') : asF64(emit(e[1]))
+        const spreadVal = multiCount(e[1]) ? materializeMulti(e[1]) : asF64(emit(e[1]))
+        const spreadItem = ctx.module.modules['string']
+          ? ['if', ['result', 'f64'],
+            ['i32.or',
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.STRING]],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.SSO]]],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])],
+            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
+          : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+
         body.push(
-          ['local.set', `$${src}`, ['call', '$__ptr_offset', spreadVal]],
-          ['local.set', `$${slen}`, ['call', '$__len', spreadVal]],
+          ['local.set', `$${src}`, spreadVal],
+          ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${src}`]]],
           ['local.set', `$${si}`, ['i32.const', 0]],
           ['block', `$brk${id}`, ['loop', `$loop${id}`,
             ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
-            ['f64.store',
-              ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-              ['f64.load', ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${si}`], ['i32.const', 3]]]]],
+            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], spreadItem]],
             ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$loop${id}`]]])
       } else {
         body.push(
-          ['f64.store', ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]], asF64(emit(e))],
+          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], asF64(emit(e))]],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]])
       }
     }
 
-    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${out}`]])
+    body.push(['local.get', `$${out}`])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
   // === Index read ===
 
   ctx.core.emit['[]'] = (arr, idx) => {
+    const keyType = typeof idx === 'string'
+      ? (ctx.func.valTypes?.get(idx) || ctx.scope.globalValTypes?.get(idx))
+      : valTypeOf(idx)
+    const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
     // TypedArray: type-aware load
     if (typeof arr === 'string' && ctx.func.valTypes?.get(arr) === 'typed' && ctx.core.emit['.typed:[]']) {
       const r = ctx.core.emit['.typed:[]'](arr, idx)
       if (r) return r
     }
-    // Boxed object: index the inner value (slot 0)
-    if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
-      const va = ctx.schema.emitInner(arr), vi = asI32(emit(idx))
-      return typed(
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]]],
-        'f64')
-    }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
-    const vt = typeof arr === 'string' ? ctx.func.valTypes?.get(arr) : null
+    const vt = typeof arr === 'string'
+      ? (ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr))
+      : valTypeOf(arr)
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
+    const dynLoad = (objExpr, keyExpr) => {
+      inc('__dyn_get')
+      return ['call', '$__dyn_get', objExpr, keyExpr]
+    }
+    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, vi])
+    const arrayLoad = (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
+    const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
+      const keyTmp = temp()
+      ctx.func.locals.set(keyTmp, 'f64')
+      inc('__is_str_key')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${keyTmp}`, asF64(emit(idx))],
+        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['local.get', `$${keyTmp}`]],
+          ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
+          ['else', numericLoad(['local.get', `$${keyTmp}`])]]], 'f64')
+    }
+    // Boxed object: string keys address the box, numeric keys address the inner array.
+    if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
+      const inner = ctx.schema.emitInner(arr)
+      if (keyType === VAL.STRING) return typed(dynLoad(asF64(emit(arr)), asF64(emit(idx))), 'f64')
+      if (useRuntimeKeyDispatch)
+        return emitDynamicKeyDispatch(asF64(emit(arr)), keyExpr =>
+          ['f64.load', ['i32.add', ['call', '$__ptr_offset', inner], ['i32.shl', asI32(typed(keyExpr, 'f64')), ['i32.const', 3]]]])
+      return typed(
+        ['f64.load', ['i32.add', ['call', '$__ptr_offset', inner], ['i32.shl', vi, ['i32.const', 3]]]],
+        'f64')
+    }
     // Known array → direct f64 element load, skip string check
-    if (vt === 'array')
-      return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', ptrExpr], ['i32.shl', vi, ['i32.const', 3]]]], 'f64')
-    // Known string → direct char load
+    if (keyType === VAL.STRING)
+      return typed(dynLoad(ptrExpr, asF64(emit(idx))), 'f64')
+    if (vt === 'array') {
+      const baseTmp = temp()
+      ctx.func.locals.set(baseTmp, 'f64')
+      return useRuntimeKeyDispatch
+        ? typed(['block', ['result', 'f64'],
+          ['local.set', `$${baseTmp}`, ptrExpr],
+          emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
+            const keyI32 = asI32(typed(keyExpr, 'f64'))
+            return (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${baseTmp}`], keyI32])
+          })], 'f64')
+        : typed(['block', ['result', 'f64'],
+          ['local.set', `$${baseTmp}`, ptrExpr],
+          (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
+    }
+    // Known string → single-char SSO string
     if (vt === 'string')
-      return typed(['f64.convert_i32_u', ['call', '$__char_at', ptrExpr, vi]], 'f64')
+      return typed(stringLoad(), 'f64')
+    if (useRuntimeKeyDispatch)
+      return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
+        const keyI32 = asI32(typed(keyExpr, 'f64'))
+        if (ctx.module.modules['string']) {
+          return ['if', ['result', 'f64'],
+            ['i32.or',
+              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
+              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, keyI32])],
+            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, keyI32])]]
+        }
+        return (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, keyI32])
+      })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
-    // Use __typed_idx when typedarray module loaded (handles typed + array via runtime dispatch)
-    const arrayLoad = ctx.module.modules['typedarray']
-      ? (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
-      : ['f64.load', ['i32.add', ['call', '$__ptr_offset', ptrExpr], ['i32.shl', vi, ['i32.const', 3]]]]
     if (ctx.module.modules['string'])
       return typed(
         ['if', ['result', 'f64'],
-          ['i32.ge_u', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
-          ['then', ['f64.convert_i32_u', ['call', '$__char_at', ptrExpr, vi]]],
+          ['i32.or',
+            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
+            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
+          ['then', stringLoad()],
           ['else', arrayLoad]],
         'f64')
     return typed(arrayLoad, 'f64')
@@ -315,15 +442,18 @@ export default () => {
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)
   ctx.core.emit['.some'] = (arr, fn) => {
-    const va = emit(arr), vf = emit(fn)
+    const recv = hoistArrayValue(arr)
     const r = `${T}sr${ctx.func.uniq++}`
     ctx.func.locals.set(r, 'f64')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
       ['local.set', `$${r}`, ['f64.const', 0]],
       ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
@@ -331,15 +461,18 @@ export default () => {
 
   // .every(fn) → return 1 if all elements pass, else 0 (early exit)
   ctx.core.emit['.every'] = (arr, fn) => {
-    const va = emit(arr), vf = emit(fn)
+    const recv = hoistArrayValue(arr)
     const r = `${T}ev${ctx.func.uniq++}`
     ctx.func.locals.set(r, 'f64')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.eq', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', ['i32.eqz', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))])],
         ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
       ['local.set', `$${r}`, ['f64.const', 1]],
       ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
@@ -347,15 +480,18 @@ export default () => {
 
   // .findIndex(fn) → return index of first matching element, or -1 (early exit)
   ctx.core.emit['.findIndex'] = (arr, fn) => {
-    const va = emit(arr), vf = emit(fn)
+    const recv = hoistArrayValue(arr)
     const r = `${T}fi${ctx.func.uniq++}`
     ctx.func.locals.set(r, 'f64')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.closure.call(vf, [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
       ['local.set', `$${r}`, ['f64.const', -1]],
       ['block', exit, ...loop],
       ['local.get', `$${r}`]], 'f64')
@@ -364,15 +500,18 @@ export default () => {
   // === Array methods ===
 
   ctx.core.emit['.map'] = (arr, fn) => {
-    const va = emit(arr)
+    const recv = hoistArrayValue(arr)
     const out = `${T}mo${ctx.func.uniq++}`, len = `${T}ml${ctx.func.uniq++}`
     ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32')
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      elemStore(out, i, asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])))
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      elemStore(out, i, asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])))
     ])
     // Allocate header + data for result
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
+      recv.setup,
+      cb.setup,
+      ['local.set', `$${len}`, ['call', '$__len', recv.value]],
       ['local.set', `$${out}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]],
       ['i32.store', ['local.get', `$${out}`], ['local.get', `$${len}`]],  // len
       ['i32.store', ['i32.add', ['local.get', `$${out}`], ['i32.const', 4]], ['local.get', `$${len}`]],  // cap
@@ -382,17 +521,20 @@ export default () => {
   }
 
   ctx.core.emit['.filter'] = (arr, fn) => {
-    const va = emit(arr)
+    const recv = hoistArrayValue(arr)
     const out = `${T}fo${ctx.func.uniq++}`, count = `${T}fc${ctx.func.uniq++}`, maxLen = `${T}fm${ctx.func.uniq++}`
     ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(count, 'i32'); ctx.func.locals.set(maxLen, 'i32')
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then',
-          ['f64.store', ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], elemLoad(ptr, i)],
+          ['f64.store', ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], item],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
     ])
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${maxLen}`, ['call', '$__len', asF64(va)]],
+      recv.setup,
+      cb.setup,
+      ['local.set', `$${maxLen}`, ['call', '$__len', recv.value]],
       ['local.set', `$${out}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${maxLen}`], ['i32.const', 3]]]]],
       ['i32.store', ['local.get', `$${out}`], ['i32.const', 0]],  // len=0 initially
       ['i32.store', ['i32.add', ['local.get', `$${out}`], ['i32.const', 4]], ['local.get', `$${maxLen}`]],  // cap
@@ -405,68 +547,79 @@ export default () => {
   }
 
   ctx.core.emit['.reduce'] = (arr, fn, init) => {
-    const va = emit(arr)
+    const recv = hoistArrayValue(arr)
     const acc = `${T}ra${ctx.func.uniq++}`
     ctx.func.locals.set(acc, 'f64')
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['local.set', `$${acc}`, asF64(ctx.closure.call(emit(fn), [typed(['local.get', `$${acc}`], 'f64'), typed(elemLoad(ptr, i), 'f64')]))]
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, _i, item) => [
+      ['local.set', `$${acc}`, asF64(ctx.closure.call(cb.value, [typed(['local.get', `$${acc}`], 'f64'), item]))]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
       ['local.set', `$${acc}`, init ? asF64(emit(init)) : ['f64.const', 0]],
       ...loop,
       ['local.get', `$${acc}`]], 'f64')
   }
 
   ctx.core.emit['.forEach'] = (arr, fn) => {
-    const va = emit(arr)
+    const recv = hoistArrayValue(arr)
     const tmp = `${T}ft${ctx.func.uniq++}`
     ctx.func.locals.set(tmp, 'f64')
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['local.set', `$${tmp}`, asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')]))]
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['local.set', `$${tmp}`, asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]
     ])
-    return typed(['block', ['result', 'f64'], ...loop, ['f64.const', 0]], 'f64')
+    return typed(['block', ['result', 'f64'], recv.setup, cb.setup, ...loop, ['f64.const', 0]], 'f64')
   }
 
   ctx.core.emit['.find'] = (arr, fn) => {
-    const va = emit(arr)
+    const recv = hoistArrayValue(arr)
     const result = `${T}ff${ctx.func.uniq++}`
     ctx.func.locals.set(result, 'f64')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.ne', asF64(ctx.closure.call(emit(fn), [typed(elemLoad(ptr, i), 'f64')])), ['f64.const', 0]],
-        ['then', ['local.set', `$${result}`, elemLoad(ptr, i)], ['br', exit]]]
+    const cb = hoistCallback(fn)
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(ctx.closure.call(cb.value, [item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
+        ['then', ['local.set', `$${result}`, item], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
       ['local.set', `$${result}`, ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]],
       ['block', exit, ...loop],
       ['local.get', `$${result}`]], 'f64')
   }
 
   ctx.core.emit['.indexOf'] = (arr, val) => {
-    const va = emit(arr), vv = asF64(emit(val))
+    const recv = hoistArrayValue(arr)
+    const vv = asF64(emit(val))
     const result = `${T}ix${ctx.func.uniq++}`
     ctx.func.locals.set(result, 'i32')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.eq', elemLoad(ptr, i), vv],
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', ['f64.eq', item, vv],
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
       ['local.set', `$${result}`, ['i32.const', -1]],
       ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
   }
 
   ctx.core.emit['.includes'] = (arr, val) => {
-    const va = emit(arr), vv = asF64(emit(val))
+    const recv = hoistArrayValue(arr)
+    const vv = asF64(emit(val))
     const result = `${T}ic${ctx.func.uniq++}`
     ctx.func.locals.set(result, 'i32')
     const exit = `$exit${ctx.func.uniq++}`
-    const loop = arrayLoop(va, (ptr, _len, i) => [
-      ['if', ['f64.eq', elemLoad(ptr, i), vv],
+    const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
+      ['if', ['f64.eq', item, vv],
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
+      recv.setup,
       ['local.set', `$${result}`, ['i32.const', 0]],
       ['block', exit, ...loop],
       ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
@@ -488,13 +641,15 @@ export default () => {
   }
 
   ctx.core.emit['.slice'] = (arr, start, end) => {
-    const va = emit(arr), vs = asI32(emit(start))
-    const ve = end ? asI32(emit(end)) : ['call', '$__len', asF64(va)]
+    const recv = hoistArrayValue(arr)
+    const vs = asI32(emit(start))
+    const ve = end ? asI32(emit(end)) : ['call', '$__len', recv.value]
     const out = `${T}so${ctx.func.uniq++}`, len = `${T}sl${ctx.func.uniq++}`, j = `${T}sj${ctx.func.uniq++}`, ptr = `${T}sp${ctx.func.uniq++}`
     ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(j, 'i32'); ctx.func.locals.set(ptr, 'i32')
     const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', asF64(va)]],
+      recv.setup,
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', recv.value]],
       ['local.set', `$${len}`, ['i32.sub', ve, vs]],
       // Alloc header + data
       ['local.set', `$${out}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]],
@@ -519,10 +674,12 @@ export default () => {
     ctx.func.locals.set(len, 'i32')
     ctx.func.locals.set(pos, 'i32')
 
-    const va = asF64(emit(arr))
+    const recv = hoistArrayValue(arr)
+    const va = recv.value
 
     // Calculate total length
     const body = [
+      recv.setup,
       ['local.set', `$${len}`, ['call', '$__len', va]],
     ]
 

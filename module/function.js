@@ -36,6 +36,17 @@ export default () => {
   ctx.closure.make = ({ params, body, captures, restParam, defaults }) => {
     // Generate closure body function name
     const fnName = `${T}closure${ctx.closure.table.length}`
+    const captureValTypes = new Map()
+    const captureSchemaVars = new Map()
+    const captureTypedElems = new Map()
+    for (const name of captures) {
+      const vt = ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name)
+      if (vt != null) captureValTypes.set(name, vt)
+      const schemaId = ctx.schema.vars.get(name)
+      if (schemaId != null) captureSchemaVars.set(name, schemaId)
+      const elemType = ctx.types.typedElem?.get(name)
+      if (elemType != null) captureTypedElems.set(name, elemType)
+    }
 
     // All closures use uniform convention: (env: f64, args_array: f64) → f64
     // The body unpacks individual params from the args array
@@ -43,7 +54,10 @@ export default () => {
     const bodyFn = { name: fnName, params, body, captures, arity: 1,
       ...(restParam && { rest: restParam }),
       ...(defaults && { defaults }),
-      ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }) }
+      ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }),
+      ...(captureValTypes.size && { valTypes: captureValTypes }),
+      ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
+      ...(captureTypedElems.size && { typedElems: captureTypedElems }) }
     ctx.closure.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)

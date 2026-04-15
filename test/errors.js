@@ -173,4 +173,32 @@ test('template: distinct functions with same name', () => {
   is(f(1), 102) // (1+1) + (1*100) = 102
 })
 
+// ============================================================================
+// Runtime .length safety
+// ============================================================================
+
+test('runtime: number.length returns undefined (no OOB)', () => {
+  is(jz('export let f = () => (1).length').exports.f(), undefined)
+})
+
+test('runtime: unknown number param .length returns undefined (no OOB)', () => {
+  is(jz('export let f = (x) => x.length').exports.f(1), undefined)
+})
+
+test('runtime: ternary reassignment does not keep stale array type', () => {
+  is(jz('export let f = () => { let b = []; b = (0 ? [] : 1); return b.length }').exports.f(), undefined)
+})
+
+test('runtime: loose null equality matches undefined', () => {
+  is(jz('export let f = (x) => x == null').exports.f(undefined), 1)
+  is(jz('export let f = (x) => x == null').exports.f(null), 1)
+  is(jz('export let f = (x) => x == null').exports.f(0), 0)
+})
+
+test('runtime: loose null inequality excludes undefined/null', () => {
+  is(jz('export let f = (x) => x != null').exports.f(undefined), 0)
+  is(jz('export let f = (x) => x != null').exports.f(null), 0)
+  is(jz('export let f = (x) => x != null').exports.f(1), 1)
+})
+
 // Constructor/namespace validation deferred to emit/modules

@@ -74,14 +74,30 @@ export const STDLIB_DEPS = {
   __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
   __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
   __str_split: ['__str_slice'],
+  __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
+  __str_eq: ['__str_byteLen', '__char_at'],
   __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
   __str_join: ['__str_concat', '__to_str', '__str_byteLen'],
   __str_encode: ['__str_byteLen', '__char_at'],
   __str_to_buf: ['__str_byteLen', '__char_at'],
 
+  __arr_idx: ['__len', '__ptr_offset'],
+  __arr_grow: ['__dyn_move'],
+  __arr_set_idx_ptr: ['__arr_grow', '__len', '__ptr_offset', '__set_len'],
+  __typed_idx: ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset'],
+  __dyn_get: ['__hash_get_local', '__to_str', '__ptr_offset', '__is_nullish'],
+  __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
+  __dyn_get_or: ['__dyn_get'],
+  __dyn_set: ['__hash_new', '__hash_get_local', '__hash_set_local', '__to_str', '__ptr_offset', '__is_nullish'],
+  __dyn_move: ['__hash_get_local', '__hash_set_local', '__to_str', '__is_nullish'],
+  __hash_get_local: ['__str_hash', '__str_eq'],
+  __hash_set_local: ['__str_hash', '__str_eq'],
+  __eq: ['__str_eq', '__ptr_type'],
+
   // hash operations
   __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set'],
   __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
+  __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
   __hash_new: ['__alloc_hdr'],
 
   // console
@@ -102,6 +118,7 @@ export const STDLIB_DEPS = {
   __jp_obj: ['__jp_val', '__hash_new', '__hash_set'],
 
   // number
+  __to_num: ['__char_at', '__str_byteLen', '__pow10'],
   __parseInt: ['__char_at', '__str_byteLen'],
 }
 
@@ -134,6 +151,7 @@ export function reset(proto, globals) {
     resolvedModules: new Map(),
     moduleStack: [],
     moduleInits: [],
+    currentPrefix: null,
   }
 
   ctx.scope = {
@@ -198,6 +216,7 @@ export function reset(proto, globals) {
 
   ctx.transform = {
     jzify: null,
+    lenient: true,
   }
 }
 

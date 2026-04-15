@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { emit, typed, asF64, asI32, asI64, T, valTypeOf, VAL } from '../src/compile.js'
+import { emit, typed, asF64, asI32, asI64, T, NULL_NAN, UNDEF_NAN, valTypeOf, VAL } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 export default () => {
@@ -281,9 +281,23 @@ export default () => {
   ctx.core.emit['Number.isNaN'] = emitIsNaN
   ctx.core.emit['Number.isFinite'] = emitIsFinite
 
-  // Global isNaN/isFinite — same semantics (jz has no type coercion)
-  ctx.core.emit['isNaN'] = emitIsNaN
-  ctx.core.emit['isFinite'] = emitIsFinite
+  // Global isNaN/isFinite — coerce string→number first (unlike Number.isNaN/isFinite)
+  ctx.core.emit['isNaN'] = (x) => {
+    inc('__to_num')
+    const v = asF64(emit(x))
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    return typed(['f64.ne',
+      ['local.tee', `$${t}`, ['call', '$__to_num', v]],
+      ['local.get', `$${t}`]], 'i32')
+  }
+  ctx.core.emit['isFinite'] = (x) => {
+    inc('__to_num')
+    const v = asF64(emit(x))
+    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    return typed(['i32.and',
+      ['f64.eq', ['local.tee', `$${t}`, ['call', '$__to_num', v]], ['local.get', `$${t}`]],
+      ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
+  }
 
   ctx.core.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))
@@ -301,6 +315,11 @@ export default () => {
     (local $result f64) (local $digit i32)
     ;; If input is a number, just truncate
     (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
+    ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
+    (if (i32.and
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
+      (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (local.get $str)))
     (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $i (i32.const 0))
@@ -344,18 +363,119 @@ export default () => {
       (br $lp)))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
+  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v f64) (result f64)
+    (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
+    (local $seen i32) (local $exp i32) (local $expNeg i32)
+    (local $result f64) (local $scale f64)
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
+    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
+    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.eqz
+          (i32.or
+            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+      (then (return (f64.const nan))))
+    (local.set $len (call $__str_byteLen (local.get $v)))
+    ;; Skip leading whitespace.
+    (block $ws (loop $wsl
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $wsl)))
+    ;; Sign.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; Integer part.
+    (block $intDone (loop $intLoop
+      (br_if $intDone (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+      (br_if $intDone
+        (i32.or
+          (i32.lt_s (local.get $c) (i32.const 48))
+          (i32.gt_s (local.get $c) (i32.const 57))))
+      (local.set $result
+        (f64.add
+          (f64.mul (local.get $result) (f64.const 10))
+          (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
+      (local.set $seen (i32.const 1))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $intLoop)))
+    ;; Fractional part.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 46)))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (local.set $scale (f64.const 0.1))
+        (block $fracDone (loop $fracLoop
+          (br_if $fracDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $fracDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $result
+            (f64.add
+              (local.get $result)
+              (f64.mul
+                (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))
+                (local.get $scale))))
+          (local.set $scale (f64.mul (local.get $scale) (f64.const 0.1)))
+          (local.set $seen (i32.const 1))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $fracLoop)))))
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    ;; Scientific notation.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.or
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (block $expDone (loop $expLoop
+          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $expDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $exp
+            (i32.add
+              (i32.mul (local.get $exp) (i32.const 10))
+              (i32.sub (local.get $c) (i32.const 48))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $expLoop)))
+        (if (local.get $expNeg)
+          (then (local.set $result (f64.div (local.get $result) (call $__pow10 (local.get $exp)))))
+          (else (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $exp))))))))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
     return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
-  ctx.core.emit['Number.parseFloat'] = (x) => asF64(emit(x))
+  ctx.core.emit['Number.parseFloat'] = (x) => {
+    inc('__to_num')
+    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+  }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 
   // Boolean(x) → truthiness (non-zero → 1, zero → 0)
   ctx.core.emit['Boolean'] = (x) => {
+    inc('__is_truthy')
     const v = asF64(emit(x))
-    return typed(['if', ['result', 'f64'], ['f64.ne', v, ['f64.const', 0]], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
+    return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
   }
 
   // === Instance method emitters ===
@@ -416,7 +536,8 @@ export default () => {
   ctx.core.emit['Number'] = (x) => {
     if (valTypeOf(x) === VAL.BIGINT)
       return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
-    return asF64(emit(x))
+    inc('__to_num')
+    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
   }
 
   // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64)

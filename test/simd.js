@@ -165,6 +165,28 @@ test('Uint8Array.from: basic', () => {
   }`).main(), 198)
 })
 
+test('Uint8Array constructor: array source', () => {
+  const { main } = run(`export let main = () => {
+    let a = new Uint8Array([65, 66, 67])
+    return [a.length, a[0], a[2]]
+  }`)
+  is(main()[0], 3)
+  is(main()[1], 65)
+  is(main()[2], 67)
+})
+
+test('spread: .push(...typedArray)', () => {
+  const { main } = run(`export let main = () => {
+    let out = []
+    let bytes = new Uint8Array([1, 2, 3])
+    out.push(...bytes)
+    return [out.length, out[0], out[2]]
+  }`)
+  is(main()[0], 3)
+  is(main()[1], 1)
+  is(main()[2], 3)
+})
+
 test('Int32Array.from: basic', () => {
   is(run(`export let main = () => {
     let a = Int32Array.from([10, 20, 30])

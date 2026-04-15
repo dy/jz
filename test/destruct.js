@@ -1,7 +1,7 @@
 // Destructuring, optional chaining, typeof
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 const interp = { __ext_prop:()=>0, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0 }
 function run(code) {
@@ -39,6 +39,32 @@ test('destruct: partial array', () => {
     return x + y
   }`)
   is(f(), 300)  // only first two elements
+})
+
+test('destruct: sparse first element stays nullish', () => {
+  const { f } = run(`export let f = () => {
+    let [x, y] = [, 7]
+    return (x == null) + y
+  }`)
+  is(f(), 8)
+})
+
+test('destruct: inline arrow param nested array pattern', () => {
+  const { f } = run(`
+    let inspect = ([kind, fields, subkind, supertypes, rec], ctx) =>
+      (kind === 'func') + (fields[0].length === 0) + (fields[1].length === 0) + (ctx === 7)
+    export let f = () => inspect(['func', [[], []]], 7)
+  `)
+  is(f(), 4)
+})
+
+test('destruct: inline arrow param nested rest pattern', () => {
+  const { f } = run(`
+    let inspect = ([mod, field, [kind, ...dfn]], ctx) =>
+      (mod === 'm') + (field === 'f') + (kind === 'func') + (dfn[0][0] === 'type') + (ctx === 7)
+    export let f = () => inspect(['m', 'f', ['func', ['type', 0]]], 7)
+  `)
+  is(f(), 5)
 })
 
 // ============================================
@@ -101,12 +127,12 @@ test('optional: ?.[i] on null returns null', () => {
   ok(isNaN(f()), '?.[i] on null returns null NaN')
 })
 
-test('optional: ?.[i] on string returns char code', () => {
-  const { f } = run(`export let f = () => {
+test('optional: ?.[i] on string returns char', () => {
+  const { f } = jz(`export let f = () => {
     let s = "ab"
     return s?.[1]
-  }`)
-  is(f(), 98)  // 'b' = 98
+  }`).exports
+  is(f(), 'b')
 })
 
 test('optional: ?.length on array', () => {

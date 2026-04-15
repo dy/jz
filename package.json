@@ -21,6 +21,9 @@
   },
   "scripts": {
     "test": "node test/index.js",
+    "test:safe": "nice -n 15 node scripts/timebox.mjs 3000 node test/index.js",
+    "test:segments": "nice -n 15 node scripts/test-segments.mjs 3000 files",
+    "test:prefixes": "nice -n 15 node scripts/test-segments.mjs 3000 prefix",
     "test262": "node test/test262.js",
     "test262:runner": "node test/runner.js",
     "dev": "node cli.js",

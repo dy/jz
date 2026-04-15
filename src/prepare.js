@@ -76,9 +76,12 @@ function resolveTypeof(node) {
 const OP_MODULES = {
   '.': ['core', 'object', 'array', 'string', 'collection'],
   '?.': ['core', 'string', 'collection'],
-  '?.[]': ['core', 'array'],
+  '?.[]': ['core', 'array', 'collection'],
   '?.()': ['core'],
+  'u+': ['number', 'string'],
   'in': ['core', 'collection', 'string'],
+  '==': ['core', 'string'],
+  '!=': ['core', 'string'],
   'typeof': ['core'],
   '[': ['core', 'array'],
   '{': ['core', 'object', 'string', 'collection'],
@@ -90,10 +93,10 @@ const BUILTIN_MODULES = {
   'DataView': ['core', 'typedarray'],
   'BigInt64Array': ['core', 'typedarray'],
   'BigUint64Array': ['core', 'typedarray'],
-  'parseFloat': ['number'],
-  'parseInt': ['number'],
+  'parseFloat': ['number', 'string'],
+  'parseInt': ['number', 'string'],
   'String': ['core', 'string', 'number'],
-  'Number': ['number'],
+  'Number': ['number', 'string'],
   'Boolean': ['number'],
   'TextEncoder': ['core', 'string'],
   'TextDecoder': ['core', 'string'],
@@ -105,6 +108,13 @@ const BUILTIN_MODULES = {
 }
 
 const dict = obj => Object.assign(Object.create(null), obj)
+
+const cloneNode = (node) => {
+  if (!Array.isArray(node)) return node
+  const copy = node.map(cloneNode)
+  if (node.loc != null) copy.loc = node.loc
+  return copy
+}
 
 const STATIC_METHOD_MODULES = dict({
   'console': dict({ 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] }),
@@ -130,7 +140,7 @@ const GENERIC_METHOD_MODULES = dict({
   'toExponential': ['core', 'string', 'number'],
 })
 
-const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Set','Map']
+const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
 
 function prep(node) {
   if (Array.isArray(node) && OP_MODULES[node[0]]) includeMods(...OP_MODULES[node[0]])
@@ -201,7 +211,7 @@ function prepDecl(op, ...inits) {
 
     // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
     if (Array.isArray(name) && name[0] === '[]') {
-      includeMods('core', 'array')
+      includeMods('core', 'array', 'collection')
       const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
       const tmp = `${T}d${ctx.func.uniq++}`
       rest.push(['=', tmp, normed])
@@ -213,6 +223,10 @@ function prepDecl(op, ...inits) {
         // Rest: [...a] → a = __tmp.slice(j)
         else if (Array.isArray(items[j]) && items[j][0] === '...')
           rest.push(['=', items[j][1], ['()', ['.', tmp, 'slice'], [, j]]])
+        else if (Array.isArray(items[j]) && (items[j][0] === '[]' || items[j][0] === '{}')) {
+          const nested = prepDecl(op, ['=', items[j], ['[]', tmp, [, j]]])
+          if (nested) rest.push(...nested.slice(1))
+        }
         else
           rest.push(['=', items[j], ['[]', tmp, [, j]]])
       }
@@ -245,19 +259,23 @@ function prepDecl(op, ...inits) {
       } else if (typeof name === 'string' && scopes.length > 0) {
         scopes[scopes.length - 1].set(name, name)
       }
-      // Track object schemas
-      if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
-        const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-        if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
-      }
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
+        if (ctx.module.currentPrefix) {
+          declName = `${ctx.module.currentPrefix}$${declName}`
+          ctx.scope.chain[name] = declName
+        }
         if (op === 'const') {
           if (!ctx.scope.consts) ctx.scope.consts = new Set()
           ctx.scope.consts.add(declName)
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
         }
+      }
+      // Track object schemas (after prefix so schema is keyed to final name)
+      if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
+        const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
       }
       // Module-scope variable → WASM global (mark as user-declared)
       if (depth === 0 && typeof declName === 'string') {
@@ -310,6 +328,16 @@ const handlers = {
           stmts.push(['=', items[j], ['[]', tmp, [, j]]])
       }
       return prep([';', ...stmts])
+    }
+    // Parser ambiguity: }[pattern] = rhs mis-parsed as subscript when it's stmt; [pattern] = rhs
+    // Detect: ['[]', stmtExpr, commaExpr] with spread in comma → split into stmt + destructuring
+    if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3) {
+      const hasSpr = n => Array.isArray(n) && (n[0] === '...' || n.some(hasSpr))
+      if (hasSpr(lhs[2])) {
+        const preStmt = lhs[1]
+        const pattern = ['[]', lhs[2]]
+        return prep([';', preStmt, ['=', pattern, rhs]])
+      }
     }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
@@ -460,6 +488,23 @@ const handlers = {
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
           ctx.func.exports[i[1]] = true
+    // export { name1, name2 as alias } → register named exports
+    if (Array.isArray(decl) && decl[0] === '{}') {
+      const inner = decl[1]
+      if (inner == null) return null
+      const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+      for (const item of items) {
+        if (typeof item === 'string') {
+          const resolved = ctx.scope.chain[item]
+          ctx.func.exports[item] = (resolved && resolved !== item) ? resolved : item
+        } else if (Array.isArray(item) && item[0] === 'as') {
+          const [, source, alias] = item
+          const resolved = ctx.scope.chain[source]
+          ctx.func.exports[alias] = (resolved && resolved !== source) ? resolved : source
+        }
+      }
+      return null
+    }
     // export default expr → mark 'default' export, rewrite to assignment
     if (Array.isArray(decl) && decl[0] === 'default') {
       const val = decl[1]
@@ -484,12 +529,53 @@ const handlers = {
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
     if (depth > 0) { includeMods('core', 'fn') }
-    depth++
-    // Push function scope with param names
+    const raw = extractParams(params)
     const fnScope = new Map()
-    for (const n of collectParamNames(extractParams(params))) fnScope.set(n, n)
+    for (const n of collectParamNames(raw)) fnScope.set(n, n)
+
+    depth++
     scopes.push(fnScope)
-    const result = ['=>', params, prep(body)]
+
+    const nextParams = []
+    const bodyPrefix = []
+    for (const r of raw) {
+      if (Array.isArray(r) && r[0] === '...') {
+        nextParams.push(r)
+        if (typeof r[1] === 'string') fnScope.set(r[1], r[1])
+        continue
+      }
+      if (Array.isArray(r) && r[0] === '=') {
+        if (typeof r[1] !== 'string') {
+          const tmp = `${T}p${ctx.func.uniq++}`
+          fnScope.set(tmp, tmp)
+          nextParams.push(['=', tmp, prep(r[2])])
+          bodyPrefix.push(prep(['let', ['=', r[1], tmp]]))
+          continue
+        }
+        nextParams.push(['=', r[1], prep(r[2])])
+        continue
+      }
+      if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
+        const tmp = `${T}p${ctx.func.uniq++}`
+        fnScope.set(tmp, tmp)
+        nextParams.push(tmp)
+        bodyPrefix.push(prep(['let', ['=', r, tmp]]))
+        continue
+      }
+      nextParams.push(r)
+    }
+    let preparedBody = prep(body)
+    if (bodyPrefix.length) {
+      const prefix = bodyPrefix.filter(x => x != null)
+      if (Array.isArray(preparedBody) && preparedBody[0] === '{}' && Array.isArray(preparedBody[1]) && preparedBody[1][0] === ';')
+        preparedBody = ['{}', [';', ...prefix, ...preparedBody[1].slice(1)]]
+      else if (Array.isArray(preparedBody) && preparedBody[0] === '{}')
+        preparedBody = ['{}', [';', ...prefix, preparedBody[1]]]
+      else
+        preparedBody = ['{}', [';', ...prefix, ['return', preparedBody]]]
+    }
+    const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
+    const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     scopes.pop()
     depth--
     return result
@@ -553,15 +639,10 @@ const handlers = {
 
   // Function call or grouping parens
 '()'(callee, ...args) {
+    // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
+    if (args.length === 0) return prep(callee)
+
     const hasRealArgs = args.some(a => a != null)
-    if (!hasRealArgs && typeof callee !== 'string' && !(Array.isArray(callee) && callee[0] === '.')) {
-      if (Array.isArray(callee) && (callee[0] === '()' || callee[0] === '=>')) {
-        const c = prep(callee)
-        includeMods('core', 'fn')
-        return ['()', c]
-      }
-      return prep(callee)
-    }
 
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
@@ -598,6 +679,9 @@ const handlers = {
           callee = prep(callee)
         }
       }
+    } else {
+      includeMods('core', 'fn')
+      callee = prep(callee)
     }
 
     const preppedArgs = args.filter(a => a != null).map(prep)
@@ -643,10 +727,21 @@ const handlers = {
       const inner = args[0]
       includeMods('core', 'array')
       if (inner == null) return ['[']
-      if (Array.isArray(inner) && inner[0] === ',') return ['[', ...inner.slice(1).map(prep)]
+      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); if (items.length && items[items.length - 1] === null) items.pop(); return ['[', ...items.map(item => item == null ? [, JZ_NULL] : prep(item))] }
       return ['[', prep(inner)]
     }
-    includeMods('core', 'array')
+    if (typeof args[0] === 'string' && ctx.module.namespaces?.[args[0]]) {
+      includeMods('core', 'string')
+      const key = prep(args[1])
+      const exports = [...ctx.module.namespaces[args[0]].entries()]
+      let fallback = [, undefined]
+      for (let i = exports.length - 1; i >= 0; i--) {
+        const [name, resolved] = exports[i]
+        fallback = ['?:', ['==', key, ['str', name]], resolved, fallback]
+      }
+      return fallback
+    }
+    includeMods('core', 'array', 'collection')
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
@@ -707,7 +802,8 @@ const handlers = {
       // for (let k in obj) → unroll at compile time when schema known, else HASH runtime iteration
       const [, decl, src] = head
       const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
-      const sid = typeof src === 'string' && ctx.schema.vars.get(src)
+      const srcName = typeof src === 'string' ? (ctx.scope.chain[src] || src) : null
+      const sid = typeof srcName === 'string' && ctx.schema.vars.get(srcName)
       if (sid != null) {
         // Known schema → compile-time unrolling with string keys
         const keys = ctx.schema.list[sid]
@@ -718,7 +814,7 @@ const handlers = {
           stmts.push(i === 0
             ? ['let', ['=', varName, [, keys[i]]]]
             : ['=', varName, [, keys[i]]])
-          stmts.push(body)
+          stmts.push(cloneNode(body))
         }
         r = prep([';', ...stmts])
       } else {
@@ -756,7 +852,7 @@ const handlers = {
       ctorArgs = ctorArgs[0].slice(1)
 
     // TypedArray constructors
-    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array']
+    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array']
     if (typedArrays.includes(name)) {
       includeMods('core', 'typedarray')
       return ['()', `new.${name}`, ...ctorArgs.map(prep)]
@@ -782,6 +878,7 @@ const MOD_DEPS = {
   string: ['core', 'number'],
   array: ['core'],
   object: ['core'],
+  collection: ['core', 'number'],
   symbol: ['core'],
   json: ['core', 'string', 'number', 'collection'],
   console: ['core', 'string', 'number'],
@@ -898,6 +995,76 @@ function collectReturns(node, out) {
 
 const isLit = n => Array.isArray(n) && n[0] == null
 
+const LENIENT_ENDERS = new Set([')', ']', '"', "'", '`', '$', '}', ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'])
+const COMMENT_ONLY_LINE = /^\s*(?:\/\/.*)?$/
+const BANG_LINE = /^\s*!/
+const CONTROL_HEADER_LINE = /^\s*(?:if|while|for|catch)\b.*\)\s*$/
+
+function lastCodeChar(line) {
+  let quote = null
+  let escape = false
+  let last = ''
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    const next = line[i + 1]
+
+    if (quote) {
+      if (escape) {
+        escape = false
+        continue
+      }
+      if (ch === '\\') {
+        escape = true
+        continue
+      }
+      if (ch === quote) {
+        last = ch
+        quote = null
+      }
+      continue
+    }
+
+    if (ch === '/' && next === '/') break
+    if (ch === '/' && next === '*') {
+      i += 2
+      while (i < line.length && !(line[i] === '*' && line[i + 1] === '/')) i++
+      i += (i < line.length ? 1 : 0)
+      continue
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch
+      last = ch
+      continue
+    }
+    if (ch !== ' ' && ch !== '\t') last = ch
+  }
+
+  return last
+}
+
+export function patchLenientASI(source) {
+  const eol = source.includes('\r\n') ? '\r\n' : '\n'
+  const lines = source
+    .replace(/\}\s*\n(\s*)\[/g, '};\n$1[')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+
+  for (let i = 1; i < lines.length; i++) {
+    if (!BANG_LINE.test(lines[i])) continue
+
+    let prev = i - 1
+    while (prev >= 0 && COMMENT_ONLY_LINE.test(lines[prev])) prev--
+    if (prev < 0) continue
+    if (CONTROL_HEADER_LINE.test(lines[prev])) continue
+
+    const last = lastCodeChar(lines[prev])
+    if (LENIENT_ENDERS.has(last)) lines[prev] += ';'
+  }
+
+  return lines.join(eol)
+}
+
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
 function prepareModule(specifier, source) {
   includeModule('core')
@@ -915,10 +1082,13 @@ function prepareModule(specifier, source) {
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.func.exports
   const savedFuncCount = ctx.func.list.length  // track new funcs from this module
+  const savedModulePrefix = ctx.module.currentPrefix
   ctx.scope.chain = derive(savedScope)  // inherit parent scope
   ctx.func.exports = {}
+  ctx.module.currentPrefix = prefix
 
   // Parse + prepare imported source (may trigger recursive imports)
+  if (ctx.transform.lenient) source = patchLenientASI(source)
   let ast = parse(source)
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
@@ -981,6 +1151,15 @@ function prepareModule(specifier, source) {
     func.name = mangled
   }
 
+  // Add mangled non-exported globals to moduleExports for walk renaming
+  // (e.g., module-level const/let used by functions declared before the global)
+  for (const [mangled, wat] of ctx.scope.globals) {
+    if (mangled.startsWith(prefix + '$')) {
+      const original = mangled.slice(prefix.length + 1)
+      if (!moduleExports.has(original)) moduleExports.set(original, mangled)
+    }
+  }
+
   // Rename references in function bodies — walk ALL functions created during this module's prep
   if (moduleExports.size) {
     const walk = (node, skip) => {
@@ -1014,6 +1193,7 @@ function prepareModule(specifier, source) {
   // Restore caller state
   ctx.scope.chain = savedScope
   ctx.func.exports = savedExports
+  ctx.module.currentPrefix = savedModulePrefix
   ctx.module.moduleStack.pop()
 
   const result = { exports: moduleExports }

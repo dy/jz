@@ -11,7 +11,7 @@
 import { parse } from 'subscript/jessie'
 import { compile as watrCompile, print as watrPrint } from "watr";
 import { ctx, reset } from './src/ctx.js'
-import prepare, { GLOBALS } from './src/prepare.js'
+import prepare, { GLOBALS, patchLenientASI } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
 import { wasi } from './wasi.js'
 import jzify from './src/jzify.js'
@@ -121,6 +121,8 @@ jz.mem = (src) => {
       if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
       if (typeof v === 'string') return mem.String(v)
       if (Array.isArray(v)) return mem.Array(v)
+      const typedName = v?.constructor?.name
+      if (typedName && ELEMS[typedName]) return mem[typedName](v)
       if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
       return UNDEF_NAN
     },
@@ -285,6 +287,19 @@ jz.wrap = (memSrc, inst) => {
   }
 
   const mem = jz.mem(memSrc)
+  const lastErrBits = realInst.exports.__jz_last_err_bits
+  const decodeThrown = error => {
+    if (!(error instanceof WebAssembly.Exception) || !lastErrBits) throw error
+    const bits = lastErrBits.value
+    _u32[0] = Number(bits & 0xffffffffn)
+    _u32[1] = Number((bits >> 32n) & 0xffffffffn)
+    const value = mem.read(_f64[0])
+    if (value instanceof Error) throw value
+    const wrapped = new Error(typeof value === 'string' ? value : String(value))
+    wrapped.cause = error
+    wrapped.thrown = value
+    throw wrapped
+  }
   const exports = {}
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
@@ -293,12 +308,20 @@ jz.wrap = (memSrc, inst) => {
         const a = args.slice(0, fixed).map(x => mem.wrapVal(x))
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
-        return mem.read(fn.apply(null, a))
+        try {
+          return mem.read(fn.apply(null, a))
+        } catch (error) {
+          decodeThrown(error)
+        }
       }
     } else if (typeof fn === 'function') {
       exports[name] = (...args) => {
         while (args.length < fn.length) args.push(undefined)
-        return mem.read(fn.apply(null, args.map(x => mem.wrapVal(x))))
+        try {
+          return mem.read(fn.apply(null, args.map(x => mem.wrapVal(x))))
+        } catch (error) {
+          decodeThrown(error)
+        }
       }
     } else {
       exports[name] = fn
@@ -356,6 +379,17 @@ jz.instantiate = (code, opts = {}) => {
     const dv = new DataView(opts.memory.buffer)
     if (dv.getInt32(1020, true) < 1024) dv.setInt32(1020, 1024, true)
   }
+  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed external refs
+  for (const imp of WebAssembly.Module.imports(mod)) {
+    if (imp.kind === 'global' && imp.module === 'env') {
+      const host = globalThis[imp.name]
+      if (host !== undefined) {
+        if (!imports.env) imports.env = {}
+        let id = extMap.indexOf(host); if (id === -1) { id = extMap.length; extMap.push(host) }
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: true }, jz.ptr(2, 0, id))
+      }
+    }
+  }
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
   if (needsWasi) imports._setMemory(inst.exports.memory)
@@ -385,6 +419,7 @@ jz.compile = (code, opts = {}) => {
   // pure: true → strict jz. pure: false → auto-jzify. unset → no transform (compat)
   const useJzify = opts.jzify || opts.pure === false
   if (useJzify) ctx.transform.jzify = jzify
+  ctx.transform.lenient = !opts.pure
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -395,8 +430,9 @@ jz.compile = (code, opts = {}) => {
   }
 
   // pure: true → strict jz (mandatory ;, no function/var/switch)
-  // default → lenient (ASI: subscript handles `}` before keywords, jz handles `}\n[` ambiguity)
-  if (!opts.pure) code = code.replace(/\}\s*\n(\s*)\[/g, '};\n$1[')
+  // default → lenient. Patch parser ASI hazards that subscript mis-reads in statement
+  // position, while preserving intentional call/index continuations.
+  if (!opts.pure) code = patchLenientASI(code)
   const savedAsi = parse.asi
   if (opts.pure) parse.asi = null
   let parsed

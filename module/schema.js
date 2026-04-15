@@ -7,7 +7,7 @@
  * @module schema
  */
 
-import { emit, typed, asF64 } from '../src/compile.js'
+import { emit, typed, asF64, VAL } from '../src/compile.js'
 import { ctx, err } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -36,6 +36,12 @@ export function initSchema() {
     // Precise: variable has known schema
     const id = ctx.schema.vars.get(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
+    // Known non-object pointer-backed values must use dynamic property lookup,
+    // not structural object schemas registered elsewhere in the function.
+    if (typeof varName === 'string') {
+      const vt = ctx.func.valTypes?.get(varName) || ctx.scope.globalValTypes?.get(varName)
+      if (vt != null && vt !== VAL.OBJECT) return -1
+    }
     // Structural subtyping: scan all schemas, require consistent offset.
     // This is the mechanism for schema objects passed through function parameters.
     // Falls through to HASH when no schema has the property.

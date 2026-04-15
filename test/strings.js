@@ -30,6 +30,18 @@ test('string +=: append', () => {
   is(run('export let f = () => { let s = "a"; s = s + "bc"; return s.length }').f(), 3)
 })
 
+test('string ==: compares by value', () => {
+  is(run('export let f = () => "module" == "module"').f(), 1)
+})
+
+test('string ==: concatenated string compares by value', () => {
+  is(run('export let f = () => { let s = "mod" + "ule"; return s == "module" }').f(), 1)
+})
+
+test('string !=: different contents compare unequal', () => {
+  is(run('export let f = () => "module" != "memory"').f(), 1)
+})
+
 // === parseInt ===
 
 test('parseInt: decimal', () => {
@@ -94,6 +106,10 @@ test('string: .indexOf found', () => {
 
 test('string: .indexOf not found', () => {
   is(run(`export let f = () => "hello".indexOf("x")`).f(), -1)
+})
+
+test('string index: out-of-range returns undefined', () => {
+  ok(Number.isNaN(run(`export let f = () => "hello"[99]`).f()))
 })
 
 // === .includes ===

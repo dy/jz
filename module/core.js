@@ -10,19 +10,86 @@
  */
 
 import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, temp } from '../src/compile.js'
-import { ctx, err, inc } from '../src/ctx.js'
+import { ctx, err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
 const NAN_PREFIX = 0x7FF8
 
 export default () => {
+  const usesDynProps = vt => vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.CLOSURE
+    || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
+
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v f64) (result i32)
     (i32.or
       (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000))
       (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000001))))`
 
+  ctx.core.stdlib['__eq'] = `(func $__eq (param $a f64) (param $b f64) (result i32)
+    (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
+    (if (result i32)
+      (i32.and
+        (f64.eq (local.get $a) (local.get $a))
+        (f64.eq (local.get $b) (local.get $b)))
+      (then (f64.eq (local.get $a) (local.get $b)))
+      (else
+        (local.set $ra (i64.reinterpret_f64 (local.get $a)))
+        (local.set $rb (i64.reinterpret_f64 (local.get $b)))
+        (if (result i32)
+          (i64.eq (local.get $ra) (local.get $rb))
+          (then
+            (if (result i32)
+              (i64.eq (local.get $ra) (i64.const 0x7FF8000000000000))
+              (then (i32.const 0))
+              (else (i32.const 1))))
+          (else
+            (local.set $ta (call $__ptr_type (local.get $a)))
+            (local.set $tb (call $__ptr_type (local.get $b)))
+            (if (result i32)
+              (i32.and
+                (i32.or
+                  (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                  (i32.eq (local.get $ta) (i32.const ${PTR.SSO})))
+                (i32.or
+                  (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
+                  (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
+              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (else (i32.const 0))))))))`
+
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v f64) (result i32)
     (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000)))`
+
+  // Truthy check: handles regular numbers AND NaN-boxed pointers
+  // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
+  ctx.core.stdlib['__is_truthy'] = `(func $__is_truthy (param $v f64) (result i32)
+    (if (result i32) (f64.eq (local.get $v) (local.get $v))
+      (then (f64.ne (local.get $v) (f64.const 0)))
+      (else (i32.and
+        (i32.and
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000000))
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000)))
+        (i32.and
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000001))
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FFA800000000000)))))))`
+
+  ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v f64) (result i32)
+    (local $t i32)
+    (if (result i32) (f64.eq (local.get $v) (local.get $v))
+      (then (i32.const 0))
+      (else
+        (local.set $t (call $__ptr_type (local.get $v)))
+        (i32.or
+          (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+          (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))))`
+
+  // Default dynamic-property helpers are harmless stubs. The collection module
+  // overrides them with the real sidecar-property implementation.
+  ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
+    (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))`
+  ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
+    (local.get $fallback))`
+  ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
+    (local.get $val))`
+  ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32))`
 
   // Memory section auto-enabled: compile.js checks ctx.module.modules.ptr
 
@@ -38,7 +105,25 @@ export default () => {
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const 0xFFFFFFFF)))))))`
 
   ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))`
+    (local $raw i32) (local $off i32)
+    (local.set $raw (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))
+    (local.set $off (local.get $raw))
+    ;; Arrays can be reallocated during growth. Preserve alias semantics by
+    ;; following forwarding headers until we reach the current backing store.
+    (if
+      (i32.and
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
+        (i32.and
+          (i32.ge_u (local.get $off) (i32.const 8))
+          (i32.le_u (local.get $off)
+            (i32.sub (i32.mul (memory.size) (i32.const 65536)) (i32.const 8)))))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
+    (local.get $off))`
 
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr f64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 32)) (i64.const 0x7FFF))))`
@@ -80,18 +165,55 @@ export default () => {
 
   // Array/TypedArray: [-8:len(i32)][-4:cap(i32)][data...]
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
-    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))`
+    (local $t i32) (local $off i32)
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (result i32)
+      (i32.and
+        (i32.ge_u (local.get $off) (i32.const 8))
+        (i32.or
+          (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+          (i32.or (i32.eq (local.get $t) (i32.const 7))
+            (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
+      (then (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (else (i32.const 0))))`
 
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
-    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
+    (local $t i32) (local $off i32)
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (result i32)
+      (i32.and
+        (i32.ge_u (local.get $off) (i32.const 4))
+        (i32.or
+          (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+          (i32.or (i32.eq (local.get $t) (i32.const 7))
+            (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
+      (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (else (i32.const 0))))`
 
   // String (heap): [-4:len(i32)][chars...]
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
-    (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))`
+    (if (result i32)
+      (i32.and
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
+        (i32.ge_u (call $__ptr_offset (local.get $ptr)) (i32.const 4)))
+      (then (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))
+      (else (i32.const 0))))`
 
   // Set len in memory (for push/pop)
   ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
-    (i32.store (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8)) (local.get $len)))`
+    (local $t i32) (local $off i32)
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if
+      (i32.and
+        (i32.ge_u (local.get $off) (i32.const 8))
+        (i32.or
+          (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+          (i32.or (i32.eq (local.get $t) (i32.const 7))
+            (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
+      (then (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
   // Alloc header(8) + data(cap*stride), store len+cap, return data offset (past header)
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)
@@ -136,25 +258,64 @@ export default () => {
     return typed(['call', '$__length', va], 'f64')
   }
 
+  // Known-schema fields live in the object payload. Dynamic sidecars are only
+  // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
+  function emitSchemaSlotRead(baseExpr, idx) {
+    const base = baseExpr?.type === 'f64' ? baseExpr : typed(baseExpr, 'f64')
+    return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', base], ['i32.const', idx * 8]]], 'f64')
+  }
+
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop) {
     const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
-    if (schemaIdx >= 0)
-      return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', schemaIdx * 8]]], 'f64')
-    // HASH (dynamic object) → runtime string-key lookup (fallback for any unresolved property)
-    inc('__hash_get', '__str_hash', '__str_eq')
-    return typed(['call', '$__hash_get', asF64(va), asF64(emit(['str', prop]))], 'f64')
+    const key = asF64(emit(['str', prop]))
+    if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)
+    if (typeof obj === 'string') {
+      const vt = ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj)
+      if (usesDynProps(vt)) {
+        inc('__dyn_get_expr')
+        return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
+      }
+      if (vt == null) {
+        inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
+        return typed(['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', asF64(va)], ['i32.const', 2]],
+          ['then', ['call', '$__hash_get', asF64(va), key]],
+          ['else', ['call', '$__dyn_get_expr', asF64(va), key]]], 'f64')
+      }
+      inc('__hash_get', '__str_hash', '__str_eq')
+      return typed(['call', '$__hash_get', asF64(va), key], 'f64')
+    }
+    inc('__dyn_get_expr')
+    return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
   }
 
   // Runtime .length dispatch as a stdlib function (avoids block nesting issues)
   ctx.core.stdlib['__length'] = `(func $__length (param $v f64) (result f64)
-    (local $t i32)
-    (local.set $t (call $__ptr_type (local.get $v)))
-    (if (result f64) (i32.eq (local.get $t) (i32.const 5))
-      (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
-      (else (if (result f64) (i32.eq (local.get $t) (i32.const 4))
-        (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-        (else (f64.convert_i32_s (call $__len (local.get $v))))))))`
+    (local $t i32) (local $off i32)
+    ;; Plain numbers are not NaN-box pointers; .length should be undefined.
+    (if (result f64) (f64.eq (local.get $v) (local.get $v))
+      (then (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))
+      (else
+        (local.set $t (call $__ptr_type (local.get $v)))
+        (local.set $off (call $__ptr_offset (local.get $v)))
+        (if (result f64) (i32.eq (local.get $t) (i32.const 5))
+          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
+          (else (if (result f64) (i32.eq (local.get $t) (i32.const 4))
+            (then
+              (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
+                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
+                (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))
+            (else (if (result f64)
+              (i32.or
+                (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+                (i32.or (i32.eq (local.get $t) (i32.const 7))
+                  (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9)))))
+              (then
+                (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
+                  (then (f64.convert_i32_s (call $__len (local.get $v))))
+                  (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))
+              (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))))))))`
 
   // === Property dispatch (.length, .prop) ===
 
@@ -166,8 +327,7 @@ export default () => {
         return typed(['f64.convert_i32_s', ['call', '$__len', inner]], 'f64')
       }
       const idx = ctx.schema.find(obj, prop)
-      if (idx >= 0)
-        return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
+      if (idx >= 0) return emitSchemaSlotRead(asF64(emit(obj)), idx)
     }
 
     if (prop === 'length') {
@@ -192,11 +352,29 @@ export default () => {
       access = emitLengthAccess(['local.get', `$${t}`], vt)
     } else {
       const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
-      if (propIdx >= 0)
-        access = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', propIdx * 8]]]
+      if (propIdx >= 0) {
+        access = emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
+      }
       else {
-        inc('__hash_get', '__str_hash', '__str_eq')
-        access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+        if (typeof obj === 'string') {
+          const objType = ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj)
+          if (usesDynProps(objType)) {
+            inc('__dyn_get_expr')
+            access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          } else if (objType == null) {
+            inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
+            access = ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', 2]],
+              ['then', ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]],
+              ['else', ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]]]
+          } else {
+            inc('__hash_get', '__str_hash', '__str_eq')
+            access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          }
+        } else {
+          inc('__dyn_get_expr')
+          access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+        }
       }
     }
     return typed(['if', ['result', 'f64'],

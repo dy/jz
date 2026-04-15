@@ -49,6 +49,98 @@ test('spread: [...a, 99]', () => {
   is(f(), 99)
 })
 
+test('in: array numeric index exists', () => {
+  const { f } = run(`export let f = () => {
+    let list = [7]
+    return 0 in list
+  }`)
+  is(f(), 1)
+})
+
+test('in: array alias table resolves numeric membership', () => {
+  const { f } = run(`export let f = () => {
+    let list = [7]
+    list['$>'] = 0
+    let n = list['$>']
+    return n in list ? n : -1
+  }`)
+  is(f(), 0)
+})
+
+test('spread: preserves left-to-right evaluation order', () => {
+  const { f } = run(`export let f = () => {
+    let idx = "$>"
+    let side = () => { idx = 0/0; return [] }
+    let code = [[idx, [], []], ...side()]
+    return code[0][0] === "$>"
+  }`)
+  is(f(), 1)
+})
+
+test('for-in: compile-time unroll clones body per key', () => {
+  const { f } = run(`export let f = () => {
+    let section = {tag: 13, code: 10}
+    let ctx = []
+    for (let kind in section) {
+      ;(ctx[section[kind]] = ctx[kind] = []).name = kind
+    }
+    return (ctx.tag !== ctx.code) + (ctx.tag.name == "tag") + (ctx.code.name == "code")
+  }`)
+  is(f(), 3)
+})
+
+test('array methods: chained receiver evaluates once', () => {
+  const { f } = run(`export let f = () => {
+    let arr = [['func']]
+    let a = 0, b = 0
+    arr.filter((n) => {
+      let kind = n[0]
+      if (kind == 'func') a += 1
+      if (kind == 'tag') a += 2
+      return true
+    }).forEach((n) => {
+      let kind = n[0]
+      if (kind == 'func') b += 1
+      if (kind == 'tag') b += 2
+    })
+    return a * 10 + b
+  }`)
+  is(f(), 11)
+})
+
+test('callbacks: captured arrays keep dynamic properties', () => {
+  const { f } = run(`export let f = () => {
+    let section = {func: 3, code: 10, tag: 13}
+    let ctx = []
+    let seq = [['func']]
+    let seen = 0
+    for (let kind in section) (ctx[section[kind]] = ctx[kind] = []).name = kind
+    seq.forEach((n) => {
+      if (n[0] == 'func') seen += (ctx.code === ctx[10]) * 10 + (ctx.tag === ctx[13])
+    })
+    return seen
+  }`)
+  is(f(), 11)
+})
+
+test('callbacks: captured arrays support computed dynamic keys', () => {
+  const { f } = run(`export let f = () => {
+    let section = {func: 3, code: 10, tag: 13}
+    let ctx = []
+    let seq = [['func']]
+    let seen = 0
+    for (let kind in section) (ctx[section[kind]] = ctx[kind] = []).name = kind
+    seq.forEach((n) => {
+      let kind = n[0]
+      let items = ctx[kind]
+      items.push(1)
+      seen += (ctx[3].length == 1) * 100 + (ctx.func.length == 1) * 10 + (items.length == 1)
+    })
+    return seen
+  }`)
+  is(f(), 111)
+})
+
 // === TypedArrays ===
 
 test('Float64Array: create + length', () => {

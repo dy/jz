@@ -2,7 +2,7 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -78,6 +78,100 @@ test('array: write preserves other elements', () => {
     return a[0] + a[2]
   }`)
   is(f(), 4)  // 1 + 3, a[1] changed but 0 and 2 untouched
+})
+
+test('array: growth preserves direct alias reads', () => {
+  const { f } = run(`export let f = () => {
+    let a = [7]
+    let b = a
+    a.push(1, 2, 3, 4)
+    return [b.length, b[0], b[4]]
+  }`)
+  is(f()[0], 5)
+  is(f()[1], 7)
+  is(f()[2], 4)
+})
+
+test('array: dynamic string key write/read', () => {
+  const { f } = run(`export let f = () => {
+    let a = []
+    let k = 'name'
+    a[k] = 7
+    return a[k]
+  }`)
+  is(f(), 7)
+})
+
+test('array: static write visible via dynamic key', () => {
+  const { f } = run(`export let f = () => {
+    let a = []
+    let k = 'name'
+    a.name = 7
+    return [a.name, a[k]]
+  }`)
+  is(f()[0], 7)
+  is(f()[1], 7)
+})
+
+test('array: dynamic write visible via static key', () => {
+  const { f } = run(`export let f = () => {
+    let a = []
+    let k = 'name'
+    a.name = 1
+    a[k] = 8
+    return a.name
+  }`)
+  is(f(), 8)
+})
+
+test('array: nested property writes on array-valued props', () => {
+  const { f } = run(`export let f = () => {
+    let ctx = []
+    ctx.meta = []
+    ctx.meta.name = 9
+    return ctx.meta.name
+  }`)
+  is(f(), 9)
+})
+
+test('array: mixed numeric and string keys stay coherent', () => {
+  const { f } = run(`export let f = () => {
+    let a = []
+    a[0] = []
+    a[0].name = 6
+    a.name = a[0]
+    return a.name.name
+  }`)
+  is(f(), 6)
+})
+
+test('array: growth inside helper preserves caller view', () => {
+  const { f } = run(`
+    let grow = (a) => a.push(1, 2, 3, 4)
+    export let f = () => {
+      let a = [7]
+      grow(a)
+      return [a.length, a[0], a[4]]
+    }
+  `)
+  is(f()[0], 5)
+  is(f()[1], 7)
+  is(f()[2], 4)
+})
+
+test('array: growth inside helper preserves nested aliases', () => {
+  const { f } = run(`
+    let grow = (a) => a.push(1, 2, 3, 4)
+    export let f = () => {
+      let a = [7]
+      let box = [a]
+      grow(a)
+      return [box[0].length, box[0][0], box[0][4]]
+    }
+  `)
+  is(f()[0], 5)
+  is(f()[1], 7)
+  is(f()[2], 4)
 })
 
 // --- Loops ---
@@ -335,25 +429,23 @@ test('mixed: nested function calls', () => {
 })
 
 // ============================================
-// String indexing (charCodeAt)
+// String indexing (returns single-char string)
 // ============================================
 
-test('string: SSO [i] charCodeAt', () => {
-  // "hi"[0] = 'h' = 104, [1] = 'i' = 105
-  const { f } = run('export let f = (i) => { let s = "hi"; return s[i] }')
-  is(f(0), 104)
-  is(f(1), 105)
+test('string: SSO [i] returns char string', () => {
+  const { f } = jz('export let f = (i) => { let s = "hi"; return s[i] }').exports
+  is(f(0), 'h')
+  is(f(1), 'i')
 })
 
-test('string: heap [i] charCodeAt', () => {
-  // "hello world"[0] = 'h' = 104, [6] = 'w' = 119
-  const { f } = run('export let f = (i) => { let s = "hello world"; return s[i] }')
-  is(f(0), 104)
-  is(f(6), 119)
+test('string: heap [i] returns char string', () => {
+  const { f } = jz('export let f = (i) => { let s = "hello world"; return s[i] }').exports
+  is(f(0), 'h')
+  is(f(6), 'w')
 })
 
 test('string: literal [i]', () => {
-  is(run('export let f = () => "abc"[1]').f(), 98)  // 'b' = 98
+  is(jz('export let f = () => "abc"[1]').exports.f(), 'b')
 })
 
 // ============================================
@@ -500,6 +592,35 @@ test('array: push many beyond initial cap', () => {
     return a.length + a[7]
   }`)
   is(f(), 16)  // length=8, a[7]=8
+})
+
+test('array: out-of-range read returns undefined', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1]
+    return a[1]
+  }`)
+  ok(Number.isNaN(f()))
+})
+
+test('array: split missing item is undefined', () => {
+  const { f } = run(`export let f = () => "unreachable".split(" ")[1]`)
+  ok(Number.isNaN(f()))
+})
+
+test('array: truthy with ||', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1]
+    return (a || [2])[0]
+  }`)
+  is(f(), 1)
+})
+
+test('array: truthy with &&', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1]
+    return (a && [2])[0]
+  }`)
+  is(f(), 2)
 })
 
 test('array: pop on single element', () => {

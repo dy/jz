@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, UNDEF_NAN } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -17,6 +17,7 @@ const ELEM = {
   Int16Array: 2, Uint16Array: 3,
   Int32Array: 4, Uint32Array: 5,
   Float32Array: 6, Float64Array: 7,
+  BigInt64Array: 7, BigUint64Array: 7,
 }
 const STRIDE = [1, 1, 2, 2, 4, 4, 4, 8]
 const SHIFT = [0, 0, 1, 1, 2, 2, 2, 3]
@@ -199,7 +200,10 @@ export default () => {
   // Constructor: new Float64Array(len) or new Uint8Array(buffer, offset, len)
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType]
-    ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => { console.log(`NEW ${name} len=${JSON.stringify(lenExpr)} off=${JSON.stringify(offsetExpr)} len2=${JSON.stringify(lenExpr2)}`);
+    ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
+      const srcType = typeof lenExpr === 'string'
+        ? (ctx.func.valTypes?.get(lenExpr) || ctx.scope.globalValTypes?.get(lenExpr))
+        : valTypeOf(lenExpr)
       // View on existing buffer: TypedArray(buffer, offset, len) → typed ptr at buffer+offset
       if (offsetExpr != null && lenExpr2 != null) {
         const buf = ['call', '$__ptr_offset', asF64(emit(lenExpr))]  // extract i32 offset from f64 ptr
@@ -213,9 +217,31 @@ export default () => {
           ['i32.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 4]], len],
           ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
       }
-      // Single arg: if source is known array type, use .from() conversion
-      if (typeof lenExpr === 'string' && ctx.func.valTypes?.get(lenExpr) === 'array' && ctx.core.emit[`${name}.from`])
+      // Single arg array-like source: copy elements instead of treating the pointer as a length.
+      if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
         return ctx.core.emit[`${name}.from`](lenExpr)
+      if (srcType == null && ctx.core.emit[`${name}.from`]) {
+        const src = `${T}ts${ctx.func.uniq++}`
+        ctx.func.locals.set(src, 'f64')
+        const len = asI32(typed(['local.get', `$${src}`], 'f64'))
+        const out = `${T}ta${ctx.func.uniq++}`
+        ctx.func.locals.set(out, 'i32')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${src}`, asF64(emit(lenExpr))],
+          ['if', ['result', 'f64'],
+            ['i32.and',
+              ['f64.ne', ['local.get', `$${src}`], ['local.get', `$${src}`]],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]]],
+            ['then', ctx.core.emit[`${name}.from`](src)],
+            ['else', ['block', ['result', 'f64'],
+              ['local.set', `$${out}`, ['call', '$__alloc_hdr', len, len, ['i32.const', stride]]],
+              ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]]]]], 'f64')
+      }
+      // Single arg buffer/view: TypedArray(buffer) → reinterpret same memory with new element type
+      if (srcType === VAL.TYPED || (Array.isArray(lenExpr) && lenExpr[0] === '.')) {
+        return typed(['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType],
+          ['call', '$__ptr_offset', asF64(emit(lenExpr))]], 'f64')
+      }
       // Normal: allocate fresh typed array (lenExpr is numeric size)
       const len = asI32(emit(lenExpr))
       const t = `${T}ta${ctx.func.uniq++}`
@@ -336,27 +362,34 @@ export default () => {
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride
   ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $off i32) (local $et i32)
+    (local $off i32) (local $et i32) (local $len i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-      (then
-        (local.set $et (call $__ptr_aux (local.get $ptr)))
-        (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
-          (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-            (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-            (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-          (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
-            (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
-              (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
-              (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
-            (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
-              (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
-                (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
-              (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
-                (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
-                (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
-      (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))`
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (else
+        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+          (then
+            (local.set $et (call $__ptr_aux (local.get $ptr)))
+            (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
+              (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
+                (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+                (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+              (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
+                (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                  (then (f64.convert_i32_u (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))
+                  (else (f64.convert_i32_s (i32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
+                (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 2))
+                  (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load16_u (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))
+                    (else (f64.convert_i32_s (i32.load16_s (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))))))))
+                  (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
+                    (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
+          (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, idx) => {

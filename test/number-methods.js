@@ -93,6 +93,18 @@ test('Number: String(42)', () => {
   is(run(`export let f = () => String(42).length`).f(), 2)
 })
 
+test('Number: unary plus string coerces', () => {
+  is(run(`export let f = () => +"0"`).f(), 0)
+})
+
+test('Number: unary plus variable string coerces', () => {
+  is(run(`export let f = () => { let s = "12"; return +s + 1 }`).f(), 13)
+})
+
+test('Number: Number(string) coerces', () => {
+  is(run(`export let f = () => Number("7.5")`).f(), 7.5)
+})
+
 test('Number: String(0)', () => {
   is(run(`export let f = () => String(0).length`).f(), 1)
 })

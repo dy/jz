@@ -1,7 +1,7 @@
 // Phase 1: Block bodies, control flow, statements
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 
 function run(code, opts) {
@@ -86,6 +86,10 @@ test('assignment: &&= on falsy', () => {
   is(run('export let f = () => { let a = 0; a &&= 42; return a }').f(), 0)
 })
 
+test('assignment: ??= on uninitialized local', () => {
+  is(run('export let f = () => { let a; a ??= 42; return a }').f(), 42)
+})
+
 // === Comma operator ===
 
 test('comma: returns last value', () => {
@@ -141,6 +145,17 @@ test('Number(): identity', () => {
 
 test('Error(): throw', () => {
   throws(() => run('export let f = () => { throw Error("test") }').f())
+})
+
+test('Error(): throw surfaces readable message', () => {
+  let error
+  try {
+    jz('export let f = () => { throw Error("test") }').exports.f()
+  } catch (caught) {
+    error = caught
+  }
+  ok(error instanceof Error)
+  is(error.message, 'test')
 })
 
 // === Auto-boxing: property assignment ===

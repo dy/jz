@@ -10,7 +10,7 @@
  * @module string
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, UNDEF_NAN } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -61,6 +61,37 @@ export default () => {
     (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.SSO}))
       (then (call $__sso_char (local.get $ptr) (local.get $i)))
       (else (call $__str_char (local.get $ptr) (local.get $i)))))`
+
+  ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr f64) (param $i i32) (result f64)
+    (local $len i32)
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (else
+        (call $__mkptr
+          (i32.const ${PTR.SSO})
+          (i32.const 1)
+          (call $__char_at (local.get $ptr) (local.get $i))))))`
+
+  ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
+    (local $len i32) (local $i i32)
+    (if (i64.eq (i64.reinterpret_f64 (local.get $a)) (i64.reinterpret_f64 (local.get $b)))
+      (then (return (i32.const 1))))
+    (local.set $len (call $__str_byteLen (local.get $a)))
+    (if (i32.ne (local.get $len) (call $__str_byteLen (local.get $b)))
+      (then (return (i32.const 0))))
+    (local.set $i (i32.const 0))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
+                  (call $__char_at (local.get $b) (local.get $i)))
+        (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (i32.const 1))`
 
   // === WAT: unified byte length (SSO → aux, heap → header) ===
 
