@@ -36,10 +36,9 @@ export const ctx = {
   transform: {},  // Transform State
 }
 
-/** Create a child scope that falls back to parent on lookup (replaces Object.create).
- *  Uses Object.create for now — the only non-jz-compatible construct in the codebase.
- *  To self-compile: replace with plain object + explicit lookup function. */
-export const derive = (parent) => Object.create(parent)
+/** Create a child scope via shallow flat copy (metacircular-safe: no prototype chain).
+ *  Mutations to the child do not affect the parent; lookups work via direct property access. */
+export const derive = (parent) => ({ ...parent })
 
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))

@@ -221,11 +221,14 @@ export default () => {
       if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
         return ctx.core.emit[`${name}.from`](lenExpr)
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
+        // Runtime dispatch: if src is a NaN-boxed array pointer copy elements, else treat as length.
+        // Pre-emit src once into an f64 local; .from() reads the same local via its name.
         const src = `${T}ts${ctx.func.uniq++}`
         ctx.func.locals.set(src, 'f64')
-        const len = asI32(typed(['local.get', `$${src}`], 'f64'))
         const out = `${T}ta${ctx.func.uniq++}`
+        const len = `${T}tl${ctx.func.uniq++}`
         ctx.func.locals.set(out, 'i32')
+        ctx.func.locals.set(len, 'i32')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['if', ['result', 'f64'],
@@ -234,7 +237,9 @@ export default () => {
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]]],
             ['then', ctx.core.emit[`${name}.from`](src)],
             ['else', ['block', ['result', 'f64'],
-              ['local.set', `$${out}`, ['call', '$__alloc_hdr', len, len, ['i32.const', stride]]],
+              ['local.set', `$${len}`, ['i32.trunc_sat_f64_s', ['local.get', `$${src}`]]],
+              ['local.set', `$${out}`, ['call', '$__alloc_hdr',
+                ['local.get', `$${len}`], ['local.get', `$${len}`], ['i32.const', stride]]],
               ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]]]]], 'f64')
       }
       // Single arg buffer/view: TypedArray(buffer) → reinterpret same memory with new element type

@@ -2,7 +2,8 @@
  * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
  * Core abstraction: emitter table (ctx.core.emit) maps AST ops → WASM nodes.
- * Base operators defined in `emitter` export, modules extend via prototype chain.
+ * Base operators defined in `emitter` export; on reset, ctx.core.emit starts as a flat copy
+ * of emitter and modules add/override entries directly. No prototype chain.
  * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.core.emit[op].
  *
  * Type system: every emitted node carries .type ('i32' | 'f64').
@@ -154,11 +155,9 @@ export function temp() {
 // === Variable storage abstraction ===
 // Centralizes the boxed/global/local 3-way dispatch (used by =, ++/--, +=, etc.)
 
-/** Get i32 memory address for a boxed variable's cell. Handles f64→i32 conversion for closure captures. */
+/** Get i32 memory address for a boxed variable's cell. Cell locals are always i32. */
 function boxedAddr(name) {
-  const c = `$${ctx.func.boxed.get(name)}`
-  const ct = ctx.func.locals?.get(ctx.func.boxed.get(name)) || 'i32'
-  return ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', c]] : ['local.get', c]
+  return ['local.get', `$${ctx.func.boxed.get(name)}`]
 }
 
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get. */
@@ -1053,11 +1052,10 @@ export default function compile(ast) {
       // Params are locals unpacked from args array
       for (const p of cb.params) ctx.func.locals.set(p, 'f64')
 
-      // Register captured variable locals (i32 for boxed = cell pointer, f64 otherwise)
+      // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
       for (let i = 0; i < cb.captures.length; i++) {
         const name = cb.captures[i]
-        // All captures are f64 — boxed ones store cell pointer as f64 (convert to i32 on use)
-        ctx.func.locals.set(name, 'f64')
+        ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
       }
 
       // Emit body
@@ -1073,11 +1071,11 @@ export default function compile(ast) {
       // Insert locals (captures + params + declared)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
-      // Load captures from env (cell pointer for boxed, value for immutable)
+      // Load captures from env: boxed → i32.trunc_f64_u (cell pointer), immutable → f64 value
       for (let i = 0; i < cb.captures.length; i++) {
         const name = cb.captures[i]
         const loadEnv = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', '$__env']], ['i32.const', i * 8]]]
-        fn.push(['local.set', `$${name}`, loadEnv])
+        fn.push(['local.set', `$${name}`, ctx.func.boxed.has(name) ? ['i32.trunc_f64_u', loadEnv] : loadEnv])
       }
 
       // Unpack params from args array (rest param: pass whole array)
@@ -1323,7 +1321,8 @@ function emitBody(node) {
 
 /**
  * Core emitter table. Maps AST ops to WASM IR generators.
- * Modules extend ctx.core.emit (inherits from emitter) for custom ops.
+ * ctx.core.emit is seeded with a flat copy of this object on reset;
+ * modules add or override ops on ctx.core.emit directly.
  * @type {Record<string, (...args: any[]) => Array>}
  */
 /** Comparison op factory with constant folding. */
@@ -1487,11 +1486,7 @@ export const emitter = {
       const va = emit(arr), vi = asI32(emit(idx)), vv = valueExpr, t = temp()
       if (typeof arr === 'string' && (ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr)) === VAL.ARRAY) {
         const persist = ptr => {
-          if (ctx.func.boxed?.has(arr)) {
-            const cell = `$${ctx.func.boxed.get(arr)}`
-            const ct = ctx.func.locals?.get(ctx.func.boxed.get(arr)) || 'i32'
-            return ['f64.store', ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', cell]] : ['local.get', cell], ptr]
-          }
+          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
           if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
           return ['local.set', `$${arr}`, ptr]
         }

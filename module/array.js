@@ -374,8 +374,7 @@ export default () => {
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
       if (ctx.func.boxed?.has(arr)) {
-        const cell = `$${ctx.func.boxed.get(arr)}`, ct = ctx.func.locals?.get(ctx.func.boxed.get(arr)) || 'i32'
-        body.push(['f64.store', ct === 'f64' ? ['i32.trunc_f64_u', ['local.get', cell]] : ['local.get', cell], ['local.get', `$${t}`]])
+        body.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(arr)}`], ['local.get', `$${t}`]])
       }
       else if (ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr))
         body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])

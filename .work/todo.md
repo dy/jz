@@ -1,3 +1,14 @@
+### Cleanup
+
+* [x] **Boxed capture i32/f64 mismatch** — established contract: cell locals are always `i32` in outer scope, packed with `f64.convert_i32_u` into env, unpacked with `i32.trunc_f64_u` on closure entry. `boxedAddr()` simplified.
+* [x] **`Uint8Array(arr)` double-emit** — src pre-emitted into f64 local once, both branches read from it.
+* [x] **Emitter prototype chain** — replaced `Object.create` with flat spread copy in `derive()`. Module inits only register (don't read) at init time, so semantically identical and metacircular-safe.
+* [x] **Schema structural subtyping silent fallback** — documented 3 return-cases; ambiguous offset across schemas correctly routes to dynamic lookup (handled by `__dyn_get_expr`).
+* [x] **`prepare()` god pass** — header enumerates 6 concerns; extracted `inferAssignSchema` helper.
+* [x] **Module registration ordering** — `MOD_DEPS` / `includeModule` comments clarify these are auto-inclusion not strict ordering; emitters looked up lazily at emit time.
+* [x] **`jzify` `swIdx` not reset** — reset at start of `jzify()` per compilation.
+* [x] **research.md NaN-boxing table** — HASH row added for type=7; "free slots" count updated.
+
 
 ### Build & tooling
 
@@ -24,7 +35,6 @@
 - Extract minimal jz parser from subscript features
 - jzify uses jessie, pure jz uses internal parser
 - True metacircular bootstrap
-- **Risk**: High, multi-sprint
 
 
 ### Validation & quality

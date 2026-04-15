@@ -1,15 +1,16 @@
 /**
- * AST preparation: normalize, validate, analyze in single pass.
+ * AST preparation: single-pass traversal that validates, resolves, and normalizes.
  *
- * Responsibilities:
- * - Validate: reject prohibited features (this, class, async, var...)
- * - Resolve: Math.sin → math.sin, import bindings → module.name
- * - Extract: arrow functions → ctx.func.list with sig (params, results)
- * - Normalize: ++/-- → +=/-=, unary ± disambiguation, for head flattening
- * - Auto-import: Math/Array/etc usage triggers module loading
+ * Distinct concerns, applied per-node via a handler table:
+ *   1. Validate      — reject prohibited features (this, class, async, var, delete, ...)
+ *   2. Resolve       — scope chain + import bindings (Math.sin → math.sin, etc.)
+ *   3. Extract       — arrow functions → ctx.func.list with sig
+ *   4. Normalize     — ++/-- → +=/-=, unary ± disambiguation, for-head flattening
+ *   5. Auto-import   — Math/Array/etc usage triggers includeModule(...)
+ *   6. Track schemas — object literals, Object.assign inference (inferAssignSchema)
  *
- * Handler table mirrors compile's emitter table — same dispatch pattern.
- * Unhandled ops fall through to recursive prep of children.
+ * Each handler may touch multiple concerns, but helpers keep each concern self-contained.
+ * Unhandled ops fall through to recursive prep() of their children.
  *
  * @module prepare
  */
@@ -692,31 +693,7 @@ const handlers = {
     }
     const result = ['()', callee, ...preppedArgs]
 
-    if (callee === 'Object.assign' && ctx.schema.register) {
-
-      // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
-      let assignArgs = result.slice(2)
-      if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
-        assignArgs = assignArgs[0].slice(1)
-      const [target, ...sources] = assignArgs
-      if (typeof target === 'string') {
-        const existingId = ctx.schema.vars.get(target)
-        const merged = existingId != null ? [...ctx.schema.list[existingId]] : []
-        for (const src of sources) {
-          // Source is object literal: extract props directly
-          let srcProps
-          if (Array.isArray(src) && src[0] === '{}')
-            srcProps = src.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-          // Source is variable with known schema
-          else if (typeof src === 'string') {
-            const srcId = ctx.schema.vars.get(src)
-            if (srcId != null) srcProps = ctx.schema.list[srcId]
-          }
-          if (srcProps) for (const p of srcProps) if (!merged.includes(p)) merged.push(p)
-        }
-        if (merged.length) ctx.schema.vars.set(target, ctx.schema.register(merged))
-      }
-    }
+    if (callee === 'Object.assign' && ctx.schema.register) inferAssignSchema(result)
 
     return result
   },
@@ -873,6 +850,10 @@ const handlers = {
 
 // Namespace → module mapping (namespaces that share a module)
 const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
+/** Auto-inclusion graph: loading a module also loads its listed prerequisites.
+ *  Not a strict ordering: module init() functions only register emitters/stdlib entries,
+ *  so relative init order does not affect correctness — emitters are looked up lazily
+ *  at compile time. Cycles (e.g. number ↔ string) are broken via the in-progress guard. */
 const MOD_DEPS = {
   number: ['core', 'string'],
   string: ['core', 'number'],
@@ -887,14 +868,38 @@ const MOD_DEPS = {
 
 const includeMods = (...names) => names.forEach(includeModule)
 
+/** Register a module and its transitive deps. Idempotent; cycle-safe via early-mark. */
 function includeModule(name) {
   const modName = MOD_ALIAS[name] || name
   const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
   if (ctx.module.modules[modName]) return
-  ctx.module.modules[modName] = true  // guard before deps (prevents circular)
+  ctx.module.modules[modName] = true  // mark before deps so cycles terminate
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
   init(ctx)
+}
+
+/** Merge source schemas into target via Object.assign for compile-time schema inference. */
+function inferAssignSchema(callNode) {
+  // After prep, args may be comma-grouped: ['()', callee, [',', target, s1, s2]]
+  let assignArgs = callNode.slice(2)
+  if (assignArgs.length === 1 && Array.isArray(assignArgs[0]) && assignArgs[0][0] === ',')
+    assignArgs = assignArgs[0].slice(1)
+  const [target, ...sources] = assignArgs
+  if (typeof target !== 'string') return
+  const existingId = ctx.schema.vars.get(target)
+  const merged = existingId != null ? [...ctx.schema.list[existingId]] : []
+  for (const src of sources) {
+    let srcProps
+    if (Array.isArray(src) && src[0] === '{}')
+      srcProps = src.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+    else if (typeof src === 'string') {
+      const srcId = ctx.schema.vars.get(src)
+      if (srcId != null) srcProps = ctx.schema.list[srcId]
+    }
+    if (srcProps) for (const p of srcProps) if (!merged.includes(p)) merged.push(p)
+  }
+  if (merged.length) ctx.schema.vars.set(target, ctx.schema.register(merged))
 }
 
 function defFunc(name, node) {

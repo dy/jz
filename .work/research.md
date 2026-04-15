@@ -232,7 +232,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   | 4 | STRING | 0 | data start | `[-4:len(i32)][chars:u8...]` |
   | 5 | STRING_SSO | len | packed chars | none (≤4 ASCII inline) |
   | 6 | OBJECT | schemaId | data start | `[prop0:f64, prop1:f64, ...]` |
-  | 7 | (free) | | | |
+  | 7 | HASH | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` (string-keyed, FNV-1a) |
   | 8 | SET | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
   | 9 | MAP | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
   | 10 | CLOSURE | funcIdx | env start | `[env0:f64, env1:f64, ...]` |
@@ -244,7 +244,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   - **One layout per type** — no flags, no subtypes. "Parse, don't validate" for pointers.
   - **Heap length** — mutable len/cap in memory header. Aliases see mutations. C-style.
   - ATOM/STRING_SSO need zero memory allocation
-  - 4 free slots for future (Promise, Iterator, ArrayBuffer, etc)
+  - 5 free slots remaining for future (Promise, Iterator, ArrayBuffer, etc)
 
   **vs Go/Rust**: Go/Rust are statically typed — no runtime type bits needed. jz needs them
   because a single f64 param could be number/array/string/object (JS polymorphism).

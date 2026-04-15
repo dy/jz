@@ -23,6 +23,7 @@
  * @returns {Array} Transformed AST
  */
 export default function jzify(ast) {
+  swIdx = 0
   return transformScope(ast)
 }
 
