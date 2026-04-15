@@ -75,7 +75,7 @@ test('nan-box: ARRAY (type=1, inline len)', () => {
   is(t, 1); is(a, 100); is(o, 2048)
 })
 
-test('nan-box: ARRAY_HEAP (type=2)', () => {
+test('nan-box: BUFFER (type=2)', () => {
   const { f } = run(`export let f = () => {
     let a = [0]
     let p = __mkptr(2, 0, 4096)
@@ -157,7 +157,7 @@ test('nan-box: CLOSURE (type=10)', () => {
   is(t, 10); is(a, 255); is(o, 8000)
 })
 
-test('nan-box: REGEX (type=11)', () => {
+test('nan-box: EXTERNAL (type=11)', () => {
   const { f } = run(`export let f = () => {
     let a = [0]
     return __ptr_type(__mkptr(11, 67, 0))

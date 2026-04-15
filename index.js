@@ -114,6 +114,16 @@ jz.mem = (src) => {
       return jz.ptr(4, 0, off)
     },
 
+    // Buffer (ArrayBuffer): [-8:byteLen][-4:byteCap][bytes...]
+    Buffer(data) {
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
+        : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new Uint8Array(data)
+      const n = bytes.length, off = hdr(n, n, n), m = new Uint8Array(memory.buffer)
+      m.set(bytes, off)
+      return jz.ptr(2, 0, off)
+    },
+
     // Object: [prop0:f64, prop1:f64, ...] — schema matched by key identity
     // Exact key-order match preferred; set-based fallback only if unambiguous
     wrapVal(v) {
@@ -121,6 +131,8 @@ jz.mem = (src) => {
       if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
       if (typeof v === 'string') return mem.String(v)
       if (Array.isArray(v)) return mem.Array(v)
+      if (v instanceof ArrayBuffer) return mem.Buffer(v)
+      if (v instanceof DataView) return mem.Buffer(v.buffer)
       const typedName = v?.constructor?.name
       if (typedName && ELEMS[typedName]) return mem[typedName](v)
       if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
@@ -130,7 +142,7 @@ jz.mem = (src) => {
       if (obj === null || obj === undefined) return memCoerce(obj)
       let id = src.extMap.indexOf(obj)
       if (id === -1) { id = src.extMap.length; src.extMap.push(obj) }
-      return jz.ptr(2, 0, id)
+      return jz.ptr(11, 0, id)
     },
 
     Object(obj) {
@@ -163,16 +175,32 @@ jz.mem = (src) => {
       const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
       if (type === 0 && aux === 1 && off === 0) return null       // NULL_NAN → JS null
       if (type === 0 && aux === 0 && off === 1) return undefined  // UNDEF_NAN → JS undefined
-      if (type === 2 && src.extMap) return src.extMap[off]
+      if (type === 11 && src.extMap) return src.extMap[off]
       if (type === 1) {  // ARRAY
         const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
         for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
         return out
       }
-      if (type === 3) {  // TYPED → return native JS typed array (zero-copy view)
-        const elem = jz.aux(ptr), len = dv().getInt32(off - 8, true)
+      if (type === 3) {  // TYPED → native JS typed array (zero-copy view).
+        // aux bit 3 = subview: offset points to 16-byte descriptor
+        //   [0:byteLen][4:dataOff][8:parentOff][12:pad]
+        // aux bits 0-2 = elemType. Owned TYPED: byteLen at [off-8], data at off.
+        const aux = jz.aux(ptr), elem = aux & 7
+        const [, stride] = ELEM_BY_ID[elem]
         const Ctor = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
-        return new Ctor(exports.memory.buffer, off, len)
+        const m = dv()
+        if (aux & 8) {
+          const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
+          return new Ctor(exports.memory.buffer, dataOff, byteLen / stride)
+        }
+        const byteLen = m.getInt32(off - 8, true)
+        return new Ctor(exports.memory.buffer, off, byteLen / stride)
+      }
+      if (type === 2) {  // BUFFER → fresh ArrayBuffer copy
+        const byteLen = dv().getInt32(off - 8, true)
+        const out = new ArrayBuffer(byteLen)
+        new Uint8Array(out).set(new Uint8Array(exports.memory.buffer, off, byteLen))
+        return out
       }
       if (type === 4) {  // STRING (heap)
         const len = dv().getInt32(off - 4, true)
@@ -234,11 +262,20 @@ jz.mem = (src) => {
         m.setInt32(off - 8, data.length, true)
         for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
       } else if (type === 3) {
-        const elem = jz.aux(ptr), cap = m.getInt32(off - 4, true)
+        const aux = jz.aux(ptr), elem = aux & 7
         const [, stride, , setter] = ELEM_BY_ID[elem]
-        if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
-        m.setInt32(off - 8, data.length, true)
-        for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
+        const byteLen = data.length * stride
+        if (aux & 8) {
+          // View: fixed-size window into parent. byteLen at descriptor[0], data at descriptor[4].
+          const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
+          if (byteLen > viewByteLen) throw Error(`write: ${byteLen} bytes exceeds view size ${viewByteLen}`)
+          for (let i = 0; i < data.length; i++) m[setter](dataOff + i * stride, data[i], true)
+        } else {
+          const byteCap = m.getInt32(off - 4, true)
+          if (byteLen > byteCap) throw Error(`write: ${byteLen} bytes exceeds capacity ${byteCap}`)
+          m.setInt32(off - 8, byteLen, true)
+          for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
+        }
       } else if (type === 6) {
         const schema = schemas[jz.aux(ptr)]
         if (!schema) throw Error(`write: unknown schema`)
@@ -257,9 +294,10 @@ jz.mem = (src) => {
   }
 
   // TypedArray constructors: m.Float64Array(data), m.Int32Array(data), etc.
+  // Header stores byteLen (shared with BUFFER headers for zero-copy aliasing).
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
     mem[name] = (data) => {
-      const n = data.length, off = hdr(n, n, n * stride), m = dv()
+      const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes), m = dv()
       for (let i = 0; i < n; i++) m[setter](off + i * stride, data[i], true)
       return jz.ptr(3, elemId, off)
     }
@@ -386,7 +424,7 @@ jz.instantiate = (code, opts = {}) => {
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
         let id = extMap.indexOf(host); if (id === -1) { id = extMap.length; extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: true }, jz.ptr(2, 0, id))
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: true }, jz.ptr(11, 0, id))
       }
     }
   }

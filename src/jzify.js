@@ -142,8 +142,9 @@ function transform(node) {
     const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array',
       'Int16Array','Uint16Array','Int8Array','Uint8Array',
       'ArrayBuffer','BigInt64Array','BigUint64Array','DataView']
-    // Keep new for TypedArrays and ArrayBuffer
-    if (typeof ctor === 'string' && typedArrays.includes(ctor)) return [op, ...args.map(transform)]
+    // Keep new for TypedArrays and ArrayBuffer — handle both string and ['()', name, ...] ctor forms
+    const ctorName = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+    if (typeof ctorName === 'string' && typedArrays.includes(ctorName)) return [op, ...args.map(transform)]
     // Strip new for others: new X(args) → X(args)
     // ctor is already ['()', name, args] from the parser, just transform it
     if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)

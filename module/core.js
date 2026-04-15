@@ -163,33 +163,78 @@ export default () => {
 
   // === Memory-based length/cap helpers (C-style headers) ===
 
-  // Array/TypedArray: [-8:len(i32)][-4:cap(i32)][data...]
+  // Array/TypedArray/Buffer: [-8:len(i32)][-4:cap(i32)][data...]
+  // For ARRAY/HASH/SET/MAP: len is element count.
+  // For BUFFER: len is byte count. For owned TYPED: header stores byte count; len
+  // is derived as byteLen >> log2(stride) so reinterpret views share their parent
+  // BUFFER's header (zero-copy aliasing).
+  // For TYPED subviews (aux bit 3 set): offset points to a 16-byte descriptor
+  //   [0:byteLen(i32)][4:dataOff(i32)][8:parentOff(i32)][12:pad]
+  // elemType = aux & 7, isView = aux & 8.
+  ctx.core.stdlib['__typed_shift'] = `(func $__typed_shift (param $et i32) (result i32)
+    (if (result i32) (i32.eq (local.get $et) (i32.const 7))
+      (then (i32.const 3))
+      (else (if (result i32) (i32.ge_u (local.get $et) (i32.const 4))
+        (then (i32.const 2))
+        (else (i32.shr_u (local.get $et) (i32.const 1)))))))`
+
+  // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
+  ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr f64) (result i32)
+    (local $off i32)
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (result i32) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8))
+      (then (i32.load (i32.add (local.get $off) (i32.const 4))))
+      (else (local.get $off))))`
+
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
-    (local $t i32) (local $off i32)
+    (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 8))
         (i32.or
-          (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+          (i32.or
+            (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+            (i32.eq (local.get $t) (i32.const ${PTR.BUFFER})))
           (i32.or (i32.eq (local.get $t) (i32.const 7))
             (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
-      (then (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (then
+        (if (result i32) (i32.eq (local.get $t) (i32.const 3))
+          (then
+            (local.set $aux (call $__ptr_aux (local.get $ptr)))
+            (if (result i32) (i32.and (local.get $aux) (i32.const 8))
+              (then (i32.shr_u (i32.load (local.get $off))
+                               (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
+              (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
+                               (call $__typed_shift (local.get $aux))))))
+          (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
       (else (i32.const 0))))`
 
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
-    (local $t i32) (local $off i32)
+    (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 4))
         (i32.or
-          (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+          (i32.or
+            (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
+            (i32.eq (local.get $t) (i32.const ${PTR.BUFFER})))
           (i32.or (i32.eq (local.get $t) (i32.const 7))
             (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
-      (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (then
+        (if (result i32) (i32.eq (local.get $t) (i32.const 3))
+          (then
+            (local.set $aux (call $__ptr_aux (local.get $ptr)))
+            (if (result i32) (i32.and (local.get $aux) (i32.const 8))
+              ;; views are non-growable: cap = len (byteLen at [off])
+              (then (i32.shr_u (i32.load (local.get $off))
+                               (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
+              (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 4)))
+                               (call $__typed_shift (local.get $aux))))))
+          (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))
       (else (i32.const 0))))`
 
   // String (heap): [-4:len(i32)][chars...]
@@ -279,7 +324,7 @@ export default () => {
       if (vt == null) {
         inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
         return typed(['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', asF64(va)], ['i32.const', 2]],
+          ['i32.eq', ['call', '$__ptr_type', asF64(va)], ['i32.const', PTR.EXTERNAL]],
           ['then', ['call', '$__hash_get', asF64(va), key]],
           ['else', ['call', '$__dyn_get_expr', asF64(va), key]]], 'f64')
       }
@@ -364,7 +409,7 @@ export default () => {
           } else if (objType == null) {
             inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
             access = ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', 2]],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.EXTERNAL]],
               ['then', ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]],
               ['else', ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]]]
           } else {

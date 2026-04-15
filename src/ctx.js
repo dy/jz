@@ -11,6 +11,7 @@
 export const PTR = {
   ATOM: 0,      // null, undefined, booleans
   ARRAY: 1,     // heap-allocated arrays
+  BUFFER: 2,    // ArrayBuffer: [-8:byteLen][-4:byteCap][bytes]
   TYPED: 3,     // TypedArrays (Float64Array, etc.)
   STRING: 4,    // heap-allocated strings
   SSO: 5,       // short string optimization (≤4 ASCII chars inline)
@@ -19,6 +20,7 @@ export const PTR = {
   SET: 8,       // Set collections
   MAP: 9,       // Map collections
   CLOSURE: 10,  // first-class functions
+  EXTERNAL: 11, // JS host object refs (aux=0, offset→extMap index)
 }
 
 // === Global context with nested sub-contexts ===
@@ -79,6 +81,13 @@ export const STDLIB_DEPS = {
   __str_join: ['__str_concat', '__to_str', '__str_byteLen'],
   __str_encode: ['__str_byteLen', '__char_at'],
   __str_to_buf: ['__str_byteLen', '__char_at'],
+
+  __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+  __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+  __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
+  __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
+  __typed_data: ['__ptr_offset', '__ptr_aux'],
+  __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
 
   __arr_idx: ['__len', '__ptr_offset'],
   __arr_grow: ['__dyn_move'],

@@ -145,10 +145,15 @@ function usesDynProps(vt) {
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
 }
 
-/** Allocate a temp local (always f64 for now), returns name without $. */
-export function temp() {
-  const name = `${T}${ctx.func.uniq++}`
+/** Allocate a temp local, returns name without $. Optional tag aids WAT readability. */
+export function temp(tag = '') {
+  const name = `${T}${tag}${ctx.func.uniq++}`
   ctx.func.locals.set(name, 'f64')
+  return name
+}
+export function tempI32(tag = '') {
+  const name = `${T}${tag}${ctx.func.uniq++}`
+  ctx.func.locals.set(name, 'i32')
   return name
 }
 
@@ -441,7 +446,7 @@ export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',
   OBJECT: 'object', SET: 'set', MAP: 'map',
   CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
-  BIGINT: 'bigint',
+  BIGINT: 'bigint', BUFFER: 'buffer',
 }
 
 /** Infer value type of an AST expression (without emitting). */
@@ -484,6 +489,8 @@ export function valTypeOf(expr) {
     if (typeof callee === 'string') {
       if (callee === 'new.Set') return VAL.SET
       if (callee === 'new.Map') return VAL.MAP
+      if (callee === 'new.ArrayBuffer') return VAL.BUFFER
+      if (callee === 'new.DataView') return VAL.BUFFER
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
@@ -520,8 +527,15 @@ function analyzeValTypes(body) {
   }
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && rhs[1].startsWith('new.'))
-      ctx.types.typedElem.set(name, rhs[1]) // e.g. 'new.Float64Array'
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && rhs[1].startsWith('new.')) {
+      // Multi-arg calls wrap args in a [',', ...] node. 3-arg form `new T(buf, off, len)`
+      // is a subview — mark with `.view` suffix so element access and .buffer/.byteOffset
+      // emit descriptor-aware code.
+      const args = rhs[2]
+      const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
+        && Array.isArray(args) && args[0] === ',' && args.length >= 4
+      ctx.types.typedElem.set(name, isView ? rhs[1] + '.view' : rhs[1])
+    }
   }
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -545,7 +559,7 @@ function analyzeValTypes(body) {
         if (vt) types.set(a[1], vt)
         else types.delete(a[1])
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
-        if (vt === VAL.TYPED) trackTyped(a[1], a[2])
+        if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
         propagateTyped(a[1], a[2])
       }
     }
@@ -554,7 +568,7 @@ function analyzeValTypes(body) {
       if (vt) types.set(args[0], vt)
       else types.delete(args[0])
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
-      if (vt === VAL.TYPED) trackTyped(args[0], args[1])
+      if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
     }
     // Track property assignments for auto-boxing: x.prop = val
@@ -2075,7 +2089,7 @@ export const emitter = {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${objTmp}`, asF64(emit(obj))],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', 2]],
+            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.EXTERNAL]],
             ['then', ['call', '$__ext_call', ['local.get', `$${objTmp}`], asF64(emit(['str', method])), arrayIR]],
             ['else', ctx.closure.call(propRead, [arrayIR], true)]]], 'f64')
       }

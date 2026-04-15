@@ -227,8 +227,8 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   |------|------|---------------|----------|---------------|
   | 0 | ATOM | kind | id | none |
   | 1 | ARRAY | 0 | data start | `[-8:len(i32)][-4:cap(i32)][elem0:f64, ...]` |
-  | 2 | (free) | | | |
-  | 3 | TYPED | elemType:3 | data start | `[-8:len(i32)][-4:cap(i32)][bytes...]` |
+  | 2 | BUFFER | 0 | bytes start | `[-8:byteLen(i32)][-4:byteCap(i32)][bytes...]` (ArrayBuffer / DataView passthrough) |
+  | 3 | TYPED | elemType:3 ∣ view:1 | data start / descriptor | **Owned** (`aux & 8 == 0`): `[-8:byteLen(i32)][-4:byteCap(i32)][bytes...]` — shares BUFFER header; `__len = byteLen >> log2(stride)`. Reinterpret `new T(buf)` is a zero-copy view (same offset, shared header). **Subview** (`aux & 8 == 8`, i.e. `new T(buf, off, len)`): offset points to 16-byte descriptor `[0:byteLen(i32)][4:dataOff(i32)][8:parentOff(i32)][12:pad]`. Reads/writes alias the parent; `.buffer = BUFFER@parentOff`, `.byteOffset = dataOff - parentOff`. |
   | 4 | STRING | 0 | data start | `[-4:len(i32)][chars:u8...]` |
   | 5 | STRING_SSO | len | packed chars | none (≤4 ASCII inline) |
   | 6 | OBJECT | schemaId | data start | `[prop0:f64, prop1:f64, ...]` |
@@ -236,7 +236,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   | 8 | SET | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
   | 9 | MAP | 0 | table start | `[-8:size(i32)][-4:cap(i32)][entries...]` |
   | 10 | CLOSURE | funcIdx | env start | `[env0:f64, env1:f64, ...]` |
-  | 11 | REGEX | flags | — | `[-8:lastIdx]` if g |
+  | 11 | EXTERNAL | 0 | extMap idx | none (host JS ref table) |
   | 12-15 | (free) | | | |
 
   Key properties:
@@ -244,7 +244,7 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   - **One layout per type** — no flags, no subtypes. "Parse, don't validate" for pointers.
   - **Heap length** — mutable len/cap in memory header. Aliases see mutations. C-style.
   - ATOM/STRING_SSO need zero memory allocation
-  - 5 free slots remaining for future (Promise, Iterator, ArrayBuffer, etc)
+  - 4 free slots remaining for future (Promise, Iterator, BigInt, etc)
 
   **vs Go/Rust**: Go/Rust are statically typed — no runtime type bits needed. jz needs them
   because a single f64 param could be number/array/string/object (JS polymorphism).

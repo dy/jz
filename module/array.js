@@ -8,15 +8,14 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, multiCount, materializeMulti } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, tempI32, multiCount, materializeMulti } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
 /** Allocate array: 8-byte header (len+cap) + n*8 data via __alloc_hdr. Returns offset to data start. */
 function allocArray(len, cap) {
   if (cap == null) cap = len
-  const t = `${T}arr${ctx.func.uniq++}`
-  ctx.func.locals.set(t, 'i32')
+  const t = tempI32('arr')
   return {
     local: t,
     setup: [
@@ -640,6 +639,11 @@ export default () => {
   }
 
   ctx.core.emit['.slice'] = (arr, start, end) => {
+    // BUFFER slice → byte-level copy handled in typedarray module.
+    if (typeof arr === 'string') {
+      const vt = ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr)
+      if (vt === 'buffer' && ctx.core.emit['.buf:slice']) return ctx.core.emit['.buf:slice'](arr, start, end)
+    }
     const recv = hoistArrayValue(arr)
     const vs = asI32(emit(start))
     const ve = end ? asI32(emit(end)) : ['call', '$__len', recv.value]

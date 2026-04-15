@@ -1,14 +1,26 @@
-### Cleanup
 
-* [x] **Boxed capture i32/f64 mismatch** — established contract: cell locals are always `i32` in outer scope, packed with `f64.convert_i32_u` into env, unpacked with `i32.trunc_f64_u` on closure entry. `boxedAddr()` simplified.
-* [x] **`Uint8Array(arr)` double-emit** — src pre-emitted into f64 local once, both branches read from it.
-* [x] **Emitter prototype chain** — replaced `Object.create` with flat spread copy in `derive()`. Module inits only register (don't read) at init time, so semantically identical and metacircular-safe.
-* [x] **Schema structural subtyping silent fallback** — documented 3 return-cases; ambiguous offset across schemas correctly routes to dynamic lookup (handled by `__dyn_get_expr`).
-* [x] **`prepare()` god pass** — header enumerates 6 concerns; extracted `inferAssignSchema` helper.
-* [x] **Module registration ordering** — `MOD_DEPS` / `includeModule` comments clarify these are auto-inclusion not strict ordering; emitters looked up lazily at emit time.
-* [x] **`jzify` `swIdx` not reset** — reset at start of `jzify()` per compilation.
-* [x] **research.md NaN-boxing table** — HASH row added for type=7; "free slots" count updated.
+### Optimizations
 
+**Runtime perf (hot path — why jz loses to V8)**
+
+* [ ] **Inline known callbacks in `.map`/`.filter`/`.forEach`/`.reduce`/`.find`** — [module/function.js:103-116](../module/function.js#L103-L116). Currently every closure call heap-allocates an args array (`__alloc(n*8+8)` + N `f64.store` + NaN-box wrap + `call_indirect`) per iteration. 1000-element `.map` = 1000 allocations just for arg marshalling. Treat the callback like a direct WASM call (pass args as params) when the closure is statically known at the call site. Fallback to heap only when the callback is stored/escaped. **Top perf win: ~10-30× on array methods.**
+* [ ] **Pass immutable closure captures as WASM params, not heap env** — [module/function.js:71-86](../module/function.js#L71-L86). `arr.map(x => x * c)` currently allocates an env cell for `c` even though it's immutable. Only allocate env when captures are actually mutated (boxed) or the closure escapes.
+* [ ] **Hoist loop-invariant `arr.length` in user `for` loops** — [src/prepare.js:773-777](../src/prepare.js#L773-L777), [src/compile.js:1826-1841](../src/compile.js#L1826-L1841). `for-of` desugars to `for (let i=0; i<arr.length; i++)` and the `<` condition re-calls `$__len` + `$__ptr_offset` every iteration. Internal `arrayLoop` already hoists correctly; user loops don't. Hoist in the `for` emitter when the RHS of `<`/`<=` is a pure length/constant expression.
+* [ ] **Cache `__ptr_offset` per basic block** — [src/compile.js:1077](../src/compile.js#L1077). Every `arr[i]` in user code re-runs the 10-15-op decode sequence. Introduce a per-scope offset cache keyed on var name so the first access emits `local.set $__off_arr`, subsequent accesses use the local.
+* [ ] **Schema inference from call sites (static inline caches)** — [module/core.js:279-284](../module/core.js#L279-L284). `(obj) => obj.x + obj.y` emits runtime `if __ptr_type == HASH` + hash lookup on every access, because `obj` is an untyped param. When a literal `{x,y}` flows into a function at compile time, monomorphize that function for that schema. Classic inline cache, but static.
+* [ ] **Fuse chained `.map`/`.filter`/`.forEach`** — [module/array.js:501-545](../module/array.js#L501-L545). `arr.map(f).filter(g)` currently materializes the intermediate array. Peephole fuse adjacent pure-callback chains into one loop. V8 can't always do this; jz sees both calls at compile time.
+* [ ] **Bump allocator can't free within a function** — [module/core.js:107-126](../module/core.js#L107-L126). Long-running audio worklets leak `.map` → `.slice` → `.concat` intermediates until the next `_reset`. Need per-expression scratch region or arena-per-call-frame.
+* [ ] **Gate auto-included core helpers by actual use** — [module/core.js:226](../module/core.js#L226). 11 helpers (`__mkptr`, `__ptr_offset`, `__alloc`, `__len`, etc.) ship unconditionally even for `export let f = (x) => x * 2`. Track which helpers are actually referenced and emit only those.
+
+**Organizational / maintenance hazards**
+
+* [ ] **`ctx.schema.target` hidden side-channel** — [src/compile.js:390-392](../src/compile.js#L390-L392), [module/core.js:354](../module/core.js#L354). Write-before-call ping tells the `{}` emitter which var is being assigned. Any reorder of `emit(init)` vs the set/clear pair silently misapplies the schema. Pass schema target as an explicit argument to the `{}` emitter instead.
+* [ ] **compile.js 2246 lines (12% over stated 2K target)** — extract analysis pass ([src/compile.js:269-515](../src/compile.js#L269-L515), ~250 lines) into `src/analyze.js`; extract spread builders ([src/compile.js:687-836](../src/compile.js#L687-L836), ~150 lines) into `module/array.js` or `src/spread.js`. Lands compile.js near 1850 lines.
+* [ ] **Param desugaring duplicated** — [src/prepare.js:914-943](../src/prepare.js#L914-L943) and [src/compile.js:1876-1901](../src/compile.js#L1876-L1901). Two ~40-line blocks with structurally identical rest/defaults/destructure → bodyPrefix logic, both writing `ctx.func.uniq`. Extract shared `desugarParams(raw)` returning `{ params, defaults, bodyPrefix }`.
+* [ ] **12+ copies of `__alloc_hdr` + `__mkptr` sequence** — array.js, collection.js, object.js, function.js, typedarray.js. One ABI change → 12 edits. Add `allocPtr(type, aux, len, stride)` IR helper that returns the typed IR.
+* [ ] **Missing `tempI32()` helper** — ~20 sites across string.js, number.js, array.js, typedarray.js manually do `const t = \`${T}x${ctx.func.uniq++}\`; ctx.func.locals.set(t, 'i32')`. Collapse to one helper alongside `temp()` in compile.js.
+* [ ] **schema.js compile-time O(N·P) scan** — [module/schema.js:18,54-60](../module/schema.js#L18). Every object literal registration scans all schemas via `findIndex(s => s.join(','))`. Every dynamic property find scans all schemas. Kills <1 ms compile target for larger inputs. Hash schemas by join-key; hash properties → `[schemaId, slot]` list.
+* [ ] **Working-tree clutter** — 298KB `output.txt`, 78KB `test_output.log`, 22 `.work/diag-*.mjs`, `out.wat`, `test_tst*.wat` in repo root. Gitignore or delete.
 
 ### Build & tooling
 
@@ -83,6 +95,16 @@
 
 
 ## Done (scratch branch)
+### Cleanup
+
+* [x] **Boxed capture i32/f64 mismatch** — established contract: cell locals are always `i32` in outer scope, packed with `f64.convert_i32_u` into env, unpacked with `i32.trunc_f64_u` on closure entry. `boxedAddr()` simplified.
+* [x] **`Uint8Array(arr)` double-emit** — src pre-emitted into f64 local once, both branches read from it.
+* [x] **Emitter prototype chain** — replaced `Object.create` with flat spread copy in `derive()`. Module inits only register (don't read) at init time, so semantically identical and metacircular-safe.
+* [x] **Schema structural subtyping silent fallback** — documented 3 return-cases; ambiguous offset across schemas correctly routes to dynamic lookup (handled by `__dyn_get_expr`).
+* [x] **`prepare()` god pass** — header enumerates 6 concerns; extracted `inferAssignSchema` helper.
+* [x] **Module registration ordering** — `MOD_DEPS` / `includeModule` comments clarify these are auto-inclusion not strict ordering; emitters looked up lazily at emit time.
+* [x] **`jzify` `swIdx` not reset** — reset at start of `jzify()` per compilation.
+* [x] **research.md NaN-boxing table** — HASH row added for type=7; "free slots" count updated.
 
 * [x] Parser (subscript/jessie)
 * [x] Numbers (0.1, 0xff, 0b11, 0o77)
@@ -116,7 +138,7 @@
 * [x] void operator
 * [x] Default params (x = 5) — triggers on NaN (missing arg), not 0
 
-## Phase 3 — Memory + NaN-boxing ✓
+### Phase 3 — Memory + NaN-boxing ✓
 
 * [x] NaN-boxing pointer helpers (mkptr, ptr_type, ptr_aux, ptr_offset)
 * [x] Bump allocator (_alloc, _reset) + memory section
@@ -128,7 +150,7 @@
 * [x] Pointer encoding tests for all 12 NaN-boxing types
 * [x] JS roundtrip preserves NaN bits
 
-## Remaining memory features
+### Remaining memory features
 
 * [x] Array `.length` (extract from NaN-boxed aux bits)
 * [x] Array as function param (pass NaN-boxed pointer, auto-extract offset)
@@ -142,7 +164,7 @@
 * [x] Schema consolidation (ctx.schemas, ctx.findPropIndex, ctx.registerSchema)
 * [-] Wire stdlib.js WAT into modules — not needed, each module defines its own WAT inline
 
-## Heap-length refactor ✓ (C-style arrays)
+### Heap-length refactor ✓ (C-style arrays)
 
 Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases see changes.
 
@@ -160,7 +182,7 @@ Principle: aux holds IMMUTABLE metadata only. Mutable state in memory. Aliases s
 * [x] NaN truthiness: if(NaN) is falsy, !NaN is true (correct JS semantics)
 * [x] Ternary in expression bodies (? → ?: normalization)
 
-## Current: Number/String methods + WASI
+### Current: Number/String methods + WASI
 
 Goal: complete standard JS type methods, then wire console.log via WASI fd_write.
 Output .wasm is standard WASI Preview 1 — runs natively on wasmtime/wasmer/deno.
@@ -222,9 +244,6 @@ jz ships a tiny polyfill for browser/Node environments without native WASI.
 * [x] 4c: audio-filter/wasm — validated: moog ladder compiles (1102B), correct impulse response
 * [x] 4d: standard JS support — Number methods, String methods, JSON, WASI console.log, HASH type
 
-
-
-## Backlog
 
 ### Core language
 

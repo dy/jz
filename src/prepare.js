@@ -131,7 +131,8 @@ const STATIC_METHOD_MODULES = dict({
   'Int16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
   'Uint16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
   'Int8Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Uint8Array': dict({ 'from': ['core', 'typedarray', 'array'] })
+  'Uint8Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
+  'ArrayBuffer': dict({ 'isView': ['core', 'typedarray'] })
 })
 
 const GENERIC_METHOD_MODULES = dict({
@@ -652,7 +653,7 @@ const handlers = {
       const builtin = BUILTIN_MODULES[callee]
       if (builtin) {
         includeMods(...builtin)
-        if (callee === 'ArrayBuffer' || callee === 'DataView' || callee === 'BigInt64Array' || callee === 'BigUint64Array') {
+        if (callee === 'BigInt64Array' || callee === 'BigUint64Array') {
           return ['()', callee, ...args.filter(a => a != null).map(prep)]
         }
       }
@@ -817,6 +818,10 @@ const handlers = {
       const mangled = ctx.module.namespaces[obj].get(prop)
       if (mangled) return mangled
     }
+    // Typed-array/buffer properties auto-include typedarray module
+    if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') {
+      includeMods('core', 'typedarray')
+    }
     return ['.', prep(obj), prop]
   },
 
@@ -828,16 +833,21 @@ const handlers = {
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
 
-    // TypedArray constructors
-    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array']
+    // Wrap multi-arg ctor arg lists back into a single comma-group — the '()' op
+    // expects callArgs as a single element (possibly comma-grouped).
+    const wrapArgs = (args) => args.length === 0 ? [null]
+      : args.length === 1 ? [prep(args[0])]
+      : [[',', ...args.map(prep)]]
+    // TypedArray / buffer constructors
+    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
     if (typedArrays.includes(name)) {
       includeMods('core', 'typedarray')
-      return ['()', `new.${name}`, ...ctorArgs.map(prep)]
+      return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
     }
     // Set/Map constructors
     if (name === 'Set' || name === 'Map') {
       includeMods('core', 'collection')
-      return ['()', `new.${name}`, ...ctorArgs.map(prep)]
+      return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
     }
 
     const mod = ctx.scope.chain[name]
