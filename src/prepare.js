@@ -17,7 +17,7 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive, PTR } from './ctx.js'
-import { T, extractParams, collectParamNames } from './compile.js'
+import { T, extractParams, collectParamNames, classifyParam } from './compile.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -541,30 +541,20 @@ const handlers = {
     const nextParams = []
     const bodyPrefix = []
     for (const r of raw) {
-      if (Array.isArray(r) && r[0] === '...') {
+      const c = classifyParam(r)
+      if (c.kind === 'rest') {
         nextParams.push(r)
-        if (typeof r[1] === 'string') fnScope.set(r[1], r[1])
-        continue
-      }
-      if (Array.isArray(r) && r[0] === '=') {
-        if (typeof r[1] !== 'string') {
-          const tmp = `${T}p${ctx.func.uniq++}`
-          fnScope.set(tmp, tmp)
-          nextParams.push(['=', tmp, prep(r[2])])
-          bodyPrefix.push(prep(['let', ['=', r[1], tmp]]))
-          continue
-        }
-        nextParams.push(['=', r[1], prep(r[2])])
-        continue
-      }
-      if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
+        if (typeof c.name === 'string') fnScope.set(c.name, c.name)
+      } else if (c.kind === 'plain') {
+        nextParams.push(c.name)
+      } else if (c.kind === 'default') {
+        nextParams.push(['=', c.name, prep(c.defValue)])
+      } else {
         const tmp = `${T}p${ctx.func.uniq++}`
         fnScope.set(tmp, tmp)
-        nextParams.push(tmp)
-        bodyPrefix.push(prep(['let', ['=', r, tmp]]))
-        continue
+        nextParams.push(c.kind === 'destruct-default' ? ['=', tmp, prep(c.defValue)] : tmp)
+        bodyPrefix.push(prep(['let', ['=', c.pattern, tmp]]))
       }
-      nextParams.push(r)
     }
     let preparedBody = prep(body)
     if (bodyPrefix.length) {
@@ -767,15 +757,22 @@ const handlers = {
       const [, init, cond, step] = head
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
     } else if (Array.isArray(head) && head[0] === 'of') {
-      // for (let x of arr) → for (let __i=0; __i<arr.length; __i++) { let x = arr[__i]; body }
+      // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.
+      // Divergence from JS: mutating arr during iteration won't extend/shorten the loop.
+      // jz philosophy: explicit > implicit; mutation during iteration is a code smell.
       const [, decl, src] = head
       const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
       const idx = `${T}i${ctx.func.uniq++}`
-      const init = ['let', ['=', idx, [, 0]]]
-      const cond = ['<', idx, ['.', src, 'length']]
+      const lenVar = `${T}len${ctx.func.uniq++}`
+      const trivial = typeof src === 'string'
+      const arrVar = trivial ? src : `${T}arr${ctx.func.uniq++}`
+      const decls = trivial
+        ? ['let', ['=', idx, [, 0]], ['=', lenVar, ['.', arrVar, 'length']]]
+        : ['let', ['=', arrVar, src], ['=', idx, [, 0]], ['=', lenVar, ['.', arrVar, 'length']]]
+      const cond = ['<', idx, lenVar]
       const step = ['++', idx]
-      const inner = [';', ['let', ['=', varName, ['[]', src, idx]]], body]
-      r = prep(['for', [';', init, cond, step], inner])
+      const inner = [';', ['let', ['=', varName, ['[]', arrVar, idx]]], body]
+      r = prep(['for', [';', decls, cond, step], inner])
     } else if (Array.isArray(head) && head[0] === 'in') {
       // for (let k in obj) → unroll at compile time when schema known, else HASH runtime iteration
       const [, decl, src] = head
@@ -919,37 +916,26 @@ function defFunc(name, node) {
   let [, rawParams, body] = node
   const raw = extractParams(rawParams)
 
-  // Extract param names and defaults: 'x' or ['=', 'x', default] or ['...', 'args']
-  // Also desugar destructured params: ([a, b], ctx) → (__p0, ctx) + let [a, b] = __p0
+  // Extract param names and defaults via shared classifier.
+  // Destructured params desugar to fresh tmp + let-binding prefix in body.
   const params = [], defaults = {}, hasRest = [], bodyPrefix = []
   for (const r of raw) {
-    if (Array.isArray(r) && r[0] === '...') {
-      // Rest param: ['...', 'name'] → array parameter
-      hasRest.push(r[1])
-      params.push({ name: r[1], type: 'f64', rest: true })
-    } else if (Array.isArray(r) && r[0] === '=') {
-      // Default: could be destructured default like {x=1, y=2} = opts
-      if (typeof r[1] !== 'string') {
-        const tmp = `${T}p${ctx.func.uniq++}`
-        params.push({ name: tmp, type: 'f64' })
-        defaults[tmp] = prep(r[2])
-        bodyPrefix.push(['let', ['=', r[1], tmp]])
-      } else {
-        params.push({ name: r[1], type: 'f64' })
-        const defVal = prep(r[2])
-        defaults[r[1]] = defVal
-        if (Array.isArray(defVal) && defVal[0] === '{}' && defVal.length > 1 && ctx.schema.register) {
-          const props = defVal.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
-          if (props.length) ctx.schema.vars.set(r[1], ctx.schema.register(props))
-        }
+    const c = classifyParam(r)
+    if (c.kind === 'rest') { hasRest.push(c.name); params.push({ name: c.name, type: 'f64', rest: true }) }
+    else if (c.kind === 'plain') params.push({ name: c.name, type: 'f64' })
+    else if (c.kind === 'default') {
+      params.push({ name: c.name, type: 'f64' })
+      const defVal = prep(c.defValue)
+      defaults[c.name] = defVal
+      if (Array.isArray(defVal) && defVal[0] === '{}' && defVal.length > 1 && ctx.schema.register) {
+        const props = defVal.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        if (props.length) ctx.schema.vars.set(c.name, ctx.schema.register(props))
       }
-    } else if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
-      // Destructured param: ([a, b], ctx) → (__p, ctx) + let [a, b] = __p
+    } else {
       const tmp = `${T}p${ctx.func.uniq++}`
       params.push({ name: tmp, type: 'f64' })
-      bodyPrefix.push(['let', ['=', r, tmp]])
-    } else {
-      params.push({ name: r, type: 'f64' })
+      if (c.kind === 'destruct-default') defaults[tmp] = prep(c.defValue)
+      bodyPrefix.push(['let', ['=', c.pattern, tmp]])
     }
   }
 

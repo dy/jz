@@ -192,7 +192,7 @@ export function reset(proto, globals) {
     vars: new Map(),
     register: null,
     find: null,
-    target: null,
+    targetStack: [],
     autoBox: null,
   }
 

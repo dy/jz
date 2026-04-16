@@ -397,3 +397,250 @@ test('aliasing — typed-array .byteLength matches parent buffer', () => {
   `)
   is(exports.main(), 16004)  // byteLength=16, length=4
 })
+
+// === Subview: elem-type variety (signed, float, multi-byte stride) ===
+
+test('subview — Int8Array read/write aliases parent', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let sub = new Int8Array(buf, 2, 4)
+      sub[0] = -1; sub[1] = 127; sub[2] = -128
+      let dv = new DataView(buf)
+      return dv.getInt8(2) * 10000 + dv.getInt8(3) * 100 + (256 + dv.getInt8(4))
+    }
+  `)
+  // -1 * 10000 + 127 * 100 + 128 = -10000 + 12700 + 128 = 2828
+  is(exports.main(), 2828)
+})
+
+test('subview — Int16Array read/write with stride=2', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let sub = new Int16Array(buf, 4, 3)
+      sub[0] = -1; sub[1] = 32767; sub[2] = -32768
+      return sub[0] + sub[1] + sub[2]
+    }
+  `)
+  is(exports.main(), -1 + 32767 + -32768)
+})
+
+test('subview — Uint16Array writes alias parent', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let sub = new Uint16Array(buf, 4, 2)
+      sub[0] = 0xABCD; sub[1] = 0x1234
+      let dv = new DataView(buf)
+      return dv.getUint8(4) + dv.getUint8(6)
+    }
+  `)
+  is(exports.main(), 0xCD + 0x34)  // LE low bytes
+})
+
+test('subview — Int32Array aliases parent and handles sign', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let sub = new Int32Array(buf, 8, 2)
+      sub[0] = -1; sub[1] = 2147483647
+      return sub[0] + sub[1]
+    }
+  `)
+  is(exports.main(), -1 + 2147483647)
+})
+
+test('subview — Float32Array aliases parent', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let dv = new DataView(buf)
+      dv.setFloat32(8, 3.5, true)
+      dv.setFloat32(12, 7.25, true)
+      let sub = new Float32Array(buf, 8, 2)
+      return sub[0] + sub[1]
+    }
+  `)
+  is(exports.main(), 10.75)
+})
+
+test('subview — Float64Array aliases parent', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(64)
+      let sub = new Float64Array(buf, 16, 3)
+      sub[0] = 1.5; sub[1] = 2.5; sub[2] = 3.5
+      let dv = new DataView(buf)
+      return dv.getFloat64(16, true) + dv.getFloat64(24, true) + dv.getFloat64(32, true)
+    }
+  `)
+  is(exports.main(), 7.5)
+})
+
+// === Subview: runtime dispatch (view passed as function argument) ===
+
+test('subview — runtime __typed_idx on view argument', () => {
+  // Function parameters get no compile-time typedElem tracking.
+  // Indexing falls to __typed_idx which must detect aux bit 3.
+  const { exports } = jz(`
+    export let get = (arr, i) => arr[i]
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let dv = new DataView(buf)
+      dv.setUint8(4, 42); dv.setUint8(5, 99)
+      let sub = new Uint8Array(buf, 4, 4)
+      return get(sub, 0) * 100 + get(sub, 1)
+    }
+  `)
+  is(exports.main(), 4299)
+})
+
+test('subview — runtime .length on view argument', () => {
+  const { exports } = jz(`
+    export let len = (arr) => arr.length
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let sub = new Float64Array(buf, 8, 2)
+      return len(sub)
+    }
+  `)
+  is(exports.main(), 2)
+})
+
+// === Subview: view.map() — SIMD + scalar paths ===
+
+test('subview — scalar .map() on view source', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let dv = new DataView(buf)
+      dv.setFloat64(8, 10, true); dv.setFloat64(16, 20, true)
+      let sub = new Float64Array(buf, 8, 2)
+      let result = sub.map(x => x + 1)
+      return result[0] + result[1]
+    }
+  `)
+  is(exports.main(), 32)  // 11 + 21
+})
+
+test('subview — SIMD .map() on Float64Array view', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(48)
+      let dv = new DataView(buf)
+      dv.setFloat64(16, 1, true); dv.setFloat64(24, 2, true); dv.setFloat64(32, 3, true); dv.setFloat64(40, 4, true)
+      let sub = new Float64Array(buf, 16, 4)
+      let out = sub.map(x => x * 10)
+      return out[0] + out[1] + out[2] + out[3]
+    }
+  `)
+  is(exports.main(), 100)  // 10+20+30+40
+})
+
+test('subview — SIMD .map() on Int32Array view', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let sub = new Int32Array(buf, 0, 8)
+      sub[0] = 1; sub[1] = 2; sub[2] = 3; sub[3] = 4
+      sub[4] = 5; sub[5] = 6; sub[6] = 7; sub[7] = 8
+      let out = sub.map(x => x * 2)
+      return out[0] + out[7]
+    }
+  `)
+  is(exports.main(), 2 + 16)
+})
+
+// === Subview: for-loop iteration via .length ===
+
+test('subview — for-loop accumulation over view', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let sub = new Uint8Array(buf, 4, 8)
+      sub[0] = 1; sub[1] = 2; sub[2] = 3; sub[3] = 4
+      sub[4] = 5; sub[5] = 6; sub[6] = 7; sub[7] = 8
+      let sum = 0
+      for (let i = 0; i < sub.length; i++) sum = sum + sub[i]
+      return sum
+    }
+  `)
+  is(exports.main(), 36)
+})
+
+// === Subview: ArrayBuffer.isView ===
+
+test('subview — ArrayBuffer.isView returns true', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let sub = new Uint8Array(buf, 4, 4)
+      return ArrayBuffer.isView(sub)
+    }
+  `)
+  is(exports.main(), 1)
+})
+
+// === Subview: multiple disjoint views on same buffer ===
+
+test('subview — two disjoint views into same buffer', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let a = new Uint8Array(buf, 0, 4)
+      let b = new Uint8Array(buf, 4, 4)
+      a[0] = 10; a[3] = 20
+      b[0] = 30; b[3] = 40
+      let dv = new DataView(buf)
+      return dv.getUint8(0) + dv.getUint8(3) + dv.getUint8(4) + dv.getUint8(7)
+    }
+  `)
+  is(exports.main(), 100)
+})
+
+// === Subview: overlapping views alias correctly ===
+
+test('subview — overlapping views share bytes', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(16)
+      let a = new Uint8Array(buf, 0, 8)
+      let b = new Uint8Array(buf, 4, 8)
+      a[4] = 42; a[5] = 99
+      return b[0] * 100 + b[1]
+    }
+  `)
+  is(exports.main(), 4299)
+})
+
+// === Subview: out-of-range index returns undefined ===
+
+test('subview — out-of-range index is undefined', () => {
+  const { exports } = jz(`
+    export let get = (arr, i) => arr[i]
+    export let main = () => {
+      let buf = new ArrayBuffer(8)
+      let sub = new Uint8Array(buf, 0, 4)
+      return get(sub, 10)
+    }
+  `)
+  is(exports.main(), undefined)
+})
+
+// === Subview of subview via .buffer ===
+
+test('subview — view-of-view via .buffer reconstructs root', () => {
+  const { exports } = jz(`
+    export let main = () => {
+      let buf = new ArrayBuffer(32)
+      let dv = new DataView(buf)
+      dv.setUint8(12, 77)
+      let sub1 = new Uint8Array(buf, 8, 8)
+      // sub1.buffer returns root buf, sub1.byteOffset = 8
+      let sub2 = new Uint8Array(sub1.buffer, 12, 4)
+      return sub2[0]
+    }
+  `)
+  is(exports.main(), 77)
+})

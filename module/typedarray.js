@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, UNDEF_NAN } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, UNDEF_NAN, allocPtr } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -215,7 +215,7 @@ export default () => {
         (if (result i32)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)))
+            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
           (then (i32.load (local.get $off)))
           (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
       (else (i32.const 0))))`
@@ -235,7 +235,7 @@ export default () => {
         (if (result f64)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)))
+            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
           (then (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0)
                   (i32.load (i32.add (local.get $off) (i32.const 8)))))
           (else (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $off)))))))`
@@ -289,12 +289,12 @@ export default () => {
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
         const src = `${T}ts${ctx.func.uniq++}`
-        const out = `${T}ta${ctx.func.uniq++}`
         const len = `${T}tl${ctx.func.uniq++}`
         ctx.func.locals.set(src, 'f64')
-        ctx.func.locals.set(out, 'i32')
         ctx.func.locals.set(len, 'i32')
         const shift = SHIFT[elemType]
+        const numBytes = ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]]
+        const numAlloc = allocPtr({ type: PTR.TYPED, aux: elemType, len: numBytes, stride: 1, tag: 'ta' })
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['if', ['result', 'f64'],
@@ -302,11 +302,8 @@ export default () => {
             // Regular number: treat as length, allocate fresh typed array with byteLen header
             ['then', ['block', ['result', 'f64'],
               ['local.set', `$${len}`, ['i32.trunc_sat_f64_s', ['local.get', `$${src}`]]],
-              ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-                ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]],
-                ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]],
-                ['i32.const', 1]]],
-              ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]]],
+              numAlloc.init,
+              numAlloc.ptr]],
             // Pointer: array → copy elements; buffer/typed → zero-copy view on same offset
             ['else', ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]],
@@ -319,16 +316,13 @@ export default () => {
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
       const lenL = `${T}tan${ctx.func.uniq++}`
-      const t = `${T}ta${ctx.func.uniq++}`
       ctx.func.locals.set(lenL, 'i32')
-      ctx.func.locals.set(t, 'i32')
+      const out = allocPtr({ type: PTR.TYPED, aux: elemType,
+        len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${lenL}`, asI32(emit(lenExpr))],
-        ['local.set', `$${t}`, ['call', '$__alloc_hdr',
-          ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]],
-          ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]],
-          ['i32.const', 1]]],
-        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+        out.init,
+        out.ptr], 'f64')
     }
   }
 
@@ -339,11 +333,8 @@ export default () => {
   // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer
   const arrayBufferCtor = (sizeExpr) => {
     const n = asI32(emit(sizeExpr))
-    const t = `${T}ab${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', n, n, ['i32.const', 1]]],
-      ['call', '$__mkptr', ['i32.const', PTR.BUFFER], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
+    const out = allocPtr({ type: PTR.BUFFER, len: n, stride: 1, tag: 'ab' })
+    return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
   ctx.core.emit['new.ArrayBuffer'] = arrayBufferCtor
 
@@ -430,7 +421,7 @@ export default () => {
     (if (result i32)
       (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-        (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)))
+        (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
       (then
         (local.set $off (call $__ptr_offset (local.get $ptr)))
         (i32.sub
@@ -453,12 +444,11 @@ export default () => {
     const beg = `${T}bsb${ctx.func.uniq++}`
     const end = `${T}bse${ctx.func.uniq++}`
     const bytes = `${T}bsn${ctx.func.uniq++}`
-    const dst = `${T}bsd${ctx.func.uniq++}`
     ctx.func.locals.set(src, 'f64')
     ctx.func.locals.set(beg, 'i32')
     ctx.func.locals.set(end, 'i32')
     ctx.func.locals.set(bytes, 'i32')
-    ctx.func.locals.set(dst, 'i32')
+    const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
     const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
     const endWat = endExpr == null
       ? ['call', '$__len', ['local.get', `$${src}`]]
@@ -471,13 +461,12 @@ export default () => {
       ['if',
         ['i32.lt_s', ['local.get', `$${bytes}`], ['i32.const', 0]],
         ['then', ['local.set', `$${bytes}`, ['i32.const', 0]]]],
-      ['local.set', `$${dst}`, ['call', '$__alloc_hdr',
-        ['local.get', `$${bytes}`], ['local.get', `$${bytes}`], ['i32.const', 1]]],
+      out.init,
       ['memory.copy',
-        ['local.get', `$${dst}`],
+        ['local.get', `$${out.local}`],
         ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${src}`]], ['local.get', `$${beg}`]],
         ['local.get', `$${bytes}`]],
-      ['call', '$__mkptr', ['i32.const', PTR.BUFFER], ['i32.const', 0], ['local.get', `$${dst}`]]], 'f64')
+      out.ptr], 'f64')
   }
 
   // DataView set methods: extract i32 offset from f64 ptr, store value
@@ -526,8 +515,11 @@ export default () => {
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
       const va = asF64(emit(src))
-      const t = `${T}tf${ctx.func.uniq++}`, len = `${T}tfl${ctx.func.uniq++}`, i = `${T}tfi${ctx.func.uniq++}`, off = `${T}tfo${ctx.func.uniq++}`
-      ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(off, 'i32')
+      const len = `${T}tfl${ctx.func.uniq++}`, i = `${T}tfi${ctx.func.uniq++}`, off = `${T}tfo${ctx.func.uniq++}`
+      ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(off, 'i32')
+      const out = allocPtr({ type: PTR.TYPED, aux: elemType,
+        len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
+      const t = out.local
       const id = ctx.func.uniq++
       const storeExpr = elemType === 7 ? ['f64.store',
           ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]],
@@ -542,17 +534,14 @@ export default () => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
         ['local.set', `$${len}`, ['call', '$__len', va]],
-        ['local.set', `$${t}`, ['call', '$__alloc_hdr',
-          ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]],
-          ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]],
-          ['i32.const', 1]]],
+        out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
           storeExpr,
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
-        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${t}`]]], 'f64')
+        out.ptr], 'f64')
     }
   }
 
@@ -584,7 +573,7 @@ export default () => {
     (if
       (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-        (i32.and (local.get $aux) (i32.const 8)))
+        (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
@@ -668,9 +657,12 @@ export default () => {
     // Scalar fallback: proper typed-array map (preserves element type)
     if (elemType != null) {
       const va = emit(arr), vf = emit(fn)
-      const out = `${T}tmo${ctx.func.uniq++}`, len = `${T}tml${ctx.func.uniq++}`, ptr = `${T}tmp${ctx.func.uniq++}`, i = `${T}tmi${ctx.func.uniq++}`
-      ctx.func.locals.set(out, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(i, 'i32')
+      const len = `${T}tml${ctx.func.uniq++}`, ptr = `${T}tmp${ctx.func.uniq++}`, i = `${T}tmi${ctx.func.uniq++}`
+      ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(i, 'i32')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
+      const dst = allocPtr({ type: PTR.TYPED, aux: elemType,
+        len: ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]], stride: 1, tag: 'tmo' })
+      const out = dst.local
 
       const loadElem = () => {
         const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', shift]]]
@@ -689,17 +681,14 @@ export default () => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
         ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
-        ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-          ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]],
-          ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]],
-          ['i32.const', 1]]],
+        dst.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
           storeElem(asF64(ctx.closure.call(vf, [loadElem()]))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
-        ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType], ['local.get', `$${out}`]]], 'f64')
+        dst.ptr], 'f64')
     }
 
     // Unknown typed array type: fall back to generic array .map

@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, VAL, T } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, VAL, T, tempI32, allocPtr } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
@@ -24,8 +24,9 @@ export default () => {
 
     // Use variable's merged schema if available (from Object.assign inference), else register literal schema
     let schemaId = ctx.schema.register(names)
-    if (ctx.schema.target) {
-      const varId = ctx.schema.vars.get(ctx.schema.target)
+    const target = ctx.schema.targetStack.at(-1)
+    if (target) {
+      const varId = ctx.schema.vars.get(target)
       if (varId != null) schemaId = varId
     }
     const schema = ctx.schema.list[schemaId]
@@ -64,17 +65,15 @@ export default () => {
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}ov${ctx.func.uniq++}`, arr = `${T}oa${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(arr, 'i32')
-    const body = [
-      ['local.set', `$${t}`, va],
-      ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
-    ]
+    const t = `${T}ov${ctx.func.uniq++}`
+    ctx.func.locals.set(t, 'f64')
+    const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
+    const body = [['local.set', `$${t}`, va], out.init]
     for (let i = 0; i < n; i++)
       body.push(['f64.store',
-        ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
+        ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
         ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]])
-    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -83,22 +82,20 @@ export default () => {
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}oe${ctx.func.uniq++}`, arr = `${T}oa${ctx.func.uniq++}`, pair = `${T}op${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(arr, 'i32'); ctx.func.locals.set(pair, 'i32')
-    const body = [
-      ['local.set', `$${t}`, va],
-      ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
-    ]
+    const t = `${T}oe${ctx.func.uniq++}`, pair = tempI32('op')
+    ctx.func.locals.set(t, 'f64')
+    const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
+    const body = [['local.set', `$${t}`, va], out.init]
     for (let i = 0; i < n; i++) {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${pair}`], emit(['str', schema[i]])],
         ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
           ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]],
-        ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]],
+        ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
           ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
     }
-    body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
@@ -242,13 +239,11 @@ function resolveSchema(obj) {
 }
 
 function emitStringArray(names) {
-  const n = names.length, arr = `${T}sa${ctx.func.uniq++}`
-  ctx.func.locals.set(arr, 'i32')
-  const body = [
-    ['local.set', `$${arr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
-  ]
+  const n = names.length
+  const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'sa' })
+  const body = [out.init]
   for (let i = 0; i < n; i++)
-    body.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', i * 8]], emit(['str', names[i]])])
-  body.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${arr}`]])
+    body.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]], emit(['str', names[i]])])
+  body.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }

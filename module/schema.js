@@ -12,12 +12,26 @@ import { ctx, err } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema() {
-  /** Register a property layout. Returns existing id if identical, else new id. */
+  // key → schemaId for O(1) dedupe; prop → [{id, slot}] for O(matches) structural find.
+  // \x01 delimiter avoids collision with any legal JS identifier character.
+  const byKey = new Map()
+  const byProp = new Map()
+  ctx.schema._byKey = byKey
+  ctx.schema._byProp = byProp
+
   ctx.schema.register = (props) => {
-    const key = props.join(',')
-    const existing = ctx.schema.list.findIndex(s => s.join(',') === key)
-    if (existing >= 0) return existing
-    return ctx.schema.list.push(props) - 1
+    const key = props.join('\x01')
+    const existing = byKey.get(key)
+    if (existing != null) return existing
+    const id = ctx.schema.list.push(props) - 1
+    byKey.set(key, id)
+    for (let i = 0; i < props.length; i++) {
+      const p = props[i]
+      let bucket = byProp.get(p)
+      if (!bucket) byProp.set(p, bucket = [])
+      bucket.push({ id, slot: i })
+    }
+    return id
   }
 
   /** Check if variable has a boxed schema (slot 0 = __inner__). */
@@ -47,16 +61,12 @@ export function initSchema() {
       const vt = ctx.func.valTypes?.get(varName) || ctx.scope.globalValTypes?.get(varName)
       if (vt != null && vt !== VAL.OBJECT) return -1
     }
-    // Structural subtyping: scan all schemas, require consistent offset.
-    // Only safe when all schemas that define the property agree on its slot.
-    // Any disagreement → -1 (dynamic lookup); silent mismatched-offset reads are a latent bug.
-    let result = -1
-    for (const s of ctx.schema.list) {
-      const idx = s.indexOf(prop)
-      if (idx < 0) continue
-      if (result >= 0 && result !== idx) return -1
-      result = idx
-    }
-    return result
+    // Structural subtyping: walk only schemas that contain this prop.
+    // Consistent slot across all → return slot; any mismatch → -1 (dynamic lookup).
+    const bucket = byProp.get(prop)
+    if (!bucket) return -1
+    const slot = bucket[0].slot
+    for (let i = 1; i < bucket.length; i++) if (bucket[i].slot !== slot) return -1
+    return slot
   }
 }

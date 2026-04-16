@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp } from '../src/compile.js'
+import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, allocPtr } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -276,11 +276,8 @@ export default () => {
   // === Set ===
 
   ctx.core.emit['new.Set'] = () => {
-    const t = `${T}set${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', SET_ENTRY]]],
-      ['call', '$__mkptr', ['i32.const', PTR.SET], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag: 'set' })
+    return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
 
   ctx.core.emit['.add'] = (setExpr, val) => {
@@ -310,11 +307,8 @@ export default () => {
   // === Map ===
 
   ctx.core.emit['new.Map'] = () => {
-    const t = `${T}map${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', INIT_CAP], ['i32.const', MAP_ENTRY]]],
-      ['call', '$__mkptr', ['i32.const', PTR.MAP], ['i32.const', 0], ['local.get', `$${t}`]]], 'f64')
+    const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY, tag: 'map' })
+    return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
 
   ctx.core.emit['.set'] = (mapExpr, key, val) => {

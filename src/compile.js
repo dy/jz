@@ -157,6 +157,23 @@ export function tempI32(tag = '') {
   return name
 }
 
+/** Build a NaN-boxed pointer from a header allocation.
+ *  type/aux/stride may be JS numbers; len/cap may be JS numbers or IR.
+ *  Returns { local, init, ptr } where:
+ *    local — i32 name pointing to data start (post-header)
+ *    init  — IR statement that allocates and sets `local`
+ *    ptr   — f64 IR expression: __mkptr(type, aux, local).
+ *  Caller emits init, fills via local, then uses ptr (or local for further work). */
+export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
+  inc('__alloc_hdr', '__mkptr')
+  const local = tempI32(tag)
+  const irOf = v => typeof v === 'number' ? ['i32.const', v] : v
+  const init = ['local.set', `$${local}`,
+    ['call', '$__alloc_hdr', irOf(len), irOf(cap == null ? len : cap), ['i32.const', stride]]]
+  const ptr = typed(['call', '$__mkptr', ['i32.const', type], irOf(aux), ['local.get', `$${local}`]], 'f64')
+  return { local, init, ptr }
+}
+
 // === Variable storage abstraction ===
 // Centralizes the boxed/global/local 3-way dispatch (used by =, ++/--, +=, etc.)
 
@@ -228,17 +245,12 @@ export function materializeMulti(callNode) {
   while (emittedArgs.length < func.sig.params.length)
     emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
   const temps = Array.from({ length: n }, () => temp())
-  const arrLocal = `${T}marr${ctx.func.uniq++}`
-  ctx.func.locals.set(arrLocal, 'i32')
-  inc('__alloc_hdr', '__mkptr')
-  const ir = [
-    ['local.set', `$${arrLocal}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]],
-    ['call', `$${name}`, ...emittedArgs],
-  ]
+  const out = allocPtr({ type: 1, len: n, tag: 'marr' })
+  const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
   for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
   for (let k = 0; k < n; k++)
-    ir.push(['f64.store', ['i32.add', ['local.get', `$${arrLocal}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
-  ir.push(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${arrLocal}`]])
+    ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
+  ir.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...ir], 'f64')
 }
 
@@ -254,6 +266,25 @@ export function extractParams(rawParams) {
   let p = rawParams
   if (Array.isArray(p) && p[0] === '()') p = p[1]
   return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+}
+
+/**
+ * Classify a single raw param node into one of:
+ *   { kind: 'rest',     name }                              — `...rest`
+ *   { kind: 'plain',    name }                              — `x`
+ *   { kind: 'default',  name, defValue }                    — `x = 1`
+ *   { kind: 'destruct', pattern }                           — `[a, b]` or `{x}`
+ *   { kind: 'destruct-default', pattern, defValue }         — `[a, b] = arr`
+ * Shared by prepare.js (=>, defFunc) and compile.js (closure =>) to keep desugaring uniform.
+ */
+export function classifyParam(r) {
+  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
+  if (Array.isArray(r) && r[0] === '=') {
+    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
+    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
+  }
+  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
+  return { kind: 'plain', name: r }
 }
 
 /** Collect all bound names from a param/destructuring pattern into a Set. */
@@ -391,10 +422,12 @@ function emitDecl(...inits) {
     if (!Array.isArray(i) || i[0] !== '=') continue
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
-    // Let {} emitter use variable's merged schema (from Object.assign inference)
-    if (Array.isArray(init) && init[0] === '{}') ctx.schema.target = name
+    // Push assignment target so a top-level {} can use the merged schema (from Object.assign inference).
+    // Stack survives nested emits — only the {} immediately under this `=` peeks the top.
+    const isObjLit = Array.isArray(init) && init[0] === '{}'
+    if (isObjLit) ctx.schema.targetStack.push(name)
     const val = emit(init)
-    ctx.schema.target = null
+    if (isObjLit) ctx.schema.targetStack.pop()
     // Boxed variable: allocate cell, store value, cell local holds pointer (i32)
     if (ctx.func.boxed.has(name)) {
       const cell = ctx.func.boxed.get(name)
@@ -549,7 +582,11 @@ function analyzeValTypes(body) {
       const src = callee[1], method = callee[2]
       if (typeof src === 'string' && types.get(src) === VAL.TYPED && method === 'map') {
         types.set(name, VAL.TYPED)
-        if (ctx.types.typedElem?.has(src)) ctx.types.typedElem.set(name, ctx.types.typedElem.get(src))
+        if (ctx.types.typedElem?.has(src)) {
+          // .map() always returns a fresh owned array — strip .view suffix
+          const srcCtor = ctx.types.typedElem.get(src)
+          ctx.types.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
+        }
       }
     }
     if (op === 'let' || op === 'const') {
@@ -759,12 +796,10 @@ function buildArrayWithSpreads(items) {
   }
 
   // Multiple sections: calculate total length, allocate, copy each section
-  const result = `${T}arr${ctx.func.uniq++}`
-  const len = `${T}len${ctx.func.uniq++}`
-  const pos = `${T}pos${ctx.func.uniq++}`
-  ctx.func.locals.set(result, 'i32')
-  ctx.func.locals.set(len, 'i32')
-  ctx.func.locals.set(pos, 'i32')
+  const len = tempI32('len')
+  const pos = tempI32('pos')
+  const out = allocPtr({ type: 1, len: ['local.get', `$${len}`], tag: 'arr' })
+  const result = out.local
 
   const ir = [
     // Calculate total length
@@ -791,14 +826,7 @@ function buildArrayWithSpreads(items) {
     }
   }
 
-  // Allocate result array
-  ir.push(
-    ['local.set', `$${result}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]],
-    ['i32.store', ['local.get', `$${result}`], ['local.get', `$${len}`]],
-    ['i32.store', ['i32.add', ['local.get', `$${result}`], ['i32.const', 4]], ['local.get', `$${len}`]],
-    ['local.set', `$${result}`, ['i32.add', ['local.get', `$${result}`], ['i32.const', 8]]],
-    ['local.set', `$${pos}`, ['i32.const', 0]]
-  )
+  ir.push(out.init, ['local.set', `$${pos}`, ['i32.const', 0]])
 
   // Copy each section
   for (const sec of sections) {
@@ -837,7 +865,7 @@ function buildArrayWithSpreads(items) {
     }
   }
 
-  ir.push(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${result}`]])  // 1 = ARRAY type
+  ir.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...ir], 'f64')
 }
 
@@ -1890,19 +1918,15 @@ export const emitter = {
     const params = [], defaults = {}
     let restParam = null, bodyPrefix = []
     for (const r of raw) {
-      if (Array.isArray(r) && r[0] === '...') {
-        restParam = r[1]
-        params.push(r[1])
-      } else if (Array.isArray(r) && r[0] === '=') {
-        if (typeof r[1] !== 'string') {
-          const tmp = `${T}p${ctx.func.uniq++}`; params.push(tmp)
-          defaults[tmp] = r[2]; bodyPrefix.push(['let', ['=', r[1], tmp]])
-        } else { params.push(r[1]); defaults[r[1]] = r[2] }
-      } else if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) {
-        const tmp = `${T}p${ctx.func.uniq++}`; params.push(tmp)
-        bodyPrefix.push(['let', ['=', r, tmp]])
-      } else {
-        params.push(r)
+      const c = classifyParam(r)
+      if (c.kind === 'rest') { restParam = c.name; params.push(c.name) }
+      else if (c.kind === 'plain') params.push(c.name)
+      else if (c.kind === 'default') { params.push(c.name); defaults[c.name] = c.defValue }
+      else {
+        const tmp = `${T}p${ctx.func.uniq++}`
+        params.push(tmp)
+        if (c.kind === 'destruct-default') defaults[tmp] = c.defValue
+        bodyPrefix.push(['let', ['=', c.pattern, tmp]])
       }
     }
 
