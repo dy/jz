@@ -2,31 +2,31 @@
 
 **Bugs / correctness**
 
-* [ ] **`STDLIB_DEPS.__write_val` defined twice** — [src/ctx.js:112](../src/ctx.js#L112) and [src/ctx.js:140](../src/ctx.js#L140). Second silently wins, dropping `__write_byte` from deps. Merge into one entry: `['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str']`.
-* [ ] **`||=`/`??=` global write-back returns void** — [src/compile.js:1290](../src/compile.js#L1290): `['global.set', ...]` has no result. If `a ||= b` is used in expression position, WASM stack is wrong. Needs tee-through-temp like `writeVar` does for globals.
-* [ ] **Missing `?.` on `ctx.func.valTypes`** — [src/compile.js:1634](../src/compile.js#L1634): all other callsites use `ctx.func.valTypes?.get()`. This one throws during `__start` emission when `valTypes` is null.
-* [ ] **`_inTry` not restored on exception in catch handler** — [src/compile.js:1088-1101](../src/compile.js#L1088): `ctx.runtime._inTry` saved/restored without `finally`. If `emit` throws during handler compilation, `_inTry` stays dirty.
-* [ ] **`__str_eq` registered in both string.js and collection.js** — [module/string.js:80](../module/string.js#L80) and [module/collection.js:347](../module/collection.js#L347). Last-loaded wins silently. Move to one owner, other uses `inc()`.
-* [ ] **`__typed_idx` registered in both array.js and typedarray.js** — [module/array.js:162](../module/array.js#L162) and [module/typedarray.js:571](../module/typedarray.js#L571). typedarray version is more capable (handles aux view bit). Move to typedarray.js only, array.js uses `inc()`.
+* [x] **`STDLIB_DEPS.__write_val` defined twice** — merged into single entry at [src/ctx.js:112](../src/ctx.js#L112) with all deps: `['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str']`.
+* [x] **`||=`/`??=` global write-back returns void** — replaced inline `global.set`/`local.set` with `writeVar(name, result)` which correctly tees through temp for globals.
+* [x] **Missing `?.` on `ctx.func.valTypes`** — added optional chaining at [src/compile.js](../src/compile.js) callsite.
+* [x] **`_inTry` not restored on exception in catch handler** — wrapped `emitFlat(body)` in try/finally at [src/compile.js](../src/compile.js).
+* [x] **`__str_eq` registered in both string.js and collection.js** — removed duplicate from collection.js; string.js owns it, collection.js uses it via `STDLIB_DEPS` transitive inclusion.
+* [x] **`__typed_idx` registered in both array.js and typedarray.js** — intentional upgrade pattern: array.js registers basic version, typedarray.js overwrites with full version (aux view bit). Documented with comment in array.js.
 
 **Structural fragility**
 
 * [ ] **Manual section index bookkeeping** — [src/compile.js:819-907](../src/compile.js#L819): 5 integer indices (`dataIdx`, `tableIdx`, `globalsIdx`, `funcsIdx`, `elemIdx`) track positions into mutable `sections` array. Each `splice()` invalidates others. Replace with named-slot builder.
-* [ ] **WASM passthrough swallows misspelled ops** — [src/compile.js:1917](../src/compile.js#L1917): `/^[a-z]/.test(op)` treats any unrecognized lowercase op as raw WASM. Typos like `'lett'` silently pass through instead of erroring.
+* [x] **WASM passthrough swallows misspelled ops** — replaced `/^[a-z]/` with `op.includes('.') || WASM_OPS.has(op)` allowlist in [src/compile.js](../src/compile.js).
 * [ ] **`handlers['{}']` block-vs-object allowlist** — [src/prepare.js](../src/prepare.js): hardcoded list of 18 statement operators. Adding a new statement form without updating this list causes it to be misinterpreted as an object literal.
 
 **Dead code & residue**
 
-* [ ] **`hoistCallback` is dead** — [module/array.js:52-59](../module/array.js#L52): defined but never called. Superseded by `makeCallback`. Delete.
-* [ ] **Dead `typeof` guards** — [src/compile.js:1767-1769](../src/compile.js#L1767): `typeof reconstructArgsWithSpreads !== 'undefined'` guards functions defined in the same file. Can never be false. Delete.
-* [ ] **`&&=`/`??=` identical ternary branch** — [src/compile.js:1276-1280](../src/compile.js#L1276): both produce the same `[thenExpr, elseExpr]` tuple. Collapse with comment explaining the conditions differ.
+* [x] **`hoistCallback` is dead** — deleted from [module/array.js](../module/array.js).
+* [x] **Dead `typeof` guards** — deleted from [src/compile.js](../src/compile.js); call `reconstructArgsWithSpreads`/`buildArrayWithSpreads` directly.
+* [x] **`&&=`/`??=` identical ternary branch** — collapsed: `||=` swaps then/else, `&&=`/`??=` share same order (different conditions).
 
 **Redundancy / missing abstractions**
 
-* [ ] **Null sentinel repeated ~10 times** — `typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')` at 10 sites in [src/compile.js](../src/compile.js). Extract `nullExpr()` one-liner.
-* [ ] **`valType` two-map lookup not using `keyValType`** — [src/compile.js:1634](../src/compile.js#L1634), [1309-1310](../src/compile.js#L1309) and 5 other sites manually write `ctx.func.valTypes?.get(x) || ctx.scope.globalValTypes?.get(x)` instead of calling existing `keyValType` helper.
-* [ ] **`mutating` method lists duplicated** — [src/compile.js:1650](../src/compile.js#L1650) and [src/compile.js:1696](../src/compile.js#L1696): overlapping but different arrays with no shared constant. A new mutating method must be added to both manually.
-* [ ] **`genUpsertGrow`/`genUpsertGrowStrict` near-duplicate** — [module/collection.js](../module/collection.js): ~80 lines of nearly identical WAT rehash code. Collapse to single generator with `strict` flag.
+* [x] **Null sentinel repeated ~10 times** — extracted `nullExpr()` and `NULL_IR` in [src/compile.js](../src/compile.js); 9 sites use `nullExpr()`, 2 raw sites use `NULL_IR`.
+* [x] **`valType` two-map lookup not using `keyValType`** — replaced 5 inline two-map lookups with `keyValType()` calls in [src/compile.js](../src/compile.js).
+* [x] **`mutating` method lists duplicated** — extracted `SPREAD_MUTATORS` (in-place spread methods) and `BOXED_MUTATORS` (reallocating methods needing write-back) as named Sets in [src/compile.js](../src/compile.js).
+* [x] **`genUpsertGrow`/`genUpsertGrowStrict` near-duplicate** — collapsed into single `genUpsertGrow(... strict)` with type guard parameter in [module/collection.js](../module/collection.js).
 * [ ] **`emitArrayReduce` duplicates `arrayLoop` pattern** — [module/math.js:37-55](../module/math.js#L37) rolls its own loop identical in structure to `arrayLoop` in array.js. Lift `arrayLoop`+`elemLoad`/`elemStore` out of array.js closure so math.js and typedarray.js can reuse.
 
 **What's clean (preserve)**

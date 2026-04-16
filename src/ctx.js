@@ -109,7 +109,7 @@ export const STDLIB_DEPS = {
   __hash_new: ['__alloc_hdr'],
 
   // console
-  __write_val: ['__write_str', '__write_num', '__write_byte', '__static_str'],
+  __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str'],
   __write_num: ['__ftoa'],
   __write_str: ['__sso_char', '__str_len'],
 
@@ -137,7 +137,6 @@ export const STDLIB_DEPS = {
   __length: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__str_len', '__len'],
   __sso_char: ['__ptr_offset'],
   __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
-  __write_val: ['__ptr_type', '__write_num', '__write_str', '__static_str'],
 }
 
 /** Expand ctx.core.includes transitively via STDLIB_DEPS. Call before WASM assembly. */

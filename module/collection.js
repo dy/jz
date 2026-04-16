@@ -111,13 +111,18 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (i32.const 0))`
 }
 
-/** Generate growable upsert (for HASH). Grows table at 75% load, rehashes, then inserts. */
-function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
+/** Generate growable upsert. Grows table at 75% load, rehashes, then inserts.
+ *  strict=false: EXTERNAL fallback via __ext_set. strict=true: reject wrong type. */
+function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false) {
+  const typeGuard = strict
+    ? `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
+      (then (return (local.get $obj))))`
+    : `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL})) (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)) (return (local.get $obj))))`
   return `(func $${name} (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32)
-    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL})) (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)) (return (local.get $obj))))
+    ${typeGuard}
     (local.set $off (call $__ptr_offset (local.get $obj)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
@@ -126,7 +131,6 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst) {
       (then
         (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
         (local.set $newptr (call $__alloc_hdr (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
-        ;; Rehash existing entries
         (local.set $i (i32.const 0))
         (block $rd (loop $rl
           (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -192,64 +196,6 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
     (f64.reinterpret_i64 (i64.const ${missing})))`
-}
-
-function genUpsertGrowStrict(name, entrySize, hashFn, eqExpr, typeConst) {
-  return `(func $${name} (param $obj f64) (param $key f64) (param $val f64) (result f64)
-    (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
-    (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
-    (local $oldslot i32) (local $newidx i32) (local $newslot i32)
-    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
-      (then (return (local.get $obj))))
-    (local.set $off (call $__ptr_offset (local.get $obj)))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
-      (then
-        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
-        (local.set $newptr (call $__alloc_hdr (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
-        (local.set $i (i32.const 0))
-        (block $rd (loop $rl
-          (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
-          (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
-          (if (f64.ne (f64.load (local.get $oldslot)) (f64.const 0))
-            (then
-              (local.set $h (call ${hashFn} (f64.load (i32.add (local.get $oldslot) (i32.const 8)))))
-              (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
-              (block $ins (loop $probe2
-                (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (i32.const ${entrySize}))))
-                (br_if $ins (f64.eq (f64.load (local.get $newslot)) (f64.const 0)))
-                (local.set $newidx (i32.and (i32.add (local.get $newidx) (i32.const 1)) (i32.sub (local.get $newcap) (i32.const 1))))
-                (br $probe2)))
-              (f64.store (local.get $newslot) (f64.load (local.get $oldslot)))
-              (f64.store (i32.add (local.get $newslot) (i32.const 8)) (f64.load (i32.add (local.get $oldslot) (i32.const 8))))
-              (f64.store (i32.add (local.get $newslot) (i32.const 16)) (f64.load (i32.add (local.get $oldslot) (i32.const 16))))
-              (i32.store (i32.sub (local.get $newptr) (i32.const 8))
-                (i32.add (i32.load (i32.sub (local.get $newptr) (i32.const 8))) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $rl)))
-        (local.set $off (local.get $newptr))
-        (local.set $cap (local.get $newcap))
-        (local.set $obj (call $__mkptr (i32.const ${typeConst}) (i32.const 0) (local.get $newptr)))))
-    (local.set $h (call ${hashFn} (local.get $key)))
-    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
-    (block $done (loop $probe
-      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
-      (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
-        (then
-          (f64.store (local.get $slot) (f64.reinterpret_i64 (i64.extend_i32_u (local.get $h))))
-          (f64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))
-          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
-          (i32.store (i32.sub (local.get $off) (i32.const 8))
-            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-          (br $done)))
-      (if ${eqExpr}
-        (then
-          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
-          (br $done)))
-      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
-      (br $probe)))
-    (local.get $obj))`
 }
 
 
@@ -343,33 +289,12 @@ export default () => {
     (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
       (then (i32.add (local.get $h) (i32.const 2))) (else (local.get $h))))`
 
-  // String content equality (handles SSO vs heap cross-comparison)
-  ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
-    (local $len i32) (local $i i32)
-    ;; Fast path: bitwise equal
-    (if (i64.eq (i64.reinterpret_f64 (local.get $a)) (i64.reinterpret_f64 (local.get $b)))
-      (then (return (i32.const 1))))
-    ;; Compare lengths
-    (local.set $len (call $__str_byteLen (local.get $a)))
-    (if (i32.ne (local.get $len) (call $__str_byteLen (local.get $b)))
-      (then (return (i32.const 0))))
-    ;; Compare chars (works for any SSO/heap combination via __char_at)
-    (local.set $i (i32.const 0))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
-                  (call $__char_at (local.get $b) (local.get $i)))
-        (then (return (i32.const 0))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
-    (i32.const 1))`
-
   ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_set_local'] = genUpsertGrowStrict('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
+  ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (local $props f64) (local $objKey f64)

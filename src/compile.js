@@ -51,6 +51,12 @@ const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = '0x7FF8000100000000'
 export const UNDEF_NAN = '0x7FF8000000000001'
+const NULL_IR = ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]
+const nullExpr = () => typed(NULL_IR, 'f64')
+
+const WASM_OPS = new Set(['block','loop','if','then','else','br','br_if','call','call_indirect','return','return_call','throw','try_table','catch','nop','drop','unreachable','select','result','mut','param','func','module','memory','table','elem','data','type','import','export','local','global','ref'])
+const SPREAD_MUTATORS = new Set(['push', 'add', 'set', 'unshift'])
+const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort'])
 
 // === Constant folding helpers ===
 
@@ -250,7 +256,7 @@ export function materializeMulti(callNode) {
   const emittedArgs = argList.map(a => asF64(emit(a)))
   // Pad missing args with sentinel NaN (triggers default param init)
   while (emittedArgs.length < func.sig.params.length)
-    emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+    emittedArgs.push(nullExpr())
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
   const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
@@ -274,7 +280,7 @@ function emitDecl(...inits) {
   const result = []
   for (const i of inits) {
     if (typeof i === 'string') {
-      const undef = typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')
+      const undef = nullExpr()
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')
@@ -771,7 +777,7 @@ export default function compile(ast) {
             ['if', ['result', 'f64'],
               ['i32.gt_s', ['local.get', `$${argsLen}`], ['i32.const', i]],
               ['then', ['f64.load', ['i32.add', ['local.get', `$${argsBase}`], ['i32.const', i * 8]]]],
-              ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]])
+              ['else', NULL_IR]]])
         }
       }
 
@@ -1086,8 +1092,7 @@ export const emitter = {
     const id = ctx.func.uniq++
     ctx.func.locals.set(errName, 'f64')
     const prev = ctx.runtime._inTry; ctx.runtime._inTry = true
-    const bodyIR = emitFlat(body)
-    ctx.runtime._inTry = prev
+    let bodyIR; try { bodyIR = emitFlat(body) } finally { ctx.runtime._inTry = prev }
     const handlerIR = emitFlat(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
@@ -1103,7 +1108,7 @@ export const emitter = {
   'return': expr => {
     if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
-    if (expr == null) return typed(['return', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]], 'void')
+    if (expr == null) return typed(['return', NULL_IR], 'void')
     const ir = asF64(emit(expr))
     if (!ctx.runtime._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
@@ -1167,7 +1172,7 @@ export const emitter = {
         return typed(storeNumeric(keyExpr), 'f64')
       }
       const va = emit(arr), vi = asI32(emit(idx)), vv = valueExpr, t = temp()
-      if (typeof arr === 'string' && (ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr)) === VAL.ARRAY) {
+      if (typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
         const persist = ptr => {
           if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
           if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
@@ -1211,7 +1216,7 @@ export const emitter = {
         }
       }
       if (typeof obj === 'string') {
-        const objType = ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj)
+        const objType = keyValType(obj)
         if (usesDynProps(objType)) {
           inc('__dyn_set')
           return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
@@ -1232,8 +1237,8 @@ export const emitter = {
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
     // String concatenation: desugar to name = name + val (+ handler knows about strings)
-    const vt = typeof name === 'string' ? (ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name)) : null
-    const vtB = typeof val === 'string' ? (ctx.func.valTypes?.get(val) || ctx.scope.globalValTypes?.get(val)) : valTypeOf(val)
+    const vt = typeof name === 'string' ? keyValType(name) : null
+    const vtB = keyValType(val)
     if (vt === VAL.STRING || vtB === VAL.STRING) return emit(['=', name, ['+', name, val]])
     return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'))
   },
@@ -1272,12 +1277,10 @@ export const emitter = {
       : ['i32.and',
           ['f64.eq', ['local.tee', `$${t}`, asF64(va)], ['local.get', `$${t}`]],
           ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]]
-    // ||= → keep if truthy, else assign. &&= → assign if truthy, else keep. ??= → assign if null.
-    const [thenExpr, elseExpr] = op === '&&='
-      ? [asF64(emit(val)), ['local.get', `$${t}`]]
-      : op === '??='
-        ? [asF64(emit(val)), ['local.get', `$${t}`]]
-        : [['local.get', `$${t}`], asF64(emit(val))]
+    // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
+    const [thenExpr, elseExpr] = op === '||='
+      ? [['local.get', `$${t}`], asF64(emit(val))]
+      : [asF64(emit(val)), ['local.get', `$${t}`]]
     const result = typed(['if', ['result', 'f64'], cond, ['then', thenExpr], ['else', elseExpr]], 'f64')
     // Write back (handles boxed/global/local)
     if (ctx.func.boxed?.has(name)) {
@@ -1287,9 +1290,7 @@ export const emitter = {
         ['f64.store', boxedAddr(name), ['local.get', `$${bt}`]],
         ['local.get', `$${bt}`]], 'f64')
     }
-    if (isGlobal(name)) return ['global.set', `$${name}`, result]
-    const lt = ctx.func.locals.get(name) || 'f64'
-    return ['local.set', `$${name}`, lt === 'i32' ? asI32(result) : result]
+    return writeVar(name, result)
   }])),
 
   // === Increment/Decrement ===
@@ -1306,8 +1307,8 @@ export const emitter = {
 
   '+': (a, b) => {
     // String concatenation: if either operand is known string, use __str_concat
-    const vtA = typeof a === 'string' ? (ctx.func.valTypes?.get(a) || ctx.scope.globalValTypes?.get(a)) : valTypeOf(a)
-    const vtB = typeof b === 'string' ? (ctx.func.valTypes?.get(b) || ctx.scope.globalValTypes?.get(b)) : valTypeOf(b)
+    const vtA = keyValType(a)
+    const vtB = keyValType(b)
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       inc('__str_concat')
       return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
@@ -1626,12 +1627,12 @@ export const emitter = {
           const func = funcMap.get(fname)
           const emittedArgs = parsed.normal.map(a => asF64(emit(a)))
           while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+            emittedArgs.push(nullExpr())
           return typed(['call', `$${fname}`, ...emittedArgs], 'f64')
         }
       }
 
-      const vt = typeof obj === 'string' ? (ctx.func.valTypes.get(obj) || ctx.scope.globalValTypes?.get(obj)) : valTypeOf(obj)
+      const vt = keyValType(obj)
 
       // Helper to call method with arguments (handles spread expansion)
       const callMethod = (objArg, methodEmitter) => {
@@ -1646,13 +1647,13 @@ export const emitter = {
           ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
           ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
 
-          // Mutating methods (push/add/set) modify in-place; accumulating methods (concat) return new values
-          const mutating = ['push', 'add', 'set', 'unshift'].includes(method)
+          // In-place spread methods modify target; accumulating methods (concat) return new values
+          const inPlace = SPREAD_MUTATORS.has(method)
           const ir = []
           ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
           if (parsed.normal.length > 0) {
             const r = asF64(methodEmitter(objArg, ...parsed.normal))
-            ir.push(mutating ? ['drop', r] : ['local.set', `$${acc}`, r])
+            ir.push(inPlace ? ['drop', r] : ['local.set', `$${acc}`, r])
           }
 
           inc('__len')
@@ -1665,7 +1666,7 @@ export const emitter = {
           ir.push(['block', `$break${loopId}`,
             ['loop', `$continue${loopId}`,
               ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
-              mutating ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
+              inPlace ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
               ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', 1]]],
               ['br', `$continue${loopId}`]]])
 
@@ -1692,9 +1693,8 @@ export const emitter = {
             ['local.set', `$${boxBase}`, ['call', '$__ptr_offset', asF64(emit(obj))]],
             ['local.set', `$${innerName}`, ['f64.load', ['local.get', `$${boxBase}`]]]]
           const result = callMethod(innerName, emitter)
-          // For mutating methods, writeback inner value to boxed slot 0 (push/pop may reallocate)
-          const mutating = ['push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort']
-          if (mutating.includes(method)) {
+          // Mutating methods may reallocate; writeback inner value to boxed slot
+          if (BOXED_MUTATORS.has(method)) {
             const wb = ['f64.store', ['local.get', `$${boxBase}`], ['local.get', `$${innerName}`]]
             return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
           }
@@ -1764,8 +1764,8 @@ export const emitter = {
 
       // Unknown callee - assume external method
       inc('__ext_call')
-      const combined = typeof reconstructArgsWithSpreads !== 'undefined' ? reconstructArgsWithSpreads(parsed.normal, parsed.spreads) : parsed.normal;
-      const arrayIR = typeof buildArrayWithSpreads !== 'undefined' ? buildArrayWithSpreads(combined) : asF64(emit(['[', ...combined]));
+      const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+      const arrayIR = buildArrayWithSpreads(combined)
       return typed(['call', '$__ext_call', asF64(emit(obj)), asF64(emit(['str', method])), arrayIR], 'f64');
     }
 
@@ -1795,7 +1795,7 @@ export const emitter = {
         // Pad missing fixed args with sentinel for defaults
         const emittedFixed = fixedArgs.map(a => asF64(emit(a)))
         while (emittedFixed.length < fixedParamCount)
-          emittedFixed.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+          emittedFixed.push(nullExpr())
 
         // Reconstruct with spreads, then take rest args
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -1813,7 +1813,7 @@ export const emitter = {
       // Pad missing args with canonical NaN (triggers default param init)
       const args = parsed.normal.map(a => asF64(emit(a)))
       const expected = func?.sig.params.length || args.length
-      while (args.length < expected) args.push(typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64'))
+      while (args.length < expected) args.push(nullExpr())
       // Multi-value return: materialize as heap array (caller expects single pointer)
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
       return typed(['call', `$${callee}`, ...args], 'f64')
@@ -1851,7 +1851,7 @@ export function emit(node) {
   if (node === true) return typed(['i32.const', 1], 'i32')
   if (node === false) return typed(['i32.const', 0], 'i32')
   if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
-    return typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')
+    return nullExpr()
   if (typeof node === 'bigint') {
     // Wrap to signed i64 range (unsigned values > 2^63-1 become negative)
     let n = node
@@ -1913,13 +1913,13 @@ export function emit(node) {
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 
   const [op, ...args] = node
-  // WASM IR passthrough: if an instruction node reaches emit() (from statement flattening), pass through
-  if (typeof op === 'string' && !ctx.core.emit[op] && /^[a-z]/.test(op)) return node
+  // WASM IR passthrough: internally-generated IR nodes (from statement flattening) pass through
+  if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
 
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
     const v = args[0]
-    return v == null ? typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64') : emit(v)
+    return v == null ? nullExpr() : emit(v)
   }
 
   const handler = ctx.core.emit[op]

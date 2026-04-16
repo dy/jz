@@ -49,15 +49,6 @@ function elemStore(ptr, i, val) {
   return ['f64.store', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]], val]
 }
 
-function hoistCallback(fn) {
-  const cb = `${T}af${ctx.func.uniq++}`
-  ctx.func.locals.set(cb, 'f64')
-  return {
-    setup: ['local.set', `$${cb}`, asF64(emit(fn))],
-    value: typed(['local.get', `$${cb}`], 'f64'),
-  }
-}
-
 function hoistArrayValue(arr) {
   const recv = `${T}ar${ctx.func.uniq++}`
   ctx.func.locals.set(recv, 'f64')
@@ -159,6 +150,8 @@ export default () => {
             (call $__ptr_offset (local.get $ptr))
             (i32.shl (local.get $i) (i32.const 3)))))))`
 
+  // Runtime-dispatch index: bounds check + typed array element type dispatch (basic version).
+  // typedarray.js overwrites with full version handling view indirection (aux bit 3).
   ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
