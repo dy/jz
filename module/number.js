@@ -390,6 +390,27 @@ export default () => {
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; 0x prefix → hex parse and early return
+    (if (i32.and
+      (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
+        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 2)))
+        (block $hexDone (loop $hexLoop
+          (br_if $hexDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 102)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 87)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 70)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 55)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))))
+        (return (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))))
     ;; Integer part.
     (block $intDone (loop $intLoop
       (br_if $intDone (i32.ge_s (local.get $i) (local.get $len)))

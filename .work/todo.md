@@ -2,7 +2,7 @@
 
 * [x] Regex greedy backtrack gives back 1 byte regardless of pattern width — `module/regex.js:256`: fixed to use `patternMinLen(node)` for correct multi-char backtracking.
 * [x] Regex split never grows past 8 elements — `module/regex.js:815`: added grow logic (double capacity + copy) when count >= cap.
-* [ ] `JSON.stringify` emits `{}` for all objects — `module/json.js:106-112`: OBJECT, HASH, MAP all serialize as `{}`. Need schema-based key iteration for OBJECT, hash iteration for HASH.
+* [x] `JSON.stringify` emits `{}` for all objects — fixed: HASH/MAP iterate slots via `__json_hash` WAT; OBJECT uses runtime schema name table (`__json_obj` + `$__schema_tbl` init in `__start`). 6 new tests added.
 
 ### Fragility
 

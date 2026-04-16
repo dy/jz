@@ -36,8 +36,11 @@ export const typed = (node, type) => (node.type = type, node)
 /** Coerce node to f64. */
 export const asF64 = n => n.type === 'f64' ? n : typed(['f64.convert_i32_s', n], 'f64')
 
-/** Coerce node to i32 without traps (NaN/inf saturate), closer to JS numeric coercion. */
+/** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
+
+/** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative). */
+const toI32 = n => n.type === 'i32' ? n : typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 
 /** Extract i64 from BigInt-as-f64. */
 export const asI64 = n => typed(['i64.reinterpret_f64', asF64(n)], 'i64')
@@ -1303,7 +1306,7 @@ export const emitter = {
     ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
     ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
   ].map(([op, fn]) => [op, (name, val) => compoundAssign(name, val,
-    (a, b) => asF64(typed([`i32.${fn}`, asI32(a), asI32(b)], 'i32')),
+    (a, b) => asF64(typed([`i32.${fn}`, toI32(a), toI32(b)], 'i32')),
     (a, b) => typed([`i32.${fn}`, a, b], 'i32')
   )])),
 
@@ -1363,6 +1366,18 @@ export const emitter = {
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
+    // Runtime string dispatch: if either operand type is unknown and string module loaded, check at runtime
+    if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
+      const tA = temp('add'), tB = temp('add')
+      inc('__str_concat', '__is_str_key')
+      return typed(['if', ['result', 'f64'],
+        ['i32.or',
+          ['call', '$__is_str_key', ['local.tee', `$${tA}`, asF64(emit(a))]],
+          ['call', '$__is_str_key', ['local.tee', `$${tB}`, asF64(emit(b))]]],
+        ['then', ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]],
+        ['else', ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]]
+      ], 'f64')
+    }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) + litVal(vb))
     if (isLit(vb) && litVal(vb) === 0) return va
@@ -1520,7 +1535,7 @@ export const emitter = {
 
   // === Bitwise (i32 for numbers, i64 for BigInt) ===
 
-  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', asI32(v), typed(['i32.const', -1], 'i32')], 'i32') },
+  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(v), typed(['i32.const', -1], 'i32')], 'i32') },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
@@ -1533,9 +1548,9 @@ export const emitter = {
       if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
       if (op === '>>') return emitNum(la >> lb)
     }
-    return typed([`i32.${fn}`, asI32(va), asI32(vb)], 'i32')
+    return typed([`i32.${fn}`, toI32(va), toI32(vb)], 'i32')
   }])),
-  '>>>': (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) >>> litVal(vb)) : typed(['i32.shr_u', asI32(va), asI32(vb)], 'i32') },
+  '>>>': (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) >>> litVal(vb)) : typed(['i32.shr_u', toI32(va), toI32(vb)], 'i32') },
 
   // === Control flow ===
 
