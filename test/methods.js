@@ -165,3 +165,33 @@ test('.flatMap: values', () => {
 test('chain: map + reduce', () => {
   is(run(`export let f = () => [1, 2, 3].map((x) => x * x).reduce((s, x) => s + x, 0)`).f(), 14)
 })
+
+test('chain: map + filter', () => {
+  let { f } = run(`export let f = () => {
+    let r = [1, 2, 3, 4, 5].map((x) => x * 2).filter((x) => x > 4)
+    return r[0] * 10000 + r[1] * 100 + r[2] + r.length * 1000000
+  }`)
+  is(f(), 3060810)  // 3*1M + 6*10K + 8*100 + 10
+})
+
+test('chain: filter + map', () => {
+  let { f } = run(`export let f = () => {
+    let r = [1, 2, 3, 4, 5].filter((x) => x > 2).map((x) => x * 10)
+    return r[0] * 10000 + r[1] * 100 + r[2] + r.length * 1000000
+  }`)
+  is(f(), 3304050)  // 3*1M + 30*10K + 40*100 + 50
+})
+
+test('chain: map + forEach', () => {
+  let { f } = run(`export let f = () => { let s = 0; [1, 2, 3].map((x) => x * x).forEach((x) => { s = s + x }); return s }`)
+  is(f(), 14)
+})
+
+test('chain: filter + forEach', () => {
+  let { f } = run(`export let f = () => { let s = 0; [1, 2, 3, 4].filter((x) => x > 2).forEach((x) => { s = s + x }); return s }`)
+  is(f(), 7)
+})
+
+test('chain: filter + reduce', () => {
+  is(run(`export let f = () => [1, 2, 3, 4, 5].filter((x) => x > 2).reduce((s, x) => s + x, 0)`).f(), 12)
+})

@@ -8,7 +8,7 @@
 * [x] **Hoist loop-invariant `arr.length` in for-of** — desugaring in [src/prepare.js](../src/prepare.js) hoists `arr` and `arr.length` once; iteration uses cached `lenVar`.
 * [ ] **Cache `__ptr_offset` per basic block** — deferred. Internal `arrayLoop` already caches; remaining sites need invalidation analysis (push/grow may relocate).
 * [ ] **Schema inference from call sites (static inline caches)** — deferred (high-complexity).
-* [ ] **Fuse chained `.map`/`.filter`/`.forEach`** — deferred.
+* [x] **Fuse chained `.map`/`.filter`/`.forEach`/`.reduce`** — `detectUpstream` in [module/array.js](../module/array.js) detects when receiver is a `.map()`/`.filter()` call expression. Fused patterns: `.map(f).filter(g)`, `.filter(f).map(g)`, `.map(f).forEach(g)`, `.filter(f).forEach(g)`, `.map(f).reduce(g,i)`, `.filter(f).reduce(g,i)`. Single loop, no intermediate array allocation.
 * [ ] **Bump allocator can't free within a function** — deferred.
 * [ ] **Gate auto-included core helpers by actual use** — deferred (broad emitter audit needed for safety).
 

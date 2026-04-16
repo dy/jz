@@ -556,7 +556,41 @@ export default () => {
 
   // === Array methods ===
 
+  // Detect fuseable chain: arr.map(f).filter(g) etc.
+  // Returns {source, method, fn} or null.
+  function detectUpstream(arr) {
+    if (!Array.isArray(arr) || arr[0] !== '()') return null
+    const [, callee, ...callArgs] = arr
+    if (!Array.isArray(callee) || callee[0] !== '.' || callArgs.length !== 1) return null
+    const [, source, method] = callee
+    if (method === 'map' || method === 'filter') return { source, method, fn: callArgs[0] }
+    return null
+  }
+
+  function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
+
   ctx.core.emit['.map'] = (arr, fn) => {
+    // .filter(f).map(g) → single loop: test f, apply g if passes
+    const up = detectUpstream(arr)
+    if (up && up.method === 'filter') {
+      const recv = hoistArrayValue(up.source)
+      const count = tempI32('fc'), maxLen = tempI32('fm')
+      const filterCb = makeCallback(up.fn), mapCb = makeCallback(fn)
+      const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+          ['then',
+            elemStore(out.local, count, asF64(mapCb.call([item, idxF64(count)]))),
+            ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
+      ])
+      return typed(['block', ['result', 'f64'],
+        recv.setup, filterCb.setup, mapCb.setup,
+        ['local.set', `$${maxLen}`, ['call', '$__len', recv.value]],
+        out.init, ['local.set', `$${count}`, ['i32.const', 0]],
+        ...loop,
+        ['i32.store', ['i32.sub', ['local.get', `$${out.local}`], ['i32.const', 8]], ['local.get', `$${count}`]],
+        out.ptr], 'f64')
+    }
     const recv = hoistArrayValue(arr)
     const len = tempI32('ml')
     const cb = makeCallback(fn)
@@ -575,6 +609,28 @@ export default () => {
   }
 
   ctx.core.emit['.filter'] = (arr, fn) => {
+    // .map(f).filter(g) → single loop: apply f, test g, store if passes
+    const up = detectUpstream(arr)
+    if (up && up.method === 'map') {
+      const recv = hoistArrayValue(up.source)
+      const count = tempI32('fc'), maxLen = tempI32('fm'), mapped = temp('mv')
+      const mapCb = makeCallback(up.fn), filterCb = makeCallback(fn)
+      const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
+        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)]))]),
+          ['then',
+            ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
+            ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
+      ])
+      return typed(['block', ['result', 'f64'],
+        recv.setup, mapCb.setup, filterCb.setup,
+        ['local.set', `$${maxLen}`, ['call', '$__len', recv.value]],
+        out.init, ['local.set', `$${count}`, ['i32.const', 0]],
+        ...loop,
+        ['i32.store', ['i32.sub', ['local.get', `$${out.local}`], ['i32.const', 8]], ['local.get', `$${count}`]],
+        out.ptr], 'f64')
+    }
     const recv = hoistArrayValue(arr)
     const count = tempI32('fc'), maxLen = tempI32('fm')
     const cb = makeCallback(fn)
@@ -598,6 +654,35 @@ export default () => {
   }
 
   ctx.core.emit['.reduce'] = (arr, fn, init) => {
+    const up = detectUpstream(arr)
+    // .map(f).reduce(g, init) → single loop: apply f, accumulate with g
+    if (up && up.method === 'map') {
+      const recv = hoistArrayValue(up.source)
+      const acc = temp('ra'), mapped = temp('mv')
+      const mapCb = makeCallback(up.fn), redCb = makeCallback(fn)
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
+        ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), typed(['local.get', `$${mapped}`], 'f64')]))]
+      ])
+      return typed(['block', ['result', 'f64'],
+        recv.setup, mapCb.setup, redCb.setup,
+        ['local.set', `$${acc}`, init ? asF64(emit(init)) : ['f64.const', 0]],
+        ...loop, ['local.get', `$${acc}`]], 'f64')
+    }
+    // .filter(f).reduce(g, init) → single loop: test f, accumulate with g if passes
+    if (up && up.method === 'filter') {
+      const recv = hoistArrayValue(up.source)
+      const acc = temp('ra')
+      const filterCb = makeCallback(up.fn), redCb = makeCallback(fn)
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+          ['then', ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]]]
+      ])
+      return typed(['block', ['result', 'f64'],
+        recv.setup, filterCb.setup, redCb.setup,
+        ['local.set', `$${acc}`, init ? asF64(emit(init)) : ['f64.const', 0]],
+        ...loop, ['local.get', `$${acc}`]], 'f64')
+    }
     const recv = hoistArrayValue(arr)
     const acc = `${T}ra${ctx.func.uniq++}`
     ctx.func.locals.set(acc, 'f64')
@@ -614,6 +699,28 @@ export default () => {
   }
 
   ctx.core.emit['.forEach'] = (arr, fn) => {
+    // .map(f).forEach(g) → single loop: apply f, call g — no intermediate array
+    const up = detectUpstream(arr)
+    if (up && up.method === 'map') {
+      const recv = hoistArrayValue(up.source)
+      const mapped = temp('mv'), tmp = temp('ft')
+      const mapCb = makeCallback(up.fn), forCb = makeCallback(fn)
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
+        ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)]))]
+      ])
+      return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
+    }
+    if (up && up.method === 'filter') {
+      const recv = hoistArrayValue(up.source)
+      const tmp = temp('ft')
+      const filterCb = makeCallback(up.fn), forCb = makeCallback(fn)
+      const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
+        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+          ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxF64(i)]))]]]
+      ])
+      return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
+    }
     const recv = hoistArrayValue(arr)
     const tmp = `${T}ft${ctx.func.uniq++}`
     ctx.func.locals.set(tmp, 'f64')
