@@ -15,6 +15,11 @@ import { ctx, err } from './ctx.js'
 
 export const T = '\uE000'
 
+/** Statement operators — used to distinguish block bodies from object literals. */
+export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
+  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
+  'throw', 'try', 'catch', '++', '--', '()'])
+
 // Value types — what a variable holds (for method dispatch, schema resolution)
 export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',

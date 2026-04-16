@@ -17,7 +17,7 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive, PTR } from './ctx.js'
-import { T, extractParams, collectParamNames, classifyParam } from './analyze.js'
+import { T, STMT_OPS, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -724,7 +724,7 @@ const handlers = {
   // Object literal - flatten comma, expand shorthand
   '{}'(inner) {
     // Detect block body vs object literal
-    if (Array.isArray(inner) && [';', 'return', 'if', 'for', 'while', 'let', 'const', 'break', 'continue', 'switch', 'throw', 'try', 'catch', '=', '+=', '-=', '*=', '/=', '%=', '++', '--'].includes(inner[0])) {
+    if (Array.isArray(inner) && STMT_OPS.has(inner[0])) {
       // Block body: push block scope for let/const shadowing
       scopes.push(new Map())
       const result = ['{}', prep(inner)]

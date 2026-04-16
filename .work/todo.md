@@ -1,48 +1,30 @@
-### Audit (structural)
+### Bugs
 
-**Bugs / correctness**
+* [x] Regex greedy backtrack gives back 1 byte regardless of pattern width — `module/regex.js:256`: fixed to use `patternMinLen(node)` for correct multi-char backtracking.
+* [x] Regex split never grows past 8 elements — `module/regex.js:815`: added grow logic (double capacity + copy) when count >= cap.
+* [ ] `JSON.stringify` emits `{}` for all objects — `module/json.js:106-112`: OBJECT, HASH, MAP all serialize as `{}`. Need schema-based key iteration for OBJECT, hash iteration for HASH.
 
-* [x] **`STDLIB_DEPS.__write_val` defined twice** — merged into single entry at [src/ctx.js:112](../src/ctx.js#L112) with all deps: `['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str']`.
-* [x] **`||=`/`??=` global write-back returns void** — replaced inline `global.set`/`local.set` with `writeVar(name, result)` which correctly tees through temp for globals.
-* [x] **Missing `?.` on `ctx.func.valTypes`** — added optional chaining at [src/compile.js](../src/compile.js) callsite.
-* [x] **`_inTry` not restored on exception in catch handler** — wrapped `emitFlat(body)` in try/finally at [src/compile.js](../src/compile.js).
-* [x] **`__str_eq` registered in both string.js and collection.js** — removed duplicate from collection.js; string.js owns it, collection.js uses it via `STDLIB_DEPS` transitive inclusion.
-* [x] **`__typed_idx` registered in both array.js and typedarray.js** — intentional upgrade pattern: array.js registers basic version, typedarray.js overwrites with full version (aux view bit). Documented with comment in array.js.
+### Fragility
 
-**Structural fragility**
+* [x] `__typed_idx` overwrite pattern — both `array.js` and `typedarray.js` now carry the full dispatch tree (intentionally duplicated: array.js is the runtime-complete fallback for external typed arrays when typedarray module isn't loaded).
 
-* [ ] **Manual section index bookkeeping** — [src/compile.js:819-907](../src/compile.js#L819): 5 integer indices (`dataIdx`, `tableIdx`, `globalsIdx`, `funcsIdx`, `elemIdx`) track positions into mutable `sections` array. Each `splice()` invalidates others. Replace with named-slot builder.
-* [x] **WASM passthrough swallows misspelled ops** — replaced `/^[a-z]/` with `op.includes('.') || WASM_OPS.has(op)` allowlist in [src/compile.js](../src/compile.js).
-* [ ] **`handlers['{}']` block-vs-object allowlist** — [src/prepare.js](../src/prepare.js): hardcoded list of 18 statement operators. Adding a new statement form without updating this list causes it to be misinterpreted as an object literal.
+### Redundancy — easy
 
-**Dead code & residue**
+* [x] `usesDynProps` defined identically in `compile.js` and `core.js` — exported from compile.js, imported in core.js
+* [x] `inc('__typed_idx')` called 7 times in array.js — hoisted to module init
+* [x] `inc('__is_truthy')` inside each array callback method — hoisted to module init
+* [x] `core.js` uses raw hex `0x7FF8000000000001` in WAT strings — replaced with `${UNDEF_NAN}` / `${NULL_NAN}` template variables
+* [x] `ctx.schema.vars.get(name) → ctx.schema.list[id]` two-liner — added `ctx.schema.resolve(name)` in schema.js, used in object.js and compile.js
+* [x] `.shift`/`.unshift`/`.flat`/`.join` — replaced with `arrMethod` factory mirroring `strMethod`
 
-* [x] **`hoistCallback` is dead** — deleted from [module/array.js](../module/array.js).
-* [x] **Dead `typeof` guards** — deleted from [src/compile.js](../src/compile.js); call `reconstructArgsWithSpreads`/`buildArrayWithSpreads` directly.
-* [x] **`&&=`/`??=` identical ternary branch** — collapsed: `||=` swaps then/else, `&&=`/`??=` share same order (different conditions).
+### Redundancy — medium
 
-**Redundancy / missing abstractions**
-
-* [x] **Null sentinel repeated ~10 times** — extracted `nullExpr()` and `NULL_IR` in [src/compile.js](../src/compile.js); 9 sites use `nullExpr()`, 2 raw sites use `NULL_IR`.
-* [x] **`valType` two-map lookup not using `keyValType`** — replaced 5 inline two-map lookups with `keyValType()` calls in [src/compile.js](../src/compile.js).
-* [x] **`mutating` method lists duplicated** — extracted `SPREAD_MUTATORS` (in-place spread methods) and `BOXED_MUTATORS` (reallocating methods needing write-back) as named Sets in [src/compile.js](../src/compile.js).
-* [x] **`genUpsertGrow`/`genUpsertGrowStrict` near-duplicate** — collapsed into single `genUpsertGrow(... strict)` with type guard parameter in [module/collection.js](../module/collection.js).
-* [ ] **`emitArrayReduce` duplicates `arrayLoop` pattern** — [module/math.js:37-55](../module/math.js#L37) rolls its own loop identical in structure to `arrayLoop` in array.js. Lift `arrayLoop`+`elemLoad`/`elemStore` out of array.js closure so math.js and typedarray.js can reuse.
-
-**What's clean (preserve)**
-
-* [x] **`schema.js`** — 73 lines, dual-index, structural subtyping. Best-written file in the project.
-* [x] **Module boundary pattern** — every module exports a factory, registers on `ctx.core.emit` + `ctx.core.stdlib`. Rigidly uniform, easy to extend.
-* [x] **`analyze.js` extraction** — clean separation of pre-analysis from emission. No side effects, purely functional.
-* [x] **`makeCallback` inline optimizer** — `isPureExpr` + `substExpr` is a well-designed expression inliner with clean fallback.
-* [x] **`allocPtr` unification** — single helper for 12+ previous sites. Good DRY win.
-* [x] **`strMethod` factory in string.js** — table-driven method registration, cleanest pattern in the stdlib.
-* [x] **Test coverage** — 32 files, ~6800 lines, covering all features including regressions and edge cases.
-
+* [-] Collection probe generators — skipped: shared part is only 4 lines, each generator has different type guard logic
+* [-] `$__is_str_ptr` WAT helper — skipped: identical to existing `__is_str_key`, no new helper needed
+* [x] `UNDEF_NAN`/`NULL_NAN` WAT expansion — added `UNDEF_WAT`/`NULL_WAT` JS string constants for WAT templates
+* [x] `__typed_idx` element-dispatch tree duplicated — kept intentionally: both array.js and typedarray.js need full dispatch for different scenarios (external typed arrays vs explicit TypedArray usage)
 
 ### Optimizations
-
-
 
 ### Build & tooling
 
@@ -117,6 +99,46 @@
 
 
 ## Done (scratch branch)
+### Audit (structural)
+
+**Bugs / correctness**
+
+* [x] **`STDLIB_DEPS.__write_val` defined twice** — merged into single entry at [src/ctx.js:112](../src/ctx.js#L112) with all deps: `['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str']`.
+* [x] **`||=`/`??=` global write-back returns void** — replaced inline `global.set`/`local.set` with `writeVar(name, result)` which correctly tees through temp for globals.
+* [x] **Missing `?.` on `ctx.func.valTypes`** — added optional chaining at [src/compile.js](../src/compile.js) callsite.
+* [x] **`_inTry` not restored on exception in catch handler** — wrapped `emitFlat(body)` in try/finally at [src/compile.js](../src/compile.js).
+* [x] **`__str_eq` registered in both string.js and collection.js** — removed duplicate from collection.js; string.js owns it, collection.js uses it via `STDLIB_DEPS` transitive inclusion.
+* [x] **`__typed_idx` registered in both array.js and typedarray.js** — intentional upgrade pattern: array.js registers basic version, typedarray.js overwrites with full version (aux view bit). Documented with comment in array.js.
+
+**Structural fragility**
+
+* [x] **Manual section index bookkeeping** — replaced 5 mutable indices + splice calls with named-slot builder (`sec.imports`, `sec.types`, `sec.memory`, etc.) in [src/compile.js](../src/compile.js); final assembly concatenates slots — no index tracking, no splice invalidation.
+* [x] **WASM passthrough swallows misspelled ops** — replaced `/^[a-z]/` with `op.includes('.') || WASM_OPS.has(op)` allowlist in [src/compile.js](../src/compile.js).
+* [x] **`handlers['{}']` block-vs-object allowlist** — extracted `STMT_OPS` Set in [src/analyze.js](../src/analyze.js); shared by [src/prepare.js](../src/prepare.js) `'{}'` handler and [src/compile.js](../src/compile.js) `isBlockBody`. Single source of truth — adding a statement op updates both sites.
+
+**Dead code & residue**
+
+* [x] **`hoistCallback` is dead** — deleted from [module/array.js](../module/array.js).
+* [x] **Dead `typeof` guards** — deleted from [src/compile.js](../src/compile.js); call `reconstructArgsWithSpreads`/`buildArrayWithSpreads` directly.
+* [x] **`&&=`/`??=` identical ternary branch** — collapsed: `||=` swaps then/else, `&&=`/`??=` share same order (different conditions).
+
+**Redundancy / missing abstractions**
+
+* [x] **Null sentinel repeated ~10 times** — extracted `nullExpr()` and `NULL_IR` in [src/compile.js](../src/compile.js); 9 sites use `nullExpr()`, 2 raw sites use `NULL_IR`.
+* [x] **`valType` two-map lookup not using `keyValType`** — replaced 5 inline two-map lookups with `keyValType()` calls in [src/compile.js](../src/compile.js).
+* [x] **`mutating` method lists duplicated** — extracted `SPREAD_MUTATORS` (in-place spread methods) and `BOXED_MUTATORS` (reallocating methods needing write-back) as named Sets in [src/compile.js](../src/compile.js).
+* [x] **`genUpsertGrow`/`genUpsertGrowStrict` near-duplicate** — collapsed into single `genUpsertGrow(... strict)` with type guard parameter in [module/collection.js](../module/collection.js).
+* [x] **`emitArrayReduce` duplicates `arrayLoop` pattern** — lifted `arrayLoop`, `elemLoad`, `elemStore` to [src/compile.js](../src/compile.js) as exports; [module/array.js](../module/array.js) and [module/math.js](../module/math.js) both import from compile.js. `emitArrayReduce` rewritten from 19 lines of manual loop to 6-line `arrayLoop` call.
+
+**What's clean (preserve)**
+
+* [x] **`schema.js`** — 73 lines, dual-index, structural subtyping. Best-written file in the project.
+* [x] **Module boundary pattern** — every module exports a factory, registers on `ctx.core.emit` + `ctx.core.stdlib`. Rigidly uniform, easy to extend.
+* [x] **`analyze.js` extraction** — clean separation of pre-analysis from emission. No side effects, purely functional.
+* [x] **`makeCallback` inline optimizer** — `isPureExpr` + `substExpr` is a well-designed expression inliner with clean fallback.
+* [x] **`allocPtr` unification** — single helper for 12+ previous sites. Good DRY win.
+* [x] **`strMethod` factory in string.js** — table-driven method registration, cleanest pattern in the stdlib.
+* [x] **Test coverage** — 32 files, ~6800 lines, covering all features including regressions and edge cases.
 
 * [x] **Inline known callbacks in `.map`/`.filter`/`.forEach`/`.reduce`/`.find`** — pure-arrow inliner in [module/array.js:114](../module/array.js#L114) (`makeCallback`): substitutes params with fresh locals, eliminates per-iteration `__alloc(n*8+8)` + `call_indirect`. Closure-machinery fallback retained for non-literal callbacks.
 * [ ] **Pass immutable closure captures as WASM params, not heap env** — [module/function.js:71-86](../module/function.js#L71-L86). Deferred — mostly subsumed by the inliner; only matters when callback is a variable, which is rare in hot loops.

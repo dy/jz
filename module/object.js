@@ -28,8 +28,8 @@ export default () => {
     let schemaId = ctx.schema.register(names)
     const target = ctx.schema.targetStack.at(-1)
     if (target) {
-      const varId = ctx.schema.vars.get(target)
-      if (varId != null) schemaId = varId
+      const merged = ctx.schema.resolve(target)
+      if (merged) schemaId = ctx.schema.vars.get(target)
     }
     const schema = ctx.schema.list[schemaId]
     const t = `${T}obj${ctx.func.uniq++}`
@@ -240,10 +240,7 @@ export default () => {
 // --- Helpers ---
 
 function resolveSchema(obj) {
-  if (typeof obj === 'string') {
-    const id = ctx.schema.vars.get(obj)
-    if (id != null) return ctx.schema.list[id]
-  }
+  if (typeof obj === 'string') return ctx.schema.resolve(obj)
   if (Array.isArray(obj) && obj[0] === '{}')
     return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
   return null

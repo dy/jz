@@ -34,6 +34,12 @@ export function initSchema() {
     return id
   }
 
+  /** Resolve variable name to its schema props array, or null. */
+  ctx.schema.resolve = (varName) => {
+    const id = ctx.schema.vars.get(varName)
+    return id != null ? ctx.schema.list[id] : null
+  }
+
   /** Check if variable has a boxed schema (slot 0 = __inner__). */
   ctx.schema.isBoxed = (varName) => {
     const id = ctx.schema.vars.get(varName)

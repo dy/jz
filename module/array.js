@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -16,37 +16,6 @@ import { ctx, inc, PTR } from '../src/ctx.js'
 function allocArray(len, cap) {
   const a = allocPtr({ type: PTR.ARRAY, len, cap, tag: 'arr' })
   return { local: a.local, setup: [a.init], ptr: a.ptr }
-}
-
-/** Emit a loop that iterates over array elements. Helper for methods. */
-function arrayLoop(arrExpr, bodyFn) {
-  const arr = `${T}aa${ctx.func.uniq++}`, ptr = `${T}ap${ctx.func.uniq++}`, len = `${T}al${ctx.func.uniq++}`, i = `${T}ai${ctx.func.uniq++}`, item = `${T}av${ctx.func.uniq++}`
-  ctx.func.locals.set(arr, 'f64')
-  ctx.func.locals.set(ptr, 'i32')
-  ctx.func.locals.set(len, 'i32')
-  ctx.func.locals.set(i, 'i32')
-  ctx.func.locals.set(item, 'f64')
-  const id = ctx.func.uniq++
-  return [
-    ['local.set', `$${arr}`, asF64(arrExpr)],
-    ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
-    ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]],
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-      ['local.set', `$${item}`, elemLoad(ptr, i)],
-      ...bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64')),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$loop${id}`]]],
-  ]
-}
-
-function elemLoad(ptr, i) {
-  return ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-}
-
-function elemStore(ptr, i, val) {
-  return ['f64.store', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]], val]
 }
 
 function hoistArrayValue(arr) {
@@ -126,8 +95,15 @@ function makeCallback(fn) {
   }
 }
 
+// Factory for simple arr→call stdlib patterns (mirrors strMethod in string.js)
+const arrMethod = (name, nArgs = 0) => (...args) => {
+  inc(name)
+  const call = ['call', `$${name}`, ...args.slice(0, nArgs + 1).map(a => asF64(emit(a)))]
+  return typed(call, 'f64')
+}
+
 export default () => {
-  inc('__ptr_offset', '__ptr_type', '__len', '__set_len')
+  inc('__ptr_offset', '__ptr_type', '__len', '__set_len', '__typed_idx', '__is_truthy')
 
   // Array.isArray(x): check ptr_type === PTR.ARRAY
   ctx.core.emit['Array.isArray'] = (x) => {
@@ -150,11 +126,18 @@ export default () => {
             (call $__ptr_offset (local.get $ptr))
             (i32.shl (local.get $i) (i32.const 3)))))))`
 
-  // Runtime-dispatch index: bounds check + typed array element type dispatch (basic version).
-  // typedarray.js overwrites with full version handling view indirection (aux bit 3).
+  // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
+  // Must handle all typed array element types since external host can pass typed arrays
+  // even when typedarray module isn't loaded. typedarray.js registers identical version.
   ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $off i32) (local $et i32) (local $len i32)
+    (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if
+      (i32.and
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
+      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.or
@@ -164,7 +147,7 @@ export default () => {
       (else
         (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
           (then
-            (local.set $et (call $__ptr_aux (local.get $ptr)))
+            (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
               (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
                 (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
@@ -278,8 +261,8 @@ export default () => {
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.STRING]],
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.SSO]]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])],
-            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
-          : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+            ['else', (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
+          : (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
 
         body.push(
           ['local.set', `$${src}`, spreadVal],
@@ -326,7 +309,7 @@ export default () => {
       return ['call', '$__dyn_get', objExpr, keyExpr]
     }
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, vi])
-    const arrayLoad = (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, vi])
+    const arrayLoad = (['call', '$__typed_idx', ptrExpr, vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       ctx.func.locals.set(keyTmp, 'f64')
@@ -359,11 +342,11 @@ export default () => {
           ['local.set', `$${baseTmp}`, ptrExpr],
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = asI32(typed(keyExpr, 'f64'))
-            return (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${baseTmp}`], keyI32])
+            return (['call', '$__typed_idx', ['local.get', `$${baseTmp}`], keyI32])
           })], 'f64')
         : typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
-          (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
+          (['call', '$__typed_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
     }
     // Known string → single-char SSO string
     if (vt === 'string')
@@ -377,9 +360,9 @@ export default () => {
               ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
               ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, keyI32])],
-            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, keyI32])]]
+            ['else', (['call', '$__typed_idx', ptrExpr, keyI32])]]
         }
-        return (inc('__typed_idx'), ['call', '$__typed_idx', ptrExpr, keyI32])
+        return (['call', '$__typed_idx', ptrExpr, keyI32])
       })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     if (ctx.module.modules['string'])
@@ -456,10 +439,7 @@ export default () => {
   }
 
   // .shift() → remove first element, shift remaining left, return removed
-  ctx.core.emit['.shift'] = (arr) => {
-    inc('__arr_shift')
-    return typed(['call', '$__arr_shift', asF64(emit(arr))], 'f64')
-  }
+  ctx.core.emit['.shift'] = arrMethod('__arr_shift')
 
   ctx.core.stdlib['__arr_shift'] = `(func $__arr_shift (param $arr f64) (result f64)
     (local $off i32) (local $len i32) (local $val f64)
@@ -477,10 +457,7 @@ export default () => {
         (local.get $val))))`
 
   // .unshift(val) → prepend element, shift existing right
-  ctx.core.emit['.unshift'] = (arr, val) => {
-    inc('__arr_unshift')
-    return typed(['call', '$__arr_unshift', asF64(emit(arr)), asF64(emit(val))], 'f64')
-  }
+  ctx.core.emit['.unshift'] = arrMethod('__arr_unshift', 1)
 
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
     (local $off i32) (local $len i32)
@@ -503,7 +480,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
+      ['if', (['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -522,7 +499,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', ['i32.eqz', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))])],
+      ['if', ['i32.eqz', (['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))])],
         ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -541,7 +518,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
+      ['if', (['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -576,7 +553,7 @@ export default () => {
       const filterCb = makeCallback(up.fn), mapCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+        ['if', (['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
           ['then',
             elemStore(out.local, count, asF64(mapCb.call([item, idxF64(count)]))),
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -616,7 +593,7 @@ export default () => {
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
-        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)]))]),
+        ['if', (['call', '$__is_truthy', asF64(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)]))]),
           ['then',
             ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -634,7 +611,7 @@ export default () => {
     const cb = makeCallback(fn)
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
+      ['if', (['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then',
           ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], item],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -673,7 +650,7 @@ export default () => {
       const acc = temp('ra')
       const filterCb = makeCallback(up.fn), redCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+        ['if', (['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
           ['then', ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]]]
       ])
       return typed(['block', ['result', 'f64'],
@@ -714,7 +691,7 @@ export default () => {
       const tmp = temp('ft')
       const filterCb = makeCallback(up.fn), forCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
+        ['if', (['call', '$__is_truthy', asF64(filterCb.call([item, idxF64(i)]))]),
           ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxF64(i)]))]]]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
@@ -736,7 +713,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', (inc('__is_truthy'), ['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
+      ['if', (['call', '$__is_truthy', asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]),
         ['then', ['local.set', `$${result}`, item], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -942,10 +919,7 @@ export default () => {
       (br $cl2)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.core.emit['.flat'] = (arr) => {
-    inc('__arr_flat')
-    return typed(['call', '$__arr_flat', asF64(emit(arr))], 'f64')
-  }
+  ctx.core.emit['.flat'] = arrMethod('__arr_flat')
 
   // .flatMap(fn) → map then flatten
   ctx.core.emit['.flatMap'] = (arr, fn) => {
@@ -956,8 +930,5 @@ export default () => {
   }
 
   // .join(sep) → concatenate array elements with separator string
-  ctx.core.emit['.join'] = (arr, sep) => {
-    inc('__str_join')
-    return typed(['call', '$__str_join', asF64(emit(arr)), asF64(emit(sep))], 'f64')
-  }
+  ctx.core.emit['.join'] = arrMethod('__str_join', 1)
 }

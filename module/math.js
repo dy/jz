@@ -13,7 +13,7 @@
  * @module math
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, temp, arrayLoop } from '../src/compile.js'
 import { ctx, inc } from '../src/ctx.js'
 
 export default () => {
@@ -35,22 +35,13 @@ export default () => {
 
   /** Emit array reduce with a WASM binary op (for Math.max(...arr), Math.min(...arr)) */
   function emitArrayReduce(wasmOp, arrExpr, initVal) {
-    inc('__ptr_offset', '__len')
-    const va = asF64(emit(arrExpr))
-    const acc = `${T}mr${ctx.func.uniq++}`, ptr = `${T}mp${ctx.func.uniq++}`, len = `${T}ml${ctx.func.uniq++}`, i = `${T}mi${ctx.func.uniq++}`
-    ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32')
-    const id = ctx.func.uniq++
+    const acc = temp('mr')
+    const loop = arrayLoop(emit(arrExpr), (_ptr, _len, _i, item) => [
+      ['local.set', `$${acc}`, [wasmOp, ['local.get', `$${acc}`], asF64(item)]]
+    ])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${acc}`, ['f64.const', initVal]],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', va]],
-      ['local.set', `$${len}`, ['call', '$__len', va]],
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${acc}`, [wasmOp, ['local.get', `$${acc}`],
-          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]],
+      ...loop,
       ['local.get', `$${acc}`]], 'f64')
   }
 

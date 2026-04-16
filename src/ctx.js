@@ -114,7 +114,10 @@ export const STDLIB_DEPS = {
   __write_str: ['__sso_char', '__str_len'],
 
   // JSON stringify
-  __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num'],
+  __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+  __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
+  __json_hash: ['__ptr_offset', '__jput', '__jput_str', '__json_val'],
+  __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
   __jput_num: ['__ftoa'],
   __jput_str: ['__char_at', '__str_byteLen'],
 

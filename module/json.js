@@ -8,8 +8,8 @@
  * @module json
  */
 
-import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { emit, typed, asF64, T } from '../src/compile.js'
+import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 export default () => {
 
@@ -21,6 +21,7 @@ export default () => {
   ctx.scope.globals.set('__jbuf', '(global $__jbuf (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
 
   // __jput(byte: i32) — append one byte to output buffer
   ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
@@ -102,17 +103,69 @@ export default () => {
           (br $l)))
         (call $__jput (i32.const 93))  ;; ]
         (return)))
-    ;; Object/Map/Hash → {}
-    (if (i32.or (i32.or (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-                        (i32.eq (local.get $type) (i32.const ${PTR.HASH})))
+    ;; HASH/MAP — iterate entries: {"key":val,...}
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
                 (i32.eq (local.get $type) (i32.const ${PTR.MAP})))
-      (then
-        (call $__jput (i32.const 123))
-        (call $__jput (i32.const 125))
-        (return)))
+      (then (call $__json_hash (local.get $val)) (return)))
+    ;; OBJECT — schema-based: iterate props with schema name table
+    (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+      (then (call $__json_obj (local.get $val)) (return)))
     ;; Unknown type → null
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
+
+  // __json_hash(val: f64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
+  // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
+  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val f64)
+    (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32)
+    (local.set $off (call $__ptr_offset (local.get $val)))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $first (i32.const 1))
+    (call $__jput (i32.const 123))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $cap)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const 24))))
+      (if (f64.ne (f64.load (local.get $slot)) (f64.const 0))
+        (then
+          (if (i32.eqz (local.get $first))
+            (then (call $__jput (i32.const 44))))
+          (local.set $first (i32.const 0))
+          (call $__jput (i32.const 34))
+          (call $__jput_str (f64.load (i32.add (local.get $slot) (i32.const 8))))
+          (call $__jput (i32.const 34))
+          (call $__jput (i32.const 58))
+          (call $__json_val (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (call $__jput (i32.const 125)))`
+
+  // __json_obj(val: f64) — stringify OBJECT using runtime schema name table.
+  // Schema name table: global $__schema_tbl → array of f64 pointers.
+  //   schema_tbl[schemaId * 8] = f64 pointer to jz Array of key name strings.
+  // Object props are sequential f64 at ptr_offset, indexed same as schema.
+  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val f64)
+    (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
+    (local $i i32) (local $koff i32)
+    (local.set $off (call $__ptr_offset (local.get $val)))
+    (local.set $sid (call $__ptr_aux (local.get $val)))
+    ;; Load keys array from schema table: schema_tbl + sid * 8
+    (local.set $keys (call $__ptr_offset
+      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+    (local.set $nkeys (call $__len
+      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+    (local.set $koff (local.get $keys))
+    (call $__jput (i32.const 123))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
+      (if (local.get $i) (then (call $__jput (i32.const 44))))
+      (call $__jput (i32.const 34))
+      (call $__jput_str (f64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
+      (call $__jput (i32.const 34))
+      (call $__jput (i32.const 58))
+      (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (call $__jput (i32.const 125)))`
 
   // __stringify(val: f64) → f64 (NaN-boxed string)
   ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val f64) (result f64)

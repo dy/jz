@@ -19,7 +19,7 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, valTypeOf, analyzeValTypes, analyzeLocals,
+  T, VAL, STMT_OPS, valTypeOf, analyzeValTypes, analyzeLocals,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures,
 } from './analyze.js'
@@ -51,6 +51,9 @@ const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = '0x7FF8000100000000'
 export const UNDEF_NAN = '0x7FF8000000000001'
+/** WAT-template-ready sentinel expressions for use in stdlib template strings. */
+export const NULL_WAT = `(f64.reinterpret_i64 (i64.const ${NULL_NAN}))`
+export const UNDEF_WAT = `(f64.reinterpret_i64 (i64.const ${UNDEF_NAN}))`
 const NULL_IR = ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]
 const nullExpr = () => typed(NULL_IR, 'f64')
 
@@ -153,7 +156,7 @@ function keyValType(node) {
     : valTypeOf(node)
 }
 
-function usesDynProps(vt) {
+export function usesDynProps(vt) {
   return vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.CLOSURE
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
 }
@@ -185,6 +188,36 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
     ['call', '$__alloc_hdr', irOf(len), irOf(cap == null ? len : cap), ['i32.const', stride]]]
   const ptr = typed(['call', '$__mkptr', ['i32.const', type], irOf(aux), ['local.get', `$${local}`]], 'f64')
   return { local, init, ptr }
+}
+
+/** Load f64 element from array data at ptr + i*8. ptr/i are local name strings. */
+export function elemLoad(ptr, i) {
+  return ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+}
+
+/** Store f64 val at array data ptr + i*8. ptr/i are local name strings. */
+export function elemStore(ptr, i, val) {
+  return ['f64.store', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]], val]
+}
+
+/** Emit a loop iterating over array elements. Returns IR instruction list.
+ *  bodyFn(ptr, len, i, item) should return an array of IR instructions. */
+export function arrayLoop(arrExpr, bodyFn) {
+  inc('__ptr_offset', '__len')
+  const arr = temp('aa'), ptr = tempI32('ap'), len = tempI32('al'), i = tempI32('ai'), item = temp('av')
+  const id = ctx.func.uniq++
+  return [
+    ['local.set', `$${arr}`, asF64(arrExpr)],
+    ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
+    ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['block', `$brk${id}`, ['loop', `$loop${id}`,
+      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ['local.set', `$${item}`, elemLoad(ptr, i)],
+      ...bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64')),
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$loop${id}`]]],
+  ]
 }
 
 // === Variable storage abstraction ===
@@ -328,7 +361,7 @@ function emitDecl(...inits) {
     // Auto-box local variable if it has property assignments
     if (ctx.types._localProps?.has(name) && ctx.schema.vars.has(name)) {
       const schemaId = ctx.schema.vars.get(name)
-      const schema = ctx.schema.list[schemaId]
+      const schema = ctx.schema.resolve(name)
       if (schema?.[0] === '__inner__') {
         inc('__alloc', '__mkptr')
         const bt = `${T}bx${ctx.func.uniq++}`
@@ -596,8 +629,7 @@ export default function compile(ast) {
     for (const [name, props] of propMap) {
       // Merge new properties into existing schema if needed
       if (ctx.schema.vars.has(name)) {
-        const existingId = ctx.schema.vars.get(name)
-        const existing = ctx.schema.list[existingId]
+        const existing = ctx.schema.resolve(name)
         const newProps = [...props].filter(p => !existing.includes(p))
         if (newProps.length) {
           const merged = [...existing, ...newProps]
@@ -797,49 +829,51 @@ export default function compile(ast) {
   }
   compilePendingClosures()
 
-  // Build module sections
-  const sections = [...ctx.module.imports]
+  // Build module sections — named slots, assembled at the end (no index bookkeeping)
+  const sec = {
+    extStdlib: [],  // external stdlib (imports that must precede all other imports)
+    imports: [...ctx.module.imports],
+    types: [],      // function types for call_indirect
+    memory: [],     // memory declaration
+    data: [],       // data segment (filled after emit)
+    tags: [],       // error tags + related exports
+    table: [],      // function table (at most one)
+    globals: [],    // globals (filled after __start)
+    funcs: [],      // closure funcs + regular funcs
+    elem: [],       // element section (table init)
+    start: [],      // __start func + start directive
+    stdlib: [],     // stdlib functions
+    customs: [],    // custom sections + exports
+  }
 
   // Function types for call_indirect (one per arity)
   if (ctx.closure.types) {
     for (const arity of ctx.closure.types) {
       const params = [['param', 'f64']] // env
       for (let i = 0; i < arity; i++) params.push(['param', 'f64'])
-      sections.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
+      sec.types.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
     }
   }
 
   if (ctx.module.modules.core) {
     const pages = ctx.memory.pages || 1
-    if (ctx.memory.shared) sections.push(['import', '"env"', '"memory"', ['memory', pages]])
-    else sections.push(['memory', ['export', '"memory"'], pages])
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
+    else sec.memory.push(['memory', ['export', '"memory"'], pages])
   }
-  // Data segment placeholder — filled after emit (string literals append to ctx.runtime.data during emit)
-  const dataIdx = sections.length
+
   if (ctx.runtime.throws) {
     ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
-    sections.push(['tag', '$__jz_err', ['param', 'f64']])
-    sections.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
+    sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
+    sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
   }
 
-  let tableIdx = -1
-  if (ctx.closure.table?.length) {
-    tableIdx = sections.length
-    sections.push(['table', ctx.closure.table.length, 'funcref'])
-  }
+  if (ctx.closure.table?.length)
+    sec.table.push(['table', ctx.closure.table.length, 'funcref'])
 
-  // Globals placeholder — filled after __start (const folding may update declarations)
-  let globalsIdx = sections.length
-  let funcsIdx = sections.length
-  sections.push(...closureFuncs)
-  sections.push(...funcs)
+  sec.funcs.push(...closureFuncs, ...funcs)
 
-  // Element section: populate function table
-  let elemIdx = -1
-  if (ctx.closure.table?.length) {
-    elemIdx = sections.length
-    sections.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
-  }
+  if (ctx.closure.table?.length)
+    sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
   // Module-scope init code (__start): reset per-function state, emit, collect locals
   ctx.func.locals = new Map()
@@ -879,66 +913,81 @@ export default function compile(ast) {
     }
   }
 
-  if (moduleInits.length || init?.length || boxInit.length) {
+  // Schema name table: if JSON.stringify is used, build runtime table mapping schemaId → key arrays
+  const schemaInit = []
+  if (ctx.core.includes.has('__stringify') && ctx.schema.list.length) {
+    const nSchemas = ctx.schema.list.length
+    const stbl = `${T}stbl`
+    const sarr = `${T}sarr`
+    ctx.func.locals.set(stbl, 'i32')
+    ctx.func.locals.set(sarr, 'i32')
+    inc('__alloc', '__alloc_hdr', '__mkptr')
+    schemaInit.push(
+      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', nSchemas * 8]]],
+      ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
+    for (let s = 0; s < nSchemas; s++) {
+      const keys = ctx.schema.list[s]
+      const n = keys.length
+      schemaInit.push(
+        ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]])
+      for (let k = 0; k < n; k++)
+        schemaInit.push(
+          ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
+            emit(['str', String(keys[k])])])
+      schemaInit.push(
+        ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
+          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${sarr}`]]])
+    }
+  }
+
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...boxInit, ...moduleInits, ...initIR)
-    sections.push(startFn)
-    sections.push(['start', '$__start'])
+    startFn.push(...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    sec.start.push(startFn, ['start', '$__start'])
   }
 
+  // Late closures (compiled during __start emit) — prepend before earlier closures
   const compiledClosureCount = closureFuncs.length
   compilePendingClosures(compiledClosureCount)
-  if (closureFuncs.length > compiledClosureCount) {
-    const lateClosures = closureFuncs.slice(compiledClosureCount)
-    sections.splice(funcsIdx, 0, ...lateClosures)
-    if (elemIdx >= 0) elemIdx += lateClosures.length
-  }
+  if (closureFuncs.length > compiledClosureCount)
+    sec.funcs.unshift(...closureFuncs.slice(compiledClosureCount))
+
+  // Finalize function table + element section (table may grow during __start emit)
   if (ctx.closure.table?.length) {
-    const elemNode = ['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]
-    if (tableIdx >= 0) sections[tableIdx][1] = ctx.closure.table.length
-    else {
-      tableIdx = globalsIdx
-      sections.splice(tableIdx, 0, ['table', ctx.closure.table.length, 'funcref'])
-      globalsIdx++
-      funcsIdx++
-      if (elemIdx >= 0) elemIdx++
-    }
-    if (elemIdx >= 0) sections[elemIdx] = elemNode
-    else {
-      elemIdx = sections.length
-      sections.push(elemNode)
-    }
+    sec.table = [['table', ctx.closure.table.length, 'funcref']]
+    sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
   }
 
   // Resolve stdlib AFTER __start emit — inc() calls during __start must be captured
   resolveIncludes()
   for (const [name, fnStr] of Object.entries(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
-      const parsed = parseWat(fnStr); sections.splice(0, 0, parsed[0] === "module" ? parsed[1] : parsed)
+      const parsed = parseWat(fnStr)
+      sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
       ctx.core.includes.delete(name)
     }
   }
-  sections.push(...[...ctx.core.includes].map(n => parseWat(ctx.core.stdlib[n])))
+  sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(ctx.core.stdlib[n])))
 
   // Adjust heap base past data section (data at offset 0 may exceed 1024 bytes)
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7 // align to 8
     ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
-    // Patch __reset in sections to use correct heap base
-    for (const s of sections)
+    // Patch __reset in stdlib to use correct heap base
+    for (const s of sec.stdlib)
       if (s[0] === 'func' && s[1] === '$__reset')
         for (let i = 2; i < s.length; i++)
           if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
             s[i][2][1] = `${heapBase}`
   }
 
-  // Insert globals at correct position (after __start may have folded consts)
-  sections.splice(globalsIdx, 0, ...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
+  // Populate globals (after __start — const folding may update declarations)
+  sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
 
-  // Insert data segment (after emit — string literals append to ctx.runtime.data during emit)
+  // Data segment (after emit — string literals append to ctx.runtime.data during emit)
   // Skip for shared memory — data at address 0 would overwrite other modules' data
   if (ctx.runtime.data && !ctx.memory.shared) {
     let esc = ''
@@ -947,42 +996,41 @@ export default function compile(ast) {
       if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += ctx.runtime.data[i]
       else esc += '\\' + c.toString(16).padStart(2, '0')
     }
-    sections.splice(dataIdx, 0, ['data', ['i32.const', 0], '"' + esc + '"'])
+    sec.data.push(['data', ['i32.const', 0], '"' + esc + '"'])
   }
 
   // Custom section: embed object schemas for JS-side interop
   if (ctx.schema.list.length)
-    sections.push(['@custom', '"jz:schema"', `"${JSON.stringify(ctx.schema.list).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+    sec.customs.push(['@custom', '"jz:schema"', `"${JSON.stringify(ctx.schema.list).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Custom section: rest params for exported functions (JS-side wrapping)
-  // Format: [{name, fixed}] where fixed = number of non-rest params
   const restParamFuncs = ctx.func.list.filter(f => f.exported && f.rest)
     .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
   if (restParamFuncs.length)
-    sections.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+    sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }
-  // String values = alias targets (resolved names); true = already exported inline (functions)
   for (const [name, val] of Object.entries(ctx.func.exports)) {
     if (val === true) {
-      // Inline export — functions already have export in their definition.
-      // But module-scope globals marked `true` need explicit export.
-      if (ctx.scope.userGlobals?.has(name)) sections.push(['export', `"${name}"`, ['global', `$${name}`]])
+      if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
       continue
     }
     if (typeof val !== 'string') continue
     const func = ctx.func.list.find(f => f.name === val)
-    if (func) sections.push(['export', `"${name}"`, ['func', `$${val}`]])
-    else if (ctx.scope.globals.has(val)) sections.push(['export', `"${name}"`, ['global', `$${val}`]])
+    if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${val}`]])
+    else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
 
+  // Assemble: named slots → flat section list
+  const sections = [
+    ...sec.extStdlib, ...sec.imports, ...sec.types, ...sec.memory, ...sec.data,
+    ...sec.tags, ...sec.table, ...sec.globals, ...sec.funcs, ...sec.elem,
+    ...sec.start, ...sec.stdlib, ...sec.customs,
+  ]
   return ['module', ...sections]
 }
 
 /** Check if node is a block body (statement list, not object literal/expression) */
-const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
-  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
-  'throw', 'try', 'catch', '++', '--', '()'])
 const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && Array.isArray(n[1]) && STMT_OPS.has(n[1]?.[0])
 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */

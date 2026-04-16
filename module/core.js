@@ -9,20 +9,17 @@
  * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, temp } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
 const NAN_PREFIX = 0x7FF8
 
 export default () => {
-  const usesDynProps = vt => vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.CLOSURE
-    || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
-
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v f64) (result i32)
     (i32.or
-      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000))
-      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000001))))`
+      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN}))
+      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN}))))`
 
   ctx.core.stdlib['__eq'] = `(func $__eq (param $a f64) (param $b f64) (result i32)
     (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
@@ -56,7 +53,7 @@ export default () => {
               (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v f64) (result i32)
-    (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000)))`
+    (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})))`
 
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
@@ -66,9 +63,9 @@ export default () => {
       (else (i32.and
         (i32.and
           (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000000))
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000100000000)))
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})))
         (i32.and
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000001))
+          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN}))
           (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FFA800000000000)))))))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v f64) (result i32)
@@ -81,10 +78,11 @@ export default () => {
           (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
           (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))))`
 
+
   // Default dynamic-property helpers are harmless stubs. The collection module
   // overrides them with the real sidecar-property implementation.
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))`
+    (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
     (local.get $fallback))`
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
@@ -343,7 +341,7 @@ export default () => {
     (local $t i32) (local $off i32)
     ;; Plain numbers are not NaN-box pointers; .length should be undefined.
     (if (result f64) (f64.eq (local.get $v) (local.get $v))
-      (then (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))
+      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
       (else
         (local.set $t (call $__ptr_type (local.get $v)))
         (local.set $off (call $__ptr_offset (local.get $v)))
@@ -353,7 +351,7 @@ export default () => {
             (then
               (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
                 (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-                (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))
+                (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))
             (else (if (result f64)
               (i32.or
                 (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
@@ -362,8 +360,8 @@ export default () => {
               (then
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
                   (then (f64.convert_i32_s (call $__len (local.get $v))))
-                  (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))
-              (else (f64.reinterpret_i64 (i64.const 0x7FF8000000000001)))))))))))`
+                  (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))
+              (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))))))`
 
   // === Property dispatch (.length, .prop) ===
 

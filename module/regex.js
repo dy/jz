@@ -252,8 +252,8 @@ const compileGreedyBacktrack = (quant, rest, c) => {
   c.code.push(`(local.set ${okL} (i32.const 1))`)
   c.code.push(`(br ${btEnd})`)
   c.code.push(')') // end btFail block
-  // Rest failed — restore pos and give back one match
-  c.code.push(`(local.set $pos (i32.sub (local.get ${btSave}) (i32.const 1)))`)
+  // Rest failed — restore pos and give back one match (backtrack by pattern width)
+  c.code.push(`(local.set $pos (i32.sub (local.get ${btSave}) (i32.const ${patternMinLen(node)})))`)
   c.code.push(`(br ${btLoop})`)
   c.code.push(')') // end loop
   c.code.push(')') // end block
@@ -804,11 +804,12 @@ export default () => {
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
     if (!ctx.core.stdlib[splitName]) {
-      inc('__str_to_buf', '__str_slice')
+      inc('__str_to_buf', '__str_slice', '__alloc')
       ctx.core.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
         (local $arrOff i32) (local $count i32) (local $cap i32)
+        (local $newArr i32) (local $j i32)
         (local.set $off (call $__str_to_buf (local.get $str)))
         (local.set $len (call $__str_byteLen (local.get $str)))
         ;; Alloc result array (cap=8 initially)
@@ -828,6 +829,19 @@ export default () => {
           ;; Found match at $pos..$result — slice prevEnd..pos into array
           (local.set $mstart (local.get $pos))
           (local.set $mend (local.get $result))
+          ;; Grow array if at capacity
+          (if (i32.ge_u (local.get $count) (local.get $cap))
+            (then
+              (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+              (local.set $newArr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
+              (local.set $j (i32.const 0))
+              (block $cd (loop $cl
+                (br_if $cd (i32.ge_s (local.get $j) (local.get $count)))
+                (f64.store (i32.add (i32.add (local.get $newArr) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))
+                  (f64.load (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (br $cl)))
+              (local.set $arrOff (local.get $newArr))))
           (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
             (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))
           (local.set $count (i32.add (local.get $count) (i32.const 1)))
@@ -835,7 +849,19 @@ export default () => {
           ;; Advance past match (at least 1 to avoid infinite loop on zero-length match)
           (local.set $pos (select (i32.add (local.get $mend) (i32.const 1)) (local.get $mend) (i32.eq (local.get $mstart) (local.get $mend))))
           (br $next)))
-        ;; Final segment: prevEnd..len
+        ;; Final segment: prevEnd..len — grow if needed
+        (if (i32.ge_u (local.get $count) (local.get $cap))
+          (then
+            (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+            (local.set $newArr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
+            (local.set $j (i32.const 0))
+            (block $cd2 (loop $cl2
+              (br_if $cd2 (i32.ge_s (local.get $j) (local.get $count)))
+              (f64.store (i32.add (i32.add (local.get $newArr) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))
+                (f64.load (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.shl (local.get $j) (i32.const 3)))))
+              (local.set $j (i32.add (local.get $j) (i32.const 1)))
+              (br $cl2)))
+            (local.set $arrOff (local.get $newArr))))
         (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
           (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))
         (local.set $count (i32.add (local.get $count) (i32.const 1)))

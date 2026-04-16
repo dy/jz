@@ -108,3 +108,58 @@ test('JSON.parse: write property', () => {
 test('JSON.parse: add new property', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.y = 2; return o.x + o.y }`).f(), 3)
 })
+
+// === JSON.stringify: objects ===
+
+test('JSON.stringify: schema object', () => {
+  const { f } = run(`export let f = () => {
+    let o = { x: 1, y: 2 }
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{"x":1,"y":2}')
+})
+
+test('JSON.stringify: nested object', () => {
+  const { f } = run(`export let f = () => {
+    let inner = { a: 10 }
+    let outer = { b: inner }
+    return JSON.stringify(outer)
+  }`)
+  is(f(), '{"b":{"a":10}}')
+})
+
+test('JSON.stringify: object with string value', () => {
+  const { f } = run(`export let f = () => {
+    let o = { name: "jz" }
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{"name":"jz"}')
+})
+
+test('JSON.stringify: object in array', () => {
+  const { f } = run(`export let f = () => {
+    let a = [{ x: 1 }, { x: 2 }]
+    return JSON.stringify(a)
+  }`)
+  is(f(), '[{"x":1},{"x":2}]')
+})
+
+test('JSON.stringify: HASH roundtrip', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{"a":1,"b":2}')
+    return JSON.stringify(o)
+  }`)
+  const result = f()
+  // HASH iteration order may differ from insertion order
+  const parsed = JSON.parse(result)
+  is(parsed.a, 1)
+  is(parsed.b, 2)
+})
+
+test('JSON.stringify: empty object', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{}')
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{}')
+})
