@@ -11,10 +11,12 @@
  */
 
 import { emit, typed, asF64, asI32, T } from '../src/compile.js'
-import { ctx, PTR } from '../src/ctx.js'
+import { ctx, PTR, inc } from '../src/ctx.js'
 
 
 export default () => {
+  inc('__mkptr', '__alloc', '__ptr_aux')
+
   // Uniform closure convention: all closures use (env: f64, args: f64) → f64
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []

@@ -1,26 +1,48 @@
+### Audit (structural)
+
+**Bugs / correctness**
+
+* [ ] **`STDLIB_DEPS.__write_val` defined twice** — [src/ctx.js:112](../src/ctx.js#L112) and [src/ctx.js:140](../src/ctx.js#L140). Second silently wins, dropping `__write_byte` from deps. Merge into one entry: `['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str']`.
+* [ ] **`||=`/`??=` global write-back returns void** — [src/compile.js:1290](../src/compile.js#L1290): `['global.set', ...]` has no result. If `a ||= b` is used in expression position, WASM stack is wrong. Needs tee-through-temp like `writeVar` does for globals.
+* [ ] **Missing `?.` on `ctx.func.valTypes`** — [src/compile.js:1634](../src/compile.js#L1634): all other callsites use `ctx.func.valTypes?.get()`. This one throws during `__start` emission when `valTypes` is null.
+* [ ] **`_inTry` not restored on exception in catch handler** — [src/compile.js:1088-1101](../src/compile.js#L1088): `ctx.runtime._inTry` saved/restored without `finally`. If `emit` throws during handler compilation, `_inTry` stays dirty.
+* [ ] **`__str_eq` registered in both string.js and collection.js** — [module/string.js:80](../module/string.js#L80) and [module/collection.js:347](../module/collection.js#L347). Last-loaded wins silently. Move to one owner, other uses `inc()`.
+* [ ] **`__typed_idx` registered in both array.js and typedarray.js** — [module/array.js:162](../module/array.js#L162) and [module/typedarray.js:571](../module/typedarray.js#L571). typedarray version is more capable (handles aux view bit). Move to typedarray.js only, array.js uses `inc()`.
+
+**Structural fragility**
+
+* [ ] **Manual section index bookkeeping** — [src/compile.js:819-907](../src/compile.js#L819): 5 integer indices (`dataIdx`, `tableIdx`, `globalsIdx`, `funcsIdx`, `elemIdx`) track positions into mutable `sections` array. Each `splice()` invalidates others. Replace with named-slot builder.
+* [ ] **WASM passthrough swallows misspelled ops** — [src/compile.js:1917](../src/compile.js#L1917): `/^[a-z]/.test(op)` treats any unrecognized lowercase op as raw WASM. Typos like `'lett'` silently pass through instead of erroring.
+* [ ] **`handlers['{}']` block-vs-object allowlist** — [src/prepare.js](../src/prepare.js): hardcoded list of 18 statement operators. Adding a new statement form without updating this list causes it to be misinterpreted as an object literal.
+
+**Dead code & residue**
+
+* [ ] **`hoistCallback` is dead** — [module/array.js:52-59](../module/array.js#L52): defined but never called. Superseded by `makeCallback`. Delete.
+* [ ] **Dead `typeof` guards** — [src/compile.js:1767-1769](../src/compile.js#L1767): `typeof reconstructArgsWithSpreads !== 'undefined'` guards functions defined in the same file. Can never be false. Delete.
+* [ ] **`&&=`/`??=` identical ternary branch** — [src/compile.js:1276-1280](../src/compile.js#L1276): both produce the same `[thenExpr, elseExpr]` tuple. Collapse with comment explaining the conditions differ.
+
+**Redundancy / missing abstractions**
+
+* [ ] **Null sentinel repeated ~10 times** — `typed(['f64.reinterpret_i64', ['i64.const', NULL_NAN]], 'f64')` at 10 sites in [src/compile.js](../src/compile.js). Extract `nullExpr()` one-liner.
+* [ ] **`valType` two-map lookup not using `keyValType`** — [src/compile.js:1634](../src/compile.js#L1634), [1309-1310](../src/compile.js#L1309) and 5 other sites manually write `ctx.func.valTypes?.get(x) || ctx.scope.globalValTypes?.get(x)` instead of calling existing `keyValType` helper.
+* [ ] **`mutating` method lists duplicated** — [src/compile.js:1650](../src/compile.js#L1650) and [src/compile.js:1696](../src/compile.js#L1696): overlapping but different arrays with no shared constant. A new mutating method must be added to both manually.
+* [ ] **`genUpsertGrow`/`genUpsertGrowStrict` near-duplicate** — [module/collection.js](../module/collection.js): ~80 lines of nearly identical WAT rehash code. Collapse to single generator with `strict` flag.
+* [ ] **`emitArrayReduce` duplicates `arrayLoop` pattern** — [module/math.js:37-55](../module/math.js#L37) rolls its own loop identical in structure to `arrayLoop` in array.js. Lift `arrayLoop`+`elemLoad`/`elemStore` out of array.js closure so math.js and typedarray.js can reuse.
+
+**What's clean (preserve)**
+
+* [x] **`schema.js`** — 73 lines, dual-index, structural subtyping. Best-written file in the project.
+* [x] **Module boundary pattern** — every module exports a factory, registers on `ctx.core.emit` + `ctx.core.stdlib`. Rigidly uniform, easy to extend.
+* [x] **`analyze.js` extraction** — clean separation of pre-analysis from emission. No side effects, purely functional.
+* [x] **`makeCallback` inline optimizer** — `isPureExpr` + `substExpr` is a well-designed expression inliner with clean fallback.
+* [x] **`allocPtr` unification** — single helper for 12+ previous sites. Good DRY win.
+* [x] **`strMethod` factory in string.js** — table-driven method registration, cleanest pattern in the stdlib.
+* [x] **Test coverage** — 32 files, ~6800 lines, covering all features including regressions and edge cases.
+
 
 ### Optimizations
 
-**Runtime perf (hot path — why jz loses to V8)**
 
-* [x] **Inline known callbacks in `.map`/`.filter`/`.forEach`/`.reduce`/`.find`** — pure-arrow inliner in [module/array.js:114](../module/array.js#L114) (`makeCallback`): substitutes params with fresh locals, eliminates per-iteration `__alloc(n*8+8)` + `call_indirect`. Closure-machinery fallback retained for non-literal callbacks.
-* [ ] **Pass immutable closure captures as WASM params, not heap env** — [module/function.js:71-86](../module/function.js#L71-L86). Deferred — mostly subsumed by the inliner; only matters when callback is a variable, which is rare in hot loops.
-* [x] **Hoist loop-invariant `arr.length` in for-of** — desugaring in [src/prepare.js](../src/prepare.js) hoists `arr` and `arr.length` once; iteration uses cached `lenVar`.
-* [ ] **Cache `__ptr_offset` per basic block** — deferred. Internal `arrayLoop` already caches; remaining sites need invalidation analysis (push/grow may relocate).
-* [ ] **Schema inference from call sites (static inline caches)** — deferred (high-complexity).
-* [x] **Fuse chained `.map`/`.filter`/`.forEach`/`.reduce`** — `detectUpstream` in [module/array.js](../module/array.js) detects when receiver is a `.map()`/`.filter()` call expression. Fused patterns: `.map(f).filter(g)`, `.filter(f).map(g)`, `.map(f).forEach(g)`, `.filter(f).forEach(g)`, `.map(f).reduce(g,i)`, `.filter(f).reduce(g,i)`. Single loop, no intermediate array allocation.
-* [ ] **Bump allocator can't free within a function** — deferred.
-* [ ] **Gate auto-included core helpers by actual use** — deferred (broad emitter audit needed for safety).
-
-**Organizational / maintenance hazards**
-
-* [x] **`ctx.schema.target` hidden side-channel** — replaced with `ctx.schema.targetStack` in [src/ctx.js](../src/ctx.js); `=` push/pop bracket the `emit(init)` call, `{}` emitter peeks the top.
-* [ ] **compile.js 2246 lines (12% over stated 2K target)** — extract analysis pass + spread builders. Deferred.
-* [x] **Param desugaring duplicated** — extracted `classifyParam(r)` in [src/compile.js](../src/compile.js); [src/prepare.js](../src/prepare.js) `=>` and `defFunc`, plus closure `=>` in [src/compile.js](../src/compile.js) all dispatch on shared kinds (`rest|plain|default|destruct|destruct-default`).
-* [x] **12+ copies of `__alloc_hdr` + `__mkptr` sequence** — added `allocPtr({type, aux, len, cap, stride})` in [src/compile.js](../src/compile.js); migrated `materializeMulti`, `buildArrayWithSpreads`, `allocArray`, `.map`/`.filter`/`.slice`/`.concat`, `Object.values`/`Object.entries`/`emitStringArray`, `new ArrayBuffer`, `new TypedArray(n)` (both branches of `from`), `TypedArray.from(arr)`, scalar `TypedArray.map`, `buf.slice`, `new Set`/`new Map`. Only remaining IR site: per-iteration pair alloc in `Object.entries` (intentionally reuses one i32 local across loop).
-* [x] **Missing `tempI32()` helper** — added alongside `temp()` in [src/compile.js](../src/compile.js); used by allocPtr and migrated array.js sites.
-* [x] **schema.js compile-time O(N·P) scan** — [module/schema.js](../module/schema.js): added `byKey: key→id` for O(1) dedupe in `register`; `byProp: prop→[{id,slot}]` for `find` to walk only schemas that contain the property.
-* [x] **Working-tree clutter** — `output.txt`, `out.wat`, `.work/diag-*.mjs`, `.work/*.wasm` gitignored.
 
 ### Build & tooling
 
@@ -95,7 +117,23 @@
 
 
 ## Done (scratch branch)
-### Cleanup
+
+* [x] **Inline known callbacks in `.map`/`.filter`/`.forEach`/`.reduce`/`.find`** — pure-arrow inliner in [module/array.js:114](../module/array.js#L114) (`makeCallback`): substitutes params with fresh locals, eliminates per-iteration `__alloc(n*8+8)` + `call_indirect`. Closure-machinery fallback retained for non-literal callbacks.
+* [ ] **Pass immutable closure captures as WASM params, not heap env** — [module/function.js:71-86](../module/function.js#L71-L86). Deferred — mostly subsumed by the inliner; only matters when callback is a variable, which is rare in hot loops.
+* [x] **Hoist loop-invariant `arr.length` in for-of** — desugaring in [src/prepare.js](../src/prepare.js) hoists `arr` and `arr.length` once; iteration uses cached `lenVar`.
+* [x] **Cache `__ptr_offset` per basic block** — cached at 12 sites: `__str_len` WAT (core.js), closure env capture + param unpack (compile.js), boxed method load+store (compile.js), Object.values/entries/assign/create (object.js), array literal push (array.js), `.concat()` source+other loops (array.js). Remaining: per-property schema reads in destructuring need ctx-level invalidation analysis.
+* [ ] **Schema inference from call sites (static inline caches)** — deferred (high-complexity).
+* [x] **Fuse chained `.map`/`.filter`/`.forEach`/`.reduce`** — `detectUpstream` in [module/array.js](../module/array.js) detects when receiver is a `.map()`/`.filter()` call expression. Fused patterns: `.map(f).filter(g)`, `.filter(f).map(g)`, `.map(f).forEach(g)`, `.filter(f).forEach(g)`, `.map(f).reduce(g,i)`, `.filter(f).reduce(g,i)`. Single loop, no intermediate array allocation.
+* [ ] **Bump allocator can't free within a function** — deferred.
+* [x] **Gate auto-included core helpers by actual use** — added per-module `inc()` calls (9 module files + targeted compile.js sites), reduced core.js blanket from 11 helpers to 3; added 8 STDLIB_DEPS entries for WAT-internal transitive deps; 815/815 tests pass.
+
+* [x] **`ctx.schema.target` hidden side-channel** — replaced with `ctx.schema.targetStack` in [src/ctx.js](../src/ctx.js); `=` push/pop bracket the `emit(init)` call, `{}` emitter peeks the top.
+* [x] **compile.js 2246 lines (12% over stated 2K target)** — extracted analysis passes into src/analyze.js (371 lines): VAL, valTypeOf, analyzeValTypes, analyzeLocals, analyzeBoxedCaptures, findFreeVars, extractParams, classifyParam, collectParamNames, T. compile.js now 1928 lines.
+* [x] **Param desugaring duplicated** — extracted `classifyParam(r)` in [src/compile.js](../src/compile.js); [src/prepare.js](../src/prepare.js) `=>` and `defFunc`, plus closure `=>` in [src/compile.js](../src/compile.js) all dispatch on shared kinds (`rest|plain|default|destruct|destruct-default`).
+* [x] **12+ copies of `__alloc_hdr` + `__mkptr` sequence** — added `allocPtr({type, aux, len, cap, stride})` in [src/compile.js](../src/compile.js); migrated `materializeMulti`, `buildArrayWithSpreads`, `allocArray`, `.map`/`.filter`/`.slice`/`.concat`, `Object.values`/`Object.entries`/`emitStringArray`, `new ArrayBuffer`, `new TypedArray(n)` (both branches of `from`), `TypedArray.from(arr)`, scalar `TypedArray.map`, `buf.slice`, `new Set`/`new Map`. Only remaining IR site: per-iteration pair alloc in `Object.entries` (intentionally reuses one i32 local across loop).
+* [x] **Missing `tempI32()` helper** — added alongside `temp()` in [src/compile.js](../src/compile.js); used by allocPtr and migrated array.js sites.
+* [x] **schema.js compile-time O(N·P) scan** — [module/schema.js](../module/schema.js): added `byKey: key→id` for O(1) dedupe in `register`; `byProp: prop→[{id,slot}]` for `find` to walk only schemas that contain the property.
+* [x] **Working-tree clutter** — `output.txt`, `out.wat`, `.work/diag-*.mjs`, `.work/*.wasm` gitignored.
 
 * [x] **Boxed capture i32/f64 mismatch** — established contract: cell locals are always `i32` in outer scope, packed with `f64.convert_i32_u` into env, unpacked with `i32.trunc_f64_u` on closure entry. `boxedAddr()` simplified.
 * [x] **`Uint8Array(arr)` double-emit** — src pre-emitted into f64 local once, both branches read from it.

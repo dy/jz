@@ -8,7 +8,7 @@
  */
 
 import { emit, typed, asF64, VAL } from '../src/compile.js'
-import { ctx, err } from '../src/ctx.js'
+import { ctx, err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
 export function initSchema() {
@@ -42,6 +42,7 @@ export function initSchema() {
 
   /** Emit code to load the inner value (slot 0) of a boxed variable. */
   ctx.schema.emitInner = (varName) => {
+    inc('__ptr_offset')
     return typed(['f64.load', ['call', '$__ptr_offset', asF64(emit(varName))]], 'f64')
   }
 

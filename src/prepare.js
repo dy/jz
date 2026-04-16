@@ -17,7 +17,7 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive, PTR } from './ctx.js'
-import { T, extractParams, collectParamNames, classifyParam } from './compile.js'
+import { T, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)

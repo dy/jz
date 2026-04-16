@@ -35,6 +35,7 @@ export default () => {
 
   /** Emit array reduce with a WASM binary op (for Math.max(...arr), Math.min(...arr)) */
   function emitArrayReduce(wasmOp, arrExpr, initVal) {
+    inc('__ptr_offset', '__len')
     const va = asF64(emit(arrExpr))
     const acc = `${T}mr${ctx.func.uniq++}`, ptr = `${T}mp${ctx.func.uniq++}`, len = `${T}ml${ctx.func.uniq++}`, i = `${T}mi${ctx.func.uniq++}`
     ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32')

@@ -18,6 +18,13 @@
 
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
+import {
+  T, VAL, valTypeOf, analyzeValTypes, analyzeLocals,
+  extractParams, classifyParam, collectParamNames,
+  findFreeVars, analyzeBoxedCaptures,
+} from './analyze.js'
+// Re-export for backward compatibility (modules import from compile.js)
+export { T, VAL, valTypeOf, extractParams, classifyParam, collectParamNames }
 let funcNames  // Set<string> — known function names, set per compile()
 let funcMap    // Map<string, func> — name → func info, set per compile()
 
@@ -38,8 +45,6 @@ export const asI64 = n => typed(['i64.reinterpret_f64', asF64(n)], 'i64')
 /** Wrap i64 result back to BigInt-as-f64. */
 const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
 
-/** Compiler temp prefix — PUA character, impossible in user JS source. */
-export const T = '\uE000'
 
 /** Null/undefined: one nullish value inside jz. NaN-boxed ATOM (type=0, aux=1, offset=0).
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
@@ -69,6 +74,7 @@ function emitTypeofCmp(a, b, cmpOp) {
   }
   if (code === -2) {
     // 'string' → is NaN-boxed AND ptr_type is STRING (heap) or SSO.
+    inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const isStr = ['i32.or',
@@ -89,6 +95,7 @@ function emitTypeofCmp(a, b, cmpOp) {
   }
   // Direct type code (6=object, 1=array, 8=set, etc.)
   if (code >= 0) {
+    inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const check = ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', code]]
     return typed(eq ? ['i32.and', isPtr, check] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', check]], 'i32')
@@ -261,142 +268,6 @@ function loopTop() {
   return top
 }
 
-/** Extract param names from arrow params AST. Handles (x), (x, y), (() x), etc. */
-export function extractParams(rawParams) {
-  let p = rawParams
-  if (Array.isArray(p) && p[0] === '()') p = p[1]
-  return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-}
-
-/**
- * Classify a single raw param node into one of:
- *   { kind: 'rest',     name }                              — `...rest`
- *   { kind: 'plain',    name }                              — `x`
- *   { kind: 'default',  name, defValue }                    — `x = 1`
- *   { kind: 'destruct', pattern }                           — `[a, b]` or `{x}`
- *   { kind: 'destruct-default', pattern, defValue }         — `[a, b] = arr`
- * Shared by prepare.js (=>, defFunc) and compile.js (closure =>) to keep desugaring uniform.
- */
-export function classifyParam(r) {
-  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
-  if (Array.isArray(r) && r[0] === '=') {
-    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
-    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
-  }
-  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
-  return { kind: 'plain', name: r }
-}
-
-/** Collect all bound names from a param/destructuring pattern into a Set. */
-export function collectParamNames(raw, out = new Set()) {
-  for (const r of raw) {
-    if (typeof r === 'string') out.add(r)
-    else if (Array.isArray(r)) {
-      if (r[0] === '=' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '...' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '=' && Array.isArray(r[1])) collectParamNames([r[1]], out)
-      else if (r[0] === '[]' || r[0] === '{}' || r[0] === ',') collectParamNames(r.slice(1), out)
-    }
-  }
-  return out
-}
-
-/** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
-function findFreeVars(node, bound, free, scope) {
-  if (node == null) return
-  if (typeof node === 'string') {
-    if (bound.has(node) || free.includes(node)) return
-    // Check if in outer scope — locals, params, or scope-tracked vars
-    const inScope = scope
-      ? scope.has(node)
-      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
-    if (inScope) free.push(node)
-    return
-  }
-  if (!Array.isArray(node)) return
-  const [op, ...args] = node
-  // Nested arrows: don't directly cross, but find what they would capture from us
-  if (op === '=>') {
-    // Recurse into nested arrows — anything they capture from us is also our capture
-    const innerBound = collectParamNames(extractParams(args[0]), new Set(bound))
-    findFreeVars(args[1], innerBound, free, scope)
-    return
-  }
-  // Track let/const/for declarations: add to bound (shadows captures) and scope (visible to nested closures)
-  if (op === 'let' || op === 'const') {
-    collectParamNames(args, bound)
-    if (scope) collectParamNames(args, scope)
-  }
-  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
-    collectParamNames(args[0].slice(1), bound)
-    if (scope) collectParamNames(args[0].slice(1), scope)
-  }
-  for (const a of args) findFreeVars(a, bound, free, scope)
-}
-
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
-
-/**
- * Pre-scan function body for captured variables that are mutated.
- * Collects outer-scope declarations, then for each arrow, finds true captures
- * (vars declared in outer scope, not inside the closure), checks for mutations.
- */
-function analyzeBoxedCaptures(body) {
-  // Collect outer-scope declarations (not inside arrows) + function params
-  const outerScope = new Set()
-  ;(function collectDecls(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const')
-      for (const a of args)
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') outerScope.add(a[1])
-    for (const a of args) collectDecls(a)
-  })(body)
-  if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
-
-  // For each closure, find captures, check if any are mutated anywhere
-  ;(function walk(node, assignTarget) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') {
-      let p = args[0]
-      if (Array.isArray(p) && p[0] === '()') p = p[1]
-      const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-      const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
-      const captures = []
-      findFreeVars(args[1], paramSet, captures, outerScope)
-      if (captures.length === 0) return
-      const captureSet = new Set(captures)
-      const mutated = new Set()
-      findMutations(body, captureSet, mutated)  // walks everywhere, including nested closures
-      // Self-referencing closure: captures its own assignment target (value unavailable at env creation)
-      if (assignTarget && captureSet.has(assignTarget)) mutated.add(assignTarget)
-      for (const v of mutated) ctx.func.boxed.set(v, `${T}cell_${v}`)
-      return
-    }
-    // Track assignment target for self-reference detection: const x = () => { x() }
-    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')
-      return walk(args[1], args[0])
-    for (const a of args) walk(a)
-  })(body)
-}
-
-/** Check if any of the given variable names are assigned anywhere in the AST (crosses into closures). */
-function findMutations(node, names, mutated) {
-  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === 'let' || op === 'const') {
-    for (const decl of args)
-      if (Array.isArray(decl) && decl[0] === '=') findMutations(decl[2], names, mutated)
-    return
-  }
-  if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  for (const a of args) findMutations(a, names, mutated)
-}
 
 /** Emit let/const initializations as typed local.set instructions. */
 function emitDecl(...inits) {
@@ -472,256 +343,7 @@ function emitDecl(...inits) {
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }
 
-// === Pre-analysis ===
 
-// Value types — what a variable holds (for method dispatch, schema resolution)
-export const VAL = {
-  NUMBER: 'number', ARRAY: 'array', STRING: 'string',
-  OBJECT: 'object', SET: 'set', MAP: 'map',
-  CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
-  BIGINT: 'bigint', BUFFER: 'buffer',
-}
-
-/** Infer value type of an AST expression (without emitting). */
-export function valTypeOf(expr) {
-  if (expr == null) return null
-  if (typeof expr === 'number') return VAL.NUMBER
-  if (typeof expr === 'bigint') return VAL.BIGINT
-  if (typeof expr === 'string') return ctx.func.valTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-  if (!Array.isArray(expr)) return null
-
-  const [op, ...args] = expr
-  if (op == null) return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER // literal
-
-  if (op === '[') return VAL.ARRAY
-  if (op === 'str') return VAL.STRING
-  if (op === '=>') return VAL.CLOSURE
-  if (op === '//') return VAL.REGEX
-  if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
-  // Arithmetic expressions: BigInt if either operand is BigInt, else number
-  if (['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
-    if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-  if (['**', '++', '--', '~', '>>>', 'u+'].includes(op)) return VAL.NUMBER
-  if (op === '+') {
-    const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
-    if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
-    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-    return VAL.NUMBER
-  }
-
-  if (op === '()') {
-    const callee = args[0]
-    // Ternary is parsed as call to '?' operator: ['()', ['?', cond, a, b]]
-    if (Array.isArray(callee) && callee[0] === '?') {
-      const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
-      return ta && ta === tb ? ta : null
-    }
-    // Constructor results
-    if (typeof callee === 'string') {
-      if (callee === 'new.Set') return VAL.SET
-      if (callee === 'new.Map') return VAL.MAP
-      if (callee === 'new.ArrayBuffer') return VAL.BUFFER
-      if (callee === 'new.DataView') return VAL.BUFFER
-      if (callee.startsWith('new.')) return VAL.TYPED
-      if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
-      if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
-    }
-    // Method return types
-    if (Array.isArray(callee) && callee[0] === '.') {
-      const [, obj, method] = callee
-      if (method === 'map' || method === 'filter') return VAL.ARRAY
-      if (method === 'push') return VAL.ARRAY
-      if (method === 'add' || method === 'delete') return VAL.SET
-      if (method === 'set') return VAL.MAP
-      // String-returning methods
-      if (['toUpperCase', 'toLowerCase', 'trim', 'trimStart', 'trimEnd',
-        'repeat', 'padStart', 'padEnd', 'replace', 'charAt', 'substring'].includes(method)) return VAL.STRING
-      // slice/concat preserve caller type (string.slice → string, array.slice → array)
-      if (method === 'slice' || method === 'concat') {
-        const objType = valTypeOf(obj)
-        if (objType) return objType
-        return VAL.ARRAY // default to array when unknown
-      }
-    }
-  }
-  return null
-}
-
-/**
- * Analyze all local value types from declarations and assignments.
- * Builds ctx.func.valTypes map for method dispatch and schema resolution.
- */
-function analyzeValTypes(body) {
-  const types = ctx.func.valTypes
-  function trackRegex(name, rhs) {
-    if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
-  }
-  function trackTyped(name, rhs) {
-    if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && rhs[1].startsWith('new.')) {
-      // Multi-arg calls wrap args in a [',', ...] node. 3-arg form `new T(buf, off, len)`
-      // is a subview — mark with `.view` suffix so element access and .buffer/.byteOffset
-      // emit descriptor-aware code.
-      const args = rhs[2]
-      const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
-        && Array.isArray(args) && args[0] === ',' && args.length >= 4
-      ctx.types.typedElem.set(name, isView ? rhs[1] + '.view' : rhs[1])
-    }
-  }
-  function walk(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return  // don't leak inner-closure val types
-    // Propagate typed array type through method calls (e.g. buf.map → typed)
-    function propagateTyped(name, rhs) {
-      if (!Array.isArray(rhs) || rhs[0] !== '()') return
-      const callee = rhs[1]
-      if (!Array.isArray(callee) || callee[0] !== '.') return
-      const src = callee[1], method = callee[2]
-      if (typeof src === 'string' && types.get(src) === VAL.TYPED && method === 'map') {
-        types.set(name, VAL.TYPED)
-        if (ctx.types.typedElem?.has(src)) {
-          // .map() always returns a fresh owned array — strip .view suffix
-          const srcCtor = ctx.types.typedElem.get(src)
-          ctx.types.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
-        }
-      }
-    }
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        const vt = valTypeOf(a[2])
-        if (vt) types.set(a[1], vt)
-        else types.delete(a[1])
-        if (vt === VAL.REGEX) trackRegex(a[1], a[2])
-        if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
-        propagateTyped(a[1], a[2])
-      }
-    }
-    if (op === '=' && typeof args[0] === 'string') {
-      const vt = valTypeOf(args[1])
-      if (vt) types.set(args[0], vt)
-      else types.delete(args[0])
-      if (vt === VAL.REGEX) trackRegex(args[0], args[1])
-      if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(args[0], args[1])
-      propagateTyped(args[0], args[1])
-    }
-    // Track property assignments for auto-boxing: x.prop = val
-    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && typeof args[0][1] === 'string') {
-      const [, obj, prop] = args[0]
-      // Pointer-backed values use the dynamic sidecar now; only scalar values still
-      // need boxing to gain identity-backed properties.
-      const vt = types.get(obj)
-      if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
-        if (!ctx.types._localProps) ctx.types._localProps = new Map()
-        if (!ctx.types._localProps.has(obj)) ctx.types._localProps.set(obj, new Set())
-        ctx.types._localProps.get(obj).add(prop)
-      }
-    }
-    for (const a of args) walk(a)
-  }
-  walk(body)
-
-  // Register boxed schemas for local variables with property assignments
-  if (ctx.types._localProps) {
-    for (const [name, props] of ctx.types._localProps) {
-      if (ctx.schema.vars.has(name)) continue
-      const schema = ['__inner__', ...props]
-      ctx.schema.vars.set(name, ctx.schema.register(schema))
-    }
-  }
-}
-
-/**
- * Infer expression result type from AST (without emitting).
- * Used to determine local variable types before compilation.
- */
-function exprType(expr, locals) {
-  if (expr == null) return 'f64'
-  if (typeof expr === 'number')
-    return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 ? 'i32' : 'f64'
-  if (typeof expr === 'string') return locals.get(expr) || 'f64'
-  if (!Array.isArray(expr)) return 'f64'
-
-  const [op, ...args] = expr
-  if (op == null) return exprType(args[0], locals) // literal [, value]
-
-  // Always f64
-  if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === '.' || op === 'str') return 'f64'
-  // Always i32
-  if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
-  // Preserve i32 if both operands i32
-  if (['+', '-', '*', '%'].includes(op)) {
-    const ta = exprType(args[0], locals)
-    const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
-    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
-  }
-  // Unary preserves type
-  if (op === 'u-' || op === 'u+') return exprType(args[0], locals)
-  // Ternary / logical: conciliate
-  if (op === '?:' || op === '&&' || op === '||') {
-    const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
-    const ta = exprType(branches[0], locals), tb = exprType(branches[1], locals)
-    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
-  }
-  // Array literal (multi-return) → f64
-  if (op === '[') return 'f64'
-  // Function calls → conservative f64
-  return 'f64'
-}
-
-/**
- * Analyze all local declarations and assignments to determine types.
- * A local is i32 if ALL assignments produce i32. Any f64 widens to f64.
- */
-function analyzeLocals(body) {
-  const locals = new Map() // name → 'i32' | 'f64'
-
-  function walk(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-
-    // let/const declarations
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        // Bare declaration: let x; → default f64
-        if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
-        if (!Array.isArray(a) || a[0] !== '=') continue
-        // Destructured: collect all bound names from pattern
-        if (typeof a[1] !== 'string') {
-          for (const n of collectParamNames([a[1]])) if (!locals.has(n)) locals.set(n, 'f64')
-          walk(a[2]); continue
-        }
-        const name = a[1], t = exprType(a[2], locals)
-        if (!locals.has(name)) locals.set(name, t)
-        else if (locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-      }
-    }
-
-    // Plain assignment
-    if (op === '=' && typeof args[0] === 'string') {
-      const name = args[0], t = exprType(args[1], locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-    }
-
-    // Compound assignment
-    if (['+=', '-=', '*=', '%='].includes(op) && typeof args[0] === 'string') {
-      const name = args[0], opChar = op[0]
-      const t = exprType([opChar, args[0], args[1]], locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-    }
-    if (['/='].includes(op) && typeof args[0] === 'string') {
-      if (locals.has(args[0])) locals.set(args[0], 'f64') // division always f64
-    }
-
-    if (op !== '=>') for (const a of args) walk(a)  // don't leak inner-closure locals
-  }
-
-  walk(body)
-  return locals
-}
 
 /** Normalize emit result to instruction list. */
 const flat = ir => {
@@ -806,6 +428,7 @@ function buildArrayWithSpreads(items) {
     ['local.set', `$${len}`, ['i32.const', 0]],
   ]
 
+  inc('__len', '__ptr_offset')
   // Emit spread expressions once, store in locals
   // Multi-value function calls get materialized as heap arrays
   for (const sec of sections) {
@@ -1110,27 +733,44 @@ export default function compile(ast) {
         bodyIR = [asF64(emit(cb.body))]
       }
 
+      // Pre-allocate cache locals for env/args unpacking
+      const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
+      if (envBase) { ctx.func.locals.set(envBase, 'i32'); inc('__ptr_offset') }
+      let argsBase, argsLen
+      if (!cb.rest && cb.params.length > 0) {
+        argsBase = `${T}argsBase${ctx.func.uniq++}`
+        argsLen = `${T}argsLen${ctx.func.uniq++}`
+        ctx.func.locals.set(argsBase, 'i32')
+        ctx.func.locals.set(argsLen, 'i32')
+      }
+
       // Insert locals (captures + params + declared)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
       // Load captures from env: boxed → i32.trunc_f64_u (cell pointer), immutable → f64 value
-      for (let i = 0; i < cb.captures.length; i++) {
-        const name = cb.captures[i]
-        const loadEnv = ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', '$__env']], ['i32.const', i * 8]]]
-        fn.push(['local.set', `$${name}`, ctx.func.boxed.has(name) ? ['i32.trunc_f64_u', loadEnv] : loadEnv])
+      if (envBase) {
+        fn.push(['local.set', `$${envBase}`, ['call', '$__ptr_offset', ['local.get', '$__env']]])
+        for (let i = 0; i < cb.captures.length; i++) {
+          const name = cb.captures[i]
+          const loadEnv = ['f64.load', ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]]
+          fn.push(['local.set', `$${name}`, ctx.func.boxed.has(name) ? ['i32.trunc_f64_u', loadEnv] : loadEnv])
+        }
       }
 
       // Unpack params from args array (rest param: pass whole array)
       if (cb.rest) {
         fn.push(['local.set', `$${cb.rest}`, ['local.get', `$${T}args`]])
-      } else {
+      } else if (argsBase) {
         const argsPtr = `$${T}args`
+        inc('__len', '__ptr_offset')
+        fn.push(['local.set', `$${argsBase}`, ['call', '$__ptr_offset', ['local.get', argsPtr]]])
+        fn.push(['local.set', `$${argsLen}`, ['call', '$__len', ['local.get', argsPtr]]])
         // Unpack with bounds check: if i >= len, use sentinel NaN (triggers default)
         for (let i = 0; i < cb.params.length; i++) {
           fn.push(['local.set', `$${cb.params[i]}`,
             ['if', ['result', 'f64'],
-              ['i32.gt_s', ['call', '$__len', ['local.get', argsPtr]], ['i32.const', i]],
-              ['then', ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', argsPtr]], ['i32.const', i * 8]]]],
+              ['i32.gt_s', ['local.get', `$${argsLen}`], ['i32.const', i]],
+              ['then', ['f64.load', ['i32.add', ['local.get', `$${argsBase}`], ['i32.const', i * 8]]]],
               ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]])
         }
       }
@@ -1335,7 +975,8 @@ export default function compile(ast) {
 
 /** Check if node is a block body (statement list, not object literal/expression) */
 const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
-  ...ASSIGN_OPS, 'throw', 'try', 'catch', '++', '--', '()'])
+  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
+  'throw', 'try', 'catch', '++', '--', '()'])
 const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && Array.isArray(n[1]) && STMT_OPS.has(n[1]?.[0])
 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
@@ -2014,6 +1655,7 @@ export const emitter = {
             ir.push(mutating ? ['drop', r] : ['local.set', `$${acc}`, r])
           }
 
+          inc('__len')
           const n = multiCount(spreadExpr)
           ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
@@ -2044,18 +1686,20 @@ export const emitter = {
         if (emitter) {
           const innerName = `${obj}${T}inner`
           if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
+          const boxBase = tempI32('bb')
           // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
-          const loadInner = ['local.set', `$${innerName}`,
-            ['f64.load', ['call', '$__ptr_offset', asF64(emit(obj))]]]
+          const loadInner = [
+            ['local.set', `$${boxBase}`, ['call', '$__ptr_offset', asF64(emit(obj))]],
+            ['local.set', `$${innerName}`, ['f64.load', ['local.get', `$${boxBase}`]]]]
           const result = callMethod(innerName, emitter)
           // For mutating methods, writeback inner value to boxed slot 0 (push/pop may reallocate)
           const mutating = ['push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort']
           if (mutating.includes(method)) {
-            const wb = ['f64.store', ['call', '$__ptr_offset', asF64(emit(obj))], ['local.get', `$${innerName}`]]
-            return typed(['block', ['result', 'f64'], loadInner, asF64(result), wb], 'f64')
+            const wb = ['f64.store', ['local.get', `$${boxBase}`], ['local.get', `$${innerName}`]]
+            return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
           }
           // Non-mutating: just load inner and call
-          return typed(['block', ['result', 'f64'], loadInner, asF64(result)], 'f64')
+          return typed(['block', ['result', 'f64'], ...loadInner, asF64(result)], 'f64')
         }
       }
 
@@ -2248,7 +1892,7 @@ export function emit(node) {
         } else {
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} (param $__env f64) (param $${T}args f64) (result f64) (local $${argLen} i32) (local $${argBase} i32) (local.set $${argBase} (call $__ptr_offset (local.get $${T}args))) (local.set $${argLen} (i32.load (i32.sub (local.get $${argBase}) (i32.const 8)))) (call $${node} ${fwd}))`
         }
-        inc(trampolineName)
+        inc(trampolineName, '__ptr_offset', '__alloc', '__mkptr')
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
       if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }

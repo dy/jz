@@ -254,6 +254,8 @@ function genUpsertGrowStrict(name, entrySize, hashFn, eqExpr, typeConst) {
 
 
 export default () => {
+  inc('__ptr_offset', '__cap')
+
   if (!ctx.scope.globals.has('__dyn_props'))
     ctx.scope.globals.set('__dyn_props', '(global $__dyn_props (mut f64) (f64.const 0))')
 

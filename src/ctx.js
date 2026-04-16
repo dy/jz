@@ -128,6 +128,16 @@ export const STDLIB_DEPS = {
   // number
   __to_num: ['__char_at', '__str_byteLen', '__pow10'],
   __parseInt: ['__char_at', '__str_byteLen'],
+
+  // core pointer helpers (WAT-internal deps)
+  __ptr_offset: ['__ptr_type'],
+  __is_str_key: ['__ptr_type'],
+  __str_len: ['__ptr_type', '__ptr_offset'],
+  __set_len: ['__ptr_type', '__ptr_offset'],
+  __length: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__str_len', '__len'],
+  __sso_char: ['__ptr_offset'],
+  __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
+  __write_val: ['__ptr_type', '__write_num', '__write_str', '__static_str'],
 }
 
 /** Expand ctx.core.includes transitively via STDLIB_DEPS. Call before WASM assembly. */

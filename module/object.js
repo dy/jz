@@ -12,6 +12,8 @@ import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
 export default () => {
+  inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
+
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
   ctx.core.emit['{}'] = (...props) => {
     if (props.length === 0)
@@ -65,14 +67,15 @@ export default () => {
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}ov${ctx.func.uniq++}`
+    const t = `${T}ov${ctx.func.uniq++}`, base = tempI32('vb')
     ctx.func.locals.set(t, 'f64')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
-    const body = [['local.set', `$${t}`, va], out.init]
+    const body = [['local.set', `$${t}`, va], out.init,
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
     for (let i = 0; i < n; i++)
       body.push(['f64.store',
         ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]])
+        ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.const', i * 8]]]])
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -82,16 +85,17 @@ export default () => {
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}oe${ctx.func.uniq++}`, pair = tempI32('op')
+    const t = `${T}oe${ctx.func.uniq++}`, pair = tempI32('op'), base = tempI32('eb')
     ctx.func.locals.set(t, 'f64')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
-    const body = [['local.set', `$${t}`, va], out.init]
+    const body = [['local.set', `$${t}`, va], out.init,
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
     for (let i = 0; i < n; i++) {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${pair}`], emit(['str', schema[i]])],
         ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', i * 8]]]],
+          ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.const', i * 8]]]],
         ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
           ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
     }
@@ -118,15 +122,17 @@ export default () => {
           ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
           ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
         ]
+        const sBase = tempI32('sb')
         for (const source of sources) {
           const sSchema = resolveSchema(source)
           body.push(['local.set', `$${s}`, asF64(emit(source))])
+          body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]])
           for (let si = 0; si < sSchema.length; si++) {
             const ti = boxedSchema.indexOf(sSchema[si])
             if (ti < 0) continue
             body.push(['f64.store',
               ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
-              ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
+              ['f64.load', ['i32.add', ['local.get', `$${sBase}`], ['i32.const', si * 8]]]])
           }
         }
         body.push(['local.set', `$${target}`,
@@ -139,17 +145,20 @@ export default () => {
     if (!tSchema) err('Object.assign: target needs known schema')
     const t = `${T}at${ctx.func.uniq++}`, s = `${T}as${ctx.func.uniq++}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(s, 'f64')
-    const body = [['local.set', `$${t}`, asF64(emit(target))]]
+    const tBase = tempI32('tb'), sBase2 = tempI32('sb')
+    const body = [['local.set', `$${t}`, asF64(emit(target))],
+      ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
     for (const source of sources) {
       const sSchema = resolveSchema(source)
       if (!sSchema) err('Object.assign: source needs known schema')
       body.push(['local.set', `$${s}`, asF64(emit(source))])
+      body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
         body.push(['f64.store',
-          ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', ti * 8]],
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', si * 8]]]])
+          ['i32.add', ['local.get', `$${tBase}`], ['i32.const', ti * 8]],
+          ['f64.load', ['i32.add', ['local.get', `$${sBase2}`], ['i32.const', si * 8]]]])
       }
     }
     body.push(['local.get', `$${t}`])
@@ -213,14 +222,16 @@ export default () => {
     const schemaId = ctx.schema.register(schema)
     const t = `${T}oc${ctx.func.uniq++}`, s = `${T}os${ctx.func.uniq++}`
     ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
+    const srcBase = tempI32('cb')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', n * 8]]],
+      ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]],
     ]
     // Copy all properties from proto
     for (let i = 0; i < n; i++)
       body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]],
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${s}`]], ['i32.const', i * 8]]]])
+        ['f64.load', ['i32.add', ['local.get', `$${srcBase}`], ['i32.const', i * 8]]]])
     body.push(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }

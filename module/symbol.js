@@ -18,11 +18,13 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, err, PTR } from '../src/ctx.js'
+import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 const RESERVED = 16  // first user atom ID
 
 export default () => {
+  inc('__mkptr')
+
   // Intern table: name → atomId (shared across compilation)
   if (!ctx.runtime.atom) {
     ctx.runtime.atom = { table: new Map(), next: RESERVED }

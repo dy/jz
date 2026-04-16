@@ -136,6 +136,8 @@ function makeCallback(fn) {
 }
 
 export default () => {
+  inc('__ptr_offset', '__ptr_type', '__len', '__set_len')
+
   // Array.isArray(x): check ptr_type === PTR.ARRAY
   ctx.core.emit['Array.isArray'] = (x) => {
     const v = asF64(emit(x))
@@ -417,11 +419,14 @@ export default () => {
     ]
 
     // Store each value and increment len
+    const pushBase = `${T}pb${ctx.func.uniq++}`
+    ctx.func.locals.set(pushBase, 'i32')
+    body.push(['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]])
     for (const val of vals) {
       const vv = asF64(emit(val))
       body.push(
         ['f64.store',
-          ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
+          ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
           vv],
         ['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', 1]]]
       )
@@ -850,9 +855,12 @@ export default () => {
     body.push(out.init)
 
     // Copy source array
+    const srcOff = `${T}co${ctx.func.uniq++}`
+    ctx.func.locals.set(srcOff, 'i32')
     body.push(
       ['local.set', `$${pos}`, ['i32.const', 0]],
-      ['local.set', `$${len}`, ['call', '$__len', va]]
+      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', va]]
     )
     const id = ctx.func.uniq++
     body.push(
@@ -860,7 +868,7 @@ export default () => {
         ['br_if', `$done${id}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
         ['f64.store',
           ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', va], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
+          ['f64.load', ['i32.add', ['local.get', `$${srcOff}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
         ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]]
     )
@@ -870,17 +878,20 @@ export default () => {
     ctx.func.locals.set(offset, 'i32')
     body.push(['local.set', `$${offset}`, ['call', '$__len', va]])
 
+    const otherOff = `${T}co2${ctx.func.uniq++}`
+    ctx.func.locals.set(otherOff, 'i32')
     for (let i = 0; i < otherVals.length; i++) {
       const vo = otherVals[i]
       const id2 = ctx.func.uniq++
       body.push(
         ['local.set', `$${pos}`, ['i32.const', 0]],
         ['local.set', `$${len}`, ['call', '$__len', vo]],
+        ['local.set', `$${otherOff}`, ['call', '$__ptr_offset', vo]],
         ['block', `$done${id2}`, ['loop', `$loop${id2}`,
           ['br_if', `$done${id2}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
           ['f64.store',
             ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['i32.add', ['local.get', `$${offset}`], ['local.get', `$${pos}`]], ['i32.const', 3]]],
-            ['f64.load', ['i32.add', ['call', '$__ptr_offset', vo], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
+            ['f64.load', ['i32.add', ['local.get', `$${otherOff}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]]]],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
           ['br', `$loop${id2}`]]],
         ['local.set', `$${offset}`, ['i32.add', ['local.get', `$${offset}`], ['local.get', `$${len}`]]]

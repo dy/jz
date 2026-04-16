@@ -86,7 +86,7 @@ export default () => {
   // console.log(...args) — variadic, each arg separated by space, followed by newline
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
-      inc('__write_val')
+      inc('__write_val', '__write_byte')
       const ir = []
       for (let i = 0; i < args.length; i++) {
         if (i > 0) ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]])  // space

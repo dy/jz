@@ -239,11 +239,13 @@ export default () => {
 
   // String (heap): [-4:len(i32)][chars...]
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
+    (local $off i32)
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
-        (i32.ge_u (call $__ptr_offset (local.get $ptr)) (i32.const 4)))
-      (then (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 4))))
+        (i32.ge_u (local.get $off) (i32.const 4)))
+      (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
 
   // Set len in memory (for push/pop)
@@ -268,7 +270,8 @@ export default () => {
     (i32.store (i32.add (local.get $ptr) (i32.const 4)) (local.get $cap))
     (i32.add (local.get $ptr) (i32.const 8)))`
 
-  inc('__mkptr', '__ptr_offset', '__ptr_aux', '__ptr_type', '__alloc', '__reset', '__len', '__cap', '__str_len', '__set_len', '__alloc_hdr')
+  // Core exports _alloc/_reset, so always include those + __alloc_hdr (used by allocPtr)
+  inc('__alloc', '__reset', '__alloc_hdr')
 
   // Export allocator
   ctx.func.list.push({
@@ -464,6 +467,7 @@ export default () => {
 
   // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
   ctx.core.emit['typeof'] = (a) => {
+    inc('__ptr_type')
     const t = temp()
     return typed(['if', ['result', 'f64'],
       // NaN check: val != val means it's a NaN-boxed pointer

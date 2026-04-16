@@ -197,6 +197,8 @@ function genSimdMap(name, elemType, pattern) {
 
 
 export default () => {
+  inc('__mkptr', '__alloc', '__ptr_offset', '__ptr_type', '__len')
+
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
 

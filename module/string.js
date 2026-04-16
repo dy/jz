@@ -15,6 +15,7 @@ import { ctx, inc, PTR } from '../src/ctx.js'
 
 
 export default () => {
+  inc('__mkptr', '__alloc')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
 
