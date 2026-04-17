@@ -117,10 +117,10 @@ Initially conceived for bytebeats, inspired by [porf](https://github.com/CanadaH
 
 #### How do I pass data between JS and WASM?
 
-Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — they need `mem` to cross the boundary:
+Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
 ```js
-const { exports, mem } = jz(`
+const { exports, memory } = jz(`
   export let greet = (s) => s.length
   export let sum = (a) => a.reduce((s, x) => s + x, 0)
   export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
@@ -128,25 +128,25 @@ const { exports, mem } = jz(`
 `)
 
 // JS → WASM (write)
-mem.String('hello')               // → NaN-boxed string pointer
-mem.Array([1, 2, 3])              // → NaN-boxed array pointer
-mem.Float64Array([1.0, 2.0])      // → NaN-boxed typed array pointer
-mem.Int32Array([10, 20, 30])      // all typed array constructors available
+memory.String('hello')               // → NaN-boxed string pointer
+memory.Array([1, 2, 3])              // → NaN-boxed array pointer
+memory.Float64Array([1.0, 2.0])      // → NaN-boxed typed array pointer
+memory.Int32Array([10, 20, 30])      // all typed array constructors available
 
 // Objects: keys and order must match the jz source declaration.
 // jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-mem.Object({ x: 3, y: 4 })       // → NaN-boxed object pointer
+memory.Object({ x: 3, y: 4 })       // → NaN-boxed object pointer
 
 // Strings/arrays inside objects are auto-wrapped to pointers:
-mem.Object({ name: 'jz', count: 3 })  // name auto-wrapped via mem.String
+memory.Object({ name: 'jz', count: 3 })  // name auto-wrapped via memory.String
 
 // Call with pointers
-exports.greet(mem.String('hello'))          // 5
-exports.sum(mem.Array([1, 2, 3]))           // 6
-exports.dist(mem.Object({ x: 3, y: 4 }))   // 5
+exports.greet(memory.String('hello'))          // 5
+exports.sum(memory.Array([1, 2, 3]))           // 6
+exports.dist(memory.Object({ x: 3, y: 4 }))   // 5
 
 // WASM → JS (read)
-mem.read(exports.process(mem.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
+memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
 Template interpolation handles most of this automatically — strings, arrays, numbers, and numeric objects are marshaled for you:
@@ -157,23 +157,28 @@ jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
 
 #### Can two modules share data?
 
-Yes — pass a shared `WebAssembly.Memory` and pointers work across modules:
+Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
 
 ```js
-const memory = new WebAssembly.Memory({ initial: 1 })
+const memory = jz.memory()
 
-const a = jz('export let make = () => { let a = [10, 20, 30]; return a }', { memory })
-const b = jz('export let sum = (arr) => arr.reduce((s, x) => s + x, 0)', { memory })
+const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
+const b = jz('export let read = (o) => o.x + o.y', { memory })
 
-// Pointer from module a, processed by module b — same memory, zero copy
-b.instance.exports.sum(a.instance.exports.make())  // 60
+// Object from module a, processed by module b — same memory, merged schemas
+b.exports.read(a.exports.make())  // 30
 
-// Strings work too
-const c = jz('export let len = (s) => s.length', { memory })
-c.instance.exports.len(a.mem.String('hello'))  // 5
+// Read from JS too — memory knows all schemas
+memory.read(a.exports.make())  // {x: 10, y: 20}
+
+// Write from JS before any compilation
+memory.String('hello')      // → NaN-boxed pointer
+memory.Array([1, 2, 3])     // → NaN-boxed pointer
 ```
 
-All modules sharing a memory use a single bump allocator (heap pointer stored in the memory itself). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
+`jz.memory()` returns an actual `WebAssembly.Memory` (monkey-patched with `.read()`, `.String()`, `.Array()`, `.Object()`, `.write()`, etc). You can also pass an existing memory: `jz.memory(new WebAssembly.Memory({ initial: 4 }))` patches and returns the same object. Passing raw `WebAssembly.Memory` to `{ memory }` auto-wraps it.
+
+All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
 #### How does template interpolation work?
 
@@ -369,12 +374,12 @@ const wrapped = jz.wrap(mod, inst)
 TypedArrays (`Float64Array`, `Int32Array`, etc.) compile to typed WASM memory with correct byte strides. `.map()` auto-vectorizes recognized patterns to SIMD:
 
 ```js
-const { exports, mem } = jz(`export let f = () => {
+const { exports, memory } = jz(`export let f = () => {
   let buf = new Float64Array(1024)
   // ... fill buf ...
   return buf.map(x => x * 2)  // compiles to f64x2.mul SIMD
 }`)
-mem.read(exports.f())  // Float64Array with doubled values
+memory.read(exports.f())  // Float64Array with doubled values
 ```
 
 ## Used by

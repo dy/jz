@@ -16,7 +16,7 @@ function evalStr(code) {
   const wasm = compile(`export let main = () => ${code}`)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
-  return jz.mem({ module: mod, instance: inst }).read(inst.exports.main())
+  return jz.memory({ module: mod, instance: inst }).read(inst.exports.main())
 }
 
 // === Greedy vs lazy quantifiers ===

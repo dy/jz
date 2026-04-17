@@ -1,6 +1,14 @@
 
-## [ ] jz.memory wrapper
+## [x] jz.memory wrapper
 
+Monkey-patch `WebAssembly.Memory` with jz read/write methods. No wrapper object — `memory` IS the Memory.
+
+- [x] **1. `jz.memory([src])`** — replaces `jz.mem(src)`.
+- [x] **2. `jz()` compile path** — normalize `{ memory }` option, auto-wrap raw Memory, schema accumulation
+- [x] **3. Instance result** — `{ exports, memory, instance, module }` — drop `.mem`
+- [x] **4. Tests** — 12 new tests in `test/mem.js` (857/857 pass)
+- [x] **5. README** — documented `jz.memory` API
+- [x] **6. Update internal refs** — `.mem` → `.memory` in template tag, tests, etc.
 
 ### Tier 1: Zero-cost (no semantic change, pure codegen cleanup)
 

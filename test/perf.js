@@ -43,7 +43,7 @@ test('perf: mandelbrot — WASM competitive with JS', () => {
 })
 
 test('perf: typed array sum — WASM competitive', () => {
-  const { exports: { sum }, mem } = jz(`
+  const { exports: { sum }, memory } = jz(`
     export let sum = (arr) => {
       let buf = new Float64Array(arr)
       let s = 0
@@ -54,7 +54,7 @@ test('perf: typed array sum — WASM competitive', () => {
   const N = 10000
   const data = new Float64Array(N)
   for (let i = 0; i < N; i++) data[i] = i * 0.1
-  const wasmArr = mem.Float64Array(data)
+  const wasmArr = memory.Float64Array(data)
 
   const jsSum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
   const expected = jsSum(data)

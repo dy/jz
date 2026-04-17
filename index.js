@@ -19,11 +19,11 @@ import jzify from './src/jzify.js'
 /**
  * jz — JS subset → WASM compiler.
  *
- * jz('code') or jz`code` → { exports, mem, instance, module }
+ * jz('code') or jz`code` → { exports, memory, instance, module }
  * jz.compile('code') → Uint8Array (raw WASM binary)
  * jz.compile('code', { wat: true }) → string (WAT text)
  * jz.wrap(mod, inst) → wrapped exports (defaults, rest params)
- * jz.mem(inst) → memory bridge (read/write JS↔WASM values)
+ * jz.memory([src]) → enhanced WebAssembly.Memory (read/write JS↔WASM values)
  *
  * @example
  * const { exports: { add } } = jz('export let add = (a, b) => a + b')
@@ -62,23 +62,59 @@ const ELEMS = {
 const ELEM_BY_ID = Object.values(ELEMS)
 
 /**
- * Bind to WASM instance. Accepts WebAssembly.instantiate() result or plain exports.
- * @param {{module, instance}|WebAssembly.Instance|object} src
+ * Enhance WebAssembly.Memory with jz read/write methods (monkey-patch).
+ * - jz.memory() → create new Memory, patch, return
+ * - jz.memory({ initial: N }) → create with options, patch, return
+ * - jz.memory(wasmMemory) → patch existing, return same object
+ * - jz.memory(instanceResult) → bind to instance (patch its memory, bind alloc/schemas/extMap)
  */
-jz.mem = (src) => {
-  const raw = src?.instance?.exports || src?.exports || src
-  const memory = src?.exports?.memory || raw.memory
-  if (!memory) return null  // pure scalar module — no memory
-  const exports = { ...raw, memory }
-  const dv = () => new DataView(memory.buffer)
-  const alloc = exports._alloc
+const _enhanced = new WeakSet()
 
-  // Read schemas from jz:schema custom section
-  let schemas = []
-  if (src?.module) {
-    const secs = WebAssembly.Module.customSections(src.module, 'jz:schema')
-    if (secs.length) schemas = JSON.parse(new TextDecoder().decode(secs[0]))
+jz.memory = (src) => {
+  // Already enhanced — return as-is (idempotent)
+  if (src instanceof WebAssembly.Memory && _enhanced.has(src)) return src
+
+  // Create new Memory from nothing or options
+  if (!src || (typeof src === 'object' && !(src instanceof WebAssembly.Memory) && !src.instance && !src.exports && !src.memory)) {
+    const mem = new WebAssembly.Memory({ initial: src?.initial || 1, ...(src?.maximum ? { maximum: src.maximum } : {}), ...(src?.shared ? { shared: src.shared } : {}) })
+    return jz.memory(mem)
   }
+
+  // Resolve the WebAssembly.Memory object
+  let memory, wasmExports, extMap, mod
+  if (src instanceof WebAssembly.Memory) {
+    memory = src
+    wasmExports = null
+    extMap = null
+    mod = null
+  } else {
+    // Instance result: { module, instance, exports, extMap }
+    const raw = src?.instance?.exports || src?.exports || src
+    memory = src?.exports?.memory || raw.memory
+    if (!memory) return null  // pure scalar module — no memory
+    wasmExports = { ...raw, memory }
+    extMap = src.extMap || null
+    mod = src.module || null
+  }
+
+  const dv = () => new DataView(memory.buffer)
+
+  // JS-side bump allocator (heap ptr at byte 1020, same convention as WASM)
+  const jsAlloc = (bytes) => {
+    const d = dv(), ptr = d.getInt32(1020, true)
+    const aligned = (ptr + 7) & ~7  // 8-byte align
+    const next = aligned + bytes
+    if (next > memory.buffer.byteLength) memory.grow(Math.ceil((next - memory.buffer.byteLength) / 65536))
+    d.setInt32(1020, next, true)
+    return aligned
+  }
+
+  // Use WASM allocator if available, else JS-side bump
+  let alloc = wasmExports?._alloc || jsAlloc
+
+  // Initialize heap pointer if not yet set
+  const initDv = dv()
+  if (initDv.getInt32(1020, true) < 1024) initDv.setInt32(1020, 1024, true)
 
   // Write header (len + cap), return data offset
   const hdr = (len, cap, bytes) => {
@@ -89,223 +125,238 @@ jz.mem = (src) => {
     return raw + 8
   }
 
-  // Coerce JS values for WASM memory: null → NULL_NAN, undefined → UNDEF_NAN
   const memCoerce = coerce
 
-  const mem = {
-    // Array: [-8:len][-4:cap][f64 elems...]
-    Array(data) {
-      const n = data.length, off = hdr(n, n, n * 8), m = dv()
-      for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
-      return jz.ptr(1, 0, off)
-    },
-
-    // String: [-4:len][u8 chars...] or SSO (≤4 ASCII)
-    String(str) {
-      if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
-        let packed = 0
-        for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-        return jz.ptr(5, str.length, packed)  // SSO
+  // Read schemas from module custom section, merge into memory.schemas
+  let schemas = memory.schemas || []
+  if (mod) {
+    const secs = WebAssembly.Module.customSections(mod, 'jz:schema')
+    if (secs.length) {
+      const newSchemas = JSON.parse(new TextDecoder().decode(secs[0]))
+      for (const s of newSchemas) {
+        const key = s.join(',')
+        if (!schemas.some(existing => existing.join(',') === key)) schemas.push(s)
       }
-      const enc = new TextEncoder().encode(str)
-      const n = enc.length, raw = alloc(4 + n), m = dv()
-      m.setInt32(raw, n, true)
-      const off = raw + 4
-      enc.forEach((b, i) => m.setUint8(off + i, b))
-      return jz.ptr(4, 0, off)
-    },
-
-    // Buffer (ArrayBuffer): [-8:byteLen][-4:byteCap][bytes...]
-    Buffer(data) {
-      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
-        : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-        : new Uint8Array(data)
-      const n = bytes.length, off = hdr(n, n, n), m = new Uint8Array(memory.buffer)
-      m.set(bytes, off)
-      return jz.ptr(2, 0, off)
-    },
-
-    // Object: [prop0:f64, prop1:f64, ...] — schema matched by key identity
-    // Exact key-order match preferred; set-based fallback only if unambiguous
-    wrapVal(v) {
-      if (v === null || v === undefined) return memCoerce(v)
-      if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
-      if (typeof v === 'string') return mem.String(v)
-      if (Array.isArray(v)) return mem.Array(v)
-      if (v instanceof ArrayBuffer) return mem.Buffer(v)
-      if (v instanceof DataView) return mem.Buffer(v.buffer)
-      const typedName = v?.constructor?.name
-      if (typedName && ELEMS[typedName]) return mem[typedName](v)
-      if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
-      return UNDEF_NAN
-    },
-    External(obj) {
-      if (obj === null || obj === undefined) return memCoerce(obj)
-      let id = src.extMap.indexOf(obj)
-      if (id === -1) { id = src.extMap.length; src.extMap.push(obj) }
-      return jz.ptr(11, 0, id)
-    },
-
-    Object(obj) {
-      const objKeys = Object.keys(obj)
-      const key = objKeys.join(',')
-      let sid = schemas.findIndex(s => s.join(',') === key)
-      if (sid === -1) {
-        // Fallback: match by key set, require exactly one match
-        const matches = schemas.reduce((a, s, i) =>
-          (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
-        if (matches.length === 1) sid = matches[0]
-        else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
-        else return mem.External(obj)
-      }
-      const schema = schemas[sid], n = schema.length, raw = alloc(n * 8), m = dv()
-      for (let i = 0; i < n; i++) {
-        let v = obj[schema[i]]
-        // Auto-wrap JS values to NaN-boxed pointers
-        if (v === null || v === undefined) v = memCoerce(v)
-        else if (typeof v === 'string') v = mem.String(v)
-        else if (Array.isArray(v)) v = mem.Array(v)
-        m.setFloat64(raw + i * 8, v, true)
-      }
-      return jz.ptr(6, sid, raw)
-    },
-
-    // Read: auto-dispatch by pointer type → JS value
-    read(ptr) {
-      if (ptr === ptr) return ptr  // regular number passthrough (NaN fails ===)
-      const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
-      if (type === 0 && aux === 1 && off === 0) return null       // NULL_NAN → JS null
-      if (type === 0 && aux === 0 && off === 1) return undefined  // UNDEF_NAN → JS undefined
-      if (type === 11 && src.extMap) return src.extMap[off]
-      if (type === 1) {  // ARRAY
-        const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
-        for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
-        return out
-      }
-      if (type === 3) {  // TYPED → native JS typed array (zero-copy view).
-        // aux bit 3 = subview: offset points to 16-byte descriptor
-        //   [0:byteLen][4:dataOff][8:parentOff][12:pad]
-        // aux bits 0-2 = elemType. Owned TYPED: byteLen at [off-8], data at off.
-        const aux = jz.aux(ptr), elem = aux & 7
-        const [, stride] = ELEM_BY_ID[elem]
-        const Ctor = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
-        const m = dv()
-        if (aux & 8) {
-          const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-          return new Ctor(exports.memory.buffer, dataOff, byteLen / stride)
-        }
-        const byteLen = m.getInt32(off - 8, true)
-        return new Ctor(exports.memory.buffer, off, byteLen / stride)
-      }
-      if (type === 2) {  // BUFFER → fresh ArrayBuffer copy
-        const byteLen = dv().getInt32(off - 8, true)
-        const out = new ArrayBuffer(byteLen)
-        new Uint8Array(out).set(new Uint8Array(exports.memory.buffer, off, byteLen))
-        return out
-      }
-      if (type === 4) {  // STRING (heap)
-        const len = dv().getInt32(off - 4, true)
-        return new TextDecoder().decode(new Uint8Array(exports.memory.buffer, off, len))
-      }
-      if (type === 5) {  // STRING_SSO
-        const len = jz.aux(ptr); let s = ''
-        for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
-        return s
-      }
-      if (type === 6) {  // OBJECT
-        const m = dv(), sid = jz.aux(ptr), keys = schemas[sid]
-        if (!keys) return ptr
-        const obj = {}
-        for (let i = 0; i < keys.length; i++) obj[keys[i]] = this.read(m.getFloat64(off + i * 8, true))
-        return obj
-      }
-      if (type === 7) {  // HASH (dynamic string-keyed object)
-        const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-        const obj = {}
-        for (let i = 0, found = 0; i < cap && found < size; i++) {
-          const hash = m.getFloat64(off + i * 24, true)
-          if (hash !== 0) {
-            const key = this.read(m.getFloat64(off + i * 24 + 8, true))
-            obj[key] = this.read(m.getFloat64(off + i * 24 + 16, true))
-            found++
-          }
-        }
-        return obj
-      }
-      if (type === 8) {  // SET
-        const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-        const set = new Set()
-        for (let i = 0; i < cap && set.size < size; i++) {
-          const hash = m.getFloat64(off + i * 16, true)
-          if (hash !== 0) set.add(this.read(m.getFloat64(off + i * 16 + 8, true)))
-        }
-        return set
-      }
-      if (type === 9) {  // MAP
-        const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
-        const map = new Map()
-        for (let i = 0; i < cap && map.size < size; i++) {
-          const hash = m.getFloat64(off + i * 24, true)
-          if (hash !== 0) map.set(this.read(m.getFloat64(off + i * 24 + 8, true)), this.read(m.getFloat64(off + i * 24 + 16, true)))
-        }
-        return map
-      }
-      if (type === 10) return ptr  // CLOSURE — opaque handle, pass back to WASM
-      return ptr
-    },
-
-    // Write: update data into existing pointer (no alloc)
-    write(ptr, data) {
-      const type = jz.type(ptr), off = jz.offset(ptr), m = dv()
-      if (type === 1) {
-        const cap = m.getInt32(off - 4, true)
-        if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
-        m.setInt32(off - 8, data.length, true)
-        for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
-      } else if (type === 3) {
-        const aux = jz.aux(ptr), elem = aux & 7
-        const [, stride, , setter] = ELEM_BY_ID[elem]
-        const byteLen = data.length * stride
-        if (aux & 8) {
-          // View: fixed-size window into parent. byteLen at descriptor[0], data at descriptor[4].
-          const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-          if (byteLen > viewByteLen) throw Error(`write: ${byteLen} bytes exceeds view size ${viewByteLen}`)
-          for (let i = 0; i < data.length; i++) m[setter](dataOff + i * stride, data[i], true)
-        } else {
-          const byteCap = m.getInt32(off - 4, true)
-          if (byteLen > byteCap) throw Error(`write: ${byteLen} bytes exceeds capacity ${byteCap}`)
-          m.setInt32(off - 8, byteLen, true)
-          for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
-        }
-      } else if (type === 6) {
-        const schema = schemas[jz.aux(ptr)]
-        if (!schema) throw Error(`write: unknown schema`)
-        for (const key of Object.keys(data)) {
-          const i = schema.indexOf(key)
-          if (i >= 0) m.setFloat64(off + i * 8, memCoerce(data[key]), true)
-        }
-      } else {
-        throw Error(`write: unsupported type ${type}`)
-      }
-    },
-
-    schemas,
-    alloc: exports._alloc,
-    reset: exports._reset,
+    }
   }
 
-  // TypedArray constructors: m.Float64Array(data), m.Int32Array(data), etc.
-  // Header stores byteLen (shared with BUFFER headers for zero-copy aliasing).
+  // If already enhanced, just update bindings (new module compiled into same memory)
+  if (_enhanced.has(memory)) {
+    memory.schemas = schemas
+    if (wasmExports?._alloc) { alloc = wasmExports._alloc; memory.alloc = alloc }
+    if (wasmExports?._reset) memory.reset = wasmExports._reset
+    if (extMap) memory._extMap = extMap
+    return memory
+  }
+
+  // Patch methods onto the Memory instance
+  memory.schemas = schemas
+  memory._extMap = extMap
+
+  memory.Array = (data) => {
+    const n = data.length, off = hdr(n, n, n * 8), m = dv()
+    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
+    return jz.ptr(1, 0, off)
+  }
+
+  memory.String = (str) => {
+    if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
+      let packed = 0
+      for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
+      return jz.ptr(5, str.length, packed)  // SSO
+    }
+    const enc = new TextEncoder().encode(str)
+    const n = enc.length, raw = alloc(4 + n), m = dv()
+    m.setInt32(raw, n, true)
+    const off = raw + 4
+    enc.forEach((b, i) => m.setUint8(off + i, b))
+    return jz.ptr(4, 0, off)
+  }
+
+  memory.Buffer = (data) => {
+    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
+      : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data)
+    const n = bytes.length, off = hdr(n, n, n), m = new Uint8Array(memory.buffer)
+    m.set(bytes, off)
+    return jz.ptr(2, 0, off)
+  }
+
+  memory.wrapVal = function(v) {
+    if (v === null || v === undefined) return memCoerce(v)
+    if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
+    if (typeof v === 'string') return this.String(v)
+    if (Array.isArray(v)) return this.Array(v)
+    if (v instanceof ArrayBuffer) return this.Buffer(v)
+    if (v instanceof DataView) return this.Buffer(v.buffer)
+    const typedName = v?.constructor?.name
+    if (typedName && ELEMS[typedName]) return this[typedName](v)
+    if (typeof v === 'object' || typeof v === 'function') return this.External(v)
+    return UNDEF_NAN
+  }
+
+  memory.External = function(obj) {
+    if (obj === null || obj === undefined) return memCoerce(obj)
+    const map = this._extMap
+    if (!map) return UNDEF_NAN
+    let id = map.indexOf(obj)
+    if (id === -1) { id = map.length; map.push(obj) }
+    return jz.ptr(11, 0, id)
+  }
+
+  memory.Object = function(obj) {
+    const objKeys = Object.keys(obj)
+    const key = objKeys.join(',')
+    const schemas = this.schemas
+    let sid = schemas.findIndex(s => s.join(',') === key)
+    if (sid === -1) {
+      const matches = schemas.reduce((a, s, i) =>
+        (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
+      if (matches.length === 1) sid = matches[0]
+      else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
+      else if (this._extMap) return this.External(obj)
+      else throw Error(`No schema for {${key}}`)
+    }
+    const schema = schemas[sid], n = schema.length, raw = alloc(n * 8), m = dv()
+    for (let i = 0; i < n; i++) {
+      let v = obj[schema[i]]
+      if (v === null || v === undefined) v = memCoerce(v)
+      else if (typeof v === 'string') v = this.String(v)
+      else if (Array.isArray(v)) v = this.Array(v)
+      m.setFloat64(raw + i * 8, v, true)
+    }
+    return jz.ptr(6, sid, raw)
+  }
+
+  memory.read = function(ptr) {
+    if (ptr === ptr) return ptr  // regular number passthrough (NaN fails ===)
+    const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
+    if (type === 0 && aux === 1 && off === 0) return null
+    if (type === 0 && aux === 0 && off === 1) return undefined
+    if (type === 11 && this._extMap) return this._extMap[off]
+    if (type === 1) {  // ARRAY
+      const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
+      for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
+      return out
+    }
+    if (type === 3) {  // TYPED
+      const aux = jz.aux(ptr), elem = aux & 7
+      const [, stride] = ELEM_BY_ID[elem]
+      const Ctor = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
+      const m = dv()
+      if (aux & 8) {
+        const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
+        return new Ctor(memory.buffer, dataOff, byteLen / stride)
+      }
+      const byteLen = m.getInt32(off - 8, true)
+      return new Ctor(memory.buffer, off, byteLen / stride)
+    }
+    if (type === 2) {  // BUFFER
+      const byteLen = dv().getInt32(off - 8, true)
+      const out = new ArrayBuffer(byteLen)
+      new Uint8Array(out).set(new Uint8Array(memory.buffer, off, byteLen))
+      return out
+    }
+    if (type === 4) {  // STRING (heap)
+      const len = dv().getInt32(off - 4, true)
+      return new TextDecoder().decode(new Uint8Array(memory.buffer, off, len))
+    }
+    if (type === 5) {  // STRING_SSO
+      const len = jz.aux(ptr); let s = ''
+      for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+      return s
+    }
+    if (type === 6) {  // OBJECT
+      const m = dv(), sid = jz.aux(ptr), keys = this.schemas[sid]
+      if (!keys) return ptr
+      const obj = {}
+      for (let i = 0; i < keys.length; i++) obj[keys[i]] = this.read(m.getFloat64(off + i * 8, true))
+      return obj
+    }
+    if (type === 7) {  // HASH
+      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
+      const obj = {}
+      for (let i = 0, found = 0; i < cap && found < size; i++) {
+        const hash = m.getFloat64(off + i * 24, true)
+        if (hash !== 0) {
+          const key = this.read(m.getFloat64(off + i * 24 + 8, true))
+          obj[key] = this.read(m.getFloat64(off + i * 24 + 16, true))
+          found++
+        }
+      }
+      return obj
+    }
+    if (type === 8) {  // SET
+      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
+      const set = new Set()
+      for (let i = 0; i < cap && set.size < size; i++) {
+        const hash = m.getFloat64(off + i * 16, true)
+        if (hash !== 0) set.add(this.read(m.getFloat64(off + i * 16 + 8, true)))
+      }
+      return set
+    }
+    if (type === 9) {  // MAP
+      const m = dv(), size = m.getInt32(off - 8, true), cap = m.getInt32(off - 4, true)
+      const map = new Map()
+      for (let i = 0; i < cap && map.size < size; i++) {
+        const hash = m.getFloat64(off + i * 24, true)
+        if (hash !== 0) map.set(this.read(m.getFloat64(off + i * 24 + 8, true)), this.read(m.getFloat64(off + i * 24 + 16, true)))
+      }
+      return map
+    }
+    if (type === 10) return ptr  // CLOSURE
+    return ptr
+  }
+
+  memory.write = function(ptr, data) {
+    const type = jz.type(ptr), off = jz.offset(ptr), m = dv()
+    if (type === 1) {
+      const cap = m.getInt32(off - 4, true)
+      if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
+      m.setInt32(off - 8, data.length, true)
+      for (let i = 0; i < data.length; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
+    } else if (type === 3) {
+      const aux = jz.aux(ptr), elem = aux & 7
+      const [, stride, , setter] = ELEM_BY_ID[elem]
+      const byteLen = data.length * stride
+      if (aux & 8) {
+        const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
+        if (byteLen > viewByteLen) throw Error(`write: ${byteLen} bytes exceeds view size ${viewByteLen}`)
+        for (let i = 0; i < data.length; i++) m[setter](dataOff + i * stride, data[i], true)
+      } else {
+        const byteCap = m.getInt32(off - 4, true)
+        if (byteLen > byteCap) throw Error(`write: ${byteLen} bytes exceeds capacity ${byteCap}`)
+        m.setInt32(off - 8, byteLen, true)
+        for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
+      }
+    } else if (type === 6) {
+      const schema = this.schemas[jz.aux(ptr)]
+      if (!schema) throw Error(`write: unknown schema`)
+      for (const key of Object.keys(data)) {
+        const i = schema.indexOf(key)
+        if (i >= 0) m.setFloat64(off + i * 8, memCoerce(data[key]), true)
+      }
+    } else {
+      throw Error(`write: unsupported type ${type}`)
+    }
+  }
+
+  memory.alloc = alloc
+  memory.reset = wasmExports?._reset || null
+
+  // TypedArray constructors: memory.Float64Array(data), etc.
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
-    mem[name] = (data) => {
+    memory[name] = (data) => {
       const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes), m = dv()
       for (let i = 0; i < n; i++) m[setter](off + i * stride, data[i], true)
       return jz.ptr(3, elemId, off)
     }
   }
 
-  return mem
+  _enhanced.add(memory)
+  return memory
 }
+
 
 /**
  * Wrap raw WASM exports with JS calling convention adaptation.
@@ -325,7 +376,7 @@ jz.wrap = (memSrc, inst) => {
     } catch (e) { /* ignore */ }
   }
 
-  const mem = jz.mem(memSrc)
+  const mem = jz.memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   const decodeThrown = error => {
     if (!(error instanceof WebAssembly.Exception) || !lastErrBits) throw error
@@ -381,7 +432,7 @@ jz.wrap = (memSrc, inst) => {
  * Compile, instantiate, and wrap exports (with WASI + rest-param support).
  * @param {string} code - jz source
  * @param {object} [opts] - Options passed to wasi()
- * @returns {{exports, mem, instance, module}} Wrapped exports + memory helper
+ * @returns {{exports, memory, instance, module}} Wrapped exports + enhanced memory
  */
 jz.instantiate = (code, opts = {}) => {
   const extMap = [null]
@@ -418,13 +469,12 @@ jz.instantiate = (code, opts = {}) => {
     for (const [name, spec] of Object.entries(fns))
       if (typeof spec === 'function') imports[modName][name] = spec
   }
-  // Shared memory: pass as import, initialize heap pointer if first module
+  // Shared memory: normalize (auto-wrap raw Memory), pass as import
   if (opts.memory) {
+    // Auto-wrap raw WebAssembly.Memory → enhanced jz.memory
+    if (opts.memory instanceof WebAssembly.Memory && !_enhanced.has(opts.memory)) opts.memory = jz.memory(opts.memory)
     if (!imports.env) imports.env = {}
-    imports.env.memory = opts.memory
-    // Initialize heap pointer at memory[1020] if not yet set
-    const dv = new DataView(opts.memory.buffer)
-    if (dv.getInt32(1020, true) < 1024) dv.setInt32(1020, 1024, true)
+    imports.env.memory = opts.memory instanceof WebAssembly.Memory ? opts.memory : opts.memory
   }
   // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed external refs
   for (const imp of WebAssembly.Module.imports(mod)) {
@@ -442,10 +492,11 @@ jz.instantiate = (code, opts = {}) => {
   if (needsWasi) imports._setMemory(inst.exports.memory)
 
   // For shared memory, resolve memory from import; for own memory, from export
-  const memory = opts.memory || inst.exports.memory
-  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory }, extMap }
-  mem = jz.mem(memSrc)
-  return { exports: jz.wrap(memSrc), mem, instance: inst, module: mod, memory: memory || null }
+  const rawMemory = opts.memory || inst.exports.memory
+  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap }
+  const enhanced = jz.memory(memSrc)
+  mem = enhanced
+  return { exports: jz.wrap(memSrc), memory: enhanced, instance: inst, module: mod }
 }
 
 /**
@@ -496,7 +547,7 @@ jz.compile = (code, opts = {}) => {
  * Compile, instantiate, and wrap. Works as both jz('code') and jz`code ${val}`.
  * @param {string|TemplateStringsArray} code
  * @param {...any} args - Interpolation values (template tag) or options (string call)
- * @returns {{exports, mem, instance, module}}
+ * @returns {{exports, memory, instance, module}}
  */
 export default function jz(code, ...args) {
   // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, objects
@@ -551,9 +602,9 @@ export default function jz(code, ...args) {
     const result = jz.instantiate(src, { _interp: hasInterp ? interp : null })
     // Patch data getters: allocate values in WASM memory, update closure refs
     for (const [, { val, ref }] of Object.entries(data)) {
-      if (typeof val === 'string') ref.ptr = result.mem.String(val)
-      else if (Array.isArray(val)) ref.ptr = result.mem.Array(val)
-      else ref.ptr = result.mem.Object(val)
+      if (typeof val === 'string') ref.ptr = result.memory.String(val)
+      else if (Array.isArray(val)) ref.ptr = result.memory.Array(val)
+      else ref.ptr = result.memory.Object(val)
     }
     return result
   }

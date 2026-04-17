@@ -32,7 +32,7 @@ test('Regression: mem.write partial object update preserves omitted fields', asy
     export let make = () => ({x: 1, y: 2, z: 3})
     export let read = (o) => [o.x, o.y, o.z]
   `))
-  const m = jz.mem(r)
+  const m = jz.memory(r)
   const ptr = r.instance.exports.make()
   m.write(ptr, { y: 99 })
   const out = r.instance.exports.read(ptr)

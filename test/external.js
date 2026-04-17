@@ -55,6 +55,6 @@ test('Return external object from JZ', () => {
     createElement(name) { return { nodeName: name.toUpperCase() } }
   }
   const divPtr = instance.exports.createNode(mockDoc)
-  const div = instance.mem.read(divPtr)
+  const div = instance.memory.read(divPtr)
   is(div.nodeName, 'DIV')
 })

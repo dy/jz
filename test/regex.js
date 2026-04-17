@@ -4,12 +4,12 @@ import { parseRegex, compileRegex } from '../module/regex.js'
 import { evaluate } from './util.js'
 import jz, { compile } from '../index.js'
 
-/** Compile + run, read result via jz.mem (for string-returning expressions) */
+/** Compile + run, read result via jz.memory (for string-returning expressions) */
 function evalStr(code) {
   const wasm = compile(`export let main = () => ${code}`)
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod)
-  const m = jz.mem({ module: mod, instance: inst })
+  const m = jz.memory({ module: mod, instance: inst })
   return m.read(inst.exports.main())
 }
 
@@ -224,7 +224,7 @@ test('regex: basic test()', async () => {
 
 test('regex: module-level variable test()', () => {
   const r = jz('const re = /abc/; export let f = (s) => re.test(s)')
-  const m = r.mem
+  const m = r.memory
   is(r.exports.f(m.String('xabcx')), 1)
   is(r.exports.f(m.String('xyz')), 0)
 })
