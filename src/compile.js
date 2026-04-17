@@ -355,7 +355,8 @@ function loopTop() {
 /** Emit let/const initializations as typed local.set instructions. */
 function emitDecl(...inits) {
   const result = []
-  for (const i of inits) {
+  for (let ii = 0; ii < inits.length; ii++) {
+    const i = inits[ii]
     if (typeof i === 'string') {
       const undef = nullExpr()
       if (ctx.func.boxed.has(i)) {
@@ -376,6 +377,45 @@ function emitDecl(...inits) {
     if (!Array.isArray(i) || i[0] !== '=') continue
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
+
+    // U: Multi-value ephemeral destructuring — skip heap alloc when temp is
+    // assigned from a multi-value call then immediately destructured element-by-element.
+    // Pattern: ['=', temp, ['()', fn, ...]] followed by ['=', t0, ['[]', temp, [,0]]], ['=', t1, ['[]', temp, [,1]]], ...
+    if (name.startsWith(T) && Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string'
+      && funcNames?.has(init[1])) {
+      const func = funcMap.get(init[1])
+      const n = func?.sig.results.length
+      if (n > 1) {
+        // Check that next N inits are sequential index reads from this temp
+        const targets = []
+        let match = true
+        for (let k = 0; k < n && match; k++) {
+          const next = inits[ii + 1 + k]
+          if (!Array.isArray(next) || next[0] !== '=' || typeof next[1] !== 'string') { match = false; break }
+          const rhs = next[2]
+          if (!Array.isArray(rhs) || rhs[0] !== '[]' || rhs[1] !== name) { match = false; break }
+          const idx = rhs[2]
+          if (!Array.isArray(idx) || idx[0] != null || idx[1] !== k) { match = false; break }
+          // Target must not be boxed or global (simple local.set only)
+          if (ctx.func.boxed.has(next[1]) || isGlobal(next[1])) { match = false; break }
+          targets.push(next[1])
+        }
+        if (match && targets.length === n) {
+          // Emit direct call — N f64 results land on WASM stack
+          const rawArgs = init.slice(2)
+          const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
+            ? rawArgs[0].slice(1) : rawArgs
+          const emittedArgs = argList.map(a => asF64(emit(a)))
+          while (emittedArgs.length < func.sig.params.length) emittedArgs.push(nullExpr())
+          result.push(['call', `$${init[1]}`, ...emittedArgs])
+          // Pop results from stack in reverse order into targets
+          for (let k = n - 1; k >= 0; k--)
+            result.push(['local.set', `$${targets[k]}`])
+          ii += n  // skip the N index-read inits
+          continue
+        }
+      }
+    }
     // Push assignment target so a top-level {} can use the merged schema (from Object.assign inference).
     // Stack survives nested emits — only the {} immediately under this `=` peeks the top.
     const isObjLit = Array.isArray(init) && init[0] === '{}'
@@ -703,6 +743,70 @@ export default function compile(ast) {
     }
   }
 
+  // D: Call-site type propagation — infer param types from how functions are called.
+  // For non-exported internal functions, if all call sites agree on a param's type,
+  // propagate that type to ctx.func.valTypes during per-function compilation.
+  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  {
+    const scanCalls = (node, callerValTypes) => {
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === '=>') return  // don't cross closure boundary
+      if (op === '()' && typeof args[0] === 'string' && funcNames.has(args[0])) {
+        const callee = args[0]
+        const func = funcMap.get(callee)
+        if (func && !func.exported) {
+          // Extract args (may be comma-grouped)
+          const rawArgs = args.slice(1)
+          const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
+            ? rawArgs[0].slice(1) : rawArgs
+          if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
+          const ptypes = paramValTypes.get(callee)
+          for (let k = 0; k < func.sig.params.length; k++) {
+            if (ptypes.get(k) === null) continue  // already conflicted
+            const argType = k < argList.length ? inferArgType(argList[k], callerValTypes) : null
+            if (!argType) { ptypes.set(k, null); continue }
+            const prev = ptypes.get(k)
+            if (prev === undefined) ptypes.set(k, argType)
+            else if (prev !== argType) ptypes.set(k, null)
+          }
+        }
+      }
+      for (const a of args) scanCalls(a, callerValTypes)
+    }
+    // Infer arg type using global valTypes + caller-local valTypes
+    const inferArgType = (expr, callerValTypes) => {
+      if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+      return valTypeOf(expr)
+    }
+    // Scan module scope
+    scanCalls(ast, ctx.scope.globalValTypes)
+    // Scan each function body with its own local valTypes
+    for (const func of ctx.func.list) {
+      if (!func.body || func.raw) continue
+      // Build this function's local valTypes (same analysis as analyzeValTypes does)
+      const localVt = new Map()
+      const walkVt = (node) => {
+        if (!Array.isArray(node)) return
+        const [op, ...args] = node
+        if (op === '=>') return
+        if (op === 'let' || op === 'const') {
+          for (const a of args) {
+            if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+              const vt = valTypeOf(a[2]); if (vt) localVt.set(a[1], vt)
+            }
+          }
+        }
+        if (op === '=' && typeof args[0] === 'string') {
+          const vt = valTypeOf(args[1]); if (vt) localVt.set(args[0], vt)
+        }
+        for (const a of args) walkVt(a)
+      }
+      walkVt(func.body)
+      scanCalls(func.body, localVt)
+    }
+  }
+
   const funcs = ctx.func.list.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
     if (func.raw) return parseWat(func.raw)
@@ -726,6 +830,14 @@ export default function compile(ast) {
     if (block) {
       analyzeValTypes(body)
       analyzeBoxedCaptures(body)
+    }
+    // D: Apply call-site param types (only if body analysis didn't already set them)
+    const ptypes = paramValTypes.get(name)
+    if (ptypes) {
+      for (const [k, vt] of ptypes) {
+        if (vt && k < sig.params.length && !ctx.func.valTypes.has(sig.params[k].name))
+          ctx.func.valTypes.set(sig.params[k].name, vt)
+      }
     }
 
     const fn = ['func', `$${name}`]

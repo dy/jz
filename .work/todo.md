@@ -1,4 +1,88 @@
 
+### Build & tooling
+
+* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
+* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
+* [x] Metacircularity: watr compilation — 8/8 WAT, 7/8 WASM binary, 1/8 valid (const.js)
+* [ ] Metacircularity: watr WASM validation — 6 files fail: boxed capture i32/f64 mismatch, Uint8Array(arr) constructor
+* [ ] Metacircularity: watr WASM execution — run compiled watr against watr test suite
+* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
+* [x] console.log/warn/error
+* [x] Date.now, performance.now
+* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
+* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
+* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
+* [x] Custom imports — host functions via { imports: { mod: { fn } } }
+* [x] Shared memory — { memory } option, cross-module pointer sharing
+* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
+* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
+* [x] Template tag
+* [ ] jzify script converting any JZ
+* [ ] align with Crockford practices
+* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
+
+## Phase 14: Internal Parser (Future)
+* [ ] Extract minimal jz parser from subscript features
+* [ ] jzify uses jessie, pure jz uses internal parser
+* [ ] True metacircular bootstrap
+
+
+### Validation & quality
+
+* [ ] color-space converter (validates multi profile)
+* [ ] digital-filter biquad (validates memory profile)
+* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
+* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
+* [ ] test262 basics
+* [ ] Warn/error on hitting memory limits
+* [ ] Excellent WASM output
+* [ ] wasm2c / w2c2 integration test
+
+### Future
+
+* [ ] metacircularity (jz compiling jz)
+* [ ] Component interface (wit)
+* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] memory64 (>4GB)
+* [ ] relaxed SIMD
+* [ ] WebGPU compute shaders
+
+## Offering
+
+* [ ] Clear, fully transparent and understood codebase
+* [ ] Completed: docs, readme, code, tests, repl
+* [ ] Integrations (floatbeat, color-space, digital-filter)
+* [ ] Benchmarks
+* [ ] Pick ONE use case, make jz undeniable for it
+* [ ] Ship something someone uses
+
+## Floatbeat playground
+
+* [ ] Syntax highlighter
+* [ ] Waveform renderer
+* [ ] Database + recipe book
+* [ ] Samples collection
+
+## REPL
+
+* [ ] Auto-convert var→let, function→arrow on paste
+* [ ] Auto-import implicit globals
+* [ ] Show produced WAT
+* [ ] Document interop
+
+
+
+## Done
+
+### API / interop
+
+* [x] **Shared mem scope** — `jz.memory()` creates shared memory scope; any `jz('code', { memory })` compiles into it.
+* [x] **Reduced interop tax** — typed arrays are zero-copy views over shared memory; unified `.read()`/`.write()` on the Memory object.
+* [x] **Cross-instance data sharing API** — `jz.memory()` accumulates schemas across compilations, shares allocator, pointers portable between instances.
+* [x] **Object interpolation: allow non-numeric values at compile time** — template tag now serializes strings, arrays, and nested objects as jz source literals. Only non-serializable values (functions, host objects) fall back to post-instantiation getters.
+* [x] **NaN-boxing justification** — documented in README: precedent (LuaJIT/JSC/SpiderMonkey/Porffor), f64 vs i32 tradeoff (~1.2x, mitigated by i32 preservation), NaN preservation guarantees (quiet NaN, spec-compliant).
+
+
 ## [x] jz.memory wrapper
 
 Monkey-patch `WebAssembly.Memory` with jz read/write methods. No wrapper object — `memory` IS the Memory.
@@ -67,9 +151,9 @@ Monkey-patch `WebAssembly.Memory` with jz read/write methods. No wrapper object 
 * [x] **T. Type section compaction** — deduplicate identical function types. Multiple functions
       with same signature (f64→f64) should share one type entry.
 
-* [ ] **U. Multi-value for ephemeral destructuring** — `let {x,y} = f()` or `let [a,b] = f()`
-      where result is immediately destructured: use WASM multi-value return instead of heap alloc.
-      Saves allocPtr + __mkptr + header bytes per call. Only for ≤8 fields and non-escaping values.
+* [x] **U. Multi-value for ephemeral destructuring** — `let [a,b] = f()` where `f` returns
+      multi-value: `emitDecl` detects temp→index pattern and emits direct call + local.set,
+      skipping allocPtr + __mkptr + heap stores/loads entirely.
 
 ### Codegen issues
 
@@ -83,14 +167,10 @@ Monkey-patch `WebAssembly.Memory` with jz read/write methods. No wrapper object 
       1. `asF64` converts `(i32.const N)` → `(f64.const N)` directly.
       2. `analyzeLocals` `widenPass` widens i32 locals compared against f64.
 
-* [ ] **D. Array indexing: polymorphic dispatch per access** — `arr[i]` where arr is untyped param emits
-      5-branch dispatch tree PER ITERATION: is-string-key? is-string? is-SSO? is-typed? else array.
-      Plus `__length` call per iteration is similarly polymorphic.
-      This is why array sum is 16x slower than JS (V8 uses inline caches, hidden classes).
-      Typed arrays (`new Float64Array(arr)`) generate clean direct loads — this is the explicit-perf path.
-      Options: (a) propagate type from call sites, (b) accept tradeoff — typed params = fast path,
-      (c) hoist type check before loop, cache ptr_offset + len, use direct loads inside.
-      Option (c) = loop-level monomorphization: check type once, branch to specialized loop body.
+* [x] **D. Array indexing: call-site type propagation** — for non-exported internal functions,
+      scan all call sites; if all callers agree on a param's type (array, typed, string, etc.),
+      propagate to `ctx.func.valTypes` so `[]`/`.length` emitters use monomorphic fast paths.
+      Removes polymorphic dispatch when param type is statically determinable.
 
 * [x] **E. Unconditional allocator inclusion** — gated on `needsMemory`: allocator only included
       when stdlib functions actually use memory. Pure `add(a,b) => a+b` now 50 bytes (was 230).
@@ -98,88 +178,7 @@ Monkey-patch `WebAssembly.Memory` with jz read/write methods. No wrapper object 
 * [x] **F. Loop-invariant `__length`/`__ptr_offset` hoisted in manual for-loops** —
       `for (let i = 0; i < arr.length; i++)` hoists `.length` to init block as local.
 
-### Build & tooling
 
-* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
-* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
-* [x] Metacircularity: watr compilation — 8/8 WAT, 7/8 WASM binary, 1/8 valid (const.js)
-* [ ] Metacircularity: watr WASM validation — 6 files fail: boxed capture i32/f64 mismatch, Uint8Array(arr) constructor
-* [ ] Metacircularity: watr WASM execution — run compiled watr against watr test suite
-* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
-* [x] console.log/warn/error
-* [x] Date.now, performance.now
-* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
-* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
-* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
-* [x] Custom imports — host functions via { imports: { mod: { fn } } }
-* [x] Shared memory — { memory } option, cross-module pointer sharing
-* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
-* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
-* [x] Template tag
-* [ ] jzify script converting any JZ
-* [ ] align with Crockford practices
-* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
-
-## Phase 14: Internal Parser (Future)
-* [ ] Extract minimal jz parser from subscript features
-* [ ] jzify uses jessie, pure jz uses internal parser
-* [ ] True metacircular bootstrap
-
-
-### Validation & quality
-
-* [ ] color-space converter (validates multi profile)
-* [ ] digital-filter biquad (validates memory profile)
-* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
-* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
-* [ ] test262 basics
-* [ ] Warn/error on hitting memory limits
-* [ ] Excellent WASM output
-* [ ] wasm2c / w2c2 integration test
-
-### API / interop
-
-* [ ] **Shared mem scope** — `mem` is scoped to jz instance, but objects from one instance can't be exchanged with another without `{ memory }`. Explore: generic mem scope, shared allocator, portable pointers between instances.
-* [ ] **Reduced interop tax** — ideally shared Float64Array / typed arrays pass back and forth without copying. Explore: zero-copy views over shared WebAssembly.Memory, direct typed array pointer passthrough.
-* [ ] **Cross-instance data sharing API** — `{ memory }` works but is low-level. Need a higher-level API for sharing data between modules (pointer portability, schema agreement, allocator coordination).
-* [x] **Object interpolation: allow non-numeric values at compile time** — template tag now serializes strings, arrays, and nested objects as jz source literals. Only non-serializable values (functions, host objects) fall back to post-instantiation getters.
-* [x] **NaN-boxing justification** — documented in README: precedent (LuaJIT/JSC/SpiderMonkey/Porffor), f64 vs i32 tradeoff (~1.2x, mitigated by i32 preservation), NaN preservation guarantees (quiet NaN, spec-compliant).
-
-### Future
-
-* [ ] metacircularity (jz compiling jz)
-* [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
-
-## Offering
-
-* [ ] Clear, fully transparent and understood codebase
-* [ ] Completed: docs, readme, code, tests, repl
-* [ ] Integrations (floatbeat, color-space, digital-filter)
-* [ ] Benchmarks
-* [ ] Pick ONE use case, make jz undeniable for it
-* [ ] Ship something someone uses
-
-## Floatbeat playground
-
-* [ ] Syntax highlighter
-* [ ] Waveform renderer
-* [ ] Database + recipe book
-* [ ] Samples collection
-
-## REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop
-
-
-
-## Done
 ### Bugs
 
 * [x] Regex greedy backtrack gives back 1 byte regardless of pattern width — `module/regex.js:256`: fixed to use `patternMinLen(node)` for correct multi-char backtracking.
