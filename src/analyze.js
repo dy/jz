@@ -253,6 +253,24 @@ export function analyzeLocals(body) {
   }
 
   walk(body)
+
+  // Second pass: widen i32 locals that are compared against f64 operands.
+  // `for (let i = 0; i < n; i++)` where n is f64 param — i should be f64
+  // to avoid per-iteration f64.convert_i32_s.
+  const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
+  function widenPass(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (CMP_OPS.has(op)) {
+      const [a, b] = args
+      const ta = exprType(a, locals), tb = exprType(b, locals)
+      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a)) locals.set(a, 'f64')
+      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b)) locals.set(b, 'f64')
+    }
+    if (op !== '=>') for (const a of args) widenPass(a)
+  }
+  widenPass(body)
+
   return locals
 }
 

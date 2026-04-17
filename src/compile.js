@@ -28,13 +28,22 @@ export { T, VAL, valTypeOf, extractParams, classifyParam, collectParamNames }
 let funcNames  // Set<string> — known function names, set per compile()
 let funcMap    // Map<string, func> — name → func info, set per compile()
 
+/** Demand context: what does the caller expect from the current expression?
+ *  'void' = result discarded, 'bool' = i32 boolean, null = value needed (default). */
+let _expect = null
+
+/** Matches WASM instructions that require a memory section. */
+const MEM_OPS = /\b(i32\.load|i32\.store|f64\.load|f64\.store|f32\.load|f32\.store|i64\.load|i64\.store|memory\.size|memory\.grow|i32\.load8|i32\.load16|i32\.store8|i32\.store16)\b/
+
 // === Type helpers ===
 
 /** Tag a WASM node with its result type. */
 export const typed = (node, type) => (node.type = type, node)
 
 /** Coerce node to f64. */
-export const asF64 = n => n.type === 'f64' ? n : typed(['f64.convert_i32_s', n], 'f64')
+export const asF64 = n => n.type === 'f64' ? n
+  : (n[0] === 'i32.const' && typeof n[1] === 'number') ? typed(['f64.const', n[1]], 'f64')
+  : typed(['f64.convert_i32_s', n], 'f64')
 
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
@@ -122,6 +131,15 @@ const isNullLit = n => Array.isArray(n) && n.length === 2 && n[0] == null && n[1
 const isUndefLit = n => Array.isArray(n) && n.length === 0
 const isNullishLit = n => isNullLit(n) || isUndefLit(n)
 
+/** L: Check if emitted IR is side-effect-free (safe for WASM select). */
+const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
+  'f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.neg', 'f64.abs', 'f64.sqrt',
+  'i32.add', 'i32.sub', 'i32.mul', 'i32.and', 'i32.or', 'i32.xor',
+  'f64.convert_i32_s', 'f64.convert_i32_u', 'i32.trunc_sat_f64_s',
+  'i32.wrap_i64', 'i64.trunc_sat_f64_s', 'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge',
+  'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz'])
+const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
+
 /** Emit a numeric constant with correct i32/f64 typing. */
 const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
   ? typed(['i32.const', v], 'i32') : typed(['f64.const', v], 'f64')
@@ -137,9 +155,27 @@ function toBoolFromEmitted(e) {
   return typed(['call', '$__is_truthy', asF64(e)], 'i32')
 }
 
+const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
+const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
+
+/** Check if (a, op, b) is a postfix pattern: [op, name] and [, 1] literal. */
+const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.isArray(b) && b[0] == null && b[1] === 1
+
 function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
-  if (['>', '<', '>=', '<=', '==', '!=', '!'].includes(op)) return emit(node)
+  if (CMP_SET.has(op)) return emit(node)
+  // &&/|| in boolean context
+  if (op === '&&') {
+    const la = toBool(node[1]), lb = toBool(node[2])
+    // Both sides are pure comparisons → branchless i32.and
+    if (isCmp(node[1]) && isCmp(node[2])) return typed(['i32.and', la, lb], 'i32')
+    return typed(['if', ['result', 'i32'], la, ['then', lb], ['else', ['i32.const', 0]]], 'i32')
+  }
+  if (op === '||') {
+    const la = toBool(node[1]), lb = toBool(node[2])
+    if (isCmp(node[1]) && isCmp(node[2])) return typed(['i32.or', la, lb], 'i32')
+    return typed(['if', ['result', 'i32'], la, ['then', ['i32.const', 1]], ['else', lb]], 'i32')
+  }
   return toBoolFromEmitted(emit(node))
 }
 
@@ -241,27 +277,32 @@ function readVar(name) {
   return typed(['local.get', `$${name}`], t)
 }
 
-/** Write variable value with tee semantics (returns the written value).
+/** Write variable value. void_ → local.set (no result); otherwise → local.tee.
  *  valIR is raw emit result — coerced to f64 for boxed/global, to local type for locals. */
-function writeVar(name, valIR) {
+function writeVar(name, valIR, void_) {
   if (ctx.func.boxed?.has(name)) {
-    const addr = boxedAddr(name), t = temp()
+    const addr = boxedAddr(name)
     const v = asF64(valIR)
+    if (void_) return typed(['block', ['f64.store', addr, v]], 'void')
+    const t = temp()
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, v],
       ['f64.store', addr, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], 'f64')
   }
   if (isGlobal(name)) {
-    const t = temp()
     const v = asF64(valIR)
+    if (void_) return typed(['block', ['global.set', `$${name}`, v]], 'void')
+    const t = temp()
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, v],
       ['global.set', `$${name}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], 'f64')
   }
   const t = ctx.func.locals.get(name) || 'f64'
-  return typed(['local.tee', `$${name}`, t === 'f64' ? asF64(valIR) : asI32(valIR)], t)
+  const coerced = t === 'f64' ? asF64(valIR) : asI32(valIR)
+  if (void_) return typed(['local.set', `$${name}`, coerced], 'void')
+  return typed(['local.tee', `$${name}`, coerced], t)
 }
 
 /** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32. */
@@ -359,7 +400,11 @@ function emitDecl(...inits) {
       continue
     }
     const localType = ctx.func.locals.get(name) || 'f64'
-    result.push(['local.set', `$${name}`, localType === 'f64' ? asF64(val) : asI32(val)])
+    const coerced = localType === 'f64' ? asF64(val) : asI32(val)
+    // H: WASM locals default to 0 — skip local.set when init is literal zero at top level
+    // (inside loops, re-init is needed: `for (let j=0; ...)` resets j each outer iteration)
+    if (!(isLit(coerced) && coerced[1] === 0 && !ctx.func.stack.length))
+      result.push(['local.set', `$${name}`, coerced])
 
     // Auto-box local variable if it has property assignments
     if (ctx.types._localProps?.has(name) && ctx.schema.vars.has(name)) {
@@ -715,7 +760,10 @@ export default function compile(ast) {
     if (block) {
       const stmts = emitBody(body)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...sig.results.map(() => ['f64.const', 0]))
+      // I: Skip trailing fallback when last statement is return (unreachable code)
+      const lastStmt = stmts.at(-1)
+      const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
+      fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(() => ['f64.const', 0])))
     } else if (multi && body[0] === '[') {
       const values = body.slice(1).map(e => asF64(emit(e)))
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
@@ -824,7 +872,8 @@ export default function compile(ast) {
         }
       }
       fn.push(...bodyIR)
-      if (block) fn.push(['f64.const', 0]) // fallthrough
+      // I: Skip trailing fallback when last statement is return
+      if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
       closureFuncs.push(fn)
       ctx.schema.vars = prevSchemaVars
       ctx.types.typedElem = prevTypedElems
@@ -858,11 +907,7 @@ export default function compile(ast) {
     }
   }
 
-  if (ctx.module.modules.core) {
-    const pages = ctx.memory.pages || 1
-    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
-    else sec.memory.push(['memory', ['export', '"memory"'], pages])
-  }
+  // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
 
   if (ctx.runtime.throws) {
     ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
@@ -965,6 +1010,20 @@ export default function compile(ast) {
 
   // Resolve stdlib AFTER __start emit — inc() calls during __start must be captured
   resolveIncludes()
+
+  // Emit memory section when any included stdlib uses memory instructions.
+  const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
+  // G: Elide __heap global when no memory needed — saves 9 bytes for pure scalar functions
+  if (!needsMemory) ctx.scope.globals.delete('__heap')
+  if (needsMemory && ctx.module.modules.core) {
+    // Include allocator when memory is needed — stdlib funcs may call $__alloc
+    for (const fn of ['__alloc', '__alloc_hdr', '__reset']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
+    const pages = ctx.memory.pages || 1
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
+    else sec.memory.push(['memory', ['export', '"memory"'], pages])
+    if (ctx.core._allocRawFuncs) sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
+  }
+
   for (const [name, fnStr] of Object.entries(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
       const parsed = parseWat(fnStr)
@@ -972,7 +1031,31 @@ export default function compile(ast) {
       ctx.core.includes.delete(name)
     }
   }
+  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
   sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(ctx.core.stdlib[n])))
+
+  // R: Strip static string table if __static_str not used (saves 57 bytes)
+  if (ctx.runtime.staticDataLen && !ctx.core.includes.has('__static_str')) {
+    const prefix = ctx.runtime.staticDataLen
+    ctx.runtime.data = ctx.runtime.data?.slice(prefix) || ''
+    // User strings computed offsets with static prefix present — shift down by prefix
+    const shift = (node) => {
+      if (!Array.isArray(node)) return
+      for (let i = 0; i < node.length; i++) {
+        const child = node[i]
+        if (Array.isArray(child)) {
+          if (child[0] === 'call' && child[1] === '$__mkptr' &&
+            Array.isArray(child[2]) && child[2][1] === PTR.STRING &&
+            Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
+            typeof child[4][1] === 'number' && child[4][1] >= prefix) {
+            child[4][1] -= prefix
+          }
+          shift(child)
+        }
+      }
+    }
+    for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
+  }
 
   // Adjust heap base past data section (data at offset 0 may exceed 1024 bytes)
   const dataLen = ctx.runtime.data?.length || 0
@@ -1039,7 +1122,7 @@ const isBlockBody = n => Array.isArray(n) && n[0] === '{}' && n.length === 2 && 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBody. */
 export function emitFlat(node) {
   if (isBlockBody(node)) return emitBody(node)
-  const ir = emit(node)
+  const ir = emit(node, 'void')
   const items = flat(ir)
   if (ir?.type && ir.type !== 'void') items.push('drop')
   return items
@@ -1076,10 +1159,11 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+  const void_ = _expect === 'void'
   const va = readVar(name), vb = emit(val)
   if (i32op && va.type === 'i32' && vb.type === 'i32')
-    return writeVar(name, i32op(va, vb))
-  return writeVar(name, f64op(asF64(va), asF64(vb)))
+    return writeVar(name, i32op(va, vb), void_)
+  return writeVar(name, f64op(asF64(va), asF64(vb)), void_)
 }
 
 export const emitter = {
@@ -1092,7 +1176,7 @@ export const emitter = {
   ';': (...args) => {
     const out = []
     for (const a of args) {
-      const r = emit(a)
+      const r = emit(a, 'void')
       if (r == null) continue
       out.push(...flat(r))
       if (r?.type && r.type !== 'void') out.push('drop')
@@ -1282,7 +1366,8 @@ export const emitter = {
       return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
-    return writeVar(name, emit(val))
+    const void_ = _expect === 'void'
+    return writeVar(name, emit(val), void_)
   },
 
   // Compound assignments: read-modify-write with type coercion
@@ -1320,6 +1405,7 @@ export const emitter = {
       return emit([baseOp, name, ['=', name, val]])
     }
     if (isConst(name)) err(`Assignment to const '${name}'`)
+    const void_ = _expect === 'void'
     const t = temp()
     const va = readVar(name)
     // Condition: ||= → truthy check, &&= → truthy check, ??= → nullish check
@@ -1341,7 +1427,7 @@ export const emitter = {
         ['f64.store', boxedAddr(name), ['local.get', `$${bt}`]],
         ['local.get', `$${bt}`]], 'f64')
     }
-    return writeVar(name, result)
+    return writeVar(name, result, void_)
   }])),
 
   // === Increment/Decrement ===
@@ -1349,14 +1435,17 @@ export const emitter = {
 
   ...Object.fromEntries([['++', 'add'], ['--', 'sub']].map(([op, fn]) => [op, name => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    const void_ = _expect === 'void'
     const v = readVar(name)
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
-    return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type))
+    return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),
 
   // === Arithmetic (type-preserving) ===
 
+  // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
   '+': (a, b) => {
+    if (_expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
     // String concatenation: if either operand is known string, use __str_concat
     const vtA = keyValType(a)
     const vtB = keyValType(b)
@@ -1386,6 +1475,7 @@ export const emitter = {
     return typed(['f64.add', asF64(va), asF64(vb)], 'f64')
   },
   '-': (a, b) => {
+    if (_expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return b === undefined
         ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
@@ -1478,9 +1568,16 @@ export const emitter = {
     if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emit(b) : emit(c) }
     const cond = toBoolFromEmitted(ca)
     const vb = emit(b), vc = emit(c)
-    if (vb.type === 'i32' && vc.type === 'i32')
+    // L: Use WASM select for pure ternaries — branchless, smaller bytecode
+    if (vb.type === 'i32' && vc.type === 'i32') {
+      if (isPureIR(vb) && isPureIR(vc))
+        return typed(['select', vb, vc, cond], 'i32')
       return typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32')
-    return typed(['if', ['result', 'f64'], cond, ['then', asF64(vb)], ['else', asF64(vc)]], 'f64')
+    }
+    const fb = asF64(vb), fc = asF64(vc)
+    if (isPureIR(fb) && isPureIR(fc))
+      return typed(['select', fb, fc, cond], 'f64')
+    return typed(['if', ['result', 'f64'], cond, ['then', fb], ['else', fc]], 'f64')
   },
 
   '&&': (a, b) => {
@@ -1577,6 +1674,8 @@ export const emitter = {
     ctx.func.stack.push({ brk, loop })
     const result = []
     if (init != null) result.push(...emitFlat(init))
+    // J: Single-test loop — condition evaluated once per iteration at the top.
+    // (block $brk (loop $loop (br_if $brk (eqz cond)) body step (br $loop)))
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
     loopBody.push(...emitFlat(body))
@@ -1908,7 +2007,8 @@ export const emitter = {
  * @param {import('./prepare.js').ASTNode} node
  * @returns {Array} typed WASM S-expression
  */
-export function emit(node) {
+export function emit(node, expect) {
+  _expect = expect || null
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return null
   if (node === true) return typed(['i32.const', 1], 'i32')

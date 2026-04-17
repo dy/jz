@@ -58,7 +58,7 @@ export const STDLIB_DEPS = {
   __mkstr: ['__alloc'],
   __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
   __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-  __to_str: ['__ftoa', '__static_str'],
+  __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
 
   // string operations
   __str_concat: ['__to_str', '__str_byteLen', '__char_at', '__alloc'],
@@ -78,7 +78,7 @@ export const STDLIB_DEPS = {
   __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
   __str_eq: ['__str_byteLen', '__char_at'],
   __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
-  __str_join: ['__str_concat', '__to_str', '__str_byteLen'],
+  __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
   __str_encode: ['__str_byteLen', '__char_at'],
   __str_to_buf: ['__str_byteLen', '__char_at'],
 
@@ -106,6 +106,7 @@ export const STDLIB_DEPS = {
   __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set'],
   __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
   __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
+  __alloc_hdr: ['__alloc'],
   __hash_new: ['__alloc_hdr'],
 
   // console

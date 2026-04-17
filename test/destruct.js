@@ -91,6 +91,51 @@ test('destruct: object in function', () => {
   is(f(), 169)
 })
 
+test('destruct assign: [...rest] = arr', () => {
+  const { f } = run(`export let f = () => {
+    let rest
+    ;[...rest] = [3, 4, 5]
+    return rest.length * 10 + rest[2]
+  }`)
+  is(f(), 35)
+})
+
+test('destruct assign: [a = v] default', () => {
+  const { f } = run(`export let f = () => {
+    let a
+    ;[a = 9] = []
+    return a
+  }`)
+  is(f(), 9)
+})
+
+test('destruct assign: ({x: a} = obj)', () => {
+  const { f } = run(`export let f = () => {
+    let a;
+    ({x: a} = {x: 7})
+    return a
+  }`)
+  is(f(), 7)
+})
+
+test('destruct assign: ({x = v} = obj) default', () => {
+  const { f } = run(`export let f = () => {
+    let x;
+    ({x = 5} = {})
+    return x
+  }`)
+  is(f(), 5)
+})
+
+test('destruct assign: ({x: a = v} = obj) alias default', () => {
+  const { f } = run(`export let f = () => {
+    let a;
+    ({x: a = 6} = {})
+    return a
+  }`)
+  is(f(), 6)
+})
+
 // ============================================
 // Optional chaining
 // ============================================

@@ -15,9 +15,17 @@ export default () => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
 
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
-  ctx.core.emit['{}'] = (...props) => {
-    if (props.length === 0)
+  ctx.core.emit['{}'] = (...rawProps) => {
+    if (rawProps.length === 0)
       return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['i32.const', 0]], 'f64')
+
+    // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
+    const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
+      ? rawProps[0].slice(1) : rawProps
+
+    // Object spread: {...a, x: 1, ...b} — merge schemas, copy props from sources
+    const hasSpreads = props.some(p => Array.isArray(p) && p[0] === '...')
+    if (hasSpreads) return emitObjectSpread(props)
 
     const names = [], values = []
     for (const p of props) {
@@ -244,6 +252,63 @@ function resolveSchema(obj) {
   if (Array.isArray(obj) && obj[0] === '{}')
     return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
   return null
+}
+
+/**
+ * Emit object literal with spread: {...a, x: 1, ...b, y: 2}
+ * Merges schemas from all sources, allocates result, copies in order.
+ */
+function emitObjectSpread(props) {
+  // Collect merged schema: union of all spread source schemas + explicit props
+  const allNames = []
+  const addName = n => { if (!allNames.includes(n)) allNames.push(n) }
+  for (const p of props) {
+    if (Array.isArray(p) && p[0] === '...') {
+      const s = resolveSchema(p[1])
+      if (s) for (const n of s) addName(n)
+    } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
+  }
+  if (!allNames.length) err('Object spread: cannot resolve source schema')
+
+  const schemaId = ctx.schema.register(allNames)
+  const schema = ctx.schema.list[schemaId]
+  const t = `${T}obj${ctx.func.uniq++}`
+  const ptr = `${T}objp${ctx.func.uniq++}`
+  const src = `${T}osp${ctx.func.uniq++}`
+  ctx.func.locals.set(t, 'i32')
+  ctx.func.locals.set(ptr, 'f64')
+  ctx.func.locals.set(src, 'i32')
+
+  const body = [['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]]]
+
+  // Process props in order — later props override earlier (JS semantics)
+  for (const p of props) {
+    if (Array.isArray(p) && p[0] === '...') {
+      const sSchema = resolveSchema(p[1])
+      if (!sSchema) err('Object spread: source needs known schema')
+      body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', asF64(emit(p[1]))]])
+      for (let si = 0; si < sSchema.length; si++) {
+        const ti = schema.indexOf(sSchema[si])
+        if (ti < 0) continue
+        body.push(['f64.store',
+          ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
+          ['f64.load', ['i32.add', ['local.get', `$${src}`], ['i32.const', si * 8]]]])
+      }
+    } else if (Array.isArray(p) && p[0] === ':') {
+      const ti = schema.indexOf(p[1])
+      if (ti >= 0) body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]], asF64(emit(p[2]))])
+    }
+  }
+
+  body.push(['local.set', `$${ptr}`, ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
+  if (ctx.module.modules.collection) {
+    inc('__dyn_set')
+    for (let i = 0; i < schema.length; i++)
+      body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
+        ['f64.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]]]])
+  }
+  body.push(['local.get', `$${ptr}`])
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
 }
 
 function emitStringArray(names) {

@@ -290,14 +290,20 @@ export default () => {
       (br $l1)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
-  // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", pointers pass through
+  // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", arrays → join(","), other pointers pass through
   ctx.core.stdlib['__to_str'] = `(func $__to_str (param $val f64) (result f64)
+    (local $type i32)
     ;; Not NaN → number, convert
     (if (f64.eq (local.get $val) (local.get $val))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
-    ;; Plain NaN (type=0) → "NaN" string; pointers (type>0) pass through
-    (if (i32.eqz (call $__ptr_type (local.get $val)))
+    (local.set $type (call $__ptr_type (local.get $val)))
+    ;; Plain NaN (type=0) → "NaN" string
+    (if (i32.eqz (local.get $type))
       (then (return (call $__static_str (i32.const 0)))))
+    ;; Array (type=1) → join(",") like JS Array.toString()
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+      (then (return (call $__str_join (local.get $val)
+        (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (i32.const 44))))))
     (local.get $val))`
 
   ctx.core.stdlib['__str_concat'] = `(func $__str_concat (param $a f64) (param $b f64) (result f64)

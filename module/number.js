@@ -247,9 +247,11 @@ export default () => {
     (if (i32.eq (local.get $id) (i32.const 8)) (then (local.set $src (i32.const 49)) (local.set $len (i32.const 8))))
     (call $__mkstr (local.get $src) (local.get $len)))`
 
-  // Data segment: static strings at address 0 (heap starts at 1024)
-  // "NaN" "Infinity" "-Infinity" "true" "false" "null" "undefined" "[Array]" "[Object]"
-  ctx.runtime.data = (ctx.runtime.data || '') + 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
+  // R: Static strings seeded at address 0. Compile.js strips if __static_str unused.
+  // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
+  const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
+  ctx.runtime.staticDataLen = staticStr.length
+  ctx.runtime.data = (ctx.runtime.data || '') + staticStr
 
   // === Number constants ===
 

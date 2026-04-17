@@ -204,6 +204,101 @@ export const GLOBALS = {
   TextDecoder: 'TextDecoder',
 }
 
+const patternItems = (node) => node?.[0] === ',' ? node.slice(1) : [node]
+const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
+
+function pushPatternAssign(target, valueExpr, out, decls = null) {
+  if (Array.isArray(target) && target[0] === '=') {
+    pushPatternAssign(target[1], ['??', valueExpr, prep(target[2])], out, decls)
+    return
+  }
+
+  if (isDestructPattern(target)) {
+    const tmp = `${T}d${ctx.func.uniq++}`
+    if (decls) decls.push(['=', tmp, valueExpr])
+    else out.push(['=', tmp, valueExpr])
+    expandDestruct(target, tmp, out, decls)
+    return
+  }
+
+  out.push(['=', target, valueExpr])
+}
+
+function expandDestruct(pattern, source, out, decls = null) {
+  if (!isDestructPattern(pattern)) return
+
+  if (pattern[0] === '[]') {
+    includeMods('core', 'array', 'collection')
+    const items = patternItems(pattern[1])
+    for (let j = 0; j < items.length; j++) {
+      const item = items[j]
+      if (item == null) continue
+
+      if (Array.isArray(item) && item[0] === '...') {
+        pushPatternAssign(item[1], ['()', ['.', source, 'slice'], [, j]], out, decls)
+        continue
+      }
+
+      pushPatternAssign(item, ['[]', source, [, j]], out, decls)
+    }
+    return
+  }
+
+  includeMods('core', 'object', 'string', 'collection')
+  const items = patternItems(pattern[1])
+
+  // Collect explicit keys and detect rest pattern
+  let restTarget = null
+  const explicitKeys = []
+  for (const item of items) {
+    if (item == null) continue
+    if (Array.isArray(item) && item[0] === '...') { restTarget = item[1]; continue }
+    if (typeof item === 'string') explicitKeys.push(item)
+    else if (Array.isArray(item) && item[0] === '=') { if (typeof item[1] === 'string') explicitKeys.push(item[1]) }
+    else if (Array.isArray(item) && item[0] === ':') explicitKeys.push(item[1])
+  }
+
+  for (const item of items) {
+    if (item == null) continue
+    if (Array.isArray(item) && item[0] === '...') continue  // handled below
+
+    if (typeof item === 'string') {
+      pushPatternAssign(item, ['.', source, item], out, decls)
+      continue
+    }
+
+    if (Array.isArray(item) && item[0] === '=') {
+      if (typeof item[1] === 'string')
+        pushPatternAssign(item[1], ['??', ['.', source, item[1]], prep(item[2])], out, decls)
+      continue
+    }
+
+    if (Array.isArray(item) && item[0] === ':') {
+      pushPatternAssign(item[2], ['.', source, item[1]], out, decls)
+      continue
+    }
+  }
+
+  // Object rest: {x, ...rest} = obj → rest = {remaining props from source schema}
+  if (restTarget) {
+    const srcSchema = typeof source === 'string' && ctx.schema.resolve(source)
+    if (srcSchema) {
+      const remaining = srcSchema.filter(k => !explicitKeys.includes(k))
+      if (remaining.length) {
+        const restProps = remaining.map(k => [':', k, ['.', source, k]])
+        const restObj = ['{}', remaining.length === 1 ? restProps[0] : [',', ...restProps]]
+        // Register schema for the rest variable so property access works
+        if (typeof restTarget === 'string') ctx.schema.vars.set(restTarget, ctx.schema.register(remaining))
+        pushPatternAssign(restTarget, restObj, out, decls)
+      } else {
+        pushPatternAssign(restTarget, ['{}'], out, decls)
+      }
+    } else {
+      err('Object rest (...) requires source with known schema — destructure the object before passing to function, or use explicit property access')
+    }
+  }
+}
+
 /** Prepare let/const declaration. */
 function prepDecl(op, ...inits) {
   const rest = []
@@ -211,44 +306,17 @@ function prepDecl(op, ...inits) {
     if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
     const [, name, init] = i, normed = prep(init)
 
-    // Array destructuring: let [a, b] = expr → let __tmp = expr; let a = __tmp[0]; let b = __tmp[1]
-    if (Array.isArray(name) && name[0] === '[]') {
-      includeMods('core', 'array', 'collection')
-      const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
+    if (isDestructPattern(name)) {
       const tmp = `${T}d${ctx.func.uniq++}`
       rest.push(['=', tmp, normed])
-      for (let j = 0; j < items.length; j++) {
-        if (items[j] == null) continue
-        // Default: [a = val] → a = __tmp[j] ?? val
-        if (Array.isArray(items[j]) && items[j][0] === '=' && typeof items[j][1] === 'string')
-          rest.push(['=', items[j][1], ['??', ['[]', tmp, [, j]], prep(items[j][2])]])
-        // Rest: [...a] → a = __tmp.slice(j)
-        else if (Array.isArray(items[j]) && items[j][0] === '...')
-          rest.push(['=', items[j][1], ['()', ['.', tmp, 'slice'], [, j]]])
-        else if (Array.isArray(items[j]) && (items[j][0] === '[]' || items[j][0] === '{}')) {
-          const nested = prepDecl(op, ['=', items[j], ['[]', tmp, [, j]]])
-          if (nested) rest.push(...nested.slice(1))
-        }
-        else
-          rest.push(['=', items[j], ['[]', tmp, [, j]]])
+      // Propagate schema to temp so rest destructuring can resolve it
+      if (typeof normed === 'string' && ctx.schema.vars.has(normed))
+        ctx.schema.vars.set(tmp, ctx.schema.vars.get(normed))
+      else if (Array.isArray(normed) && normed[0] === '{}') {
+        const p = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        if (p.length) ctx.schema.vars.set(tmp, ctx.schema.register(p))
       }
-      continue
-    }
-
-    // Object destructuring: let {x, y} = expr → let __tmp = expr; let x = __tmp.x; let y = __tmp.y
-    if (Array.isArray(name) && name[0] === '{}') {
-      includeMods('core', 'object', 'string', 'collection')
-      const items = name[1]?.[0] === ',' ? name[1].slice(1) : [name[1]]
-      const tmp = `${T}d${ctx.func.uniq++}`
-      rest.push(['=', tmp, normed])
-      for (const item of items) {
-        if (typeof item === 'string') rest.push(['=', item, ['.', tmp, item]])
-        // Alias: {x: a} → a = tmp.x
-        else if (Array.isArray(item) && item[0] === ':') rest.push(['=', item[2], ['.', tmp, item[1]]])
-        // Default: {x = val} → x = tmp.x ?? val (use nullish coalescing)
-        else if (Array.isArray(item) && item[0] === '=' && typeof item[1] === 'string')
-          rest.push(['=', item[1], ['??', ['.', tmp, item[1]], prep(item[2])]])
-      }
+      expandDestruct(name, tmp, rest)
       continue
     }
 
@@ -276,7 +344,15 @@ function prepDecl(op, ...inits) {
       }
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
-        const props = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
+        const props = []
+        for (const p of normed.slice(1)) {
+          if (Array.isArray(p) && p[0] === ':') props.push(p[1])
+          else if (Array.isArray(p) && p[0] === '...') {
+            // Merge spread source schema into this object's schema
+            const srcSchema = typeof p[1] === 'string' && ctx.schema.resolve(p[1])
+            if (srcSchema) for (const n of srcSchema) { if (!props.includes(n)) props.push(n) }
+          }
+        }
         if (props.length && ctx.schema.register) ctx.schema.vars.set(declName, ctx.schema.register(props))
       }
       // Module-scope variable → WASM global (mark as user-declared)
@@ -314,22 +390,18 @@ const handlers = {
 
   // Destructuring assignment: [a, ...b] = expr or {x, y} = expr
   '='(lhs, rhs) {
-    // Array destructuring assignment: [a, b, ...rest] = expr (not arr[idx] = val)
-    // Distinguishing: destructuring has ['[]', [',', ...items]] or ['[]', name], index has ['[]', arr, idx]
-    if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 2) {
-      includeMods('core', 'array')
-      const items = lhs[1]?.[0] === ',' ? lhs[1].slice(1) : [lhs[1]]
+    // Destructuring assignment: [a, ...r] = expr or ({x: a} = expr)
+    // Distinguishing from index assignment: destructuring patterns have exactly one payload node.
+    if (isDestructPattern(lhs) && lhs.length === 2) {
       const normed = prep(rhs)
       const tmp = `${T}d${ctx.func.uniq++}`
-      const stmts = [['let', ['=', tmp, normed]]]
-      for (let j = 0; j < items.length; j++) {
-        if (items[j] == null) continue
-        if (Array.isArray(items[j]) && items[j][0] === '...')
-          stmts.push(['=', items[j][1], ['()', ['.', tmp, 'slice'], [, j]]])
-        else
-          stmts.push(['=', items[j], ['[]', tmp, [, j]]])
-      }
-      return prep([';', ...stmts])
+      const decls = [['=', tmp, normed]]
+      // Propagate schema to temp so rest destructuring can resolve it
+      if (typeof normed === 'string' && ctx.schema.vars.has(normed))
+        ctx.schema.vars.set(tmp, ctx.schema.vars.get(normed))
+      const stmts = []
+      expandDestruct(lhs, tmp, stmts, decls)
+      return prep([';', ['let', ...decls], ...stmts])
     }
     // Parser ambiguity: }[pattern] = rhs mis-parsed as subscript when it's stmt; [pattern] = rhs
     // Detect: ['[]', stmtExpr, commaExpr] with spread in comma → split into stmt + destructuring
@@ -754,7 +826,18 @@ const handlers = {
     scopes.push(new Map())
     let r
     if (Array.isArray(head) && head[0] === ';') {
-      const [, init, cond, step] = head
+      let [, init, cond, step] = head
+      // Hoist .length from for-condition: `i < arr.length` → `let __len = arr.length; ... i < __len`
+      if (cond && Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || cond[0] === '>' || cond[0] === '>=')) {
+        const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
+        if (Array.isArray(lenExpr) && lenExpr[0] === '.' && lenExpr[2] === 'length') {
+          const lenVar = `${T}len${ctx.func.uniq++}`
+          const lenDecl = ['let', ['=', lenVar, lenExpr]]
+          init = init ? [';', init, lenDecl] : lenDecl
+          if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
+          else cond = [cond[0], lenVar, cond[2]]
+        }
+      }
       r = ['for', init ? prep(init) : null, cond ? prep(cond) : null, step ? prep(step) : null, prep(body)]
     } else if (Array.isArray(head) && head[0] === 'of') {
       // for (let x of arr) → hoist arr (if non-trivial) and arr.length once, iterate by index.

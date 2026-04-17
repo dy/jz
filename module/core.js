@@ -268,20 +268,13 @@ export default () => {
     (i32.store (i32.add (local.get $ptr) (i32.const 4)) (local.get $cap))
     (i32.add (local.get $ptr) (i32.const 8)))`
 
-  // Core exports _alloc/_reset, so always include those + __alloc_hdr (used by allocPtr)
-  inc('__alloc', '__reset', '__alloc_hdr')
-
-  // Export allocator
-  ctx.func.list.push({
-    name: '_alloc', body: null, exported: true,
-    sig: { params: [{ name: 'bytes', type: 'i32' }], results: ['i32'] },
-    raw: '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))'
-  })
-  ctx.func.list.push({
-    name: '_reset', body: null, exported: true,
-    sig: { params: [], results: [] },
-    raw: '(func (export "_reset") (call $__reset))'
-  })
+  // Allocator + exports are deferred: only included when memory is actually needed.
+  // Any module using allocPtr/inc('__alloc') pulls these in via STDLIB_DEPS.
+  // compile.js emits _alloc/_reset exports + memory section only when __alloc is in includes.
+  ctx.core._allocRawFuncs = [
+    '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
+    '(func (export "_reset") (call $__reset))',
+  ]
 
   // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN
   const notNullish = v => {

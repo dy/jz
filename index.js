@@ -9,7 +9,7 @@
  */
 
 import { parse } from 'subscript/jessie'
-import { compile as watrCompile, print as watrPrint } from "watr";
+import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } from "watr";
 import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS, patchLenientASI } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
@@ -68,6 +68,7 @@ const ELEM_BY_ID = Object.values(ELEMS)
 jz.mem = (src) => {
   const raw = src?.instance?.exports || src?.exports || src
   const memory = src?.exports?.memory || raw.memory
+  if (!memory) return null  // pure scalar module — no memory
   const exports = { ...raw, memory }
   const dv = () => new DataView(memory.buffer)
   const alloc = exports._alloc
@@ -331,7 +332,7 @@ jz.wrap = (memSrc, inst) => {
     const bits = lastErrBits.value
     _u32[0] = Number(bits & 0xffffffffn)
     _u32[1] = Number((bits >> 32n) & 0xffffffffn)
-    const value = mem.read(_f64[0])
+    const value = mem ? mem.read(_f64[0]) : _f64[0]
     if (value instanceof Error) throw value
     const wrapped = new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
@@ -339,6 +340,14 @@ jz.wrap = (memSrc, inst) => {
     throw wrapped
   }
   const exports = {}
+  // Pure scalar module (no memory): pass f64 values directly, no marshaling
+  if (!mem) {
+    for (const [name, fn] of Object.entries(realInst.exports))
+      exports[name] = typeof fn === 'function'
+        ? (...args) => { while (args.length < fn.length) args.push(undefined); try { return fn(...args.map(coerce)) } catch (e) { decodeThrown(e) } }
+        : fn
+    return exports
+  }
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
@@ -436,7 +445,7 @@ jz.instantiate = (code, opts = {}) => {
   const memory = opts.memory || inst.exports.memory
   const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory }, extMap }
   mem = jz.mem(memSrc)
-  return { exports: jz.wrap(memSrc), mem, instance: inst, module: mod, memory }
+  return { exports: jz.wrap(memSrc), mem, instance: inst, module: mod, memory: memory || null }
 }
 
 /**
@@ -479,7 +488,8 @@ jz.compile = (code, opts = {}) => {
   const ast = prepare(parsed)
   const module = compile(ast)
 
-  return opts.wat ? watrPrint(module) : watrCompile(module)
+  const optimized = opts.optimize !== false ? watrOptimize(module) : module
+  return opts.wat ? watrPrint(optimized) : watrCompile(optimized)
 }
 
 /**
@@ -492,52 +502,47 @@ export default function jz(code, ...args) {
   // Template tag: jz`code ${val}` — numbers, functions, strings, arrays, objects
   if (Array.isArray(code)) {
     const interp = {}, data = {}, hoisted = []
+
+    // Serialize JS value to jz source literal. Returns null if not serializable.
+    const serialize = (v) => {
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+      if (v === null) return 'null'
+      if (typeof v === 'string') return JSON.stringify(v)
+      if (Array.isArray(v)) {
+        const elems = v.map(serialize)
+        return elems.every(e => e !== null) ? `[${elems.join(', ')}]` : null
+      }
+      if (typeof v === 'object') {
+        const props = Object.keys(v).map(k => {
+          const s = serialize(v[k])
+          return s !== null ? `${k}: ${s}` : null
+        })
+        return props.every(p => p !== null) ? `{${props.join(', ')}}` : null
+      }
+      return null
+    }
+
     let src = code[0]
     for (let i = 0; i < args.length; i++) {
       const v = args[i]
       if (typeof v === 'function') {
         const key = `$$${i}`; interp[key] = v; src += key
-      } else if (typeof v === 'number' || typeof v === 'boolean') {
-        src += String(v)
-      } else if (typeof v === 'string') {
-        // String → imported getter (closure patched post-instantiation)
-        const key = `$$${i}`, ref = { ptr: 0 }
-        data[key] = { val: v, ref }; interp[key] = () => ref.ptr
-        src += `${key}()`
-      } else if (Array.isArray(v)) {
-        // Array → imported getter
-        const key = `$$${i}`, ref = { ptr: 0 }
-        data[key] = { val: v, ref }; interp[key] = () => ref.ptr
-        src += `${key}()`
-      } else if (typeof v === 'object' && v !== null) {
-        // Object → emit literal with property values as inline or getter imports
-        const key = `$$${i}`
-        let hasNonNumeric = false
-        const props = Object.keys(v).map(k => {
-          const val = v[k]
-          if (typeof val === 'number') return `${k}: ${val}`
-          if (typeof val === 'boolean') return `${k}: ${val ? 1 : 0}`
-          hasNonNumeric = true
-          const pk = `${key}_${k}`, ref = { ptr: 0 }
-          data[pk] = { val, ref }; interp[pk] = () => ref.ptr
-          return `${k}: ${pk}()`
-        })
-        const literal = `{${props.join(', ')}}`
-        if (!hasNonNumeric) {
-          // All numeric: hoist to module scope (safe at __start time)
-          hoisted.push(`let ${key} = ${literal}`)
+      } else {
+        const s = serialize(v)
+        if (s !== null && (typeof v === 'number' || typeof v === 'boolean')) {
+          // Scalars inline directly
+          src += s
+        } else if (s !== null) {
+          // Strings, arrays, objects — hoist as compile-time literal
+          const key = `$$${i}`
+          hoisted.push(`let ${key} = ${s}`)
           src += key
         } else {
-          // Has non-numeric: hoist dummy to register schema, use getter for real value
-          const dummy = Object.keys(v).map(k => `${k}: 0`).join(', ')
-          hoisted.push(`let ${key} = {${dummy}}`)
-          const ref = { ptr: 0 }
+          // Non-serializable (host objects, etc.) — post-instantiation getter
+          const key = `$$${i}`, ref = { ptr: 0 }
           data[key] = { val: v, ref }; interp[key] = () => ref.ptr
-          // Replace hoisted var with getter value at call time
           src += `${key}()`
         }
-      } else {
-        throw Error(`jz template: cannot interpolate ${typeof v}`)
       }
       src += code[i + 1]
     }

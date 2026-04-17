@@ -1,6 +1,7 @@
 # jz ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
-Functional modern JS subset compiling to WASM. No runtime, no GC, no overhead.
+Functional JS subset compiling to WASM. Static dispatch, zero GC, tiny binaries.
+
 
 ## Usage
 
@@ -35,14 +36,14 @@ const wat = compile('export let f = (x) => x * 2', { wat: true })
 # Compile jz to WASM
 jz program.jz -o program.wasm
 
-# Compile any JS (auto-jzify: function→arrow, var→let, switch→if/else)
+# Compile any jz (auto-jzify: function→arrow, var→let, switch→if/else)
 jz program.js -o program.wasm
 
-# Transform JS to jz (no compilation)
-jz --jzify lib.js > lib.jz
-
-# Compile to WAT
+# Compile strict jz to WAT
 jz program.jz -o program.wat
+
+# Transform js to jz (no compilation)
+jz --jzify lib.js > lib.jz
 
 # Evaluate expression
 jz -e "1 + 2"
@@ -52,10 +53,12 @@ jz -e "1 + 2"
 jz --help
 ```
 
-## Reference
+## Features
 
-* Numbers: `0.1`, `1.2e+3`, `0xff`, `0b101`, `0o77`
-* Strings: `"abc"`, `'abc'`, `s.length`, `s[i]`
+* Numbers: `0.1`, `1.2e+3`, `0xff`, `0b101`, `0o77`, `10n` (BigInt)
+* Strings: `"abc"`, `'abc'`, `` `hello ${x}` ``, `s.length`, `s[i]`
+* String methods: `.slice`, `.indexOf`, `.includes`, `.startsWith`, `.endsWith`, `.trim`, `.padStart`, `.padEnd`, `.repeat`, `.split`, `.replace`, `.replaceAll`, `.toUpperCase`, `.toLowerCase`, `.charAt`, `.charCodeAt`, `.at`, `.search`, `.match`, `.concat`
+* Regex: `/pattern/flags`, `.test`, `.exec`, `.match`, `.replace`, `.split`, `.search`
 * Values: `true`, `false`, `null`, `NaN`, `Infinity`
 * Arithmetic: `+a`, `-a`, `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`
 * Comparison: `a < b`, `a <= b`, `a > b`, `a >= b`, `a == b`, `a != b`
@@ -63,43 +66,51 @@ jz --help
 * Logic: `!a`, `a && b`, `a || b`, `a ?? b`, `a ? b : c`
 * Assignment: `a = b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a %= b`
 * Declarations: `let`, `const`, block scope
-* Control: `if`/`else`, `for`, `while`, `switch`/`case`, `return`
-* Functions: `(a, b) => c`, `a => b`, `() => c`, defaults, currying, closures
+* Control: `if`/`else`, `for`, `while`, `switch`/`case`, `return`, `try`/`catch`/`throw`
+* Functions: `(a, b) => c`, `a => b`, `() => c`, defaults, rest params, currying, closures
 * Multi-return: `(a, b) => [b, a]`
-* Arrays: `[a, b]`, `arr[i]`, `.length`, `.push`, `.pop`, `.map`, `.filter`, `.reduce`, `.find`, `.indexOf`, `.includes`, `.slice`
+* Arrays: `[a, b]`, `arr[i]`, `.length`, `.push`, `.pop`, `.shift`, `.unshift`, `.map`, `.filter`, `.reduce`, `.forEach`, `.find`, `.indexOf`, `.includes`, `.slice`, `.concat`, `.flat`, `.join`
 * Spread: `[...a, ...b]`, `let [x, y] = a`, `let {x, y} = o`
-* Objects: `{a: b}`, `{a, b}`, `o.prop`, `o.prop = x`
-* Collections: `new Set()`, `new Map()`, `new Float64Array(n)`, `new Int32Array(n)`
+* Objects: `{a: b}`, `{a, b}`, `o.prop`, `o.prop = x`, `Object.keys`, `.values`, `.entries`, `.assign`
+* TypedArrays: `new Float64Array(n)`, `Int32Array`, `Uint8Array`, etc. + SIMD auto-vectorization
+* Buffer: `new ArrayBuffer(n)`, typed array views
+* Collections: `new Set()`, `new Map()`
+* Number methods: `.toString`, `.toFixed`, `.toExponential`, `.toPrecision`, `parseInt`, `parseFloat`, `Number.isNaN`, `.isFinite`, `.isInteger`
 * Loops: `for...of` arrays, `for...in` objects (compile-time unrolled)
 * Modules: `import { a } from 'b'`, `export`, source bundling, host imports
 * Math: `sin cos tan atan2 sqrt pow abs min max floor ceil round log exp` ...
+* JSON: `JSON.stringify`, `JSON.parse`
+* Encoding: `TextEncoder`, `TextDecoder`
 * Time: `Date.now()`, `performance.now()` (WASI)
 * IO: `console.log/warn/error` (WASI)
+* Symbols: `Symbol()`, `Symbol.for()`
 * typeof: `typeof x === 'string'` (compile-time type checks)
+* Optional chaining: `a?.b`, `a?.[i]`
 * Comments: `// foo`, `/* bar */`
 * No `var`, `function`, `this`, `class`, `async`, `eval`, `with`, `arguments`
 * `==` is `===`, `null` is a distinct value (not `0`), `??` works correctly
 
+
 ## Why?
 
-JS has become complex and with regrets (coercions, hoisting, `this`, classes, `null` vs `undefined`, precision loss).
-Ongoing proposals shape language into something unappealing.
+Native speed from plain JS. Deterministic execution (no GC pauses, no deopt cliffs, no JIT warmup). Tiny binaries (453 bytes for mandelbrot). Instant compilation (<1ms). Portable (browser, wasmtime, wasmer, deno, wasm2c).
 
-_jz_ (javascript zero) – keeps minimal functional JS best practices, drops the rest.
-Aligned with [Crockford's Good Parts](https://www.crockford.com/) and [Jessie](https://github.com/endojs/Jessie): class-free, `this`-free, coercion-free.
+_jz_ (javascript zero) keeps minimal functional JS best practices, drops the rest.
 Initially conceived for bytebeats, inspired by [porf](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
 ### Principles
 
-* **Crockford-aligned** — no `var`, `this`, `class`, `switch`, `==`. Mandatory `;`. The Good Parts, enforced by the compiler.
-* **Compile-time over runtime** — types inferred from usage, no annotations. All dispatch resolved statically. No GC, no runtime checks.
+* **Crockford-aligned** — no `var`, `this`, `class`, `switch`, `==`. The Good Parts, enforced by the compiler. `jzify` auto-transforms non-conforming JS.
+* **Compile-time over runtime** — types inferred from usage, no annotations. All dispatch resolved statically. No GC, no runtime checks. Method calls resolve to direct WASM function calls at compile time.
 * **Explicit over implicit** — no coercions, no hoisting, no magic. `==` is strict. `null` is distinct from `0`. `??` works correctly. Code means what it says.
-* **Functional over OOP** — functions are the unit of composition. No `class`, no `this`, no inheritance. Data is plain, behavior is functions.
-* **Valid jz = valid js** — every jz program runs as normal javascript. The subset enforces good style by design — no linter needed.
-* **jzify** — any JS file compiles to WASM via automatic transform: `function` → arrow, `var` → `let`, `switch` → if/else, `new` → call. `jz file.js` just works.
-* **Uniform f64 representation** — all values are f64. Heap types use [NaN-boxing](https://articlems.com/nan-boxing-in-javascript): arrays, strings, objects are pointers encoded in quiet NaN bits. One convention beats type-specific complexity.
-* **Minimal core, extensible surface** — core compiles pure compute (~2K lines). Arrays, strings, objects, Math — each is a module. Capabilities grow without core growth.
-* **Live compilation** — compiles in-browser in <1ms. WASM as interactive medium, not build artifact.
+* **Functional over OOP** — functions are the unit of composition. No `class`, no `this`, no inheritance. Data is plain, behavior is functions. Closures capture by reference, currying works naturally.
+* **Hand-written output** — produced WAT/WASM reads as if you wrote it manually. Constant folding, dead code elimination, i32 preservation, SIMD vectorization, loop-invariant hoisting, tail call optimization. Goal: jz output = hand-written for scalar functions.
+* **No perf-hostile patterns** — language-level prevention of practices that resist optimization. No dynamic property lookup, no implicit type coercion, no prototype chains, no hidden classes. If it would force a runtime type check, it's not in the language.
+* **Valid jz = valid js** — every jz program runs as normal JS. The subset enforces good style by design — no linter needed.
+* **jzify** — any JS file compiles to WASM via automatic transform: `function` → arrow, `var` → `let`, `switch` → if/else, `==` → `===`, `new` → call. `jz file.js` just works.
+* **Uniform f64** — all values are f64. Heap types use [NaN-boxing](https://sean.cm/a/nan-boxing): arrays, strings, objects are pointers encoded in quiet NaN bits. One representation, no type tags, no boxing overhead.
+* **Minimal core, extensible surface** — core compiles pure compute (~2K lines). Arrays, strings, objects, regex, Math — each is a module. Capabilities grow without core growth.
+* **Live compilation** — compiles in-browser in <1ms. WASM as interactive medium, not build artifact. Fast enough for live coding and REPL use.
 
 
 ## FAQ
@@ -164,18 +175,20 @@ c.instance.exports.len(a.mem.String('hello'))  // 5
 
 All modules sharing a memory use a single bump allocator (heap pointer stored in the memory itself). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-#### How does object interpolation work?
+#### How does template interpolation work?
 
-Objects with all-numeric values are emitted as jz object literals at compile time. Objects with strings, arrays, or mixed values are allocated via `mem.Object` after instantiation — the template tag handles this automatically:
+Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
 ```js
-// Numeric: compile-time literal
-jz`export let f = () => ${{x: 1, y: 2}}.x`             // 1
+jz`export let f = () => ${'hello'}.length`              // 5 — string compiled as literal
+jz`export let f = () => ${[10, 20, 30]}[1]`             // 20 — array compiled as literal
+jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3 — object compiled as literal
 
-// Mixed: auto-allocated post-instantiation
-const { exports, mem } = jz`export let f = () => ${{name: 'jz', count: 3}}.name`
-mem.read(exports.f())                                    // 'jz'
+// Nested values work too
+jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 ```
+
+Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
 #### Does it support imports?
 
@@ -203,11 +216,49 @@ jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
 
 **Browser**: pass resolved sources via `{ modules }`. No filesystem access needed — the host fetches sources and provides them. The compiler stays synchronous and pure.
 
-**How it works**: imported modules are parsed, prepared, and merged into the main module's function table during compilation. The output is always one WASM binary — no multi-module linking, no runtime resolution. Transitive imports work (A imports B which imports C). Circular imports error at compile time.
+**How it works**: imported modules are parsed, prepared, and merged into the main module's function table during compilation. The output is always one WASM binary — no multi-module linking, no runtime resolution. Transitive imports work. Circular imports error at compile time.
+
+```js
+// Transitive: main → math → utils (all bundled into one WASM)
+const { exports } = jz(
+  'import { dist } from "./math.jz"; export let f = (x, y) => dist(x, y)',
+  { modules: {
+    './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
+    './utils.jz': 'export let sq = (x) => x * x'
+  }}
+)
+
+// Browser: fetch sources yourself, pass them in
+let mathSrc = await fetch('./math.jz').then(r => r.text())
+let utilsSrc = await fetch('./utils.jz').then(r => r.text())
+const { exports } = jz(mainSrc, { modules: { './math.jz': mathSrc, './utils.jz': utilsSrc } })
+```
 
 #### How does everything fit in f64?
 
-All values are IEEE 754 f64. Integers up to 2^53 are exact. Heap types (arrays, strings, objects) use [NaN-boxing](https://sean.cm/a/nan-boxing): a quiet NaN with type + pointer packed in the payload bits. `null` is a reserved NaN pattern (distinct from `0` and `NaN`), so `??` and `?.` work correctly. One representation, no type tags, no boxing overhead.
+All values are IEEE 754 f64. Integers up to 2^53 are exact. Heap types use [NaN-boxing](https://sean.cm/a/nan-boxing): quiet NaN (`0x7FF8`) + 51-bit payload `[type:4][aux:15][offset:32]`.
+
+| Type | Code | Payload | Example |
+|------|------|---------|---------|
+| Number | — | regular f64 | `3.14`, `42`, `NaN` |
+| Null | 0 | reserved pattern | `null` (distinct from `0` and `NaN`) |
+| Array | 1 | aux=length, offset=heap | `[1, 2, 3]` |
+| ArrayBuffer | 2 | offset=heap | `new ArrayBuffer(16)` |
+| TypedArray | 3 | aux=elemType, offset=heap | `new Float64Array(n)` |
+| String | 4 | offset=heap | `"hello world"` (>4 chars) |
+| SSO String | 5 | aux=packed chars | `"hi"` (<=4 ASCII chars, zero alloc) |
+| Object | 6 | aux=schemaId, offset=heap | `{x: 1, y: 2}` |
+| Hash | 7 | offset=heap | dynamic string-keyed objects |
+| Set | 8 | offset=heap | `new Set()` |
+| Map | 9 | offset=heap | `new Map()` |
+| Closure | 10 | aux=funcIdx, offset=env | `x => x + captured` |
+| External | 11 | offset=hostMap index | JS host object references |
+
+**Why NaN-boxing?** Proven technique: used by LuaJIT, JavaScriptCore, SpiderMonkey, Porffor, early V8. The alternatives — tagged unions (OCaml, Haskell), pointer tagging (V8 Smis), or separate type+value pairs — all require branching at call boundaries or multi-word passing. NaN-boxing fits any value in one 64-bit word: one calling convention, one memory layout, one comparison instruction.
+
+**The f64 tradeoff**: f64 arithmetic is ~1.2x slower than i32 for pure integer work on most architectures. jz mitigates this — `analyzeLocals` preserves i32 for loop counters, bitwise ops, and comparisons, so the penalty only applies to mixed-type parameters. The gain: zero interop cost at the JS↔WASM boundary (f64 is WASM's native JS-compatible type), no marshaling, no boxing/unboxing. For jz's target workloads (DSP, typed arrays, math), f64 is the natural type anyway.
+
+**NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
 
 #### How do I run compiled WASM outside the browser?
 
@@ -221,6 +272,19 @@ deno run program.wasm
 ```
 
 `console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
+
+#### What WASI features are supported?
+
+jz targets WASI Preview 1. The compiled `.wasm` uses standard WASI imports — runs natively on wasmtime, wasmer, deno without polyfills.
+
+| JS API | WASI call | Notes |
+|--------|-----------|-------|
+| `console.log()` | `fd_write` (fd=1) | Multiple args space-separated, newline appended |
+| `console.warn()`, `console.error()` | `fd_write` (fd=2) | Writes to stderr |
+| `Date.now()` | `clock_time_get` (realtime) | Returns ms since epoch |
+| `performance.now()` | `clock_time_get` (monotonic) | Returns ms, high-resolution |
+
+For browser/Node environments without native WASI, jz ships a tiny polyfill (`jz/wasi`) that maps these calls to `console.log` and `performance.now()`. The `jz()` function applies it automatically.
 
 #### Can I compile jz to C?
 
@@ -238,23 +302,50 @@ jz → WASM → C → native binary.
 
 Compiled jz runs as native WASM — same speed as hand-written WAT or C-compiled WASM. No interpreter, no GC pauses. Compilation itself takes <1ms for typical modules, fast enough for live coding.
 
-Best for: tight compute loops, DSP, audio processing, math, pixel manipulation, physics.
-Not ideal for: DOM manipulation, async I/O, heavy string processing.
+| Benchmark | vs JS | Notes |
+|-----------|-------|-------|
+| `fib(30)` | **2x faster** | Recursive — WASM call overhead amortized |
+| `Float64Array.sum(10k)` | **2.3x faster** | Typed memory + loop hoisting |
+| `mandelbrot(100)` | ~0.7x | V8 JIT applies CSE that WASM doesn't |
+| `(a, b) => a + b` | 50 bytes | Pure scalar — no memory, no runtime |
+
+WASM wins on typed memory and deep recursion. V8 can match or beat WASM on pure scalar loops where its JIT applies optimizations like common subexpression elimination. The gap narrows as code uses more typed arrays and less pure arithmetic.
+
+Best for: typed array processing, DSP, audio, math, pixel manipulation, physics, recursion.
+Not ideal for: DOM manipulation, async I/O, heavy string processing, pure scalar loops where V8 JIT excels.
+
+#### What optimizations does jz apply?
+
+| Optimization | Layer | What it does |
+|--------------|-------|-------------|
+| Constant folding | jz | Evaluates `2 * 3` → `6`, `x + 0` → `x`, `x * 1` → `x` at compile time |
+| Dead code elimination | jz | Removes `if (false)` branches, unreachable code after `return` |
+| i32 preservation | jz | Keeps integer locals as `i32` instead of promoting to `f64` — faster bitwise, comparison, indexing |
+| SIMD vectorization | jz | `Float64Array.map(x => x * 2)` → `f64x2.mul` SIMD instructions |
+| Tail call optimization | jz | `return f(x)` → `return_call` — no stack growth for recursive calls |
+| Loop-invariant hoisting | jz | `arr.length` in `for` conditions evaluated once, cached in local |
+| Callback inlining | jz | `.map(x => x * 2)` inlined — no closure alloc, no `call_indirect` per iteration |
+| Chain fusion | jz | `.map(f).filter(g)` → single loop, no intermediate array |
+| Monomorphic dispatch | jz | Known types skip runtime type checks for `.length`, `[]`, method calls |
+| Branchless select | jz | Pure ternaries `a ? b : c` → WASM `select` (no branching) |
+| Inline/peephole | watr | Instruction-level optimization on WAT output |
 
 #### What JS features are excluded and why?
 
-| Excluded | Reason |
-|----------|--------|
-| `var`, `function` | Hoisting. Use `let`/`const` and arrows. |
-| `class`, `this`, `super` | OOP. Use plain objects and functions. |
-| `async`/`await` | WASM is synchronous. Use host callbacks. |
-| `do`...`while` | Use `while` or `for`. |
-| `eval`, `with` | Dynamic scope. Not compilable. |
-| `arguments` | Implicit. Use rest params `...args`. |
-| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. |
-| `null` vs `undefined` | One nullish value. No debate. `??` just works. |
-| Implicit coercions | `==` is strict. `null` is distinct from `0`. No surprises. |
-| `switch` | Use `if`/`else` chains. |
+| Excluded | Reason | jzify? |
+|----------|--------|--------|
+| `var` | Hoisting. Use `let`/`const`. | `var` → `let` |
+| `function` | Hoisting. Use arrows. | `function f(){}` → `const f = () => {}` |
+| `class`, `this`, `super` | OOP. Use plain objects and functions. | — |
+| `async`/`await` | WASM is synchronous. Use host callbacks. | — |
+| `do`...`while` | Use `while` or `for`. | — |
+| `eval`, `with` | Dynamic scope. Not compilable. | — |
+| `arguments` | Implicit. Use rest params `...args`. | — |
+| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
+| `null` vs `undefined` | One nullish value. `??` just works. | — |
+| `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
+| `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
+| `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
 
 #### What's the difference between `jz()` and `compile()`?
 
@@ -286,22 +377,21 @@ const { exports, mem } = jz(`export let f = () => {
 mem.read(exports.f())  // Float64Array with doubled values
 ```
 
-
 ## Used by
 
 * [web-audio-api](https://github.com/audiojs/web-audio-api)
 * [color-space](https://github.com/colorjs/color-space)
+<!-- TODO: audio-filter, digital-filter, time-stretch etc -->
 
-## Built With
+## Under the Hood
 
-* [subscript](https://github.com/dy/subscript) – parser
-* [watr](https://www.npmjs.com/package/watr) – WAT to WASM
+* [subscript](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs without a full ES parser. Jessie subset keeps the grammar small and deterministic.
+* [watr](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Handles binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into a valid `.wasm` binary.
 
-<!--
-## Similar
+## Alternatives
 
-* [porffor](https://github.com/CanadaHonk/porffor) – targets full JS semantics from TC39
-* [jawsm](https://github.com/drogus/jawsm)
--->
+* [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
+* [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
+
 
 <p align=center><a href="https://github.com/krishnized/license/">ॐ</a></p>

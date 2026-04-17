@@ -113,6 +113,24 @@ function transform(node) {
   if (op === '=' && Array.isArray(args[0]) && args[0][0] === 'var')
     return ['let', ['=', args[0][1], transform(args[1])]]
 
+  // --- Chained property assignment: a.x = a.y = v → a.y = v; a.x = v ---
+  // Prevents nested __dyn_set calls that can corrupt memory in edge cases
+  if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && Array.isArray(args[1]) && args[1][0] === '=') {
+    const targets = []
+    let cur = node
+    while (Array.isArray(cur) && cur[0] === '=') {
+      targets.push(cur[1])
+      cur = cur[2]
+    }
+    // cur is the final value; targets are [a.x, a.y, a.z]
+    // emit innermost first: a.z = v, a.y = v, a.x = v
+    const val = transform(cur)
+    const stmts = []
+    for (let i = targets.length - 1; i >= 0; i--)
+      stmts.push(['=', transform(targets[i]), val])
+    return stmts.length === 1 ? stmts[0] : [';', ...stmts]
+  }
+
   // --- switch → if/else chain ---
   if (op === 'switch') {
     // Strip fall-through number flags from case bodies before transform
@@ -128,6 +146,16 @@ function transform(node) {
       return c
     })
     return transformSwitch(args[0], clean)
+  }
+
+  // --- Prototype identity: X.prototype.Y comparisons → constants ---
+  // No prototype chain in WASM — a.Y !== X.prototype.Y is always false, a.Y === is always true
+  const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
+
+  // --- == → ===, != → !== ---
+  if (op === '==' || op === '===' || op === '!=' || op === '!==') {
+    if (isProto(args[0]) || isProto(args[1]))
+      return (op === '!==' || op === '!=') ? 0 : 1
   }
 
   // --- == → ===, != → !== ---

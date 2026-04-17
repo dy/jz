@@ -1,30 +1,94 @@
-### Bugs
 
-* [x] Regex greedy backtrack gives back 1 byte regardless of pattern width — `module/regex.js:256`: fixed to use `patternMinLen(node)` for correct multi-char backtracking.
-* [x] Regex split never grows past 8 elements — `module/regex.js:815`: added grow logic (double capacity + copy) when count >= cap.
-* [x] `JSON.stringify` emits `{}` for all objects — fixed: HASH/MAP iterate slots via `__json_hash` WAT; OBJECT uses runtime schema name table (`__json_obj` + `$__schema_tbl` init in `__start`). 6 new tests added.
+## [ ] jz.memory wrapper
 
-### Fragility
 
-* [x] `__typed_idx` overwrite pattern — both `array.js` and `typedarray.js` now carry the full dispatch tree (intentionally duplicated: array.js is the runtime-complete fallback for external typed arrays when typedarray module isn't loaded).
+### Tier 1: Zero-cost (no semantic change, pure codegen cleanup)
 
-### Redundancy — easy
+* [x] **G. Elide `__heap` global when no memory** — 9 bytes per module. Pure scalar functions
+      (`add`, `fib`, `bits`, `mandelbrot`) don't need `__heap`. Gate on `needsMemory`.
+      Closes the add/fib gap entirely (50→41, 91→82).
 
-* [x] `usesDynProps` defined identically in `compile.js` and `core.js` — exported from compile.js, imported in core.js
-* [x] `inc('__typed_idx')` called 7 times in array.js — hoisted to module init
-* [x] `inc('__is_truthy')` inside each array callback method — hoisted to module init
-* [x] `core.js` uses raw hex `0x7FF8000000000001` in WAT strings — replaced with `${UNDEF_NAN}` / `${NULL_NAN}` template variables
-* [x] `ctx.schema.vars.get(name) → ctx.schema.list[id]` two-liner — added `ctx.schema.resolve(name)` in schema.js, used in object.js and compile.js
-* [x] `.shift`/`.unshift`/`.flat`/`.join` — replaced with `arrMethod` factory mirroring `strMethod`
+* [x] **H. Elide zero-init for locals** — WASM spec: locals default to 0.
+      `(local.set $zx (f64.const 0))` is dead code. Skip `local.set` when init is literal 0/0.0.
+      Mandelbrot emits 3 of these: `$zx`, `$zy`, `$i` → saves ~18 bytes.
 
-### Redundancy — medium
+* [x] **I. Eliminate dead code after return** — `(return (local.get $i)) (f64.const 0)` in
+      mandelbrot: the `(f64.const 0)` is unreachable. Detect `return` as last statement in
+      function body and omit the trailing fallback expression.
 
-* [-] Collection probe generators — skipped: shared part is only 4 lines, each generator has different type guard logic
-* [-] `$__is_str_ptr` WAT helper — skipped: identical to existing `__is_str_key`, no new helper needed
-* [x] `UNDEF_NAN`/`NULL_NAN` WAT expansion — added `UNDEF_WAT`/`NULL_WAT` JS string constants for WAT templates
-* [x] `__typed_idx` element-dispatch tree duplicated — kept intentionally: both array.js and typedarray.js need full dispatch for different scenarios (external typed arrays vs explicit TypedArray usage)
+* [x] **J. While-loop single-test form** — current `while(cond)` emits condition TWICE:
+      once as `br_if $brk (eqz cond)` before loop, once as `br_if $loop (cond)` at end.
+      This duplicates the entire condition bytecode (~40 bytes for mandelbrot).
+      Use single-test form: `(block $brk (loop $loop (br_if $brk (eqz cond)) body (br $loop)))`.
+      One condition evaluation per iteration, same semantics.
+      Mandelbrot: 221→~170 bytes from this alone.
 
-### Optimizations
+* [x] **K. Elide `local.tee` when value unused** — patterns like `local.tee $x ... drop`
+      should be `local.set $x`. Peephole pass on IR before WAT emission.
+
+* [x] **L. Use `select` for pure ternaries** — `a ? b : c` where b,c are side-effect-free →
+      WASM `select` instruction (branchless, 1 byte opcode vs if/then/else structure).
+
+### Tier 2: Peephole / strength reduction
+
+* [x] **M. CSE for repeated subexpressions** — mandelbrot computes `zx*zx` and `zy*zy` twice
+      (condition + body). Hoist to locals. Saves ~20 bytes + 2 f64.mul per iteration.
+
+* [x] **N. `local.set` + `local.get` → `local.tee`** — many emit patterns store then immediately
+      load. Peephole fusion saves 2-3 bytes per site.
+
+* [x] **O. Inline tiny stdlib helpers** — `__is_truthy`, `__ptr_type`, `__ptr_offset` are
+      3-5 instructions each. Inline at call site when called ≤N times to eliminate call overhead.
+      Saves both size (no function entry/type) and perf (no call frame).
+
+* [x] **P. Dead local elimination** — temps created by `temp()`/`tempI32()` but unused after
+      constant folding or optimization should not appear in local declarations.
+
+* [x] **Q. Compact integer encoding** — ensure LEB128 encoding is minimal. Check watr output
+      for over-wide encodings of small constants.
+
+### Tier 3: Structural
+
+* [x] **R. Data segment deduplication** — static strings like "NaN", "Infinity", "true", "false"
+      should share one data segment. Currently each compilation includes full string table even
+      if only "NaN" is used. Gate segments on actual string usage.
+
+* [x] **S. Function-level dead code elimination** — stdlib functions included via `inc()` but
+      never actually called should be stripped. Walk call graph from exports, keep only reachable.
+
+* [x] **T. Type section compaction** — deduplicate identical function types. Multiple functions
+      with same signature (f64→f64) should share one type entry.
+
+* [ ] **U. Multi-value for ephemeral destructuring** — `let {x,y} = f()` or `let [a,b] = f()`
+      where result is immediately destructured: use WASM multi-value return instead of heap alloc.
+      Saves allocPtr + __mkptr + header bytes per call. Only for ≤8 fields and non-escaping values.
+
+### Codegen issues
+
+* [x] **A. Boolean propagation** — `toBoolFromEmitted()` checks `e.type === 'i32'` upfront,
+      skips `__is_truthy` when input is already i32.
+
+* [x] **B. Postfix `i++` in void context** — detects `_expect === 'void'` + `isPostfix()`,
+      emits just `++i`/`--i` without subtract+drop.
+
+* [x] **C. Unnecessary i32↔f64 conversions** — both fixed:
+      1. `asF64` converts `(i32.const N)` → `(f64.const N)` directly.
+      2. `analyzeLocals` `widenPass` widens i32 locals compared against f64.
+
+* [ ] **D. Array indexing: polymorphic dispatch per access** — `arr[i]` where arr is untyped param emits
+      5-branch dispatch tree PER ITERATION: is-string-key? is-string? is-SSO? is-typed? else array.
+      Plus `__length` call per iteration is similarly polymorphic.
+      This is why array sum is 16x slower than JS (V8 uses inline caches, hidden classes).
+      Typed arrays (`new Float64Array(arr)`) generate clean direct loads — this is the explicit-perf path.
+      Options: (a) propagate type from call sites, (b) accept tradeoff — typed params = fast path,
+      (c) hoist type check before loop, cache ptr_offset + len, use direct loads inside.
+      Option (c) = loop-level monomorphization: check type once, branch to specialized loop body.
+
+* [x] **E. Unconditional allocator inclusion** — gated on `needsMemory`: allocator only included
+      when stdlib functions actually use memory. Pure `add(a,b) => a+b` now 50 bytes (was 230).
+
+* [x] **F. Loop-invariant `__length`/`__ptr_offset` hoisted in manual for-loops** —
+      `for (let i = 0; i < arr.length; i++)` hoists `.length` to init block as local.
 
 ### Build & tooling
 
@@ -46,11 +110,12 @@
 * [x] Template tag
 * [ ] jzify script converting any JZ
 * [ ] align with Crockford practices
+* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
 
 ## Phase 14: Internal Parser (Future)
-- Extract minimal jz parser from subscript features
-- jzify uses jessie, pure jz uses internal parser
-- True metacircular bootstrap
+* [ ] Extract minimal jz parser from subscript features
+* [ ] jzify uses jessie, pure jz uses internal parser
+* [ ] True metacircular bootstrap
 
 
 ### Validation & quality
@@ -63,6 +128,14 @@
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
 * [ ] wasm2c / w2c2 integration test
+
+### API / interop
+
+* [ ] **Shared mem scope** — `mem` is scoped to jz instance, but objects from one instance can't be exchanged with another without `{ memory }`. Explore: generic mem scope, shared allocator, portable pointers between instances.
+* [ ] **Reduced interop tax** — ideally shared Float64Array / typed arrays pass back and forth without copying. Explore: zero-copy views over shared WebAssembly.Memory, direct typed array pointer passthrough.
+* [ ] **Cross-instance data sharing API** — `{ memory }` works but is low-level. Need a higher-level API for sharing data between modules (pointer portability, schema agreement, allocator coordination).
+* [x] **Object interpolation: allow non-numeric values at compile time** — template tag now serializes strings, arrays, and nested objects as jz source literals. Only non-serializable values (functions, host objects) fall back to post-instantiation getters.
+* [x] **NaN-boxing justification** — documented in README: precedent (LuaJIT/JSC/SpiderMonkey/Porffor), f64 vs i32 tradeoff (~1.2x, mitigated by i32 preservation), NaN preservation guarantees (quiet NaN, spec-compliant).
 
 ### Future
 
@@ -98,7 +171,36 @@
 
 
 
-## Done (scratch branch)
+## Done
+### Bugs
+
+* [x] Regex greedy backtrack gives back 1 byte regardless of pattern width — `module/regex.js:256`: fixed to use `patternMinLen(node)` for correct multi-char backtracking.
+* [x] Regex split never grows past 8 elements — `module/regex.js:815`: added grow logic (double capacity + copy) when count >= cap.
+* [x] `JSON.stringify` emits `{}` for all objects — fixed: HASH/MAP iterate slots via `__json_hash` WAT; OBJECT uses runtime schema name table (`__json_obj` + `$__schema_tbl` init in `__start`). 6 new tests added.
+
+### Fragility
+
+* [x] `__typed_idx` overwrite pattern — both `array.js` and `typedarray.js` now carry the full dispatch tree (intentionally duplicated: array.js is the runtime-complete fallback for external typed arrays when typedarray module isn't loaded).
+
+### Redundancy — easy
+
+* [x] `usesDynProps` defined identically in `compile.js` and `core.js` — exported from compile.js, imported in core.js
+* [x] `inc('__typed_idx')` called 7 times in array.js — hoisted to module init
+* [x] `inc('__is_truthy')` inside each array callback method — hoisted to module init
+* [x] `core.js` uses raw hex `0x7FF8000000000001` in WAT strings — replaced with `${UNDEF_NAN}` / `${NULL_NAN}` template variables
+* [x] `ctx.schema.vars.get(name) → ctx.schema.list[id]` two-liner — added `ctx.schema.resolve(name)` in schema.js, used in object.js and compile.js
+* [x] `.shift`/`.unshift`/`.flat`/`.join` — replaced with `arrMethod` factory mirroring `strMethod`
+
+### Redundancy — medium
+
+* [-] Collection probe generators — skipped: shared part is only 4 lines, each generator has different type guard logic
+* [-] `$__is_str_ptr` WAT helper — skipped: identical to existing `__is_str_key`, no new helper needed
+* [x] `UNDEF_NAN`/`NULL_NAN` WAT expansion — added `UNDEF_WAT`/`NULL_WAT` JS string constants for WAT templates
+* [x] `__typed_idx` element-dispatch tree duplicated — kept intentionally: both array.js and typedarray.js need full dispatch for different scenarios (external typed arrays vs explicit TypedArray usage)
+
+### Optimizations
+
+
 ### Audit (structural)
 
 **Bugs / correctness**

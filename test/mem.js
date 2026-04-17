@@ -12,7 +12,7 @@ async function run(code) {
 // ============================================
 
 test('mem.read: regular number passthrough', async () => {
-  const r = await run('export let f = () => 42')
+  const r = await run('export let f = () => [1]')
   const m = jz.mem(r)
   is(m.read(42), 42)
   is(m.read(0), 0)
@@ -21,7 +21,7 @@ test('mem.read: regular number passthrough', async () => {
 })
 
 test('mem.read: NaN passthrough (falls through type dispatch, returns NaN)', async () => {
-  const r = await run('export let f = () => 0')
+  const r = await run('export let f = () => [0]')
   const m = jz.mem(r)
   ok(isNaN(m.read(NaN)))
 })
