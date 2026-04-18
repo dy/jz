@@ -16,7 +16,7 @@
  */
 
 import { parse } from 'subscript/jessie'
-import { ctx, err, derive, PTR } from './ctx.js'
+import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import * as mods from '../module/index.js'
 
@@ -57,8 +57,8 @@ function isDeclared(name) {
   return scopes.some(s => s.has(name))
 }
 
-/** Map JS typeof strings to jz type checks. */
-const TYPEOF_MAP = { 'number': -1, 'string': -2, 'object': PTR.OBJECT, 'undefined': -3, 'boolean': -4 }
+/** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
+const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6 }
 function resolveTypeof(node) {
   const [op, a, b] = node
   // typeof x == 'string' → type check
@@ -83,7 +83,7 @@ const OP_MODULES = {
   'in': ['core', 'collection', 'string'],
   '==': ['core', 'string'],
   '!=': ['core', 'string'],
-  'typeof': ['core'],
+  'typeof': ['core', 'string'],
   '[': ['core', 'array'],
   '{': ['core', 'object', 'string', 'collection'],
   '//': ['core', 'string', 'regex'],

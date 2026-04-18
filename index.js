@@ -155,7 +155,7 @@ jz.memory = (src) => {
 
   memory.Array = (data) => {
     const n = data.length, off = hdr(n, n, n * 8), m = dv()
-    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, memCoerce(data[i]), true)
+    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, memory.wrapVal(data[i]), true)
     return jz.ptr(1, 0, off)
   }
 
@@ -229,14 +229,18 @@ jz.memory = (src) => {
   }
 
   memory.read = function(ptr) {
+    if (Array.isArray(ptr)) return ptr.map(v => this.read(v))  // multi-value tuple
     if (ptr === ptr) return ptr  // regular number passthrough (NaN fails ===)
     const type = jz.type(ptr), aux = jz.aux(ptr), off = jz.offset(ptr)
     if (type === 0 && aux === 1 && off === 0) return null
     if (type === 0 && aux === 0 && off === 1) return undefined
     if (type === 11 && this._extMap) return this._extMap[off]
     if (type === 1) {  // ARRAY
-      const m = dv(), len = m.getInt32(off - 8, true), out = new Array(len)
-      for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(off + i * 8, true))
+      let m = dv(), aOff = off
+      // Follow forwarding pointers (cap === -1 means array was reallocated)
+      while (m.getInt32(aOff - 4, true) === -1) aOff = m.getInt32(aOff - 8, true)
+      const len = m.getInt32(aOff - 8, true), out = new Array(len)
+      for (let i = 0; i < len; i++) out[i] = this.read(m.getFloat64(aOff + i * 8, true))
       return out
     }
     if (type === 3) {  // TYPED

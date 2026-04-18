@@ -17,7 +17,7 @@ export default () => {
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
   ctx.core.emit['{}'] = (...rawProps) => {
     if (rawProps.length === 0)
-      return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['i32.const', 0]], 'f64')
+      return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['call', '$__alloc', ['i32.const', 8]]], 'f64')
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
     const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','

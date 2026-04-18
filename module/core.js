@@ -456,16 +456,42 @@ export default () => {
       ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
   }
 
-  // typeof: returns ptr type code (0=atom, 1=array, 4=string, 6=object), or -1 for plain number
+  // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object
+  // (booleans are f64 and hit the number branch; no bigints). Strings are preallocated into globals and
+  // initialized in __start (see compile.js). Comparison patterns (typeof x === 'string') are optimized
+  // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
   ctx.core.emit['typeof'] = (a) => {
-    inc('__ptr_type')
-    const t = temp()
-    return typed(['if', ['result', 'f64'],
-      // NaN check: val != val means it's a NaN-boxed pointer
-      ['f64.ne', ['local.tee', `$${t}`, asF64(emit(a))], ['local.get', `$${t}`]],
-      ['then', ['f64.convert_i32_s', ['call', '$__ptr_type', ['local.get', `$${t}`]]]],
-      ['else', ['f64.const', -1]]], 'f64') // -1 = plain number
+    if (!ctx.runtime.typeofStrs) {
+      ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object']
+      for (const s of ctx.runtime.typeofStrs)
+        ctx.scope.globals.set(`__tof_${s}`, `(global $__tof_${s} (mut f64) (f64.const 0))`)
+    }
+    inc('__typeof')
+    return typed(['call', '$__typeof', asF64(emit(a))], 'f64')
   }
+
+  ctx.core.stdlib['__typeof'] = `(func $__typeof (param $v f64) (result f64)
+    (local $t i32)
+    ;; Plain number: x === x (NaN-boxed pointers are quiet NaNs, fail self-equality)
+    (if (f64.eq (local.get $v) (local.get $v))
+      (then (return (global.get $__tof_number))))
+    ;; Nullish (both null and undefined NAN values) → 'undefined'
+    (if (call $__is_nullish (local.get $v))
+      (then (return (global.get $__tof_undefined))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    ;; String (heap) or SSO → 'string'
+    (if (i32.or
+          (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+          (i32.eq (local.get $t) (i32.const ${PTR.SSO})))
+      (then (return (global.get $__tof_string))))
+    ;; Closure → 'function'
+    (if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
+      (then (return (global.get $__tof_function))))
+    ;; ATOM (non-nullish) → 'symbol'
+    (if (i32.eqz (local.get $t))
+      (then (return (global.get $__tof_symbol))))
+    ;; Everything else (array, object, hash, set, map, typed, buffer, external) → 'object'
+    (global.get $__tof_object))`
 
   // === Schema helpers (centralized in module/schema.js) ===
   initSchema()

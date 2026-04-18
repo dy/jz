@@ -57,8 +57,12 @@ export function initSchema() {
    *    1. Variable has precise schema but schema lacks the property
    *    2. Variable's valType is known and is not an object
    *    3. Structural search finds the property at inconsistent offsets across schemas
-   *  Case 3 is a real ambiguity — the caller must route to runtime dispatch. */
-  ctx.schema.find = (varName, prop) => {
+   *  Case 3 is a real ambiguity — the caller must route to runtime dispatch.
+   *  `safe=true` disables structural subtyping when the variable's type is not
+   *  known to be VAL.OBJECT. Use for writes: a wrong slot clobbers unrelated
+   *  memory (e.g. arr.loc = ... corrupting arr[slot]). Reads only return wrong
+   *  values, which callers can tolerate. */
+  ctx.schema.find = (varName, prop, safe = false) => {
     // Precise: variable has known schema
     const id = ctx.schema.vars.get(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
@@ -67,6 +71,7 @@ export function initSchema() {
     if (typeof varName === 'string') {
       const vt = ctx.func.valTypes?.get(varName) || ctx.scope.globalValTypes?.get(varName)
       if (vt != null && vt !== VAL.OBJECT) return -1
+      if (safe && vt !== VAL.OBJECT) return -1
     }
     // Structural subtyping: walk only schemas that contain this prop.
     // Consistent slot across all → return slot; any mismatch → -1 (dynamic lookup).

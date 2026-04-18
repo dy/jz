@@ -105,16 +105,37 @@ function emitTypeofCmp(a, b, cmpOp) {
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
   if (code === -3) {
-    // 'undefined' → check for null NaN
-    return typed(eq
-      ? ['i64.eq', ['i64.reinterpret_f64', va], ['i64.const', NULL_NAN]]
-      : ['i64.ne', ['i64.reinterpret_f64', va], ['i64.const', NULL_NAN]], 'i32')
+    // 'undefined' → nullish (both NULL_NAN and UNDEF_NAN); jz collapses null/undefined
+    inc('__is_nullish')
+    const check = ['call', '$__is_nullish', va]
+    return typed(eq ? check : ['i32.eqz', check], 'i32')
   }
   if (code === -4) {
     // 'boolean' → always false (no boolean type in jz)
     return typed(['i32.const', eq ? 0 : 1], 'i32')
   }
-  // Direct type code (6=object, 1=array, 8=set, etc.)
+  if (code === -5) {
+    // 'object' → NaN-boxed AND not nullish AND ptr_type not in {STRING, SSO, CLOSURE}
+    inc('__ptr_type', '__is_nullish')
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
+    const notStrFn = ['i32.and',
+      ['i32.and',
+        ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
+        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
+      ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
+    const notNullish = ['i32.eqz', ['call', '$__is_nullish', ['local.get', `$${t}`]]]
+    const check = ['i32.and', ['i32.and', isPtr, notStrFn], notNullish]
+    return typed(eq ? check : ['i32.eqz', check], 'i32')
+  }
+  if (code === -6) {
+    // 'function' → NaN-boxed AND ptr_type === CLOSURE
+    inc('__ptr_type')
+    const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
+    const isFn = ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.CLOSURE]]
+    return typed(eq ? ['i32.and', isPtr, isFn] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isFn]], 'i32')
+  }
+  // Direct type code (reserved for raw ptr_type comparisons; not reachable via TYPEOF_MAP)
   if (code >= 0) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
@@ -1100,11 +1121,17 @@ export default function compile(ast) {
     }
   }
 
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length) {
+  // Preallocate typeof result strings into globals (emit['str'] needs __start's fresh locals map).
+  const typeofInit = []
+  if (ctx.runtime.typeofStrs) {
+    for (const s of ctx.runtime.typeofStrs)
+      typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
+  }
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    startFn.push(...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
     sec.start.push(startFn, ['start', '$__start'])
   }
 
@@ -1449,9 +1476,11 @@ export const emitter = {
     // Object property assignment: obj.prop = x
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
-      // Schema-based object → f64.store at fixed offset
+      // Schema-based object → f64.store at fixed offset.
+      // safe=true: skip structural subtyping when variable's type is unknown,
+      // otherwise a slot write could clobber an array/string's payload.
       if (typeof obj === 'string' && ctx.schema.find) {
-        const idx = ctx.schema.find(obj, prop)
+        const idx = ctx.schema.find(obj, prop, true)
         if (idx >= 0) {
           const va = emit(obj), vv = asF64(emit(val)), t = temp()
           inc('__dyn_set')

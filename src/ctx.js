@@ -82,6 +82,8 @@ export const STDLIB_DEPS = {
   __str_encode: ['__str_byteLen', '__char_at'],
   __str_to_buf: ['__str_byteLen', '__char_at'],
 
+  __typeof: ['__ptr_type', '__is_nullish'],
+
   __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
   __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
   __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
@@ -103,7 +105,7 @@ export const STDLIB_DEPS = {
   __eq: ['__str_eq', '__ptr_type'],
 
   // hash operations
-  __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set'],
+  __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'],
   __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
   __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
   __alloc_hdr: ['__alloc'],

@@ -112,12 +112,20 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
 }
 
 /** Generate growable upsert. Grows table at 75% load, rehashes, then inserts.
- *  strict=false: EXTERNAL fallback via __ext_set. strict=true: reject wrong type. */
+ *  strict=true: reject wrong type.
+ *  strict=false: EXTERNAL → __ext_set, other non-HASH types → __dyn_set (global props).
+ *  The non-strict fallback is critical for untyped variables (e.g. arrays from
+ *  Object.create) that receive property writes — without it writes silently vanish. */
 function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false) {
   const typeGuard = strict
     ? `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
       (then (return (local.get $obj))))`
-    : `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst})) (then (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL})) (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)) (return (local.get $obj))))`
+    : `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
+        (then
+          (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL}))
+            (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)
+            (else (call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop))
+          (return (local.get $obj))))`
   return `(func $${name} (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)

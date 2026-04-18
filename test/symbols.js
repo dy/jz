@@ -1,7 +1,7 @@
 // Symbol tests: unique identities, interning
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
@@ -51,20 +51,20 @@ test('Symbol.for: different names are different', () => {
 
 // === typeof Symbol ===
 
-test('typeof Symbol anonymous', () => {
-  const { f } = run(`export let f = () => {
+test('typeof Symbol anonymous', async () => {
+  const { exports: { f } } = await jz(`export let f = () => {
     let s = Symbol('test')
     return typeof s
   }`)
-  is(f(), 0)  // type=0 (ATOM)
+  is(f(), 'symbol')
 })
 
-test('typeof Symbol.for', () => {
-  const { f } = run(`export let f = () => {
+test('typeof Symbol.for', async () => {
+  const { exports: { f } } = await jz(`export let f = () => {
     let s = Symbol.for('x')
     return typeof s
   }`)
-  is(f(), 0)  // type=0 (ATOM)
+  is(f(), 'symbol')
 })
 
 // === Object property access with Symbol keys ===

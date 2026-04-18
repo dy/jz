@@ -226,31 +226,27 @@ test('optional: ?.prop on dynamic HASH object', () => {
 // typeof
 // ============================================
 
-test('typeof: number', () => {
-  // -1 = plain number
-  is(run('export let f = () => typeof 42').f(), -1)
+test('typeof: number', async () => {
+  const { exports: { f } } = await jz('export let f = () => typeof 42')
+  is(f(), 'number')
 })
 
-test('typeof: array (pointer)', () => {
-  // 1 = ARRAY type
-  const { f } = run('export let f = () => { let a = [1,2]; return typeof a }')
-  is(f(), 1)
+test('typeof: array (pointer)', async () => {
+  const { exports: { f } } = await jz('export let f = () => { let a = [1,2]; return typeof a }')
+  is(f(), 'object')
 })
 
-test('typeof: object (pointer)', () => {
-  // 6 = OBJECT type
-  const { f } = run('export let f = () => { let o = {x: 1}; return typeof o }')
-  is(f(), 6)
+test('typeof: object (pointer)', async () => {
+  const { exports: { f } } = await jz('export let f = () => { let o = {x: 1}; return typeof o }')
+  is(f(), 'object')
 })
 
-test('typeof: string SSO', () => {
-  // 5 = STRING_SSO
-  const { f } = run('export let f = () => { let s = "hi"; return typeof s }')
-  is(f(), 5)
+test('typeof: string SSO', async () => {
+  const { exports: { f } } = await jz('export let f = () => { let s = "hi"; return typeof s }')
+  is(f(), 'string')
 })
 
-test('typeof: string heap', () => {
-  // 4 = STRING
-  const { f } = run('export let f = () => { let s = "hello world"; return typeof s }')
-  is(f(), 4)
+test('typeof: string heap', async () => {
+  const { exports: { f } } = await jz('export let f = () => { let s = "hello world"; return typeof s }')
+  is(f(), 'string')
 })
