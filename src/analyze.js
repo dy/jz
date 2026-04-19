@@ -95,6 +95,16 @@ export function valTypeOf(expr) {
   return null
 }
 
+/** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
+ *  or null if RHS isn't a typed-array/ArrayBuffer/DataView constructor. */
+export function typedElemCtor(rhs) {
+  if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
+  const args = rhs[2]
+  const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
+    && Array.isArray(args) && args[0] === ',' && args.length >= 4
+  return isView ? rhs[1] + '.view' : rhs[1]
+}
+
 /**
  * Analyze all local value types from declarations and assignments.
  * Builds ctx.func.valTypes map for method dispatch and schema resolution.
@@ -106,12 +116,8 @@ export function analyzeValTypes(body) {
   }
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && rhs[1].startsWith('new.')) {
-      const args = rhs[2]
-      const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
-        && Array.isArray(args) && args[0] === ',' && args.length >= 4
-      ctx.types.typedElem.set(name, isView ? rhs[1] + '.view' : rhs[1])
-    }
+    const ctor = typedElemCtor(rhs)
+    if (ctor) ctx.types.typedElem.set(name, ctor)
   }
   function walk(node) {
     if (!Array.isArray(node)) return

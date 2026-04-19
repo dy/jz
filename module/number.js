@@ -314,7 +314,7 @@ export default () => {
   // parseInt(str, radix) — parse string to integer
   ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $result f64) (local $digit i32)
+    (local $result f64) (local $digit i32) (local $seen i32)
     ;; If input is a number, just truncate
     (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
     ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
@@ -360,9 +360,12 @@ export default () => {
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
       (br_if $done (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix))))
+      (local.set $seen (i32.const 1))
       (local.set $result (f64.add (f64.mul (local.get $result) (f64.convert_i32_s (local.get $radix))) (f64.convert_i32_s (local.get $digit))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lp)))
+    ;; No digits consumed → NaN
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
   ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v f64) (result f64)
@@ -563,10 +566,17 @@ export default () => {
     return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
   }
 
-  // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64)
+  // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64).
+  // For number input: truncate directly. For string / unknown: first coerce via __to_num
+  // (handles both decimal and hex string parse), then truncate.
   ctx.core.emit['BigInt'] = (x) => {
-    if (valTypeOf(x) === VAL.BIGINT) return emit(x)
-    return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
+    const vt = valTypeOf(x)
+    if (vt === VAL.BIGINT) return emit(x)
+    if (vt === VAL.NUMBER)
+      return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
+    inc('__to_num')
+    return typed(['f64.reinterpret_i64',
+      ['i64.trunc_sat_f64_s', ['call', '$__to_num', asF64(emit(x))]]], 'f64')
   }
 
   // BigInt.asIntN(bits, bigint) — truncate to signed N-bit

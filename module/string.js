@@ -30,24 +30,34 @@ export default () => {
     if (!ctx.memory.shared) {
       // Own memory: place in static data segment (no runtime allocation)
       if (!ctx.runtime.data) ctx.runtime.data = ''
+      const prior = ctx.runtime.dataDedup.get(str)
+      if (prior !== undefined)
+        return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['i32.const', prior + 4]], 'f64')
       while (ctx.runtime.data.length % 4 !== 0) ctx.runtime.data += '\0'
       const offset = ctx.runtime.data.length
       ctx.runtime.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
       for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(str.charCodeAt(i))
+      ctx.runtime.dataDedup.set(str, offset)
       return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['i32.const', offset + 4]], 'f64')
     }
-    // Shared memory: heap-allocate (data segment would collide across modules)
-    const t = `${T}str${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
-    const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', len + 4]]],
-      ['i32.store', ['local.get', `$${t}`], ['i32.const', len]],
-      ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
-    ]
-    for (let i = 0; i < len; i++)
-      body.push(['i32.store8', ['i32.add', ['local.get', `$${t}`], ['i32.const', i]], ['i32.const', str.charCodeAt(i)]])
-    body.push(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['local.get', `$${t}`]])
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
+    // Shared memory: pack all string literals into one passive data segment with 4-byte
+    // length prefixes. At __start, alloc the whole pool once and memory.init it in a single
+    // call. Each use site resolves to `strBase + compile-time-offset` — O(1) IR nodes per
+    // use, independent of string length AND reused across uses.
+    if (!ctx.runtime.strPool) {
+      ctx.runtime.strPool = ''
+      ctx.scope.globals.set('__strBase', '(global $__strBase (mut i32) (i32.const 0))')
+    }
+    let off = ctx.runtime.strPoolDedup.get(str)
+    if (off === undefined) {
+      // Pack length header then bytes; offset points PAST the length (at the data).
+      ctx.runtime.strPool += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
+      off = ctx.runtime.strPool.length
+      ctx.runtime.strPool += str
+      ctx.runtime.strPoolDedup.set(str, off)
+    }
+    return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0],
+      ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]]], 'f64')
   }
 
   // === WAT: char extraction ===

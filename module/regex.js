@@ -7,8 +7,37 @@
  * @module regex
  */
 
-import { emit, typed, asF64, T } from '../src/compile.js'
+import { emit, typed, asF64, T, UNDEF_NAN } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
+
+// Build IR that constructs a match array: [full, cap1, cap2, ...]
+// strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
+// Captures read from globals $__re_g${i}_start / _end. -1 → undefined.
+const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
+  const N = nGroups + 1
+  inc('__alloc', '__mkptr', '__str_slice')
+  const arr = `${T}mka${ctx.func.uniq++}`
+  ctx.func.locals.set(arr, 'i32')
+  const stmts = [
+    ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', 8 + N * 8]]],
+    ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
+    ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', N]],
+    ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]],
+      ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+        ['local.get', `$${msLocal}`], ['local.get', `$${meLocal}`]]],
+  ]
+  for (let i = 1; i <= nGroups; i++) {
+    stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8 + i * 8]],
+      ['if', ['result', 'f64'],
+        ['i32.lt_s', ['global.get', `$__re_g${i}_start`], ['i32.const', 0]],
+        ['then', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]],
+        ['else', ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+          ['global.get', `$__re_g${i}_start`], ['global.get', `$__re_g${i}_end`]]]]])
+  }
+  stmts.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0],
+    ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]])
+  return ['block', ['result', 'f64'], ...stmts]
+}
 
 // === Parser ===
 
@@ -178,7 +207,17 @@ export const compileRegex = (ast, name = 'regex_match') => {
 
   const rctx = { ignoreCase, dotAll, groups, labelId: 0, code: [], failLabel: null }
   rctx.code.push('(local.set $pos (local.get $start))')
+  // Init capture locals to -1 (unmatched / undefined)
+  for (let i = 1; i <= groups; i++) {
+    rctx.code.push(`(local.set $g${i}_start (i32.const -1))`)
+    rctx.code.push(`(local.set $g${i}_end (i32.const -1))`)
+  }
   compileNode(ast, rctx)
+  // On success, publish captures to module globals (read by .string:match / .regex:exec)
+  for (let i = 1; i <= groups; i++) {
+    rctx.code.push(`(global.set $__re_g${i}_start (local.get $g${i}_start))`)
+    rctx.code.push(`(global.set $__re_g${i}_end (local.get $g${i}_end))`)
+  }
   rctx.code.push('(local.get $pos)')
 
   return `(func $${name} (param $str i32) (param $len i32) (param $start i32) (result i32)
@@ -611,7 +650,7 @@ const patternMinLen = node => {
 
 export default () => {
 
-  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map() }
+  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
 
   // SSO → heap normalizer: returns data offset (i32) for direct byte access
   ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
@@ -638,6 +677,14 @@ export default () => {
     const id = ctx.runtime.regex.count++
     const ast = parseRegex(pattern, flags)
     const funcName = `__regex_${id}`
+    // Reserve mutable globals for capture group start/end (shared across regexes by index)
+    for (let i = 1; i <= (ast.groups || 0); i++) {
+      if (!ctx.scope.globals.has(`__re_g${i}_start`)) {
+        ctx.scope.globals.set(`__re_g${i}_start`, `(global $__re_g${i}_start (mut i32) (i32.const -1))`)
+        ctx.scope.globals.set(`__re_g${i}_end`, `(global $__re_g${i}_end (mut i32) (i32.const -1))`)
+      }
+    }
+    ctx.runtime.regex.groups.set(id, ast.groups || 0)
     ctx.core.stdlib[funcName] = compileRegex(ast, funcName)
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
@@ -694,11 +741,11 @@ export default () => {
         ['else', ['f64.const', 0]]]], 'f64')
   }
 
-  // regex.exec(str) → [match_text] array or 0 (null)
+  // regex.exec(str) → [match_text, cap1, ...] array or 0 (null)
   ctx.core.emit['.regex:exec'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
-    inc('__str_slice', '__wrap1')
+    const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const s = `${T}re${ctx.func.uniq++}`, ms = `${T}rems${ctx.func.uniq++}`, me = `${T}reme${ctx.func.uniq++}`
     ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
@@ -707,10 +754,7 @@ export default () => {
         ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
-        ['else',
-          ['call', '$__wrap1',
-            ['call', '$__str_slice', ['local.get', `$${s}`],
-              ['local.get', `$${ms}`], ['local.get', `$${me}`]]]]]], 'f64')
+        ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
   }
 
   // str.search(/re/) → first match position or -1
@@ -750,7 +794,7 @@ export default () => {
                 ['local.get', `$${idx}`],
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
     }
-    inc('__str_slice', '__wrap1')
+    const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const s = `${T}sm${ctx.func.uniq++}`, ms = `${T}smms${ctx.func.uniq++}`, me = `${T}smme${ctx.func.uniq++}`
     ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
     return typed(['block', ['result', 'f64'],
@@ -759,10 +803,7 @@ export default () => {
         ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
-        ['else',
-          ['call', '$__wrap1',
-            ['call', '$__str_slice', ['local.get', `$${s}`],
-              ['local.get', `$${ms}`], ['local.get', `$${me}`]]]]]], 'f64')
+        ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
   }
 
   // str.replace(/re/, repl) → replaced string

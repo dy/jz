@@ -183,6 +183,7 @@ export function reset(proto, globals) {
     userGlobals: new Set(),
     globalTypes: new Map(),
     globalValTypes: null,
+    globalTypedElem: null,
     consts: null,
   }
 
@@ -223,6 +224,9 @@ export function reset(proto, globals) {
     atom: null,
     regex: null,
     data: null,
+    dataDedup: new Map(),  // str → offset (dedup literal bytes in active data segment)
+    strPool: null,         // shared-memory: accumulated raw bytes of string literals (no length prefix)
+    strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
     _inTry: false,
   }

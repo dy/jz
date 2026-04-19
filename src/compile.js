@@ -21,7 +21,7 @@ import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
   T, VAL, STMT_OPS, valTypeOf, analyzeValTypes, analyzeLocals,
   extractParams, classifyParam, collectParamNames,
-  findFreeVars, analyzeBoxedCaptures,
+  findFreeVars, analyzeBoxedCaptures, typedElemCtor,
 } from './analyze.js'
 // Re-export for backward compatibility (modules import from compile.js)
 export { T, VAL, valTypeOf, extractParams, classifyParam, collectParamNames }
@@ -165,8 +165,33 @@ const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every
 const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
   ? typed(['i32.const', v], 'i32') : typed(['f64.const', v], 'f64')
 
-/** WASM has no f64.rem — implement as a - trunc(a/b) * b */
-const f64rem = (a, b) => typed(['f64.sub', a, ['f64.mul', ['f64.trunc', ['f64.div', a, b]], b]], 'f64')
+/** WASM has no f64.rem — implement as a - trunc(a/b) * b.
+ *  Both `a` and `b` appear twice in the expansion; cache non-pure operands
+ *  in locals so side effects (e.g. assignments) only execute once. */
+const f64rem = (a, b) => {
+  const pa = isPureIR(a), pb = isPureIR(b)
+  if (pa && pb) return typed(['f64.sub', a, ['f64.mul', ['f64.trunc', ['f64.div', a, b]], b]], 'f64')
+  const ta = pa ? null : temp(), tb = pb ? null : temp()
+  const ga = pa ? a : ['local.get', `$${ta}`], gb = pb ? b : ['local.get', `$${tb}`]
+  const pre = []
+  if (!pa) pre.push(['local.set', `$${ta}`, a])
+  if (!pb) pre.push(['local.set', `$${tb}`, b])
+  return typed(['block', ['result', 'f64'], ...pre,
+    ['f64.sub', ga, ['f64.mul', ['f64.trunc', ['f64.div', ga, gb]], gb]]], 'f64')
+}
+
+/** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
+ *  Skips coercion when static type proves the value is already numeric
+ *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT) or when
+ *  __to_num is not available (no string module loaded → no strings possible). */
+function toNumF64(node, v) {
+  if (v.type === 'i32' || isLit(v)) return asF64(v)
+  const vt = keyValType(node)
+  if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
+  if (!ctx.core.stdlib['__to_num']) return asF64(v)
+  inc('__to_num')
+  return typed(['call', '$__to_num', asF64(v)], 'f64')
+}
 
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS). */
 function toBoolFromEmitted(e) {
@@ -221,14 +246,18 @@ export function usesDynProps(vt) {
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
 }
 
-/** Allocate a temp local, returns name without $. Optional tag aids WAT readability. */
+/** Allocate a temp local, returns name without $. Optional tag aids WAT readability.
+ *  Skips names already registered (by analyzeLocals from prepare-generated names)
+ *  to avoid collisions that would silently override the pre-analyzed type. */
 export function temp(tag = '') {
-  const name = `${T}${tag}${ctx.func.uniq++}`
+  let name
+  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
   ctx.func.locals.set(name, 'f64')
   return name
 }
 export function tempI32(tag = '') {
-  const name = `${T}${tag}${ctx.func.uniq++}`
+  let name
+  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
   ctx.func.locals.set(name, 'i32')
   return name
 }
@@ -699,9 +728,12 @@ export default function compile(ast) {
     }
   }
 
-  // Pre-scan module-scope value types so functions can dispatch methods on globals
-  if (ast) {
-    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1) : [ast]
+  // Pre-scan module-scope value types so functions can dispatch methods on globals.
+  // Also scan moduleInits so cross-module imports (e.g. regex literals from util.js)
+  // resolve to the correct static dispatch path.
+  const scanStmts = (root) => {
+    if (!root) return
+    const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
     for (const s of stmts) {
       if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let')) continue
       for (const decl of s.slice(1)) {
@@ -712,9 +744,16 @@ export default function compile(ast) {
           ctx.scope.globalValTypes.set(decl[1], vt)
           if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(decl[1], decl[2])
         }
+        const ctor = typedElemCtor(decl[2])
+        if (ctor) {
+          if (!ctx.scope.globalTypedElem) ctx.scope.globalTypedElem = new Map()
+          ctx.scope.globalTypedElem.set(decl[1], ctor)
+        }
       }
     }
   }
+  scanStmts(ast)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
 
   // Pre-scan property assignments (x.prop = val) → auto-box variables with schemas
   if (ast && ctx.schema.register) {
@@ -768,7 +807,31 @@ export default function compile(ast) {
   // For non-exported internal functions, if all call sites agree on a param's type,
   // propagate that type to ctx.func.valTypes during per-function compilation.
   const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  // Functions used as first-class values (passed to .map, stored, etc.) — their params
+  // can receive any type from invisible call sites, so don't narrowly specialize.
+  const valueUsed = new Set()
   {
+    const scanValueUse = (node) => {
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === '()' && typeof args[0] === 'string' && funcNames.has(args[0])) {
+        // Callee position — not a value use. Recurse into args only.
+        for (let i = 1; i < args.length; i++) scanValueUse(args[i])
+        return
+      }
+      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && funcNames.has(args[0])) {
+        // `fn.prop` — method/property access, not a value use
+        return
+      }
+      // Any bare reference to a funcName counts as value use
+      for (let i = 0; i < args.length; i++) {
+        if (typeof args[i] === 'string' && funcNames.has(args[i])) valueUsed.add(args[i])
+        else scanValueUse(args[i])
+      }
+    }
+    scanValueUse(ast)
+    for (const func of ctx.func.list) if (func.body && !func.raw) scanValueUse(func.body)
+
     const scanCalls = (node, callerValTypes) => {
       if (!Array.isArray(node)) return
       const [op, ...args] = node
@@ -776,7 +839,7 @@ export default function compile(ast) {
       if (op === '()' && typeof args[0] === 'string' && funcNames.has(args[0])) {
         const callee = args[0]
         const func = funcMap.get(callee)
-        if (func && !func.exported) {
+        if (func && !func.exported && !valueUsed.has(callee)) {
           // Extract args (may be comma-grouped)
           const rawArgs = args.slice(1)
           const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
@@ -848,6 +911,7 @@ export default function compile(ast) {
     ctx.func.valTypes = new Map()
     ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
     ctx.types._localProps = null  // reset per function
+    ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
     if (block) {
       analyzeValTypes(body)
       analyzeBoxedCaptures(body)
@@ -922,8 +986,14 @@ export default function compile(ast) {
       ctx.func.valTypes = new Map()
       if (cb.valTypes) for (const [name, vt] of cb.valTypes) ctx.func.valTypes.set(name, vt)
       if (cb.schemaVars) ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
-      if (cb.typedElems) ctx.types.typedElem = new Map(cb.typedElems)
-      else ctx.types.typedElem = prevTypedElems
+      const globalTE = ctx.scope.globalTypedElem
+      if (cb.typedElems) {
+        ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
+      } else if (globalTE) {
+        ctx.types.typedElem = new Map(globalTE)
+      } else {
+        ctx.types.typedElem = prevTypedElems
+      }
       // In closure bodies, boxed captures use the original name as both var and cell local
       ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
       ctx.func.stack = []
@@ -1121,17 +1191,28 @@ export default function compile(ast) {
     }
   }
 
+  // Allocate shared-memory string pool and copy bytes from passive segment — MUST run
+  // before anything else, since all heap-string emissions resolve via $__strBase.
+  const strPoolInit = []
+  if (ctx.runtime.strPool) {
+    const total = ctx.runtime.strPool.length
+    strPoolInit.push(
+      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
+      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
+      ['data.drop', '$__strPool'],  // free segment bytes once copied
+    )
+  }
   // Preallocate typeof result strings into globals (emit['str'] needs __start's fresh locals map).
   const typeofInit = []
   if (ctx.runtime.typeofStrs) {
     for (const s of ctx.runtime.typeofStrs)
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length) {
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
     sec.start.push(startFn, ['start', '$__start'])
   }
 
@@ -1212,17 +1293,22 @@ export default function compile(ast) {
   // Populate globals (after __start — const folding may update declarations)
   sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
 
-  // Data segment (after emit — string literals append to ctx.runtime.data during emit)
-  // Skip for shared memory — data at address 0 would overwrite other modules' data
-  if (ctx.runtime.data && !ctx.memory.shared) {
+  // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
+  // Active segment at address 0 — skipped for shared memory (would collide across modules)
+  const escBytes = (s) => {
     let esc = ''
-    for (let i = 0; i < ctx.runtime.data.length; i++) {
-      const c = ctx.runtime.data.charCodeAt(i)
-      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += ctx.runtime.data[i]
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += s[i]
       else esc += '\\' + c.toString(16).padStart(2, '0')
     }
-    sec.data.push(['data', ['i32.const', 0], '"' + esc + '"'])
+    return esc
   }
+  if (ctx.runtime.data && !ctx.memory.shared)
+    sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
+  // Passive segment for shared-memory string literals (copied via memory.init at runtime)
+  if (ctx.runtime.strPool)
+    sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
 
   // Custom section: embed object schemas for JS-side interop
   if (ctx.schema.list.length)
@@ -1431,7 +1517,8 @@ export const emitter = {
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
       if (keyType === VAL.STRING) return setDyn()
-      if (typeof arr === 'string' && ctx.func.valTypes?.get(arr) === 'typed' && ctx.core.emit['.typed:[]=']) {
+      if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
+          (ctx.func.valTypes?.get(arr) === 'typed' || ctx.scope.globalValTypes?.get(arr) === 'typed')) {
         const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val)
         if (r) return r
       }
@@ -1621,12 +1708,12 @@ export const emitter = {
       return b === undefined
         ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
         : fromI64(['i64.sub', asI64(emit(a)), asI64(emit(b))])
-    if (b === undefined) { const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64') }
+    if (b === undefined) { const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', toNumF64(a, v)], 'f64') }
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) - litVal(vb))
-    if (isLit(vb) && litVal(vb) === 0) return va
+    if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.sub', va, vb], 'i32')
-    return typed(['f64.sub', asF64(va), asF64(vb)], 'f64')
+    return typed(['f64.sub', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   'u+': a => {
     if (valTypeOf(a) === VAL.BIGINT)
@@ -1636,27 +1723,27 @@ export const emitter = {
   },
   'u-': a => {
     if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
-    const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', v], 'f64')
+    const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', toNumF64(a, v)], 'f64')
   },
   '*': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64(['i64.mul', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) return emitNum(litVal(va) * litVal(vb))
-    if (isLit(vb) && litVal(vb) === 1) return va
-    if (isLit(va) && litVal(va) === 1) return vb
+    if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
+    if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
     if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.mul', va, vb], 'i32')
-    return typed(['f64.mul', asF64(va), asF64(vb)], 'f64')
+    return typed(['f64.mul', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '/': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64(['i64.div_s', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) / litVal(vb))
-    if (isLit(vb) && litVal(vb) === 1) return asF64(va)
-    return typed(['f64.div', asF64(va), asF64(vb)], 'f64')
+    if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
+    return typed(['f64.div', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '%': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
@@ -1664,7 +1751,7 @@ export const emitter = {
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) % litVal(vb))
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.rem_s', va, vb], 'i32')
-    return f64rem(asF64(va), asF64(vb))
+    return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
 
   // === Comparisons (always i32 result) ===
@@ -1952,6 +2039,9 @@ export const emitter = {
 
           // In-place spread methods modify target; accumulating methods (concat) return new values
           const inPlace = SPREAD_MUTATORS.has(method)
+          // unshift prepends each arg to the front — iterating forward reverses the
+          // intended order, so walk the spread from end to start.
+          const reverseIter = method === 'unshift'
           const ir = []
           ir.push(['local.set', `$${acc}`, asF64(emit(objArg))])
           if (parsed.normal.length > 0) {
@@ -1963,24 +2053,108 @@ export const emitter = {
           const n = multiCount(spreadExpr)
           ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
-          ir.push(['local.set', `$${idx}`, ['i32.const', 0]])
+          ir.push(['local.set', `$${idx}`,
+            reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
           const loopId = ctx.func.uniq++
-          const loopBody = asF64(methodEmitter(acc, ['[]', arr, idx]))
+          const loopBody = asF64(methodEmitter(inPlace ? objArg : acc, ['[]', arr, idx]))
           ir.push(['block', `$break${loopId}`,
             ['loop', `$continue${loopId}`,
-              ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
+              ['br_if', `$break${loopId}`,
+                reverseIter
+                  ? ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]
+                  : ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]],
               inPlace ? ['drop', loopBody] : ['local.set', `$${acc}`, loopBody],
-              ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', 1]]],
+              ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', reverseIter ? -1 : 1]]],
               ['br', `$continue${loopId}`]]])
 
-          ir.push(['local.get', `$${acc}`])
+          ir.push(inPlace ? asF64(emit(objArg)) : ['local.get', `$${acc}`])
           return typed(['block', ['result', 'f64'], ...ir], 'f64')
         }
 
-        // More complex spreads - build full array and pass to method
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        const arrayIR = buildArrayWithSpreads(combined)
-        return methodEmitter(objArg, arrayIR)
+        // General spread case: iterate args in original order, batch contiguous normal
+        // args into a single call, emit a per-element loop for each spread.
+        //
+        // inPlace methods (push/unshift/add/set): call methodEmitter(objArg, ...) each
+        // time so the source variable's local gets updated (else heap grow/realloc
+        // wouldn't be visible to subsequent uses of the variable). Final value is objArg.
+        //
+        // non-inPlace (concat, etc.): chain via temp acc since return value is the new
+        // collection.
+        const inPlaceG = SPREAD_MUTATORS.has(method)
+        const combinedG = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+        inc('__len')
+
+        if (inPlaceG) {
+          const irG = []
+          let batch = []
+          const flushBatch = () => {
+            if (!batch.length) return
+            irG.push(['drop', asF64(methodEmitter(objArg, ...batch))])
+            batch = []
+          }
+          for (const item of combinedG) {
+            if (Array.isArray(item) && item[0] === '__spread') {
+              flushBatch()
+              const spreadExpr = item[1]
+              const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
+              ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+              const n = multiCount(spreadExpr)
+              irG.push(
+                ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
+                ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+                ['local.set', `$${idxL}`, ['i32.const', 0]])
+              const loopId = ctx.func.uniq++
+              const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
+              irG.push(['block', `$break${loopId}`,
+                ['loop', `$continue${loopId}`,
+                  ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
+                  ['drop', loopBody],
+                  ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
+                  ['br', `$continue${loopId}`]]])
+            } else {
+              batch.push(item)
+            }
+          }
+          flushBatch()
+          irG.push(asF64(emit(objArg)))
+          return typed(['block', ['result', 'f64'], ...irG], 'f64')
+        }
+
+        const accG = `${T}acc${ctx.func.uniq++}`
+        ctx.func.locals.set(accG, 'f64')
+        const irG = [['local.set', `$${accG}`, asF64(emit(objArg))]]
+        let batch = []
+        const flushBatch = () => {
+          if (!batch.length) return
+          irG.push(['local.set', `$${accG}`, asF64(methodEmitter(accG, ...batch))])
+          batch = []
+        }
+        for (const item of combinedG) {
+          if (Array.isArray(item) && item[0] === '__spread') {
+            flushBatch()
+            const spreadExpr = item[1]
+            const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
+            ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+            const n = multiCount(spreadExpr)
+            irG.push(
+              ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
+              ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+              ['local.set', `$${idxL}`, ['i32.const', 0]])
+            const loopId = ctx.func.uniq++
+            const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))
+            irG.push(['block', `$break${loopId}`,
+              ['loop', `$continue${loopId}`,
+                ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${idxL}`], ['local.get', `$${lenL}`]]],
+                ['local.set', `$${accG}`, loopBody],
+                ['local.set', `$${idxL}`, ['i32.add', ['local.get', `$${idxL}`], ['i32.const', 1]]],
+                ['br', `$continue${loopId}`]]])
+          } else {
+            batch.push(item)
+          }
+        }
+        flushBatch()
+        irG.push(['local.get', `$${accG}`])
+        return typed(['block', ['result', 'f64'], ...irG], 'f64')
       }
 
       // Boxed object: delegate method to inner value (slot 0)
@@ -2011,9 +2185,13 @@ export const emitter = {
         return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
       }
 
-      // Unknown type, both string + generic exist → runtime dispatch by ptr type
+      // Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
+      // analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
+      // runtime dispatch resolves whether the operand is actually a string or an array.
+      // Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
+      // emitter which already knows how to handle them.
       const strKey = `.string:${method}`, genKey = `.${method}`
-      if (!vt && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+      if ((!vt || vt === VAL.ARRAY) && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
         const t = `${T}rt${ctx.func.uniq++}`, tt = `${T}rtt${ctx.func.uniq++}`
         ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
         const strEmitter = ctx.core.emit[strKey]

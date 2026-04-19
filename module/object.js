@@ -208,20 +208,39 @@ export default () => {
       ? (ctx.func.valTypes?.get(proto) || ctx.scope.globalValTypes?.get(proto))
       : valTypeOf(proto)
     if (protoType === VAL.ARRAY) {
-      inc('__arr_from')
-      return typed(['call', '$__arr_from', asF64(emit(proto))], 'f64')
+      // Clone array data + link named-prop sidecar so for-in/bracket-name lookups
+      // keep working after Object.create (watr's ctx.local = Object.create(param) pattern).
+      inc('__arr_from', '__dyn_move', '__ptr_offset')
+      const src = `${T}ocs${ctx.func.uniq++}`
+      const dst = `${T}ocd${ctx.func.uniq++}`
+      ctx.func.locals.set(src, 'f64')
+      ctx.func.locals.set(dst, 'f64')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${src}`, asF64(emit(proto))],
+        ['local.set', `$${dst}`, ['call', '$__arr_from', ['local.get', `$${src}`]]],
+        ['call', '$__dyn_move',
+          ['call', '$__ptr_offset', ['local.get', `$${src}`]],
+          ['call', '$__ptr_offset', ['local.get', `$${dst}`]]],
+        ['local.get', `$${dst}`]], 'f64')
     }
     const schema = resolveSchema(proto)
     if (!schema) {
       if (protoType == null) {
         const value = `${T}ocr${ctx.func.uniq++}`
         ctx.func.locals.set(value, 'f64')
-        inc('__arr_from')
+        inc('__arr_from', '__dyn_move', '__ptr_offset')
+        const dst2 = `${T}ocd${ctx.func.uniq++}`
+        ctx.func.locals.set(dst2, 'f64')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${value}`]], ['i32.const', PTR.ARRAY]],
-            ['then', ['call', '$__arr_from', ['local.get', `$${value}`]]],
+            ['then', ['block', ['result', 'f64'],
+              ['local.set', `$${dst2}`, ['call', '$__arr_from', ['local.get', `$${value}`]]],
+              ['call', '$__dyn_move',
+                ['call', '$__ptr_offset', ['local.get', `$${value}`]],
+                ['call', '$__ptr_offset', ['local.get', `$${dst2}`]]],
+              ['local.get', `$${dst2}`]]],
             ['else', ['local.get', `$${value}`]]]] , 'f64')
       }
       err('Object.create requires object with known schema')
@@ -268,6 +287,12 @@ function emitObjectSpread(props) {
       if (s) for (const n of s) addName(n)
     } else if (Array.isArray(p) && p[0] === ':') addName(p[1])
   }
+  // Pragmatic fallback: single spread source with no resolvable schema
+  // (e.g. `{ ...opts }` where opts is a parameter). Emit source directly.
+  // Alias rather than clone — safe for read-only use; mutation would affect source.
+  if (!allNames.length && props.length === 1 && Array.isArray(props[0]) && props[0][0] === '...') {
+    return typed(asF64(emit(props[0][1])), 'f64')
+  }
   if (!allNames.length) err('Object spread: cannot resolve source schema')
 
   const schemaId = ctx.schema.register(allNames)
@@ -282,10 +307,27 @@ function emitObjectSpread(props) {
   const body = [['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]]]
 
   // Process props in order — later props override earlier (JS semantics)
+  const srcF = `${T}ospf${ctx.func.uniq++}`
+  let srcFUsed = false
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
       const sSchema = resolveSchema(p[1])
-      if (!sSchema) err('Object spread: source needs known schema')
+      if (!sSchema) {
+        // Unknown-schema source (e.g. parameter). Override each slot via runtime
+        // __dyn_get_or using existing value as fallback. Requires collection module.
+        if (!ctx.module.modules.collection) err('Object spread: source needs known schema')
+        inc('__dyn_get_or')
+        if (!srcFUsed) { ctx.func.locals.set(srcF, 'f64'); srcFUsed = true }
+        body.push(['local.set', `$${srcF}`, asF64(emit(p[1]))])
+        for (let i = 0; i < schema.length; i++) {
+          const slot = ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]
+          body.push(['f64.store', slot,
+            ['call', '$__dyn_get_or', ['local.get', `$${srcF}`],
+              emit(['str', String(schema[i])]),
+              ['f64.load', slot]]])
+        }
+        continue
+      }
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', asF64(emit(p[1]))]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])

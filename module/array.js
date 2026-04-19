@@ -288,12 +288,25 @@ export default () => {
   // === Index read ===
 
   ctx.core.emit['[]'] = (arr, idx) => {
+    // Hoist non-identifier arr so side-effecting sources (e.g. `foo.shift()[i]`) execute once.
+    // The rest of the handler inlines `emit(arr)` into multiple IR positions, which would
+    // otherwise re-execute the source expression per use at runtime.
+    if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
+      const vtArr = valTypeOf(arr)
+      const h = `${T}ai${ctx.func.uniq++}`
+      ctx.func.locals.set(h, 'f64')
+      if (vtArr) ctx.func.valTypes.set(h, vtArr)
+      const setup = ['local.set', `$${h}`, asF64(emit(arr))]
+      const result = ctx.core.emit['[]'](h, idx)
+      return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
+    }
     const keyType = typeof idx === 'string'
       ? (ctx.func.valTypes?.get(idx) || ctx.scope.globalValTypes?.get(idx))
       : valTypeOf(idx)
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
     // TypedArray: type-aware load
-    if (typeof arr === 'string' && ctx.func.valTypes?.get(arr) === 'typed' && ctx.core.emit['.typed:[]']) {
+    if (typeof arr === 'string' && ctx.core.emit['.typed:[]'] &&
+        (ctx.func.valTypes?.get(arr) === 'typed' || ctx.scope.globalValTypes?.get(arr) === 'typed')) {
       const r = ctx.core.emit['.typed:[]'](arr, idx)
       if (r) return r
     }
@@ -455,6 +468,61 @@ export default () => {
           (i32.shl (i32.sub (local.get $len) (i32.const 1)) (i32.const 3)))
         (call $__set_len (local.get $arr) (i32.sub (local.get $len) (i32.const 1)))
         (local.get $val))))`
+
+  // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array
+  ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
+    const recv = hoistArrayValue(arr)
+    const va = recv.value
+    const vs = asI32(emit(start))
+    const s = tempI32('sps'), cnt = tempI32('spc'), len = tempI32('spl'), off = tempI32('spo'), j = tempI32('spj')
+    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
+    const id = ctx.func.uniq++
+    const body = [
+      recv.setup,
+      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
+      // clamp start to [0, len]
+      ['local.set', `$${s}`, vs],
+      ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
+        ['then',
+          ['local.set', `$${s}`, ['i32.add', ['local.get', `$${s}`], ['local.get', `$${len}`]]],
+          ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
+            ['then', ['local.set', `$${s}`, ['i32.const', 0]]]]]],
+      ['if', ['i32.gt_s', ['local.get', `$${s}`], ['local.get', `$${len}`]],
+        ['then', ['local.set', `$${s}`, ['local.get', `$${len}`]]]],
+      // compute count
+      deleteCount === undefined
+        ? ['local.set', `$${cnt}`, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]
+        : ['block',
+            ['local.set', `$${cnt}`, asI32(emit(deleteCount))],
+            ['if', ['i32.lt_s', ['local.get', `$${cnt}`], ['i32.const', 0]],
+              ['then', ['local.set', `$${cnt}`, ['i32.const', 0]]]],
+            ['if', ['i32.gt_s',
+                ['i32.add', ['local.get', `$${s}`], ['local.get', `$${cnt}`]],
+                ['local.get', `$${len}`]],
+              ['then', ['local.set', `$${cnt}`,
+                ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]]]],
+      // allocate result array of size cnt
+      out.init,
+      // copy removed elements into new array
+      ['memory.copy',
+        ['local.get', `$${out.local}`],
+        ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
+        ['i32.shl', ['local.get', `$${cnt}`], ['i32.const', 3]]],
+      // shift remaining elements left: copy arr[s+cnt..len] → arr[s..]
+      ['memory.copy',
+        ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
+        ['i32.add', ['local.get', `$${off}`], ['i32.shl',
+          ['i32.add', ['local.get', `$${s}`], ['local.get', `$${cnt}`]], ['i32.const', 3]]],
+        ['i32.shl',
+          ['i32.sub', ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]], ['local.get', `$${cnt}`]],
+          ['i32.const', 3]]],
+      // update length
+      ['call', '$__set_len', va, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
+      out.ptr,
+    ]
+    return typed(['block', ['result', 'f64'], ...body], 'f64')
+  }
 
   // .unshift(val) → prepend element, shift existing right
   ctx.core.emit['.unshift'] = arrMethod('__arr_unshift', 1)

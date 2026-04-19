@@ -516,7 +516,8 @@ export default () => {
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
-      const va = asF64(emit(src))
+      const srcL = `${T}tfs${ctx.func.uniq++}`
+      ctx.func.locals.set(srcL, 'f64')
       const len = `${T}tfl${ctx.func.uniq++}`, i = `${T}tfi${ctx.func.uniq++}`, off = `${T}tfo${ctx.func.uniq++}`
       ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(off, 'i32')
       const out = allocPtr({ type: PTR.TYPED, aux: elemType,
@@ -534,8 +535,9 @@ export default () => {
           [(elemType & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s',
             ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
-        ['local.set', `$${len}`, ['call', '$__len', va]],
+        ['local.set', `$${srcL}`, asF64(emit(src))],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${srcL}`]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcL}`]]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,

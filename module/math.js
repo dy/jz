@@ -193,10 +193,14 @@ export default () => {
 
   ctx.core.stdlib['math.log'] = `(func $math.log (param $x f64) (result f64)
     (local $k i32) (local $y f64) (local $s f64) (local $z f64)
+    (if (f64.ne (local.get $x) (local.get $x))
+      (then (return (local.get $x))))
     (if (f64.le (local.get $x) (f64.const 0.0))
       (then (return (f64.const 0.0))))
     (if (f64.eq (local.get $x) (f64.const 1.0))
       (then (return (f64.const 0.0))))
+    (if (f64.eq (local.get $x) (f64.const inf))
+      (then (return (local.get $x))))
     (local.set $k (i32.const 0))
     (local.set $y (local.get $x))
     (block $done_up
