@@ -21,7 +21,7 @@ import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
   T, VAL, STMT_OPS, valTypeOf, analyzeValTypes, analyzeLocals,
   extractParams, classifyParam, collectParamNames,
-  findFreeVars, analyzeBoxedCaptures, typedElemCtor,
+  findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
 } from './analyze.js'
 // Re-export for backward compatibility (modules import from compile.js)
 export { T, VAL, valTypeOf, extractParams, classifyParam, collectParamNames }
@@ -63,11 +63,86 @@ const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = '0x7FF8000100000000'
 export const UNDEF_NAN = '0x7FF8000000000001'
-/** WAT-template-ready sentinel expressions for use in stdlib template strings. */
-export const NULL_WAT = `(f64.reinterpret_i64 (i64.const ${NULL_NAN}))`
-export const UNDEF_WAT = `(f64.reinterpret_i64 (i64.const ${UNDEF_NAN}))`
-const NULL_IR = ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]
+/** WAT-template-ready sentinel expressions for use in stdlib template strings.
+ *  `f64.const nan:0xHEX` is 3 bytes shorter than `f64.reinterpret_i64 (i64.const ...)`. */
+export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
+export const UNDEF_WAT = `(f64.const nan:${UNDEF_NAN})`
+const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
 const nullExpr = () => typed(NULL_IR, 'f64')
+
+const NAN_PREFIX_BITS = 0x7FF8n
+const litI32 = n => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number' ? n[1] : null
+
+/** Pack (type, aux, offset) into the f64 NaN-box bit pattern as a hex string. */
+function packPtrBits(type, aux, offset) {
+  const bits = (NAN_PREFIX_BITS << 48n)
+    | ((BigInt(type) & 0xFn) << 47n)
+    | ((BigInt(aux) & 0x7FFFn) << 32n)
+    | (BigInt(offset >>> 0) & 0xFFFFFFFFn)
+  return '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
+}
+
+/** Build `__mkptr(type, aux, offset)` IR. Folds to `(f64.const nan:0x...)` — 9 bytes
+ *  vs 12 for `f64.reinterpret_i64 (i64.const ...)` — when all args are i32 literals.
+ *  Args may be raw IR nodes or numbers (numbers are wrapped as i32.const). */
+export function mkPtrIR(type, aux, offset) {
+  const tIR = typeof type === 'number' ? ['i32.const', type] : type
+  const aIR = typeof aux === 'number' ? ['i32.const', aux] : aux
+  const oIR = typeof offset === 'number' ? ['i32.const', offset] : offset
+  const tL = litI32(tIR), aL = litI32(aIR), oL = litI32(oIR)
+  if (tL != null && aL != null && oL != null)
+    return typed(['f64.const', 'nan:' + packPtrBits(tL, aL, oL)], 'f64')
+  inc('__mkptr')
+  return typed(['call', '$__mkptr', tIR, aIR, oIR], 'f64')
+}
+
+const _F64_BITS_BUF = new ArrayBuffer(8)
+const _F64_BITS_F = new Float64Array(_F64_BITS_BUF)
+const _F64_BITS_U = new BigUint64Array(_F64_BITS_BUF)
+
+/** Return i64 bit pattern (BigInt) of a pure-literal IR node, or null if non-literal. */
+export function extractF64Bits(node) {
+  if (!Array.isArray(node)) return null
+  if (node[0] === 'f64.const') {
+    if (typeof node[1] === 'number') { _F64_BITS_F[0] = node[1]; return _F64_BITS_U[0] }
+    if (typeof node[1] === 'string' && node[1].startsWith('nan:')) {
+      try { return BigInt(node[1].slice(4)) | 0x7FF0000000000000n } catch { return null }
+    }
+    return null
+  }
+  if (node[0] === 'f64.reinterpret_i64' && Array.isArray(node[1]) && node[1][0] === 'i64.const' && typeof node[1][1] === 'string') {
+    const s = node[1][1]
+    if (s.startsWith('-')) {
+      const abs = s.slice(1)
+      try { return ((1n << 64n) - BigInt(abs)) & 0xFFFFFFFFFFFFFFFFn } catch { return null }
+    }
+    try { return BigInt(s) } catch { return null }
+  }
+  return null
+}
+
+/** Append `slots` (BigInt i64 each) to ctx.runtime.data 8-byte aligned, return raw byte offset of first slot.
+ *  Slots that look like NaN-boxed pointers are recorded in `ctx.runtime.staticPtrSlots` so the
+ *  prefix-strip pass can patch their embedded offsets. */
+export function appendStaticSlots(slots, headerBytes = 0) {
+  if (!ctx.runtime.data) ctx.runtime.data = ''
+  while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+  const off = ctx.runtime.data.length
+  const u8 = new Uint8Array(headerBytes + slots.length * 8)
+  const dv = new DataView(u8.buffer)
+  for (let i = 0; i < slots.length; i++) dv.setBigUint64(headerBytes + i * 8, slots[i], true)
+  let chunk = ''
+  for (let i = 0; i < u8.length; i++) chunk += String.fromCharCode(u8[i])
+  ctx.runtime.data += chunk
+  if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
+  for (let i = 0; i < slots.length; i++) {
+    const bits = slots[i]
+    if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+      ctx.runtime.staticPtrSlots.push(off + i * 8)
+    }
+  }
+  return off
+}
 
 const WASM_OPS = new Set(['block','loop','if','then','else','br','br_if','call','call_indirect','return','return_call','throw','try_table','catch','nop','drop','unreachable','select','result','mut','param','func','module','memory','table','elem','data','type','import','export','local','global','ref'])
 const SPREAD_MUTATORS = new Set(['push', 'add', 'set', 'unshift'])
@@ -193,13 +268,20 @@ function toNumF64(node, v) {
   return typed(['call', '$__to_num', asF64(v)], 'f64')
 }
 
-/** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS). */
-function toBoolFromEmitted(e) {
+/** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
+ *  Peepholes: i32 → as-is; `f64.convert_i32_*(x)` → x (i32 conversion never NaN);
+ *  nested `__is_truthy(x)` → x (already 0/1). */
+export function truthyIR(e) {
   if (e.type === 'i32') return e
-  // Truthy: handles regular numbers AND NaN-boxed pointers (strings, arrays, objects)
+  if (Array.isArray(e)) {
+    if (e[0] === 'f64.convert_i32_s' || e[0] === 'f64.convert_i32_u')
+      return typed(['i32.ne', e[1], ['i32.const', 0]], 'i32')
+    if (e[0] === 'call' && e[1] === '$__is_truthy') return typed(e, 'i32')
+  }
   inc('__is_truthy')
   return typed(['call', '$__is_truthy', asF64(e)], 'i32')
 }
+const toBoolFromEmitted = truthyIR
 
 const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
@@ -246,6 +328,15 @@ export function usesDynProps(vt) {
     || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP || vt === VAL.REGEX
 }
 
+/** Does this object literal / property write need a `__dyn_props` shadow update?
+ *  `target` is the var name receiving the literal (or null when escaping). */
+export function needsDynShadow(target) {
+  if (!ctx.module.modules.collection) return false
+  const dyn = ctx.types?._dynKeyVars
+  if (target == null) return ctx.types?._anyDynKey ?? true
+  return dyn ? dyn.has(target) : true
+}
+
 /** Allocate a temp local, returns name without $. Optional tag aids WAT readability.
  *  Skips names already registered (by analyzeLocals from prepare-generated names)
  *  to avoid collisions that would silently override the pre-analyzed type. */
@@ -261,6 +352,18 @@ export function tempI32(tag = '') {
   ctx.func.locals.set(name, 'i32')
   return name
 }
+export function tempI64(tag = '') {
+  let name
+  do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  ctx.func.locals.set(name, 'i64')
+  return name
+}
+
+/** Slot address: `base + idx*8` IR. Uses `local.get` directly when idx=0. */
+export function slotAddr(baseLocal, idx) {
+  const base = ['local.get', `$${baseLocal}`]
+  return idx === 0 ? base : ['i32.add', base, ['i32.const', idx * 8]]
+}
 
 /** Build a NaN-boxed pointer from a header allocation.
  *  type/aux/stride may be JS numbers; len/cap may be JS numbers or IR.
@@ -270,12 +373,12 @@ export function tempI32(tag = '') {
  *    ptr   — f64 IR expression: __mkptr(type, aux, local).
  *  Caller emits init, fills via local, then uses ptr (or local for further work). */
 export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
-  inc('__alloc_hdr', '__mkptr')
+  inc('__alloc_hdr')
   const local = tempI32(tag)
   const irOf = v => typeof v === 'number' ? ['i32.const', v] : v
   const init = ['local.set', `$${local}`,
     ['call', '$__alloc_hdr', irOf(len), irOf(cap == null ? len : cap), ['i32.const', stride]]]
-  const ptr = typed(['call', '$__mkptr', ['i32.const', type], irOf(aux), ['local.get', `$${local}`]], 'f64')
+  const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }
 }
 
@@ -513,7 +616,7 @@ function emitDecl(...inits) {
           ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
           ...schema.slice(1).map((_, j) =>
             ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], ['f64.const', 0]]),
-          ['local.set', `$${name}`, ['call', '$__mkptr', ['i32.const', 6], ['i32.const', schemaId], ['local.get', `$${bt}`]]])
+          ['local.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
       }
     }
   }
@@ -755,6 +858,9 @@ export default function compile(ast) {
   scanStmts(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
 
+  // Whole-program scan: which vars need __dyn_props shadow (gates __dyn_set emission)
+  analyzeDynKeys(ast)
+
   // Pre-scan property assignments (x.prop = val) → auto-box variables with schemas
   if (ast && ctx.schema.register) {
     const propMap = new Map() // varName → Set<propName>
@@ -975,9 +1081,10 @@ export default function compile(ast) {
   })
 
   const closureFuncs = []
-  const compilePendingClosures = (startIndex = 0) => {
+  let compiledBodyCount = 0
+  const compilePendingClosures = () => {
     const bodies = ctx.closure.bodies || []
-    for (let bodyIndex = startIndex; bodyIndex < bodies.length; bodyIndex++) {
+    for (let bodyIndex = compiledBodyCount; bodyIndex < bodies.length; bodyIndex++) {
       const cb = bodies[bodyIndex]
       const prevSchemaVars = ctx.schema.vars
       const prevTypedElems = ctx.types.typedElem
@@ -1081,6 +1188,7 @@ export default function compile(ast) {
       ctx.schema.vars = prevSchemaVars
       ctx.types.typedElem = prevTypedElems
     }
+    compiledBodyCount = bodies.length
   }
   compilePendingClosures()
 
@@ -1160,7 +1268,7 @@ export default function compile(ast) {
         ...schema.slice(1).map((_, i) =>
           ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
         // Create boxed OBJECT pointer and store back
-        ['global.set', `$${name}`, ['call', '$__mkptr', ['i32.const', 6], ['i32.const', schemaId], ['local.get', `$${bt}`]]])
+        ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
     }
   }
 
@@ -1187,7 +1295,7 @@ export default function compile(ast) {
             emit(['str', String(keys[k])])])
       schemaInit.push(
         ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
-          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${sarr}`]]])
+          mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
     }
   }
 
@@ -1217,10 +1325,61 @@ export default function compile(ast) {
   }
 
   // Late closures (compiled during __start emit) — prepend before earlier closures
-  const compiledClosureCount = closureFuncs.length
-  compilePendingClosures(compiledClosureCount)
-  if (closureFuncs.length > compiledClosureCount)
-    sec.funcs.unshift(...closureFuncs.slice(compiledClosureCount))
+  const beforeLen = closureFuncs.length
+  compilePendingClosures()
+  if (closureFuncs.length > beforeLen)
+    sec.funcs.unshift(...closureFuncs.slice(beforeLen))
+
+  // Function-body dedup: alpha-rename locals/params, hash, redirect dupes through elem section.
+  // Runs AFTER all closures (including late ones compiled during __start) are collected so that
+  // structural duplicates across batches collapse into a single emitted body.
+  if (closureFuncs.length > 1) {
+    const canonicalize = (fn) => {
+      const localNames = new Set()
+      const collect = (node) => {
+        if (!Array.isArray(node)) return
+        if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
+          localNames.add(node[1])
+        for (const c of node) collect(c)
+      }
+      collect(fn)
+      let counter = 0
+      const renameMap = new Map()
+      const walk = node => {
+        if (typeof node === 'string') {
+          if (!localNames.has(node)) return node
+          let r = renameMap.get(node)
+          if (!r) { r = `$_c${counter++}`; renameMap.set(node, r) }
+          return r
+        }
+        if (!Array.isArray(node)) return node
+        return node.map(walk)
+      }
+      return JSON.stringify(['func', ...fn.slice(2).map(walk)])
+    }
+    const hashToName = new Map()
+    const redirect = new Map()
+    const keepSet = new Set()
+    for (const fn of closureFuncs) {
+      const key = canonicalize(fn)
+      const name = fn[1].slice(1)
+      const canonical = hashToName.get(key)
+      if (canonical) redirect.set(name, canonical)
+      else { hashToName.set(key, name); keepSet.add(name) }
+    }
+    if (redirect.size) {
+      // Rewrite closure table to point all dupes at canonical names
+      ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
+      // Filter sec.funcs in place: keep non-closures + canonical closures
+      const kept = sec.funcs.filter(fn => {
+        if (!Array.isArray(fn) || fn[0] !== 'func') return true
+        const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+        return !name || !redirect.has(name)
+      })
+      sec.funcs.length = 0
+      sec.funcs.push(...kept)
+    }
+  }
 
   // Finalize function table + element section (table may grow during __start emit)
   if (ctx.closure.table?.length) {
@@ -1257,24 +1416,127 @@ export default function compile(ast) {
   // R: Strip static string table if __static_str not used (saves 57 bytes)
   if (ctx.runtime.staticDataLen && !ctx.core.includes.has('__static_str')) {
     const prefix = ctx.runtime.staticDataLen
-    ctx.runtime.data = ctx.runtime.data?.slice(prefix) || ''
-    // User strings computed offsets with static prefix present — shift down by prefix
+    // User strings/objects/arrays computed offsets with static prefix present — shift down.
+    // Patches both the runtime-call form `__mkptr(...)` and the constant-folded form
+    // `f64.reinterpret_i64 (i64.const ...)`. Ptr types pointing at heap (offset >= prefix)
+    // are addresses into ctx.runtime.data — shift them. ATOM/SSO have no offset to shift.
+    const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
+    // Patch embedded pointer slots inside static data (STRING refs in static arrays/objects).
+    // Slot offsets are absolute pre-strip; rewrite each i64, then slice off the prefix.
+    const data = ctx.runtime.data || ''
+    const buf = new Uint8Array(data.length)
+    for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
+    const dv = new DataView(buf.buffer)
+    if (ctx.runtime.staticPtrSlots) {
+      for (const slotOff of ctx.runtime.staticPtrSlots) {
+        if (slotOff < prefix) continue  // slot itself stripped
+        const bits = dv.getBigUint64(slotOff, true)
+        if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX_BITS) continue
+        const ty = Number((bits >> 47n) & 0xFn)
+        if (!SHIFTABLE.has(ty)) continue
+        const off = Number(bits & 0xFFFFFFFFn)
+        if (off < prefix) continue
+        const hi = bits & ~0xFFFFFFFFn
+        dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
+      }
+    }
+    let s = ''
+    for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
+    ctx.runtime.data = s
+    if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
+      .filter(o => o >= prefix).map(o => o - prefix)
     const shift = (node) => {
       if (!Array.isArray(node)) return
       for (let i = 0; i < node.length; i++) {
         const child = node[i]
-        if (Array.isArray(child)) {
-          if (child[0] === 'call' && child[1] === '$__mkptr' &&
-            Array.isArray(child[2]) && child[2][1] === PTR.STRING &&
-            Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
-            typeof child[4][1] === 'number' && child[4][1] >= prefix) {
-            child[4][1] -= prefix
+        if (!Array.isArray(child)) continue
+        if (child[0] === 'call' && child[1] === '$__mkptr' &&
+          Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
+          Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
+          typeof child[4][1] === 'number' && child[4][1] >= prefix) {
+          child[4][1] -= prefix
+        } else if (child[0] === 'f64.const' &&
+          typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
+          const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
+          if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+            const ty = Number((bits >> 47n) & 0xFn)
+            if (SHIFTABLE.has(ty)) {
+              const off = Number(bits & 0xFFFFFFFFn)
+              if (off >= prefix) {
+                const hi = bits & ~0xFFFFFFFFn
+                const newBits = hi | BigInt(off - prefix)
+                child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
+              }
+            }
           }
-          shift(child)
         }
+        shift(child)
       }
     }
     for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
+  }
+
+  // Fold (load/store (i32.add base (i32.const N)) ...) → (load/store offset=N base ...)
+  // Saves ~2 bytes per site (removes i32.add + i32.const, folds N into memarg offset).
+  const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
+  const foldMemargOffsets = (node) => {
+    if (!Array.isArray(node)) return
+    for (const c of node) foldMemargOffsets(c)
+    if (typeof node[0] !== 'string' || !MEMOP.test(node[0])) return
+    if (typeof node[1] === 'string' && (node[1].startsWith('offset=') || node[1].startsWith('align='))) return
+    const addr = node[1]
+    if (!Array.isArray(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return
+    let base, offset
+    const a = addr[1], b = addr[2]
+    if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
+    else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
+    if (base == null) return
+    node[1] = `offset=${offset}`
+    node.splice(2, 0, base)
+  }
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) foldMemargOffsets(s)
+
+  // Hoist frequently-repeated f64 constants (e.g. UNDEF_NAN, literal 0/1, hot STRING/SSO ptrs)
+  // into mutable globals. `f64.const` is 9 bytes; `global.get` with idx<128 is 2 bytes — saves
+  // 7 B per reuse. Mutable so watr's propagate doesn't fold global.get back to f64.const.
+  // Pool entries are sorted by usage descending, so hottest get lowest indices (1-byte LEB128).
+  // Break-even: N ≥ 2 uses (pool cost: 11 B global decl + 2N bytes vs 9N original).
+  {
+    const MIN_USES = 2
+    const counts = new Map()
+    const countConsts = (node) => {
+      if (!Array.isArray(node)) return
+      if (node[0] === 'f64.const' && (typeof node[1] === 'number' || typeof node[1] === 'string')) {
+        const k = typeof node[1] === 'number' ? `n:${node[1]}` : `s:${node[1]}`
+        counts.set(k, (counts.get(k) || 0) + 1)
+      }
+      for (const c of node) countConsts(c)
+    }
+    for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) countConsts(s)
+    const hoist = new Map()
+    const sorted = [...counts].filter(([, n]) => n >= MIN_USES).sort((a, b) => b[1] - a[1])
+    let gId = 0
+    for (const [k] of sorted) {
+      const name = `__fc${gId++}`
+      const lit = k.slice(2)
+      ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const ${lit}))`)
+      hoist.set(k, name)
+    }
+    if (hoist.size) {
+      const rewrite = (node) => {
+        if (!Array.isArray(node)) return
+        for (let i = 0; i < node.length; i++) {
+          const c = node[i]
+          if (Array.isArray(c) && c[0] === 'f64.const') {
+            const k = typeof c[1] === 'number' ? `n:${c[1]}` : `s:${c[1]}`
+            const g = hoist.get(k)
+            if (g) { node[i] = ['global.get', `$${g}`]; continue }
+          }
+          rewrite(c)
+        }
+      }
+      for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) rewrite(s)
+    }
   }
 
   // Adjust heap base past data section (data at offset 0 may exceed 1024 bytes)
@@ -1332,11 +1594,13 @@ export default function compile(ast) {
     else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
 
-  // Assemble: named slots → flat section list
+  // Assemble: named slots → flat section list.
+  // Stdlib funcs come BEFORE user funcs so hot stdlib calls get 1-byte LEB128 indices
+  // (<128). Top stdlib targets account for ~14K calls in watr self-host — saves ~14 KB.
   const sections = [
     ...sec.extStdlib, ...sec.imports, ...sec.types, ...sec.memory, ...sec.data,
-    ...sec.tags, ...sec.table, ...sec.globals, ...sec.funcs, ...sec.elem,
-    ...sec.start, ...sec.stdlib, ...sec.customs,
+    ...sec.tags, ...sec.table, ...sec.globals, ...sec.stdlib, ...sec.funcs,
+    ...sec.elem, ...sec.start, ...sec.customs,
   ]
   return ['module', ...sections]
 }
@@ -1516,6 +1780,21 @@ export const emitter = {
             ['then', ['call', '$__dyn_set', asF64(emit(arr)), ['local.get', `$${keyTmp}`], valueExpr]],
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
+      // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
+      const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1] : null
+      if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
+        const slot = ctx.schema.find(arr, litKey, true)
+        if (slot >= 0) {
+          inc('__ptr_offset')
+          const t = temp()
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${t}`, valueExpr],
+            ['f64.store',
+              ['i32.add', ['call', '$__ptr_offset', asF64(emit(arr))], ['i32.const', slot * 8]],
+              ['local.get', `$${t}`]],
+            ['local.get', `$${t}`]], 'f64')
+        }
+      }
       if (keyType === VAL.STRING) return setDyn()
       if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
           (ctx.func.valTypes?.get(arr) === 'typed' || ctx.scope.globalValTypes?.get(arr) === 'typed')) {
@@ -1570,12 +1849,16 @@ export const emitter = {
         const idx = ctx.schema.find(obj, prop, true)
         if (idx >= 0) {
           const va = emit(obj), vv = asF64(emit(val)), t = temp()
-          inc('__dyn_set')
-          return typed(['block', ['result', 'f64'],
+          const shadow = needsDynShadow(obj)
+          if (shadow) inc('__dyn_set')
+          const stmts = [
             ['local.set', `$${t}`, vv],
             ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], ['local.get', `$${t}`]],
-            ['drop', ['call', '$__dyn_set', asF64(va), asF64(emit(['str', prop])), ['local.get', `$${t}`]]],
-            ['local.get', `$${t}`]], 'f64')
+          ]
+          if (shadow)
+            stmts.push(['drop', ['call', '$__dyn_set', asF64(va), asF64(emit(['str', prop])), ['local.get', `$${t}`]]])
+          stmts.push(['local.get', `$${t}`])
+          return typed(['block', ['result', 'f64'], ...stmts], 'f64')
         }
       }
       if (typeof obj === 'string') {
@@ -2359,7 +2642,7 @@ export function emit(node, expect) {
       if (!ctx.core.stdlib[trampolineName]) {
         const argLen = `${T}argc`
         const argBase = `${T}argp`
-        const forwardArg = i => `(if (result f64) (i32.gt_s (local.get $${argLen}) (i32.const ${i})) (then (f64.load (i32.add (local.get $${argBase}) (i32.const ${i * 8})))) (else (f64.reinterpret_i64 (i64.const ${NULL_NAN}))))`
+        const forwardArg = i => `(if (result f64) (i32.gt_s (local.get $${argLen}) (i32.const ${i})) (then (f64.load (i32.add (local.get $${argBase}) (i32.const ${i * 8})))) (else ${NULL_WAT}))`
         const fwd = func?.sig.params.map((_, i) => forwardArg(i)).join(' ') || ''
         if ((func?.sig.results.length || 1) > 1) {
           const n = func.sig.results.length
@@ -2378,7 +2661,7 @@ export function emit(node, expect) {
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
       if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }
-      return typed(['call', '$__mkptr', ['i32.const', 10], ['i32.const', idx], ['i32.const', 0]], 'f64')
+      return mkPtrIR(PTR.CLOSURE, idx, 0)
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision
     if (node.includes('.') && ctx.core.emit[node]) return ctx.core.emit[node]()

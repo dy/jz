@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, VAL, T, tempI32, allocPtr } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
@@ -17,7 +17,7 @@ export default () => {
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
   ctx.core.emit['{}'] = (...rawProps) => {
     if (rawProps.length === 0)
-      return typed(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', 0], ['call', '$__alloc', ['i32.const', 8]]], 'f64')
+      return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc', ['i32.const', 8]])
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
     const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
@@ -40,22 +40,40 @@ export default () => {
       if (merged) schemaId = ctx.schema.vars.get(target)
     }
     const schema = ctx.schema.list[schemaId]
-    const t = `${T}obj${ctx.func.uniq++}`
-    const ptr = `${T}objp${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
-    ctx.func.locals.set(ptr, 'f64')
+    const t = tempI32('obj')
+    const ptr = temp('objp')
+
+    // R: Static data segment for objects of pure-literal property values (own-memory only).
+    // Even with shadow needed, we can skip alloc + N stores; just feed literal values to __dyn_set.
+    const shadow = needsDynShadow(target)
+    if (values.length >= 2 && !ctx.memory.shared) {
+      const emitted = values.map(emit)
+      const slots = emitted.map(extractF64Bits)
+      if (slots.every(b => b !== null)) {
+        const off = appendStaticSlots(slots)
+        const staticPtr = mkPtrIR(PTR.OBJECT, schemaId, off)
+        if (!shadow) return staticPtr
+        inc('__dyn_set')
+        const body = [['local.set', `$${ptr}`, staticPtr]]
+        for (let i = 0; i < schema.length; i++)
+          body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`],
+            emit(['str', String(schema[i])]), asF64(emitted[i])]])
+        body.push(['local.get', `$${ptr}`])
+        return typed(['block', ['result', 'f64'], ...body], 'f64')
+      }
+    }
 
     const body = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
     ]
     for (let i = 0; i < values.length; i++)
-      body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], asF64(emit(values[i]))])
-    body.push(['local.set', `$${ptr}`, ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
-    if (ctx.module.modules.collection) {
+      body.push(['f64.store', slotAddr(t, i), asF64(emit(values[i]))])
+    body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
+    if (shadow) {
       inc('__dyn_set')
       for (let i = 0; i < schema.length; i++)
         body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-          ['f64.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]]]])
+          ['f64.load', slotAddr(t, i)]]])
     }
     body.push(['local.get', `$${ptr}`])
 
@@ -75,15 +93,12 @@ export default () => {
     if (!schema) err('Object.values requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}ov${ctx.func.uniq++}`, base = tempI32('vb')
-    ctx.func.locals.set(t, 'f64')
+    const t = temp('ov'), base = tempI32('vb')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
     for (let i = 0; i < n; i++)
-      body.push(['f64.store',
-        ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
-        ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.const', i * 8]]]])
+      body.push(['f64.store', slotAddr(out.local, i), ['f64.load', slotAddr(base, i)]])
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -93,19 +108,16 @@ export default () => {
     if (!schema) err('Object.entries requires object with known schema')
     const va = asF64(emit(obj))
     const n = schema.length
-    const t = `${T}oe${ctx.func.uniq++}`, pair = tempI32('op'), base = tempI32('eb')
-    ctx.func.locals.set(t, 'f64')
+    const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
     for (let i = 0; i < n; i++) {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
-        ['f64.store', ['local.get', `$${pair}`], emit(['str', schema[i]])],
-        ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
-          ['f64.load', ['i32.add', ['local.get', `$${base}`], ['i32.const', i * 8]]]],
-        ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]],
-          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${pair}`]]])
+        ['f64.store', slotAddr(pair, 0), emit(['str', schema[i]])],
+        ['f64.store', slotAddr(pair, 1), ['f64.load', slotAddr(base, i)]],
+        ['f64.store', slotAddr(out.local, i), mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])])
     }
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -124,8 +136,7 @@ export default () => {
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
         ctx.schema.vars.set(target, schemaId)
-        const t = `${T}bx${ctx.func.uniq++}`, s = `${T}bs${ctx.func.uniq++}`
-        ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
+        const t = tempI32('bx'), s = temp('bs')
         const body = [
           ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
           ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
@@ -138,21 +149,18 @@ export default () => {
           for (let si = 0; si < sSchema.length; si++) {
             const ti = boxedSchema.indexOf(sSchema[si])
             if (ti < 0) continue
-            body.push(['f64.store',
-              ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
-              ['f64.load', ['i32.add', ['local.get', `$${sBase}`], ['i32.const', si * 8]]]])
+            body.push(['f64.store', slotAddr(t, ti), ['f64.load', slotAddr(sBase, si)]])
           }
         }
         body.push(['local.set', `$${target}`,
-          ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
+          mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
         body.push(['local.get', `$${target}`])
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
     }
     const tSchema = resolveSchema(target)
     if (!tSchema) err('Object.assign: target needs known schema')
-    const t = `${T}at${ctx.func.uniq++}`, s = `${T}as${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(s, 'f64')
+    const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
@@ -164,9 +172,7 @@ export default () => {
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
-        body.push(['f64.store',
-          ['i32.add', ['local.get', `$${tBase}`], ['i32.const', ti * 8]],
-          ['f64.load', ['i32.add', ['local.get', `$${sBase2}`], ['i32.const', si * 8]]]])
+        body.push(['f64.store', slotAddr(tBase, ti), ['f64.load', slotAddr(sBase2, si)]])
       }
     }
     body.push(['local.get', `$${t}`])
@@ -178,10 +184,8 @@ export default () => {
     inc('__hash_new', '__hash_set')
     inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
-    const t = `${T}fe${ctx.func.uniq++}`, ptr = `${T}fp${ctx.func.uniq++}`, len = `${T}fl${ctx.func.uniq++}`
-    const i = `${T}fi${ctx.func.uniq++}`, pair = `${T}fv${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(len, 'i32')
-    ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(pair, 'i32')
+    const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
+    const i = tempI32('fi'), pair = tempI32('fv')
     const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
@@ -211,10 +215,8 @@ export default () => {
       // Clone array data + link named-prop sidecar so for-in/bracket-name lookups
       // keep working after Object.create (watr's ctx.local = Object.create(param) pattern).
       inc('__arr_from', '__dyn_move', '__ptr_offset')
-      const src = `${T}ocs${ctx.func.uniq++}`
-      const dst = `${T}ocd${ctx.func.uniq++}`
-      ctx.func.locals.set(src, 'f64')
-      ctx.func.locals.set(dst, 'f64')
+      const src = temp('ocs')
+      const dst = temp('ocd')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${src}`, asF64(emit(proto))],
         ['local.set', `$${dst}`, ['call', '$__arr_from', ['local.get', `$${src}`]]],
@@ -226,11 +228,9 @@ export default () => {
     const schema = resolveSchema(proto)
     if (!schema) {
       if (protoType == null) {
-        const value = `${T}ocr${ctx.func.uniq++}`
-        ctx.func.locals.set(value, 'f64')
+        const value = temp('ocr')
         inc('__arr_from', '__dyn_move', '__ptr_offset')
-        const dst2 = `${T}ocd${ctx.func.uniq++}`
-        ctx.func.locals.set(dst2, 'f64')
+        const dst2 = temp('ocd')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
@@ -247,8 +247,7 @@ export default () => {
     }
     const n = schema.length
     const schemaId = ctx.schema.register(schema)
-    const t = `${T}oc${ctx.func.uniq++}`, s = `${T}os${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
+    const t = tempI32('oc'), s = temp('os')
     const srcBase = tempI32('cb')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
@@ -257,9 +256,8 @@ export default () => {
     ]
     // Copy all properties from proto
     for (let i = 0; i < n; i++)
-      body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]],
-        ['f64.load', ['i32.add', ['local.get', `$${srcBase}`], ['i32.const', i * 8]]]])
-    body.push(['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]])
+      body.push(['f64.store', slotAddr(t, i), ['f64.load', slotAddr(srcBase, i)]])
+    body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 }
@@ -297,18 +295,14 @@ function emitObjectSpread(props) {
 
   const schemaId = ctx.schema.register(allNames)
   const schema = ctx.schema.list[schemaId]
-  const t = `${T}obj${ctx.func.uniq++}`
-  const ptr = `${T}objp${ctx.func.uniq++}`
-  const src = `${T}osp${ctx.func.uniq++}`
-  ctx.func.locals.set(t, 'i32')
-  ctx.func.locals.set(ptr, 'f64')
-  ctx.func.locals.set(src, 'i32')
+  const t = tempI32('obj')
+  const ptr = temp('objp')
+  const src = tempI32('osp')
 
   const body = [['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]]]
 
   // Process props in order — later props override earlier (JS semantics)
-  const srcF = `${T}ospf${ctx.func.uniq++}`
-  let srcFUsed = false
+  let srcF
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
       const sSchema = resolveSchema(p[1])
@@ -317,10 +311,10 @@ function emitObjectSpread(props) {
         // __dyn_get_or using existing value as fallback. Requires collection module.
         if (!ctx.module.modules.collection) err('Object spread: source needs known schema')
         inc('__dyn_get_or')
-        if (!srcFUsed) { ctx.func.locals.set(srcF, 'f64'); srcFUsed = true }
+        srcF ??= temp('ospf')
         body.push(['local.set', `$${srcF}`, asF64(emit(p[1]))])
         for (let i = 0; i < schema.length; i++) {
-          const slot = ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]
+          const slot = slotAddr(t, i)
           body.push(['f64.store', slot,
             ['call', '$__dyn_get_or', ['local.get', `$${srcF}`],
               emit(['str', String(schema[i])]),
@@ -332,22 +326,21 @@ function emitObjectSpread(props) {
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])
         if (ti < 0) continue
-        body.push(['f64.store',
-          ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]],
-          ['f64.load', ['i32.add', ['local.get', `$${src}`], ['i32.const', si * 8]]]])
+        body.push(['f64.store', slotAddr(t, ti), ['f64.load', slotAddr(src, si)]])
       }
     } else if (Array.isArray(p) && p[0] === ':') {
       const ti = schema.indexOf(p[1])
-      if (ti >= 0) body.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', ti * 8]], asF64(emit(p[2]))])
+      if (ti >= 0) body.push(['f64.store', slotAddr(t, ti), asF64(emit(p[2]))])
     }
   }
 
-  body.push(['local.set', `$${ptr}`, ['call', '$__mkptr', ['i32.const', PTR.OBJECT], ['i32.const', schemaId], ['local.get', `$${t}`]]])
-  if (ctx.module.modules.collection) {
+  body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
+  const spreadTarget = ctx.schema.targetStack.at(-1)
+  if (needsDynShadow(spreadTarget)) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)
       body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-        ['f64.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]]]])
+        ['f64.load', slotAddr(t, i)]]])
   }
   body.push(['local.get', `$${ptr}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -358,7 +351,7 @@ function emitStringArray(names) {
   const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'sa' })
   const body = [out.init]
   for (let i = 0; i < n; i++)
-    body.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', i * 8]], emit(['str', names[i]])])
+    body.push(['f64.store', slotAddr(out.local, i), emit(['str', names[i]])])
   body.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...body], 'f64')
 }

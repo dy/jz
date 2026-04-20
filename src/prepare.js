@@ -88,7 +88,7 @@ const OP_MODULES = {
   '{': ['core', 'object', 'string', 'collection'],
   '//': ['core', 'string', 'regex'],
 }
-
+// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
 const BUILTIN_MODULES = {
   'ArrayBuffer': ['core', 'typedarray'],
   'DataView': ['core', 'typedarray'],
@@ -117,6 +117,7 @@ const cloneNode = (node) => {
   return copy
 }
 
+// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
 const STATIC_METHOD_MODULES = dict({
   'console': dict({ 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] }),
   'Object': dict({ 'fromEntries': ['collection', 'string'], 'keys': ['string'], 'entries': ['string'] }),
@@ -142,6 +143,7 @@ const GENERIC_METHOD_MODULES = dict({
   'toExponential': ['core', 'string', 'number'],
 })
 
+// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
 const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
 
 function prep(node) {
@@ -179,6 +181,7 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
+// FIXME: can we jzify some of these?
 const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not supported', 'yield': '`yield` not supported',
   'this': '`this` not supported: use explicit parameter',
   'super': '`super` not supported: no class inheritance',
@@ -187,6 +190,7 @@ const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not suppo
 }
 
 // Global namespaces for scope resolution (value = scope alias used in ctx.core.emit[])
+// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
 export const GLOBALS = {
   Math: 'math',
   Number: 'Number',
@@ -376,6 +380,7 @@ const handlers = {
   },
 
   // Prohibited ops
+  // FIXME: these are supposed to be handled by jzify, but I guess .jz cannot have them either
   'async': () => err('async/await not supported: WASM is synchronous'),
   'await': () => err('async/await not supported: WASM is synchronous'),
   'class': () => err('class not supported: use object literals'),
@@ -1079,6 +1084,7 @@ function collectReturns(node, out) {
 
 const isLit = n => Array.isArray(n) && n[0] == null
 
+// FIXME: is this supposed to be in subscript, not here?
 const LENIENT_ENDERS = new Set([')', ']', '"', "'", '`', '$', '}', ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'])
 const COMMENT_ONLY_LINE = /^\s*(?:\/\/.*)?$/
 const BANG_LINE = /^\s*!/
@@ -1127,6 +1133,7 @@ function lastCodeChar(line) {
   return last
 }
 
+// FIXME: this too?
 export function patchLenientASI(source) {
   const eol = source.includes('\r\n') ? '\r\n' : '\n'
   const lines = source

@@ -82,7 +82,7 @@ export default () => {
   // Default dynamic-property helpers are harmless stubs. The collection module
   // overrides them with the real sidecar-property implementation.
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
+    (f64.const nan:${UNDEF_NAN}))`
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
     (local.get $fallback))`
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
@@ -334,7 +334,7 @@ export default () => {
     (local $t i32) (local $off i32)
     ;; Plain numbers are not NaN-box pointers; .length should be undefined.
     (if (result f64) (f64.eq (local.get $v) (local.get $v))
-      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $t (call $__ptr_type (local.get $v)))
         (local.set $off (call $__ptr_offset (local.get $v)))
@@ -344,7 +344,7 @@ export default () => {
             (then
               (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
                 (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-                (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))
+                (else (f64.const nan:${UNDEF_NAN}))))
             (else (if (result f64)
               (i32.or
                 (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
@@ -353,8 +353,8 @@ export default () => {
               (then
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
                   (then (f64.convert_i32_s (call $__len (local.get $v))))
-                  (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))
-              (else (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))))))))))`
+                  (else (f64.const nan:${UNDEF_NAN}))))
+              (else (f64.const nan:${UNDEF_NAN}))))))))))`
 
   // === Property dispatch (.length, .prop) ===
 
@@ -419,7 +419,7 @@ export default () => {
     return typed(['if', ['result', 'f64'],
       notNullish(['local.tee', `$${t}`, va]),
       ['then', access],
-      ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
+      ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
   }
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
@@ -440,7 +440,7 @@ export default () => {
       ['if', ['result', 'f64'],
         notNullish(['local.get', `$${t}`]),
         ['then', asF64(ctx.core.emit['[]'](t, idx))],
-        ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]]], 'f64')
+        ['else', ['f64.const', `nan:${NULL_NAN}`]]]], 'f64')
   }
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
@@ -453,7 +453,7 @@ export default () => {
     return typed(['if', ['result', 'f64'],
       notNullish(['local.tee', `$${t}`, va]),
       ['then', asF64(callResult)],
-      ['else', ['f64.reinterpret_i64', ['i64.const', NULL_NAN]]]], 'f64')
+      ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
   }
 
   // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object

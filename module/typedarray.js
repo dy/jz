@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, UNDEF_NAN, allocPtr } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, VAL, UNDEF_NAN, allocPtr, mkPtrIR, temp, tempI32 } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -254,14 +254,10 @@ export default () => {
       // and tags the TYPED ptr with aux=elemType|8. Reads/writes alias the parent,
       // .buffer reconstructs the root BUFFER, .byteOffset = dataOff - parentOff.
       if (offsetExpr != null && lenExpr2 != null) {
-        const src = `${T}tvs${ctx.func.uniq++}`
-        const parentOff = `${T}tvp${ctx.func.uniq++}`
-        const byteLen = `${T}tvb${ctx.func.uniq++}`
-        const dst = `${T}tvd${ctx.func.uniq++}`
-        ctx.func.locals.set(src, 'f64')
-        ctx.func.locals.set(parentOff, 'i32')
-        ctx.func.locals.set(byteLen, 'i32')
-        ctx.func.locals.set(dst, 'i32')
+        const src = temp('tvs')
+        const parentOff = tempI32('tvp')
+        const byteLen = tempI32('tvb')
+        const dst = tempI32('tvd')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['local.set', `$${parentOff}`, ['call', '$__ptr_offset', ['local.get', `$${src}`]]],
@@ -274,7 +270,7 @@ export default () => {
           ['i32.store',
             ['i32.add', ['local.get', `$${dst}`], ['i32.const', 8]],
             ['local.get', `$${parentOff}`]],
-          ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', elemType | 8], ['local.get', `$${dst}`]]], 'f64')
+          mkPtrIR(PTR.TYPED, elemType | 8, ['local.get', `$${dst}`])], 'f64')
       }
       // Single arg array-like source: copy elements instead of treating the pointer as a length.
       if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
@@ -283,17 +279,12 @@ export default () => {
       // TYPED retagged at the same offset — the byteLen header is shared with the parent.
       // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
-        return typed(['call', '$__mkptr',
-          ['i32.const', PTR.TYPED],
-          ['i32.const', elemType],
-          ['call', '$__ptr_offset', asF64(emit(lenExpr))]], 'f64')
+        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', asF64(emit(lenExpr))])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
-        const src = `${T}ts${ctx.func.uniq++}`
-        const len = `${T}tl${ctx.func.uniq++}`
-        ctx.func.locals.set(src, 'f64')
-        ctx.func.locals.set(len, 'i32')
+        const src = temp('ts')
+        const len = tempI32('tl')
         const shift = SHIFT[elemType]
         const numBytes = ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]]
         const numAlloc = allocPtr({ type: PTR.TYPED, aux: elemType, len: numBytes, stride: 1, tag: 'ta' })
@@ -310,15 +301,12 @@ export default () => {
             ['else', ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]],
               ['then', ctx.core.emit[`${name}.from`](src)],
-              ['else', ['call', '$__mkptr',
-                ['i32.const', PTR.TYPED],
-                ['i32.const', elemType],
-                ['call', '$__ptr_offset', ['local.get', `$${src}`]]]]]]]], 'f64')
+              ['else', mkPtrIR(PTR.TYPED, elemType,
+                ['call', '$__ptr_offset', ['local.get', `$${src}`]])]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
-      const lenL = `${T}tan${ctx.func.uniq++}`
-      ctx.func.locals.set(lenL, 'i32')
+      const lenL = tempI32('tan')
       const out = allocPtr({ type: PTR.TYPED, aux: elemType,
         len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
       return typed(['block', ['result', 'f64'],
@@ -346,8 +334,7 @@ export default () => {
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
     const va = asF64(emit(bufExpr))
-    return typed(['call', '$__mkptr', ['i32.const', PTR.TYPED], ['i32.const', 7],
-      ['call', '$__ptr_offset', va]], 'f64')
+    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', va])
   }
 
   // .buffer — always aliased (zero-copy). BUFFER/DataView: passthrough.
@@ -364,8 +351,7 @@ export default () => {
           const parentOff = isView
             ? ['i32.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', 8]]]
             : ['call', '$__ptr_offset', asF64(emit(obj))]
-          return typed(['call', '$__mkptr',
-            ['i32.const', PTR.BUFFER], ['i32.const', 0], parentOff], 'f64')
+          return mkPtrIR(PTR.BUFFER, 0, parentOff)
         }
       }
     }
@@ -403,8 +389,7 @@ export default () => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor?.endsWith('.view')) {
-        const t = `${T}bo${ctx.func.uniq++}`
-        ctx.func.locals.set(t, 'i32')
+        const t = tempI32('bo')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, ['call', '$__ptr_offset', asF64(emit(obj))]],
           ['f64.convert_i32_s',
@@ -442,14 +427,10 @@ export default () => {
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
   // Only dispatches statically when obj is a tracked ArrayBuffer/DataView variable.
   ctx.core.emit['.buf:slice'] = (obj, beginExpr, endExpr) => {
-    const src = `${T}bss${ctx.func.uniq++}`
-    const beg = `${T}bsb${ctx.func.uniq++}`
-    const end = `${T}bse${ctx.func.uniq++}`
-    const bytes = `${T}bsn${ctx.func.uniq++}`
-    ctx.func.locals.set(src, 'f64')
-    ctx.func.locals.set(beg, 'i32')
-    ctx.func.locals.set(end, 'i32')
-    ctx.func.locals.set(bytes, 'i32')
+    const src = temp('bss')
+    const beg = tempI32('bsb')
+    const end = tempI32('bse')
+    const bytes = tempI32('bsn')
     const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
     const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
     const endWat = endExpr == null
@@ -516,10 +497,8 @@ export default () => {
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
-      const srcL = `${T}tfs${ctx.func.uniq++}`
-      ctx.func.locals.set(srcL, 'f64')
-      const len = `${T}tfl${ctx.func.uniq++}`, i = `${T}tfi${ctx.func.uniq++}`, off = `${T}tfo${ctx.func.uniq++}`
-      ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(off, 'i32')
+      const srcL = temp('tfs')
+      const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
       const out = allocPtr({ type: PTR.TYPED, aux: elemType,
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
@@ -584,7 +563,7 @@ export default () => {
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
-      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (then (f64.const nan:${UNDEF_NAN}))
       (else
         (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
           (then
@@ -661,8 +640,7 @@ export default () => {
     // Scalar fallback: proper typed-array map (preserves element type)
     if (elemType != null) {
       const va = emit(arr), vf = emit(fn)
-      const len = `${T}tml${ctx.func.uniq++}`, ptr = `${T}tmp${ctx.func.uniq++}`, i = `${T}tmi${ctx.func.uniq++}`
-      ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(ptr, 'i32'); ctx.func.locals.set(i, 'i32')
+      const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
       const dst = allocPtr({ type: PTR.TYPED, aux: elemType,
         len: ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]], stride: 1, tag: 'tmo' })

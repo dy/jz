@@ -47,6 +47,7 @@ export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 
 /** Stdlib call-dependency graph: fn → fns it calls internally.
  *  resolveIncludes() expands transitively before WASM assembly. */
+// FIXME: it should belong to individual modules
 export const STDLIB_DEPS = {
   __set_has: ['__ext_has'],
   __set_delete: [],
@@ -159,6 +160,7 @@ export function resolveIncludes() {
 
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals) {
+  // FIXME: feels like so many duplicates per group
   ctx.core = {
     emit: derive(proto),
     stdlib: {},
@@ -198,6 +200,7 @@ export function reset(proto, globals) {
     uniq: 0,
   }
 
+  // FIXME: why is localProps lowdashed?
   ctx.types = {
     typedElem: null,
     _localProps: null,
@@ -228,6 +231,7 @@ export function reset(proto, globals) {
     strPool: null,         // shared-memory: accumulated raw bytes of string literals (no length prefix)
     strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
+    // FIXME: why lodash
     _inTry: false,
   }
 

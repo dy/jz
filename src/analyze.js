@@ -359,6 +359,50 @@ function findMutations(node, names, mutated) {
 }
 
 /**
+ * Pre-scan AST for variables that need a `__dyn_props` shadow sidecar.
+ *
+ * The shadow exists so `obj[runtimeKey]` can read a value via `__dyn_get`,
+ * and `obj.prop = v` keeps the sidecar in sync. Most object literals are only
+ * accessed via `.prop` or `obj['lit']`, both of which resolve through the
+ * schema directly and bypass the shadow. Allocating + populating the sidecar
+ * for those literals is pure waste.
+ *
+ * Populates:
+ *  - ctx.types._dynKeyVars: Set<string> — names accessed via runtime key
+ *  - ctx.types._anyDynKey: boolean — any dynamic key access exists in program
+ *    (used for escaping literals where no target var is known)
+ */
+export function analyzeDynKeys(...roots) {
+  const dynVars = new Set()
+  let anyDyn = false
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+
+  function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) {
+        anyDyn = true
+        if (typeof obj === 'string') dynVars.add(obj)
+      }
+    }
+    // Runtime for-in (compile-time unroll didn't fire) → walks via shadow
+    if (op === 'for-in') {
+      anyDyn = true
+      if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    for (const a of args) walk(a)
+  }
+  for (const r of roots) walk(r)
+  if (ctx.func.list) for (const f of ctx.func.list) if (f.body) walk(f.body)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walk(mi)
+
+  ctx.types._dynKeyVars = dynVars
+  ctx.types._anyDynKey = anyDyn
+}
+
+/**
  * Pre-scan function body for captured variables that are mutated.
  * Marks mutably-captured vars in ctx.func.boxed for cell-based capture.
  */

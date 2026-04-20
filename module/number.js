@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { emit, typed, asF64, asI32, asI64, T, NULL_NAN, UNDEF_NAN, valTypeOf, VAL } from '../src/compile.js'
+import { emit, typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, valTypeOf, VAL, temp, tempI32, tempI64 } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 export default () => {
@@ -268,13 +268,13 @@ export default () => {
 
   const emitIsNaN = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
   }
 
   const emitIsFinite = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['i32.and',
       ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
@@ -287,7 +287,7 @@ export default () => {
   ctx.core.emit['isNaN'] = (x) => {
     inc('__to_num')
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['f64.ne',
       ['local.tee', `$${t}`, ['call', '$__to_num', v]],
       ['local.get', `$${t}`]], 'i32')
@@ -295,7 +295,7 @@ export default () => {
   ctx.core.emit['isFinite'] = (x) => {
     inc('__to_num')
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['i32.and',
       ['f64.eq', ['local.tee', `$${t}`, ['call', '$__to_num', v]], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
@@ -303,7 +303,7 @@ export default () => {
 
   ctx.core.emit['Number.isInteger'] = (x) => {
     const v = asF64(emit(x))
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['i32.and',
       ['i32.and',
         ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
@@ -523,8 +523,7 @@ export default () => {
 
   ctx.core.emit['.number:toPrecision'] = (n, p) => {
     inc('__ftoa', '__toExp')
-    const val = `${T}pv${ctx.func.uniq++}`, t = `${T}tp${ctx.func.uniq++}`, exp = `${T}te${ctx.func.uniq++}`, pr = `${T}pp${ctx.func.uniq++}`
-    ctx.func.locals.set(val, 'f64'); ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(exp, 'i32'); ctx.func.locals.set(pr, 'i32')
+    const val = temp('pv'), t = temp('tp'), exp = tempI32('te'), pr = tempI32('pp')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${val}`, asF64(emit(n))],
       ['local.set', `$${pr}`, asI32(emit(p))],
@@ -584,7 +583,7 @@ export default () => {
     const vbits = asI32(emit(bits)), vval = asI64(emit(val))
     // (val << (64 - bits)) >> (64 - bits)  — arithmetic shift for sign extension
     const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
-    const t = `${T}bi${ctx.func.uniq++}`; ctx.func.locals.set(t, 'i64')
+    const t = tempI64('bi')
     return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],
       ['local.set', `$${t}`, shift],
       ['i64.shr_s', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')

@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, allocPtr } from '../src/compile.js'
+import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -58,13 +58,13 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
 function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue) {
   const rt = wantValue ? 'f64' : 'i32'
   const onEmpty = wantValue
-    ? `(return (f64.reinterpret_i64 (i64.const ${NULL_NAN})))`
+    ? `(return (f64.const nan:${NULL_NAN}))`
     : '(return (i32.const 0))'
   const onFound = wantValue
     ? '(return (f64.load (i32.add (local.get $slot) (i32.const 16))))'
     : '(return (i32.const 1))'
   const notFound = wantValue
-    ? `(f64.reinterpret_i64 (i64.const ${NULL_NAN}))`
+    ? `(f64.const nan:${NULL_NAN})`
     : '(i32.const 0)'
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
@@ -188,7 +188,7 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
   return `(func $${name} (param $coll f64) (param $key f64) (result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType}))
-      (then (return (f64.reinterpret_i64 (i64.const ${missing})))))
+      (then (return (f64.const nan:${missing}))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -196,14 +196,14 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
       (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
-        (then (return (f64.reinterpret_i64 (i64.const ${missing})))))
+        (then (return (f64.const nan:${missing}))))
       (if ${eqExpr}
         (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
       (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
       (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
       (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
       (br $probe)))
-    (f64.reinterpret_i64 (i64.const ${missing})))`
+    (f64.const nan:${missing}))`
 }
 
 
@@ -307,12 +307,12 @@ export default () => {
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (local $props f64) (local $objKey f64)
     (if (result f64) (f64.eq (global.get $__dyn_props) (f64.const 0))
-      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $objKey (call $__to_str (f64.convert_i32_s (call $__ptr_offset (local.get $obj)))))
         (local.set $props (call $__hash_get_local (global.get $__dyn_props) (local.get $objKey)))
         (if (result f64) (call $__is_nullish (local.get $props))
-          (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+          (then (f64.const nan:${UNDEF_NAN}))
           (else (call $__hash_get_local (local.get $props) (local.get $key)))))))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
@@ -332,7 +332,7 @@ export default () => {
       (else
         (if (result f64) (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
           (then (call $__hash_get_local (local.get $obj) (local.get $key)))
-          (else (f64.reinterpret_i64 (i64.const ${NULL_NAN})))))))`
+          (else (f64.const nan:${NULL_NAN}))))))`
 
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $objKey f64)
@@ -384,12 +384,9 @@ export default () => {
 
     const keyTmp = temp()
     const objTmp = temp()
-    const idxTmp = `${T}in_idx${ctx.func.uniq++}`
-    const typeTmp = `${T}in_type${ctx.func.uniq++}`
-    const outTmp = `${T}in_out${ctx.func.uniq++}`
-    ctx.func.locals.set(idxTmp, 'i32')
-    ctx.func.locals.set(typeTmp, 'i32')
-    ctx.func.locals.set(outTmp, 'i32')
+    const idxTmp = tempI32('in_idx')
+    const typeTmp = tempI32('in_type')
+    const outTmp = tempI32('in_out')
 
     const keyVal = ['local.get', `$${keyTmp}`]
     const objVal = ['local.get', `$${objTmp}`]
@@ -460,10 +457,8 @@ export default () => {
 
   // for-in: iterate HASH entries, binding key string to loop variable
   ctx.core.emit['for-in'] = (varName, src, body) => {
-    const off = `${T}ho${ctx.func.uniq++}`, cap = `${T}hc${ctx.func.uniq++}`
-    const i = `${T}hi${ctx.func.uniq++}`, slot = `${T}hs${ctx.func.uniq++}`
-    ctx.func.locals.set(off, 'i32'); ctx.func.locals.set(cap, 'i32')
-    ctx.func.locals.set(i, 'i32'); ctx.func.locals.set(slot, 'i32')
+    const off = tempI32('ho'), cap = tempI32('hc')
+    const i = tempI32('hi'), slot = tempI32('hs')
     if (!ctx.func.locals.has(varName)) ctx.func.locals.set(varName, 'f64')
     const id = ctx.func.uniq++
     const va = asF64(emit(src))

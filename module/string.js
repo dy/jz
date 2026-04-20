@@ -10,7 +10,7 @@
  * @module string
  */
 
-import { emit, typed, asF64, asI32, T, UNDEF_NAN } from '../src/compile.js'
+import { emit, typed, asF64, asI32, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -24,21 +24,20 @@ export default () => {
     if (str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', str.length], ['i32.const', packed]], 'f64')
+      return mkPtrIR(PTR.SSO, str.length, packed)
     }
     const len = str.length
     if (!ctx.memory.shared) {
       // Own memory: place in static data segment (no runtime allocation)
       if (!ctx.runtime.data) ctx.runtime.data = ''
       const prior = ctx.runtime.dataDedup.get(str)
-      if (prior !== undefined)
-        return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['i32.const', prior + 4]], 'f64')
+      if (prior !== undefined) return mkPtrIR(PTR.STRING, 0, prior + 4)
       while (ctx.runtime.data.length % 4 !== 0) ctx.runtime.data += '\0'
       const offset = ctx.runtime.data.length
       ctx.runtime.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
       for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(str.charCodeAt(i))
       ctx.runtime.dataDedup.set(str, offset)
-      return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['i32.const', offset + 4]], 'f64')
+      return mkPtrIR(PTR.STRING, 0, offset + 4)
     }
     // Shared memory: pack all string literals into one passive data segment with 4-byte
     // length prefixes. At __start, alloc the whole pool once and memory.init it in a single
@@ -56,8 +55,7 @@ export default () => {
       ctx.runtime.strPool += str
       ctx.runtime.strPoolDedup.set(str, off)
     }
-    return typed(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0],
-      ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]]], 'f64')
+    return mkPtrIR(PTR.STRING, 0, ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]])
   }
 
   // === WAT: char extraction ===
@@ -80,7 +78,7 @@ export default () => {
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
-      (then (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))
+      (then (f64.const nan:${UNDEF_NAN}))
       (else
         (call $__mkptr
           (i32.const ${PTR.SSO})
@@ -488,7 +486,7 @@ export default () => {
   ctx.core.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')
     if (end != null) return typed(['call', '$__str_slice', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_slice', ['local.get', `$${t}`], asI32(emit(start)),
@@ -510,7 +508,7 @@ export default () => {
   ctx.core.emit['.substring'] = (str, start, end) => {
     inc('__str_substring')
     if (end != null) return typed(['call', '$__str_substring', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
-    const t = `${T}t${ctx.func.uniq++}`; ctx.func.locals.set(t, 'f64')
+    const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['local.get', `$${t}`], asI32(emit(start)),
@@ -555,26 +553,23 @@ export default () => {
 
   ctx.core.emit['.padStart'] = (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asF64(emit(pad))
-      : typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
+    const vpad = pad != null ? asF64(emit(pad)) : mkPtrIR(PTR.SSO, 1, 32)
     return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
   }
 
   ctx.core.emit['.padEnd'] = (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asF64(emit(pad))
-      : typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['i32.const', 32]], 'f64')
+    const vpad = pad != null ? asF64(emit(pad)) : mkPtrIR(PTR.SSO, 1, 32)
     return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
   }
 
   // .charAt(i) → 1-char string from char code at index i
   ctx.core.emit['.charAt'] = (str, idx) => {
-    const t = `${T}ch${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
+    const t = tempI32('ch')
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]],
-      ['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], ['local.get', `$${t}`]]], 'f64')
+      mkPtrIR(PTR.SSO, 1, ['local.get', `$${t}`])], 'f64')
   }
 
   // .charCodeAt(i) → integer char code
@@ -583,9 +578,7 @@ export default () => {
   }
 
   // String.fromCharCode(code) → 1-char SSO string
-  ctx.core.emit['String.fromCharCode'] = (code) => {
-    return typed(['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1], asI32(emit(code))], 'f64')
-  }
+  ctx.core.emit['String.fromCharCode'] = (code) => mkPtrIR(PTR.SSO, 1, asI32(emit(code)))
 
   // String.fromCodePoint(cp) → UTF-8 encoded string
   ctx.core.stdlib['__fromCodePoint'] = `(func $__fromCodePoint (param $cp i32) (result f64)
@@ -621,8 +614,7 @@ export default () => {
 
   // .at(i) → charAt with negative index support
   ctx.core.emit['.at'] = (str, idx) => {
-    const t = `${T}at${ctx.func.uniq++}`, s = `${T}as${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32'); ctx.func.locals.set(s, 'f64')
+    const t = tempI32('at'), s = temp('as')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${t}`, asI32(emit(idx))],
@@ -630,8 +622,7 @@ export default () => {
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
           ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]],
-      ['call', '$__mkptr', ['i32.const', PTR.SSO], ['i32.const', 1],
-        ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]]]], 'f64')
+      mkPtrIR(PTR.SSO, 1, ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]])], 'f64')
   }
 
   // .search(str) → indexOf (same as indexOf for string args)
@@ -644,8 +635,7 @@ export default () => {
   // For string args, returns single-element array with the matched substring
   ctx.core.emit['.match'] = (str, search) => {
     inc('__str_indexof', '__str_slice', '__wrap1')
-    const s = `${T}ms${ctx.func.uniq++}`, q = `${T}mq${ctx.func.uniq++}`, idx = `${T}mi${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(q, 'f64'); ctx.func.locals.set(idx, 'i32')
+    const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
     // indexOf, then if >= 0, create 1-element array with the match slice
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],

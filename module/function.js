@@ -10,7 +10,7 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32, T } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32 } from '../src/compile.js'
 import { ctx, PTR, inc } from '../src/ctx.js'
 
 
@@ -67,11 +67,10 @@ export default () => {
     // At call site: allocate env, store captured values, return NaN-boxed pointer
     if (captures.length === 0) {
       // No captures — just a function reference
-      return typed(['call', '$__mkptr', ['i32.const', PTR.CLOSURE], ['i32.const', tableIdx], ['i32.const', 0]], 'f64')
+      return mkPtrIR(PTR.CLOSURE, tableIdx, 0)
     }
 
-    const t = `${T}env${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'i32')
+    const t = tempI32('env')
 
     const block = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', captures.length * 8]]],
@@ -83,7 +82,7 @@ export default () => {
         : asF64(emit(captures[i]))
       block.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], v])
     }
-    block.push(['call', '$__mkptr', ['i32.const', PTR.CLOSURE], ['i32.const', tableIdx], ['local.get', `$${t}`]])
+    block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['local.get', `$${t}`]))
 
     return typed(['block', ['result', 'f64'], ...block], 'f64')
   }
@@ -94,8 +93,7 @@ export default () => {
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
    */
   ctx.closure.call = (closureExpr, args, prebuiltArray) => {
-    const t = `${T}clos${ctx.func.uniq++}`
-    ctx.func.locals.set(t, 'f64')
+    const t = temp('clos')
 
     let argsPtr, setup = []
     if (prebuiltArray) {
@@ -104,8 +102,7 @@ export default () => {
     } else {
       // Pack all args into a heap array (uniform calling convention)
       const emittedArgs = args.map(a => asF64(a?.type ? a : emit(a)))
-      const arrT = `${T}ca${ctx.func.uniq++}`
-      ctx.func.locals.set(arrT, 'i32')
+      const arrT = tempI32('ca')
       const n = emittedArgs.length
       setup = [
         ['local.set', `$${arrT}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
@@ -115,7 +112,7 @@ export default () => {
       ]
       for (let i = 0; i < n; i++)
         setup.push(['f64.store', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]], emittedArgs[i]])
-      argsPtr = typed(['call', '$__mkptr', ['i32.const', 1], ['i32.const', 0], ['local.get', `$${arrT}`]], 'f64')
+      argsPtr = mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${arrT}`])
     }
 
     return typed(['block', ['result', 'f64'],

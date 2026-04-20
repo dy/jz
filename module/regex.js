@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { emit, typed, asF64, T, UNDEF_NAN } from '../src/compile.js'
+import { emit, typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
@@ -16,8 +16,7 @@ import { ctx, err, inc, PTR } from '../src/ctx.js'
 const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
   const N = nGroups + 1
   inc('__alloc', '__mkptr', '__str_slice')
-  const arr = `${T}mka${ctx.func.uniq++}`
-  ctx.func.locals.set(arr, 'i32')
+  const arr = tempI32('mka')
   const stmts = [
     ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', 8 + N * 8]]],
     ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
@@ -30,12 +29,11 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
     stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8 + i * 8]],
       ['if', ['result', 'f64'],
         ['i32.lt_s', ['global.get', `$__re_g${i}_start`], ['i32.const', 0]],
-        ['then', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]],
+        ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
         ['else', ['call', '$__str_slice', ['local.get', `$${strLocal}`],
           ['global.get', `$__re_g${i}_start`], ['global.get', `$__re_g${i}_end`]]]]])
   }
-  stmts.push(['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0],
-    ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]])
+  stmts.push(mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]))
   return ['block', ['result', 'f64'], ...stmts]
 }
 
@@ -729,8 +727,7 @@ export default () => {
   ctx.core.emit['.regex:test'] = (obj, str) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.test requires a known regex')
-    const s = `${T}rt${ctx.func.uniq++}`, mstart = `${T}rms${ctx.func.uniq++}`, mend = `${T}rme${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(mstart, 'i32'); ctx.func.locals.set(mend, 'i32')
+    const s = temp('rt'), mstart = tempI32('rms'), mend = tempI32('rme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
@@ -746,8 +743,7 @@ export default () => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
-    const s = `${T}re${ctx.func.uniq++}`, ms = `${T}rems${ctx.func.uniq++}`, me = `${T}reme${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
+    const s = temp('re'), ms = tempI32('rems'), me = tempI32('reme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -765,8 +761,7 @@ export default () => {
       inc('__str_indexof')
       return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
     }
-    const s = `${T}ss${ctx.func.uniq++}`, ms = `${T}ssms${ctx.func.uniq++}`, me = `${T}ssme${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
+    const s = temp('ss'), ms = tempI32('ssms'), me = tempI32('ssme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -780,8 +775,7 @@ export default () => {
     if (id == null) {
       // Fall back to string match
       inc('__str_indexof', '__str_slice', '__wrap1')
-      const s = `${T}ms${ctx.func.uniq++}`, q = `${T}mq${ctx.func.uniq++}`, idx = `${T}mi${ctx.func.uniq++}`
-      ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(q, 'f64'); ctx.func.locals.set(idx, 'i32')
+      const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${q}`, asF64(emit(search))],
@@ -795,8 +789,7 @@ export default () => {
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
-    const s = `${T}sm${ctx.func.uniq++}`, ms = `${T}smms${ctx.func.uniq++}`, me = `${T}smme${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
+    const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
@@ -815,8 +808,7 @@ export default () => {
       return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat')
-    const s = `${T}sr${ctx.func.uniq++}`, r = `${T}srr${ctx.func.uniq++}`, ms = `${T}srms${ctx.func.uniq++}`, me = `${T}srme${ctx.func.uniq++}`
-    ctx.func.locals.set(s, 'f64'); ctx.func.locals.set(r, 'f64'); ctx.func.locals.set(ms, 'i32'); ctx.func.locals.set(me, 'i32')
+    const s = temp('sr'), r = temp('srr'), ms = tempI32('srms'), me = tempI32('srme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${r}`, asF64(emit(repl))],

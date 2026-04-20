@@ -17,7 +17,7 @@
  * @module symbol
  */
 
-import { emit, typed, asF64 } from '../src/compile.js'
+import { emit, typed, asF64, mkPtrIR } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 const RESERVED = 16  // first user atom ID
@@ -42,18 +42,13 @@ export default () => {
   }
 
   // Symbol('name') → unique atom (each call site gets a different ID)
-  ctx.core.emit['Symbol'] = (nameExpr) => {
-    const id = nextAtom()
-    return typed(['call', '$__mkptr', ['i32.const', PTR.ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
-  }
+  ctx.core.emit['Symbol'] = (nameExpr) => mkPtrIR(PTR.ATOM, nextAtom(), 0)
 
   // Symbol.for('name') → interned atom (same name = same ID)
   ctx.core.emit['Symbol.for'] = (nameExpr) => {
     // Name must be a string literal at compile time
     if (!Array.isArray(nameExpr) || nameExpr[0] !== 'str')
       err('Symbol.for requires a string literal')
-    const name = nameExpr[1]
-    const id = internAtom(name)
-    return typed(['call', '$__mkptr', ['i32.const', PTR.ATOM], ['i32.const', id], ['i32.const', 0]], 'f64')
+    return mkPtrIR(PTR.ATOM, internAtom(nameExpr[1]), 0)
   }
 }

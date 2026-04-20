@@ -117,8 +117,10 @@ test('codegen: pure scalar function — minimal binary', () => {
 
 test('codegen: .length hoisted out of for-loop', () => {
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
-  // Inside the loop body, there should be no __len call
-  const loopMatch = wat.match(/\(loop[^]*?\(br(_if)? \$loop/s)
+  // Scope to user function $f, then find its outer for-loop body
+  const fMatch = wat.match(/\(func \$f[\s\S]*?^\s\s\)$/m)
+  ok(fMatch, 'expected $f function in WAT')
+  const loopMatch = fMatch[0].match(/\(loop[^]*?\(br(_if)? \$loop/s)
   if (loopMatch) {
     const lenCalls = (loopMatch[0].match(/__len|__length/g) || []).length
     ok(lenCalls === 0, `expected 0 __len calls inside loop body, got ${lenCalls}`)

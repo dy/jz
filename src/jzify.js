@@ -17,6 +17,7 @@
  * @module jzify
  */
 
+// FIXME: instead of a bunch of conditions id prefer dict pattern like it's in prepare
 /**
  * Transform AST in-place. Returns transformed AST.
  * @param {Array} ast - subscript/jessie parsed AST
