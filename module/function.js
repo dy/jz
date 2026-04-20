@@ -78,12 +78,14 @@ export default (ctx) => {
     const block = [
       ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', captures.length * 8]]],
     ]
-    // Store captured values in env: boxed → cell pointer packed as f64, otherwise value
+    // Store captured values in env: boxed cells as raw i32 in low 4 bytes, others as f64.
+    // Avoids i32↔f64 roundtrip; body loads via i32.load/f64.load using the same branch.
     for (let i = 0; i < captures.length; i++) {
-      const v = ctx.func.boxed?.has(captures[i])
-        ? typed(['f64.convert_i32_u', ['local.get', `$${ctx.func.boxed.get(captures[i])}`]], 'f64')
-        : asF64(emit(captures[i]))
-      block.push(['f64.store', ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]], v])
+      const addr = ['i32.add', ['local.get', `$${t}`], ['i32.const', i * 8]]
+      if (ctx.func.boxed?.has(captures[i]))
+        block.push(['i32.store', addr, ['local.get', `$${ctx.func.boxed.get(captures[i])}`]])
+      else
+        block.push(['f64.store', addr, asF64(emit(captures[i]))])
     }
     block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['local.get', `$${t}`]))
 

@@ -985,9 +985,35 @@ export default function compile(ast) {
   // propagate that type to ctx.func.valTypes during per-function compilation.
   // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
+  // Also propagate schema ID — when all call sites pass objects with the same schema,
+  // bind the callee's param to that schema so `p.x` becomes a direct slot load.
   const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
+  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
   {
-    const scanCalls = (node, callerValTypes, callerLocals) => {
+    // Infer schemaId for an argument expression. Returns null if not inferrable.
+    // Safe sources: object literal with all string keys and no spreads, or a variable
+    // whose schema is already bound in ctx.schema.vars (module-level) or callerSchemas.
+    const inferArgSchema = (expr, callerSchemas) => {
+      if (typeof expr === 'string') {
+        if (callerSchemas && callerSchemas.has(expr)) return callerSchemas.get(expr)
+        const id = ctx.schema.vars.get(expr)
+        return id != null ? id : null
+      }
+      if (Array.isArray(expr) && expr[0] === '{}') {
+        const rawProps = expr.slice(1)
+        const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
+          ? rawProps[0].slice(1) : rawProps
+        const names = []
+        for (const p of props) {
+          if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+          names.push(p[1])
+        }
+        if (!names.length) return null
+        return ctx.schema.register(names)
+      }
+      return null
+    }
+    const scanCalls = (node, callerValTypes, callerLocals, callerSchemas) => {
       if (!Array.isArray(node)) return
       const [op, ...args] = node
       if (op === '=>') return  // don't cross closure boundary
@@ -1001,8 +1027,10 @@ export default function compile(ast) {
             ? rawArgs[0].slice(1) : rawArgs
           if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
           if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
+          if (!paramSchemas.has(callee)) paramSchemas.set(callee, new Map())
           const ptypes = paramValTypes.get(callee)
           const wtypes = paramWasmTypes.get(callee)
+          const stypes = paramSchemas.get(callee)
           for (let k = 0; k < func.sig.params.length; k++) {
             if (k < argList.length) {
               // VAL type
@@ -1022,31 +1050,50 @@ export default function compile(ast) {
                 if (prev === undefined) wtypes.set(k, wt)
                 else if (prev !== wt) wtypes.set(k, null)
               }
+              // Schema
+              if (stypes.get(k) !== null) {
+                const s = inferArgSchema(argList[k], callerSchemas)
+                if (s == null) stypes.set(k, null)
+                else {
+                  const prev = stypes.get(k)
+                  if (prev === undefined) stypes.set(k, s)
+                  else if (prev !== s) stypes.set(k, null)
+                }
+              }
             } else {
               // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
               ptypes.set(k, null)
               wtypes.set(k, null)
+              stypes.set(k, null)
             }
           }
         }
       }
-      for (const a of args) scanCalls(a, callerValTypes, callerLocals)
+      for (const a of args) scanCalls(a, callerValTypes, callerLocals, callerSchemas)
     }
     // Infer arg type using global valTypes + caller-local valTypes
     const inferArgType = (expr, callerValTypes) => {
       if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
       return valTypeOf(expr)
     }
-    // Scan module scope (no locals context — callerLocals is the globalTypes map)
-    scanCalls(ast, ctx.scope.globalValTypes, ctx.scope.globalTypes)
-    // Scan each function body with its own local valTypes + wasm types
-    for (const func of ctx.func.list) {
-      if (!func.body || func.raw) continue
-      // Seed caller local types with params so args that are direct-params propagate type.
-      const callerLocals = analyzeLocals(func.body)
-      for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
-      scanCalls(func.body, collectValTypes(func.body), callerLocals)
+    // Two-pass fixpoint: first pass learns from literals + module vars; second pass
+    // lets callers forward propagated schemas (for chained helpers: f→addXY→{getX,getY}).
+    const runAllScans = () => {
+      scanCalls(ast, ctx.scope.globalValTypes, ctx.scope.globalTypes, null)
+      for (const func of ctx.func.list) {
+        if (!func.body || func.raw) continue
+        const callerLocals = analyzeLocals(func.body)
+        for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
+        // Caller's schema bindings: params inferred so far (for transitive propagation).
+        const cs = paramSchemas.get(func.name)
+        const callerSchemas = cs ? new Map(
+          [...cs].filter(([, v]) => v != null).map(([k, v]) => [func.sig.params[k].name, v])
+        ) : null
+        scanCalls(func.body, collectValTypes(func.body), callerLocals, callerSchemas)
+      }
     }
+    runAllScans()
+    runAllScans()
   }
 
   // Apply i32 specialization: for non-exported/non-value-used funcs with consistent
@@ -1097,6 +1144,18 @@ export default function compile(ast) {
           ctx.func.valTypes.set(sig.params[k].name, vt)
       }
     }
+    // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
+    // are restored after this function's emit so bindings don't leak across functions
+    // that reuse param names (e.g. `o`). Requires all call sites to agree on schemaId.
+    const stypes = paramSchemas.get(name)
+    const schemaVarsPrev = new Map(ctx.schema.vars)
+    if (stypes && !exported) {
+      for (const [k, sid] of stypes) {
+        if (sid == null || k >= sig.params.length) continue
+        const pname = sig.params[k].name
+        if (!ctx.schema.vars.has(pname)) ctx.schema.vars.set(pname, sid)
+      }
+    }
 
     const fn = ['func', `$${name}`]
     if (exported) fn.push(['export', `"${name}"`])
@@ -1144,6 +1203,8 @@ export default function compile(ast) {
       fn.push(...defaultInits, ...boxedParamInits, asF64(ir))
     }
 
+    // Restore schema.vars so param bindings don't leak to next function.
+    ctx.schema.vars = schemaVarsPrev
     return fn
   })
 
@@ -1218,13 +1279,14 @@ export default function compile(ast) {
       // Insert locals (captures + params + declared)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
-      // Load captures from env: boxed → i32.trunc_f64_u (cell pointer), immutable → f64 value
+      // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value
       if (envBase) {
         fn.push(['local.set', `$${envBase}`, ['call', '$__ptr_offset', ['local.get', '$__env']]])
         for (let i = 0; i < cb.captures.length; i++) {
           const name = cb.captures[i]
-          const loadEnv = ['f64.load', ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]]
-          fn.push(['local.set', `$${name}`, ctx.func.boxed.has(name) ? ['i32.trunc_f64_u', loadEnv] : loadEnv])
+          const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
+          fn.push(['local.set', `$${name}`,
+            ctx.func.boxed.has(name) ? ['i32.load', addr] : ['f64.load', addr]])
         }
       }
 

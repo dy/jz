@@ -296,6 +296,12 @@ export default (ctx) => {
     return ['i32.eqz', ['call', '$__is_nullish', v]]
   }
 
+  // Optional-chain wrapper: eval guard, if non-nullish emit access, else NULL_NAN.
+  const emitNullishGuarded = (guard, access) => typed(['if', ['result', 'f64'],
+    notNullish(guard),
+    ['then', access],
+    ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
+
   // === Shared dispatch helpers ===
 
   /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch. */
@@ -430,10 +436,7 @@ export default (ctx) => {
         }
       }
     }
-    return typed(['if', ['result', 'f64'],
-      notNullish(['local.tee', `$${t}`, va]),
-      ['then', access],
-      ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
+    return emitNullishGuarded(['local.tee', `$${t}`, va], access)
   }
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
@@ -448,13 +451,7 @@ export default (ctx) => {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
     }
-    // Emit: tee base into temp, null-check, then use normal [] on temp
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, va],
-      ['if', ['result', 'f64'],
-        notNullish(['local.get', `$${t}`]),
-        ['then', asF64(ctx.core.emit['[]'](t, idx))],
-        ['else', ['f64.const', `nan:${NULL_NAN}`]]]], 'f64')
+    return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(ctx.core.emit['[]'](t, idx)))
   }
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
@@ -464,10 +461,7 @@ export default (ctx) => {
     // If nullish → return NULL_NAN, else call via fn.call
     if (!ctx.closure.call) err('Optional call requires fn module')
     const callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
-    return typed(['if', ['result', 'f64'],
-      notNullish(['local.tee', `$${t}`, va]),
-      ['then', asF64(callResult)],
-      ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
+    return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(callResult))
   }
 
   // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object
