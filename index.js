@@ -59,9 +59,9 @@ jz.compile = (code, opts = {}) => {
   if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) ctx.module.hostImports = opts.imports
-  // pure: true → strict jz. pure: false → auto-jzify. unset → no transform (compat)
-  const useJzify = opts.jzify || opts.pure === false
-  if (useJzify) ctx.transform.jzify = jzify
+  // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
+  // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
+  if (opts.jzify) ctx.transform.jzify = jzify
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -71,13 +71,8 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  // pure: true → strict jz (mandatory ;, no function/var/switch)
-  // default → lenient. subscript's jessie parser handles ASI natively.
-  const savedAsi = parse.asi
-  if (opts.pure) parse.asi = null
-  let parsed
-  try { parsed = parse(code) } finally { parse.asi = savedAsi }
-  if (useJzify) parsed = jzify(parsed)
+  let parsed = parse(code)
+  if (opts.jzify) parsed = jzify(parsed)
   const ast = prepare(parsed)
   const module = compile(ast)
 

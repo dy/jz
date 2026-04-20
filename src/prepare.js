@@ -74,8 +74,42 @@ function resolveTypeof(node) {
   return node
 }
 
+// Property-based narrowing: unambiguous prop names limit module load.
+// Map value is the exact module set for that property (always includes 'core').
+// Properties not in this table fall back to the generic '.' receiver-type heuristic.
+// Uses null-prototype dict so inherited names (constructor, toString) don't match.
+const PROP_MODULES = Object.assign(Object.create(null), {
+  // array-only methods
+  push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
+  splice: ['core', 'array'], reverse: ['core', 'array'], sort: ['core', 'array'], fill: ['core', 'array'],
+  map: ['core', 'array'], filter: ['core', 'array'], reduce: ['core', 'array'], reduceRight: ['core', 'array'],
+  forEach: ['core', 'array'], find: ['core', 'array'], findIndex: ['core', 'array'],
+  findLast: ['core', 'array'], findLastIndex: ['core', 'array'],
+  every: ['core', 'array'], some: ['core', 'array'], flat: ['core', 'array'], flatMap: ['core', 'array'],
+  join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'array'],
+  // string-only methods
+  charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
+  toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], trim: ['core', 'string'],
+  trimStart: ['core', 'string'], trimEnd: ['core', 'string'],
+  split: ['core', 'string'], replace: ['core', 'string'], replaceAll: ['core', 'string'],
+  repeat: ['core', 'string'], startsWith: ['core', 'string'], endsWith: ['core', 'string'],
+  padStart: ['core', 'string'], padEnd: ['core', 'string'], normalize: ['core', 'string'],
+  matchAll: ['core', 'string'], match: ['core', 'string'],
+  substring: ['core', 'string'], substr: ['core', 'string'],
+  // collection-only methods
+  add: ['core', 'collection'], clear: ['core', 'collection'],
+  // string + array (cross-type but not object/collection)
+  slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
+  indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
+  includes: ['core', 'string', 'array'],
+  // string + array + typedarray (length shared across all sequence types)
+  length: ['core', 'string', 'array', 'typedarray'],
+  // Note: toString/toFixed/toPrecision/toExponential not narrowed — they only have
+  // number-schema emitters; unknown receivers fall through to __ext_call (collection module).
+})
+
 const OP_MODULES = {
-  '.': ['core', 'object', 'array', 'string', 'collection'],
+  // '.' handled inline (see '.' handler) for property-based narrowing
   '?.': ['core', 'string', 'collection'],
   '?.[]': ['core', 'array', 'collection'],
   '?.()': ['core'],
@@ -907,6 +941,11 @@ const handlers = {
     if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') {
       includeMods('core', 'typedarray')
     }
+    // Narrowing: unambiguous property name limits module load; otherwise pessimistic.
+    // Receiver-literal narrowing would still need collection for __dyn_get_expr fallback
+    // on unknown props, so it saves nothing — stick with property-name narrowing only.
+    if (typeof prop === 'string' && PROP_MODULES[prop]) includeMods(...PROP_MODULES[prop])
+    else includeMods('core', 'object', 'array', 'string', 'collection')
     return ['.', prep(obj), prop]
   },
 

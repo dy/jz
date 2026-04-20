@@ -126,7 +126,7 @@ async function handleCompile(args) {
 
   const opts = {
     wat,
-    pure: isJs ? false : true,  // .js → auto-jzify, .jz → pure (mandatory ;)
+    jzify: isJs,  // .js → accept full JS subset; .jz → strict jz (no function/var/switch)
     ...(Object.keys(modules).length && { modules }),
   }
 
