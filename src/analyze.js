@@ -106,6 +106,31 @@ export function typedElemCtor(rhs) {
 }
 
 /**
+ * Lightweight walk: collect var→valType from let/const/= assignments.
+ * Shared between analyzeValTypes and compile.js pre-compile call-site scan.
+ */
+export function collectValTypes(body, types = new Map()) {
+  function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        const vt = valTypeOf(a[2])
+        if (vt) types.set(a[1], vt); else types.delete(a[1])
+      }
+    } else if (op === '=' && typeof args[0] === 'string') {
+      const vt = valTypeOf(args[1])
+      if (vt) types.set(args[0], vt); else types.delete(args[0])
+    }
+    for (const a of args) walk(a)
+  }
+  walk(body)
+  return types
+}
+
+/**
  * Analyze all local value types from declarations and assignments.
  * Builds ctx.func.valTypes map for method dispatch and schema resolution.
  */
@@ -161,9 +186,9 @@ export function analyzeValTypes(body) {
       const [, obj, prop] = args[0]
       const vt = types.get(obj)
       if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
-        if (!ctx.types._localProps) ctx.types._localProps = new Map()
-        if (!ctx.types._localProps.has(obj)) ctx.types._localProps.set(obj, new Set())
-        ctx.types._localProps.get(obj).add(prop)
+        if (!ctx.func.localProps) ctx.func.localProps = new Map()
+        if (!ctx.func.localProps.has(obj)) ctx.func.localProps.set(obj, new Set())
+        ctx.func.localProps.get(obj).add(prop)
       }
     }
     for (const a of args) walk(a)
@@ -171,8 +196,8 @@ export function analyzeValTypes(body) {
   walk(body)
 
   // Register boxed schemas for local variables with property assignments
-  if (ctx.types._localProps) {
-    for (const [name, props] of ctx.types._localProps) {
+  if (ctx.func.localProps) {
+    for (const [name, props] of ctx.func.localProps) {
       if (ctx.schema.vars.has(name)) continue
       const schema = ['__inner__', ...props]
       ctx.schema.vars.set(name, ctx.schema.register(schema))
@@ -183,12 +208,16 @@ export function analyzeValTypes(body) {
 /**
  * Infer expression result type from AST (without emitting).
  * Used to determine local variable types before compilation.
+ * Looks up `locals` first, then current-function params (for i32-specialized params).
  */
-function exprType(expr, locals) {
+export function exprType(expr, locals) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
     return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 ? 'i32' : 'f64'
-  if (typeof expr === 'string') return locals.get(expr) || 'f64'
+  if (typeof expr === 'string') {
+    if (locals?.has?.(expr)) return locals.get(expr)
+    return ctx.func.current?.params?.find(p => p.name === expr)?.type || 'f64'
+  }
   if (!Array.isArray(expr)) return 'f64'
 
   const [op, ...args] = expr
@@ -368,8 +397,8 @@ function findMutations(node, names, mutated) {
  * for those literals is pure waste.
  *
  * Populates:
- *  - ctx.types._dynKeyVars: Set<string> — names accessed via runtime key
- *  - ctx.types._anyDynKey: boolean — any dynamic key access exists in program
+ *  - ctx.types.dynKeyVars: Set<string> — names accessed via runtime key
+ *  - ctx.types.anyDynKey: boolean — any dynamic key access exists in program
  *    (used for escaping literals where no target var is known)
  */
 export function analyzeDynKeys(...roots) {
@@ -398,8 +427,8 @@ export function analyzeDynKeys(...roots) {
   if (ctx.func.list) for (const f of ctx.func.list) if (f.body) walk(f.body)
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walk(mi)
 
-  ctx.types._dynKeyVars = dynVars
-  ctx.types._anyDynKey = anyDyn
+  ctx.types.dynKeyVars = dynVars
+  ctx.types.anyDynKey = anyDyn
 }
 
 /**

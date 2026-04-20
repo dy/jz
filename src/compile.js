@@ -19,7 +19,7 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, STMT_OPS, valTypeOf, analyzeValTypes, analyzeLocals,
+  T, VAL, STMT_OPS, valTypeOf, analyzeValTypes, collectValTypes, analyzeLocals, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
 } from './analyze.js'
@@ -48,6 +48,9 @@ export const asF64 = n => n.type === 'f64' ? n
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
 
+/** Coerce emitted IR to a target WASM param type ('i32' | 'f64'). */
+const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
+
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative). */
 const toI32 = n => n.type === 'i32' ? n : typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
 
@@ -68,7 +71,15 @@ export const UNDEF_NAN = '0x7FF8000000000001'
 export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
 export const UNDEF_WAT = `(f64.const nan:${UNDEF_NAN})`
 const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
+const UNDEF_IR = ['f64.const', `nan:${UNDEF_NAN}`]
 const nullExpr = () => typed(NULL_IR, 'f64')
+const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
+
+// Max arity of inline closure slots. Closures are compiled with signature
+// (env f64, argc i32, a0..a{MAX-1} f64) → f64 — no per-call heap alloc.
+// Calls with more args than MAX error; rest-param closures receive at most
+// MAX rest args when invoked via spread with >MAX dynamic elements.
+export const MAX_CLOSURE_ARITY = 8
 
 const NAN_PREFIX_BITS = 0x7FF8n
 const litI32 = n => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number' ? n[1] : null
@@ -270,13 +281,24 @@ function toNumF64(node, v) {
 
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
  *  Peepholes: i32 → as-is; `f64.convert_i32_*(x)` → x (i32 conversion never NaN);
- *  nested `__is_truthy(x)` → x (already 0/1). */
+ *  nested `__is_truthy(x)` → x (already 0/1); literal f64 const folds to 0/1. */
 export function truthyIR(e) {
   if (e.type === 'i32') return e
   if (Array.isArray(e)) {
     if (e[0] === 'f64.convert_i32_s' || e[0] === 'f64.convert_i32_u')
       return typed(['i32.ne', e[1], ['i32.const', 0]], 'i32')
     if (e[0] === 'call' && e[1] === '$__is_truthy') return typed(e, 'i32')
+    // Fold literal f64 constants: zero/NaN → 0, any other number → 1.
+    if (e[0] === 'f64.const' && typeof e[1] === 'number') {
+      return typed(['i32.const', (e[1] !== 0 && !Number.isNaN(e[1])) ? 1 : 0], 'i32')
+    }
+    // Fold NaN-boxed pointer literals: UNDEF/NULL/canonical-NaN sentinels are falsy;
+    // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
+    if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
+      const bits = String(e[1][1])
+      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA800000000000'])
+      return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
+    }
   }
   inc('__is_truthy')
   return typed(['call', '$__is_truthy', asF64(e)], 'i32')
@@ -332,8 +354,8 @@ export function usesDynProps(vt) {
  *  `target` is the var name receiving the literal (or null when escaping). */
 export function needsDynShadow(target) {
   if (!ctx.module.modules.collection) return false
-  const dyn = ctx.types?._dynKeyVars
-  if (target == null) return ctx.types?._anyDynKey ?? true
+  const dyn = ctx.types?.dynKeyVars
+  if (target == null) return ctx.types?.anyDynKey ?? true
   return dyn ? dyn.has(target) : true
 }
 
@@ -458,8 +480,19 @@ function writeVar(name, valIR, void_) {
   return typed(['local.tee', `$${name}`, coerced], t)
 }
 
-/** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32. */
-const isNullish = (f64expr) => { inc('__is_nullish'); return typed(['call', '$__is_nullish', f64expr], 'i32') }
+/** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32.
+ *  Peepholes: fold known NaN-boxed sentinel literals; elide on numeric literals. */
+const isNullish = (f64expr) => {
+  if (Array.isArray(f64expr)) {
+    if (f64expr[0] === 'f64.const') return typed(['i32.const', 0], 'i32')  // numeric literal — never nullish
+    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
+      const bits = String(f64expr[1][1])
+      return typed(['i32.const', (bits === NULL_NAN || bits === UNDEF_NAN) ? 1 : 0], 'i32')
+    }
+  }
+  inc('__is_nullish')
+  return typed(['call', '$__is_nullish', f64expr], 'i32')
+}
 
 /** Check if a call expression targets a multi-value function. Returns result count or 0. */
 export function multiCount(callNode) {
@@ -483,10 +516,10 @@ export function materializeMulti(callNode) {
   const rawArgs = callNode.slice(2)
   const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
     ? rawArgs[0].slice(1) : rawArgs
-  const emittedArgs = argList.map(a => asF64(emit(a)))
+  const emittedArgs = argList.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
   // Pad missing args with sentinel NaN (triggers default param init)
   while (emittedArgs.length < func.sig.params.length)
-    emittedArgs.push(nullExpr())
+    emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
   const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
@@ -558,8 +591,9 @@ function emitDecl(...inits) {
           const rawArgs = init.slice(2)
           const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
             ? rawArgs[0].slice(1) : rawArgs
-          const emittedArgs = argList.map(a => asF64(emit(a)))
-          while (emittedArgs.length < func.sig.params.length) emittedArgs.push(nullExpr())
+          const emittedArgs = argList.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
+          while (emittedArgs.length < func.sig.params.length)
+            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
           result.push(['call', `$${init[1]}`, ...emittedArgs])
           // Pop results from stack in reverse order into targets
           for (let k = n - 1; k >= 0; k--)
@@ -600,7 +634,7 @@ function emitDecl(...inits) {
       result.push(['local.set', `$${name}`, coerced])
 
     // Auto-box local variable if it has property assignments
-    if (ctx.types._localProps?.has(name) && ctx.schema.vars.has(name)) {
+    if (ctx.func.localProps?.has(name) && ctx.schema.vars.has(name)) {
       const schemaId = ctx.schema.vars.get(name)
       const schema = ctx.schema.resolve(name)
       if (schema?.[0] === '__inner__') {
@@ -858,30 +892,71 @@ export default function compile(ast) {
   scanStmts(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
 
-  // Whole-program scan: which vars need __dyn_props shadow (gates __dyn_set emission)
-  analyzeDynKeys(ast)
-
-  // Pre-scan property assignments (x.prop = val) → auto-box variables with schemas
-  if (ast && ctx.schema.register) {
-    const propMap = new Map() // varName → Set<propName>
-    const scan = (node) => {
+  // Unified whole-program walk: collects three outputs in one pass.
+  //   1. dynVars/anyDyn — vars accessed via runtime key (analyzeDynKeys)
+  //   2. propMap — property assignments for auto-boxing
+  //   3. valueUsed — funcNames passed as first-class values (not specializable)
+  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  const valueUsed = new Set()
+  const dynVars = new Set()
+  let anyDyn = false
+  const propMap = new Map()
+  const doSchema = ast && ctx.schema.register
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  const unifiedWalk = (node) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    // dyn-key detection
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
+    } else if (op === 'for-in') {
+      anyDyn = true
+      if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    // property-assignment scan for auto-box
+    if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+      const [, obj, prop] = args[0]
+      if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || funcNames.has(obj))) {
+        if (!propMap.has(obj)) propMap.set(obj, new Set())
+        propMap.get(obj).add(prop)
+      }
+    }
+    // first-class function-value scan
+    if (op === '()' && typeof args[0] === 'string' && funcNames.has(args[0])) {
+      for (let i = 1; i < args.length; i++) unifiedWalk(args[i])  // callee-position: not value use
+      return
+    }
+    if ((op === '.' || op === '?.') && typeof args[0] === 'string' && funcNames.has(args[0])) return
+    for (const a of args) {
+      if (typeof a === 'string' && funcNames.has(a)) valueUsed.add(a)
+      else unifiedWalk(a)
+    }
+  }
+  unifiedWalk(ast)
+  for (const func of ctx.func.list) if (func.body && !func.raw) unifiedWalk(func.body)
+  // moduleInits: dyn-key detection only (they don't own user props/funcs)
+  if (ctx.module.moduleInits) {
+    const dynOnlyWalk = (node) => {
       if (!Array.isArray(node)) return
       const [op, ...args] = node
-      if (op === ';' || op === '{}') { for (const a of args) scan(a); return }
-      if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
-        const [, obj, prop] = args[0]
-        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || funcNames.has(obj))) {
-          if (!propMap.has(obj)) propMap.set(obj, new Set())
-          propMap.get(obj).add(prop)
-        }
+      if (op === '[]') {
+        const [obj, idx] = args
+        if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
+      } else if (op === 'for-in') {
+        anyDyn = true
+        if (typeof args[1] === 'string') dynVars.add(args[1])
       }
-      for (const a of args) if (Array.isArray(a)) scan(a)
+      for (const a of args) dynOnlyWalk(a)
     }
-    scan(ast)
-    // Also scan function bodies (property assignments like err.loc = pos happen inside functions)
-    for (const func of ctx.func.list) if (func.body) scan(func.body)
+    for (const mi of ctx.module.moduleInits) dynOnlyWalk(mi)
+  }
+  ctx.types.dynKeyVars = dynVars
+  ctx.types.anyDynKey = anyDyn
+
+  // Materialize auto-box schemas from collected propMap
+  if (doSchema) {
     for (const [name, props] of propMap) {
-      // Merge new properties into existing schema if needed
       if (ctx.schema.vars.has(name)) {
         const existing = ctx.schema.resolve(name)
         const newProps = [...props].filter(p => !existing.includes(p))
@@ -892,18 +967,14 @@ export default function compile(ast) {
         }
         continue
       }
-      // Skip props that are extracted as functions (fn.prop = arrow)
       const valueProps = [...props].filter(p => !funcNames.has(`${name}$${p}`))
       if (!valueProps.length) continue
-      // Include extracted fn props in schema too (so schema is complete)
       const allProps = [...props]
       const schema = ['__inner__', ...allProps]
       const schemaId = ctx.schema.register(schema)
       ctx.schema.vars.set(name, schemaId)
-      // For function variables, ensure a global exists for property storage
       if (funcNames.has(name) && !ctx.scope.globals.has(name))
         ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
-      // Mark for boxing emission in __start
       if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
       ctx.schema.autoBox.set(name, { schemaId, schema })
     }
@@ -912,33 +983,11 @@ export default function compile(ast) {
   // D: Call-site type propagation — infer param types from how functions are called.
   // For non-exported internal functions, if all call sites agree on a param's type,
   // propagate that type to ctx.func.valTypes during per-function compilation.
-  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
-  // Functions used as first-class values (passed to .map, stored, etc.) — their params
-  // can receive any type from invisible call sites, so don't narrowly specialize.
-  const valueUsed = new Set()
+  // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
+  // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
+  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
   {
-    const scanValueUse = (node) => {
-      if (!Array.isArray(node)) return
-      const [op, ...args] = node
-      if (op === '()' && typeof args[0] === 'string' && funcNames.has(args[0])) {
-        // Callee position — not a value use. Recurse into args only.
-        for (let i = 1; i < args.length; i++) scanValueUse(args[i])
-        return
-      }
-      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && funcNames.has(args[0])) {
-        // `fn.prop` — method/property access, not a value use
-        return
-      }
-      // Any bare reference to a funcName counts as value use
-      for (let i = 0; i < args.length; i++) {
-        if (typeof args[i] === 'string' && funcNames.has(args[i])) valueUsed.add(args[i])
-        else scanValueUse(args[i])
-      }
-    }
-    scanValueUse(ast)
-    for (const func of ctx.func.list) if (func.body && !func.raw) scanValueUse(func.body)
-
-    const scanCalls = (node, callerValTypes) => {
+    const scanCalls = (node, callerValTypes, callerLocals) => {
       if (!Array.isArray(node)) return
       const [op, ...args] = node
       if (op === '=>') return  // don't cross closure boundary
@@ -951,49 +1000,67 @@ export default function compile(ast) {
           const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
             ? rawArgs[0].slice(1) : rawArgs
           if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
+          if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
           const ptypes = paramValTypes.get(callee)
+          const wtypes = paramWasmTypes.get(callee)
           for (let k = 0; k < func.sig.params.length; k++) {
-            if (ptypes.get(k) === null) continue  // already conflicted
-            const argType = k < argList.length ? inferArgType(argList[k], callerValTypes) : null
-            if (!argType) { ptypes.set(k, null); continue }
-            const prev = ptypes.get(k)
-            if (prev === undefined) ptypes.set(k, argType)
-            else if (prev !== argType) ptypes.set(k, null)
+            if (k < argList.length) {
+              // VAL type
+              if (ptypes.get(k) !== null) {
+                const argType = inferArgType(argList[k], callerValTypes)
+                if (!argType) ptypes.set(k, null)
+                else {
+                  const prev = ptypes.get(k)
+                  if (prev === undefined) ptypes.set(k, argType)
+                  else if (prev !== argType) ptypes.set(k, null)
+                }
+              }
+              // WASM type
+              if (wtypes.get(k) !== null) {
+                const wt = exprType(argList[k], callerLocals)
+                const prev = wtypes.get(k)
+                if (prev === undefined) wtypes.set(k, wt)
+                else if (prev !== wt) wtypes.set(k, null)
+              }
+            } else {
+              // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
+              ptypes.set(k, null)
+              wtypes.set(k, null)
+            }
           }
         }
       }
-      for (const a of args) scanCalls(a, callerValTypes)
+      for (const a of args) scanCalls(a, callerValTypes, callerLocals)
     }
     // Infer arg type using global valTypes + caller-local valTypes
     const inferArgType = (expr, callerValTypes) => {
       if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
       return valTypeOf(expr)
     }
-    // Scan module scope
-    scanCalls(ast, ctx.scope.globalValTypes)
-    // Scan each function body with its own local valTypes
+    // Scan module scope (no locals context — callerLocals is the globalTypes map)
+    scanCalls(ast, ctx.scope.globalValTypes, ctx.scope.globalTypes)
+    // Scan each function body with its own local valTypes + wasm types
     for (const func of ctx.func.list) {
       if (!func.body || func.raw) continue
-      // Build this function's local valTypes (same analysis as analyzeValTypes does)
-      const localVt = new Map()
-      const walkVt = (node) => {
-        if (!Array.isArray(node)) return
-        const [op, ...args] = node
-        if (op === '=>') return
-        if (op === 'let' || op === 'const') {
-          for (const a of args) {
-            if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
-              const vt = valTypeOf(a[2]); if (vt) localVt.set(a[1], vt)
-            }
-          }
-        }
-        if (op === '=' && typeof args[0] === 'string') {
-          const vt = valTypeOf(args[1]); if (vt) localVt.set(args[0], vt)
-        }
-        for (const a of args) walkVt(a)
-      }
-      walkVt(func.body)
-      scanCalls(func.body, localVt)
+      // Seed caller local types with params so args that are direct-params propagate type.
+      const callerLocals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
+      scanCalls(func.body, collectValTypes(func.body), callerLocals)
+    }
+  }
+
+  // Apply i32 specialization: for non-exported/non-value-used funcs with consistent
+  // i32 call sites and no defaults/rest at that position, narrow sig.params[k].type.
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const wtypes = paramWasmTypes.get(func.name)
+    if (!wtypes) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, wt] of wtypes) {
+      if (wt !== 'i32' || k === restIdx) continue
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) continue  // defaults need nullish-sentinel f64
+      func.sig.params[k].type = 'i32'
     }
   }
 
@@ -1016,7 +1083,7 @@ export default function compile(ast) {
     ctx.func.locals = block ? analyzeLocals(body) : new Map()
     ctx.func.valTypes = new Map()
     ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
-    ctx.types._localProps = null  // reset per function
+    ctx.func.localProps = null  // reset per function
     ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
     if (block) {
       analyzeValTypes(body)
@@ -1105,15 +1172,18 @@ export default function compile(ast) {
       ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
       ctx.func.stack = []
       ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
-      // Uniform convention: (env: f64, __args: f64) → f64
-      ctx.func.current = { params: [{ name: '__env', type: 'f64' }, { name: `${T}args`, type: 'f64' }], results: ['f64'] }
+      // Uniform convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64
+      const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
+      for (let i = 0; i < MAX_CLOSURE_ARITY; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
+      ctx.func.current = { params: paramDecls, results: ['f64'] }
 
       const fn = ['func', `$${cb.name}`]
       fn.push(['param', '$__env', 'f64'])
-      fn.push(['param', `$${T}args`, 'f64'])
+      fn.push(['param', '$__argc', 'i32'])
+      for (let i = 0; i < MAX_CLOSURE_ARITY; i++) fn.push(['param', `$__a${i}`, 'f64'])
       fn.push(['result', 'f64'])
 
-      // Params are locals unpacked from args array
+      // Params are locals, assigned directly from inline slots
       for (const p of cb.params) ctx.func.locals.set(p, 'f64')
 
       // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
@@ -1132,15 +1202,17 @@ export default function compile(ast) {
         bodyIR = [asF64(emit(cb.body))]
       }
 
-      // Pre-allocate cache locals for env/args unpacking
+      // Pre-allocate cache locals for env unpacking
       const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
       if (envBase) { ctx.func.locals.set(envBase, 'i32'); inc('__ptr_offset') }
-      let argsBase, argsLen
-      if (!cb.rest && cb.params.length > 0) {
-        argsBase = `${T}argsBase${ctx.func.uniq++}`
-        argsLen = `${T}argsLen${ctx.func.uniq++}`
-        ctx.func.locals.set(argsBase, 'i32')
-        ctx.func.locals.set(argsLen, 'i32')
+      // Rest param: allocate helper locals (len + offset) before emitting decls
+      let restOff, restLen
+      if (cb.rest) {
+        restOff = `${T}restOff${ctx.func.uniq++}`
+        restLen = `${T}restLen${ctx.func.uniq++}`
+        ctx.func.locals.set(restOff, 'i32')
+        ctx.func.locals.set(restLen, 'i32')
+        inc('__alloc_hdr', '__mkptr')
       }
 
       // Insert locals (captures + params + declared)
@@ -1156,22 +1228,38 @@ export default function compile(ast) {
         }
       }
 
-      // Unpack params from args array (rest param: pass whole array)
+      // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
+      // Rest name (if present) is last in cb.params — handled separately below.
+      const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
+      for (let i = 0; i < fixedParamN && i < MAX_CLOSURE_ARITY; i++) {
+        fn.push(['local.set', `$${cb.params[i]}`, ['local.get', `$__a${i}`]])
+      }
+
+      // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
+      // len = clamp(argc - fixedParams, 0, restSlots). Rest-param closures receive
+      // at most (MAX_CLOSURE_ARITY - fixedParams) rest args — spread callers with
+      // more dynamic elements lose the overflow (documented limitation).
       if (cb.rest) {
-        fn.push(['local.set', `$${cb.rest}`, ['local.get', `$${T}args`]])
-      } else if (argsBase) {
-        const argsPtr = `$${T}args`
-        inc('__len', '__ptr_offset')
-        fn.push(['local.set', `$${argsBase}`, ['call', '$__ptr_offset', ['local.get', argsPtr]]])
-        fn.push(['local.set', `$${argsLen}`, ['call', '$__len', ['local.get', argsPtr]]])
-        // Unpack with bounds check: if i >= len, use sentinel NaN (triggers default)
-        for (let i = 0; i < cb.params.length; i++) {
-          fn.push(['local.set', `$${cb.params[i]}`,
-            ['if', ['result', 'f64'],
-              ['i32.gt_s', ['local.get', `$${argsLen}`], ['i32.const', i]],
-              ['then', ['f64.load', ['i32.add', ['local.get', `$${argsBase}`], ['i32.const', i * 8]]]],
-              ['else', NULL_IR]]])
+        const fixedN = fixedParamN
+        const restSlots = MAX_CLOSURE_ARITY - fixedN
+        fn.push(['local.set', `$${restLen}`,
+          ['select',
+            ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
+            ['i32.const', 0],
+            ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
+        fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
+          ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
+        fn.push(['local.set', `$${restOff}`,
+          ['call', '$__alloc_hdr',
+            ['local.get', `$${restLen}`], ['local.get', `$${restLen}`], ['i32.const', 8]]])
+        for (let i = 0; i < restSlots; i++) {
+          fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
+            ['then', ['f64.store',
+              ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
+              ['local.get', `$__a${fixedN + i}`]]]])
         }
+        fn.push(['local.set', `$${cb.rest}`,
+          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]])
       }
 
       // Default params for closures (check sentinel after unpack)
@@ -1209,13 +1297,14 @@ export default function compile(ast) {
     customs: [],    // custom sections + exports
   }
 
-  // Function types for call_indirect (one per arity)
+  // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
+  // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
+  // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
+  // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
   if (ctx.closure.types) {
-    for (const arity of ctx.closure.types) {
-      const params = [['param', 'f64']] // env
-      for (let i = 0; i < arity; i++) params.push(['param', 'f64'])
-      sec.types.push(['type', `$ft${arity}`, ['func', ...params, ['result', 'f64']]])
-    }
+    const params = [['param', 'f64'], ['param', 'i32']] // env + argc
+    for (let i = 0; i < MAX_CLOSURE_ARITY; i++) params.push(['param', 'f64'])
+    sec.types.push(['type', `$ftN`, ['func', ...params, ['result', 'f64']]])
   }
 
   // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
@@ -1715,8 +1804,8 @@ export const emitter = {
     ctx.runtime.throws = true
     const id = ctx.func.uniq++
     ctx.func.locals.set(errName, 'f64')
-    const prev = ctx.runtime._inTry; ctx.runtime._inTry = true
-    let bodyIR; try { bodyIR = emitFlat(body) } finally { ctx.runtime._inTry = prev }
+    const prev = ctx.func.inTry; ctx.func.inTry = true
+    let bodyIR; try { bodyIR = emitFlat(body) } finally { ctx.func.inTry = prev }
     const handlerIR = emitFlat(handler)
     return typed(['block', `$outer${id}`, ['result', 'f64'],
       ['block', `$catch${id}`, ['result', 'f64'],
@@ -1734,7 +1823,7 @@ export const emitter = {
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
     if (expr == null) return typed(['return', NULL_IR], 'void')
     const ir = asF64(emit(expr))
-    if (!ctx.runtime._inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
+    if (!ctx.func.inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
     return typed(['return', ir], 'void')
   },
@@ -2298,9 +2387,9 @@ export const emitter = {
         const fname = `${obj}$${method}`
         if (funcNames.has(fname)) {
           const func = funcMap.get(fname)
-          const emittedArgs = parsed.normal.map(a => asF64(emit(a)))
+          const emittedArgs = parsed.normal.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
           while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(nullExpr())
+            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
           return typed(['call', `$${fname}`, ...emittedArgs], 'f64')
         }
       }
@@ -2557,9 +2646,9 @@ export const emitter = {
         const fixedParamCount = func.sig.params.length - 1
         const fixedArgs = parsed.normal.slice(0, fixedParamCount)
         // Pad missing fixed args with sentinel for defaults
-        const emittedFixed = fixedArgs.map(a => asF64(emit(a)))
+        const emittedFixed = fixedArgs.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
         while (emittedFixed.length < fixedParamCount)
-          emittedFixed.push(nullExpr())
+          emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
 
         // Reconstruct with spreads, then take rest args
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -2575,9 +2664,9 @@ export const emitter = {
       // Regular function call without rest params
       if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
       // Pad missing args with canonical NaN (triggers default param init)
-      const args = parsed.normal.map(a => asF64(emit(a)))
+      const args = parsed.normal.map((a, k) => asParamType(emit(a), func?.sig.params[k]?.type))
       const expected = func?.sig.params.length || args.length
-      while (args.length < expected) args.push(nullExpr())
+      while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
       // Multi-value return: materialize as heap array (caller expects single pointer)
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
       return typed(['call', `$${callee}`, ...args], 'f64')
@@ -2636,14 +2725,20 @@ export function emit(node, expect) {
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
     if (funcNames.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && ctx.closure.table) {
-      // Generate trampoline: (env, __args) → unpack args, call $func(p0, p1, ...)
+      // Trampoline signature: uniform closure ABI (env f64, argc i32, a0..a{MAX-1} f64) → f64.
+      // Forwards the first N inline slots to $func where N = func's fixed param count.
       const func = funcMap.get(node)
+      const sigParams = func?.sig.params || []
+      if (sigParams.length > MAX_CLOSURE_ARITY) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
       const trampolineName = `${T}tramp_${node}`
       if (!ctx.core.stdlib[trampolineName]) {
-        const argLen = `${T}argc`
-        const argBase = `${T}argp`
-        const forwardArg = i => `(if (result f64) (i32.gt_s (local.get $${argLen}) (i32.const ${i})) (then (f64.load (i32.add (local.get $${argBase}) (i32.const ${i * 8})))) (else ${NULL_WAT}))`
-        const fwd = func?.sig.params.map((_, i) => forwardArg(i)).join(' ') || ''
+        const paramDecls = ['(param $__env f64)', '(param $__argc i32)']
+        for (let i = 0; i < MAX_CLOSURE_ARITY; i++) paramDecls.push(`(param $__a${i} f64)`)
+        // Forward fixed slots; if func expects i32, convert via trunc_sat
+        const fwd = sigParams.map((p, i) =>
+          p.type === 'i32'
+            ? `(i32.trunc_sat_f64_s (local.get $__a${i}))`
+            : `(local.get $__a${i})`).join(' ')
         if ((func?.sig.results.length || 1) > 1) {
           const n = func.sig.results.length
           const arr = `${T}retarr`
@@ -2653,11 +2748,12 @@ export function emit(node, expect) {
             `(f64.store (i32.add (local.get $${arr}) (i32.const ${i * 8})) (local.get $${name}))`
           ).join(' ')
           const capture = temps.slice().reverse().map(name => `(local.set $${name})`).join(' ')
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} (param $__env f64) (param $${T}args f64) (result f64) (local $${argLen} i32) (local $${argBase} i32) (local $${arr} i32) ${tempLocals} (local.set $${argBase} (call $__ptr_offset (local.get $${T}args))) (local.set $${argLen} (i32.load (i32.sub (local.get $${argBase}) (i32.const 8)))) (call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} (call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
+          inc(trampolineName, '__alloc', '__mkptr')
         } else {
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} (param $__env f64) (param $${T}args f64) (result f64) (local $${argLen} i32) (local $${argBase} i32) (local.set $${argBase} (call $__ptr_offset (local.get $${T}args))) (local.set $${argLen} (i32.load (i32.sub (local.get $${argBase}) (i32.const 8)))) (call $${node} ${fwd}))`
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (call $${node} ${fwd}))`
+          inc(trampolineName)
         }
-        inc(trampolineName, '__ptr_offset', '__alloc', '__mkptr')
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
       if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }

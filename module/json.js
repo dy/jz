@@ -9,9 +9,23 @@
  */
 
 import { emit, typed, asF64, T } from '../src/compile.js'
-import { ctx, err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR } from '../src/ctx.js'
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
+    __json_hash: ['__ptr_offset', '__jput', '__jput_str', '__json_val'],
+    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
+    __jput_num: ['__ftoa'],
+    __jput_str: ['__char_at', '__str_byteLen'],
+    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws'],
+    __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
+    __jp_num: ['__pow10'],
+    __jp_arr: ['__jp_val'],
+    __jp_obj: ['__jp_val', '__hash_new', '__hash_set'],
+  })
+
 
   // === JSON.stringify ===
 

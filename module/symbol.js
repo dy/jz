@@ -18,11 +18,11 @@
  */
 
 import { emit, typed, asF64, mkPtrIR } from '../src/compile.js'
-import { ctx, err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR } from '../src/ctx.js'
 
 const RESERVED = 16  // first user atom ID
 
-export default () => {
+export default (ctx) => {
   inc('__mkptr')
 
   // Intern table: name → atomId (shared across compilation)

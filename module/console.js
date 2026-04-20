@@ -13,9 +13,15 @@
  */
 
 import { emit, typed, asF64 } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { inc, PTR } from '../src/ctx.js'
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str'],
+    __write_num: ['__ftoa'],
+    __write_str: ['__sso_char', '__str_len'],
+  })
+
 
   // Import fd_write from WASI
   ctx.module.imports.push(

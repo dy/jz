@@ -10,12 +10,26 @@
  */
 
 import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps } from '../src/compile.js'
-import { ctx, err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
 const NAN_PREFIX = 0x7FF8
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __eq: ['__str_eq', '__ptr_type'],
+    __typeof: ['__ptr_type', '__is_nullish'],
+    __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __typed_data: ['__ptr_offset', '__ptr_aux'],
+    __ptr_offset: ['__ptr_type'],
+    __is_str_key: ['__ptr_type'],
+    __str_len: ['__ptr_type', '__ptr_offset'],
+    __set_len: ['__ptr_type', '__ptr_offset'],
+    __length: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__str_len', '__len'],
+    __alloc_hdr: ['__alloc'],
+  })
+
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v f64) (result i32)
     (i32.or
       (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN}))
@@ -269,7 +283,7 @@ export default () => {
     (i32.add (local.get $ptr) (i32.const 8)))`
 
   // Allocator + exports are deferred: only included when memory is actually needed.
-  // Any module using allocPtr/inc('__alloc') pulls these in via STDLIB_DEPS.
+  // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.
   // compile.js emits _alloc/_reset exports + memory section only when __alloc is in includes.
   ctx.core._allocRawFuncs = [
     '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
@@ -494,7 +508,7 @@ export default () => {
     (global.get $__tof_object))`
 
   // === Schema helpers (centralized in module/schema.js) ===
-  initSchema()
+  initSchema(ctx)
 
   // Low-level pointer helpers callable from jz code
   ctx.core.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')

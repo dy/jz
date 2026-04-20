@@ -10,19 +10,19 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32 } from '../src/compile.js'
-import { ctx, PTR, inc } from '../src/ctx.js'
+import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/compile.js'
+import { PTR, inc, err } from '../src/ctx.js'
 
 
-export default () => {
-  inc('__mkptr', '__alloc', '__ptr_aux')
+export default (ctx) => {
+  inc('__mkptr', '__alloc', '__ptr_aux', '__len', '__ptr_offset')
 
-  // Uniform closure convention: all closures use (env: f64, args: f64) → f64
+  // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
 
-  ctx.closure.types.add(1) // single type: (env, args_array) → f64
+  ctx.closure.types.add(1) // presence triggers $ftN type emission
 
   const addToTable = (name) => {
     let idx = ctx.closure.table.indexOf(name)
@@ -36,6 +36,9 @@ export default () => {
    * @returns {WasmNode} NaN-boxed closure pointer
    */
   ctx.closure.make = ({ params, body, captures, restParam, defaults }) => {
+    const fixedN = params.length - (restParam ? 1 : 0)
+    if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+    if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
     // Generate closure body function name
     const fnName = `${T}closure${ctx.closure.table.length}`
     const captureValTypes = new Map()
@@ -87,40 +90,63 @@ export default () => {
     return typed(['block', ['result', 'f64'], ...block], 'f64')
   }
 
+  const UNDEF_LIT = () => ['f64.const', `nan:${UNDEF_NAN}`]
+
   /**
-   * Call a closure value: extract funcIdx + env from NaN-boxed pointer, call_indirect.
+   * Call a closure value: pass args inline as a0..a{MAX-1} + argc, call_indirect.
    * @param {WasmNode} closureExpr - Already-emitted closure pointer expression
    * @param {any[]} args - AST nodes (will be emitted) OR pre-emitted nodes (if .type is set)
+   * @param {boolean} prebuiltArray - args[0] is a pre-built args array (spread path)
    */
   ctx.closure.call = (closureExpr, args, prebuiltArray) => {
     const t = temp('clos')
 
-    let argsPtr, setup = []
     if (prebuiltArray) {
-      // Args already packed as a single array expression
-      argsPtr = asF64(args[0])
-    } else {
-      // Pack all args into a heap array (uniform calling convention)
-      const emittedArgs = args.map(a => asF64(a?.type ? a : emit(a)))
-      const arrT = tempI32('ca')
-      const n = emittedArgs.length
-      setup = [
-        ['local.set', `$${arrT}`, ['call', '$__alloc', ['i32.const', n * 8 + 8]]],
-        ['i32.store', ['local.get', `$${arrT}`], ['i32.const', n]],
-        ['i32.store', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', 4]], ['i32.const', n]],
-        ['local.set', `$${arrT}`, ['i32.add', ['local.get', `$${arrT}`], ['i32.const', 8]]],
+      // Spread path: decode array into inline slots. Slots beyond array len padded with UNDEF.
+      // Rest-param closures receive up to (MAX - fixedParams) spread elements (overflow lost).
+      const arrT = tempI32('sa')
+      const lenL = tempI32('sl')
+      const setup = [
+        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', asF64(args[0])]],
+        ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${t}`]]],  // placeholder — set below
       ]
-      for (let i = 0; i < n; i++)
-        setup.push(['f64.store', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]], emittedArgs[i]])
-      argsPtr = mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${arrT}`])
+      // Rebuild setup properly since we need the array ptr before len call
+      setup.length = 0
+      const arrPtrF64 = temp('sp')
+      setup.push(['local.set', `$${arrPtrF64}`, asF64(args[0])])
+      setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['local.get', `$${arrPtrF64}`]]])
+      setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrPtrF64}`]]])
+
+      const slots = []
+      for (let i = 0; i < MAX_CLOSURE_ARITY; i++) {
+        slots.push(['if', ['result', 'f64'],
+          ['i32.gt_s', ['local.get', `$${lenL}`], ['i32.const', i]],
+          ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
+          ['else', UNDEF_LIT()]])
+      }
+      return typed(['block', ['result', 'f64'],
+        ...setup,
+        ['local.set', `$${t}`, asF64(closureExpr)],
+        ['call_indirect', ['type', '$ftN'],
+          ['local.get', `$${t}`],
+          ['local.get', `$${lenL}`],
+          ...slots,
+          ['call', '$__ptr_aux', ['local.get', `$${t}`]]]], 'f64')
     }
 
+    // Inline path: emit each arg, pad missing slots with UNDEF
+    const n = args.length
+    if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+    const slots = []
+    for (let i = 0; i < n; i++) slots.push(asF64(args[i]?.type ? args[i] : emit(args[i])))
+    for (let i = n; i < MAX_CLOSURE_ARITY; i++) slots.push(UNDEF_LIT())
+
     return typed(['block', ['result', 'f64'],
-      ...setup,
       ['local.set', `$${t}`, asF64(closureExpr)],
-      ['call_indirect', ['type', '$ft1'],
+      ['call_indirect', ['type', '$ftN'],
         ['local.get', `$${t}`],
-        argsPtr,
+        ['i32.const', n],
+        ...slots,
         ['call', '$__ptr_aux', ['local.get', `$${t}`]]]], 'f64')
   }
 }

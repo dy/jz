@@ -8,10 +8,10 @@
  */
 
 import { emit, typed, asF64, VAL } from '../src/compile.js'
-import { ctx, err, inc } from '../src/ctx.js'
+import { err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
-export function initSchema() {
+export function initSchema(ctx) {
   // key → schemaId for O(1) dedupe; prop → [{id, slot}] for O(matches) structural find.
   // \x01 delimiter avoids collision with any legal JS identifier character.
   const byKey = new Map()

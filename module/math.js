@@ -14,9 +14,9 @@
  */
 
 import { emit, typed, asF64, asI32, temp, arrayLoop } from '../src/compile.js'
-import { ctx, inc } from '../src/ctx.js'
+import { inc } from '../src/ctx.js'
 
-export default () => {
+export default (ctx) => {
   // Helpers: all math ops take f64 and return f64
   const f = (op, a) => typed([op, asF64(emit(a))], 'f64')
   const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')

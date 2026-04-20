@@ -8,7 +8,7 @@
  */
 
 import { emit, typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
-import { ctx, err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
@@ -646,7 +646,10 @@ const patternMinLen = node => {
 
 // === Module init ===
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __str_to_buf: ['__str_byteLen', '__char_at'],
+  })
 
   ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
 

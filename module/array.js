@@ -69,22 +69,38 @@ function substExpr(node, mapping) {
   return out
 }
 
-// Callback factory: returns { setup, call } where call(argExprs) emits the invocation.
+// Check whether a name is referenced inside a pure expression body.
+// Mirrors substExpr's traversal — skips property names on '.'/'?.' and object keys on ':'.
+function exprUses(node, name) {
+  if (typeof node === 'string') return node === name
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === '.' || op === '?.') return exprUses(node[1], name)
+  if (op === ':') return exprUses(node[2], name)
+  for (let i = 1; i < node.length; i++) if (exprUses(node[i], name)) return true
+  return false
+}
+
+// Callback factory: returns { setup, call, usedParams } where call(argExprs) emits the invocation.
 // Fast path: literal arrow with simple-string params and pure expression body → inline,
 // substituting param refs with fresh locals. Zero closure alloc, zero call_indirect, zero
 // args-array alloc. Captures resolve naturally to outer locals.
 // Slow path: fall back to ctx.closure.call (heap-allocated args array per iteration).
+// usedParams: boolean array (fast path only) — callers can skip computing args for unused params.
 function makeCallback(fn) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
     if (raw.every(p => typeof p === 'string') && isPureExpr(body)) {
+      const usedParams = raw.map(p => exprUses(body, p))
       return {
         setup: ['nop'],
+        usedParams,
         call: (argExprs) => {
           const stmts = []
           const mapping = new Map()
           for (let i = 0; i < raw.length; i++) {
+            if (!usedParams[i]) continue  // skip dead local + arg evaluation
             const fresh = temp('inl')
             mapping.set(raw[i], fresh)
             const ae = i < argExprs.length && argExprs[i] != null
@@ -101,7 +117,7 @@ function makeCallback(fn) {
       }
     }
   }
-  // Fallback: closure call
+  // Fallback: closure call — all params are potentially used.
   const cb = temp('af')
   return {
     setup: ['local.set', `$${cb}`, asF64(emit(fn))],
@@ -116,7 +132,14 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
   return typed(call, 'f64')
 }
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __arr_idx: ['__len', '__ptr_offset'],
+    __arr_grow: ['__dyn_move'],
+    __arr_set_idx_ptr: ['__arr_grow', '__len', '__ptr_offset', '__set_len'],
+    __typed_idx: ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset'],
+  })
+
   inc('__ptr_offset', '__ptr_type', '__len', '__set_len', '__typed_idx', '__is_truthy')
 
   // Array.isArray(x): check ptr_type === PTR.ARRAY
@@ -569,7 +592,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -587,7 +610,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', ['i32.eqz', truthyIR(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
+      ['if', ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i)]))],
         ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -605,7 +628,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -630,6 +653,10 @@ export default () => {
   }
 
   function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
+  // Skip f64-convert when callback's index param is unused — saves per-iteration conversion.
+  function idxArg(cb, i, slot = 1) {
+    return cb.usedParams && !cb.usedParams[slot] ? null : idxF64(i)
+  }
 
   ctx.core.emit['.map'] = (arr, fn) => {
     // .filter(f).map(g) → single loop: test f, apply g if passes
@@ -640,9 +667,9 @@ export default () => {
       const filterCb = makeCallback(up.fn), mapCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxF64(i)])),
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then',
-            elemStore(out.local, count, asF64(mapCb.call([item, idxF64(count)]))),
+            elemStore(out.local, count, asF64(mapCb.call([item, idxArg(mapCb, count)]))),
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
       ])
       return typed(['block', ['result', 'f64'],
@@ -659,7 +686,7 @@ export default () => {
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      elemStore(out.local, i, asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])))
+      elemStore(out.local, i, asF64(cb.call([item, idxArg(cb, i)])))
     ])
     return typed(['block', ['result', 'f64'],
       recv.setup,
@@ -679,8 +706,8 @@ export default () => {
       const mapCb = makeCallback(up.fn), filterCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
-        ['if', truthyIR(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)])),
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+        ['if', truthyIR(filterCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(filterCb, i)])),
           ['then',
             ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -698,7 +725,7 @@ export default () => {
     const cb = makeCallback(fn)
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then',
           ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], item],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
@@ -723,7 +750,7 @@ export default () => {
       const acc = temp('ra'), mapped = temp('mv')
       const mapCb = makeCallback(up.fn), redCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
         ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), typed(['local.get', `$${mapped}`], 'f64')]))]
       ])
       return typed(['block', ['result', 'f64'],
@@ -737,7 +764,7 @@ export default () => {
       const acc = temp('ra')
       const filterCb = makeCallback(up.fn), redCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxF64(i)])),
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then', ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]]]
       ])
       return typed(['block', ['result', 'f64'],
@@ -767,8 +794,8 @@ export default () => {
       const mapped = temp('mv'), tmp = temp('ft')
       const mapCb = makeCallback(up.fn), forCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxF64(i)]))],
-        ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxF64(i)]))]
+        ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
+        ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
     }
@@ -777,8 +804,8 @@ export default () => {
       const tmp = temp('ft')
       const filterCb = makeCallback(up.fn), forCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
-        ['if', truthyIR(filterCb.call([item, idxF64(i)])),
-          ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxF64(i)]))]]]
+        ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
+          ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, ...loop, ['f64.const', 0]], 'f64')
     }
@@ -786,7 +813,7 @@ export default () => {
     const tmp = temp('ft')
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['local.set', `$${tmp}`, asF64(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]
+      ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i)]))]
     ])
     return typed(['block', ['result', 'f64'], recv.setup, cb.setup, ...loop, ['f64.const', 0]], 'f64')
   }
@@ -797,7 +824,7 @@ export default () => {
     const exit = `$exit${ctx.func.uniq++}`
     const cb = makeCallback(fn)
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', truthyIR(cb.call([item, typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+      ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${result}`, item], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],

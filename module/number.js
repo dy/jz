@@ -10,9 +10,17 @@
  */
 
 import { emit, typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, valTypeOf, VAL, temp, tempI32, tempI64 } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { inc, PTR } from '../src/ctx.js'
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __mkstr: ['__alloc'],
+    __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10'],
+    __parseInt: ['__char_at', '__str_byteLen'],
+  })
+
 
   // __pow10(n: i32) → f64 — compute 10^n via loop
   ctx.core.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)

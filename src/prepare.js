@@ -971,7 +971,7 @@ function includeModule(name) {
   if (ctx.module.modules[modName]) return
   ctx.module.modules[modName] = true  // mark before deps so cycles terminate
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
-  init(ctx)
+  init(ctx)  // modules receive ctx explicitly instead of importing it
 }
 
 /** Merge source schemas into target via Object.assign for compile-time schema inference. */
@@ -1084,78 +1084,6 @@ function collectReturns(node, out) {
 
 const isLit = n => Array.isArray(n) && n[0] == null
 
-// FIXME: is this supposed to be in subscript, not here?
-const LENIENT_ENDERS = new Set([')', ']', '"', "'", '`', '$', '}', ...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_'])
-const COMMENT_ONLY_LINE = /^\s*(?:\/\/.*)?$/
-const BANG_LINE = /^\s*!/
-const CONTROL_HEADER_LINE = /^\s*(?:if|while|for|catch)\b.*\)\s*$/
-
-function lastCodeChar(line) {
-  let quote = null
-  let escape = false
-  let last = ''
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    const next = line[i + 1]
-
-    if (quote) {
-      if (escape) {
-        escape = false
-        continue
-      }
-      if (ch === '\\') {
-        escape = true
-        continue
-      }
-      if (ch === quote) {
-        last = ch
-        quote = null
-      }
-      continue
-    }
-
-    if (ch === '/' && next === '/') break
-    if (ch === '/' && next === '*') {
-      i += 2
-      while (i < line.length && !(line[i] === '*' && line[i + 1] === '/')) i++
-      i += (i < line.length ? 1 : 0)
-      continue
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch
-      last = ch
-      continue
-    }
-    if (ch !== ' ' && ch !== '\t') last = ch
-  }
-
-  return last
-}
-
-// FIXME: this too?
-export function patchLenientASI(source) {
-  const eol = source.includes('\r\n') ? '\r\n' : '\n'
-  const lines = source
-    .replace(/\}\s*\n(\s*)\[/g, '};\n$1[')
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-
-  for (let i = 1; i < lines.length; i++) {
-    if (!BANG_LINE.test(lines[i])) continue
-
-    let prev = i - 1
-    while (prev >= 0 && COMMENT_ONLY_LINE.test(lines[prev])) prev--
-    if (prev < 0) continue
-    if (CONTROL_HEADER_LINE.test(lines[prev])) continue
-
-    const last = lastCodeChar(lines[prev])
-    if (LENIENT_ENDERS.has(last)) lines[prev] += ';'
-  }
-
-  return lines.join(eol)
-}
-
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
 function prepareModule(specifier, source) {
   includeModule('core')
@@ -1179,7 +1107,6 @@ function prepareModule(specifier, source) {
   ctx.module.currentPrefix = prefix
 
   // Parse + prepare imported source (may trigger recursive imports)
-  if (ctx.transform.lenient) source = patchLenientASI(source)
   let ast = parse(source)
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0

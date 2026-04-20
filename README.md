@@ -330,6 +330,7 @@ Not ideal for: DOM manipulation, async I/O, heavy string processing, pure scalar
 | Tail call optimization | jz | `return f(x)` → `return_call` — no stack growth for recursive calls |
 | Loop-invariant hoisting | jz | `arr.length` in `for` conditions evaluated once, cached in local |
 | Callback inlining | jz | `.map(x => x * 2)` inlined — no closure alloc, no `call_indirect` per iteration |
+| Inline closure ABI | jz | Uniform `(env, argc, a0..a7)` signature — no per-call heap args-array allocation |
 | Chain fusion | jz | `.map(f).filter(g)` → single loop, no intermediate array |
 | Monomorphic dispatch | jz | Known types skip runtime type checks for `.length`, `[]`, method calls |
 | Branchless select | jz | Pure ternaries `a ? b : c` → WASM `select` (no branching) |

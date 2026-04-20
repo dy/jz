@@ -45,113 +45,14 @@ export const derive = (parent) => ({ ...parent })
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 
-/** Stdlib call-dependency graph: fn → fns it calls internally.
- *  resolveIncludes() expands transitively before WASM assembly. */
-// FIXME: it should belong to individual modules
-export const STDLIB_DEPS = {
-  __set_has: ['__ext_has'],
-  __set_delete: [],
-  __map_set: ['__ext_set'],
-  __map_get: ['__ext_prop', '__map_set'],
-  __map_delete: [],
-
-  // number → string conversion chain
-  __mkstr: ['__alloc'],
-  __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-  __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-  __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
-
-  // string operations
-  __str_concat: ['__to_str', '__str_byteLen', '__char_at', '__alloc'],
-  __str_slice: ['__char_at', '__str_byteLen', '__alloc'],
-  __str_indexof: ['__str_byteLen', '__char_at'],
-  __str_substring: ['__str_slice'],
-  __str_startswith: ['__str_byteLen', '__char_at'],
-  __str_endswith: ['__str_byteLen', '__char_at'],
-  __str_case: ['__str_byteLen', '__char_at', '__alloc'],
-  __str_trim: ['__str_slice'],
-  __str_trimStart: ['__str_slice'],
-  __str_trimEnd: ['__str_slice'],
-  __str_repeat: ['__str_byteLen', '__char_at', '__alloc'],
-  __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
-  __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
-  __str_split: ['__str_slice'],
-  __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
-  __str_eq: ['__str_byteLen', '__char_at'],
-  __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
-  __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
-  __str_encode: ['__str_byteLen', '__char_at'],
-  __str_to_buf: ['__str_byteLen', '__char_at'],
-
-  __typeof: ['__ptr_type', '__is_nullish'],
-
-  __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
-  __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
-  __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-  __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
-  __typed_data: ['__ptr_offset', '__ptr_aux'],
-  __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
-
-  __arr_idx: ['__len', '__ptr_offset'],
-  __arr_grow: ['__dyn_move'],
-  __arr_set_idx_ptr: ['__arr_grow', '__len', '__ptr_offset', '__set_len'],
-  __typed_idx: ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset'],
-  __dyn_get: ['__hash_get_local', '__to_str', '__ptr_offset', '__is_nullish'],
-  __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
-  __dyn_get_or: ['__dyn_get'],
-  __dyn_set: ['__hash_new', '__hash_get_local', '__hash_set_local', '__to_str', '__ptr_offset', '__is_nullish'],
-  __dyn_move: ['__hash_get_local', '__hash_set_local', '__to_str', '__is_nullish'],
-  __hash_get_local: ['__str_hash', '__str_eq'],
-  __hash_set_local: ['__str_hash', '__str_eq'],
-  __eq: ['__str_eq', '__ptr_type'],
-
-  // hash operations
-  __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'],
-  __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
-  __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
-  __alloc_hdr: ['__alloc'],
-  __hash_new: ['__alloc_hdr'],
-
-  // console
-  __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str'],
-  __write_num: ['__ftoa'],
-  __write_str: ['__sso_char', '__str_len'],
-
-  // JSON stringify
-  __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num', '__mkstr'],
-  __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
-  __json_hash: ['__ptr_offset', '__jput', '__jput_str', '__json_val'],
-  __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
-  __jput_num: ['__ftoa'],
-  __jput_str: ['__char_at', '__str_byteLen'],
-
-  // JSON parse
-  __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws'],
-  __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
-  __jp_num: ['__pow10'],
-  __jp_arr: ['__jp_val'],
-  __jp_obj: ['__jp_val', '__hash_new', '__hash_set'],
-
-  // number
-  __to_num: ['__char_at', '__str_byteLen', '__pow10'],
-  __parseInt: ['__char_at', '__str_byteLen'],
-
-  // core pointer helpers (WAT-internal deps)
-  __ptr_offset: ['__ptr_type'],
-  __is_str_key: ['__ptr_type'],
-  __str_len: ['__ptr_type', '__ptr_offset'],
-  __set_len: ['__ptr_type', '__ptr_offset'],
-  __length: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__str_len', '__len'],
-  __sso_char: ['__ptr_offset'],
-  __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
-}
-
-/** Expand ctx.core.includes transitively via STDLIB_DEPS. Call before WASM assembly. */
+/** Expand ctx.core.includes transitively via ctx.core.stdlibDeps. Call before WASM assembly.
+ *  Each module co-locates its own deps with its stdlib registrations at init time. */
 export function resolveIncludes() {
+  const graph = ctx.core.stdlibDeps
   const queue = [...ctx.core.includes]
   while (queue.length) {
     const name = queue.pop()
-    const deps = STDLIB_DEPS[name]
+    const deps = graph[name]
     if (deps) for (const dep of deps) {
       if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); queue.push(dep) }
     }
@@ -164,6 +65,7 @@ export function reset(proto, globals) {
   ctx.core = {
     emit: derive(proto),
     stdlib: {},
+    stdlibDeps: {},   // populated per-module at init time (was STDLIB_DEPS in this file)
     includes: new Set(),
   }
 
@@ -198,12 +100,14 @@ export function reset(proto, globals) {
     boxed: new Map(),
     stack: [],
     uniq: 0,
+    inTry: false,
+    localProps: null,
   }
 
-  // FIXME: why is localProps lowdashed?
   ctx.types = {
     typedElem: null,
-    _localProps: null,
+    dynKeyVars: null,
+    anyDynKey: false,
   }
 
   ctx.schema = {
@@ -231,8 +135,6 @@ export function reset(proto, globals) {
     strPool: null,         // shared-memory: accumulated raw bytes of string literals (no length prefix)
     strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
-    // FIXME: why lodash
-    _inTry: false,
   }
 
   ctx.memory = {
@@ -247,7 +149,6 @@ export function reset(proto, globals) {
 
   ctx.transform = {
     jzify: null,
-    lenient: true,
   }
 }
 

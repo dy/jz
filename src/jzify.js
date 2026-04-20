@@ -17,7 +17,6 @@
  * @module jzify
  */
 
-// FIXME: instead of a bunch of conditions id prefer dict pattern like it's in prepare
 /**
  * Transform AST in-place. Returns transformed AST.
  * @param {Array} ast - subscript/jessie parsed AST
@@ -65,77 +64,55 @@ function transformScope(node) {
   return transform(node)
 }
 
-/** Transform a single AST node recursively. */
-function transform(node) {
-  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+/** Wrap function body for arrow conversion */
+function wrapArrowBody(body) {
+  const t = transformScope(body)
+  return Array.isArray(t) && (t[0] === '{}' || t[0] === ';') ? (t[0] === '{}' ? t : ['{}', t]) : ['{}', t]
+}
 
-  const [op, ...args] = node
+/** Prototype identity check: X.prototype.Y */
+const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 
-  // Literal: [, value]
-  if (op == null) return node
+const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32Array',
+  'Int16Array','Uint16Array','Int8Array','Uint8Array',
+  'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
-  // --- Named IIFE: (function name(params) { body })(args) ---
-  // → let name = (params) => { body }; name(args)
-  if (op === '()') {
-    const callee = args[0]
-    // (function name(p){b})(a) — callee is ['()', ['function', name, p, b]]
+const handlers = {
+  // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
+  '()'(callee, ...rest) {
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
-      const callArgs = args.slice(1)
-      const tBody = transformScope(body)
-      const wrappedBody = Array.isArray(tBody) && tBody[0] === '{}' ? tBody
-        : Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : ['{}', tBody]
-      const arrow = ['=>', params, wrappedBody]
-      return [';', ['let', ['=', name, arrow]], ['()', name, ...callArgs.map(transform)]]
+      return [';', ['let', ['=', name, ['=>', params, wrapArrowBody(body)]]], ['()', name, ...rest.map(transform)]]
     }
-  }
+  },
 
-  // --- function → arrow ---
-  // function(params) { body } → (params) => { body }
-  // Named: function name(params) { body } → const name = (params) => { body }
-  if (op === 'function') {
-    const [name, params, body] = args
-    // Wrap body in {} block (parser gives [';', ...] for function bodies, arrows need ['{}', ...])
-    const tBody = transformScope(body)
-    const wrappedBody = Array.isArray(tBody) && tBody[0] === '{}' ? tBody
-      : Array.isArray(tBody) && tBody[0] === ';' ? ['{}', tBody] : ['{}', tBody]
-    const arrow = ['=>', params, wrappedBody]
-    if (name) {
-      const decl = ['const', ['=', name, arrow]]
-      decl._hoisted = true // mark for hoisting
-      return decl
-    }
+  // function → arrow (named → hoisted const)
+  'function'(name, params, body) {
+    const arrow = ['=>', params, wrapArrowBody(body)]
+    if (name) { const decl = ['const', ['=', name, arrow]]; decl._hoisted = true; return decl }
     return arrow
-  }
+  },
 
-  // --- var → let ---
-  if (op === 'var') return ['let', ...args.map(transform)]
-  // var assignment form: ['=', ['var', name], init] → ['let', ['=', name, init]]
-  if (op === '=' && Array.isArray(args[0]) && args[0][0] === 'var')
-    return ['let', ['=', args[0][1], transform(args[1])]]
+  'var'(...args) { return ['let', ...args.map(transform)] },
 
-  // --- Chained property assignment: a.x = a.y = v → a.y = v; a.x = v ---
-  // Prevents nested __dyn_set calls that can corrupt memory in edge cases
-  if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && Array.isArray(args[1]) && args[1][0] === '=') {
-    const targets = []
-    let cur = node
-    while (Array.isArray(cur) && cur[0] === '=') {
-      targets.push(cur[1])
-      cur = cur[2]
+  '='(lhs, rhs) {
+    // var assignment: ['=', ['var', name], init] → let
+    if (Array.isArray(lhs) && lhs[0] === 'var')
+      return ['let', ['=', lhs[1], transform(rhs)]]
+    // Chained property assignment: a.x = a.y = v → a.y = v; a.x = v
+    if (Array.isArray(lhs) && lhs[0] === '.' && Array.isArray(rhs) && rhs[0] === '=') {
+      const targets = []
+      let cur = ['=', lhs, rhs]
+      while (Array.isArray(cur) && cur[0] === '=') { targets.push(cur[1]); cur = cur[2] }
+      const val = transform(cur)
+      const stmts = []
+      for (let i = targets.length - 1; i >= 0; i--) stmts.push(['=', transform(targets[i]), val])
+      return stmts.length === 1 ? stmts[0] : [';', ...stmts]
     }
-    // cur is the final value; targets are [a.x, a.y, a.z]
-    // emit innermost first: a.z = v, a.y = v, a.x = v
-    const val = transform(cur)
-    const stmts = []
-    for (let i = targets.length - 1; i >= 0; i--)
-      stmts.push(['=', transform(targets[i]), val])
-    return stmts.length === 1 ? stmts[0] : [';', ...stmts]
-  }
+  },
 
-  // --- switch → if/else chain ---
-  if (op === 'switch') {
-    // Strip fall-through number flags from case bodies before transform
-    const clean = args.slice(1).map(c => {
+  'switch'(disc, ...cases) {
+    const clean = cases.map(c => {
       if (c[0] === 'case' && Array.isArray(c[2]) && c[2][0] === ';') {
         const body = c[2].slice(1).filter(s => typeof s !== 'number')
         return ['case', c[1], body.length === 1 ? body[0] : [';', ...body]]
@@ -146,56 +123,43 @@ function transform(node) {
       }
       return c
     })
-    return transformSwitch(args[0], clean)
-  }
+    return transformSwitch(disc, clean)
+  },
 
-  // --- Prototype identity: X.prototype.Y comparisons → constants ---
-  // No prototype chain in WASM — a.Y !== X.prototype.Y is always false, a.Y === is always true
-  const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
+  // == → ===, != → !== (with prototype identity folding)
+  '=='(a, b) { return isProto(a) || isProto(b) ? 1 : ['===', transform(a), transform(b)] },
+  '!='(a, b) { return isProto(a) || isProto(b) ? 0 : ['!==', transform(a), transform(b)] },
+  '==='(a, b) { if (isProto(a) || isProto(b)) return 1 },
+  '!=='(a, b) { if (isProto(a) || isProto(b)) return 0 },
 
-  // --- == → ===, != → !== ---
-  if (op === '==' || op === '===' || op === '!=' || op === '!==') {
-    if (isProto(args[0]) || isProto(args[1]))
-      return (op === '!==' || op === '!=') ? 0 : 1
-  }
-
-  // --- == → ===, != → !== ---
-  if (op === '==') return ['===', transform(args[0]), transform(args[1])]
-  if (op === '!=') return ['!==', transform(args[0]), transform(args[1])]
-
-  // --- new → call (for non-TypedArray/non-builtin) ---
-  // Keep: new Float64Array, new Uint8Array, etc.
-  // Remove new: everything else (Error, etc.)
-  if (op === 'new') {
-    const [ctor, ...cargs] = args
-    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array',
-      'Int16Array','Uint16Array','Int8Array','Uint8Array',
-      'ArrayBuffer','BigInt64Array','BigUint64Array','DataView']
-    // Keep new for TypedArrays and ArrayBuffer — handle both string and ['()', name, ...] ctor forms
-    const ctorName = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-    if (typeof ctorName === 'string' && typedArrays.includes(ctorName)) return [op, ...args.map(transform)]
-    // Strip new for others: new X(args) → X(args)
-    // ctor is already ['()', name, args] from the parser, just transform it
+  // new → call (keep TypedArrays)
+  'new'(ctor, ...cargs) {
+    const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+    if (typeof name === 'string' && TYPED_ARRAYS.has(name)) return ['new', transform(ctor), ...cargs.map(transform)]
     if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
     return ['()', transform(ctor), ...cargs.map(transform)]
-  }
+  },
 
-  // --- Block body: recurse as scope for hoisting ---
-  if (op === '{}') return ['{}', ...args.map(a => transformScope(a) ?? a)]
+  // Block body: recurse as scope for hoisting
+  '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
 
-  // --- Export: recurse into exported declaration ---
-  if (op === 'export') {
-    const inner = args[0]
-    // export default function name(...) { body } → const name = arrow + export default name
+  // Export: recurse into exported declaration
+  'export'(inner) {
     if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
-      const decl = transform(inner[1]) // → ['const', ['=', name, arrow]] with _hoisted
+      const decl = transform(inner[1])
       return [';', decl, ['export', ['default', inner[1][1]]]]
     }
     return ['export', transform(inner)]
-  }
+  },
+}
 
-  // --- Default recursion ---
-  return [op, ...args.map(transform)]
+/** Transform a single AST node recursively. */
+function transform(node) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+  const [op, ...args] = node
+  if (op == null) return node
+  const h = handlers[op]
+  return (h && h(...args)) ?? (h ? [op, ...args.map(transform)] : [op, ...args.map(transform)])
 }
 
 /** Transform switch statement to if/else chain. */

@@ -11,7 +11,7 @@ import { emit, typed, asF64, valTypeOf, VAL, temp, tempI32, allocPtr, needsDynSh
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
-export default () => {
+export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
 
   // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId

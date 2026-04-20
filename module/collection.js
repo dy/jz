@@ -9,7 +9,7 @@
  */
 
 import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -207,7 +207,28 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
 }
 
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __set_has: ['__ext_has'],
+    __set_delete: [],
+    __map_set: ['__ext_set'],
+    __map_get: ['__ext_prop', '__map_set'],
+    __map_delete: [],
+    __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'],
+    __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
+    __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
+    __hash_new: ['__alloc_hdr'],
+    __hash_get_local: ['__str_hash', '__str_eq'],
+    __hash_set_local: ['__str_hash', '__str_eq'],
+    __ihash_get_local: ['__hash'],
+    __ihash_set_local: ['__hash', '__alloc_hdr', '__mkptr'],
+    __dyn_get: ['__ihash_get_local', '__hash_get_local', '__ptr_offset', '__is_nullish'],
+    __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
+    __dyn_get_or: ['__dyn_get'],
+    __dyn_set: ['__hash_new', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
+    __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
+  })
+
   inc('__ptr_offset', '__cap')
 
   if (!ctx.scope.globals.has('__dyn_props'))
@@ -303,14 +324,18 @@ export default () => {
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
+  // Outer __dyn_props hash: keyed by object offset (i32 as f64), value is per-object props hash.
+  // Uses bit-hash + f64.eq — no string allocation for the unique integer key.
+  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH)
+  ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH, true)
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (local $props f64) (local $objKey f64)
+    (local $props f64)
     (if (result f64) (f64.eq (global.get $__dyn_props) (f64.const 0))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $objKey (call $__to_str (f64.convert_i32_s (call $__ptr_offset (local.get $obj)))))
-        (local.set $props (call $__hash_get_local (global.get $__dyn_props) (local.get $objKey)))
+        (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
+          (f64.convert_i32_s (call $__ptr_offset (local.get $obj)))))
         (if (result f64) (call $__is_nullish (local.get $props))
           (then (f64.const nan:${UNDEF_NAN}))
           (else (call $__hash_get_local (local.get $props) (local.get $key)))))))`
@@ -341,24 +366,24 @@ export default () => {
       (then
         (local.set $root (call $__hash_new))
         (global.set $__dyn_props (local.get $root))))
-    (local.set $objKey (call $__to_str (f64.convert_i32_s (call $__ptr_offset (local.get $obj)))))
-    (local.set $props (call $__hash_get_local (local.get $root) (local.get $objKey)))
+    (local.set $objKey (f64.convert_i32_s (call $__ptr_offset (local.get $obj))))
+    (local.set $props (call $__ihash_get_local (local.get $root) (local.get $objKey)))
     (if (call $__is_nullish (local.get $props))
       (then
         (local.set $props (call $__hash_new))
-        (local.set $root (call $__hash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
+        (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
         (global.set $__dyn_props (local.get $root))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
-    (local.set $root (call $__hash_set_local (global.get $__dyn_props) (local.get $objKey) (local.get $props)))
+    (local.set $root (call $__ihash_set_local (global.get $__dyn_props) (local.get $objKey) (local.get $props)))
     (global.set $__dyn_props (local.get $root))
     (local.get $val))`
 
   ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32)
     (local $props f64) (local $root f64)
     (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return)))
-    (local.set $props (call $__hash_get_local (global.get $__dyn_props) (call $__to_str (f64.convert_i32_s (local.get $oldOff)))))
+    (local.set $props (call $__ihash_get_local (global.get $__dyn_props) (f64.convert_i32_s (local.get $oldOff))))
     (if (call $__is_nullish (local.get $props)) (then (return)))
-    (local.set $root (call $__hash_set_local (global.get $__dyn_props) (call $__to_str (f64.convert_i32_s (local.get $newOff))) (local.get $props)))
+    (local.set $root (call $__ihash_set_local (global.get $__dyn_props) (f64.convert_i32_s (local.get $newOff)) (local.get $props)))
     (global.set $__dyn_props (local.get $root)))`
 
   // Generated HASH probe functions

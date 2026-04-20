@@ -8,7 +8,7 @@
  */
 
 import { emit, typed, asF64, asI32, valTypeOf, VAL, UNDEF_NAN, allocPtr, mkPtrIR, temp, tempI32 } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { inc, PTR } from '../src/ctx.js'
 
 
 // Element types and their byte sizes
@@ -196,7 +196,13 @@ function genSimdMap(name, elemType, pattern) {
 }
 
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
+  })
+
   inc('__mkptr', '__alloc', '__ptr_offset', '__ptr_type', '__len')
 
   // === Runtime helpers: byte length, buffer coerce ===

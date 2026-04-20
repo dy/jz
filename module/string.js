@@ -11,10 +11,35 @@
  */
 
 import { emit, typed, asF64, asI32, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { inc, PTR } from '../src/ctx.js'
 
 
-export default () => {
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __str_concat: ['__to_str', '__str_byteLen', '__char_at', '__alloc'],
+    __str_slice: ['__char_at', '__str_byteLen', '__alloc'],
+    __str_indexof: ['__str_byteLen', '__char_at'],
+    __str_substring: ['__str_slice'],
+    __str_startswith: ['__str_byteLen', '__char_at'],
+    __str_endswith: ['__str_byteLen', '__char_at'],
+    __str_case: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_trim: ['__str_slice'],
+    __str_trimStart: ['__str_slice'],
+    __str_trimEnd: ['__str_slice'],
+    __str_repeat: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
+    __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
+    __str_split: ['__str_slice'],
+    __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
+    __str_eq: ['__str_byteLen', '__char_at'],
+    __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
+    __str_encode: ['__str_byteLen', '__char_at'],
+    __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
+    __sso_char: ['__ptr_offset'],
+    __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
+  })
+
   inc('__mkptr', '__alloc')
 
   // === String literal: "abc" → SSO if ≤4 ASCII, else heap ===
