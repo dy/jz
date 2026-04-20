@@ -122,8 +122,23 @@ const OP_MODULES = {
   '{': ['core', 'object', 'string', 'collection'],
   '//': ['core', 'string', 'regex'],
 }
-// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
-const BUILTIN_MODULES = {
+const dict = obj => Object.assign(Object.create(null), obj)
+
+const cloneNode = (node) => {
+  if (!Array.isArray(node)) return node
+  const copy = node.map(cloneNode)
+  if (node.loc != null) copy.loc = node.loc
+  return copy
+}
+
+// Call-site module inclusion. Keyed by either a bare callee name (e.g. 'parseFloat')
+// or a dotted path ('console.log'). Value is the module set to load.
+// The lookup fires from the '()' handler before scope resolution.
+// Architectural note: fully eliminating this (auto-imports via jzify) was considered but
+// rejected — Object.fromEntries needs collection+string while o.x does not, so MOD_DEPS
+// transitive inclusion alone over-loads simple paths. This table pinpoints load per callee.
+const CALL_MODULES = dict({
+  // Bare-identifier calls
   'ArrayBuffer': ['core', 'typedarray'],
   'DataView': ['core', 'typedarray'],
   'BigInt64Array': ['core', 'typedarray'],
@@ -137,39 +152,32 @@ const BUILTIN_MODULES = {
   'TextDecoder': ['core', 'string'],
   'Error': ['core', 'string'],
   'BigInt': ['number'],
+  // Namespace.method calls
+  'console.log': ['core', 'string', 'number', 'console'],
+  'console.warn': ['core', 'string', 'number', 'console'],
+  'console.error': ['core', 'string', 'number', 'console'],
   'Object.fromEntries': ['collection', 'string'],
   'Object.keys': ['string'],
-  'Object.entries': ['string']
-}
-
-const dict = obj => Object.assign(Object.create(null), obj)
-
-const cloneNode = (node) => {
-  if (!Array.isArray(node)) return node
-  const copy = node.map(cloneNode)
-  if (node.loc != null) copy.loc = node.loc
-  return copy
-}
-
-// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
-const STATIC_METHOD_MODULES = dict({
-  'console': dict({ 'log': ['core', 'string', 'number', 'console'], 'warn': ['core', 'string', 'number', 'console'], 'error': ['core', 'string', 'number', 'console'] }),
-  'Object': dict({ 'fromEntries': ['collection', 'string'], 'keys': ['string'], 'entries': ['string'] }),
-  'Date': dict({ 'now': ['core', 'console'] }),
-  'performance': dict({ 'now': ['core', 'console'] }),
-  'String': dict({ 'fromCharCode': ['core', 'string'], 'fromCodePoint': ['core', 'string'] }),
-  'BigInt': dict({ 'asIntN': ['number'], 'asUintN': ['number'] }),
-  'Float64Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Float32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Int32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Uint32Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Int16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Uint16Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Int8Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'Uint8Array': dict({ 'from': ['core', 'typedarray', 'array'] }),
-  'ArrayBuffer': dict({ 'isView': ['core', 'typedarray'] })
+  'Object.entries': ['string'],
+  'Date.now': ['core', 'console'],
+  'performance.now': ['core', 'console'],
+  'String.fromCharCode': ['core', 'string'],
+  'String.fromCodePoint': ['core', 'string'],
+  'BigInt.asIntN': ['number'],
+  'BigInt.asUintN': ['number'],
+  'Float64Array.from': ['core', 'typedarray', 'array'],
+  'Float32Array.from': ['core', 'typedarray', 'array'],
+  'Int32Array.from': ['core', 'typedarray', 'array'],
+  'Uint32Array.from': ['core', 'typedarray', 'array'],
+  'Int16Array.from': ['core', 'typedarray', 'array'],
+  'Uint16Array.from': ['core', 'typedarray', 'array'],
+  'Int8Array.from': ['core', 'typedarray', 'array'],
+  'Uint8Array.from': ['core', 'typedarray', 'array'],
+  'ArrayBuffer.isView': ['core', 'typedarray'],
 })
 
+// Method-call inclusion for unknown-receiver cases (e.g. `(x) => x.toFixed(2)`).
+// Keyed by bare method name — fires only when receiver can't be resolved to a namespace.
 const GENERIC_METHOD_MODULES = dict({
   'toString': ['core', 'string', 'number'],
   'toFixed': ['core', 'string', 'number'],
@@ -177,7 +185,8 @@ const GENERIC_METHOD_MODULES = dict({
   'toExponential': ['core', 'string', 'number'],
 })
 
-// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
+// Constructor names that users may call without `new` — `Float64Array(5)` → `new Float64Array(5)`.
+// Keeps user source ergonomic; these cannot be plain function calls in JS semantics anyway.
 const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
 
 function prep(node) {
@@ -223,8 +232,12 @@ const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not suppo
   'eval': '`eval` not supported'
 }
 
-// Global namespaces for scope resolution (value = scope alias used in ctx.core.emit[])
-// FIXME: it feels to me if we convert jzify implicit imports to explicit, we wouldn't not need this
+// Predefined globals seeded into scope.chain at ctx.reset(). Value is the scope alias
+// used in ctx.core.emit[]. Dotted lookups (Math.sin) go through the '.' handler which
+// resolves via scope.chain → module 'math' → registers 'math.sin' emitter.
+// Not actually "implicit imports" — these are ambient globals that exist in every jz/JS
+// program (they do not live in any module). jzify auto-injecting imports would still
+// need a list of these names to know what to emit, so the table lives here either way.
 export const GLOBALS = {
   Math: 'math',
   Number: 'Number',
@@ -413,8 +426,8 @@ const handlers = {
     return ['...', prep(expr)]
   },
 
-  // Prohibited ops
-  // FIXME: these are supposed to be handled by jzify, but I guess .jz cannot have them either
+  // Prohibited ops — duplicated from jzify deliberately: .jz source bypasses jzify,
+  // so prepare is the actual defense. Messages here fire for both .js and .jz.
   'async': () => err('async/await not supported: WASM is synchronous'),
   'await': () => err('async/await not supported: WASM is synchronous'),
   'class': () => err('class not supported: use object literals'),
@@ -751,9 +764,9 @@ const handlers = {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
       if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
 
-      const builtin = BUILTIN_MODULES[callee]
-      if (builtin) {
-        includeMods(...builtin)
+      const mods = CALL_MODULES[callee]
+      if (mods) {
+        includeMods(...mods)
         if (callee === 'BigInt64Array' || callee === 'BigUint64Array') {
           return ['()', callee, ...args.filter(a => a != null).map(prep)]
         }
@@ -768,9 +781,10 @@ const handlers = {
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
-      if (STATIC_METHOD_MODULES[obj]?.[prop]) {
-        includeMods(...STATIC_METHOD_MODULES[obj][prop])
-        callee = `${obj}.${prop}`
+      const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
+      if (key && CALL_MODULES[key]) {
+        includeMods(...CALL_MODULES[key])
+        callee = key
       } else if (GENERIC_METHOD_MODULES[prop]) {
         includeMods(...GENERIC_METHOD_MODULES[prop])
         callee = prep(callee)

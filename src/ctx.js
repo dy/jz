@@ -61,7 +61,6 @@ export function resolveIncludes() {
 
 /** Reset all compilation state. Called once per jz() invocation. */
 export function reset(proto, globals) {
-  // FIXME: feels like so many duplicates per group
   ctx.core = {
     emit: derive(proto),
     stdlib: {},

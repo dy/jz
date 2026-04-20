@@ -24,6 +24,7 @@
  */
 export default function jzify(ast) {
   swIdx = 0
+  argsIdx = 0
   return transformScope(ast)
 }
 
@@ -77,18 +78,70 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32
   'Int16Array','Uint16Array','Int8Array','Uint8Array',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
+// `arguments` lowering: regular `function` has implicit `arguments`; arrow doesn't.
+// jzify converts function → arrow, so any `arguments` use must be rewritten to a rest param.
+// Arrow functions inherit `arguments` from enclosing function — don't stop at '=>'.
+// Nested `function` introduces its own `arguments` — stop recursion there.
+let argsIdx = 0
+
+function usesArguments(node) {
+  if (node === 'arguments') return true
+  if (!Array.isArray(node)) return false
+  if (node[0] === 'function') return false
+  if (node[0] === '.' || node[0] === '?.') return usesArguments(node[1])
+  if (node[0] === ':') return usesArguments(node[2])
+  for (let i = 1; i < node.length; i++) if (usesArguments(node[i])) return true
+  return false
+}
+
+function renameArguments(node, to) {
+  if (node === 'arguments') return to
+  if (!Array.isArray(node)) return node
+  if (node[0] === 'function') return node
+  if (node[0] === '.' || node[0] === '?.')
+    return [node[0], renameArguments(node[1], to), node[2]]
+  if (node[0] === ':')
+    return [node[0], node[1], renameArguments(node[2], to)]
+  return node.map(n => renameArguments(n, to))
+}
+
+function paramList(params) {
+  if (params == null) return []
+  if (Array.isArray(params)) {
+    if (params[0] === '()') {
+      const inner = params[1]
+      if (inner == null) return []
+      if (Array.isArray(inner) && inner[0] === ',') return inner.slice(1)
+      return [inner]
+    }
+    if (params[0] === ',') return params.slice(1)
+  }
+  return [params]
+}
+
+function lowerArguments(params, body) {
+  if (!usesArguments(body)) return [params, body]
+  const name = `\uE001arg${argsIdx++}`
+  const items = paramList(params)
+  items.push(['...', name])
+  const inner = items.length === 1 ? items[0] : [',', ...items]
+  return [['()', inner], renameArguments(body, name)]
+}
+
 const handlers = {
   // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
   '()'(callee, ...rest) {
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
-      return [';', ['let', ['=', name, ['=>', params, wrapArrowBody(body)]]], ['()', name, ...rest.map(transform)]]
+      const [p2, b2] = lowerArguments(params, body)
+      return [';', ['let', ['=', name, ['=>', p2, wrapArrowBody(b2)]]], ['()', name, ...rest.map(transform)]]
     }
   },
 
   // function → arrow (named → hoisted const)
   'function'(name, params, body) {
-    const arrow = ['=>', params, wrapArrowBody(body)]
+    const [p2, b2] = lowerArguments(params, body)
+    const arrow = ['=>', p2, wrapArrowBody(b2)]
     if (name) { const decl = ['const', ['=', name, arrow]]; decl._hoisted = true; return decl }
     return arrow
   },
