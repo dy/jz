@@ -46,7 +46,7 @@ export default (ctx) => {
 
   ctx.core.emit['str'] = (str) => {
     const MAX_SSO = 4
-    if (str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
+    if (ctx.features.sso && str.length <= MAX_SSO && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
       return mkPtrIR(PTR.SSO, str.length, packed)

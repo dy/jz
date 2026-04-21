@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { emit, emitFlat, typed, asF64, asI32, valTypeOf, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/compile.js'
+import { emit, emitFlat, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/compile.js'
 import { inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -19,8 +19,10 @@ const INIT_CAP = 8    // initial capacity (must be power of 2)
 const f64Eq = '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 const strEq = '(call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
-/** Generate upsert (add/set) probe function. hasVal: store value at slot+16. */
-function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
+/** Generate upsert (add/set) probe function. hasVal: store value at slot+16.
+ *  hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching type).
+ *  Gated off → type mismatch just returns coll unchanged. */
+function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt) {
   const valParam = hasVal ? '(param $val f64) ' : ''
   const storeVal = hasVal ? `\n          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))` : ''
   const onMatch = hasVal
@@ -30,9 +32,12 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
   const extBranch = hasVal
     ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
     : '(then (nop))'
+  const typeGuard = hasExt
+    ? `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return (local.get $coll))))`
+    : `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (local.get $coll))))`
   return `(func $${name} (param $coll f64) (param $key f64) ${valParam}(result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return (local.get $coll))))
+    ${typeGuard}
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -54,8 +59,9 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal) {
 
 /** Generate lookup probe function.
  *  wantValue=true: return slot value, missing => NULL_NAN sentinel.
- *  wantValue=false: return i32 0/1 existence flag. */
-function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue) {
+ *  wantValue=false: return i32 0/1 existence flag.
+ *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has). */
+function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, hasExt) {
   const rt = wantValue ? 'f64' : 'i32'
   const onEmpty = wantValue
     ? `(return (f64.const nan:${NULL_NAN}))`
@@ -66,12 +72,15 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue) {
   const notFound = wantValue
     ? `(f64.const nan:${NULL_NAN})`
     : '(i32.const 0)'
+  const typeGuard = hasExt
+    ? `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL}))
+        (then (return (call $__ext_${wantValue ? 'prop' : 'has'} (local.get $coll) (local.get $key))))
+        (else ${onEmpty}))))`
+    : `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then ${onEmpty}))`
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL}))
-        (then (return (call $__ext_${wantValue ? 'prop' : 'has'} (local.get $coll) (local.get $key))))
-        (else ${onEmpty}))))
+    ${typeGuard}
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -116,15 +125,18 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
  *  strict=false: EXTERNAL → __ext_set, other non-HASH types → __dyn_set (global props).
  *  The non-strict fallback is critical for untyped variables (e.g. arrays from
  *  Object.create) that receive property writes — without it writes silently vanish. */
-function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false) {
+function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false, hasExt = false) {
+  const nonHashFallback = hasExt
+    ? `(if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL}))
+            (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)
+            (else (call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop))`
+    : `(call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop`
   const typeGuard = strict
     ? `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
       (then (return (local.get $obj))))`
     : `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
         (then
-          (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL}))
-            (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)
-            (else (call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop))
+          ${nonHashFallback}
           (return (local.get $obj))))`
   return `(func $${name} (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
@@ -208,15 +220,24 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
 
 
 export default (ctx) => {
+  // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
+  // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
+  const ifExt = (name) => () => ctx.features.external ? [name] : []
   Object.assign(ctx.core.stdlibDeps, {
-    __set_has: ['__ext_has'],
+    __set_has: ifExt('__ext_has'),
     __set_delete: [],
-    __map_set: ['__ext_set'],
-    __map_get: ['__ext_prop', '__map_set'],
+    __map_set: ifExt('__ext_set'),
+    __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set'] : ['__map_set'],
     __map_delete: [],
-    __hash_set: ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'],
-    __hash_get: ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop'],
-    __hash_has: ['__str_hash', '__str_eq', '__ptr_type', '__ext_has'],
+    __hash_set: () => ctx.features.external
+      ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set']
+      : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set'],
+    __hash_get: () => ctx.features.external
+      ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_prop']
+      : ['__str_hash', '__str_eq', '__ptr_type'],
+    __hash_has: () => ctx.features.external
+      ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_has']
+      : ['__str_hash', '__str_eq', '__ptr_type'],
     __hash_new: ['__alloc_hdr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_set_local: ['__str_hash', '__str_eq'],
@@ -224,6 +245,9 @@ export default (ctx) => {
     __ihash_set_local: ['__hash', '__alloc_hdr', '__mkptr'],
     __dyn_get: ['__ihash_get_local', '__hash_get_local', '__ptr_offset', '__is_nullish'],
     __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
+    __dyn_get_any: () => ctx.features.external
+      ? ['__dyn_get', '__hash_get_local', '__ptr_type', '__ext_prop']
+      : ['__dyn_get', '__hash_get_local', '__ptr_type'],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
@@ -253,6 +277,7 @@ export default (ctx) => {
   // === Set ===
 
   ctx.core.emit['new.Set'] = () => {
+    ctx.features.set = true
     const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag: 'set' })
     return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
@@ -277,13 +302,14 @@ export default (ctx) => {
   }
 
   // Generated Set probe functions
-  ctx.core.stdlib['__set_add'] = genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false)
-  ctx.core.stdlib['__set_has'] = genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false)
+  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false, ctx.features.external)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq, PTR.SET)
 
   // === Map ===
 
   ctx.core.emit['new.Map'] = () => {
+    ctx.features.map = true
     const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY, tag: 'map' })
     return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
@@ -299,8 +325,8 @@ export default (ctx) => {
   }
 
   // Generated Map probe functions
-  ctx.core.stdlib['__map_set'] = genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true)
-  ctx.core.stdlib['__map_get'] = genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true)
+  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
@@ -359,6 +385,28 @@ export default (ctx) => {
           (then (call $__hash_get_local (local.get $obj) (local.get $key)))
           (else (f64.const nan:${NULL_NAN}))))))`
 
+  // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.
+  // Used at call sites where receiver type is statically unknown.
+  // When features.external is off, collapses to __dyn_get_expr shape (no EXTERNAL probe).
+  ctx.core.stdlib['__dyn_get_any'] = () => {
+    const extArm = ctx.features.external
+      ? `(else (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+            (then (call $__ext_prop (local.get $obj) (local.get $key)))
+            (else (f64.const nan:${NULL_NAN}))))`
+      : `(else (f64.const nan:${NULL_NAN}))`
+    return `(func $__dyn_get_any (param $obj f64) (param $key f64) (result f64)
+    (local $val f64) (local $t i32)
+    (local.set $val (call $__dyn_get (local.get $obj) (local.get $key)))
+    (if (result f64)
+      (i64.ne (i64.reinterpret_f64 (local.get $val)) (i64.const ${UNDEF_NAN}))
+      (then (local.get $val))
+      (else
+        (local.set $t (call $__ptr_type (local.get $obj)))
+        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+          (then (call $__hash_get_local (local.get $obj) (local.get $key)))
+          ${extArm}))))`
+  }
+
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $objKey f64)
     (local.set $root (global.get $__dyn_props))
@@ -387,15 +435,13 @@ export default (ctx) => {
     (global.set $__dyn_props (local.get $root)))`
 
   // Generated HASH probe functions
-  ctx.core.stdlib['__hash_set'] = genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
-  ctx.core.stdlib['__hash_get'] = genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
-  ctx.core.stdlib['__hash_has'] = genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false)
+  ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external)
+  ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true, ctx.features.external)
+  ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external)
 
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {
-    const objType = typeof obj === 'string'
-      ? (ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj))
-      : valTypeOf(obj)
+    const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
 
     if (Array.isArray(key) && key[0] === 'str') {
       const prop = key[1]
@@ -440,7 +486,8 @@ export default (ctx) => {
               ['i32.eq', typeVal, ['i32.const', PTR.MAP]]],
             ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]]]]]]
 
-    inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__ext_has', '__is_str_key', '__to_str', '__dyn_get', '__is_nullish')
+    inc('__ptr_type', '__len', '__str_byteLen', '__hash_has', '__is_str_key', '__to_str', '__dyn_get', '__is_nullish')
+    if (ctx.features.external) inc('__ext_has')
 
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
@@ -472,8 +519,8 @@ export default (ctx) => {
             ['then', ['call', '$__hash_has', objVal, keyVal]],
             ['else', ['call', '$__hash_has', objVal, ['call', '$__to_str', keyVal]]]]]]],
 
-      ['if', ['i32.eq', typeVal, ['i32.const', 2]],
-        ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has', objVal, keyVal]]]],
+      ...(ctx.features.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
+        ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has', objVal, keyVal]]]]] : []),
 
       ['local.get', `$${outTmp}`]], 'i32')
   }

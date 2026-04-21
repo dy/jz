@@ -1,9 +1,34 @@
 /**
  * jz - JS subset → WASM compiler.
  *
- * Pipeline: parse(subscript) → prepare(AST) → compile(AST) → watr → binary
- * State: shared ctx object (src/ctx.js), reset per call
- * Extension: modules register emitters on ctx.core.emit (see module/)
+ * # Pipeline stages + contracts
+ *
+ *   source (string)
+ *     ↓  parse (subscript/jessie) — lexing + expression-oriented AST
+ *   raw AST: nested arrays `[op, ...args]`, no ctx mutation
+ *     ↓  jzify (opt-in via opts.jzify) — lower full-JS subset (var/function/class/switch) to jz-native
+ *   desugared AST: arrow functions + let/const/if only
+ *     ↓  prepare — validate (reject disallowed ops), normalize (++/--→+=/-=, scope rename),
+ *        extract (functions→ctx.func.list with sig), resolve (imports→ctx.module.imports),
+ *        track (object-literal schemas via ctx.schema.register)
+ *   prepared AST: normalized, with `ctx.func.list` / `ctx.module.imports` / `ctx.schema.list`
+ *     populated. Arrow bodies carry no type info yet.
+ *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
+ *        narrowing fixpoint) with IR generation via the emitter table (src/emit.js).
+ *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
+ *        Also calls optimizeFunc (src/optimize.js): `hoistPtrType` + `foldMemargOffsets`.
+ *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
+ *     ↓  watrOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
+ *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
+ *
+ * # State
+ * Single shared `ctx` (src/ctx.js). Reset at compile() entry via `reset(emitter, GLOBALS)`.
+ * Each subkey has a declared lifecycle + ownership — see ctx.js docstring for the table.
+ *
+ * # Extension
+ * Modules in module/ register operator handlers on ctx.core.emit and stdlibs on ctx.core.stdlib.
+ * Feature flags (ctx.features.*) gate conditional stdlib branches for dead-code elimination.
+ * Capability hooks (ctx.schema.register, ctx.closure.make) are installed by capability modules.
  *
  * Interop runtime (memory marshaling, wrap, instantiate) lives in src/runtime.js.
  *
@@ -58,7 +83,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.memory) ctx.memory.shared = true
   if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
   if (opts.modules) ctx.module.importSources = opts.modules
-  if (opts.imports) ctx.module.hostImports = opts.imports
+  if (opts.imports) { ctx.module.hostImports = opts.imports; ctx.features.external = true }
   // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
   // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
   if (opts.jzify) ctx.transform.jzify = jzify
@@ -66,6 +91,7 @@ jz.compile = (code, opts = {}) => {
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue;
+      ctx.features.external = true
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
     }

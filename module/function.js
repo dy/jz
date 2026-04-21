@@ -10,7 +10,7 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, lookupValType } from '../src/compile.js'
 import { PTR, inc, err } from '../src/ctx.js'
 
 
@@ -45,7 +45,7 @@ export default (ctx) => {
     const captureSchemaVars = new Map()
     const captureTypedElems = new Map()
     for (const name of captures) {
-      const vt = ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name)
+      const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
       const schemaId = ctx.schema.vars.get(name)
       if (schemaId != null) captureSchemaVars.set(name, schemaId)
@@ -68,6 +68,7 @@ export default (ctx) => {
     const tableIdx = addToTable(fnName)
 
     // At call site: allocate env, store captured values, return NaN-boxed pointer
+    ctx.features.closure = true
     if (captures.length === 0) {
       // No captures — just a function reference
       return mkPtrIR(PTR.CLOSURE, tableIdx, 0)
@@ -119,8 +120,9 @@ export default (ctx) => {
       setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['local.get', `$${arrPtrF64}`]]])
       setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrPtrF64}`]]])
 
+      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
       const slots = []
-      for (let i = 0; i < MAX_CLOSURE_ARITY; i++) {
+      for (let i = 0; i < W; i++) {
         slots.push(['if', ['result', 'f64'],
           ['i32.gt_s', ['local.get', `$${lenL}`], ['i32.const', i]],
           ['then', ['f64.load', ['i32.add', ['local.get', `$${arrT}`], ['i32.const', i * 8]]]],
@@ -139,9 +141,10 @@ export default (ctx) => {
     // Inline path: emit each arg, pad missing slots with UNDEF
     const n = args.length
     if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+    const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
     for (let i = 0; i < n; i++) slots.push(asF64(args[i]?.type ? args[i] : emit(args[i])))
-    for (let i = n; i < MAX_CLOSURE_ARITY; i++) slots.push(UNDEF_LIT())
+    for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
 
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(closureExpr)],

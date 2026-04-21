@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
@@ -208,9 +208,7 @@ export default (ctx) => {
 
   // Object.create(proto) → shallow copy of object (same schema, copied properties)
   ctx.core.emit['Object.create'] = (proto) => {
-    const protoType = typeof proto === 'string'
-      ? (ctx.func.valTypes?.get(proto) || ctx.scope.globalValTypes?.get(proto))
-      : valTypeOf(proto)
+    const protoType = typeof proto === 'string' ? lookupValType(proto) : valTypeOf(proto)
     if (protoType === VAL.ARRAY) {
       // Clone array data + link named-prop sidecar so for-in/bracket-name lookups
       // keep working after Object.create (watr's ctx.local = Object.create(param) pattern).

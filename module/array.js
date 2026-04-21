@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/compile.js'
 import { ctx, inc, PTR } from '../src/ctx.js'
 
 
@@ -137,8 +137,15 @@ export default (ctx) => {
     __arr_idx: ['__len', '__ptr_offset'],
     __arr_grow: ['__dyn_move'],
     __arr_set_idx_ptr: ['__arr_grow', '__len', '__ptr_offset', '__set_len'],
-    __typed_idx: ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset'],
+    __typed_idx: () => ctx.features.typedarray || ctx.features.external
+      ? ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset']
+      : ['__len', '__ptr_offset'],
   })
+
+  // Iteration methods (.map/.filter/.reduce/.forEach/...) invoke callbacks with
+  // (item, idx) internally — closure width must accommodate arity 2 even if no
+  // source-level closure has that arity.
+  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
 
   inc('__ptr_offset', '__ptr_type', '__len', '__set_len', '__typed_idx', '__is_truthy')
 
@@ -164,9 +171,22 @@ export default (ctx) => {
             (i32.shl (local.get $i) (i32.const 3)))))))`
 
   // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
-  // Must handle all typed array element types since external host can pass typed arrays
-  // even when typedarray module isn't loaded. typedarray.js registers identical version.
-  ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+  // Full body handles TYPED element types and view indirection since external host can
+  // pass typed arrays even when typedarray module isn't loaded. When features.typedarray
+  // and features.external are both off, collapses to ARRAY-only f64 indexing.
+  ctx.core.stdlib['__typed_idx'] = () => {
+    if (!ctx.features.typedarray && !ctx.features.external) {
+      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+    (local $len i32)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.const nan:${UNDEF_NAN}))
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
+    }
+    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -201,6 +221,7 @@ export default (ctx) => {
                     (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                     (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
+  }
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
   ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
@@ -340,13 +361,11 @@ export default (ctx) => {
       const result = ctx.core.emit['[]'](h, idx)
       return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')
     }
-    const keyType = typeof idx === 'string'
-      ? (ctx.func.valTypes?.get(idx) || ctx.scope.globalValTypes?.get(idx))
-      : valTypeOf(idx)
+    const keyType = typeof idx === 'string' ? lookupValType(idx) : valTypeOf(idx)
     const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
     // TypedArray: type-aware load
     if (typeof arr === 'string' && ctx.core.emit['.typed:[]'] &&
-        (ctx.func.valTypes?.get(arr) === 'typed' || ctx.scope.globalValTypes?.get(arr) === 'typed')) {
+        lookupValType(arr) === 'typed') {
       const r = ctx.core.emit['.typed:[]'](arr, idx)
       if (r) return r
     }
@@ -362,9 +381,7 @@ export default (ctx) => {
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
-    const vt = typeof arr === 'string'
-      ? (ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr))
-      : valTypeOf(arr)
+    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
     const dynLoad = (objExpr, keyExpr) => {
@@ -884,7 +901,7 @@ export default (ctx) => {
   ctx.core.emit['.slice'] = (arr, start, end) => {
     // BUFFER slice → byte-level copy handled in typedarray module.
     if (typeof arr === 'string') {
-      const vt = ctx.func.valTypes?.get(arr) || ctx.scope.globalValTypes?.get(arr)
+      const vt = lookupValType(arr)
       if (vt === 'buffer' && ctx.core.emit['.buf:slice']) return ctx.core.emit['.buf:slice'](arr, start, end)
     }
     const recv = hoistArrayValue(arr)

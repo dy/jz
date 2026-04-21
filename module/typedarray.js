@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, UNDEF_NAN, allocPtr, mkPtrIR, temp, tempI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, UNDEF_NAN, allocPtr, mkPtrIR, temp, tempI32 } from '../src/compile.js'
 import { inc, PTR } from '../src/ctx.js'
 
 
@@ -203,6 +203,9 @@ export default (ctx) => {
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
   })
 
+  // .map/.filter invoke callbacks with arity 1 internally.
+  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 1)
+
   inc('__mkptr', '__alloc', '__ptr_offset', '__ptr_type', '__len')
 
   // === Runtime helpers: byte length, buffer coerce ===
@@ -252,9 +255,8 @@ export default (ctx) => {
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
-      const srcType = typeof lenExpr === 'string'
-        ? (ctx.func.valTypes?.get(lenExpr) || ctx.scope.globalValTypes?.get(lenExpr))
-        : valTypeOf(lenExpr)
+      ctx.features.typedarray = true
+      const srcType = typeof lenExpr === 'string' ? lookupValType(lenExpr) : valTypeOf(lenExpr)
       // Subview: new TypedArray(buffer, byteOffset, length) — true JS-parity view.
       // Allocates a 16-byte descriptor [byteLen:i32][dataOff:i32][parentOff:i32][pad]
       // and tags the TYPED ptr with aux=elemType|8. Reads/writes alias the parent,
@@ -339,6 +341,7 @@ export default (ctx) => {
 
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
+    ctx.features.typedarray = true
     const va = asF64(emit(bufExpr))
     return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', va])
   }
@@ -503,6 +506,7 @@ export default (ctx) => {
   for (const [name, elemType] of Object.entries(ELEM)) {
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
+      ctx.features.typedarray = true
       const srcL = temp('tfs')
       const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
       const out = allocPtr({ type: PTR.TYPED, aux: elemType,
@@ -555,7 +559,21 @@ export default (ctx) => {
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
-  ctx.core.stdlib['__typed_idx'] = `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+  // Factory — collapses to ARRAY-only f64 indexing when no TYPED pointer can reach here.
+  // Identical factory in array.js; whichever module loads last wins the registration.
+  ctx.core.stdlib['__typed_idx'] = () => {
+    if (!ctx.features.typedarray && !ctx.features.external) {
+      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+    (local $len i32)
+    (local.set $len (call $__len (local.get $ptr)))
+    (if (result f64)
+      (i32.or
+        (i32.lt_s (local.get $i) (i32.const 0))
+        (i32.ge_u (local.get $i) (local.get $len)))
+      (then (f64.const nan:${UNDEF_NAN}))
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
+    }
+    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -590,6 +608,7 @@ export default (ctx) => {
                     (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                     (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
+  }
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, idx) => {

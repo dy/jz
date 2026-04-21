@@ -1,12 +1,23 @@
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
- * These run before emit and build metadata that guides code generation:
- * - VAL/valTypeOf: what value type (array, string, number, etc.) an expression produces
- * - analyzeValTypes: populate ctx.func.valTypes for method dispatch
- * - analyzeLocals: determine WASM local types (i32 vs f64) from declaration patterns
- * - analyzeBoxedCaptures: find mutably-captured vars that need memory cells
- * - extractParams/classifyParam/collectParamNames: normalize arrow param AST
+ * # Stage contract
+ *   IN:  prepared AST + ctx.func.list (from prepare).
+ *   OUT: per-function populated `ctx.func.valTypes` + `ctx.func.locals` + `ctx.func.boxed`,
+ *        module-global `ctx.scope.globalValTypes`, type-analysis `ctx.types.typedElem` /
+ *        `.dynKeyVars` / `.anyDynKey`.
+ *
+ * # Passes (all walk AST; none mutate AST itself — only ctx)
+ *   - valTypeOf:           expression-level value-type inference (pure)
+ *   - lookupValType:       name→VAL.* resolver (func scope ∪ global scope)
+ *   - collectValTypes:     pure pass — returns a types map (for caller-local analysis)
+ *   - analyzeValTypes:     ctx-mutating pass — writes types + tracks regex/typed + localProps
+ *   - analyzeLocals:       name→'i32'|'f64' dataflow, two-pass (assignments + widenPass)
+ *   - analyzeDynKeys:      cross-function scan for `obj[runtimeKey]` → sets ctx.types.dynKeyVars
+ *   - analyzeBoxedCaptures:detect mutably-captured vars → ctx.func.boxed cells
+ *   - extractParams/classifyParam/collectParamNames: arrow param AST normalization helpers
+ *
+ * Ordering: analyzeDynKeys runs once per compile; others run per function during compile().
  *
  * @module analyze
  */
@@ -28,12 +39,16 @@ export const VAL = {
   BIGINT: 'bigint', BUFFER: 'buffer',
 }
 
+/** Look up value type for a variable name: function-local scope first, then module-global scope. */
+export const lookupValType = name =>
+  ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
+
 /** Infer value type of an AST expression (without emitting). */
 export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
   if (typeof expr === 'bigint') return VAL.BIGINT
-  if (typeof expr === 'string') return ctx.func.valTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+  if (typeof expr === 'string') return lookupValType(expr)
   if (!Array.isArray(expr)) return null
 
   const [op, ...args] = expr

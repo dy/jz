@@ -7,7 +7,7 @@
  * @module schema
  */
 
-import { emit, typed, asF64, VAL } from '../src/compile.js'
+import { emit, typed, asF64, VAL, lookupValType } from '../src/compile.js'
 import { err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -69,7 +69,7 @@ export function initSchema(ctx) {
     // Known non-object pointer-backed values must use dynamic property lookup,
     // not structural object schemas registered elsewhere in the function.
     if (typeof varName === 'string') {
-      const vt = ctx.func.valTypes?.get(varName) || ctx.scope.globalValTypes?.get(varName)
+      const vt = lookupValType(varName)
       if (vt != null && vt !== VAL.OBJECT) return -1
       if (safe && vt !== VAL.OBJECT) return -1
     }

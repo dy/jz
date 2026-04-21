@@ -8,6 +8,12 @@
  */
 
 // === NaN-boxing pointer type codes ===
+// SEALED: 4-bit tag (values 0-15). Layout is hardcoded in dispatch funcs
+// (__length/__typeof/__to_str/__ptr_type) and the static-data strip pass
+// ([src/compile.js] SHIFTABLE). No plugin/extension API — internal A/B
+// measurement goes through `ctx.features.*` flags instead (see reset()).
+// To retire a type, gate emission behind a feature flag and drop its dispatch
+// branches; to add, renumber with care — all hardcoded branches must update.
 export const PTR = {
   ATOM: 0,      // null, undefined, booleans
   ARRAY: 1,     // heap-allocated arrays
@@ -24,18 +30,42 @@ export const PTR = {
 }
 
 // === Global context with nested sub-contexts ===
+// Each namespace has a single lifecycle phase and clear ownership. Violating
+// these boundaries (e.g. emit writing to ctx.scope) signals a design smell.
+//
+// Lifecycle phases (reset() at phase start):
+//   init     — once at boot (reset() on first jz() call)
+//   compile  — per jz() invocation
+//   function — per function being lowered
+//   emit     — transient during a single AST→IR dispatch
+//
+// | Namespace | Phase    | Writers                   | Readers                    |
+// |-----------|----------|---------------------------|----------------------------|
+// | core      | compile  | reset, modules, inc()     | emit, compile, modules     |
+// | module    | compile  | prepare, index.js         | prepare, compile, emit     |
+// | scope     | compile  | analyze, compile          | compile, emit              |
+// | func      | function | compile                   | emit, modules              |
+// | types     | function | analyze                   | emit, modules              |
+// | schema    | compile  | prepare, analyze, compile | prepare, analyze, emit     |
+// | closure   | init     | modules (fn plugin)       | emit, compile              |
+// | runtime   | compile  | emit, modules             | emit, compile              |
+// | memory    | compile  | index.js                  | compile                    |
+// | error     | compile  | prepare, compile, emit    | err()                      |
+// | transform | compile  | index.js                  | prepare                    |
+// | features  | compile  | emit, modules, prepare    | compile (resolveIncludes), |
+// |           |          |                           | stdlib factories           |
 export const ctx = {
-  core: {},       // Core Compilation (rarely reset)
-  module: {},     // Module Resolution (per-compile reset)
-  scope: {},      // Scope & Bindings (per-compile reset)
-  func: {},       // Function State (per-function reset)
-  types: {},      // Type System (per-function reset)
-  schema: {},     // Object Schema (per-compile reset)
-  closure: {},    // Closures (initialized once, used per-compile)
-  runtime: {},    // Runtime Support (initialized once)
-  memory: {},     // Memory Configuration (per-compile)
-  error: {},      // Error Context (set during compilation)
-  transform: {},  // Transform State
+  core: {},       // emitter table + stdlib registry (seeded by reset + modules)
+  module: {},     // module graph: imports, resolved sources, module-init blocks
+  scope: {},      // bindings: globals, consts, typed-elem ctors per global
+  func: {},       // current function: locals, signature, name registry, uniq counter
+  types: {},      // per-function type analysis: typedElem map, dyn-key vars
+  schema: {},     // object shape inference: var→schema, schema list
+  closure: {},    // first-class fn infrastructure (installed by module/function.js)
+  runtime: {},    // runtime state: data segments, string pool, atom table, throws flag
+  memory: {},     // module memory config (pages, shared)
+  error: {},      // source location carried through emit for err() messages
+  transform: {},  // compile-time options (jzify, etc.)
 }
 
 /** Create a child scope via shallow flat copy (metacircular-safe: no prototype chain).
@@ -52,7 +82,8 @@ export function resolveIncludes() {
   const queue = [...ctx.core.includes]
   while (queue.length) {
     const name = queue.pop()
-    const deps = graph[name]
+    const entry = graph[name]
+    const deps = typeof entry === 'function' ? entry() : entry
     if (deps) for (const dep of deps) {
       if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); queue.push(dep) }
     }
@@ -92,6 +123,8 @@ export function reset(proto, globals) {
 
   ctx.func = {
     list: [],
+    names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
+    map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
     exports: {},
     current: null,
     locals: new Map(),
@@ -148,6 +181,33 @@ export function reset(proto, globals) {
 
   ctx.transform = {
     jzify: null,
+  }
+
+  // Feature flags: capabilities the compiled module may exercise at runtime.
+  // Set true by producer sites (import points, auto-imports, dynamic call sites).
+  // Read by stdlib template factories and deps graph at resolveIncludes() time to
+  // elide dead branches / skip unused imports. All default false; templates must be
+  // safe when flag is off (i.e. no way to produce a value of the gated kind).
+  //
+  // Only `external` is wired into emission today. The rest are slots for future
+  // work — most are currently usage-gated organically by `inc()`/stdlibDeps (a
+  // stdlib only lands in the binary if something called inc() for it, directly
+  // or transitively). Promote them here when one of two conditions holds:
+  //   (a) a stdlib has dead conditional branches that can be elided when off
+  //       (how `external` saves bytes in __hash_*/__set_*/__map_*/__dyn_get_any)
+  //   (b) a capability needs an opt-in A/B switch against the default path
+  //       (SSO is the planned first user — default string-literal emission
+  //       currently forces SSO for ≤4 ASCII chars at string.js:49)
+  ctx.features = {
+    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site. WIRED.
+    hash: false,      // PTR.HASH + __dyn_* substrate. Organic: any inc(__hash_*/__dyn_*) implies on.
+    sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
+    regex: false,     // RegExp literals + methods. Organic via inc(__regex_*).
+    json: false,      // JSON.parse/stringify. Organic via inc(__jp_*/__json_*).
+    typedarray: false,// Float64Array/Int32Array/etc. Organic via inc(__typed_*) + ctx.closure.floor.
+    set: false,       // Set. Organic via inc(__set_*).
+    map: false,       // Map. Organic via inc(__map_*).
+    closure: false,   // First-class functions. Organic via ctx.closure.table population.
   }
 }
 

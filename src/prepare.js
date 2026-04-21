@@ -1,7 +1,14 @@
 /**
  * AST preparation: single-pass traversal that validates, resolves, and normalizes.
  *
- * Distinct concerns, applied per-node via a handler table:
+ * # Stage contract
+ *   IN:  raw jessie AST from subscript/jessie (possibly jzified).
+ *   OUT: normalized AST + populated `ctx.func.list`, `ctx.module.imports`, `ctx.schema.list`,
+ *        `ctx.scope.consts`, `ctx.module.moduleInits`.
+ *   POST: no `var`/`function`/`class`/`this` remain; ++/-- rewritten as +=/-=; arrow
+ *        bodies carry no type metadata yet (that's analyze/compile's job).
+ *
+ * # Concerns (per-node handler table, applied together per op)
  *   1. Validate      — reject prohibited features (this, class, async, var, delete, ...)
  *   2. Resolve       — scope chain + import bindings (Math.sin → math.sin, etc.)
  *   3. Extract       — arrow functions → ctx.func.list with sig

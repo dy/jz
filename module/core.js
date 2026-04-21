@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps } from '../src/compile.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
@@ -26,7 +26,12 @@ export default (ctx) => {
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset'],
     __set_len: ['__ptr_type', '__ptr_offset'],
-    __length: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__str_len', '__len'],
+    __length: () => {
+      const d = ['__ptr_type', '__ptr_offset', '__str_len', '__len']
+      if (ctx.features.sso) d.push('__ptr_aux')
+      return d
+    },
+    __typeof: ['__ptr_type', '__is_nullish'],
     __alloc_hdr: ['__alloc'],
   })
 
@@ -312,8 +317,14 @@ export default (ctx) => {
     // Known string → byteLen (handles SSO + heap)
     if (vt === VAL.STRING)
       return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
-    // Unknown → runtime dispatch via stdlib (avoids block nesting issues in statement context)
+    // Unknown → runtime dispatch via stdlib. Receiver could be any ptr-bearing type;
+    // enable the type-specific __length branches so the dispatch handles them.
+    // Host-passed values (via jz.memory or direct export calls) may carry types
+    // producers didn't flag, so this flip is unconditional for correctness.
     inc('__length')
+    ctx.features.typedarray = true
+    ctx.features.set = true
+    ctx.features.map = true
     return typed(['call', '$__length', va], 'f64')
   }
 
@@ -330,17 +341,15 @@ export default (ctx) => {
     const key = asF64(emit(['str', prop]))
     if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)
     if (typeof obj === 'string') {
-      const vt = ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj)
+      const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
         inc('__dyn_get_expr')
         return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
       }
       if (vt == null) {
-        inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
-        return typed(['if', ['result', 'f64'],
-          ['i32.eq', ['call', '$__ptr_type', asF64(va)], ['i32.const', PTR.EXTERNAL]],
-          ['then', ['call', '$__hash_get', asF64(va), key]],
-          ['else', ['call', '$__dyn_get_expr', asF64(va), key]]], 'f64')
+        inc('__dyn_get_any')
+        ctx.features.external = true
+        return typed(['call', '$__dyn_get_any', asF64(va), key], 'f64')
       }
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['call', '$__hash_get', asF64(va), key], 'f64')
@@ -349,32 +358,46 @@ export default (ctx) => {
     return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
   }
 
-  // Runtime .length dispatch as a stdlib function (avoids block nesting issues)
-  ctx.core.stdlib['__length'] = `(func $__length (param $v f64) (result f64)
+  // Runtime .length dispatch — factory elides branches for types that can't exist in
+  // this program (features.* + hash-stdlib presence). ARRAY is always live; STRING and
+  // number are always dispatched. SSO branch elided when features.sso is off. The __len
+  // disjunction collapses to whichever of ARRAY/TYPED/HASH/SET/MAP are reachable.
+  ctx.core.stdlib['__length'] = () => {
+    const types = [PTR.ARRAY]
+    if (ctx.features.typedarray) types.push(PTR.TYPED)
+    if (ctx.core.includes.has('__hash_new') || ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
+      types.push(PTR.HASH)
+    if (ctx.features.set) types.push(PTR.SET)
+    if (ctx.features.map) types.push(PTR.MAP)
+    const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`
+    let disj = eqT(types[0])
+    for (let i = 1; i < types.length; i++) disj = `(i32.or ${disj} ${eqT(types[i])})`
+    const lenArm = `(if (result f64) ${disj}
+              (then
+                (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
+                  (then (f64.convert_i32_s (call $__len (local.get $v))))
+                  (else (f64.const nan:${UNDEF_NAN}))))
+              (else (f64.const nan:${UNDEF_NAN})))`
+    const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+            (then
+              (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
+                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
+                (else (f64.const nan:${UNDEF_NAN}))))
+            (else ${lenArm}))`
+    const afterNumber = ctx.features.sso
+      ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
+          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
+          (else ${stringArm}))`
+      : stringArm
+    return `(func $__length (param $v f64) (result f64)
     (local $t i32) (local $off i32)
-    ;; Plain numbers are not NaN-box pointers; .length should be undefined.
     (if (result f64) (f64.eq (local.get $v) (local.get $v))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $t (call $__ptr_type (local.get $v)))
         (local.set $off (call $__ptr_offset (local.get $v)))
-        (if (result f64) (i32.eq (local.get $t) (i32.const 5))
-          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
-          (else (if (result f64) (i32.eq (local.get $t) (i32.const 4))
-            (then
-              (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
-                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-                (else (f64.const nan:${UNDEF_NAN}))))
-            (else (if (result f64)
-              (i32.or
-                (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
-                (i32.or (i32.eq (local.get $t) (i32.const 7))
-                  (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9)))))
-              (then
-                (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
-                  (then (f64.convert_i32_s (call $__len (local.get $v))))
-                  (else (f64.const nan:${UNDEF_NAN}))))
-              (else (f64.const nan:${UNDEF_NAN}))))))))))`
+        ${afterNumber})))`
+  }
 
   // === Property dispatch (.length, .prop) ===
 
@@ -416,16 +439,14 @@ export default (ctx) => {
       }
       else {
         if (typeof obj === 'string') {
-          const objType = ctx.func.valTypes?.get(obj) || ctx.scope.globalValTypes?.get(obj)
+          const objType = lookupValType(obj)
           if (usesDynProps(objType)) {
             inc('__dyn_get_expr')
             access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
           } else if (objType == null) {
-            inc('__dyn_get_expr', '__hash_get', '__str_hash', '__str_eq')
-            access = ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.EXTERNAL]],
-              ['then', ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]],
-              ['else', ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]]]
+            inc('__dyn_get_any')
+            ctx.features.external = true
+            access = ['call', '$__dyn_get_any', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
             access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
@@ -475,31 +496,33 @@ export default (ctx) => {
         ctx.scope.globals.set(`__tof_${s}`, `(global $__tof_${s} (mut f64) (f64.const 0))`)
     }
     inc('__typeof')
+    // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
+    ctx.features.closure = true
     return typed(['call', '$__typeof', asF64(emit(a))], 'f64')
   }
 
-  ctx.core.stdlib['__typeof'] = `(func $__typeof (param $v f64) (result f64)
+  ctx.core.stdlib['__typeof'] = () => {
+    const stringTest = ctx.features.sso
+      ? `(i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO})))`
+      : `(i32.eq (local.get $t) (i32.const ${PTR.STRING}))`
+    const closureArm = ctx.features.closure
+      ? `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
+      (then (return (global.get $__tof_function))))`
+      : ''
+    return `(func $__typeof (param $v f64) (result f64)
     (local $t i32)
-    ;; Plain number: x === x (NaN-boxed pointers are quiet NaNs, fail self-equality)
     (if (f64.eq (local.get $v) (local.get $v))
       (then (return (global.get $__tof_number))))
-    ;; Nullish (both null and undefined NAN values) → 'undefined'
     (if (call $__is_nullish (local.get $v))
       (then (return (global.get $__tof_undefined))))
     (local.set $t (call $__ptr_type (local.get $v)))
-    ;; String (heap) or SSO → 'string'
-    (if (i32.or
-          (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-          (i32.eq (local.get $t) (i32.const ${PTR.SSO})))
+    (if ${stringTest}
       (then (return (global.get $__tof_string))))
-    ;; Closure → 'function'
-    (if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
-      (then (return (global.get $__tof_function))))
-    ;; ATOM (non-nullish) → 'symbol'
+    ${closureArm}
     (if (i32.eqz (local.get $t))
       (then (return (global.get $__tof_symbol))))
-    ;; Everything else (array, object, hash, set, map, typed, buffer, external) → 'object'
     (global.get $__tof_object))`
+  }
 
   // === Schema helpers (centralized in module/schema.js) ===
   initSchema(ctx)
