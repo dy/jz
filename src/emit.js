@@ -654,14 +654,21 @@ export const emitter = {
   )])),
   '%=': (name, val) => compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32')),
 
-  // Bitwise compound assignments: read-modify-write in i32 via compoundAssign
+  // Bitwise compound assignments: i32 normally, i64 when either operand is BigInt
   ...Object.fromEntries([
     ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
     ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
-  ].map(([op, fn]) => [op, (name, val) => compoundAssign(name, val,
-    (a, b) => asF64(typed([`i32.${fn}`, toI32(a), toI32(b)], 'i32')),
-    (a, b) => typed([`i32.${fn}`, a, b], 'i32')
-  )])),
+  ].map(([op, fn]) => [op, (name, val) => {
+    if (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT) {
+      const void_ = _expect === 'void'
+      const result = fromI64([`i64.${fn}`, asI64(readVar(name)), asI64(emit(val))])
+      return writeVar(name, result, void_)
+    }
+    return compoundAssign(name, val,
+      (a, b) => asF64(typed([`i32.${fn}`, toI32(a), toI32(b)], 'i32')),
+      (a, b) => typed([`i32.${fn}`, a, b], 'i32')
+    )
+  }])),
 
   // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
   // Logical/nullish compound assignments: read → check → conditionally write

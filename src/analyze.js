@@ -462,6 +462,7 @@ export function analyzeBoxedCaptures(body) {
     for (const a of args) collectDecls(a)
   })(body)
   if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
+  if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
 
   ;(function walk(node, assignTarget) {
     if (!Array.isArray(node)) return
@@ -478,7 +479,7 @@ export function analyzeBoxedCaptures(body) {
       const mutated = new Set()
       findMutations(body, captureSet, mutated)
       if (assignTarget && captureSet.has(assignTarget)) mutated.add(assignTarget)
-      for (const v of mutated) ctx.func.boxed.set(v, `${T}cell_${v}`)
+      for (const v of mutated) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
       return
     }
     if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')

@@ -14,6 +14,7 @@
  * Passes:
  *   foldMemargOffsets — `(load (i32.add base (i32.const N)) …)` → `(load offset=N base …)` (~2 B/site)
  *   hoistPtrType      — repeated `(call $__ptr_type X)` on same X → single local.tee + local.get reuse
+ *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
  *   hoistConstantPool — frequently-repeated f64.const values → mutable globals (~7 B/reuse)
  *
  * Per-function passes run over sec.funcs + sec.stdlib + sec.start.
@@ -23,6 +24,7 @@
  */
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
+const NAN_PREFIX_BITS = 0x7FF8n
 
 /**
  * Fold constant-offset address arithmetic into memarg offset=N syntax.
@@ -168,6 +170,304 @@ export function hoistConstantPool(funcs, addGlobal) {
 }
 
 /**
+ * Specialize `(call $F arg1 arg2 …)` call sites by literal-arg signature.
+ *
+ * For each call target with a stable (param-types, result-type) signature,
+ * scan all call sites and group by "literal-arg signature" (which args are
+ * `i32.const N` literals vs runtime-dynamic). For groups with ≥ MIN_USES, emit
+ * a specialized trampoline `$F_L1_L2_…` that bakes literals into the call:
+ *
+ *   (func $F_L1_L2 (param $a2 T2) (result R)
+ *     (call $F (i32.const L1) (local.get $a2)))
+ *
+ * Call sites are rewritten `(call $F (i32.const L1) a2)` → `(call $F_L1_L2 a2)`.
+ * Savings per site: ~2 B per dropped literal arg.
+ *
+ * For `$__mkptr`, every combo has type+aux literal so we special-case the body:
+ * fold the prefix into `(i64.const TEMPLATE)` instead of a trampoline call —
+ * avoids a runtime indirection for the hottest path.
+ *
+ * @param funcs    — flat list of func IR nodes (sec.funcs + sec.stdlib + sec.start)
+ * @param addFunc  — callback `(watString) => void` to register new helpers
+ * @param parseWat — `wat → IR` parser (injected to avoid circular imports)
+ */
+export function specializeMkptr(funcs, addFunc, parseWat) {
+  // Per-target specification: param-types, result-type. Threshold tuned so helper cost amortizes.
+  // Any target not listed here is left untouched. Order matters only for readability.
+  const SPECS = {
+    '$__mkptr':     { params: ['i32', 'i32', 'i32'], result: 'f64', inline: true },
+    '$__alloc_hdr': { params: ['i32', 'i32', 'i32'], result: 'i32' },
+    '$__typed_idx': { params: ['f64', 'i32'],        result: 'f64' },
+    '$__str_idx':   { params: ['f64', 'i32'],        result: 'f64' },
+  }
+  const MIN_USES = 5
+
+  // Build literal-arg signature key for a call node. Returns null if no args are literal.
+  // Key format: 'T:V' per literal arg, 'D' per dynamic; indexed by position.
+  const sigKey = (call, nParams) => {
+    const key = []
+    let anyLit = false
+    for (let i = 0; i < nParams; i++) {
+      const a = call[2 + i]
+      if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number') { key.push('L:' + a[1]); anyLit = true }
+      else key.push('D')
+    }
+    return anyLit ? key.join('|') : null
+  }
+
+  // Pass 1: count per (target, sig). Key separator `##` won't appear in sig content.
+  const counts = new Map()  // 'target##sig' → count
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'call' && typeof node[1] === 'string' && SPECS[node[1]]) {
+      const spec = SPECS[node[1]]
+      if (node.length === 2 + spec.params.length) {
+        const k = sigKey(node, spec.params.length)
+        if (k) counts.set(node[1] + '##' + k, (counts.get(node[1] + '##' + k) || 0) + 1)
+      }
+    }
+    for (const c of node) walk(c)
+  }
+  for (const fn of funcs) walk(fn)
+
+  // Pass 2: for each eligible (target, sig), emit helper.
+  const specialized = new Set()
+  for (const [k, n] of counts) if (n >= MIN_USES) specialized.add(k)
+  if (!specialized.size) return
+
+  const variantName = (target, sigParts) => target.slice(1) + '_' + sigParts
+    .map(p => p === 'D' ? 'd' : p.slice(2)).join('_')
+
+  for (const fullKey of specialized) {
+    const [target, sig] = fullKey.split('##')
+    const parts = sig.split('|')
+    const spec = SPECS[target]
+    const name = variantName(target, parts)
+
+    // $__mkptr inline fast path: bake (type, aux) literals into i64.const template.
+    if (target === '$__mkptr' && spec.inline && parts[0].startsWith('L:') && parts[1].startsWith('L:')) {
+      const type = +parts[0].slice(2), aux = +parts[1].slice(2)
+      const tmpl = (NAN_PREFIX_BITS << 48n)
+        | ((BigInt(type) & 0xFn) << 47n)
+        | ((BigInt(aux) & 0x7FFFn) << 32n)
+      // Third arg (offset) may also be literal — emit (f64.const nan:…) then.
+      if (parts[2].startsWith('L:')) {
+        // Fully literal: all sites can be f64.const — no helper needed, handled in rewrite below.
+        continue
+      }
+      addFunc(`(func $${name} (param $o i32) (result f64)
+        (f64.reinterpret_i64 (i64.or (i64.const 0x${tmpl.toString(16).toUpperCase()}) (i64.extend_i32_u (local.get $o)))))`)
+      continue
+    }
+
+    // Generic trampoline: (func $F_LITS (param …dyn) (result R) (call $F lits+dyn))
+    const dynArgs = []
+    const callArgs = []
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].startsWith('L:')) {
+        callArgs.push(`(i32.const ${parts[i].slice(2)})`)
+      } else {
+        dynArgs.push(`(param $a${i} ${spec.params[i]})`)
+        callArgs.push(`(local.get $a${i})`)
+      }
+    }
+    addFunc(`(func $${name} ${dynArgs.join(' ')} (result ${spec.result}) (call ${target} ${callArgs.join(' ')}))`)
+  }
+
+  // Pass 3: rewrite call sites bottom-up (nested calls: rewrite inner before outer).
+  const rewrite = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) rewrite(node[i])
+    for (let i = 0; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c) || c[0] !== 'call' || typeof c[1] !== 'string') continue
+      const spec = SPECS[c[1]]
+      if (!spec || c.length !== 2 + spec.params.length) continue
+      const k = sigKey(c, spec.params.length)
+      if (!k || !specialized.has(c[1] + '##' + k)) continue
+      const parts = k.split('|')
+
+      // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
+      if (c[1] === '$__mkptr' && parts.every(p => p.startsWith('L:'))) {
+        const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
+        const bits = (NAN_PREFIX_BITS << 48n)
+          | ((BigInt(type) & 0xFn) << 47n)
+          | ((BigInt(aux) & 0x7FFFn) << 32n)
+          | (BigInt(off >>> 0) & 0xFFFFFFFFn)
+        const n = ['f64.const', 'nan:0x' + bits.toString(16).toUpperCase().padStart(16, '0')]
+        n.type = 'f64'
+        node[i] = n
+        continue
+      }
+
+      const name = variantName(c[1], parts)
+      const dynArgs = []
+      for (let j = 0; j < parts.length; j++) if (parts[j] === 'D') dynArgs.push(c[2 + j])
+      const newCall = ['call', '$' + name, ...dynArgs]
+      newCall.type = spec.result
+      node[i] = newCall
+    }
+  }
+  for (const fn of funcs) rewrite(fn)
+}
+
+/**
+ * Specialize `(call $F (i32.add (global.get $G) (i32.const N)))` → `(call $F_rel_$G (i32.const N))`.
+ * Helper bakes `(global.get $G) + i32.add` into its body so call sites drop those 3 B.
+ * Targets any single-arg call whose arg is `add(global_base, const)` — in practice: $__mkptr_X_Y_d
+ * specializations against $__strBase (watr self-host: ~2193 sites × 3 B ≈ 6.5 KB).
+ *
+ * @param funcs    — flat list of func IR nodes
+ * @param addFunc  — callback `(watString) => void` to register new helpers
+ * @param parseWat — `wat → IR` parser (injected)
+ */
+export function specializePtrBase(funcs, addFunc, parseWat) {
+  const MIN_USES = 20
+
+  // Pass 1: count (targetFunc, baseGlobal) pairs. Track result-type via any func whose name we recognize.
+  const counts = new Map()  // 'F##G' → count
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'call' && typeof node[1] === 'string' && node.length === 3) {
+      const arg = node[2]
+      if (Array.isArray(arg) && arg[0] === 'i32.add' && arg.length === 3 &&
+          Array.isArray(arg[1]) && arg[1][0] === 'global.get' && typeof arg[1][1] === 'string' &&
+          Array.isArray(arg[2]) && arg[2][0] === 'i32.const') {
+        const k = node[1] + '##' + arg[1][1]
+        counts.set(k, (counts.get(k) || 0) + 1)
+      }
+    }
+    for (const c of node) walk(c)
+  }
+  for (const fn of funcs) walk(fn)
+
+  const specialized = new Set()
+  for (const [k, n] of counts) if (n >= MIN_USES) specialized.add(k)
+  if (!specialized.size) return
+
+  // Find a target func's result-type by locating its decl among `funcs`.
+  const funcByName = new Map()
+  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
+    funcByName.set(fn[1], fn)
+  const resultOf = (name) => {
+    const fn = funcByName.get(name)
+    if (!fn) return 'f64'  // defensive; mkptr specializations all return f64
+    for (let i = 2; i < fn.length; i++) {
+      const c = fn[i]
+      if (Array.isArray(c) && c[0] === 'result') return c[1]
+      if (Array.isArray(c) && c[0] !== 'param') break
+    }
+    return 'f64'
+  }
+
+  const sanit = (g) => g.replace(/^\$/, '').replace(/[^a-zA-Z0-9_]/g, '_')
+  const variantFor = (F, G) => `${F}_rel_${sanit(G)}`
+
+  // Pass 2: emit helpers.
+  for (const fullKey of specialized) {
+    const [F, G] = fullKey.split('##')
+    const rt = resultOf(F)
+    const name = variantFor(F, G)
+    addFunc(`(func ${name} (param $o i32) (result ${rt}) (call ${F} (i32.add (global.get ${G}) (local.get $o))))`)
+  }
+
+  // Pass 3: rewrite sites bottom-up.
+  const rewrite = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) rewrite(node[i])
+    for (let i = 0; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c) || c[0] !== 'call' || typeof c[1] !== 'string' || c.length !== 3) continue
+      const arg = c[2]
+      if (!Array.isArray(arg) || arg[0] !== 'i32.add' || arg.length !== 3) continue
+      const gbase = arg[1], konst = arg[2]
+      if (!Array.isArray(gbase) || gbase[0] !== 'global.get' || typeof gbase[1] !== 'string') continue
+      if (!Array.isArray(konst) || konst[0] !== 'i32.const') continue
+      const key = c[1] + '##' + gbase[1]
+      if (!specialized.has(key)) continue
+      const newCall = ['call', variantFor(c[1], gbase[1]), konst]
+      newCall.type = resultOf(c[1])
+      node[i] = newCall
+    }
+  }
+  for (const fn of funcs) rewrite(fn)
+}
+
+/**
+ * Reorder strings in `strPool` so most-referenced strings get low byte offsets.
+ * Each string ref is encoded as `(i32.const off)` with ULEB128: 1 B for off<128, 2 B for off<16384, 3 B for off<2M.
+ * Frequent strings migrating from 3-B to 2-B (or 2-B to 1-B) LEB128 saves ~541 B on watr self-host.
+ *
+ * Pool layout: `[4-byte-len][data-bytes][4-byte-len][data-bytes]...`. Offsets in refs point PAST the len prefix.
+ *
+ * @param funcs        — flat list of func IR nodes (scanned for refs)
+ * @param strPoolRef   — `{ pool: string }` holder; pool is rewritten in place
+ * @param strDedupMap  — optional `Map<string, offset>` to update (kept consistent for later queries)
+ */
+export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
+  if (!strPoolRef.pool) return
+  // Match both specialized and unspecialized strBase refs.
+  const isSpecRef = (n) =>
+    Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string' && n[1].includes('_rel___strBase') &&
+    n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.const'
+  const isUnspecRef = (n) =>
+    Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string' && n[1].startsWith('$__mkptr_') &&
+    n.length === 3 && Array.isArray(n[2]) && n[2][0] === 'i32.add' && n[2].length === 3 &&
+    Array.isArray(n[2][1]) && n[2][1][0] === 'global.get' && n[2][1][1] === '$__strBase' &&
+    Array.isArray(n[2][2]) && n[2][2][0] === 'i32.const'
+  const getOff = (n) => isSpecRef(n) ? (n[2][1] | 0) : isUnspecRef(n) ? (n[2][2][1] | 0) : null
+  const setOff = (n, v) => { if (isSpecRef(n)) n[2][1] = v; else if (isUnspecRef(n)) n[2][2][1] = v }
+
+  const freq = new Map()
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    const o = getOff(n)
+    if (o !== null) freq.set(o, (freq.get(o) || 0) + 1)
+    for (const c of n) walk(c)
+  }
+  for (const fn of funcs) walk(fn)
+  if (!freq.size) return
+
+  // Parse pool structure into entries.
+  const pool = strPoolRef.pool
+  const entries = []
+  let i = 0
+  while (i < pool.length) {
+    const len = pool.charCodeAt(i) | (pool.charCodeAt(i+1) << 8) | (pool.charCodeAt(i+2) << 16) | (pool.charCodeAt(i+3) << 24)
+    const oldOff = i + 4
+    entries.push({ oldOff, len, str: pool.substring(oldOff, oldOff + len) })
+    i = oldOff + len
+  }
+
+  // Sort by freq descending; tie-break by length ascending (pack short hot strings into low-offset range).
+  entries.sort((a, b) => (freq.get(b.oldOff) || 0) - (freq.get(a.oldOff) || 0) || a.len - b.len)
+
+  // Rebuild pool; map old → new offsets.
+  const remap = new Map()
+  let newPool = ''
+  for (const e of entries) {
+    newPool += String.fromCharCode(e.len & 0xFF, (e.len >> 8) & 0xFF, (e.len >> 16) & 0xFF, (e.len >> 24) & 0xFF)
+    remap.set(e.oldOff, newPool.length)
+    newPool += e.str
+  }
+  strPoolRef.pool = newPool
+  if (strDedupMap)
+    for (const [str, oldOff] of strDedupMap) {
+      const newOff = remap.get(oldOff)
+      if (newOff !== undefined) strDedupMap.set(str, newOff)
+    }
+
+  // Rewrite refs.
+  const rewrite = (n) => {
+    if (!Array.isArray(n)) return
+    for (const c of n) rewrite(c)
+    const o = getOff(n)
+    if (o !== null) { const newO = remap.get(o); if (newO !== undefined) setOff(n, newO) }
+  }
+  for (const fn of funcs) rewrite(fn)
+}
+
+/**
  * Run all per-function IR optimizations on a single function node.
  * Order matters: hoistPtrType before foldMemargOffsets (former may introduce
  * new locals that shouldn't interfere with memarg folding; they don't today,
@@ -176,4 +476,97 @@ export function hoistConstantPool(funcs, addGlobal) {
 export function optimizeFunc(fn) {
   hoistPtrType(fn)
   foldMemargOffsets(fn)
+  sortLocalsByUse(fn)
+}
+
+/**
+ * Dead-code elimination: remove func decls not reachable from any entry point.
+ * Roots: `(start $X)`, `(export "n" (func $X))`, `(elem … $X …)`, `(ref.func $X)`.
+ * Iteratively adds funcs called from reachable ones. Mutates arrays in place.
+ * Typical win: watr's optimize.js has orphan top-level consts (e.g. `hoist` = 26 KB).
+ *
+ * @param funcSections — array of { arr, isStartContainer? }. Each `arr` holds func IR nodes
+ *                       (may be interleaved with other nodes like `(start $X)` for sec.start).
+ * @param allModuleNodes — flat iterable of all module-level nodes for root discovery
+ *                          (exports, elem, start directive are elsewhere than funcSections).
+ */
+export function treeshake(funcSections, allModuleNodes) {
+  const funcByName = new Map()
+  const allFuncs = []
+  for (const { arr } of funcSections)
+    for (const n of arr)
+      if (Array.isArray(n) && n[0] === 'func') {
+        allFuncs.push(n)
+        if (typeof n[1] === 'string') funcByName.set(n[1], n)
+      }
+
+  const reachable = new Set()
+  const stack = []
+  const addRoot = (name) => { if (funcByName.has(name) && !reachable.has(name)) { reachable.add(name); stack.push(name) } }
+
+  // Named funcs with inline `(export "name")` are module-export roots.
+  for (const [name, fn] of funcByName)
+    for (let i = 2; i < fn.length; i++)
+      if (Array.isArray(fn[i]) && fn[i][0] === 'export') { addRoot(name); break }
+
+  const findRoots = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'start' && typeof node[1] === 'string') addRoot(node[1])
+    else if (node[0] === 'export' && Array.isArray(node[2]) && node[2][0] === 'func') addRoot(node[2][1])
+    else if (node[0] === 'elem') for (const c of node) if (typeof c === 'string' && c.startsWith('$')) addRoot(c)
+    for (const c of node) findRoots(c)
+  }
+  for (const n of allModuleNodes) findRoots(n)
+
+  const CALL_OPS = new Set(['call', 'return_call', 'ref.func'])
+  const visitCalls = (node) => {
+    if (!Array.isArray(node)) return
+    if (CALL_OPS.has(node[0]) && typeof node[1] === 'string') addRoot(node[1])
+    for (const c of node) visitCalls(c)
+  }
+  // Anonymous funcs can't be pruned (no name) — walk them to seed roots.
+  for (const fn of allFuncs) if (typeof fn[1] !== 'string') visitCalls(fn)
+  while (stack.length) visitCalls(funcByName.get(stack.pop()))
+
+  let removed = 0
+  for (const { arr } of funcSections) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const n = arr[i]
+      if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && !reachable.has(n[1])) {
+        arr.splice(i, 1); removed++
+      }
+    }
+  }
+  return removed
+}
+
+/**
+ * Reorder non-param local decls by reference count (hot locals first).
+ * WASM `local.get/set/tee` encode local idx as ULEB128 — 1 B for idx < 128, else 2 B.
+ * Only the decl order changes; refs by name are unchanged and re-resolved by watr.
+ * Params are fixed (their slot defines the call ABI) — only `(local …)` nodes move.
+ */
+export function sortLocalsByUse(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const localIdxs = []
+  let totalDecls = 0
+  for (let i = 2; i < fn.length; i++) {
+    const c = fn[i]
+    if (!Array.isArray(c)) continue
+    if (c[0] === 'param' || c[0] === 'result') { totalDecls++; continue }
+    if (c[0] === 'local') { localIdxs.push(i); totalDecls++; continue }
+    break
+  }
+  if (localIdxs.length < 2 || totalDecls <= 128) return
+  const counts = new Map()
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+      counts.set(n[1], (counts.get(n[1]) || 0) + 1)
+    for (const c of n) visit(c)
+  }
+  for (let i = totalDecls + 2; i < fn.length; i++) visit(fn[i])
+  const locals = localIdxs.map(i => fn[i])
+  locals.sort((a, b) => (counts.get(b[1]) || 0) - (counts.get(a[1]) || 0))
+  localIdxs.forEach((i, k) => { fn[i] = locals[k] })
 }

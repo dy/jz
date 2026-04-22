@@ -658,6 +658,46 @@ export default (ctx) => {
 
   // === Array methods ===
 
+  // Fusion is only semantics-preserving when callbacks are side-effect-free.
+  // A callback with calls or writes to outer state (e.g., `ctx.push(x)`) observes
+  // the iteration order; fusing filter().forEach() would interleave them.
+  // Conservative purity: no call-expressions (covers method calls, free fn calls);
+  // no assignments to names not declared locally in the callback.
+  function collectLocals(node, locals) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const' || op === 'var') {
+      for (const a of args) if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') locals.add(a[1])
+    }
+    for (const a of args) collectLocals(a, locals)
+  }
+  function isPureCallback(fn) {
+    if (!Array.isArray(fn) || fn[0] !== '=>') return false
+    const body = fn[2]
+    const params = new Set()
+    const p = fn[1]
+    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : p[0] === '()' ? (p[1] == null ? [] : Array.isArray(p[1]) && p[1][0] === ',' ? p[1].slice(1) : [p[1]]) : [p]) : [p]
+    for (const r of raw) params.add(Array.isArray(r) && r[0] === '...' ? r[1] : typeof r === 'string' ? r : Array.isArray(r) && r[0] === '=' ? r[1] : null)
+    const locals = new Set(params)
+    collectLocals(body, locals)
+    let pure = true
+    ;(function walk(node) {
+      if (!pure || !Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === '=>') return
+      if (op === '()' || op === '?.()' || op === 'new') { pure = false; return }
+      if (op === '++' || op === '--') { pure = false; return }
+      if (op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%=' || op === '&=' || op === '|=' || op === '^=' || op === '>>=' || op === '<<=' || op === '>>>=' || op === '||=' || op === '&&=' || op === '??=') {
+        const t = args[0]
+        if (typeof t === 'string') { if (!locals.has(t)) { pure = false; return } }
+        else { pure = false; return }
+      }
+      for (const a of args) walk(a)
+    })(body)
+    return pure
+  }
+
   // Detect fuseable chain: arr.map(f).filter(g) etc.
   // Returns {source, method, fn} or null.
   function detectUpstream(arr) {
@@ -665,8 +705,9 @@ export default (ctx) => {
     const [, callee, ...callArgs] = arr
     if (!Array.isArray(callee) || callee[0] !== '.' || callArgs.length !== 1) return null
     const [, source, method] = callee
-    if (method === 'map' || method === 'filter') return { source, method, fn: callArgs[0] }
-    return null
+    if (method !== 'map' && method !== 'filter') return null
+    if (!isPureCallback(callArgs[0])) return null
+    return { source, method, fn: callArgs[0] }
   }
 
   function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
@@ -678,7 +719,7 @@ export default (ctx) => {
   ctx.core.emit['.map'] = (arr, fn) => {
     // .filter(f).map(g) → single loop: test f, apply g if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'filter') {
+    if (up && up.method === 'filter' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm')
       const filterCb = makeCallback(up.fn), mapCb = makeCallback(fn)
@@ -717,7 +758,7 @@ export default (ctx) => {
   ctx.core.emit['.filter'] = (arr, fn) => {
     // .map(f).filter(g) → single loop: apply f, test g, store if passes
     const up = detectUpstream(arr)
-    if (up && up.method === 'map') {
+    if (up && up.method === 'map' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), mapped = temp('mv')
       const mapCb = makeCallback(up.fn), filterCb = makeCallback(fn)
@@ -806,7 +847,7 @@ export default (ctx) => {
   ctx.core.emit['.forEach'] = (arr, fn) => {
     // .map(f).forEach(g) → single loop: apply f, call g — no intermediate array
     const up = detectUpstream(arr)
-    if (up && up.method === 'map') {
+    if (up && up.method === 'map' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const mapped = temp('mv'), tmp = temp('ft')
       const mapCb = makeCallback(up.fn), forCb = makeCallback(fn)

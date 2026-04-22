@@ -119,7 +119,17 @@ export const memory = (src) => {
   if (mod) {
     const secs = WebAssembly.Module.customSections(mod, 'jz:schema')
     if (secs.length) {
-      const newSchemas = JSON.parse(new TextDecoder().decode(secs[0]))
+      const b = new Uint8Array(secs[0]), td = new TextDecoder()
+      let i = 0
+      const varint = () => { let r = 0, s = 0; while (1) { const x = b[i++]; r |= (x & 0x7F) << s; if (!(x & 0x80)) return r; s += 7 } }
+      const dec = () => {
+        const t = b[i++]
+        if (t === 0) return null
+        if (t === 1) return [null, dec()]
+        const n = varint(), s = td.decode(b.subarray(i, i + n)); i += n; return s
+      }
+      const nS = varint(), newSchemas = []
+      for (let j = 0; j < nS; j++) { const k = varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
       for (const s of newSchemas) {
         const key = s.join(',')
         if (!schemas.some(existing => existing.join(',') === key)) schemas.push(s)

@@ -32,7 +32,7 @@ import {
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
 } from './analyze.js'
-import { optimizeFunc, hoistConstantPool } from './optimize.js'
+import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import {
   typed, asF64, asI32, asParamType, toI32, asI64, fromI64,
@@ -650,6 +650,11 @@ export default function compile(ast) {
       let bodyIR
       if (block) {
         for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+        // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
+        analyzeBoxedCaptures(cb.body)
+        for (const name of ctx.func.boxed.keys()) {
+          if (ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
+        }
         bodyIR = emitBody(cb.body)
       } else {
         bodyIR = [asF64(emit(cb.body))]
@@ -1024,6 +1029,22 @@ export default function compile(ast) {
     for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
   }
 
+  // Whole-module: specialize __mkptr(T, A, off) per (T, A) combo — saves ~4 B/site (see optimize.js).
+  // Run BEFORE per-function passes so new specialized helpers are included.
+  specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+
+  // Whole-module: specialize `call F (add (global G) (const N))` — saves ~3 B/site.
+  // Runs AFTER specializeMkptr so mkptr variants (e.g. $__mkptr_4_0_d) are present.
+  specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+
+  // Whole-module: reorder strings in strPool by reference frequency — hot strings get low offsets,
+  // shrinking their `i32.const N` LEB128 encoding. Shared-memory mode only (passive strPool segment).
+  if (ctx.runtime.strPool) {
+    const poolRef = { pool: ctx.runtime.strPool }
+    sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
+    ctx.runtime.strPool = poolRef.pool
+  }
+
   // Per-function IR optimizations: ptr-type hoist, memarg-offset fold (see optimize.js).
   for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s)
 
@@ -1063,9 +1084,22 @@ export default function compile(ast) {
   if (ctx.runtime.strPool)
     sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
 
-  // Custom section: embed object schemas for JS-side interop
-  if (ctx.schema.list.length)
-    sec.customs.push(['@custom', '"jz:schema"', `"${JSON.stringify(ctx.schema.list).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+  // Custom section: embed object schemas for JS-side interop.
+  // Compact binary format: varint(nSchemas); per schema: varint(nProps); per prop:
+  //   0x00=null, 0x01=[null, <prop>], 0x02=<varint len><utf8 bytes>. Runtime decodes.
+  if (ctx.schema.list.length) {
+    const bytes = []
+    const utf8 = new TextEncoder()
+    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
+    const enc = (p) => {
+      if (p === null) bytes.push(0)
+      else if (Array.isArray(p)) { bytes.push(1); enc(p[1]) }
+      else { bytes.push(2); const b = utf8.encode(p); varint(b.length); for (const x of b) bytes.push(x) }
+    }
+    varint(ctx.schema.list.length)
+    for (const s of ctx.schema.list) { varint(s.length); for (const p of s) enc(p) }
+    sec.customs.push(['@custom', '"jz:schema"', bytes])
+  }
 
   // Custom section: rest params for exported functions (JS-side wrapping)
   const restParamFuncs = ctx.func.list.filter(f => f.exported && f.rest)
@@ -1085,13 +1119,36 @@ export default function compile(ast) {
     else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
 
+  // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
+  // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
+  treeshake(
+    [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
+    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports]
+  )
+
+  // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
+  // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
+  // On watr self-host this saves ~6 KB (hot specialized helpers migrate to idx < 128).
+  const callCount = new Map()
+  const countWalk = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'call' && typeof n[1] === 'string')
+      callCount.set(n[1], (callCount.get(n[1]) || 0) + 1)
+    for (const c of n) countWalk(c)
+  }
+  for (const s of [...sec.stdlib, ...sec.funcs, ...sec.start]) countWalk(s)
+  const byCalls = (a, b) => (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
+  const startFn = sec.start.find(n => n[0] === 'func')
+  const startDir = sec.start.find(n => n[0] === 'start')
+  const sortedFuncs = [
+    ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
+  ].sort(byCalls)
+
   // Assemble: named slots → flat section list.
-  // Stdlib funcs come BEFORE user funcs so hot stdlib calls get 1-byte LEB128 indices
-  // (<128). Top stdlib targets account for ~14K calls in watr self-host — saves ~14 KB.
   const sections = [
     ...sec.extStdlib, ...sec.imports, ...sec.types, ...sec.memory, ...sec.data,
-    ...sec.tags, ...sec.table, ...sec.globals, ...sec.stdlib, ...sec.funcs,
-    ...sec.elem, ...sec.start, ...sec.customs,
+    ...sec.tags, ...sec.table, ...sec.globals, ...sortedFuncs,
+    ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
   return ['module', ...sections]
 }
