@@ -28,10 +28,30 @@ import { T, VAL, valTypeOf, lookupValType } from './analyze.js'
 /** Tag a WASM node with its result type. */
 export const typed = (node, type) => (node.type = type, node)
 
-/** Coerce node to f64. */
-export const asF64 = n => n.type === 'f64' ? n
-  : (n[0] === 'i32.const' && typeof n[1] === 'number') ? typed(['f64.const', n[1]], 'f64')
-  : typed(['f64.convert_i32_s', n], 'f64')
+/** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
+function ptrBoxPrefix(ptrType, aux = 0) {
+  return (0x7FF8n << 48n)
+    | ((BigInt(ptrType) & 0xFn) << 47n)
+    | ((BigInt(aux) & 0x7FFFn) << 32n)
+}
+
+/** Build f64 NaN-boxed pointer IR from an i32 offset node of known kind.
+ *  `aux` is the 15-bit secondary tag (schema ID for OBJECT, element type for TYPED, etc.). */
+function boxPtrIR(i32node, ptrType, aux = 0) {
+  const prefix = ptrBoxPrefix(ptrType, aux)
+  return typed(['f64.reinterpret_i64',
+    ['i64.or',
+      ['i64.const', '0x' + prefix.toString(16).toUpperCase()],
+      ['i64.extend_i32_u', i32node]]], 'f64')
+}
+
+/** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert. */
+export const asF64 = n => {
+  if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
+  if (n.type === 'f64') return n
+  if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n[1]], 'f64')
+  return typed(['f64.convert_i32_s', n], 'f64')
+}
 
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
@@ -105,6 +125,38 @@ export function mkPtrIR(type, aux, offset) {
     return typed(['f64.const', 'nan:' + packPtrBits(tL, aL, oL)], 'f64')
   inc('__mkptr')
   return typed(['call', '$__mkptr', tIR, aIR, oIR], 'f64')
+}
+
+/** Offset extraction for a NaN-boxed pointer, specialized on known value type.
+ *  For non-ARRAY pointer kinds we skip `__ptr_offset` entirely — arrays are the
+ *  only type that can forward on reallocation, everyone else returns the raw low 32 bits.
+ *  If the node is already an unboxed pointer (ptrKind), return it directly. */
+export function ptrOffsetIR(valIR, valType) {
+  if (valIR.ptrKind != null && valIR.ptrKind !== VAL.ARRAY) return valIR
+  if (valType != null && valType !== VAL.ARRAY) {
+    return ['i32.wrap_i64', ['i64.reinterpret_f64', valIR]]
+  }
+  inc('__ptr_offset')
+  return ['call', '$__ptr_offset', valIR]
+}
+
+/** Map VAL.* → PTR.* when unambiguous. STRING is ambiguous (heap vs SSO). ARRAY maps
+ *  to PTR.ARRAY but callers that want to skip forwarding must check separately. */
+const VAL_TO_PTR = {
+  array: PTR.ARRAY, object: PTR.OBJECT, set: PTR.SET, map: PTR.MAP,
+  closure: PTR.CLOSURE, typed: PTR.TYPED, buffer: PTR.BUFFER,
+}
+export const valKindToPtr = (vt) => VAL_TO_PTR[vt]
+
+/** Type-tag extraction for a NaN-boxed pointer. Unambiguous VAL → constant; known i32
+ *  offset of a ptrKind → constant (no reinterpret); otherwise inline bit-extraction. */
+export function ptrTypeIR(valIR, valType) {
+  if (valIR.ptrKind != null) return typed(['i32.const', VAL_TO_PTR[valIR.ptrKind]], 'i32')
+  const known = valType != null ? VAL_TO_PTR[valType] : undefined
+  if (known != null) return ['i32.const', known]
+  return ['i32.wrap_i64', ['i64.and',
+    ['i64.shr_u', ['i64.reinterpret_f64', valIR], ['i64.const', 47]],
+    ['i64.const', 0xF]]]
 }
 
 const _F64_BITS_BUF = new ArrayBuffer(8)
@@ -239,6 +291,8 @@ export function toNumF64(node, v) {
  *  nested `__is_truthy(x)` → x (already 0/1); literal f64 const folds to 0/1. */
 export function truthyIR(e) {
   if (e.type === 'i32') return e
+  // Unboxed pointer offsets: truthy iff non-zero offset.
+  if (e.ptrKind != null) return typed(['i32.ne', e, ['i32.const', 0]], 'i32')
   if (Array.isArray(e)) {
     if (e[0] === 'f64.convert_i32_s' || e[0] === 'f64.convert_i32_u')
       return typed(['i32.ne', e[1], ['i32.const', 0]], 'i32')
@@ -253,6 +307,21 @@ export function truthyIR(e) {
       const bits = String(e[1][1])
       const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA800000000000'])
       return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
+    }
+    // Fresh pointer constructors never produce nullish. Treat as always truthy.
+    if (e[0] === 'call' && typeof e[1] === 'string' &&
+        (e[1].startsWith('$__mkptr') || e[1] === '$__alloc' || e[1].startsWith('$__alloc_hdr'))) {
+      return typed(['i32.const', 1], 'i32')
+    }
+    // Pointer-typed local reads: value is never a plain number — truthy iff not nullish.
+    // (local.get $x) where $x's valType is a non-STRING pointer kind.
+    if (e[0] === 'local.get' && typeof e[1] === 'string') {
+      const name = e[1][0] === '$' ? e[1].slice(1) : e[1]
+      const vt = lookupValType(name)
+      if (vt === VAL.ARRAY || vt === VAL.OBJECT || vt === VAL.SET || vt === VAL.MAP ||
+          vt === VAL.CLOSURE || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.REGEX) {
+        return typed(['i32.eqz', isNullish(e)], 'i32')
+      }
     }
   }
   inc('__is_truthy')
@@ -298,14 +367,23 @@ export function boxedAddr(name) {
   return ['local.get', `$${ctx.func.boxed.get(name)}`]
 }
 
-/** Read variable value: boxed → f64.load, global → global.get, local → local.get. */
+/** Read variable value: boxed → f64.load, global → global.get, local → local.get.
+ *  Unboxed pointer locals (ctx.func.ptrKinds) tag the returned node with `.ptrKind`
+ *  so downstream coercions know it's an i32 offset, not a numeric. */
 export function readVar(name) {
   if (ctx.func.boxed?.has(name))
     return typed(['f64.load', boxedAddr(name)], 'f64')
   if (isGlobal(name))
     return typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
   const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
-  return typed(['local.get', `$${name}`], t)
+  const node = typed(['local.get', `$${name}`], t)
+  const kind = ctx.func.ptrKinds?.get(name)
+  if (kind != null) {
+    node.ptrKind = kind
+    const aux = ctx.schema.vars?.get(name)
+    if (aux != null) node.ptrAux = aux
+  }
+  return node
 }
 
 /** Write variable value. void_ → local.set (no result); otherwise → local.tee.
@@ -331,21 +409,54 @@ export function writeVar(name, valIR, void_) {
       ['local.get', `$${t}`]], 'f64')
   }
   const t = ctx.func.locals.get(name) || 'f64'
-  const coerced = t === 'f64' ? asF64(valIR) : asI32(valIR)
+  const ptrKind = ctx.func.ptrKinds?.get(name)
+  let coerced
+  if (ptrKind != null) {
+    // Local stores unboxed i32 offset. If RHS is already a same-kind offset, pass through;
+    // otherwise extract low 32 bits from the NaN-boxed f64.
+    coerced = valIR.ptrKind === ptrKind
+      ? valIR
+      : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(valIR)]], 'i32')
+  } else {
+    coerced = t === 'f64' ? asF64(valIR) : asI32(valIR)
+  }
   if (void_) return typed(['local.set', `$${name}`, coerced], 'void')
-  return typed(['local.tee', `$${name}`, coerced], t)
+  const teeNode = typed(['local.tee', `$${name}`, coerced], t)
+  if (ptrKind != null) teeNode.ptrKind = ptrKind
+  return teeNode
 }
 
 /** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32.
- *  Peepholes: fold known NaN-boxed sentinel literals; elide on numeric literals. */
+ *  Peepholes: fold known NaN-boxed sentinel literals; elide on numeric literals;
+ *  unboxed pointer locals are proven non-null by analyzePtrUnboxable.
+ *  Inlines directly: (i32.or (i64.eq bits NULL_NAN) (i64.eq bits UNDEF_NAN))
+ *  rather than calling $__is_nullish — saves WASM call dispatch in V8 JIT. */
 export const isNullish = (f64expr) => {
+  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
   if (Array.isArray(f64expr)) {
-    if (f64expr[0] === 'f64.const') return typed(['i32.const', 0], 'i32')  // numeric literal — never nullish
+    if (f64expr[0] === 'f64.const') {
+      // Check for NaN-boxed sentinel: (f64.const nan:0x...) — matches NULL_IR/UNDEF_IR form.
+      const lit = String(f64expr[1])
+      if (lit.startsWith('nan:')) {
+        const bits = lit.slice(4)
+        return typed(['i32.const', (bits === NULL_NAN || bits === UNDEF_NAN) ? 1 : 0], 'i32')
+      }
+      return typed(['i32.const', 0], 'i32')  // numeric literal — never nullish
+    }
     if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
       const bits = String(f64expr[1][1])
       return typed(['i32.const', (bits === NULL_NAN || bits === UNDEF_NAN) ? 1 : 0], 'i32')
     }
   }
+  // Inline the 3-op nullish test. Tee into a temp i64 so the value is computed once.
+  // For simple (local.get $x) we can just reinterpret twice — V8 CSEs it.
+  if (Array.isArray(f64expr) && f64expr[0] === 'local.get') {
+    const bits = ['i64.reinterpret_f64', f64expr]
+    return typed(['i32.or',
+      ['i64.eq', bits, ['i64.const', NULL_NAN]],
+      ['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]]], 'i32')
+  }
+  // Non-trivial expr: fall back to the helper — keeps binary size stable & preserves eval once.
   inc('__is_nullish')
   return typed(['call', '$__is_nullish', f64expr], 'i32')
 }

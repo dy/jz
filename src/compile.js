@@ -28,7 +28,7 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, exprType,
+  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
 } from './analyze.js'
@@ -38,7 +38,7 @@ import {
   typed, asF64, asI32, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
   MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, extractF64Bits, appendStaticSlots,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, extractF64Bits, appendStaticSlots,
   isLit, litVal, isNullishLit, isPureIR, isPostfix, emitNum,
   temp, tempI32, tempI64, f64rem, toNumF64, truthyIR, toBoolFromEmitted,
   keyValType, usesDynProps, needsDynShadow,
@@ -55,7 +55,7 @@ export {
   typed, asF64, asI32, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
   MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR, extractF64Bits, appendStaticSlots,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, extractF64Bits, appendStaticSlots,
   isLit, litVal, isNullishLit, isPureIR, isPostfix, emitNum,
   temp, tempI32, tempI64, f64rem, toNumF64, truthyIR, toBoolFromEmitted,
   keyValType, usesDynProps, needsDynShadow,
@@ -427,6 +427,33 @@ export default function compile(ast) {
     }
   }
 
+  // Pointer-ABI specialization: for non-forwarding pointer params consistent across
+  // call sites, narrow from NaN-boxed f64 to i32 offset. Eliminates per-call __ptr_offset
+  // extraction + f64→i64→i32 reinterpret chains that dominate watr-style compilers.
+  // Safety:
+  //   - exclude ARRAY (forwards on realloc — f64 NaN-box is a stable identity) and
+  //     STRING (SSO vs heap dual encoding depends on ptr-type bits we'd drop).
+  //   - exclude CLOSURE/TYPED (aux bits carry schema/element-type, lost with offset).
+  //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
+  //   - exclude rest position (array pack/unpack stays f64).
+  const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const ptypes = paramValTypes.get(func.name)
+    if (!ptypes) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, vt] of ptypes) {
+      if (!PTR_ABI_KINDS.has(vt)) continue
+      if (k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue  // already narrowed by numeric pass
+      if (func.defaults?.[p.name] != null) continue
+      p.type = 'i32'
+      p.ptrKind = vt
+    }
+  }
+
   // E: Result-type monomorphization — narrow sig.results[0] to 'i32' when body only
   // produces i32 values. Fixpoint: a call to another narrowed func now contributes i32;
   // iterate until stable so chains of i32-only helpers all narrow together.
@@ -502,6 +529,62 @@ export default function compile(ast) {
     }
   }
 
+  // E2: VAL-type result inference — if a function always returns the same VAL kind,
+  // record it so callers inherit that type (enables static dispatch on .length, .[],
+  // .prop through a call chain). Fixpoint propagates through helper chains.
+  // Safety: skip exported (host sees raw f64), value-used (indirect call signature).
+  // Shim so calls to already-typed funcs contribute their result type.
+  const valTypeOfWithCalls = (expr, localValTypes) => {
+    if (expr == null) return null
+    if (typeof expr === 'string') return localValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+    if (!Array.isArray(expr)) return valTypeOf(expr)
+    const [op, ...args] = expr
+    if (op === '()' && typeof args[0] === 'string') {
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult) return f.valResult
+    }
+    if (op === '?:') {
+      const a = valTypeOfWithCalls(args[1], localValTypes), b = valTypeOfWithCalls(args[2], localValTypes)
+      return a && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
+      return a && a === b ? a : null
+    }
+    return valTypeOf(expr)
+  }
+  const valTypeNarrowable = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) && f.sig.results.length === 1
+  )
+  changed = true
+  while (changed) {
+    changed = false
+    for (const func of valTypeNarrowable) {
+      if (func.valResult) continue
+      const body = func.body
+      const exprs = []
+      if (Array.isArray(body) && body[0] === '{}') {
+        collectReturnExprs(body, exprs)
+        const hasBareReturn = (n) => {
+          if (!Array.isArray(n)) return false
+          if (n[0] === '=>') return false
+          if (n[0] === 'return' && n[1] == null) return true
+          return n.some(hasBareReturn)
+        }
+        if (hasBareReturn(body)) continue
+      } else {
+        exprs.push(body)
+      }
+      if (!exprs.length) continue
+      const localValTypes = (Array.isArray(body) && body[0] === '{}') ? collectValTypes(body) : new Map()
+      // Params of this function contribute no known VAL type yet (paramValTypes may help later).
+      const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+      if (!vt0) continue
+      const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
+      if (allSame) { func.valResult = vt0; changed = true }
+    }
+  }
+
   const funcs = ctx.func.list.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
     if (func.raw) return parseWat(func.raw)
@@ -522,10 +605,26 @@ export default function compile(ast) {
     ctx.func.valTypes = new Map()
     ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
     ctx.func.localProps = null  // reset per function
+    ctx.func.ptrKinds = null    // populated after boxed analysis; reset per function
     ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
     if (block) {
       analyzeValTypes(body)
       analyzeBoxedCaptures(body)
+      // Lower provably-monomorphic pointer locals to i32 offset storage.
+      const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
+      if (unbox.size > 0) {
+        ctx.func.ptrKinds = unbox
+        for (const name of unbox.keys()) ctx.func.locals.set(name, 'i32')
+      }
+    }
+    // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
+    // ptrKind set. Register them in ctx.func.ptrKinds so readVar tags local.gets correctly.
+    // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
+    // so asF64 reboxes to NaN-form before f64.store to the cell.
+    for (const p of sig.params) {
+      if (p.ptrKind == null) continue
+      if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
+      ctx.func.ptrKinds.set(p.name, p.ptrKind)
     }
     // D: Apply call-site param types (only if body analysis didn't already set them)
     const ptypes = paramValTypes.get(name)
@@ -571,9 +670,11 @@ export default function compile(ast) {
       if (ctx.func.boxed.has(p.name)) {
         const cell = ctx.func.boxed.get(p.name)
         ctx.func.locals.set(cell, 'i32')
+        const lget = typed(['local.get', `$${p.name}`], p.type)
+        if (p.ptrKind != null) lget.ptrKind = p.ptrKind
         boxedParamInits.push(
           ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-          ['f64.store', ['local.get', `$${cell}`], asF64(typed(['local.get', `$${p.name}`], p.type))])
+          ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
       }
     }
 

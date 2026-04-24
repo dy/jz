@@ -39,9 +39,15 @@ export const VAL = {
   BIGINT: 'bigint', BUFFER: 'buffer',
 }
 
-/** Look up value type for a variable name: function-local scope first, then module-global scope. */
-export const lookupValType = name =>
-  ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
+/** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →
+ *  function-local scope → module-global scope.
+ *  Refinements are pushed by the 'if' emitter when the condition is a type guard
+ *  (typeof x === 't', Array.isArray(x), etc.) and popped after the then-branch. */
+export const lookupValType = name => {
+  const r = ctx.func.refinements
+  if (r && r.size) { const v = r.get(name); if (v) return v }
+  return ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
+}
 
 /** Infer value type of an AST expression (without emitting). */
 export function valTypeOf(expr) {
@@ -52,7 +58,12 @@ export function valTypeOf(expr) {
   if (!Array.isArray(expr)) return null
 
   const [op, ...args] = expr
-  if (op == null) return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER // literal
+  if (op == null) {
+    // Literal forms: [] = undefined, [null, null] = null, [null, n] = number/bigint
+    if (args.length === 0) return null              // undefined literal
+    if (args[0] == null) return null                // null literal
+    return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
+  }
 
   if (op === '[') return VAL.ARRAY
   if (op === 'str') return VAL.STRING
@@ -79,7 +90,7 @@ export function valTypeOf(expr) {
       const ta = valTypeOf(callee[2]), tb = valTypeOf(callee[3])
       return ta && ta === tb ? ta : null
     }
-    // Constructor results
+    // Constructor results + user function return-type inference
     if (typeof callee === 'string') {
       if (callee === 'new.Set') return VAL.SET
       if (callee === 'new.Map') return VAL.MAP
@@ -88,6 +99,9 @@ export function valTypeOf(expr) {
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
+      // User-defined func with monomorphic VAL return (populated in compile.js E2 pass).
+      const f = ctx.func.map?.get(callee)
+      if (f?.valResult) return f.valResult
     }
     // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
@@ -322,6 +336,131 @@ export function analyzeLocals(body) {
   widenPass(body)
 
   return locals
+}
+
+/**
+ * Identify locals that can be stored as an unboxed i32 pointer offset instead of
+ * a NaN-boxed f64. Static type is tracked out-of-band so reads skip `__ptr_offset`
+ * and `__ptr_type` entirely and writes unbox once at the assignment site.
+ *
+ * Criteria — the local must be:
+ *   - declared once with `let`/`const`, never reassigned or compound-assigned
+ *   - valType is an unambiguous non-forwarding pointer kind:
+ *       OBJECT, SET, MAP, CLOSURE, TYPED, BUFFER
+ *     (excluded: ARRAY — forwards on realloc; STRING — SSO/heap dual encoding.)
+ *   - initialized from a form that guarantees a fresh, non-null pointer of that VAL:
+ *       OBJECT ← `{…}`
+ *       SET    ← `new Set(...)`
+ *       MAP    ← `new Map(...)`
+ *       CLOSURE← `=>` literal
+ *       BUFFER ← `new ArrayBuffer(...)` / `new DataView(...)`
+ *       TYPED  ← `new XxxArray(...)` / method returning typed array
+ *   - not captured in boxed storage (boxed locals stay f64 for the heap slot)
+ *   - never compared to null/undefined (we lose the nullish NaN representation)
+ *
+ * Returns Map<name, VAL> of locals to unbox.
+ */
+export function analyzePtrUnboxable(body, valTypes, locals, boxed) {
+  const candidates = new Set()
+  const disqualified = new Set()
+
+  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+
+  // RHS must produce a fresh, non-null pointer of the declared VAL kind.
+  //   OBJECT  ← `{…}`
+  //   CLOSURE ← `=>`
+  //   SET/MAP/BUFFER/TYPED ← `new X(...)`
+  // Validating the exact ctor→VAL match keeps the analysis tied to valTypeOf, so when
+  // that helper grows (e.g. `Array.from` → ARRAY), we don't drift out of sync.
+  const isFreshInit = (expr, kind) => {
+    if (!Array.isArray(expr)) return false
+    if (kind === VAL.OBJECT) return expr[0] === '{}'
+    if (kind === VAL.CLOSURE) return expr[0] === '=>'
+    if (expr[0] !== '()') return false
+    const callee = expr[1]
+    if (typeof callee !== 'string' || !callee.startsWith('new.')) return false
+    if (kind === VAL.SET) return callee === 'new.Set'
+    if (kind === VAL.MAP) return callee === 'new.Map'
+    if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer' || callee === 'new.DataView'
+    if (kind === VAL.TYPED) {
+      // Any typed-array ctor: new.Int8Array, new.Uint32Array, new.Float64Array, …
+      return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
+    }
+    return false
+  }
+  const isNullishLit = (expr) =>
+    expr === 'null' || expr === 'undefined' ||
+    (Array.isArray(expr) && expr[0] == null &&
+      (expr[1] === null || expr[1] === undefined))
+
+  function collect(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        const name = a[1]
+        const vt = valTypes.get(name)
+        if (!UNBOXABLE_KINDS.has(vt)) continue
+        if (locals.get(name) !== 'f64') continue
+        if (boxed?.has(name)) continue
+        if (!isFreshInit(a[2], vt)) continue
+        candidates.add(name)
+      }
+    }
+    for (const a of args) collect(a)
+  }
+
+  const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+    '<<=', '>>=', '>>>=', '||=', '&&=', '??='])
+  const NULL_CMP_OPS = new Set(['==', '!=', '===', '!=='])
+
+  function check(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && candidates.has(args[0])) {
+      if (op !== '=') disqualified.add(args[0])
+      // Initial `let x = {…}` arrives here too as op='='; the `let` pass already vetted it.
+      // A later `x = …` in the same body is a re-assignment — disqualify unless it's the init.
+      // We detect by tracking count: if we see '=' twice for the same name, disqualify.
+    }
+    if ((op === '++' || op === '--') && typeof args[0] === 'string' && candidates.has(args[0]))
+      disqualified.add(args[0])
+    if (NULL_CMP_OPS.has(op)) {
+      for (let i = 0; i < 2; i++) {
+        const side = args[i], other = args[1 - i]
+        if (typeof side === 'string' && candidates.has(side) && isNullishLit(other)) disqualified.add(side)
+      }
+    }
+    for (const a of args) check(a)
+  }
+
+  // Count bare `=` assignments per candidate. Init `let x = …` is NOT parsed as `['=', x, …]`
+  // at the statement level — it's inside `['let', ['=', x, …]]`. A standalone `['=', x, …]`
+  // at statement level IS a reassignment.
+  const assignCount = new Map()
+  function countAssigns(node, inLet) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === '=' && !inLet && typeof args[0] === 'string' && candidates.has(args[0])) {
+      assignCount.set(args[0], (assignCount.get(args[0]) || 0) + 1)
+    }
+    const childInLet = op === 'let' || op === 'const'
+    for (const a of args) countAssigns(a, childInLet)
+  }
+
+  collect(body)
+  check(body)
+  countAssigns(body, false)
+
+  for (const [name, count] of assignCount) if (count > 0) disqualified.add(name)
+
+  const result = new Map()
+  for (const name of candidates) if (!disqualified.has(name)) result.set(name, valTypes.get(name))
+  return result
 }
 
 // === Param / closure helpers ===

@@ -463,13 +463,26 @@ export default (ctx) => {
     const va = asF64(emit(arr))
     const t = temp('pp'), len = tempI32('pl')
 
+    // Known ARRAY → inline len as `i32.load(off - 8)` (ARRAY branch of __len). Saves a
+    // full __ptr_type + dispatch per push site. The off<8 nullish guard in __len is
+    // unreachable here: .push on a nullish var is a JS error before we get here.
+    const vt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const inlineLen = vt === VAL.ARRAY
+
     const body = [
       ['local.set', `$${t}`, va],
-      ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
+    ]
+    if (inlineLen) {
+      body.push(['local.set', `$${len}`,
+        ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', 8]]]])
+    } else {
+      body.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]])
+    }
+    body.push(
       // Grow if needed: ensure cap >= len + vals.length
       ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
         ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
-    ]
+    )
 
     // Store each value and increment len
     const pushBase = tempI32('pb')
@@ -505,9 +518,14 @@ export default (ctx) => {
   ctx.core.emit['.pop'] = (arr) => {
     const va = asF64(emit(arr))
     const t = temp('po'), len = tempI32('pl')
+    // Known ARRAY → inline len (skips __len dispatch tree).
+    const vt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const rawLen = vt === VAL.ARRAY
+      ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', 8]]]
+      : ['call', '$__len', ['local.get', `$${t}`]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
-      ['local.set', `$${len}`, ['i32.sub', ['call', '$__len', ['local.get', `$${t}`]], ['i32.const', 1]]],
+      ['local.set', `$${len}`, ['i32.sub', rawLen, ['i32.const', 1]]],
       ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
       ['f64.load',
         ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
@@ -539,10 +557,15 @@ export default (ctx) => {
     const s = tempI32('sps'), cnt = tempI32('spc'), len = tempI32('spl'), off = tempI32('spo'), j = tempI32('spj')
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
     const id = ctx.func.uniq++
+    // Known ARRAY → fuse len with offset (__len would re-compute __ptr_offset + dispatch).
+    const svt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const lenInit = svt === VAL.ARRAY
+      ? ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]
+      : ['local.set', `$${len}`, ['call', '$__len', va]]
     const body = [
       recv.setup,
-      ['local.set', `$${len}`, ['call', '$__len', va]],
       ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
+      lenInit,
       // clamp start to [0, len]
       ['local.set', `$${s}`, vs],
       ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],

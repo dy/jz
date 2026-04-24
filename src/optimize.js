@@ -468,13 +468,148 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
 }
 
 /**
+ * Collapse rebox-then-unbox round-trips left by emit.js.
+ *
+ * The NaN-box rebox/unbox boundary emits patterns like:
+ *   `(i32.wrap_i64 (i64.reinterpret_f64 (f64.reinterpret_i64 (i64.or PREFIX (i64.extend_i32_u X)))))`
+ * that reduce to just `X` when PREFIX has zero low-32 bits (NaN header only).
+ *
+ * Folds applied (bottom-up, to fixed point within one call):
+ *   `i64.reinterpret_f64 (f64.reinterpret_i64 X)`              → `X`
+ *   `f64.reinterpret_i64 (i64.reinterpret_f64 X)`              → `X`
+ *   `i32.wrap_i64 (i64.extend_i32_u X)`                        → `X`
+ *   `i32.wrap_i64 (i64.extend_i32_s X)`                        → `X`
+ *   `i32.wrap_i64 (i64.or (i64.const K) (i64.extend_i32_u X))` → `X` when (K & 0xFFFFFFFF) === 0
+ *   `i32.wrap_i64 (i64.or (i64.extend_i32_u X) (i64.const K))` → `X` when (K & 0xFFFFFFFF) === 0
+ *
+ * The recursive walk handles nested patterns — an outer fold often unlocks
+ * an inner one after the intermediate layer is removed.
+ */
+export function peepholeFolds(node) {
+  if (!Array.isArray(node)) return node
+  // Fold children first so outer patterns see already-simplified inputs.
+  for (let i = 0; i < node.length; i++) {
+    const c = node[i]
+    if (Array.isArray(c)) node[i] = peepholeFolds(c)
+  }
+
+  const op = node[0]
+  if (op === 'i64.reinterpret_f64' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'f64.reinterpret_i64' && a.length === 2) return a[1]
+  }
+  if (op === 'f64.reinterpret_i64' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) return a[1]
+  }
+  if (op === 'i32.wrap_i64' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && (a[0] === 'i64.extend_i32_u' || a[0] === 'i64.extend_i32_s') && a.length === 2)
+      return a[1]
+    // i32.wrap_i64 (i64.or (i64.const HIGH_ONLY) (i64.extend_i32_u X)) → X
+    if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
+      const l = a[1], r = a[2]
+      const isHighOnly = (n) => {
+        if (!Array.isArray(n) || n[0] !== 'i64.const') return false
+        const v = n[1]
+        let bi
+        if (typeof v === 'number') bi = BigInt(v)
+        else if (typeof v === 'string') {
+          try { bi = v.startsWith('-') ? -BigInt(v.slice(1)) : BigInt(v) } catch { return false }
+        } else return false
+        return (bi & 0xFFFFFFFFn) === 0n
+      }
+      const isExtend = (n) => Array.isArray(n) && (n[0] === 'i64.extend_i32_u' || n[0] === 'i64.extend_i32_s') && n.length === 2
+      if (isHighOnly(l) && isExtend(r)) return r[1]
+      if (isHighOnly(r) && isExtend(l)) return l[1]
+    }
+  }
+  return node
+}
+
+/**
+ * Inline tiny pointer-decode helpers — `$__ptr_type`, `$__ptr_aux` — directly at call sites.
+ * Each is 3-4 ops of bit extraction; inlining eliminates WASM call dispatch overhead and
+ * lets V8 CSE redundant work (common-subexpression elimination across sites sharing the
+ * same pointer local). Binary grows a few hundred KB but runtime drops measurably.
+ *
+ * Skipped inside `$__ptr_*` stdlib bodies (self-reference + keeps helpers intact in case
+ * any reflexive site still needs the call form).
+ */
+export function inlinePtrType(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const name = typeof fn[1] === 'string' ? fn[1] : null
+  if (name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy')) return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+  const rewrite = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) {
+      const c = node[i]
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'call' && c.length === 3) {
+        if (c[1] === '$__ptr_type') {
+          node[i] = ['i32.and',
+            ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', c[2]], ['i64.const', 47]]],
+            ['i32.const', 0xF]]
+          continue
+        }
+        if (c[1] === '$__ptr_aux') {
+          node[i] = ['i32.and',
+            ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', c[2]], ['i64.const', 32]]],
+            ['i32.const', 0x7FFF]]
+          continue
+        }
+        if (c[1] === '$__is_nullish' && Array.isArray(c[2]) && c[2][0] === 'local.get') {
+          // Only inline on local.get — for other exprs the helper evaluates once,
+          // inline would duplicate or need a tee. local.get is cheap to reference twice.
+          node[i] = ['i32.or',
+            ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000100000000']],
+            ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000000000001']]]
+          continue
+        }
+        // __is_truthy on a simple local.get arg: inline the two-branch test.
+        // V8 CSEs the repeated local.get / reinterpret; the explicit shape lets
+        // it specialize by profiled NaN-vs-numeric bias.
+        if (c[1] === '$__is_truthy' && Array.isArray(c[2]) && c[2][0] === 'local.get') {
+          const lget = c[2]
+          const bits = ['i64.reinterpret_f64', lget]
+          node[i] = ['if', ['result', 'i32'],
+            ['f64.eq', lget, lget],
+            ['then', ['f64.ne', lget, ['f64.const', 0]]],
+            ['else', ['i32.and',
+              ['i32.and',
+                ['i64.ne', bits, ['i64.const', '0x7FF8000000000000']],
+                ['i64.ne', bits, ['i64.const', '0x7FF8000100000000']]],
+              ['i32.and',
+                ['i64.ne', bits, ['i64.const', '0x7FF8000000000001']],
+                ['i64.ne', bits, ['i64.const', '0x7FFA800000000000']]]]]]
+          continue
+        }
+      }
+      rewrite(c)
+    }
+  }
+  for (let i = bodyStart; i < fn.length; i++) rewrite(fn[i])
+}
+
+/**
  * Run all per-function IR optimizations on a single function node.
  * Order matters: hoistPtrType before foldMemargOffsets (former may introduce
  * new locals that shouldn't interfere with memarg folding; they don't today,
  * but keep the invariant that structural rewrites run before low-level folds).
+ * peepholeFolds runs first to collapse rebox/unbox round-trips before
+ * downstream passes (hoistPtrType, memarg fold) try to analyze those patterns.
  */
 export function optimizeFunc(fn) {
+  if (Array.isArray(fn)) {
+    for (let i = 0; i < fn.length; i++) {
+      const c = fn[i]
+      if (Array.isArray(c)) fn[i] = peepholeFolds(c)
+    }
+  }
   hoistPtrType(fn)
+  inlinePtrType(fn)
   foldMemargOffsets(fn)
   sortLocalsByUse(fn)
 }

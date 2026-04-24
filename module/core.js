@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/compile.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
@@ -22,7 +22,7 @@ export default (ctx) => {
     __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
-    __ptr_offset: ['__ptr_type'],
+    __ptr_offset: [],
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset'],
     __set_len: ['__ptr_type', '__ptr_offset'],
@@ -58,8 +58,8 @@ export default (ctx) => {
               (then (i32.const 0))
               (else (i32.const 1))))
           (else
-            (local.set $ta (call $__ptr_type (local.get $a)))
-            (local.set $tb (call $__ptr_type (local.get $b)))
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
             (if (result i32)
               (i32.and
                 (i32.or
@@ -77,15 +77,18 @@ export default (ctx) => {
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
   ctx.core.stdlib['__is_truthy'] = `(func $__is_truthy (param $v f64) (result i32)
+    (local $bits i64)
     (if (result i32) (f64.eq (local.get $v) (local.get $v))
       (then (f64.ne (local.get $v) (f64.const 0)))
-      (else (i32.and
+      (else
+        (local.set $bits (i64.reinterpret_f64 (local.get $v)))
         (i32.and
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FF8000000000000))
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})))
-        (i32.and
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN}))
-          (i64.ne (i64.reinterpret_f64 (local.get $v)) (i64.const 0x7FFA800000000000)))))))`
+          (i32.and
+            (i64.ne (local.get $bits) (i64.const 0x7FF8000000000000))
+            (i64.ne (local.get $bits) (i64.const ${NULL_NAN})))
+          (i32.and
+            (i64.ne (local.get $bits) (i64.const ${UNDEF_NAN}))
+            (i64.ne (local.get $bits) (i64.const 0x7FFA800000000000)))))))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v f64) (result i32)
     (local $t i32)
@@ -122,24 +125,25 @@ export default (ctx) => {
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const 0xFFFFFFFF)))))))`
 
   ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr f64) (result i32)
-    (local $raw i32) (local $off i32)
-    (local.set $raw (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))
-    (local.set $off (local.get $raw))
-    ;; Arrays can be reallocated during growth. Preserve alias semantics by
-    ;; following forwarding headers until we reach the current backing store.
-    (if
-      (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
-        (i32.and
-          (i32.ge_u (local.get $off) (i32.const 8))
-          (i32.le_u (local.get $off)
-            (i32.sub (i32.mul (memory.size) (i32.const 65536)) (i32.const 8)))))
+    (local $bits i64) (local $off i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    ;; Arrays can be reallocated during growth; non-array ptrs skip the forwarding check.
+    ;; Inline type extraction + nested ifs let the non-ARRAY fast path skip memory.size math.
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.ARRAY}))
       (then
-        (block $done
-          (loop $follow
-            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-            (br $follow)))))
+        (if (i32.and
+              (i32.ge_u (local.get $off) (i32.const 8))
+              (i32.le_u (local.get $off)
+                (i32.sub (i32.mul (memory.size) (i32.const 65536)) (i32.const 8))))
+          (then
+            (block $done
+              (loop $follow
+                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+                (br $follow)))))))
     (local.get $off))`
 
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr f64) (result i32)
@@ -295,11 +299,10 @@ export default (ctx) => {
     '(func (export "_reset") (call $__reset))',
   ]
 
-  // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN
-  const notNullish = v => {
-    inc('__is_nullish')
-    return ['i32.eqz', ['call', '$__is_nullish', v]]
-  }
+  // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN.
+  // Routes through isNullish() so peepholes (ptrKind, NaN-boxed literal, local.get inline)
+  // apply — otherwise this would always emit a __is_nullish call even for provable cases.
+  const notNullish = v => ['i32.eqz', isNullish(v)]
 
   // Optional-chain wrapper: eval guard, if non-nullish emit access, else NULL_NAN.
   const emitNullishGuarded = (guard, access) => typed(['if', ['result', 'f64'],
@@ -309,10 +312,17 @@ export default (ctx) => {
 
   // === Shared dispatch helpers ===
 
-  /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch. */
+  /** Emit .length access for a WASM f64 node. Monomorphize by vt, or runtime dispatch.
+   *  ARRAY/SET/MAP share a single layout: length is i32 at offset-8. We inline that load
+   *  directly instead of calling __len which re-dispatches on type. ptrOffsetIR handles
+   *  ARRAY forwarding (non-ARRAY skips the forwarding loop). TYPED has a variable-width
+   *  layout depending on the aux typed-element shift, so it still routes through __len. */
   function emitLengthAccess(va, vt) {
-    // Known array/typed/set/map → direct header read
-    if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.SET || vt === VAL.MAP)
+    if (vt === VAL.ARRAY || vt === VAL.SET || vt === VAL.MAP) {
+      const off = ptrOffsetIR(va, vt)
+      return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', off, ['i32.const', 8]]]], 'f64')
+    }
+    if (vt === VAL.TYPED)
       return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
     // Known string → byteLen (handles SSO + heap)
     if (vt === VAL.STRING)
@@ -332,7 +342,8 @@ export default (ctx) => {
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
   function emitSchemaSlotRead(baseExpr, idx) {
     const base = baseExpr?.type === 'f64' ? baseExpr : typed(baseExpr, 'f64')
-    return typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', base], ['i32.const', idx * 8]]], 'f64')
+    // Schema-backed objects are never ARRAY → skip __ptr_offset forwarding helper.
+    return typed(['f64.load', ['i32.add', ptrOffsetIR(base, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
   }
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */

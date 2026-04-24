@@ -28,7 +28,7 @@ import {
   typed, asF64, asI32, asI64, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
-  mkPtrIR,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR,
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
@@ -70,15 +70,14 @@ export function emitTypeofCmp(a, b, cmpOp) {
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
   if (code === -3) {
-    inc('__is_nullish')
-    const check = ['call', '$__is_nullish', va]
+    const check = isNullish(va)
     return typed(eq ? check : ['i32.eqz', check], 'i32')
   }
   if (code === -4) {
     return typed(['i32.const', eq ? 0 : 1], 'i32')
   }
   if (code === -5) {
-    inc('__ptr_type', '__is_nullish')
+    inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const notStrFn = ['i32.and',
@@ -86,7 +85,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
         ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
         ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
       ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
-    const notNullish = ['i32.eqz', ['call', '$__is_nullish', ['local.get', `$${t}`]]]
+    const notNullish = ['i32.eqz', isNullish(['local.get', `$${t}`])]
     const check = ['i32.and', ['i32.and', isPtr, notStrFn], notNullish]
     return typed(eq ? check : ['i32.eqz', check], 'i32')
   }
@@ -108,6 +107,111 @@ export function emitTypeofCmp(a, b, cmpOp) {
 const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
 
+// Pointer kinds for which JS `==` / `!=` is pure reference equality — i.e. i64 bit
+// compare of the NaN-box is equivalent to __eq. Excludes STRING (content compare for
+// heap strings) and BIGINT (content compare).
+const REF_EQ_KINDS = new Set([
+  VAL.ARRAY, VAL.OBJECT, VAL.SET, VAL.MAP,
+  VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.REGEX,
+])
+
+// === Flow-sensitive type refinement ===
+// Map typeof code (from resolveTypeof in prepare.js) → VAL kind. Undef/boolean/object have no
+// single VAL refinement, so they're excluded. String/number/function do.
+const TYPEOF_CODE_TO_VAL = { [-1]: VAL.NUMBER, [-2]: VAL.STRING, [-6]: VAL.CLOSURE }
+
+/** Extract refinements from a boolean condition AST.
+ *  `sense`: true = refine for then-branch, false = refine for else-branch (i.e. cond inverted).
+ *  Returns a Map<name, VAL>. Walks && / || / ! accordingly. */
+function extractRefinements(cond, out, sense = true) {
+  if (!Array.isArray(cond)) return out
+  const op = cond[0]
+  // ! flips sense
+  if (op === '!') return extractRefinements(cond[1], out, !sense)
+  // && under positive sense refines with union of both branches.
+  // || under negative sense (De Morgan) similarly refines the else-branch.
+  if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
+  if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
+  // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
+  if ((op === '==' || op === '===' || op === '!=' || op === '!==')) {
+    const eq = (op === '==' || op === '===')
+    const wantPositive = eq ? sense : !sense
+    if (!wantPositive) return out
+    const a = cond[1], b = cond[2]
+    const pair = Array.isArray(a) && a[0] === 'typeof' ? [a[1], b]
+      : Array.isArray(b) && b[0] === 'typeof' ? [b[1], a] : null
+    if (pair && typeof pair[0] === 'string' && Array.isArray(pair[1]) && pair[1][0] == null) {
+      const val = TYPEOF_CODE_TO_VAL[pair[1][1]]
+      if (val) out.set(pair[0], val)
+    }
+    return out
+  }
+  // Array.isArray(x) — only refines under positive sense.
+  // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array', 'isArray'] pair.
+  if (op === '()' && sense && typeof cond[2] === 'string') {
+    const callee = cond[1]
+    const isArr = callee === 'Array.isArray'
+      || (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
+    if (isArr) { out.set(cond[2], VAL.ARRAY); return out }
+  }
+  return out
+}
+
+/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
+ *  Conservative over-reject: if unsure, treat as written. */
+function isReassigned(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%='
+      || op === '&=' || op === '|=' || op === '^=' || op === '<<=' || op === '>>=' || op === '>>>='
+      || op === '||=' || op === '&&=' || op === '??=') {
+    if (body[1] === name) return true
+  }
+  if ((op === '++' || op === '--') && body[1] === name) return true
+  if (op === 'let' || op === 'const') {
+    // Redeclaration shadows in inner block; outer refinement stays valid. Don't treat as reassign.
+  }
+  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
+  return false
+}
+
+/** Does `body` always exit the enclosing scope (return / throw / break / continue)?
+ *  Used for early-return refinement: after `if (!guard) return`, `guard` holds for the rest. */
+function isTerminator(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
+  // Block body: {} or ; — terminator if it ends with a terminator statement.
+  if (op === '{}' || op === ';') {
+    for (let i = body.length - 1; i >= 1; i--) {
+      const s = body[i]
+      if (s == null) continue
+      return isTerminator(s)
+    }
+    return false
+  }
+  return false
+}
+
+/** Apply refinements for the duration of `fn()`. Restores prior state on return/throw. */
+function withRefinements(refs, body, fn) {
+  if (!refs || refs.size === 0) return fn()
+  const cur = ctx.func.refinements
+  // Drop names that are reassigned in the body — refinement would be unsound.
+  const saved = []
+  for (const [name, val] of refs) {
+    if (isReassigned(body, name)) continue
+    saved.push([name, cur.get(name)])
+    cur.set(name, val)
+  }
+  try { return fn() }
+  finally {
+    for (const [name, prev] of saved) {
+      if (prev === undefined) cur.delete(name); else cur.set(name, prev)
+    }
+  }
+}
+
 /** Coerce an AST node to an i32 boolean, folding && / || at the boolean boundary. */
 export function toBool(node) {
   const op = Array.isArray(node) ? node[0] : null
@@ -125,6 +229,13 @@ export function toBool(node) {
   return toBoolFromEmitted(emit(node))
 }
 
+/** Coerce an emitted arg IR to match a callee param. Param may carry ptrKind (pointer-ABI
+ *  i32 offset), else falls back to numeric WASM type coercion. */
+function emitArgForParam(ir, param) {
+  if (param?.ptrKind != null) return ptrOffsetIR(ir, param.ptrKind)
+  return asParamType(ir, param?.type)
+}
+
 /**
  * Materialize a multi-value function call as a heap array.
  * Call → store each result in temp → copy to allocated array → return pointer.
@@ -136,7 +247,7 @@ export function materializeMulti(callNode) {
   const rawArgs = callNode.slice(2)
   const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
     ? rawArgs[0].slice(1) : rawArgs
-  const emittedArgs = argList.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
+  const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
   while (emittedArgs.length < func.sig.params.length)
     emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
   const temps = Array.from({ length: n }, () => temp())
@@ -198,7 +309,7 @@ export function emitDecl(...inits) {
           const rawArgs = init.slice(2)
           const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
             ? rawArgs[0].slice(1) : rawArgs
-          const emittedArgs = argList.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
+          const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
             emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
           result.push(['call', `$${init[1]}`, ...emittedArgs])
@@ -227,7 +338,25 @@ export function emitDecl(...inits) {
       continue
     }
     const localType = ctx.func.locals.get(name) || 'f64'
-    const coerced = localType === 'f64' ? asF64(val) : asI32(val)
+    let ptrKind = ctx.func.ptrKinds?.get(name)
+    // Inherit ptrKind from a pointer-ABI RHS: destructure temps (`__d0 = v`) and other
+    // fresh let-bindings whose init is already an unboxed pointer. Without this, readVar
+    // returns an untyped i32 local.get and later `asF64` emits a numeric convert instead
+    // of a ptr-rebox. Safe because emitDecl runs once per let/const binding.
+    if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
+      if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
+      ctx.func.ptrKinds.set(name, val.ptrKind)
+      ptrKind = val.ptrKind
+      if (val.ptrAux != null && !ctx.schema.vars?.has(name)) ctx.schema.vars.set(name, val.ptrAux)
+    }
+    let coerced
+    if (ptrKind != null) {
+      // Unboxed pointer local — extract i32 offset from NaN-boxed f64 via reinterpret, not numeric trunc.
+      coerced = val.ptrKind === ptrKind ? val
+        : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
+    } else {
+      coerced = localType === 'f64' ? asF64(val) : asI32(val)
+    }
     if (!(isLit(coerced) && coerced[1] === 0 && !ctx.func.stack.length))
       result.push(['local.set', `$${name}`, coerced])
 
@@ -373,14 +502,36 @@ export function emitFlat(node) {
   return items
 }
 
-/** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitFlat per statement. */
+/** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitFlat per statement.
+ *  Also drives early-return refinement: `if (!guard) return/throw` narrows `guard` for the
+ *  rest of the enclosing block. Refinements added here are rolled back on block exit. */
 export function emitBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
-  for (const s of stmts) {
+  const accumulated = []
+  for (let i = 0; i < stmts.length; i++) {
+    const s = stmts[i]
     if (s == null || typeof s === 'number') continue
     out.push(...emitFlat(s))
+    // After an `if (cond) terminator` (no else), narrow types from !cond for subsequent statements.
+    // Skip names that are reassigned later — refinement would be unsound past the assignment.
+    if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
+      const refs = extractRefinements(s[1], new Map(), false)
+      for (const [name, val] of refs) {
+        let reassigned = false
+        for (let j = i + 1; j < stmts.length; j++)
+          if (isReassigned(stmts[j], name)) { reassigned = true; break }
+        if (reassigned) continue
+        accumulated.push([name, ctx.func.refinements.get(name)])
+        ctx.func.refinements.set(name, val)
+      }
+    }
+  }
+  // Restore prior refinements on block exit.
+  for (let i = accumulated.length - 1; i >= 0; i--) {
+    const [name, prev] = accumulated[i]
+    if (prev === undefined) ctx.func.refinements.delete(name); else ctx.func.refinements.set(name, prev)
   }
   return out
 }
@@ -540,12 +691,11 @@ export const emitter = {
       if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
         const slot = ctx.schema.find(arr, litKey, true)
         if (slot >= 0) {
-          inc('__ptr_offset')
           const t = temp()
           return typed(['block', ['result', 'f64'],
             ['local.set', `$${t}`, valueExpr],
             ['f64.store',
-              ['i32.add', ['call', '$__ptr_offset', asF64(emit(arr))], ['i32.const', slot * 8]],
+              ['i32.add', ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), ['i32.const', slot * 8]],
               ['local.get', `$${t}`]],
             ['local.get', `$${t}`]], 'f64')
         }
@@ -558,8 +708,9 @@ export const emitter = {
       }
       if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
         const inner = ctx.schema.emitInner(arr)
+        const arrVT = lookupValType(arr) || VAL.OBJECT
         const storeNumeric = keyNode => storeArrayValue(inner, keyNode, ptr =>
-          ['f64.store', ['call', '$__ptr_offset', asF64(emit(arr))], ptr])
+          ['f64.store', ptrOffsetIR(asF64(emit(arr)), arrVT), ptr])
         if (useRuntimeKeyDispatch) {
           inc('__dyn_set', '__is_str_key')
           return dispatchKey(storeNumeric)
@@ -579,19 +730,21 @@ export const emitter = {
         }
         return storeArrayValue(asF64(va), keyExpr, persist)
       }
+      // arr is non-ARRAY here (VAL.ARRAY branch was taken above); safe to skip forwarding.
+      const arrVT = (typeof arr === 'string' ? lookupValType(arr) : null) || VAL.OBJECT
       if (useRuntimeKeyDispatch) {
         inc('__dyn_set', '__is_str_key')
         return dispatchKey(keyNode => {
           const keyI32 = asI32(typed(keyNode, 'f64'))
           return ['block', ['result', 'f64'],
             ['local.set', `$${t}`, vv],
-            ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', keyI32, ['i32.const', 3]]], ['local.get', `$${t}`]],
+            ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), arrVT), ['i32.shl', keyI32, ['i32.const', 3]]], ['local.get', `$${t}`]],
             ['local.get', `$${t}`]]
         })
       }
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, vv],
-        ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.shl', vi, ['i32.const', 3]]], ['local.get', `$${t}`]],
+        ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), arrVT), ['i32.shl', vi, ['i32.const', 3]]], ['local.get', `$${t}`]],
         ['local.get', `$${t}`]], 'f64')
     }
     // Object property assignment: obj.prop = x
@@ -608,7 +761,7 @@ export const emitter = {
           if (shadow) inc('__dyn_set')
           const stmts = [
             ['local.set', `$${t}`, vv],
-            ['f64.store', ['i32.add', ['call', '$__ptr_offset', asF64(va)], ['i32.const', idx * 8]], ['local.get', `$${t}`]],
+            ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]], ['local.get', `$${t}`]],
           ]
           if (shadow)
             stmts.push(['drop', ['call', '$__dyn_set', asF64(va), asF64(emit(['str', prop])), ['local.get', `$${t}`]]])
@@ -804,22 +957,53 @@ export const emitter = {
   // === Comparisons (always i32 result) ===
 
   '==': (a, b) => {
-    // JS loose nullish equality: x == null / x == undefined
-    if (isNullishLit(a)) { inc('__is_nullish'); return typed(['call', '$__is_nullish', asF64(emit(b))], 'i32') }
-    if (isNullishLit(b)) { inc('__is_nullish'); return typed(['call', '$__is_nullish', asF64(emit(a))], 'i32') }
+    // JS loose nullish equality: x == null / x == undefined.
+    // If the non-literal side has a known non-null VAL type, fold to 0.
+    if (isNullishLit(a)) {
+      if (valTypeOf(b)) return emitNum(0)
+      return isNullish(asF64(emit(b)))
+    }
+    if (isNullishLit(b)) {
+      if (valTypeOf(a)) return emitNum(0)
+      return isNullish(asF64(emit(a)))
+    }
     // typeof x == 'string' → compile-time type check (prepare rewrites string to type code)
     const tc = emitTypeofCmp(a, b, 'eq'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
+    // Both sides known-pure NUMBER → f64.eq (skip __eq's pointer-identity/string path).
+    // valTypeOf handles literals/arithmetic exprs; lookupValType covers typed locals/params.
+    const vta = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
+    const vtb = valTypeOf(b) ?? (typeof b === 'string' ? lookupValType(b) : null)
+    if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
+    // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
+    // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
+    // STRING needs __eq (heap strings can be equal by content but different pointers).
+    // BIGINT needs __eq (heap-allocated, content compare).
+    if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
+      return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+    }
     inc('__eq')
     return typed(['call', '$__eq', asF64(va), asF64(vb)], 'i32')
   },
   '!=': (a, b) => {
-    if (isNullishLit(a)) { inc('__is_nullish'); return typed(['i32.eqz', ['call', '$__is_nullish', asF64(emit(b))]], 'i32') }
-    if (isNullishLit(b)) { inc('__is_nullish'); return typed(['i32.eqz', ['call', '$__is_nullish', asF64(emit(a))]], 'i32') }
+    if (isNullishLit(a)) {
+      if (valTypeOf(b)) return emitNum(1)
+      return typed(['i32.eqz', isNullish(asF64(emit(b)))], 'i32')
+    }
+    if (isNullishLit(b)) {
+      if (valTypeOf(a)) return emitNum(1)
+      return typed(['i32.eqz', isNullish(asF64(emit(a)))], 'i32')
+    }
     const tc = emitTypeofCmp(a, b, 'ne'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
+    const vta = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
+    const vtb = valTypeOf(b) ?? (typeof b === 'string' ? lookupValType(b) : null)
+    if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
+    if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
+      return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+    }
     inc('__eq')
     return typed(['i32.eqz', ['call', '$__eq', asF64(va), asF64(vb)]], 'i32')
   },
@@ -833,6 +1017,14 @@ export const emitter = {
   '!': a => {
     const v = emit(a)
     if (v.type === 'i32') return typed(['i32.eqz', v], 'i32')
+    // Unboxed pointer offsets: falsy iff zero offset.
+    if (v.ptrKind != null) return typed(['i32.eqz', v], 'i32')
+    // Known pointer-kinded operand: `!x` is just `x is nullish` (null/undefined).
+    // Pointers are never 0 / NaN / false / empty-string in the boxed form.
+    const vt = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
+    if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT) {
+      return isNullish(asF64(v))
+    }
     inc('__is_truthy')
     return typed(['i32.eqz', ['call', '$__is_truthy', asF64(v)]], 'i32')
   },
@@ -842,7 +1034,11 @@ export const emitter = {
     const ca = emit(a)
     if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emit(b) : emit(c) }
     const cond = toBoolFromEmitted(ca)
-    const vb = emit(b), vc = emit(c)
+    // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
+    const thenRefs = extractRefinements(a, new Map(), true)
+    const elseRefs = extractRefinements(a, new Map(), false)
+    const vb = withRefinements(thenRefs, b, () => emit(b))
+    const vc = withRefinements(elseRefs, c, () => emit(c))
     // L: Use WASM select for pure ternaries — branchless, smaller bytecode
     if (vb.type === 'i32' && vc.type === 'i32') {
       if (isPureIR(vb) && isPureIR(vc))
@@ -858,6 +1054,22 @@ export const emitter = {
   '&&': (a, b) => {
     const va = emit(a)
     if (isLit(va)) { const v = litVal(va); return (v !== 0 && v === v) ? emit(b) : va }
+    // i32 fast path: use i32 tee as cond directly (nonzero=truthy in wasm `if`),
+    // skip f64 round-trip and __is_truthy call entirely.
+    if (va.type === 'i32') {
+      const vb = emit(b)
+      const t = tempI32()
+      if (vb.type === 'i32') {
+        return typed(['if', ['result', 'i32'],
+          ['local.tee', `$${t}`, va],
+          ['then', vb],
+          ['else', ['local.get', `$${t}`]]], 'i32')
+      }
+      return typed(['if', ['result', 'f64'],
+        ['local.tee', `$${t}`, va],
+        ['then', asF64(vb)],
+        ['else', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')]], 'f64')
+    }
     const t = temp()
     const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
     return typed(['if', ['result', 'f64'],
@@ -869,6 +1081,20 @@ export const emitter = {
   '||': (a, b) => {
     const va = emit(a)
     if (isLit(va)) { const v = litVal(va); return (v !== 0 && v === v) ? va : emit(b) }
+    if (va.type === 'i32') {
+      const vb = emit(b)
+      const t = tempI32()
+      if (vb.type === 'i32') {
+        return typed(['if', ['result', 'i32'],
+          ['local.tee', `$${t}`, va],
+          ['then', ['local.get', `$${t}`]],
+          ['else', vb]], 'i32')
+      }
+      return typed(['if', ['result', 'f64'],
+        ['local.tee', `$${t}`, va],
+        ['then', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')],
+        ['else', asF64(vb)]], 'f64')
+    }
     const t = temp()
     const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
     return typed(['if', ['result', 'f64'],
@@ -936,9 +1162,14 @@ export const emitter = {
       return null
     }
     const c = ce.type === 'i32' ? ce : toBoolFromEmitted(ce)
-    const thenBody = emitFlat(then)
-    if (els != null)
-      return ['if', c, ['then', ...thenBody], ['else', ...emitFlat(els)]]
+    // Flow-sensitive type refinement: narrow types within each branch based on the guard.
+    const thenRefs = extractRefinements(cond, new Map(), true)
+    const elseRefs = extractRefinements(cond, new Map(), false)
+    const thenBody = withRefinements(thenRefs, then, () => emitFlat(then))
+    if (els != null) {
+      const elseBody = withRefinements(elseRefs, els, () => emitFlat(els))
+      return ['if', c, ['then', ...thenBody], ['else', ...elseBody]]
+    }
     return ['if', c, ['then', ...thenBody]]
   },
 
@@ -1062,7 +1293,7 @@ export const emitter = {
         const fname = `${obj}$${method}`
         if (ctx.func.names.has(fname)) {
           const func = ctx.func.map.get(fname)
-          const emittedArgs = parsed.normal.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
+          const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
             emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
           return typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
@@ -1213,8 +1444,9 @@ export const emitter = {
           if (!ctx.func.locals.has(innerName)) ctx.func.locals.set(innerName, 'f64')
           const boxBase = tempI32('bb')
           // Load current inner value from boxed object's slot 0 (may have been updated by prior mutations)
+          // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
           const loadInner = [
-            ['local.set', `$${boxBase}`, ['call', '$__ptr_offset', asF64(emit(obj))]],
+            ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
             ['local.set', `$${innerName}`, ['f64.load', ['local.get', `$${boxBase}`]]]]
           const result = callMethod(innerName, emitter)
           // Mutating methods may reallocate; writeback inner value to boxed slot
@@ -1258,7 +1490,7 @@ export const emitter = {
       if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
         const idx = ctx.schema.find(obj, method)
         if (idx >= 0) {
-          const propRead = typed(['f64.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', idx * 8]]], 'f64')
+          const propRead = typed(['f64.load', ['i32.add', ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
           return ctx.closure.call(propRead, parsed.normal)
         }
       }
@@ -1323,7 +1555,7 @@ export const emitter = {
         const fixedParamCount = func.sig.params.length - 1
         const fixedArgs = parsed.normal.slice(0, fixedParamCount)
         // Pad missing fixed args with sentinel for defaults
-        const emittedFixed = fixedArgs.map((a, k) => asParamType(emit(a), func.sig.params[k]?.type))
+        const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
         while (emittedFixed.length < fixedParamCount)
           emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
 
@@ -1341,7 +1573,7 @@ export const emitter = {
       // Regular function call without rest params
       if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
       // Pad missing args with canonical NaN (triggers default param init)
-      const args = parsed.normal.map((a, k) => asParamType(emit(a), func?.sig.params[k]?.type))
+      const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
       const expected = func?.sig.params.length || args.length
       while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
       // Multi-value return: materialize as heap array (caller expects single pointer)
@@ -1384,12 +1616,10 @@ export function emit(node, expect) {
   if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
     return nullExpr()
   if (typeof node === 'bigint') {
-    // Wrap to signed i64 range (unsigned values > 2^63-1 become negative)
-    let n = node
-    if (n > 0x7fffffffffffffffn) n = n - 0x10000000000000000n
-    if (n < -0x8000000000000000n) n = n + 0x10000000000000000n
-    const hex = n < 0n ? '-0x' + (-n).toString(16) : '0x' + n.toString(16)
-    return typed(['f64.reinterpret_i64', ['i64.const', hex]], 'f64')
+    // Wrap to unsigned i64 range — emit as positive hex so downstream BigInt() parsers
+    // (e.g. watr's optimize.js getConst) don't choke on "-0x..." strings.
+    const n = node & 0xFFFFFFFFFFFFFFFFn
+    return typed(['f64.reinterpret_i64', ['i64.const', '0x' + n.toString(16)]], 'f64')
   }
   if (typeof node === 'number') {
     if (Number.isInteger(node) && node >= -2147483648 && node <= 2147483647)

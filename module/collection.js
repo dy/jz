@@ -32,13 +32,15 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
   const extBranch = hasVal
     ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
     : '(then (nop))'
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))`
   const typeGuard = hasExt
-    ? `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return (local.get $coll))))`
-    : `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (local.get $coll))))`
+    ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return (local.get $coll))))`
+    : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (return (local.get $coll))))`
   return `(func $${name} (param $coll f64) (param $key f64) ${valParam}(result f64)
-    (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
+    (local $bits i64) (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $coll)))
     ${typeGuard}
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -72,16 +74,18 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
   const notFound = wantValue
     ? `(f64.const nan:${NULL_NAN})`
     : '(i32.const 0)'
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))`
   const typeGuard = hasExt
-    ? `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (if (i32.eq (call $__ptr_type (local.get $coll)) (i32.const ${PTR.EXTERNAL}))
+    ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
         (then (return (call $__ext_${wantValue ? 'prop' : 'has'} (local.get $coll) (local.get $key))))
         (else ${onEmpty}))))`
-    : `(if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then ${onEmpty}))`
+    : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then ${onEmpty}))`
 
   return `(func $${name} (param $coll f64) (param $key f64) (result ${rt})
-    (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local $bits i64) (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $coll)))
     ${typeGuard}
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -198,10 +202,13 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
 
 function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing = UNDEF_NAN) {
   return `(func $${name} (param $coll f64) (param $key f64) (result f64)
-    (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType}))
+    (local $bits i64) (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $coll)))
+    (if (i32.ne
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${expectedType}))
       (then (return (f64.const nan:${missing}))))
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
