@@ -539,7 +539,7 @@ export function peepholeFolds(node) {
 export function inlinePtrType(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const name = typeof fn[1] === 'string' ? fn[1] : null
-  if (name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy')) return
+  if (name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy' || name === '$__is_null')) return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const rewrite = (node) => {
@@ -566,6 +566,11 @@ export function inlinePtrType(fn) {
           node[i] = ['i32.or',
             ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000100000000']],
             ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000000000001']]]
+          continue
+        }
+        if (c[1] === '$__is_null') {
+          // One op: reinterpret + compare. Always inline.
+          node[i] = ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000100000000']]
           continue
         }
         // __is_truthy on a simple local.get arg: inline the two-branch test.
