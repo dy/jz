@@ -414,23 +414,25 @@ export default (ctx) => {
           ${extArm}))))`
   }
 
+  // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).
+  // Defer the root insert to the end and gate it on props-ptr change: most calls hit
+  // the no-grow case where the ptr is unchanged and the root slot already points to it.
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
-    (local $root f64) (local $props f64) (local $objKey f64)
+    (local $root f64) (local $props f64) (local $oldProps f64) (local $objKey f64)
     (local.set $root (global.get $__dyn_props))
     (if (f64.eq (local.get $root) (f64.const 0))
-      (then
-        (local.set $root (call $__hash_new))
-        (global.set $__dyn_props (local.get $root))))
+      (then (local.set $root (call $__hash_new))))
     (local.set $objKey (f64.convert_i32_s (call $__ptr_offset (local.get $obj))))
-    (local.set $props (call $__ihash_get_local (local.get $root) (local.get $objKey)))
-    (if (call $__is_nullish (local.get $props))
+    (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
+    (local.set $props
+      (if (result f64) (call $__is_nullish (local.get $oldProps))
+        (then (call $__hash_new))
+        (else (local.get $oldProps))))
+    (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
+    (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
       (then
-        (local.set $props (call $__hash_new))
         (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
         (global.set $__dyn_props (local.get $root))))
-    (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
-    (local.set $root (call $__ihash_set_local (global.get $__dyn_props) (local.get $objKey) (local.get $props)))
-    (global.set $__dyn_props (local.get $root))
     (local.get $val))`
 
   ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32)

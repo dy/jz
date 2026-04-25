@@ -42,7 +42,10 @@ COMMON="-I. -I$WABT_DIR/wasm2c -DWASM_RT_MEMCHECK_GUARD_PAGES -DWASM_RT_USE_MMAP
 EXTRA="-fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-stack-protector"
 
 # Stage 0: regenerate watr.wasm via jz + wasm-opt if missing or stale.
-if [ ! -f jz-watr-opt.wasm ] || [ "$SRC_DIR/gen-watr-wasm.mjs" -nt jz-watr-opt.wasm ]; then
+# Stamp depends on every input that affects codegen: gen script, jz sources, watr sources.
+JZ_ROOT="$(cd "$SRC_DIR/../.." && pwd)"
+NEWEST_INPUT=$(find "$SRC_DIR/gen-watr-wasm.mjs" "$JZ_ROOT/index.js" "$JZ_ROOT/src" "$JZ_ROOT/module" "$JZ_ROOT/node_modules/watr/src" -type f \( -name '*.js' -o -name '*.mjs' \) -print0 2>/dev/null | xargs -0 stat -f '%m %N' | sort -rn | head -1 | awk '{print $2}')
+if [ ! -f jz-watr-opt.wasm ] || [ "$NEWEST_INPUT" -nt jz-watr-opt.wasm ]; then
   echo "=== Stage 0: regen watr.wasm via jz + wasm-opt ==="
   BUILD_DIR="$BUILD_DIR" WASM_OPT="$WASM_OPT" node "$SRC_DIR/gen-watr-wasm.mjs" > /dev/null
 fi
