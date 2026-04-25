@@ -1309,6 +1309,69 @@ export const emitter = {
           return methodEmitter(objArg, ...parsed.normal)
         }
 
+        // Bulk push fast path: `obj.push(...src)` — single spread, no normal args, named obj.
+        // The generic single-spread loop below calls methodEmitter per iteration, which expands
+        // to a full .push (grow check + ptr_offset + store + set_len) every step. Amortising the
+        // grow + set_len across the whole spread eliminates ~3 stdlib calls per byte in watr's
+        // hot `out.push(...HANDLER[op](...))` path (~24M bytes/iter on raycast).
+        if (method === 'push' && parsed.normal.length === 0 &&
+            parsed.spreads.length === 1 && typeof objArg === 'string') {
+          const spreadExpr = parsed.spreads[0].expr
+          inc('__len'); inc('__arr_grow'); inc('__set_len'); inc('__ptr_offset')
+          const o = `${T}po${ctx.func.uniq++}`,
+                sa = `${T}psa${ctx.func.uniq++}`,
+                sl = `${T}psl${ctx.func.uniq++}`,
+                ol = `${T}pol${ctx.func.uniq++}`,
+                si = `${T}psi${ctx.func.uniq++}`,
+                base = `${T}pb${ctx.func.uniq++}`
+          ctx.func.locals.set(o, 'f64'); ctx.func.locals.set(sa, 'f64')
+          ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
+          ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
+
+          const objIsArr = (ctx.func.valTypes?.get(objArg) ?? lookupValType(objArg)) === VAL.ARRAY
+          const n = multiCount(spreadExpr)
+          const ir = []
+          ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
+          ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
+          ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
+          // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
+          if (objIsArr) {
+            ir.push(['local.set', `$${ol}`,
+              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${o}`]], ['i32.const', 8]]]])
+          } else {
+            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['local.get', `$${o}`]]])
+          }
+          // Single grow for the full spread (vs per-element grow check in the generic loop).
+          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['local.get', `$${o}`],
+            ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
+          // base captured AFTER grow (grow may relocate the array).
+          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${o}`]]])
+          // Tight store loop.
+          ir.push(['local.set', `$${si}`, ['i32.const', 0]])
+          const loopId = ctx.func.uniq++
+          ir.push(['block', `$break${loopId}`, ['loop', `$continue${loopId}`,
+            ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${si}`], ['local.get', `$${sl}`]]],
+            ['f64.store',
+              ['i32.add', ['local.get', `$${base}`],
+                ['i32.shl', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${si}`]], ['i32.const', 3]]],
+              asF64(emit(['[]', sa, si]))],
+            ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
+            ['br', `$continue${loopId}`]]])
+          // Single set_len for the full spread.
+          ir.push(['call', '$__set_len', ['local.get', `$${o}`],
+            ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
+          // Update source variable: grow may have moved the pointer.
+          if (ctx.func.boxed?.has(objArg)) {
+            ir.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(objArg)}`], ['local.get', `$${o}`]])
+          } else if (ctx.scope.globals.has(objArg) && !ctx.func.locals?.has(objArg)) {
+            ir.push(['global.set', `$${objArg}`, ['local.get', `$${o}`]])
+          } else {
+            ir.push(['local.set', `$${objArg}`, ['local.get', `$${o}`]])
+          }
+          ir.push(['f64.convert_i32_s', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
+          return typed(['block', ['result', 'f64'], ...ir], 'f64')
+        }
+
         // Single spread at end: call method with normal args, then loop spread elements
         if (parsed.spreads.length === 1 && parsed.spreads[0].pos === parsed.normal.length) {
           const spreadExpr = parsed.spreads[0].expr
