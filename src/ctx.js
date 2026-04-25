@@ -182,6 +182,7 @@ export function reset(proto, globals) {
 
   ctx.transform = {
     jzify: null,
+    noTailCall: false,  // when true, emit `return call` instead of `return_call` (wasm2c compat)
   }
 
   // Feature flags: capabilities the compiled module may exercise at runtime.

@@ -87,6 +87,7 @@ jz.compile = (code, opts = {}) => {
   // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
   // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
   if (opts.jzify) ctx.transform.jzify = jzify
+  if (opts.noTailCall) ctx.transform.noTailCall = true
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {

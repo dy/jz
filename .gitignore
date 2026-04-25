@@ -126,9 +126,10 @@ dist
 .yarn/install-state.gz
 .pnp.*
 /.work/backup
-/.work/diag-*.mjs
+/.work/*.mjs
 /.work/*.wasm
 /.claude
+/CLAUDE.md
 .DS_Store
 /out.wat
 /output.txt

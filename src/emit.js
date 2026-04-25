@@ -640,7 +640,8 @@ export const emitter = {
     if (expr == null) return typed(['return', NULL_IR], 'void')
     const rt = ctx.func.current?.results[0] || 'f64'
     const ir = asParamType(emit(expr), rt)
-    if (!ctx.func.inTry && Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
+    if (!ctx.func.inTry && !ctx.transform.noTailCall &&
+        Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
     return typed(['return', ir], 'void')
   },
