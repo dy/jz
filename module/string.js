@@ -18,24 +18,24 @@ export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_copy: [],
-    __str_slice: ['__char_at', '__str_byteLen', '__alloc'],
-    __str_indexof: ['__str_byteLen', '__char_at'],
+    __str_slice: ['__str_byteLen', '__alloc'],
+    __str_indexof: ['__str_byteLen'],
     __str_substring: ['__str_slice'],
-    __str_startswith: ['__str_byteLen', '__char_at'],
-    __str_endswith: ['__str_byteLen', '__char_at'],
-    __str_case: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_startswith: ['__str_byteLen'],
+    __str_endswith: ['__str_byteLen'],
+    __str_case: ['__str_byteLen', '__alloc'],
     __str_trim: ['__str_slice'],
     __str_trimStart: ['__str_slice'],
     __str_trimEnd: ['__str_slice'],
-    __str_repeat: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_repeat: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_split: ['__str_slice'],
     __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
     __str_eq: ['__char_at'],
-    __str_pad: ['__str_byteLen', '__char_at', '__alloc'],
+    __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
-    __str_encode: ['__str_byteLen', '__char_at'],
+    __str_encode: ['__str_byteLen', '__str_copy'],
     __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
@@ -99,10 +99,22 @@ export default (ctx) => {
       (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF)))
       (local.get $i))))`
 
+  // Hot (~37M calls in watr self-host). Type+offset extracted once from $bits;
+  // SSO/STRING bodies merged inline to skip 2 function calls per char fetch.
   ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr f64) (param $i i32) (result i32)
-    (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.SSO}))
-      (then (call $__sso_char (local.get $ptr) (local.get $i)))
-      (else (call $__str_char (local.get $ptr) (local.get $i)))))`
+    (local $bits i64) (local $off i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (if (result i32)
+      (i32.eq
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+        (i32.const ${PTR.SSO}))
+      (then
+        (i32.and
+          (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8)))
+          (i32.const 0xFF)))
+      (else
+        (i32.load8_u (i32.add (local.get $off) (local.get $i))))))`
 
   ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr f64) (param $i i32) (result f64)
     (local $len i32)
@@ -137,7 +149,10 @@ export default (ctx) => {
     ;; Both SSO with !bit-eq ⇒ content differs (high 32 bits hold type+len; both equal here).
     (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
       (then (return (i32.const 0))))
-    ;; Both STRING fast path: inline len from header, raw load8_u byte loop.
+    ;; Both STRING fast path: inline len from header. Chunk by 4 bytes via unaligned i32.load
+    ;; (wasm guarantees unaligned-OK), then byte-tail. Most string comparisons fail early on
+    ;; the first 4-byte word, so this collapses the per-byte branch overhead into a single
+    ;; 32-bit equality.
     (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
       (then
         (if (i32.or (i32.lt_u (local.get $offA) (i32.const 4)) (i32.lt_u (local.get $offB) (i32.const 4)))
@@ -146,6 +161,15 @@ export default (ctx) => {
         (local.set $lenB (i32.load (i32.sub (local.get $offB) (i32.const 4))))
         (if (i32.ne (local.get $len) (local.get $lenB))
           (then (return (i32.const 0))))
+        (local.set $lenB (i32.and (local.get $len) (i32.const -4)))
+        (block $d4 (loop $l4
+          (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenB)))
+          (if (i32.ne
+                (i32.load (i32.add (local.get $offA) (local.get $i)))
+                (i32.load (i32.add (local.get $offB) (local.get $i))))
+            (then (return (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 4)))
+          (br $l4)))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (if (i32.ne
@@ -194,8 +218,11 @@ export default (ctx) => {
 
   // === WAT: string methods ===
 
+  // SSO source uses an unrolled byte-extract loop (len ≤ 4); heap source uses memory.copy
+  // (single bulk op instead of nlen × __char_at).
   ctx.core.stdlib['__str_slice'] = `(func $__str_slice (param $ptr f64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $nlen i32) (local $off i32) (local $i i32)
+    (local $bits i64) (local $srcOff i32) (local $isSso i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
@@ -215,13 +242,23 @@ export default (ctx) => {
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $nlen))))
     (i32.store (local.get $off) (local.get $nlen))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $i (i32.const 0))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $nlen)))
-      (i32.store8 (i32.add (local.get $off) (local.get $i))
-        (call $__char_at (local.get $ptr) (i32.add (local.get $start) (local.get $i))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $isSso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
+    (if (local.get $isSso)
+      (then
+        (block $done (loop $loop
+          (br_if $done (i32.ge_s (local.get $i) (local.get $nlen)))
+          (i32.store8 (i32.add (local.get $off) (local.get $i))
+            (i32.and (i32.shr_u (local.get $srcOff)
+              (i32.shl (i32.add (local.get $start) (local.get $i)) (i32.const 3)))
+              (i32.const 0xFF)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $loop))))
+      (else
+        (memory.copy (local.get $off) (i32.add (local.get $srcOff) (local.get $start)) (local.get $nlen))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.core.stdlib['__str_substring'] = `(func $__str_substring (param $ptr f64) (param $start i32) (param $end i32) (result f64)
@@ -242,12 +279,26 @@ export default (ctx) => {
         (local.set $end (local.get $tmp))))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
 
+  // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
+  // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
   ctx.core.stdlib['__str_indexof'] = `(func $__str_indexof (param $hay f64) (param $ndl f64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
+    (local $hbits i64) (local $nbits i64) (local $hoff i32) (local $noff i32)
+    (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
     (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
     (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
+    (local.set $hbits (i64.reinterpret_f64 (local.get $hay)))
+    (local.set $nbits (i64.reinterpret_f64 (local.get $ndl)))
+    (local.set $hoff (i32.wrap_i64 (i64.and (local.get $hbits) (i64.const 0xFFFFFFFF))))
+    (local.set $noff (i32.wrap_i64 (i64.and (local.get $nbits) (i64.const 0xFFFFFFFF))))
+    (local.set $hsso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $hbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
+    (local.set $nsso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $nbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
     (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
     (block $done (loop $outer
       (br_if $done (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (local.get $nlen))))
@@ -255,9 +306,14 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $nomatch (loop $inner
         (br_if $nomatch (i32.ge_s (local.get $j) (local.get $nlen)))
-        (if (i32.ne
-              (call $__char_at (local.get $hay) (i32.add (local.get $i) (local.get $j)))
-              (call $__char_at (local.get $ndl) (local.get $j)))
+        (local.set $k (i32.add (local.get $i) (local.get $j)))
+        (local.set $hb (if (result i32) (local.get $hsso)
+          (then (i32.and (i32.shr_u (local.get $hoff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+          (else (i32.load8_u (i32.add (local.get $hoff) (local.get $k))))))
+        (local.set $nb (if (result i32) (local.get $nsso)
+          (then (i32.and (i32.shr_u (local.get $noff) (i32.shl (local.get $j) (i32.const 3))) (i32.const 0xFF)))
+          (else (i32.load8_u (i32.add (local.get $noff) (local.get $j))))))
+        (if (i32.ne (local.get $hb) (local.get $nb))
           (then (local.set $match (i32.const 0)) (br $nomatch)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $inner)))
@@ -266,55 +322,105 @@ export default (ctx) => {
       (br $outer)))
     (i32.const -1))`
 
+  // SSO/heap dispatch hoisted; inner loop is two inlined byte-fetches and a compare.
   ctx.core.stdlib['__str_startswith'] = `(func $__str_startswith (param $str f64) (param $pfx f64) (result i32)
     (local $plen i32) (local $i i32)
+    (local $sbits i64) (local $pbits i64) (local $soff i32) (local $poff i32) (local $ssso i32) (local $psso i32)
     (local.set $plen (call $__str_byteLen (local.get $pfx)))
     (if (i32.gt_s (local.get $plen) (call $__str_byteLen (local.get $str)))
       (then (return (i32.const 0))))
-    (local.set $i (i32.const 0))
+    (local.set $sbits (i64.reinterpret_f64 (local.get $str)))
+    (local.set $pbits (i64.reinterpret_f64 (local.get $pfx)))
+    (local.set $soff (i32.wrap_i64 (i64.and (local.get $sbits) (i64.const 0xFFFFFFFF))))
+    (local.set $poff (i32.wrap_i64 (i64.and (local.get $pbits) (i64.const 0xFFFFFFFF))))
+    (local.set $ssso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $sbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
+    (local.set $psso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $pbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $plen)))
-      (if (i32.ne (call $__char_at (local.get $str) (local.get $i))
-                  (call $__char_at (local.get $pfx) (local.get $i)))
+      (if (i32.ne
+            (if (result i32) (local.get $ssso)
+              (then (i32.and (i32.shr_u (local.get $soff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (else (i32.load8_u (i32.add (local.get $soff) (local.get $i)))))
+            (if (result i32) (local.get $psso)
+              (then (i32.and (i32.shr_u (local.get $poff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (else (i32.load8_u (i32.add (local.get $poff) (local.get $i))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
     (i32.const 1))`
 
   ctx.core.stdlib['__str_endswith'] = `(func $__str_endswith (param $str f64) (param $sfx f64) (result i32)
-    (local $slen i32) (local $flen i32) (local $off i32) (local $i i32)
+    (local $slen i32) (local $flen i32) (local $off i32) (local $i i32) (local $k i32)
+    (local $sbits i64) (local $fbits i64) (local $soff i32) (local $foff i32) (local $ssso i32) (local $fsso i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (local.set $flen (call $__str_byteLen (local.get $sfx)))
     (if (i32.gt_s (local.get $flen) (local.get $slen))
       (then (return (i32.const 0))))
     (local.set $off (i32.sub (local.get $slen) (local.get $flen)))
-    (local.set $i (i32.const 0))
+    (local.set $sbits (i64.reinterpret_f64 (local.get $str)))
+    (local.set $fbits (i64.reinterpret_f64 (local.get $sfx)))
+    (local.set $soff (i32.wrap_i64 (i64.and (local.get $sbits) (i64.const 0xFFFFFFFF))))
+    (local.set $foff (i32.wrap_i64 (i64.and (local.get $fbits) (i64.const 0xFFFFFFFF))))
+    (local.set $ssso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $sbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
+    (local.set $fsso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $flen)))
-      (if (i32.ne (call $__char_at (local.get $str) (i32.add (local.get $off) (local.get $i)))
-                  (call $__char_at (local.get $sfx) (local.get $i)))
+      (local.set $k (i32.add (local.get $off) (local.get $i)))
+      (if (i32.ne
+            (if (result i32) (local.get $ssso)
+              (then (i32.and (i32.shr_u (local.get $soff) (i32.shl (local.get $k) (i32.const 3))) (i32.const 0xFF)))
+              (else (i32.load8_u (i32.add (local.get $soff) (local.get $k)))))
+            (if (result i32) (local.get $fsso)
+              (then (i32.and (i32.shr_u (local.get $foff) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+              (else (i32.load8_u (i32.add (local.get $foff) (local.get $i))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $loop)))
     (i32.const 1))`
 
+  // Source SSO/heap dispatch hoisted out of the byte loop (was a per-byte __char_at).
   ctx.core.stdlib['__str_case'] = `(func $__str_case (param $ptr f64) (param $lo i32) (param $hi i32) (param $delta i32) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $c i32)
+    (local $bits i64) (local $srcOff i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $i (i32.const 0))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (local.get $ptr) (local.get $i)))
-      (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
-        (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
-      (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.SSO}))
+      (then
+        (block $dsso (loop $lsso
+          (br_if $dsso (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (i32.and
+            (i32.shr_u (local.get $srcOff) (i32.shl (local.get $i) (i32.const 3)))
+            (i32.const 0xFF)))
+          (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
+            (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
+          (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $lsso))))
+      (else
+        (block $dh (loop $lh
+          (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (i32.load8_u (i32.add (local.get $srcOff) (local.get $i))))
+          (if (i32.and (i32.ge_u (local.get $c) (local.get $lo)) (i32.le_u (local.get $c) (local.get $hi)))
+            (then (local.set $c (i32.add (local.get $c) (local.get $delta)))))
+          (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $c))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $lh)))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.core.stdlib['__str_trim'] = `(func $__str_trim (param $ptr f64) (result f64)
@@ -356,8 +462,10 @@ export default (ctx) => {
       (br $loop)))
     (call $__str_slice (local.get $ptr) (i32.const 0) (local.get $end)))`
 
+  // Materialize source bytes once via __str_copy (handles SSO/heap), then memory.copy
+  // each subsequent repetition (single bulk op vs len byte stores per copy).
   ctx.core.stdlib['__str_repeat'] = `(func $__str_repeat (param $ptr f64) (param $n i32) (result f64)
-    (local $len i32) (local $total i32) (local $off i32) (local $i i32) (local $j i32) (local $pos i32)
+    (local $len i32) (local $total i32) (local $off i32) (local $i i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.or (i32.eqz (local.get $n)) (i32.eqz (local.get $len)))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
@@ -365,20 +473,16 @@ export default (ctx) => {
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $pos (i32.const 0))
-    (local.set $i (i32.const 0))
-    (block $d1 (loop $l1
-      (br_if $d1 (i32.ge_s (local.get $i) (local.get $n)))
-      (local.set $j (i32.const 0))
-      (block $d2 (loop $l2
-        (br_if $d2 (i32.ge_s (local.get $j) (local.get $len)))
-        (i32.store8 (i32.add (local.get $off) (local.get $pos))
-          (call $__char_at (local.get $ptr) (local.get $j)))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-        (local.set $j (i32.add (local.get $j) (i32.const 1)))
-        (br $l2)))
+    (call $__str_copy (local.get $ptr) (local.get $off) (local.get $len))
+    (local.set $i (i32.const 1))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (memory.copy
+        (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $len)))
+        (local.get $off)
+        (local.get $len))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l1)))
+      (br $loop)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", arrays → join(","), other pointers pass through
@@ -543,9 +647,12 @@ export default (ctx) => {
       (br $loop)))
     (local.get $result))`
 
+  // Source string copied via __str_copy (handles SSO/heap with memory.copy where possible).
+  // Pad fill loops a single tile of pad bytes — hoist pad dispatch out of the byte loop.
   ctx.core.stdlib['__str_pad'] = `(func $__str_pad (param $str f64) (param $target i32) (param $pad f64) (param $before i32) (result f64)
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
     (local $str_off i32) (local $pad_off i32)
+    (local $pbits i64) (local $poff i32) (local $psso i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (local.get $str))))
@@ -556,18 +663,20 @@ export default (ctx) => {
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (local.set $str_off (select (local.get $fill) (i32.const 0) (local.get $before)))
     (local.set $pad_off (select (i32.const 0) (local.get $slen) (local.get $before)))
-    (local.set $i (i32.const 0))
-    (block $d1 (loop $l1
-      (br_if $d1 (i32.ge_s (local.get $i) (local.get $slen)))
-      (i32.store8 (i32.add (local.get $off) (i32.add (local.get $str_off) (local.get $i)))
-        (call $__char_at (local.get $str) (local.get $i)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l1)))
-    (local.set $i (i32.const 0))
+    (call $__str_copy (local.get $str) (i32.add (local.get $off) (local.get $str_off)) (local.get $slen))
+    (local.set $pbits (i64.reinterpret_f64 (local.get $pad)))
+    (local.set $poff (i32.wrap_i64 (i64.and (local.get $pbits) (i64.const 0xFFFFFFFF))))
+    (local.set $psso (i32.eq
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $pbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.const ${PTR.SSO})))
     (block $d2 (loop $l2
       (br_if $d2 (i32.ge_s (local.get $i) (local.get $fill)))
       (i32.store8 (i32.add (local.get $off) (i32.add (local.get $pad_off) (local.get $i)))
-        (call $__char_at (local.get $pad) (i32.rem_u (local.get $i) (local.get $plen))))
+        (if (result i32) (local.get $psso)
+          (then (i32.and
+            (i32.shr_u (local.get $poff) (i32.shl (i32.rem_u (local.get $i) (local.get $plen)) (i32.const 3)))
+            (i32.const 0xFF)))
+          (else (i32.load8_u (i32.add (local.get $poff) (i32.rem_u (local.get $i) (local.get $plen)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
@@ -762,20 +871,13 @@ export default (ctx) => {
   // .encode(str) → Uint8Array of string's UTF-8 bytes
   // Copies bytes from string (SSO or heap) into a new Uint8Array
   ctx.core.stdlib['__str_encode'] = `(func $__str_encode (param $str f64) (result f64)
-    (local $len i32) (local $dst i32) (local $i i32)
+    (local $len i32) (local $dst i32)
     (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $len))))
     (i32.store (local.get $dst) (local.get $len))
     (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))
     (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
-    ;; Copy bytes using char_at (handles both SSO and heap)
-    (local.set $i (i32.const 0))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (i32.store8 (i32.add (local.get $dst) (local.get $i))
-        (call $__char_at (local.get $str) (local.get $i)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
+    (call $__str_copy (local.get $str) (local.get $dst) (local.get $len))
     (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`
 
   ctx.core.emit['.encode'] = (obj, str) => {

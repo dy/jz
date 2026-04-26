@@ -59,19 +59,15 @@ export default (ctx) => {
       (br $rl)))
     (local.get $len))`
 
-  // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string
+  // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
+  // Hot (~60M calls in watr self-host via __ftoa). bulk memory.copy is ~10× faster than
+  // a hand-rolled byte loop (wasm2c lowers it to memcpy under PGO+LTO).
   ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
-    (local $off i32) (local $i i32)
+    (local $off i32)
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $off) (local.get $len))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (local.set $i (i32.const 0))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (i32.store8 (i32.add (local.get $off) (local.get $i))
-        (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
+    (memory.copy (local.get $off) (local.get $buf) (local.get $len))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string)

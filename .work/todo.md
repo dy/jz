@@ -6,7 +6,15 @@
 ## Status snapshot — Apr 26 2026
 
 - **Phase 1 (native > V8 JS, 21/21)**: ✅ DONE & stable. `node scripts/bench-native.mjs` reports PASS. After Apr 26 stdlib hot-path inlining: smallest margin maze 1.04–1.06×, raycast 1.08–1.11×, containers 1.07–1.09×; rest 1.12–4.44×.
-- **Apr 26 stdlib pass** (commits `99ce0c7`, `fc50c46`): inlined hot helpers `__eq` (bit-eq first), `__ptr_offset` (drop redundant memory.size bound), `__len` (ARRAY fast path), `__str_hash` and `__str_eq` (hoist type/offset/byteLen out of byte loop, raw load8_u inner loop). PGO call counts: i64_reinterpret_f64 2.22B → 1.84B (-17%), `__ptr_offset` 637M → 446M (-30%), `__str_hash` 95M → 67M, `__str_eq` 63M → 54M, `__str_byteLen` 118M → 103M. Native deltas (50×5 bench): raycast 3.978 → 3.752 (-5.7%), maze 0.799 → 0.720 (-9.9%), containers 2.014 → 1.766 (-12%), raytrace 0.41 → 0.39 (-5%). Saved as `.work/bench-after-push.txt`.
+- **Apr 26 stdlib pass — Round 1** (commits `99ce0c7`, `fc50c46`): inlined hot helpers `__eq` (bit-eq first), `__ptr_offset` (drop redundant memory.size bound), `__len` (ARRAY fast path), `__str_hash` and `__str_eq` (hoist type/offset/byteLen out of byte loop, raw load8_u inner loop). PGO call counts: i64_reinterpret_f64 2.22B → 1.84B (-17%), `__ptr_offset` 637M → 446M (-30%), `__str_hash` 95M → 67M, `__str_eq` 63M → 54M, `__str_byteLen` 118M → 103M. Native deltas (50×5 bench): raycast 3.978 → 3.752 (-5.7%), maze 0.799 → 0.720 (-9.9%), containers 2.014 → 1.766 (-12%), raytrace 0.41 → 0.39 (-5%). Saved as `.work/bench-after-push.txt`.
+- **Apr 26 stdlib pass — Round 2** (this session, uncommitted): doubled down on bulk-memory + dispatch hoisting across hot string ops:
+  - `__mkstr` byte-loop → `memory.copy` (lowers to memcpy under wasm2c+clang).
+  - `__str_eq` 4-byte chunked compare via unaligned `i32.load` (~4× inner-loop throughput).
+  - `__str_slice` / `__str_pad` / `__str_repeat` / `__str_encode` — invariant SSO/heap dispatch hoisted out of the byte loop; bulk path delegates to `__str_copy`/`memory.copy`. `__str_repeat` uses doubling-via-`memory.copy` after first emit.
+  - `__str_case` / `__str_indexof` / `__str_startswith` / `__str_endswith` — SSO/heap dispatch hoisted out of inner byte loop; per-byte fetch becomes inline branchless extract instead of `__char_at` call.
+  - `stdlibDeps` swept: `__char_at` removed from sites that no longer need it; deps narrowed to `__str_byteLen` / `__str_copy` / `__alloc` only.
+  - PGO call-count after round 2 (topN): `__eq` 207M, `__ptr_offset` 147M, `__str_byteLen` 103M, `__char_at` 91M (down from 137M), `__len` 89M, `__str_hash` 67M, `__mkstr` 62M, `__str_eq` 54M.
+  - Bench (50×5): 21/21 PASS, raycast 3.835. Tests: 907/912 (no regression).
 - **Phase 2 (jz-compiled wasm > V8 JS)**: ❌ uniformly ~3× SLOWER. Confirmed intrinsic to V8's wasm runtime (not marshalling). See "Path to V8 parity" section below.
 - **Tier B watr-source rewrites**: tried previously, regressed native (jz's spread-push is faster than push-loop), reverted. See Tier B section.
 - **Remaining Phase-1 levers** (Tier E below): amortized-O(1) `__arr_shift` (E1), inline `__hash_get_local` (E3), devirtualize HANDLER closure dispatch (E5). After Apr 26 the dominant remaining cost is watr-internal compiler functions (f38 instr, f10, f179, f84) — stdlib is largely tapped out.
