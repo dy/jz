@@ -111,39 +111,56 @@ export default (ctx) => {
           (i32.const 1)
           (call $__char_at (local.get $ptr) (local.get $i))))))`
 
+  // Hot: ~63M calls in watr self-host. Bit-eq covers identity. SSO/SSO with !bit-eq
+  // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
+  // ⇒ bytes differ). STRING/STRING uses raw load8_u — no per-byte function calls.
+  // Mixed SSO×STRING is rare; falls back to __char_at.
   ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
     (local $len i32) (local $lenB i32) (local $i i32)
-    (local $ba i64) (local $bb i64) (local $ta i32) (local $tb i32) (local $off i32)
+    (local $ba i64) (local $bb i64) (local $ta i32) (local $tb i32)
+    (local $offA i32) (local $offB i32)
     (local.set $ba (i64.reinterpret_f64 (local.get $a)))
     (local.set $bb (i64.reinterpret_f64 (local.get $b)))
     (if (i64.eq (local.get $ba) (local.get $bb))
       (then (return (i32.const 1))))
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ba) (i64.const 47)) (i64.const 0xF))))
     (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bb) (i64.const 47)) (i64.const 0xF))))
+    (local.set $offA (i32.wrap_i64 (i64.and (local.get $ba) (i64.const 0xFFFFFFFF))))
+    (local.set $offB (i32.wrap_i64 (i64.and (local.get $bb) (i64.const 0xFFFFFFFF))))
+    (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
+      (then (return (i32.const 0))))
     (if (i32.eq (local.get $ta) (i32.const ${PTR.SSO}))
       (then (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ba) (i64.const 32)) (i64.const 0x7FFF)))))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $ba) (i64.const 0xFFFFFFFF))))
-        (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-          (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4)))))
+        (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offA) (i32.const 4)))
+          (then (local.set $len (i32.load (i32.sub (local.get $offA) (i32.const 4)))))
           (else (local.set $len (i32.const 0))))))
     (if (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))
       (then (local.set $lenB (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bb) (i64.const 32)) (i64.const 0x7FFF)))))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $bb) (i64.const 0xFFFFFFFF))))
-        (if (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-          (then (local.set $lenB (i32.load (i32.sub (local.get $off) (i32.const 4)))))
+        (if (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offB) (i32.const 4)))
+          (then (local.set $lenB (i32.load (i32.sub (local.get $offB) (i32.const 4)))))
           (else (local.set $lenB (i32.const 0))))))
     (if (i32.ne (local.get $len) (local.get $lenB))
       (then (return (i32.const 0))))
-    (local.set $i (i32.const 0))
-    (block $done (loop $loop
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+    (if (i32.and (i32.ne (local.get $ta) (i32.const ${PTR.SSO})) (i32.ne (local.get $tb) (i32.const ${PTR.SSO})))
+      (then
+        (block $dh (loop $lh
+          (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
+          (if (i32.ne
+                (i32.load8_u (i32.add (local.get $offA) (local.get $i)))
+                (i32.load8_u (i32.add (local.get $offB) (local.get $i))))
+            (then (return (i32.const 0))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $lh)))
+        (return (i32.const 1))))
+    (block $dm (loop $lm
+      (br_if $dm (i32.ge_s (local.get $i) (local.get $len)))
       (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
                   (call $__char_at (local.get $b) (local.get $i)))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $loop)))
+      (br $lm)))
     (i32.const 1))`
 
   // === WAT: unified byte length (SSO → aux, heap → header) ===

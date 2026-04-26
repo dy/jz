@@ -42,22 +42,23 @@ export default (ctx) => {
 
   ctx.core.stdlib['__eq'] = `(func $__eq (param $a f64) (param $b f64) (result i32)
     (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
-    (if (result i32)
-      (i32.and
-        (f64.eq (local.get $a) (local.get $a))
-        (f64.eq (local.get $b) (local.get $b)))
-      (then (f64.eq (local.get $a) (local.get $b)))
+    ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
+    ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
+    ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string').
+    (local.set $ra (i64.reinterpret_f64 (local.get $a)))
+    (local.set $rb (i64.reinterpret_f64 (local.get $b)))
+    (if (result i32) (i64.eq (local.get $ra) (local.get $rb))
+      (then (i64.ne (local.get $ra) (i64.const 0x7FF8000000000000)))
       (else
-        (local.set $ra (i64.reinterpret_f64 (local.get $a)))
-        (local.set $rb (i64.reinterpret_f64 (local.get $b)))
+        ;; Bits differ. Numeric path covers -0/+0 and any normal numeric inequality.
         (if (result i32)
-          (i64.eq (local.get $ra) (local.get $rb))
-          (then
-            (if (result i32)
-              (i64.eq (local.get $ra) (i64.const 0x7FF8000000000000))
-              (then (i32.const 0))
-              (else (i32.const 1))))
+          (i32.and
+            (f64.eq (local.get $a) (local.get $a))
+            (f64.eq (local.get $b) (local.get $b)))
+          (then (f64.eq (local.get $a) (local.get $b)))
           (else
+            ;; ≥1 is a NaN-box. Heap-allocated STRING with same content can have different
+            ;; offsets — fall through to byte-wise __str_eq.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
             (if (result i32)
@@ -129,15 +130,14 @@ export default (ctx) => {
     (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     ;; Arrays can be reallocated during growth; non-array ptrs skip the forwarding check.
-    ;; Inline type extraction + nested ifs let the non-ARRAY fast path skip memory.size math.
+    ;; ARRAY pointers always come from __alloc_hdr → off ≥ 8 (8-byte header). The cheap
+    ;; lower bound guards against malformed NaN-boxes (e.g. type=ARRAY with off<8); the
+    ;; upper bound (memory.size * 64K - 8) was redundant since __alloc grows before return.
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
           (i32.const ${PTR.ARRAY}))
       (then
-        (if (i32.and
-              (i32.ge_u (local.get $off) (i32.const 8))
-              (i32.le_u (local.get $off)
-                (i32.sub (i32.mul (memory.size) (i32.const 65536)) (i32.const 8))))
+        (if (i32.ge_u (local.get $off) (i32.const 8))
           (then
             (block $done
               (loop $follow
@@ -211,26 +211,30 @@ export default (ctx) => {
     (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
+    ;; ARRAY fast path: dominates watr hot loops (nodes?.length, out.length …).
     (if (result i32)
-      (i32.and
-        (i32.ge_u (local.get $off) (i32.const 8))
-        (i32.or
-          (i32.or
-            (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
-            (i32.eq (local.get $t) (i32.const ${PTR.BUFFER})))
-          (i32.or (i32.eq (local.get $t) (i32.const 7))
-            (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
-      (then
-        (if (result i32) (i32.eq (local.get $t) (i32.const 3))
+      (i32.and (i32.eq (local.get $t) (i32.const 1)) (i32.ge_u (local.get $off) (i32.const 8)))
+      (then (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (else
+        (if (result i32)
+          (i32.and
+            (i32.ge_u (local.get $off) (i32.const 8))
+            (i32.or
+              (i32.eq (local.get $t) (i32.const 3))
+              (i32.or (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
+                (i32.or (i32.eq (local.get $t) (i32.const 7))
+                  (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9)))))))
           (then
-            (local.set $aux (call $__ptr_aux (local.get $ptr)))
-            (if (result i32) (i32.and (local.get $aux) (i32.const 8))
-              (then (i32.shr_u (i32.load (local.get $off))
-                               (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
-              (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
-                               (call $__typed_shift (local.get $aux))))))
-          (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-      (else (i32.const 0))))`
+            (if (result i32) (i32.eq (local.get $t) (i32.const 3))
+              (then
+                (local.set $aux (call $__ptr_aux (local.get $ptr)))
+                (if (result i32) (i32.and (local.get $aux) (i32.const 8))
+                  (then (i32.shr_u (i32.load (local.get $off))
+                                   (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
+                  (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
+                                   (call $__typed_shift (local.get $aux))))))
+              (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
+          (else (i32.const 0))))))`
 
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)

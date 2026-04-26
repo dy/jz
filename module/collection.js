@@ -338,15 +338,34 @@ export default (ctx) => {
   // === HASH — dynamic string-keyed object (type=7) ===
 
   // FNV-1a hash of string content (works on both SSO and heap strings)
+  // FNV-1a. ~95M calls in watr self-host. Inline char-fetch: hoist type/offset out of the
+  // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
+  // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
-    (local $h i32) (local $len i32) (local $i i32)
+    (local $h i32) (local $len i32) (local $i i32) (local $t i32) (local $off i32)
     (local.set $h (i32.const 0x811c9dc5))
     (local.set $len (call $__str_byteLen (local.get $s)))
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $h (i32.mul (i32.xor (local.get $h) (call $__char_at (local.get $s) (local.get $i))) (i32.const 0x01000193)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $l)))
+    (local.set $t (call $__ptr_type (local.get $s)))
+    (local.set $off (call $__ptr_offset (local.get $s)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
+      (then
+        (block $ds (loop $ls
+          (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $h (i32.mul
+            (i32.xor (local.get $h)
+              (i32.and (i32.shr_u (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i32.const 0xFF)))
+            (i32.const 0x01000193)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $ls))))
+      (else
+        (block $dh (loop $lh
+          (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $h (i32.mul
+            (i32.xor (local.get $h)
+              (i32.load8_u (i32.add (local.get $off) (local.get $i))))
+            (i32.const 0x01000193)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $lh)))))
     ;; Ensure >= 2 (0=empty, 1=tombstone)
     (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
       (then (i32.add (local.get $h) (i32.const 2))) (else (local.get $h))))`
