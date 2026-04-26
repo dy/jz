@@ -504,21 +504,24 @@ export default (ctx) => {
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
   // heap strings (single native op); unpacks SSO aux-packed bytes inline.
   ctx.core.stdlib['__str_copy'] = `(func $__str_copy (param $src f64) (param $dst i32) (param $len i32)
-    (local $bits i64) (local $i i32)
+    (local $bits i64) (local $w i32)
     (local.set $bits (i64.reinterpret_f64 (local.get $src)))
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
           (i32.const ${PTR.SSO}))
       (then
-        ;; SSO: up to 4 chars packed in low 32 bits; unroll byte extraction
-        (block $d (loop $l
-          (br_if $d (i32.ge_u (local.get $i) (local.get $len)))
-          (i32.store8 (i32.add (local.get $dst) (local.get $i))
-            (i32.wrap_i64 (i64.and
-              (i64.shr_u (local.get $bits) (i64.extend_i32_u (i32.shl (local.get $i) (i32.const 3))))
-              (i64.const 0xFF))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $l))))
+        ;; SSO: up to 4 chars packed in low 32 bits (LE byte order). Unroll: write 1/2/3/4 bytes
+        ;; depending on len. (len > 4 is rare/disallowed in practice — fallback handles up to 4.)
+        (local.set $w (i32.wrap_i64 (local.get $bits)))
+        (if (i32.ge_u (local.get $len) (i32.const 4))
+          (then (i32.store (local.get $dst) (local.get $w)))
+          (else
+            (if (i32.eq (local.get $len) (i32.const 0)) (then (return)))
+            (i32.store8 (local.get $dst) (local.get $w))
+            (if (i32.eq (local.get $len) (i32.const 1)) (then (return)))
+            (i32.store8 offset=1 (local.get $dst) (i32.shr_u (local.get $w) (i32.const 8)))
+            (if (i32.eq (local.get $len) (i32.const 2)) (then (return)))
+            (i32.store8 offset=2 (local.get $dst) (i32.shr_u (local.get $w) (i32.const 16))))))
       (else
         ;; Heap STRING: memory.copy directly from string data
         (memory.copy (local.get $dst)
