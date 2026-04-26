@@ -310,9 +310,10 @@ Compiled jz runs as native WASM — same speed as hand-written WAT or C-compiled
 | Benchmark | vs JS | Notes |
 |-----------|-------|-------|
 | `fib(30)` | **2x faster** | Recursive — WASM call overhead amortized |
-| `Float64Array.sum(10k)` | **2.3x faster** | Typed memory + loop hoisting |
+| `Float64Array.sum(10k)` | **2.5x faster** | Typed memory + loop hoisting |
 | `mandelbrot(100)` | ~0.7x | V8 JIT applies CSE that WASM doesn't |
-| `(a, b) => a + b` | 50 bytes | Pure scalar — no memory, no runtime |
+| `(a, b) => a + b` | 41 bytes | Pure scalar — no memory, no runtime |
+| `watr` self-host (compile WAT→WASM) | **1.0–4.4x** native vs V8 JS | 21/21 examples; native = jz→WASM→wasm2c+clang+PGO+LTO |
 
 WASM wins on typed memory and deep recursion. V8 can match or beat WASM on pure scalar loops where its JIT applies optimizations like common subexpression elimination. The gap narrows as code uses more typed arrays and less pure arithmetic.
 
@@ -334,6 +335,14 @@ Not ideal for: DOM manipulation, async I/O, heavy string processing, pure scalar
 | Chain fusion | jz | `.map(f).filter(g)` → single loop, no intermediate array |
 | Monomorphic dispatch | jz | Known types skip runtime type checks for `.length`, `[]`, method calls |
 | Branchless select | jz | Pure ternaries `a ? b : c` → WASM `select` (no branching) |
+| Schema slot reads | jz | `obj.prop` on inferred shape → `f64.load (base + idx*8)` — no hash, no dispatch |
+| Pointer-type subexpression elimination | jz | Repeated `__ptr_type x` in same block → single `local.tee`, reused |
+| Memarg fold | jz | `(i32.load (i32.add ptr (i32.const k)))` → `(i32.load offset=k ptr)` — fewer instructions |
+| Bulk memory ops | jz | String copy/slice/repeat/pad/encode → `memory.copy` (lowers to memcpy) |
+| Chunked compare | jz | `__str_eq` does 4-byte unaligned `i32.load` per step (~4× inner-loop throughput) |
+| Inline FNV-1a | jz | `__str_hash` 4-byte unrolled (one `i32.load` + 4 sequential xor/mul per iter) |
+| Dispatch hoisting | jz | SSO/heap branch lifted out of inner byte loop in slice/case/pad/indexOf/etc. |
+| Inline dyn property probe | jz | `__dyn_get` (95M calls in self-host) inlines `__hash_get_local`'s probe loop — skips redundant type check + bit unboxing on already-validated props hash |
 | Inline/peephole | watr | Instruction-level optimization on WAT output |
 
 #### What JS features are excluded and why?

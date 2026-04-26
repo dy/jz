@@ -250,7 +250,7 @@ export default (ctx) => {
     __hash_set_local: ['__str_hash', '__str_eq'],
     __ihash_get_local: ['__hash'],
     __ihash_set_local: ['__hash', '__alloc_hdr', '__mkptr'],
-    __dyn_get: ['__ihash_get_local', '__hash_get_local', '__ptr_offset', '__is_nullish'],
+    __dyn_get: ['__ihash_get_local', '__str_hash', '__str_eq', '__is_nullish'],
     __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
     __dyn_get_any: () => ctx.features.external
       ? ['__dyn_get', '__hash_get_local', '__ptr_type', '__ext_prop']
@@ -395,31 +395,48 @@ export default (ctx) => {
   ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH)
   ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH, true)
 
-  // Inline __ptr_offset (forwarding-aware) so the obj→objKey path skips a function call
-  // — only ARRAY ever has forwarding, and dyn_get is in the hot path of every dyn read.
+  // Inline __ptr_offset (forwarding-aware) and __hash_get_local body — dyn_get is the
+  // single hottest stdlib symbol in watr self-host (~95M calls). props returned by
+  // __ihash_get_local is always HASH (or NULL_NAN, filtered by __is_nullish), so the
+  // inlined probe skips a redundant type check + bit unboxing per call.
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (local $props f64) (local $bits i64) (local $off i32)
-    (if (result f64) (f64.eq (global.get $__dyn_props) (f64.const 0))
-      (then (f64.const nan:${UNDEF_NAN}))
-      (else
-        (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-        (if (i32.eq
-              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
-              (i32.const ${PTR.ARRAY}))
-          (then
-            (block $done
-              (loop $follow
-                (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
-                (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
-                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-                (br $follow)))))
-        (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
-          (f64.convert_i32_s (local.get $off))))
-        (if (result f64) (call $__is_nullish (local.get $props))
-          (then (f64.const nan:${UNDEF_NAN}))
-          (else (call $__hash_get_local (local.get $props) (local.get $key)))))))`
+    (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (if (f64.eq (global.get $__dyn_props) (f64.const 0))
+      (then (return (f64.const nan:${UNDEF_NAN}))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.ARRAY}))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
+    (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
+      (f64.convert_i32_s (local.get $off))))
+    (if (call $__is_nullish (local.get $props))
+      (then (return (f64.const nan:${UNDEF_NAN}))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $props)))
+    (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
+    (local.set $h (call $__str_hash (local.get $key)))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
+    (block $hdone (loop $hprobe
+      (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
+      (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
+        (then (return (f64.const nan:${UNDEF_NAN}))))
+      (if (call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+        (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
+      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
+      (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
+      (br $hprobe)))
+    (f64.const nan:${UNDEF_NAN}))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
     (local $val f64)
