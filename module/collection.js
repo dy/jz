@@ -342,13 +342,14 @@ export default (ctx) => {
   // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
   // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
-    (local $h i32) (local $len i32) (local $i i32) (local $t i32) (local $off i32)
+    (local $h i32) (local $len i32) (local $i i32) (local $t i32) (local $off i32) (local $bits i64)
     (local.set $h (i32.const 0x811c9dc5))
-    (local.set $len (call $__str_byteLen (local.get $s)))
-    (local.set $t (call $__ptr_type (local.get $s)))
-    (local.set $off (call $__ptr_offset (local.get $s)))
+    (local.set $bits (i64.reinterpret_f64 (local.get $s)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
       (then
+        (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
         (block $ds (loop $ls
           (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
@@ -358,6 +359,8 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $ls))))
       (else
+        (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
+          (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
