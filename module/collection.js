@@ -342,7 +342,7 @@ export default (ctx) => {
   // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
   // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
-    (local $h i32) (local $len i32) (local $i i32) (local $t i32) (local $off i32) (local $bits i64)
+    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $bits i64) (local $w i32)
     (local.set $h (i32.const 0x811c9dc5))
     (local.set $bits (i64.reinterpret_f64 (local.get $s)))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
@@ -361,6 +361,17 @@ export default (ctx) => {
       (else
         (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
           (then (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+        ;; 4-byte unrolled FNV-1a: each iter loads i32, mixes 4 bytes (little-endian) sequentially.
+        (local.set $lenA (i32.and (local.get $len) (i32.const -4)))
+        (block $d4 (loop $l4
+          (br_if $d4 (i32.ge_s (local.get $i) (local.get $lenA)))
+          (local.set $w (i32.load (i32.add (local.get $off) (local.get $i))))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (local.get $w) (i32.const 0xFF))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (i32.shr_u (local.get $w) (i32.const 8)) (i32.const 0xFF))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (i32.shr_u (local.get $w) (i32.const 16)) (i32.const 0xFF))) (i32.const 0x01000193)))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $w) (i32.const 24))) (i32.const 0x01000193)))
+          (local.set $i (i32.add (local.get $i) (i32.const 4)))
+          (br $l4)))
         (block $dh (loop $lh
           (br_if $dh (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
