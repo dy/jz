@@ -134,11 +134,11 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
-    __arr_idx: ['__len', '__ptr_offset'],
+    __arr_idx: [],
     __arr_grow: ['__dyn_move'],
-    __arr_set_idx_ptr: ['__arr_grow', '__len', '__ptr_offset', '__set_len'],
+    __arr_set_idx_ptr: ['__arr_grow', '__len', '__set_len'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
-      ? ['__len', '__ptr_type', '__ptr_aux', '__ptr_offset']
+      ? ['__len']
       : ['__len', '__ptr_offset'],
   })
 
@@ -158,17 +158,33 @@ export default (ctx) => {
       ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
+  // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
+  // the redundant double pass through __len then __ptr_offset that both follow forwarding.
   ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr f64) (param $i i32) (result f64)
+    (local $bits i64) (local $off i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
     (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (call $__len (local.get $ptr))))
+      (i32.ne
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+        (i32.const ${PTR.ARRAY}))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (f64.load
-          (i32.add
-            (call $__ptr_offset (local.get $ptr))
-            (i32.shl (local.get $i) (i32.const 3)))))))`
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))
+        (if (result f64)
+          (i32.and
+            (i32.ge_u (local.get $off) (i32.const 8))
+            (i32.and
+              (i32.ge_s (local.get $i) (i32.const 0))
+              (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))))
+          (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (else (f64.const nan:${UNDEF_NAN})))))) `
 
   // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
   // Full body handles TYPED element types and view indirection since external host can
@@ -186,13 +202,16 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
+    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $bits.
     return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local $bits i64) (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (if
       (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $len (call $__len (local.get $ptr)))
@@ -202,7 +221,7 @@ export default (ctx) => {
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
           (then
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
@@ -267,8 +286,10 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
 
+  // Hot for arr[i] = val (~18M calls in watr self-host). Inline __ptr_offset (forwarding-aware
+  // for ARRAY) on the no-grow path so the in-bounds store skips a function call.
   ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr f64) (param $i i32) (param $val f64) (result f64)
-    (local $len i32)
+    (local $len i32) (local $bits i64) (local $off i32)
     (if (i32.lt_s (local.get $i) (i32.const 0))
       (then (return (local.get $ptr))))
     (local.set $len (call $__len (local.get $ptr)))
@@ -276,8 +297,21 @@ export default (ctx) => {
       (then
         (local.set $ptr (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
         (call $__set_len (local.get $ptr) (i32.add (local.get $i) (i32.const 1)))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.ARRAY}))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
     (f64.store
-      (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))
+      (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
     (local.get $ptr))`
 

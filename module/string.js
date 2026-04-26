@@ -37,7 +37,6 @@ export default (ctx) => {
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
     __str_encode: ['__str_byteLen', '__char_at'],
     __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
-    __sso_char: ['__ptr_offset'],
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
@@ -86,11 +85,19 @@ export default (ctx) => {
 
   // === WAT: char extraction ===
 
+  // SSO/STRING ptrs never have forwarding pointers (only ARRAY does), so we extract
+  // the raw offset directly instead of paying the __ptr_offset function-call overhead.
   ctx.core.stdlib['__sso_char'] = `(func $__sso_char (param $ptr f64) (param $i i32) (result i32)
-    (i32.and (i32.shr_u (call $__ptr_offset (local.get $ptr)) (i32.mul (local.get $i) (i32.const 8))) (i32.const 0xFF)))`
+    (i32.and
+      (i32.shr_u
+        (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF)))
+        (i32.mul (local.get $i) (i32.const 8)))
+      (i32.const 0xFF)))`
 
   ctx.core.stdlib['__str_char'] = `(func $__str_char (param $ptr f64) (param $i i32) (result i32)
-    (i32.load8_u (i32.add (call $__ptr_offset (local.get $ptr)) (local.get $i))))`
+    (i32.load8_u (i32.add
+      (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF)))
+      (local.get $i))))`
 
   ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr f64) (param $i i32) (result i32)
     (if (result i32) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.SSO}))

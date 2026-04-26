@@ -19,13 +19,13 @@ export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __eq: ['__str_eq', '__ptr_type'],
     __typeof: ['__ptr_type', '__is_nullish'],
-    __len: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __len: ['__typed_shift'],
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
     __ptr_offset: [],
     __is_str_key: ['__ptr_type'],
     __str_len: ['__ptr_type', '__ptr_offset'],
-    __set_len: ['__ptr_type', '__ptr_offset'],
+    __set_len: [],
     __length: () => {
       const d = ['__ptr_type', '__ptr_offset', '__str_len', '__len']
       if (ctx.features.sso) d.push('__ptr_aux')
@@ -129,21 +129,20 @@ export default (ctx) => {
     (local $bits i64) (local $off i32)
     (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    ;; Arrays can be reallocated during growth; non-array ptrs skip the forwarding check.
-    ;; ARRAY pointers always come from __alloc_hdr → off ≥ 8 (8-byte header). The cheap
-    ;; lower bound guards against malformed NaN-boxes (e.g. type=ARRAY with off<8); the
-    ;; upper bound (memory.size * 64K - 8) was redundant since __alloc grows before return.
+    ;; Arrays can be reallocated during growth; follow forwarding pointer (cap=-1 sentinel).
+    ;; Bounds are checked inside the loop so non-array ptrs skip them entirely, and well-formed
+    ;; ARRAY ptrs without forwarding still pay only one bounds check before the cap load.
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
           (i32.const ${PTR.ARRAY}))
       (then
-        (if (i32.ge_u (local.get $off) (i32.const 8))
-          (then
-            (block $done
-              (loop $follow
-                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
-                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
-                (br $follow)))))))
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
     (local.get $off))`
 
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr f64) (result i32)
@@ -207,14 +206,24 @@ export default (ctx) => {
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`
 
+  // Hot (~85M calls in watr self-host). Type/offset extraction inlined; forwarding
+  // loop only entered for ARRAY. ARRAY fast path dominates (nodes?.length, out.length …).
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
-    (local $t i32) (local $off i32) (local $aux i32)
-    (local.set $t (call $__ptr_type (local.get $ptr)))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
-    ;; ARRAY fast path: dominates watr hot loops (nodes?.length, out.length …).
+    (local $bits i64) (local $t i32) (local $off i32) (local $aux i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    ;; ARRAY fast path: follow forwarding inline, then load len at off-8.
     (if (result i32)
       (i32.and (i32.eq (local.get $t) (i32.const 1)) (i32.ge_u (local.get $off) (i32.const 8)))
-      (then (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))
+        (i32.load (i32.sub (local.get $off) (i32.const 8))))
       (else
         (if (result i32)
           (i32.and
@@ -227,7 +236,7 @@ export default (ctx) => {
           (then
             (if (result i32) (i32.eq (local.get $t) (i32.const 3))
               (then
-                (local.set $aux (call $__ptr_aux (local.get $ptr)))
+                (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
                 (if (result i32) (i32.and (local.get $aux) (i32.const 8))
                   (then (i32.shr_u (i32.load (local.get $off))
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
@@ -273,11 +282,15 @@ export default (ctx) => {
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
 
-  // Set len in memory (for push/pop)
+  // Set len in memory (for push/pop). Hot (~42M calls in watr self-host).
+  // Type/offset extraction inlined; forwarding loop only entered for ARRAY.
   ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
-    (local $t i32) (local $off i32)
-    (local.set $t (call $__ptr_type (local.get $ptr)))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local $bits i64) (local $t i32) (local $off i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    ;; Only ARRAY (1), TYPED (3), HASH (7), SET (8), MAP (9) carry an 8-byte header.
+    ;; Of those, only ARRAY can be forwarded — follow the chain inline.
     (if
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 8))
@@ -285,7 +298,17 @@ export default (ctx) => {
           (i32.or (i32.eq (local.get $t) (i32.const 1)) (i32.eq (local.get $t) (i32.const 3)))
           (i32.or (i32.eq (local.get $t) (i32.const 7))
             (i32.or (i32.eq (local.get $t) (i32.const 8)) (i32.eq (local.get $t) (i32.const 9))))))
-      (then (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
+      (then
+        (if (i32.eq (local.get $t) (i32.const 1))
+          (then
+            (block $done
+              (loop $follow
+                (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+                (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+                (br $follow)))))
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
   // Alloc header(8) + data(cap*stride), store len+cap, return data offset (past header)
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)

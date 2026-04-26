@@ -384,13 +384,28 @@ export default (ctx) => {
   ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH)
   ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH, true)
 
+  // Inline __ptr_offset (forwarding-aware) so the obj→objKey path skips a function call
+  // — only ARRAY ever has forwarding, and dyn_get is in the hot path of every dyn read.
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (local $props f64)
+    (local $props f64) (local $bits i64) (local $off i32)
     (if (result f64) (f64.eq (global.get $__dyn_props) (f64.const 0))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
+        (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+        (if (i32.eq
+              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+              (i32.const ${PTR.ARRAY}))
+          (then
+            (block $done
+              (loop $follow
+                (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+                (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+                (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+                (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+                (br $follow)))))
         (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
-          (f64.convert_i32_s (call $__ptr_offset (local.get $obj)))))
+          (f64.convert_i32_s (local.get $off))))
         (if (result f64) (call $__is_nullish (local.get $props))
           (then (f64.const nan:${UNDEF_NAN}))
           (else (call $__hash_get_local (local.get $props) (local.get $key)))))))`
@@ -439,12 +454,27 @@ export default (ctx) => {
   // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).
   // Defer the root insert to the end and gate it on props-ptr change: most calls hit
   // the no-grow case where the ptr is unchanged and the root slot already points to it.
+  // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $oldProps f64) (local $objKey f64)
+    (local $bits i64) (local $off i32)
     (local.set $root (global.get $__dyn_props))
     (if (f64.eq (local.get $root) (f64.const 0))
       (then (local.set $root (call $__hash_new))))
-    (local.set $objKey (f64.convert_i32_s (call $__ptr_offset (local.get $obj))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.ARRAY}))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
+    (local.set $objKey (f64.convert_i32_s (local.get $off)))
     (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
     (local.set $props
       (if (result f64) (call $__is_nullish (local.get $oldProps))
