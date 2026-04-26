@@ -56,15 +56,18 @@ export function foldMemargOffsets(node) {
  *   - X is `(local.get $Y)` — cheap to keep first call, simple mutation tracking
  *   - $Y is never written (local.set/local.tee) within the function body
  *   - group has ≥3 occurrences (break-even: 2N-5 bytes saved, positive at N≥3)
+ *
+ * Safety: __ptr_type extracts type tag bits, which never change for a given
+ * NaN-boxed f64. Caching is always safe when the source local isn't reassigned.
+ * (Contrast __ptr_offset, which has a forwarding loop for ARRAY — caching its
+ * result is unsafe across realloc, so it isn't hoisted here.)
  */
 export function hoistPtrType(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  // Pass 1: find all (call $__ptr_type X) nodes, group by X signature.
-  const groups = new Map()  // x-key → { count, arg, sites: [{parent, idx}] }
-  const callSites = []  // [{parent, idx, xKey}]
+  const groups = new Map()
   const walk = (node, parent, pi) => {
     if (!Array.isArray(node)) return
     if (node[0] === 'call' && node[1] === '$__ptr_type' && node.length === 3) {
@@ -72,7 +75,7 @@ export function hoistPtrType(fn) {
       if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string') {
         const xKey = arg[1]
         let g = groups.get(xKey)
-        if (!g) { g = { count: 0, argLocal: xKey, sites: [] }; groups.set(xKey, g) }
+        if (!g) { g = { count: 0, sites: [] }; groups.set(xKey, g) }
         g.count++
         g.sites.push({ parent, idx: pi })
       }
@@ -83,7 +86,6 @@ export function hoistPtrType(fn) {
 
   if (groups.size === 0) return
 
-  // Pass 2: check mutation — skip if $Y is written anywhere.
   const written = new Set()
   const scanWrites = (node) => {
     if (!Array.isArray(node)) return
@@ -92,7 +94,6 @@ export function hoistPtrType(fn) {
   }
   for (let i = bodyStart; i < fn.length; i++) scanWrites(fn[i])
 
-  // Pass 3: apply hoist for eligible groups.
   let hoistId = 0
   const locals = []
   for (const [xKey, g] of groups) {
@@ -100,7 +101,6 @@ export function hoistPtrType(fn) {
     if (written.has(xKey)) continue
     const tLocal = `$__pt${hoistId++}`
     locals.push(['local', tLocal, 'i32'])
-    // First site: wrap in local.tee. Remaining sites: replace with local.get.
     for (let i = 0; i < g.sites.length; i++) {
       const { parent, idx } = g.sites[i]
       if (i === 0) parent[idx] = ['local.tee', tLocal, parent[idx]]
