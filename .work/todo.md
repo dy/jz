@@ -46,13 +46,21 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   Each phase should have an input/output contract. Ordering should be encoded structurally,
   not remembered through comments.
 
-* [ ] **Strict core mode** — dynamic property access, unknown receiver method calls, and
-  external fallback should require explicit opt-in. This is the largest wasm-size lever:
-  simple fixed-shape programs should not pay for dynamic JS compatibility.
+* [x] **Strict core mode** — Apr 27. `compile(code, { strict: true })` and `jz(code, { strict: true })`
+  now reject (with clear `strict mode: ...` errors): `obj[runtimeKey]` falling to `__dyn_get`
+  (typed-array `buf[i]` still allowed, since it lowers to typed-element load), `for (… in …)`,
+  and method calls on values of unknown type that would emit `__ext_call` or `__dyn_get_expr`.
+  Default behavior unchanged (back-compat). Hooked at the actual stdlib-pull sites so static
+  shapes pay nothing. 6 new tests in `test/errors.js` (3 reject + 3 accept). 922/922 PASS.
+  Future work: surface strict in golden size tests once a representative dyn-heavy program
+  is added (today's golden cases compile identically with/without strict).
 
-* [ ] **Golden size tests** — add representative binary-size snapshots with tolerances:
-  scalar add, known-shape object, unknown/dynamic object, closure-heavy parser, typed-array loop.
-  These should catch accidental stdlib or feature-gate regressions.
+* [x] **Golden size tests** — Apr 27. `test/perf.js` now snapshots WASM byte counts
+  for known-shape object (3306 b), typed-array loop (1968 b), closure-heavy parser
+  (4084 b), unknown/dynamic object (6072 b); ±5% tolerance (min ±20 b). Existing
+  scalar add `< 150` covers the trivial case. Catches accidental stdlib /
+  feature-gate regressions; prerequisite for landing strict-core mode safely.
+  916/916 PASS.
 
 ### Tier A — Runtime / Output Wins
 

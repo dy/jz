@@ -219,11 +219,14 @@ export default function compile(ast) {
   const walkFacts = (node, full, inArrow, callerFunc) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
-    // dyn-key detection
+    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
+    // Float64Array uses typed-array load, not __dyn_get — only the actual
+    // dynamic-dispatch fallback should error in strict mode).
     if (op === '[]') {
       const [obj, idx] = args
       if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
     } else if (op === 'for-in') {
+      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
       anyDyn = true
       if (typeof args[1] === 'string') dynVars.add(args[1])
     }

@@ -184,6 +184,8 @@ export function reset(proto, globals) {
   ctx.transform = {
     jzify: null,
     noTailCall: false,  // when true, emit `return call` instead of `return_call` (wasm2c compat)
+    strict: false,      // when true, dynamic features (obj[k], for-in) error at compile time
+                        // instead of pulling in dynamic-dispatch stdlib. See ProgramFacts walk.
   }
 
   // Feature flags: capabilities the compiled module may exercise at runtime.

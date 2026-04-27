@@ -9,7 +9,7 @@
  */
 
 import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/compile.js'
-import { ctx, inc, PTR } from '../src/ctx.js'
+import { ctx, inc, err, PTR } from '../src/ctx.js'
 
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
@@ -410,6 +410,7 @@ export default (ctx) => {
     const va = emit(arr), vi = asI32(emit(idx))
     const ptrExpr = asF64(va)
     const dynLoad = (objExpr, keyExpr) => {
+      if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       inc('__dyn_get')
       return ['call', '$__dyn_get', objExpr, keyExpr]
     }

@@ -202,3 +202,39 @@ test('runtime: loose null inequality excludes undefined/null', () => {
 })
 
 // Constructor/namespace validation deferred to emit/modules
+
+// ============================================================================
+// Strict core mode — opt-in: dynamic features error instead of pulling
+// dynamic-dispatch stdlib. (Largest WASM-size lever per audit.)
+// ============================================================================
+
+const throwsStrict = (code, match, msg) => {
+  let error
+  try { compile(code, { strict: true }) } catch (e) { error = e }
+  ok(error && error.message.includes(match), `${msg}: expected "${match}", got "${error?.message}"`)
+}
+
+test('strict: dynamic property access errors', () =>
+  throwsStrict('export let f = (k) => { let p = {}; p[k] = 1; return p[k] }', 'strict mode', 'p[k] should error'))
+
+test('strict: for-in errors', () =>
+  throwsStrict('export let f = (o) => { let s = 0; for (let k in o) s++; return s }', 'strict mode', 'for-in should error'))
+
+test('strict: unknown-receiver method call errors', () =>
+  throwsStrict('export let f = (x) => x.foo(1, 2)', 'strict mode', 'x.foo should error'))
+
+test('strict: accepts pure scalar function', () => {
+  const wasm = compile('export let add = (a, b) => a + b', { strict: true })
+  ok(wasm.byteLength === 41, `pure scalar should compile to 41 bytes in strict mode, got ${wasm.byteLength}`)
+})
+
+test('strict: accepts known-shape object', () => {
+  // Object literal with literal keys + p.x access (no dynamic dispatch needed)
+  const wasm = compile('export let f = (x) => { let p = { x: x, y: x * 2 }; return p.x + p.y }', { strict: true })
+  ok(wasm.byteLength > 0, `should compile, got ${wasm.byteLength}`)
+})
+
+test('strict: accepts typed-array loop', () => {
+  const wasm = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { strict: true })
+  ok(wasm.byteLength > 0, `should compile, got ${wasm.byteLength}`)
+})

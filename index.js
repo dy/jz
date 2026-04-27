@@ -74,6 +74,9 @@ jz.instantiate = (code, opts = {}) => instantiateRuntime(jz.compile, code, opts)
  * @param {string} code - jz source
  * @param {object} [opts]
  * @param {boolean} [opts.wat] - Return WAT text instead of binary
+ * @param {boolean} [opts.strict] - Reject dynamic features (obj[k], for-in, unknown
+ *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
+ *   into output; large size win for static programs.
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
@@ -88,6 +91,7 @@ jz.compile = (code, opts = {}) => {
   // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
   if (opts.jzify) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
+  if (opts.strict) ctx.transform.strict = true
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {

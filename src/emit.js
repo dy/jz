@@ -1612,6 +1612,8 @@ export const emitter = {
 
       // Dynamic property function call on non-external values.
       if (ctx.closure.call) {
+        if (ctx.transform.strict)
+          err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
         const objTmp = `${T}mobj${ctx.func.uniq++}`
         ctx.func.locals.set(objTmp, 'f64')
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -1634,6 +1636,8 @@ export const emitter = {
       }
 
       // Unknown callee - assume external method
+      if (ctx.transform.strict)
+        err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
       inc('__ext_call')
       ctx.features.external = true
       const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
