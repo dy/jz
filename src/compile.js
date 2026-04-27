@@ -28,7 +28,7 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, exprType,
+  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
 } from './analyze.js'
@@ -633,6 +633,7 @@ export default function compile(ast) {
     ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
     ctx.func.localProps = null  // reset per function
     ctx.func.ptrKinds = null    // populated after boxed analysis; reset per function
+    ctx.func.ptrAuxes = null    // per-local aux bits for unboxed PTR.* (TYPED elemType, OBJECT schemaId, …)
     ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
     if (block) {
       analyzeValTypes(body)
@@ -641,7 +642,13 @@ export default function compile(ast) {
       const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
       if (unbox.size > 0) {
         ctx.func.ptrKinds = unbox
-        for (const name of unbox.keys()) ctx.func.locals.set(name, 'i32')
+        for (const [name, kind] of unbox) {
+          ctx.func.locals.set(name, 'i32')
+          if (kind === VAL.TYPED) {
+            const aux = typedElemAux(ctx.types.typedElem?.get(name))
+            if (aux != null) (ctx.func.ptrAuxes ||= new Map()).set(name, aux)
+          }
+        }
       }
     }
     // Pointer-ABI params (from narrowing loop above): params already have type='i32' and

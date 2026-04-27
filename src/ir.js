@@ -386,7 +386,7 @@ export function readVar(name) {
   const kind = ctx.func.ptrKinds?.get(name)
   if (kind != null) {
     node.ptrKind = kind
-    const aux = ctx.schema.vars?.get(name)
+    const aux = ctx.func.ptrAuxes?.get(name) ?? ctx.schema.vars?.get(name)
     if (aux != null) node.ptrAux = aux
   }
   return node

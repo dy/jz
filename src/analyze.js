@@ -134,6 +134,23 @@ export function typedElemCtor(rhs) {
   return isView ? rhs[1] + '.view' : rhs[1]
 }
 
+// Element-type byte mapping (mirror of module/typedarray.js ELEM). Bit 3 (|8) marks a view.
+const _ELEM_AUX = {
+  Int8Array: 0, Uint8Array: 1, Int16Array: 2, Uint16Array: 3,
+  Int32Array: 4, Uint32Array: 5, Float32Array: 6, Float64Array: 7,
+  BigInt64Array: 7, BigUint64Array: 7,
+}
+/** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
+ *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView). */
+export function typedElemAux(ctor) {
+  if (!ctor || !ctor.startsWith('new.')) return null
+  const isView = ctor.endsWith('.view')
+  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+  const et = _ELEM_AUX[name]
+  if (et == null) return null
+  return isView ? et | 8 : et
+}
+
 /**
  * Lightweight walk: collect var→valType from let/const/= assignments.
  * Shared between analyzeValTypes and compile.js pre-compile call-site scan.
@@ -364,7 +381,7 @@ export function analyzePtrUnboxable(body, valTypes, locals, boxed) {
   const candidates = new Set()
   const disqualified = new Set()
 
-  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.
   //   OBJECT  ← `{…}`
