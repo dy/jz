@@ -126,3 +126,36 @@ test('codegen: .length hoisted out of for-loop', () => {
     ok(lenCalls === 0, `expected 0 __len calls inside loop body, got ${lenCalls}`)
   }
 })
+
+// === Golden size tests ===
+// Snapshot WASM byte count for representative shapes. Catches accidental stdlib
+// or feature-gate regressions. On improvement, update the baseline; the printed
+// "actual N" makes drift visible.
+//
+// Tolerance is ±5% rounded to nearest 10 bytes (min 20). Tight enough to catch
+// regressions, loose enough to absorb harmless codegen jitter.
+const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
+  const wasm = compile(src)
+  const actual = wasm.byteLength
+  const tol = Math.max(20, Math.round(expected * 0.05 / 10) * 10)
+  ok(Math.abs(actual - expected) <= tol,
+    `${name}: expected ${expected}±${tol} bytes, got ${actual}`)
+})
+
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 3306)
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 6072)
+golden('closure-heavy parser', `export let f = (s) => {
+  let i = 0, n = s.length
+  let peek = () => i < n ? s[i] : ''
+  let next = () => { let c = peek(); i++; return c }
+  let isDigit = (c) => c >= '0' && c <= '9'
+  let total = 0
+  while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
+  return total
+}`, 4084)
+golden('typed-array loop', `export let f = (arr) => {
+  let buf = new Float64Array(arr)
+  let s = 0
+  for (let i = 0; i < buf.length; i++) s += buf[i] * 2
+  return s
+}`, 1968)
