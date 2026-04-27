@@ -1404,6 +1404,8 @@ export const emitter = {
           const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
           ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
           ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
+          const spreadVT = valTypeOf(spreadExpr)
+          if (spreadVT) ctx.func.valTypes?.set(arr, spreadVT)
 
           // In-place spread methods modify target; accumulating methods (concat) return new values
           const inPlace = SPREAD_MUTATORS.has(method)
@@ -1466,6 +1468,8 @@ export const emitter = {
               const spreadExpr = item[1]
               const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
               ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+              const spreadVT = valTypeOf(spreadExpr)
+              if (spreadVT) ctx.func.valTypes?.set(arrL, spreadVT)
               const n = multiCount(spreadExpr)
               irG.push(
                 ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
@@ -1503,6 +1507,8 @@ export const emitter = {
             const spreadExpr = item[1]
             const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
             ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+            const spreadVT = valTypeOf(spreadExpr)
+            if (spreadVT) ctx.func.valTypes?.set(arrL, spreadVT)
             const n = multiCount(spreadExpr)
             irG.push(
               ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
