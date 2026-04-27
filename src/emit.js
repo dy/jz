@@ -443,10 +443,21 @@ export function buildArrayWithSpreads(items) {
       ctx.func.locals.set(sec.local, 'f64')
       sec.lenLocal = `${T}spl${ctx.func.uniq++}`
       ctx.func.locals.set(sec.lenLocal, 'i32')
+      sec.vt = valTypeOf(sec.expr)
+      // ARRAY-known source: hoist data base and inline len/load (skip per-iter dispatch).
+      if (sec.vt === VAL.ARRAY && !multiCount(sec.expr)) {
+        sec.baseLocal = `${T}spb${ctx.func.uniq++}`
+        ctx.func.locals.set(sec.baseLocal, 'i32')
+      }
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
-      // Cache __len once per spread; reused below for total-len sum and inner copy bound.
-      ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['local.get', `$${sec.local}`]]])
+      if (sec.baseLocal) {
+        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['local.get', `$${sec.local}`]]])
+        ir.push(['local.set', `$${sec.lenLocal}`, ['i32.load', ['i32.sub', ['local.get', `$${sec.baseLocal}`], ['i32.const', 8]]]])
+      } else {
+        // Cache __len once per spread; reused below for total-len sum and inner copy bound.
+        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['local.get', `$${sec.local}`]]])
+      }
     }
   }
 
@@ -474,20 +485,23 @@ export function buildArrayWithSpreads(items) {
       const slen = sec.lenLocal, sidx = `${T}sidx${ctx.func.uniq++}`
       ctx.func.locals.set(sidx, 'i32')
       const loopId = ctx.func.uniq++
+      const elemLoad = sec.baseLocal
+        ? ['f64.load', ['i32.add', ['local.get', `$${sec.baseLocal}`], ['i32.shl', ['local.get', `$${sidx}`], ['i32.const', 3]]]]
+        : ctx.module.modules['string']
+          ? ['if', ['result', 'f64'],
+            ['i32.or',
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.STRING]],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.SSO]]],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])],
+            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])]]
+          : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])
       ir.push(
         ['local.set', `$${sidx}`, ['i32.const', 0]],
         ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
           ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${slen}`]]],
           ['f64.store',
             ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-            ctx.module.modules['string']
-              ? ['if', ['result', 'f64'],
-                ['i32.or',
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.STRING]],
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.SSO]]],
-                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])],
-                ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])]]
-              : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])],
+            elemLoad],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
           ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
           ['br', `$loop${loopId}`]]]
