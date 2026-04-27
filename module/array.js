@@ -791,7 +791,7 @@ export default (ctx) => {
           ['then',
             elemStore(out.local, count, asF64(mapCb.call([item, idxArg(mapCb, count)]))),
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
-      ])
+      ], maxLen)
       return typed(['block', ['result', 'f64'],
         recv.setup, filterCb.setup, mapCb.setup,
         ['local.set', `$${maxLen}`, ['call', '$__len', recv.value]],
@@ -805,9 +805,10 @@ export default (ctx) => {
     const cb = makeCallback(fn)
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
+    // Reuse the precomputed len local in arrayLoop (skip its internal load).
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       elemStore(out.local, i, asF64(cb.call([item, idxArg(cb, i)])))
-    ])
+    ], len)
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
@@ -831,7 +832,7 @@ export default (ctx) => {
           ['then',
             ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], ['local.get', `$${mapped}`]],
             ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
-      ])
+      ], maxLen)
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, filterCb.setup,
         ['local.set', `$${maxLen}`, ['call', '$__len', recv.value]],
@@ -849,7 +850,7 @@ export default (ctx) => {
         ['then',
           ['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${count}`], ['i32.const', 3]]], item],
           ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]]
-    ])
+    ], maxLen)
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,

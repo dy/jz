@@ -493,23 +493,31 @@ export function elemStore(ptr, i, val) {
  *  bodyFn(ptr, len, i, item) should return an array of IR instructions.
  *  ARRAY-only — elemLoad assumes f64-stride data layout. After __ptr_offset
  *  resolves forwarding, len lives at ptr-8, so skip the second __len call
- *  (which would re-walk forwarding + dispatch on type). */
-export function arrayLoop(arrExpr, bodyFn) {
+ *  (which would re-walk forwarding + dispatch on type).
+ *
+ *  Optional `lenLocal`: caller already has the array length in an i32 local
+ *  (e.g. from sizing the output before the loop). Reuses it instead of
+ *  re-loading from ptr-8. */
+export function arrayLoop(arrExpr, bodyFn, lenLocal) {
   inc('__ptr_offset')
-  const arr = temp('aa'), ptr = tempI32('ap'), len = tempI32('al'), i = tempI32('ai'), item = temp('av')
+  const arr = temp('aa'), ptr = tempI32('ap'), i = tempI32('ai'), item = temp('av')
+  const len = lenLocal ?? tempI32('al')
   const id = ctx.func.uniq++
-  return [
+  const setup = [
     ['local.set', `$${arr}`, asF64(arrExpr)],
     ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
-    ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
+  ]
+  if (!lenLocal) setup.push(
+    ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
+  setup.push(
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
       ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
       ['local.set', `$${item}`, elemLoad(ptr, i)],
       ...bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64')),
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$loop${id}`]]],
-  ]
+      ['br', `$loop${id}`]]])
+  return setup
 }
 
 /** Build a NaN-boxed pointer from a header allocation.
