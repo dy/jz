@@ -501,21 +501,36 @@ export default (ctx) => {
     const body = [
       ['local.set', `$${t}`, va],
     ]
+    const pushBase = tempI32('pb')
     if (inlineLen) {
-      body.push(['local.set', `$${len}`,
-        ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', 8]]]])
+      // Hoist offset once; reuse for len load, cap-fits check, store base, and
+      // post-grow rebase. On cap-fits (the common path) we skip __arr_grow's call
+      // dispatch and prologue entirely; on grow we re-extract offset because the
+      // alloc may have relocated the buffer.
+      body.push(
+        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
+        ['local.set', `$${len}`,
+          ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]],
+        ['if',
+          ['i32.lt_s',
+            ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],
+            ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]],
+          ['then',
+            ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
+              ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
+            ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]],
+      )
     } else {
-      body.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]])
+      body.push(
+        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
+        // Grow if needed: ensure cap >= len + vals.length
+        ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
+          ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
+        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
+      )
     }
-    body.push(
-      // Grow if needed: ensure cap >= len + vals.length
-      ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
-        ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
-    )
 
     // Store each value and increment len
-    const pushBase = tempI32('pb')
-    body.push(['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]])
     for (const val of vals) {
       const vv = asF64(emit(val))
       body.push(
