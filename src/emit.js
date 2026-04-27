@@ -441,8 +441,12 @@ export function buildArrayWithSpreads(items) {
     if (sec.type === 'spread') {
       sec.local = `${T}sp${ctx.func.uniq++}`
       ctx.func.locals.set(sec.local, 'f64')
+      sec.lenLocal = `${T}spl${ctx.func.uniq++}`
+      ctx.func.locals.set(sec.lenLocal, 'i32')
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
+      // Cache __len once per spread; reused below for total-len sum and inner copy bound.
+      ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['local.get', `$${sec.local}`]]])
     }
   }
 
@@ -450,7 +454,7 @@ export function buildArrayWithSpreads(items) {
     if (sec.type === 'array') {
       ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', sec.items.length]]])
     } else {
-      ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', ['local.get', `$${sec.local}`]]]])
+      ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['local.get', `$${sec.lenLocal}`]]])
     }
   }
 
@@ -467,11 +471,10 @@ export function buildArrayWithSpreads(items) {
         )
       }
     } else {
-      const slen = `${T}slen${ctx.func.uniq++}`, sidx = `${T}sidx${ctx.func.uniq++}`
-      ctx.func.locals.set(slen, 'i32'); ctx.func.locals.set(sidx, 'i32')
+      const slen = sec.lenLocal, sidx = `${T}sidx${ctx.func.uniq++}`
+      ctx.func.locals.set(sidx, 'i32')
       const loopId = ctx.func.uniq++
       ir.push(
-        ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${sec.local}`]]],
         ['local.set', `$${sidx}`, ['i32.const', 0]],
         ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
           ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${slen}`]]],
