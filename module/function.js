@@ -67,11 +67,15 @@ export default (ctx) => {
 
     const tableIdx = addToTable(fnName)
 
-    // At call site: allocate env, store captured values, return NaN-boxed pointer
+    // At call site: allocate env, store captured values, return NaN-boxed pointer.
+    // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch
+    // (skip call_indirect on a const-bound, non-escaping closure local). See emit.js '()' handler.
     ctx.features.closure = true
     if (captures.length === 0) {
       // No captures — just a function reference
-      return mkPtrIR(PTR.CLOSURE, tableIdx, 0)
+      const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
+      ir.closureBodyName = fnName
+      return ir
     }
 
     const t = tempI32('env')
@@ -90,7 +94,9 @@ export default (ctx) => {
     }
     block.push(mkPtrIR(PTR.CLOSURE, tableIdx, ['local.get', `$${t}`]))
 
-    return typed(['block', ['result', 'f64'], ...block], 'f64')
+    const ir = typed(['block', ['result', 'f64'], ...block], 'f64')
+    ir.closureBodyName = fnName
+    return ir
   }
 
   const UNDEF_LIT = () => ['f64.const', `nan:${UNDEF_NAN}`]

@@ -665,6 +665,8 @@ export default function compile(ast) {
     ctx.func.stack = []
     ctx.func.uniq = 0
     ctx.func.current = sig
+    ctx.func.body = body
+    ctx.func.directClosures = null
 
     // Pre-analyze local types from body
     // Block body vs object literal: object has ':' property nodes
@@ -801,6 +803,8 @@ export default function compile(ast) {
       ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
       ctx.func.stack = []
       ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
+      ctx.func.body = cb.body
+      ctx.func.directClosures = null
       // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
       const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
       const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]

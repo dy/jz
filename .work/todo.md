@@ -76,8 +76,13 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   the shape. Enable only with focused tests for aux preservation, nullish comparisons,
   capture behavior, and typed-array method results.
 
-* [ ] **Known table-slot direct calls** — replace `call_indirect` with direct `call` when
-  the closure table slot is statically known and initialized exactly once.
+* [x] **Known table-slot direct calls** — Apr 27. const-bound, non-escaping local closures
+  now lower their call sites to `call $<bodyFn>` (same uniform `(env, argc, a0..)` ABI as
+  the body, just skipping the `call_indirect` + `__ptr_aux` funcIdx extraction). Tagged at
+  `closure.make`, registered in `ctx.func.directClosures` from `emitDecl` when the binding
+  is non-boxed, non-global, and not reassigned in the function body. Also fixed
+  `isReassigned` to not flag `let g = …` initialization as a write of `g`. Closure-heavy
+  parser golden: 4084 → 4042 b. 922/922 PASS.
 
 * [ ] **Head-offset `Array.shift`** — replace O(n) `memory.copy` shift with amortized O(1)
   head offset. High leverage, high touch surface: every array index/iteration path must

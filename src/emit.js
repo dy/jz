@@ -158,7 +158,9 @@ function extractRefinements(cond, out, sense = true) {
 }
 
 /** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
- *  Conservative over-reject: if unsure, treat as written. */
+ *  Conservative over-reject: if unsure, treat as written.
+ *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
+ *  inside them are scanned. (Treating `let g = ...` as a write of `g` would defeat A3.) */
 function isReassigned(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -169,7 +171,13 @@ function isReassigned(body, name) {
   }
   if ((op === '++' || op === '--') && body[1] === name) return true
   if (op === 'let' || op === 'const') {
-    // Redeclaration shadows in inner block; outer refinement stays valid. Don't treat as reassign.
+    // Each decl item is either a bare name (string) or `['=', pattern, init]`.
+    // Only the init expression can contain real reassignments — recurse into it only.
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
+    }
+    return false
   }
   for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
   return false
@@ -324,6 +332,15 @@ export function emitDecl(...inits) {
     if (isObjLit) ctx.schema.targetStack.push(name)
     const val = emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
+    // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
+    // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
+    // isReassigned is conservative across nested arrow shadows — we miss the optimization
+    // rather than emit a wrong direct call.
+    if (val?.closureBodyName && !ctx.func.boxed.has(name) && !isGlobal(name)
+        && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+      if (!ctx.func.directClosures) ctx.func.directClosures = new Map()
+      ctx.func.directClosures.set(name, val.closureBodyName)
+    }
     if (ctx.func.boxed.has(name)) {
       const cell = ctx.func.boxed.get(name)
       ctx.func.locals.set(cell, 'i32')
@@ -1697,6 +1714,25 @@ export const emitter = {
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
       if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
       return callIR
+    }
+
+    // A3: const-bound, non-escaping closure → direct call to body (skip call_indirect).
+    // emitDecl registered name → bodyName when it saw the closure.make IR. Body signature
+    // is uniform $ftN: (env f64, argc i32, a0..a{W-1} f64) → f64. We pass the closure
+    // NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
+    if (typeof callee === 'string' && !parsed.hasSpread
+        && ctx.func.directClosures?.has(callee)) {
+      const bodyName = ctx.func.directClosures.get(callee)
+      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+      const n = parsed.normal.length
+      if (n <= W) {
+        const slots = parsed.normal.map(a => asF64(emit(a)))
+        while (slots.length < W) slots.push(undefExpr())
+        return typed(['call', `$${bodyName}`,
+          asF64(emit(callee)),
+          typed(['i32.const', n], 'i32'),
+          ...slots], 'f64')
+      }
     }
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer
