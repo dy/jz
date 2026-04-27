@@ -106,7 +106,14 @@ export function valTypeOf(expr) {
     // Method return types
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
-      if (method === 'map' || method === 'filter') return VAL.ARRAY
+      if (method === 'map' || method === 'filter') {
+        // Typed-array .map/.filter preserve element type → return VAL.TYPED.
+        // Unknown receiver: don't claim (stay null) — runtime-dispatched index handles both.
+        const objType = valTypeOf(obj)
+        if (objType === VAL.TYPED) return VAL.TYPED
+        if (objType === VAL.ARRAY) return VAL.ARRAY
+        return null
+      }
       if (method === 'push') return VAL.ARRAY
       if (method === 'add' || method === 'delete') return VAL.SET
       if (method === 'set') return VAL.MAP

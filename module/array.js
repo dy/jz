@@ -448,17 +448,21 @@ export default (ctx) => {
     if (keyType === VAL.STRING)
       return typed(dynLoad(ptrExpr, asF64(emit(idx))), 'f64')
     if (vt === 'array') {
+      // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
+      // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
+      // plus type-dispatch overhead irrelevant for plain arrays).
+      inc('__arr_idx')
       const baseTmp = temp()
       return useRuntimeKeyDispatch
         ? typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = asI32(typed(keyExpr, 'f64'))
-            return (['call', '$__typed_idx', ['local.get', `$${baseTmp}`], keyI32])
+            return (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], keyI32])
           })], 'f64')
         : typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
-          (['call', '$__typed_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
+          (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
     }
     // Known string → single-char SSO string
     if (vt === 'string')
