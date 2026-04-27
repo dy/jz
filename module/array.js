@@ -495,7 +495,7 @@ export default (ctx) => {
     // Known ARRAY → inline len as `i32.load(off - 8)` (ARRAY branch of __len). Saves a
     // full __ptr_type + dispatch per push site. The off<8 nullish guard in __len is
     // unreachable here: .push on a nullish var is a JS error before we get here.
-    const vt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const inlineLen = vt === VAL.ARRAY
 
     const body = [
@@ -563,7 +563,7 @@ export default (ctx) => {
     const va = asF64(emit(arr))
     const t = temp('po'), len = tempI32('pl')
     // Known ARRAY → inline len (skips __len dispatch tree).
-    const vt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const rawLen = vt === VAL.ARRAY
       ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', 8]]]
       : ['call', '$__len', ['local.get', `$${t}`]]
@@ -602,7 +602,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${cnt}`], tag: 'sp' })
     const id = ctx.func.uniq++
     // Known ARRAY → fuse len with offset (__len would re-compute __ptr_offset + dispatch).
-    const svt = typeof arr === 'string' ? (ctx.func.valTypes?.get(arr) ?? lookupValType(arr)) : valTypeOf(arr)
+    const svt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const lenInit = svt === VAL.ARRAY
       ? ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]
       : ['local.set', `$${len}`, ['call', '$__len', va]]

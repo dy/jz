@@ -1354,7 +1354,7 @@ export const emitter = {
           ctx.func.locals.set(sl, 'i32'); ctx.func.locals.set(ol, 'i32')
           ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
 
-          const objIsArr = (ctx.func.valTypes?.get(objArg) ?? lookupValType(objArg)) === VAL.ARRAY
+          const objIsArr = lookupValType(objArg) === VAL.ARRAY
           // Spread source: if statically known ARRAY, inline len/load via hoisted srcBase
           // (skip per-iteration __arr_idx call + dispatch).
           const srcVT = valTypeOf(spreadExpr)
