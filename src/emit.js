@@ -333,6 +333,12 @@ export function emitDecl(...inits) {
       continue
     }
     if (isGlobal(name)) {
+      // Unboxed-TYPED const globals carry the raw i32 offset; init coerces via asPtrOffset.
+      if (ctx.scope.unboxedTypedGlobals?.has(name)) {
+        result.push(['global.set', `$${name}`, asPtrOffset(val, VAL.TYPED)])
+        continue
+      }
+      // Pre-folded numeric const globals have their init baked into the decl — skip.
       if (ctx.scope.globalTypes.has(name)) continue
       result.push(['global.set', `$${name}`, asF64(val)])
       continue

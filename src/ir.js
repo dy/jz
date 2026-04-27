@@ -379,8 +379,12 @@ export function boxedAddr(name) {
 export function readVar(name) {
   if (ctx.func.boxed?.has(name))
     return typed(['f64.load', boxedAddr(name)], 'f64')
-  if (isGlobal(name))
-    return typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
+  if (isGlobal(name)) {
+    const node = typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
+    const aux = ctx.scope.unboxedTypedGlobals?.get(name)
+    if (aux != null) { node.ptrKind = VAL.TYPED; node.ptrAux = aux }
+    return node
+  }
   const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
   const node = typed(['local.get', `$${name}`], t)
   const kind = ctx.func.ptrKinds?.get(name)

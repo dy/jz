@@ -167,6 +167,26 @@ export default function compile(ast) {
   scanStmts(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
 
+  // Unbox const TYPED globals: change `(mut f64)` slot to `(mut i32)` and store the raw
+  // pointer offset. Reads tag the global.get with ptrKind=TYPED + ptrAux=elemType so
+  // typed-array consumers (.[]/.buffer/…) can resolve through ptrOffsetIR without ever
+  // calling __ptr_offset on a NaN-box. Init still flows through emit.js, but the assign
+  // coerces via asPtrOffset(val, VAL.TYPED) — one bit-extract at startup, then every
+  // hot read is a plain `global.get` of an i32.
+  if (ctx.scope.globalTypedElem && ctx.scope.consts) {
+    for (const [name, ctor] of ctx.scope.globalTypedElem) {
+      if (!ctx.scope.consts.has(name)) continue
+      if (ctx.scope.globalValTypes?.get(name) !== VAL.TYPED) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      const decl = ctx.scope.globals.get(name)
+      if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
+      ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
+      ctx.scope.globalTypes.set(name, 'i32')
+      ;(ctx.scope.unboxedTypedGlobals ||= new Map()).set(name, aux)
+    }
+  }
+
   // Unified whole-program walk: collects three outputs in one pass.
   //   1. dynVars/anyDyn — vars accessed via runtime key (analyzeDynKeys)
   //   2. propMap — property assignments for auto-boxing
