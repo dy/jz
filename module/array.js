@@ -325,7 +325,8 @@ export default (ctx) => {
       // R: Static data segment for arrays of pure-literal elements (own-memory only).
       // Saves N×(alloc+store) instructions in __start; raw f64 bits embedded directly.
       if (len >= 4 && !ctx.memory.shared) {
-        const slots = elems.map(e => extractF64Bits(emit(e)))
+        // asF64 folds i32.const → f64.const literally, so int-literal arrays also qualify.
+        const slots = elems.map(e => extractF64Bits(asF64(emit(e))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
       const a = allocArray(len, Math.max(len, 4))  // min cap=4 for small pushes

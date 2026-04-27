@@ -48,7 +48,8 @@ export default (ctx) => {
     const shadow = needsDynShadow(target)
     if (values.length >= 2 && !ctx.memory.shared) {
       const emitted = values.map(emit)
-      const slots = emitted.map(extractF64Bits)
+      // asF64 folds i32.const → f64.const so int-literal values also qualify.
+      const slots = emitted.map(v => extractF64Bits(asF64(v)))
       if (slots.every(b => b !== null)) {
         const off = appendStaticSlots(slots)
         const staticPtr = mkPtrIR(PTR.OBJECT, schemaId, off)
