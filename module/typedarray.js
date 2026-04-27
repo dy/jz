@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, UNDEF_NAN, allocPtr, mkPtrIR, temp, tempI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32 } from '../src/compile.js'
 import { inc, PTR } from '../src/ctx.js'
 
 
@@ -358,8 +358,8 @@ export default (ctx) => {
         const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
         if (ELEM[name] != null) {
           const parentOff = isView
-            ? ['i32.load', ['i32.add', ['call', '$__ptr_offset', asF64(emit(obj))], ['i32.const', 8]]]
-            : ['call', '$__ptr_offset', asF64(emit(obj))]
+            ? ['i32.load', ['i32.add', ptrOffsetIR(emit(obj), VAL.TYPED), ['i32.const', 8]]]
+            : ptrOffsetIR(emit(obj), VAL.TYPED)
           return mkPtrIR(PTR.BUFFER, 0, parentOff)
         }
       }
@@ -382,7 +382,7 @@ export default (ctx) => {
         if (et != null) {
           if (isView) {
             return typed(['f64.convert_i32_s',
-              ['i32.load', ['call', '$__ptr_offset', asF64(emit(obj))]]], 'f64')
+              ['i32.load', ptrOffsetIR(emit(obj), VAL.TYPED)]], 'f64')
           }
           return typed(['f64.convert_i32_s',
             ['i32.shl', ['call', '$__len', asF64(emit(obj))], ['i32.const', SHIFT[et]]]], 'f64')
@@ -400,7 +400,7 @@ export default (ctx) => {
       if (ctor?.endsWith('.view')) {
         const t = tempI32('bo')
         return typed(['block', ['result', 'f64'],
-          ['local.set', `$${t}`, ['call', '$__ptr_offset', asF64(emit(obj))]],
+          ['local.set', `$${t}`, ptrOffsetIR(emit(obj), VAL.TYPED)],
           ['f64.convert_i32_s',
             ['i32.sub',
               ['i32.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
@@ -471,7 +471,7 @@ export default (ctx) => {
   }
   for (const [method, storeOp] of Object.entries(DV_SET)) {
     ctx.core.emit[`.${method}`] = (dv, off, val, _le) => {
-      const dvOff = ['call', '$__ptr_offset', asF64(emit(dv))]
+      const dvOff = ptrOffsetIR(emit(dv), VAL.BUFFER)
       const addr = ['i32.add', dvOff, asI32(emit(off))]
       let v = emit(val)
       if (method.includes('BigInt') || method.includes('BigUint'))
@@ -493,7 +493,7 @@ export default (ctx) => {
   }
   for (const [method, [loadOp, resultType]] of Object.entries(DV_GET)) {
     ctx.core.emit[`.${method}`] = (dv, off, _le) => {
-      const addr = ['i32.add', ['call', '$__ptr_offset', asF64(emit(dv))], asI32(emit(off))]
+      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), asI32(emit(off))]
       const raw = typed([loadOp, addr], resultType)
       if (resultType === 'f64') return raw
       if (resultType === 'f32') return typed(['f64.promote_f32', raw], 'f64')
@@ -551,11 +551,13 @@ export default (ctx) => {
     return et == null ? null : { et, isView }
   }
 
-  /** Emit the real data byte-address for a typed array WAT f64 node.
-   *  Owned: __ptr_offset(va). View: load descriptor[4]. */
-  const typedDataAddr = (va, isView) => isView
-    ? ['i32.load', ['i32.add', ['call', '$__ptr_offset', va], ['i32.const', 4]]]
-    : ['call', '$__ptr_offset', va]
+  /** Emit the real data byte-address for a typed array IR node.
+   *  Owned: low 32 bits of the NaN-box (or the unboxed local directly).
+   *  View: load descriptor[4]. Uses ptrOffsetIR so unboxed-TYPED locals pass through
+   *  without a rebox-then-unbox round trip, and globals fold to inline bit-extract. */
+  const typedDataAddr = (objIR, isView) => isView
+    ? ['i32.load', ['i32.add', ptrOffsetIR(objIR, VAL.TYPED), ['i32.const', 4]]]
+    : ptrOffsetIR(objIR, VAL.TYPED)
 
   // Runtime-dispatch typed index: checks ptr_type + aux to load with correct stride.
   // For TYPED views (aux bit 3), $off indirects through descriptor[4] to real data.
@@ -615,8 +617,8 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView } = r
-    const va = asF64(emit(arr)), vi = asI32(emit(idx))
-    const off = ['i32.add', typedDataAddr(va, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    const objIR = emit(arr), vi = asI32(emit(idx))
+    const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (et === 7) return typed(['f64.load', off], 'f64') // Float64Array
     if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64') // Float32Array
     // Integer types: load and convert to f64 (unsigned types use unsigned conversion)
@@ -628,8 +630,8 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView } = r
-    const va = asF64(emit(arr)), vi = asI32(emit(idx)), vv = asF64(emit(val))
-    const off = ['i32.add', typedDataAddr(va, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    const objIR = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
+    const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (et === 7) return ['f64.store', off, vv] // Float64Array
     if (et === 6) return ['f32.store', off, ['f32.demote_f64', vv]] // Float32Array
     // Integer types: truncate f64 to i32, then store (unsigned types use unsigned truncation)
@@ -686,7 +688,7 @@ export default (ctx) => {
 
       const id = ctx.func.uniq++
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
+        ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
         ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
         dst.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
