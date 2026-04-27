@@ -1341,11 +1341,22 @@ export const emitter = {
           ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
 
           const objIsArr = (ctx.func.valTypes?.get(objArg) ?? lookupValType(objArg)) === VAL.ARRAY
+          // Spread source: if statically known ARRAY, inline len/load via hoisted srcBase
+          // (skip per-iteration __arr_idx call + dispatch).
+          const srcVT = valTypeOf(spreadExpr)
+          const srcIsArr = !multiCount(spreadExpr) && srcVT === VAL.ARRAY
+          const srcBase = srcIsArr ? `${T}psb${ctx.func.uniq++}` : null
+          if (srcIsArr) ctx.func.locals.set(srcBase, 'i32')
           const n = multiCount(spreadExpr)
           const ir = []
           ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
           ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-          ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
+          if (srcIsArr) {
+            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${sa}`]]])
+            ir.push(['local.set', `$${sl}`, ['i32.load', ['i32.sub', ['local.get', `$${srcBase}`], ['i32.const', 8]]]])
+          } else {
+            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
+          }
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
             ir.push(['local.set', `$${ol}`,
@@ -1361,12 +1372,15 @@ export const emitter = {
           // Tight store loop.
           ir.push(['local.set', `$${si}`, ['i32.const', 0]])
           const loopId = ctx.func.uniq++
+          const srcLoad = srcIsArr
+            ? ['f64.load', ['i32.add', ['local.get', `$${srcBase}`], ['i32.shl', ['local.get', `$${si}`], ['i32.const', 3]]]]
+            : asF64(emit(['[]', sa, si]))
           ir.push(['block', `$break${loopId}`, ['loop', `$continue${loopId}`,
             ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${si}`], ['local.get', `$${sl}`]]],
             ['f64.store',
               ['i32.add', ['local.get', `$${base}`],
                 ['i32.shl', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${si}`]], ['i32.const', 3]]],
-              asF64(emit(['[]', sa, si]))],
+              srcLoad],
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$continue${loopId}`]]])
           // Single set_len for the full spread.
