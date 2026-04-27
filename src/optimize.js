@@ -7,15 +7,19 @@
  *   INVARIANTS: pure IR→IR rewrite. No ctx reads/writes. No new top-level declarations except
  *        the ones explicitly surfaced via `addGlobal` (hoistConstantPool only).
  *
- * Each pass is orthogonal. Apply order matters: structural hoists (hoistPtrType) before
- * low-level folds (foldMemargOffsets) — former may introduce locals the latter shouldn't
- * interfere with.
+ * Each pass is orthogonal. Apply order matters: structural hoists (hoistPtrType) introduce
+ * new locals before the fused walk, which mixes peephole rebox folds, ptr-helper inlining,
+ * and memarg-offset folding in one bottom-up traversal.
  *
  * Passes:
- *   foldMemargOffsets — `(load (i32.add base (i32.const N)) …)` → `(load offset=N base …)` (~2 B/site)
  *   hoistPtrType      — repeated `(call $__ptr_type X)` on same X → single local.tee + local.get reuse
+ *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
+ *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
+ *   specializePtrBase — `(call $F (i32.add (global.get $G) (i32.const N)))` → `$F_rel_$G (i32.const N)`
+ *   sortStrPoolByFreq — reorder string pool so hottest strings get small offsets (smaller LEB128)
  *   hoistConstantPool — frequently-repeated f64.const values → mutable globals (~7 B/reuse)
+ *   treeshake         — drop func decls unreachable from exports / start / elem / ref.func roots
  *
  * Per-function passes run over sec.funcs + sec.stdlib + sec.start.
  * Whole-module passes see the full function list + globals map.
@@ -25,27 +29,6 @@
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_PREFIX_BITS = 0x7FF8n
-
-/**
- * Fold constant-offset address arithmetic into memarg offset=N syntax.
- * `(load/store (i32.add base (i32.const N)) …)` → `(load/store offset=N base …)`.
- * Saves ~2 bytes per site (removes i32.add + i32.const encoding, fold into memarg).
- */
-export function foldMemargOffsets(node) {
-  if (!Array.isArray(node)) return
-  for (const c of node) foldMemargOffsets(c)
-  if (typeof node[0] !== 'string' || !MEMOP.test(node[0])) return
-  if (typeof node[1] === 'string' && (node[1].startsWith('offset=') || node[1].startsWith('align='))) return
-  const addr = node[1]
-  if (!Array.isArray(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return
-  let base, offset
-  const a = addr[1], b = addr[2]
-  if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
-  else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
-  if (base == null) return
-  node[1] = `offset=${offset}`
-  node.splice(2, 0, base)
-}
 
 /**
  * Hoist repeated `(call $__ptr_type X)` on same X into a single local.
@@ -67,10 +50,13 @@ export function hoistPtrType(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
+  // Fused walk: collect ptr_type call sites and track local writes in one pass.
   const groups = new Map()
+  const written = new Set()
   const walk = (node, parent, pi) => {
     if (!Array.isArray(node)) return
-    if (node[0] === 'call' && node[1] === '$__ptr_type' && node.length === 3) {
+    const op = node[0]
+    if (op === 'call' && node[1] === '$__ptr_type' && node.length === 3) {
       const arg = node[2]
       if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string') {
         const xKey = arg[1]
@@ -79,20 +65,14 @@ export function hoistPtrType(fn) {
         g.count++
         g.sites.push({ parent, idx: pi })
       }
+    } else if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
+      written.add(node[1])
     }
     for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
   for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
 
   if (groups.size === 0) return
-
-  const written = new Set()
-  const scanWrites = (node) => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string') written.add(node[1])
-    for (const c of node) scanWrites(c)
-  }
-  for (let i = bodyStart; i < fn.length; i++) scanWrites(fn[i])
 
   let hoistId = 0
   const locals = []
@@ -134,16 +114,24 @@ function findBodyStart(fn) {
  */
 export function hoistConstantPool(funcs, addGlobal) {
   const MIN_USES = 2
+  // Single walk: count occurrences AND record each f64.const site for direct rewrite.
+  // Avoids a second full-AST traversal in the rewrite phase.
   const counts = new Map()
-  const countConsts = (node) => {
+  const sites = []  // { parent, idx, key }
+  const walk = (node) => {
     if (!Array.isArray(node)) return
-    if (node[0] === 'f64.const' && (typeof node[1] === 'number' || typeof node[1] === 'string')) {
-      const k = typeof node[1] === 'number' ? `n:${node[1]}` : `s:${node[1]}`
-      counts.set(k, (counts.get(k) || 0) + 1)
+    for (let i = 0; i < node.length; i++) {
+      const c = node[i]
+      if (Array.isArray(c) && c[0] === 'f64.const' && (typeof c[1] === 'number' || typeof c[1] === 'string')) {
+        const k = typeof c[1] === 'number' ? `n:${c[1]}` : `s:${c[1]}`
+        counts.set(k, (counts.get(k) || 0) + 1)
+        sites.push({ parent: node, idx: i, key: k })
+      }
+      walk(c)
     }
-    for (const c of node) countConsts(c)
   }
-  for (const s of funcs) countConsts(s)
+  for (let i = 0; i < funcs.length; i++) walk(funcs[i])
+
   const hoist = new Map()
   const sorted = [...counts].filter(([, n]) => n >= MIN_USES).sort((a, b) => b[1] - a[1])
   let gId = 0
@@ -154,19 +142,17 @@ export function hoistConstantPool(funcs, addGlobal) {
     hoist.set(k, name)
   }
   if (!hoist.size) return
-  const rewrite = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) {
-      const c = node[i]
-      if (Array.isArray(c) && c[0] === 'f64.const') {
-        const k = typeof c[1] === 'number' ? `n:${c[1]}` : `s:${c[1]}`
-        const g = hoist.get(k)
-        if (g) { node[i] = ['global.get', `$${g}`]; continue }
-      }
-      rewrite(c)
-    }
+
+  // Rewrite recorded sites directly. Idempotent: if parent[idx] is no longer the
+  // f64.const we recorded (shared subtrees), skip.
+  for (let i = 0; i < sites.length; i++) {
+    const { parent, idx, key } = sites[i]
+    const g = hoist.get(key)
+    if (!g) continue
+    const c = parent[idx]
+    if (!Array.isArray(c) || c[0] !== 'f64.const') continue
+    parent[idx] = ['global.get', `$${g}`]
   }
-  for (const s of funcs) rewrite(s)
 }
 
 /**
@@ -215,20 +201,27 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     return anyLit ? key.join('|') : null
   }
 
-  // Pass 1: count per (target, sig). Key separator `##` won't appear in sig content.
+  // Pass 1: count per (target, sig) AND record candidate site locations for direct
+  // rewrite in pass 3. Pre-order push means nested candidates appear later in `sites`,
+  // so reverse iteration in pass 3 yields leaf-first rewrite order (inner before outer).
   const counts = new Map()  // 'target##sig' → count
-  const walk = (node) => {
+  const sites = []  // { parent, idx, fullKey, parts }
+  const walk = (node, parent, idx) => {
     if (!Array.isArray(node)) return
-    if (node[0] === 'call' && typeof node[1] === 'string' && SPECS[node[1]]) {
+    if (parent && node[0] === 'call' && typeof node[1] === 'string' && SPECS[node[1]]) {
       const spec = SPECS[node[1]]
       if (node.length === 2 + spec.params.length) {
         const k = sigKey(node, spec.params.length)
-        if (k) counts.set(node[1] + '##' + k, (counts.get(node[1] + '##' + k) || 0) + 1)
+        if (k) {
+          const fullKey = node[1] + '##' + k
+          counts.set(fullKey, (counts.get(fullKey) || 0) + 1)
+          sites.push({ parent, idx, fullKey, parts: k.split('|') })
+        }
       }
     }
-    for (const c of node) walk(c)
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
-  for (const fn of funcs) walk(fn)
+  for (let i = 0; i < funcs.length; i++) walk(funcs[i], null, 0)
 
   // Pass 2: for each eligible (target, sig), emit helper.
   const specialized = new Set()
@@ -274,41 +267,40 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     addFunc(`(func $${name} ${dynArgs.join(' ')} (result ${spec.result}) (call ${target} ${callArgs.join(' ')}))`)
   }
 
-  // Pass 3: rewrite call sites bottom-up (nested calls: rewrite inner before outer).
-  const rewrite = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) rewrite(node[i])
-    for (let i = 0; i < node.length; i++) {
-      const c = node[i]
-      if (!Array.isArray(c) || c[0] !== 'call' || typeof c[1] !== 'string') continue
-      const spec = SPECS[c[1]]
-      if (!spec || c.length !== 2 + spec.params.length) continue
-      const k = sigKey(c, spec.params.length)
-      if (!k || !specialized.has(c[1] + '##' + k)) continue
-      const parts = k.split('|')
+  // Pass 3: rewrite recorded sites in reverse (leaf-first since pass 1 was pre-order).
+  // Iterating the captured site list avoids a second full-AST walk.
+  // Idempotency guard: shared subtrees in the IR cause the same (parent, idx) to be
+  // recorded as multiple sites. The first visit rewrites; subsequent visits see the
+  // rewritten call (target no longer in SPECS) and skip — same behavior as the
+  // recursive rewrite this replaces.
+  for (let i = sites.length - 1; i >= 0; i--) {
+    const { parent, idx, fullKey, parts } = sites[i]
+    if (!specialized.has(fullKey)) continue
+    const c = parent[idx]
+    const target = c[1]
+    const spec = SPECS[target]
+    if (!spec || c.length !== 2 + spec.params.length) continue
 
-      // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
-      if (c[1] === '$__mkptr' && parts.every(p => p.startsWith('L:'))) {
-        const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
-        const bits = (NAN_PREFIX_BITS << 48n)
-          | ((BigInt(type) & 0xFn) << 47n)
-          | ((BigInt(aux) & 0x7FFFn) << 32n)
-          | (BigInt(off >>> 0) & 0xFFFFFFFFn)
-        const n = ['f64.const', 'nan:0x' + bits.toString(16).toUpperCase().padStart(16, '0')]
-        n.type = 'f64'
-        node[i] = n
-        continue
-      }
-
-      const name = variantName(c[1], parts)
-      const dynArgs = []
-      for (let j = 0; j < parts.length; j++) if (parts[j] === 'D') dynArgs.push(c[2 + j])
-      const newCall = ['call', '$' + name, ...dynArgs]
-      newCall.type = spec.result
-      node[i] = newCall
+    // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
+    if (target === '$__mkptr' && parts[0].startsWith('L:') && parts[1].startsWith('L:') && parts[2].startsWith('L:')) {
+      const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
+      const bits = (NAN_PREFIX_BITS << 48n)
+        | ((BigInt(type) & 0xFn) << 47n)
+        | ((BigInt(aux) & 0x7FFFn) << 32n)
+        | (BigInt(off >>> 0) & 0xFFFFFFFFn)
+      const n = ['f64.const', 'nan:0x' + bits.toString(16).toUpperCase().padStart(16, '0')]
+      n.type = 'f64'
+      parent[idx] = n
+      continue
     }
+
+    const name = variantName(target, parts)
+    const dynArgs = []
+    for (let j = 0; j < parts.length; j++) if (parts[j] === 'D') dynArgs.push(c[2 + j])
+    const newCall = ['call', '$' + name, ...dynArgs]
+    newCall.type = spec.result
+    parent[idx] = newCall
   }
-  for (const fn of funcs) rewrite(fn)
 }
 
 /**
@@ -324,22 +316,25 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
 export function specializePtrBase(funcs, addFunc, parseWat) {
   const MIN_USES = 20
 
-  // Pass 1: count (targetFunc, baseGlobal) pairs. Track result-type via any func whose name we recognize.
+  // Pass 1: count (targetFunc, baseGlobal) pairs AND record candidate sites for direct
+  // rewrite in pass 3 (avoids a second full-AST walk).
   const counts = new Map()  // 'F##G' → count
-  const walk = (node) => {
+  const sites = []  // { parent, idx, key }
+  const walk = (node, parent, idx) => {
     if (!Array.isArray(node)) return
-    if (node[0] === 'call' && typeof node[1] === 'string' && node.length === 3) {
+    if (parent && node[0] === 'call' && typeof node[1] === 'string' && node.length === 3) {
       const arg = node[2]
       if (Array.isArray(arg) && arg[0] === 'i32.add' && arg.length === 3 &&
           Array.isArray(arg[1]) && arg[1][0] === 'global.get' && typeof arg[1][1] === 'string' &&
           Array.isArray(arg[2]) && arg[2][0] === 'i32.const') {
         const k = node[1] + '##' + arg[1][1]
         counts.set(k, (counts.get(k) || 0) + 1)
+        sites.push({ parent, idx, key: k })
       }
     }
-    for (const c of node) walk(c)
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
-  for (const fn of funcs) walk(fn)
+  for (let i = 0; i < funcs.length; i++) walk(funcs[i], null, 0)
 
   const specialized = new Set()
   for (const [k, n] of counts) if (n >= MIN_USES) specialized.add(k)
@@ -347,8 +342,10 @@ export function specializePtrBase(funcs, addFunc, parseWat) {
 
   // Find a target func's result-type by locating its decl among `funcs`.
   const funcByName = new Map()
-  for (const fn of funcs) if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
-    funcByName.set(fn[1], fn)
+  for (let i = 0; i < funcs.length; i++) {
+    const fn = funcs[i]
+    if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string') funcByName.set(fn[1], fn)
+  }
   const resultOf = (name) => {
     const fn = funcByName.get(name)
     if (!fn) return 'f64'  // defensive; mkptr specializations all return f64
@@ -371,26 +368,26 @@ export function specializePtrBase(funcs, addFunc, parseWat) {
     addFunc(`(func ${name} (param $o i32) (result ${rt}) (call ${F} (i32.add (global.get ${G}) (local.get $o))))`)
   }
 
-  // Pass 3: rewrite sites bottom-up.
-  const rewrite = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) rewrite(node[i])
-    for (let i = 0; i < node.length; i++) {
-      const c = node[i]
-      if (!Array.isArray(c) || c[0] !== 'call' || typeof c[1] !== 'string' || c.length !== 3) continue
-      const arg = c[2]
-      if (!Array.isArray(arg) || arg[0] !== 'i32.add' || arg.length !== 3) continue
-      const gbase = arg[1], konst = arg[2]
-      if (!Array.isArray(gbase) || gbase[0] !== 'global.get' || typeof gbase[1] !== 'string') continue
-      if (!Array.isArray(konst) || konst[0] !== 'i32.const') continue
-      const key = c[1] + '##' + gbase[1]
-      if (!specialized.has(key)) continue
-      const newCall = ['call', variantFor(c[1], gbase[1]), konst]
-      newCall.type = resultOf(c[1])
-      node[i] = newCall
-    }
+  // Pass 3: rewrite recorded sites in reverse (leaf-first since pass 1 was pre-order).
+  // Idempotency guard: shared IR subtrees can record the same (parent, idx) twice.
+  // The first visit rewrites to a 2-arg call; subsequent visits see a shape that
+  // doesn't match the original `call F (i32.add (global.get) (i32.const))` pattern.
+  for (let i = sites.length - 1; i >= 0; i--) {
+    const { parent, idx, key } = sites[i]
+    if (!specialized.has(key)) continue
+    const c = parent[idx]
+    if (!Array.isArray(c) || c[0] !== 'call' || c.length !== 3) continue
+    const arg = c[2]
+    if (!Array.isArray(arg) || arg[0] !== 'i32.add' || arg.length !== 3) continue
+    if (!Array.isArray(arg[1]) || arg[1][0] !== 'global.get') continue
+    if (!Array.isArray(arg[2]) || arg[2][0] !== 'i32.const') continue
+    const F = c[1]
+    const G = arg[1][1]
+    const konst = arg[2]
+    const newCall = ['call', variantFor(F, G), konst]
+    newCall.type = resultOf(F)
+    parent[idx] = newCall
   }
-  for (const fn of funcs) rewrite(fn)
 }
 
 /**
@@ -418,14 +415,16 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
   const getOff = (n) => isSpecRef(n) ? (n[2][1] | 0) : isUnspecRef(n) ? (n[2][2][1] | 0) : null
   const setOff = (n, v) => { if (isSpecRef(n)) n[2][1] = v; else if (isUnspecRef(n)) n[2][2][1] = v }
 
+  // Single walk: count freq AND record each ref site for direct rewrite.
   const freq = new Map()
+  const sites = []  // { node, oldOff } — node is the ref node, mutate offset in place
   const walk = (n) => {
     if (!Array.isArray(n)) return
     const o = getOff(n)
-    if (o !== null) freq.set(o, (freq.get(o) || 0) + 1)
-    for (const c of n) walk(c)
+    if (o !== null) { freq.set(o, (freq.get(o) || 0) + 1); sites.push({ node: n, oldOff: o }) }
+    for (let i = 0; i < n.length; i++) walk(n[i])
   }
-  for (const fn of funcs) walk(fn)
+  for (let i = 0; i < funcs.length; i++) walk(funcs[i])
   if (!freq.size) return
 
   // Parse pool structure into entries.
@@ -457,43 +456,98 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
       if (newOff !== undefined) strDedupMap.set(str, newOff)
     }
 
-  // Rewrite refs.
-  const rewrite = (n) => {
-    if (!Array.isArray(n)) return
-    for (const c of n) rewrite(c)
-    const o = getOff(n)
-    if (o !== null) { const newO = remap.get(o); if (newO !== undefined) setOff(n, newO) }
+  // Rewrite recorded ref sites directly (no second AST walk).
+  for (let i = 0; i < sites.length; i++) {
+    const { node, oldOff } = sites[i]
+    const newO = remap.get(oldOff)
+    if (newO !== undefined) setOff(node, newO)
   }
-  for (const fn of funcs) rewrite(fn)
 }
 
 /**
- * Collapse rebox-then-unbox round-trips left by emit.js.
- *
- * The NaN-box rebox/unbox boundary emits patterns like:
- *   `(i32.wrap_i64 (i64.reinterpret_f64 (f64.reinterpret_i64 (i64.or PREFIX (i64.extend_i32_u X)))))`
- * that reduce to just `X` when PREFIX has zero low-32 bits (NaN header only).
- *
- * Folds applied (bottom-up, to fixed point within one call):
- *   `i64.reinterpret_f64 (f64.reinterpret_i64 X)`              → `X`
- *   `f64.reinterpret_i64 (i64.reinterpret_f64 X)`              → `X`
- *   `i32.wrap_i64 (i64.extend_i32_u X)`                        → `X`
- *   `i32.wrap_i64 (i64.extend_i32_s X)`                        → `X`
- *   `i32.wrap_i64 (i64.or (i64.const K) (i64.extend_i32_u X))` → `X` when (K & 0xFFFFFFFF) === 0
- *   `i32.wrap_i64 (i64.or (i64.extend_i32_u X) (i64.const K))` → `X` when (K & 0xFFFFFFFF) === 0
- *
- * The recursive walk handles nested patterns — an outer fold often unlocks
- * an inner one after the intermediate layer is removed.
+ * Run all per-function IR optimizations on a single function node.
+ * hoistPtrType runs first — it introduces new locals (`$__ptN`) that the fused
+ * walk should see in their final form. fusedRewrite then collapses rebox/unbox
+ * round-trips, inlines tiny ptr/is_* helpers, and folds (i32.add base const)
+ * into memarg offset= form, all in a single bottom-up traversal — and
+ * piggybacks local-ref counting so sortLocalsByUse skips its own walk.
  */
-export function peepholeFolds(node) {
+export function optimizeFunc(fn) {
+  hoistPtrType(fn)
+  const counts = new Map()
+  fusedRewrite(fn, counts)
+  sortLocalsByUse(fn, counts)
+}
+
+// Fused bottom-up walk applying three orthogonal pattern sets at each node:
+//   inlinePtrType  — call $__ptr_type / __ptr_aux / __is_nullish / __is_null / __is_truthy
+//                    (skipped inside $__ptr_*/__is_* helper bodies themselves)
+//   peephole       — rebox/unbox round-trips: i64.reinterpret_f64 / f64.reinterpret_i64 /
+//                    i32.wrap_i64 over (i64.extend_i32_u/_s X) or (i64.or HIGH_ONLY extend X)
+//   foldMemarg     — (load/store (i32.add base (i32.const N)) …) → (load/store offset=N base …)
+// They discriminate on node[0] and don't overlap, so one visit suffices for all three.
+function fusedRewrite(fn, counts) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') {
+    if (Array.isArray(fn)) {
+      for (let i = 0; i < fn.length; i++) {
+        const c = fn[i]
+        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts)
+      }
+    }
+    return
+  }
+  // Skip __ptr_*/is_* bodies for inline pattern (they ARE the helpers).
+  const name = typeof fn[1] === 'string' ? fn[1] : null
+  const skipInline = !!(name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy' || name === '$__is_null'))
+  const bodyStart = findBodyStart(fn)
+  for (let i = bodyStart; i < fn.length; i++) {
+    const c = fn[i]
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts)
+  }
+}
+
+function walkRewrite(node, doInline, counts) {
   if (!Array.isArray(node)) return node
-  // Fold children first so outer patterns see already-simplified inputs.
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = peepholeFolds(c)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts)
+  }
+  const op = node[0]
+  // Piggyback local-ref counting for sortLocalsByUse. `counts` may be undefined
+  // when fusedRewrite is called outside optimizeFunc (whole-module pass).
+  if (counts && (op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string')
+    counts.set(node[1], (counts.get(node[1]) || 0) + 1)
+
+  // Inline-ptr-helpers: $__ptr_type / $__ptr_aux / $__is_nullish / $__is_null / $__is_truthy
+  if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {
+    const fname = node[1]
+    if (fname === '$__ptr_type') return ['i32.and',
+      ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', node[2]], ['i64.const', 47]]],
+      ['i32.const', 0xF]]
+    if (fname === '$__ptr_aux') return ['i32.and',
+      ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', node[2]], ['i64.const', 32]]],
+      ['i32.const', 0x7FFF]]
+    if (fname === '$__is_null') return ['i64.eq', ['i64.reinterpret_f64', node[2]], ['i64.const', '0x7FF8000100000000']]
+    if (fname === '$__is_nullish' && Array.isArray(node[2]) && node[2][0] === 'local.get') return ['i32.or',
+      ['i64.eq', ['i64.reinterpret_f64', node[2]], ['i64.const', '0x7FF8000100000000']],
+      ['i64.eq', ['i64.reinterpret_f64', node[2]], ['i64.const', '0x7FF8000000000001']]]
+    if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'local.get') {
+      const lget = node[2]
+      const bits = ['i64.reinterpret_f64', lget]
+      return ['if', ['result', 'i32'],
+        ['f64.eq', lget, lget],
+        ['then', ['f64.ne', lget, ['f64.const', 0]]],
+        ['else', ['i32.and',
+          ['i32.and',
+            ['i64.ne', bits, ['i64.const', '0x7FF8000000000000']],
+            ['i64.ne', bits, ['i64.const', '0x7FF8000100000000']]],
+          ['i32.and',
+            ['i64.ne', bits, ['i64.const', '0x7FF8000000000001']],
+            ['i64.ne', bits, ['i64.const', '0x7FFA800000000000']]]]]]
+    }
   }
 
-  const op = node[0]
+  // Peephole: rebox/unbox round-trips
   if (op === 'i64.reinterpret_f64' && node.length === 2) {
     const a = node[1]
     if (Array.isArray(a) && a[0] === 'f64.reinterpret_i64' && a.length === 2) return a[1]
@@ -506,7 +560,6 @@ export function peepholeFolds(node) {
     const a = node[1]
     if (Array.isArray(a) && (a[0] === 'i64.extend_i32_u' || a[0] === 'i64.extend_i32_s') && a.length === 2)
       return a[1]
-    // i32.wrap_i64 (i64.or (i64.const HIGH_ONLY) (i64.extend_i32_u X)) → X
     if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
       const l = a[1], r = a[2]
       const isHighOnly = (n) => {
@@ -524,99 +577,25 @@ export function peepholeFolds(node) {
       if (isHighOnly(r) && isExtend(l)) return l[1]
     }
   }
-  return node
-}
 
-/**
- * Inline tiny pointer-decode helpers — `$__ptr_type`, `$__ptr_aux` — directly at call sites.
- * Each is 3-4 ops of bit extraction; inlining eliminates WASM call dispatch overhead and
- * lets V8 CSE redundant work (common-subexpression elimination across sites sharing the
- * same pointer local). Binary grows a few hundred KB but runtime drops measurably.
- *
- * Skipped inside `$__ptr_*` stdlib bodies (self-reference + keeps helpers intact in case
- * any reflexive site still needs the call form).
- */
-export function inlinePtrType(fn) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const name = typeof fn[1] === 'string' ? fn[1] : null
-  if (name && (name.startsWith('$__ptr_') || name === '$__is_nullish' || name === '$__is_truthy' || name === '$__is_null')) return
-  const bodyStart = findBodyStart(fn)
-  if (bodyStart < 0) return
-  const rewrite = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) {
-      const c = node[i]
-      if (!Array.isArray(c)) continue
-      if (c[0] === 'call' && c.length === 3) {
-        if (c[1] === '$__ptr_type') {
-          node[i] = ['i32.and',
-            ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', c[2]], ['i64.const', 47]]],
-            ['i32.const', 0xF]]
-          continue
-        }
-        if (c[1] === '$__ptr_aux') {
-          node[i] = ['i32.and',
-            ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', c[2]], ['i64.const', 32]]],
-            ['i32.const', 0x7FFF]]
-          continue
-        }
-        if (c[1] === '$__is_nullish' && Array.isArray(c[2]) && c[2][0] === 'local.get') {
-          // Only inline on local.get — for other exprs the helper evaluates once,
-          // inline would duplicate or need a tee. local.get is cheap to reference twice.
-          node[i] = ['i32.or',
-            ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000100000000']],
-            ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000000000001']]]
-          continue
-        }
-        if (c[1] === '$__is_null') {
-          // One op: reinterpret + compare. Always inline.
-          node[i] = ['i64.eq', ['i64.reinterpret_f64', c[2]], ['i64.const', '0x7FF8000100000000']]
-          continue
-        }
-        // __is_truthy on a simple local.get arg: inline the two-branch test.
-        // V8 CSEs the repeated local.get / reinterpret; the explicit shape lets
-        // it specialize by profiled NaN-vs-numeric bias.
-        if (c[1] === '$__is_truthy' && Array.isArray(c[2]) && c[2][0] === 'local.get') {
-          const lget = c[2]
-          const bits = ['i64.reinterpret_f64', lget]
-          node[i] = ['if', ['result', 'i32'],
-            ['f64.eq', lget, lget],
-            ['then', ['f64.ne', lget, ['f64.const', 0]]],
-            ['else', ['i32.and',
-              ['i32.and',
-                ['i64.ne', bits, ['i64.const', '0x7FF8000000000000']],
-                ['i64.ne', bits, ['i64.const', '0x7FF8000100000000']]],
-              ['i32.and',
-                ['i64.ne', bits, ['i64.const', '0x7FF8000000000001']],
-                ['i64.ne', bits, ['i64.const', '0x7FFA800000000000']]]]]]
-          continue
+  // foldMemargOffsets: (load/store (i32.add base const) ...) → (load/store offset=N base ...)
+  if (typeof op === 'string' && MEMOP.test(op)) {
+    const m1 = node[1]
+    if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align=')))) {
+      const addr = m1
+      if (Array.isArray(addr) && addr[0] === 'i32.add' && addr.length === 3) {
+        const a = addr[1], b = addr[2]
+        let base, offset
+        if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
+        else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
+        if (base != null) {
+          node[1] = `offset=${offset}`
+          node.splice(2, 0, base)
         }
       }
-      rewrite(c)
     }
   }
-  for (let i = bodyStart; i < fn.length; i++) rewrite(fn[i])
-}
-
-/**
- * Run all per-function IR optimizations on a single function node.
- * Order matters: hoistPtrType before foldMemargOffsets (former may introduce
- * new locals that shouldn't interfere with memarg folding; they don't today,
- * but keep the invariant that structural rewrites run before low-level folds).
- * peepholeFolds runs first to collapse rebox/unbox round-trips before
- * downstream passes (hoistPtrType, memarg fold) try to analyze those patterns.
- */
-export function optimizeFunc(fn) {
-  if (Array.isArray(fn)) {
-    for (let i = 0; i < fn.length; i++) {
-      const c = fn[i]
-      if (Array.isArray(c)) fn[i] = peepholeFolds(c)
-    }
-  }
-  hoistPtrType(fn)
-  inlinePtrType(fn)
-  foldMemargOffsets(fn)
-  sortLocalsByUse(fn)
+  return node
 }
 
 /**
@@ -658,10 +637,18 @@ export function treeshake(funcSections, allModuleNodes) {
   }
   for (const n of allModuleNodes) findRoots(n)
 
+  // Side-output: per-callee call counts over all reachable + anonymous funcs.
+  // Caller uses this to sort funcs by hotness for low-LEB128-funcidx packing.
+  // Counting here is free — we already visit every node in these funcs.
+  const callCount = new Map()
   const CALL_OPS = new Set(['call', 'return_call', 'ref.func'])
   const visitCalls = (node) => {
     if (!Array.isArray(node)) return
-    if (CALL_OPS.has(node[0]) && typeof node[1] === 'string') addRoot(node[1])
+    if (CALL_OPS.has(node[0]) && typeof node[1] === 'string') {
+      addRoot(node[1])
+      if (node[0] === 'call' || node[0] === 'return_call')
+        callCount.set(node[1], (callCount.get(node[1]) || 0) + 1)
+    }
     for (const c of node) visitCalls(c)
   }
   // Anonymous funcs can't be pruned (no name) — walk them to seed roots.
@@ -677,7 +664,7 @@ export function treeshake(funcSections, allModuleNodes) {
       }
     }
   }
-  return removed
+  return { removed, callCount }
 }
 
 /**
@@ -686,7 +673,7 @@ export function treeshake(funcSections, allModuleNodes) {
  * Only the decl order changes; refs by name are unchanged and re-resolved by watr.
  * Params are fixed (their slot defines the call ABI) — only `(local …)` nodes move.
  */
-export function sortLocalsByUse(fn) {
+export function sortLocalsByUse(fn, precomputedCounts) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const localIdxs = []
   let totalDecls = 0
@@ -698,14 +685,17 @@ export function sortLocalsByUse(fn) {
     break
   }
   if (localIdxs.length < 2 || totalDecls <= 128) return
-  const counts = new Map()
-  const visit = (n) => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
-      counts.set(n[1], (counts.get(n[1]) || 0) + 1)
-    for (const c of n) visit(c)
+  let counts = precomputedCounts
+  if (!counts) {
+    counts = new Map()
+    const visit = (n) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+        counts.set(n[1], (counts.get(n[1]) || 0) + 1)
+      for (const c of n) visit(c)
+    }
+    for (let i = totalDecls + 2; i < fn.length; i++) visit(fn[i])
   }
-  for (let i = totalDecls + 2; i < fn.length; i++) visit(fn[i])
   const locals = localIdxs.map(i => fn[i])
   locals.sort((a, b) => (counts.get(b[1]) || 0) - (counts.get(a[1]) || 0))
   localIdxs.forEach((i, k) => { fn[i] = locals[k] })

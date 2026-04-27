@@ -16,7 +16,7 @@
  *     ↓  compile — drives per-function emit, interleaves analysis (locals/valTypes/captures/
  *        narrowing fixpoint) with IR generation via the emitter table (src/emit.js).
  *        Writes: `ctx.func.valTypes`/`.locals`, `ctx.types.*`, `ctx.runtime.*`, `ctx.core.includes`.
- *        Also calls optimizeFunc (src/optimize.js): `hoistPtrType` + `foldMemargOffsets`.
+ *        Also calls optimizeFunc (src/optimize.js): `hoistPtrType` + fused peephole/inline/memarg walk.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
  *     ↓  watrOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
