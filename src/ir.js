@@ -490,15 +490,18 @@ export function elemStore(ptr, i, val) {
 }
 
 /** Emit a loop iterating over array elements. Returns IR instruction list.
- *  bodyFn(ptr, len, i, item) should return an array of IR instructions. */
+ *  bodyFn(ptr, len, i, item) should return an array of IR instructions.
+ *  ARRAY-only — elemLoad assumes f64-stride data layout. After __ptr_offset
+ *  resolves forwarding, len lives at ptr-8, so skip the second __len call
+ *  (which would re-walk forwarding + dispatch on type). */
 export function arrayLoop(arrExpr, bodyFn) {
-  inc('__ptr_offset', '__len')
+  inc('__ptr_offset')
   const arr = temp('aa'), ptr = tempI32('ap'), len = tempI32('al'), i = tempI32('ai'), item = temp('av')
   const id = ctx.func.uniq++
   return [
     ['local.set', `$${arr}`, asF64(arrExpr)],
     ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
-    ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]],
+    ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,
       ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
