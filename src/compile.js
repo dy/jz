@@ -187,18 +187,36 @@ export default function compile(ast) {
     }
   }
 
-  // Unified whole-program walk: collects three outputs in one pass.
-  //   1. dynVars/anyDyn — vars accessed via runtime key (analyzeDynKeys)
-  //   2. propMap — property assignments for auto-boxing
-  //   3. valueUsed — ctx.func.names passed as first-class values (not specializable)
+  // === ProgramFacts: single whole-program walk over ast + user funcs + moduleInits ===
+  // Collects (in `programFacts`):
+  //   dynVars/anyDyn   — vars accessed via runtime key
+  //   propMap          — property assignments for auto-boxing schemas
+  //   valueUsed        — ctx.func.names passed as first-class values (not specializable)
+  //   maxDef/maxCall   — closure ABI width
+  //   hasRest/hasSpread
+  //   callSites        — `{ callee, argList, callerFunc }` for static-name calls (to drive
+  //                      the type/schema fixpoint without re-walking the AST)
+  // Three visit modes:
+  //   full=true  (ast + user funcs)  → all facts including call-site collection
+  //   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/callSites:
+  //                                     moduleInits don't own user props/funcs, and the
+  //                                     pre-fusion scanCalls didn't walk them either)
+  // `inArrow=true` flips off call-site collection — matching the prior scanCalls that
+  // bailed at any '=>' boundary so closure-internal calls don't poison caller-context
+  // type inference.
   const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
+  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
   const valueUsed = new Set()
   const dynVars = new Set()
   let anyDyn = false
   const propMap = new Map()
+  const callSites = []  // { callee, argList, callerFunc /* func obj or null */ }
   const doSchema = ast && ctx.schema.register
+  const doArity = !!ctx.closure.make
+  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
   const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
-  const unifiedWalk = (node) => {
+  const walkFacts = (node, full, inArrow, callerFunc) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     // dyn-key detection
@@ -209,50 +227,77 @@ export default function compile(ast) {
       anyDyn = true
       if (typeof args[1] === 'string') dynVars.add(args[1])
     }
-    // property-assignment scan for auto-box
-    if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
-      const [, obj, prop] = args[0]
-      if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
-        if (!propMap.has(obj)) propMap.set(obj, new Set())
-        propMap.get(obj).add(prop)
+    // closure ABI arity
+    if (doArity) {
+      if (op === '=>') {
+        let fixedN = 0
+        for (const r of extractParams(args[0])) {
+          if (classifyParam(r).kind === 'rest') hasRest = true
+          else fixedN++
+        }
+        if (fixedN > maxDef) maxDef = fixedN
+      } else if (op === '()') {
+        const a = args[1]
+        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
+        if (callArgs.length > maxCall) maxCall = callArgs.length
       }
     }
-    // first-class function-value scan
-    if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
-      // callee-position: not a value use. But args[1..] may still pass ctx.func.names as values.
-      for (let i = 1; i < args.length; i++) {
-        const a = args[i]
-        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-        else unifiedWalk(a)
-      }
+    // Crossing into a closure body: from now on, no call-site collection (matches the
+    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
+    if (op === '=>') {
+      for (const a of args) walkFacts(a, full, true, callerFunc)
       return
     }
-    if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
-    for (const a of args) {
-      if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-      else unifiedWalk(a)
-    }
-  }
-  unifiedWalk(ast)
-  for (const func of ctx.func.list) if (func.body && !func.raw) unifiedWalk(func.body)
-  // moduleInits: dyn-key detection only (they don't own user props/funcs)
-  if (ctx.module.moduleInits) {
-    const dynOnlyWalk = (node) => {
-      if (!Array.isArray(node)) return
-      const [op, ...args] = node
-      if (op === '[]') {
-        const [obj, idx] = args
-        if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
-      } else if (op === 'for-in') {
-        anyDyn = true
-        if (typeof args[1] === 'string') dynVars.add(args[1])
+    if (full) {
+      // property-assignment scan for auto-box
+      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, prop] = args[0]
+        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+          if (!propMap.has(obj)) propMap.set(obj, new Set())
+          propMap.get(obj).add(prop)
+        }
       }
-      for (const a of args) dynOnlyWalk(a)
+      // first-class function-value + static-call-site scan
+      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
+        if (!inArrow) {
+          // Record call site for the type/schema fixpoint. Filtering by
+          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
+          const a = args[1]
+          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          callSites.push({ callee: args[0], argList, callerFunc })
+        }
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i]
+          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+          else walkFacts(a, true, inArrow, callerFunc)
+        }
+        return
+      }
+      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
+      for (const a of args) {
+        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+        else walkFacts(a, true, inArrow, callerFunc)
+      }
+    } else {
+      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
     }
-    for (const mi of ctx.module.moduleInits) dynOnlyWalk(mi)
   }
-  ctx.types.dynKeyVars = dynVars
-  ctx.types.anyDynKey = anyDyn
+  walkFacts(ast, true, false, null)
+  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+  // Single explicit handle on collected facts. Downstream phases below read from these
+  // bindings directly today; when compile.js splits into phase functions (S3), the
+  // programFacts object is what they receive as input. ctx.types.* mirrors are kept
+  // because ir.js consumes them at emit time (will be replaced when emit takes facts
+  // explicitly — S3).
+  const programFacts = {
+    dynVars, anyDyn, propMap, valueUsed, callSites,
+    maxDef, maxCall, hasRest, hasSpread,
+    paramValTypes, paramWasmTypes, paramSchemas,
+  }
+  ctx.types.dynKeyVars = programFacts.dynVars
+  ctx.types.anyDynKey = programFacts.anyDyn
 
   // Materialize auto-box schemas from collected propMap
   if (doSchema) {
@@ -280,51 +325,26 @@ export default function compile(ast) {
     }
   }
 
-  // Dynamic closure ABI width: scan AST for max param count (`=>` defs) and max
-  // call arity. $ftN type, call-site padding, and body slot decls use this instead
-  // of the static MAX_CLOSURE_ARITY cap. hasRest adds +1 for rest overflow.
-  // hasSpread forces MAX (spread expands unknown element count at runtime).
+  // Dynamic closure ABI width: max param count (`=>` defs), max call arity, rest/spread
+  // accumulated by walkFacts above. $ftN type, call-site padding, and body slot decls
+  // use this instead of the static MAX_CLOSURE_ARITY cap. hasRest adds +1 for rest
+  // overflow. hasSpread + hasRest together force MAX (spread expands unknown element
+  // count at runtime, and any rest receiver may consume them).
   if (ctx.closure.make) {
-    let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
-    const scanArity = (n) => {
-      if (!Array.isArray(n)) return
-      if (n[0] === '=>') {
-        let fixedN = 0
-        for (const r of extractParams(n[1])) {
-          if (classifyParam(r).kind === 'rest') hasRest = true
-          else fixedN++
-        }
-        if (fixedN > maxDef) maxDef = fixedN
-      } else if (n[0] === '()') {
-        const a = n[2]
-        const args = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-        if (args.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
-        if (args.length > maxCall) maxCall = args.length
-      }
-      for (const c of n) scanArity(c)
-    }
-    scanArity(ast)
-    for (const fn of ctx.func.list) if (fn.body) scanArity(fn.body)
-    for (const mi of ctx.module.moduleInits || []) scanArity(mi)
     const floor = ctx.closure.floor ?? 0
-    // Spread + rest together force MAX: call_indirect targets are runtime values, so
-    // if ANY rest closure exists AND any spread site exists, the spread may feed the
-    // rest target and every element must reach it. Spread without rest anywhere can
-    // narrow — extras past W are safely dropped (no rest receiver to miss them).
     ctx.closure.width = (hasSpread && hasRest)
       ? MAX_CLOSURE_ARITY
       : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
   }
 
   // D: Call-site type propagation — infer param types from how functions are called.
+  // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
   // For non-exported internal functions, if all call sites agree on a param's type,
   // propagate that type to ctx.func.valTypes during per-function compilation.
   // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
-  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
-  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
   {
     // Infer schemaId for an argument expression. Returns null if not inferrable.
     // Safe sources: object literal with all string keys and no spreads, or a variable
@@ -349,87 +369,85 @@ export default function compile(ast) {
       }
       return null
     }
-    const scanCalls = (node, callerValTypes, callerLocals, callerSchemas) => {
-      if (!Array.isArray(node)) return
-      const [op, ...args] = node
-      if (op === '=>') return  // don't cross closure boundary
-      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
-        const callee = args[0]
-        const func = ctx.func.map.get(callee)
-        if (func && !func.exported && !valueUsed.has(callee)) {
-          // Extract args (may be comma-grouped)
-          const rawArgs = args.slice(1)
-          const argList = rawArgs.length === 1 && Array.isArray(rawArgs[0]) && rawArgs[0][0] === ','
-            ? rawArgs[0].slice(1) : rawArgs
-          if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
-          if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
-          if (!paramSchemas.has(callee)) paramSchemas.set(callee, new Map())
-          const ptypes = paramValTypes.get(callee)
-          const wtypes = paramWasmTypes.get(callee)
-          const stypes = paramSchemas.get(callee)
-          for (let k = 0; k < func.sig.params.length; k++) {
-            if (k < argList.length) {
-              // VAL type
-              if (ptypes.get(k) !== null) {
-                const argType = inferArgType(argList[k], callerValTypes)
-                if (!argType) ptypes.set(k, null)
-                else {
-                  const prev = ptypes.get(k)
-                  if (prev === undefined) ptypes.set(k, argType)
-                  else if (prev !== argType) ptypes.set(k, null)
-                }
-              }
-              // WASM type
-              if (wtypes.get(k) !== null) {
-                const wt = exprType(argList[k], callerLocals)
-                const prev = wtypes.get(k)
-                if (prev === undefined) wtypes.set(k, wt)
-                else if (prev !== wt) wtypes.set(k, null)
-              }
-              // Schema
-              if (stypes.get(k) !== null) {
-                const s = inferArgSchema(argList[k], callerSchemas)
-                if (s == null) stypes.set(k, null)
-                else {
-                  const prev = stypes.get(k)
-                  if (prev === undefined) stypes.set(k, s)
-                  else if (prev !== s) stypes.set(k, null)
-                }
-              }
-            } else {
-              // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
-              ptypes.set(k, null)
-              wtypes.set(k, null)
-              stypes.set(k, null)
-            }
-          }
-        }
-      }
-      for (const a of args) scanCalls(a, callerValTypes, callerLocals, callerSchemas)
-    }
     // Infer arg type using global valTypes + caller-local valTypes
     const inferArgType = (expr, callerValTypes) => {
       if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
       return valTypeOf(expr)
     }
+    // Per-caller analysis is stable across fixpoint iterations — precompute once.
+    // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
+    const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
+    callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+    for (const func of ctx.func.list) {
+      if (!func.body || func.raw) continue
+      const callerLocals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
+      callerCtx.set(func, { callerLocals, callerValTypes: collectValTypes(func.body) })
+    }
     // Two-pass fixpoint: first pass learns from literals + module vars; second pass
     // lets callers forward propagated schemas (for chained helpers: f→addXY→{getX,getY}).
-    const runAllScans = () => {
-      scanCalls(ast, ctx.scope.globalValTypes, ctx.scope.globalTypes, null)
-      for (const func of ctx.func.list) {
-        if (!func.body || func.raw) continue
-        const callerLocals = analyzeLocals(func.body)
-        for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
+    const runFixpoint = () => {
+      for (let s = 0; s < callSites.length; s++) {
+        const { callee, argList, callerFunc } = callSites[s]
+        const func = ctx.func.map.get(callee)
+        if (!func || func.exported || valueUsed.has(callee)) continue
+        const ctxEntry = callerCtx.get(callerFunc)
+        if (!ctxEntry) continue
+        const { callerLocals, callerValTypes } = ctxEntry
         // Caller's schema bindings: params inferred so far (for transitive propagation).
-        const cs = paramSchemas.get(func.name)
-        const callerSchemas = cs ? new Map(
-          [...cs].filter(([, v]) => v != null).map(([k, v]) => [func.sig.params[k].name, v])
-        ) : null
-        scanCalls(func.body, collectValTypes(func.body), callerLocals, callerSchemas)
+        let callerSchemas = null
+        if (callerFunc) {
+          const cs = paramSchemas.get(callerFunc.name)
+          if (cs) {
+            for (const [k, v] of cs) if (v != null) {
+              callerSchemas ||= new Map()
+              callerSchemas.set(callerFunc.sig.params[k].name, v)
+            }
+          }
+        }
+        if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
+        if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
+        if (!paramSchemas.has(callee)) paramSchemas.set(callee, new Map())
+        const ptypes = paramValTypes.get(callee)
+        const wtypes = paramWasmTypes.get(callee)
+        const stypes = paramSchemas.get(callee)
+        for (let k = 0; k < func.sig.params.length; k++) {
+          if (k < argList.length) {
+            if (ptypes.get(k) !== null) {
+              const argType = inferArgType(argList[k], callerValTypes)
+              if (!argType) ptypes.set(k, null)
+              else {
+                const prev = ptypes.get(k)
+                if (prev === undefined) ptypes.set(k, argType)
+                else if (prev !== argType) ptypes.set(k, null)
+              }
+            }
+            if (wtypes.get(k) !== null) {
+              const wt = exprType(argList[k], callerLocals)
+              const prev = wtypes.get(k)
+              if (prev === undefined) wtypes.set(k, wt)
+              else if (prev !== wt) wtypes.set(k, null)
+            }
+            if (stypes.get(k) !== null) {
+              const sId = inferArgSchema(argList[k], callerSchemas)
+              if (sId == null) stypes.set(k, null)
+              else {
+                const prev = stypes.get(k)
+                if (prev === undefined) stypes.set(k, sId)
+                else if (prev !== sId) stypes.set(k, null)
+              }
+            }
+          } else {
+            // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
+            ptypes.set(k, null)
+            wtypes.set(k, null)
+            stypes.set(k, null)
+          }
+        }
       }
     }
-    runAllScans()
-    runAllScans()
+    runFixpoint()
+    runFixpoint()
   }
 
   // Apply i32 specialization: for non-exported/non-value-used funcs with consistent
@@ -1280,7 +1298,8 @@ export default function compile(ast) {
 
   // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
   // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
-  treeshake(
+  // Also returns callCount Map (computed during the same walk — used below for funcidx sort).
+  const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports]
   )
@@ -1288,14 +1307,7 @@ export default function compile(ast) {
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
   // On watr self-host this saves ~6 KB (hot specialized helpers migrate to idx < 128).
-  const callCount = new Map()
-  const countWalk = (n) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === 'call' && typeof n[1] === 'string')
-      callCount.set(n[1], (callCount.get(n[1]) || 0) + 1)
-    for (const c of n) countWalk(c)
-  }
-  for (const s of [...sec.stdlib, ...sec.funcs, ...sec.start]) countWalk(s)
+  // callCount was computed inline by treeshake's walk (same set of nodes).
   const byCalls = (a, b) => (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
   const startFn = sec.start.find(n => n[0] === 'func')
   const startDir = sec.start.find(n => n[0] === 'start')
