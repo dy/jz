@@ -15,7 +15,7 @@ import { PTR, inc, err } from '../src/ctx.js'
 
 
 export default (ctx) => {
-  inc('__mkptr', '__alloc', '__ptr_aux', '__len', '__ptr_offset')
+  inc('__mkptr', '__alloc', '__len', '__ptr_offset')
 
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64
   if (!ctx.closure.types) ctx.closure.types = new Set()
@@ -135,7 +135,10 @@ export default (ctx) => {
           ['local.get', `$${t}`],
           ['local.get', `$${lenL}`],
           ...slots,
-          ['call', '$__ptr_aux', ['local.get', `$${t}`]]]], 'f64')
+          // Inline __ptr_aux for CLOSURE pointer: aux = bits 32..46 holds funcIdx.
+          ['i32.wrap_i64', ['i64.and',
+            ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', 32]],
+            ['i64.const', 0x7FFF]]]]], 'f64')
     }
 
     // Inline path: emit each arg, pad missing slots with UNDEF
@@ -152,6 +155,9 @@ export default (ctx) => {
         ['local.get', `$${t}`],
         ['i32.const', n],
         ...slots,
-        ['call', '$__ptr_aux', ['local.get', `$${t}`]]]], 'f64')
+        // Inline __ptr_aux for CLOSURE pointer: aux = bits 32..46 holds funcIdx.
+        ['i32.wrap_i64', ['i64.and',
+          ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', 32]],
+          ['i64.const', 0x7FFF]]]]], 'f64')
   }
 }

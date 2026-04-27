@@ -818,7 +818,7 @@ export default function compile(ast) {
 
       // Pre-allocate cache locals for env unpacking
       const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
-      if (envBase) { ctx.func.locals.set(envBase, 'i32'); inc('__ptr_offset') }
+      if (envBase) ctx.func.locals.set(envBase, 'i32')
       // Rest param: allocate helper locals (len + offset) before emitting decls
       let restOff, restLen
       if (cb.rest) {
@@ -832,9 +832,12 @@ export default function compile(ast) {
       // Insert locals (captures + params + declared)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
-      // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value
+      // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
+      // env is the CLOSURE pointer (PTR.CLOSURE) — never an ARRAY, no forwarding chain.
+      // Inline the offset extraction (low 32 bits) instead of calling __ptr_offset per invocation.
       if (envBase) {
-        fn.push(['local.set', `$${envBase}`, ['call', '$__ptr_offset', ['local.get', '$__env']]])
+        fn.push(['local.set', `$${envBase}`,
+          ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$__env']]]])
         for (let i = 0; i < cb.captures.length; i++) {
           const name = cb.captures[i]
           const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
