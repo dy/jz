@@ -25,7 +25,7 @@
 import { ctx, err, inc, PTR } from './ctx.js'
 import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS } from './analyze.js'
 import {
-  typed, asF64, asI32, asI64, asParamType, toI32, fromI64,
+  typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR,
@@ -639,7 +639,8 @@ export const emitter = {
       return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
     if (expr == null) return typed(['return', NULL_IR], 'void')
     const rt = ctx.func.current?.results[0] || 'f64'
-    const ir = asParamType(emit(expr), rt)
+    const pk = ctx.func.current?.ptrKind
+    const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
     if (!ctx.func.inTry && !ctx.transform.noTailCall &&
         Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
@@ -1297,7 +1298,9 @@ export const emitter = {
           const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
             emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
-          return typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
+          const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
+          if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+          return callIR
         }
       }
 
@@ -1629,9 +1632,11 @@ export const emitter = {
 
         // Build array: emit code for normal args + code to expand spreads
         const arrayIR = buildArrayWithSpreads(restArgsFinal)
-        return typed(['call', `$${callee}`,
+        const callIR = typed(['call', `$${callee}`,
           ...emittedFixed,
           arrayIR], func.sig.results[0])
+        if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+        return callIR
       }
 
       // Regular function call without rest params
@@ -1642,7 +1647,9 @@ export const emitter = {
       while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
       // Multi-value return: materialize as heap array (caller expects single pointer)
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
-      return typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
+      const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
+      if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+      return callIR
     }
 
     // Closure call: callee is a variable holding a NaN-boxed closure pointer

@@ -56,6 +56,12 @@ export const asF64 = n => {
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
 
+/** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed
+ *  ptr passes through; otherwise extract low 32 bits from the NaN-boxed f64
+ *  (NOT trunc — that would convert numerically). */
+export const asPtrOffset = (n, ptrKind) =>
+  n.ptrKind === ptrKind ? n : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(n)]], 'i32')
+
 /** Coerce emitted IR to a target WASM param type ('i32' | 'f64'). */
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
 

@@ -35,7 +35,7 @@ import {
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import {
-  typed, asF64, asI32, asParamType, toI32, asI64, fromI64,
+  typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
   MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR, extractF64Bits, appendStaticSlots,
@@ -585,6 +585,33 @@ export default function compile(ast) {
     }
   }
 
+  // E3: Result-type pointer narrowing — when valResult is a non-ambiguous pointer kind
+  // with constant aux (SET/MAP/BUFFER, all aux=0), narrow sig.results[0] from f64 to i32
+  // and tag sig.ptrKind. Eliminates the f64.reinterpret_i64+i64.or rebox at every return
+  // and the i32.wrap_i64+i64.reinterpret_f64 unbox at every callsite that uses the value
+  // as a pointer (load .[], .length, method dispatch).
+  // Safety: ARRAY forwards on realloc; STRING dual-encoded SSO/heap; CLOSURE/TYPED carry
+  // table-idx/element-type in aux; OBJECT carries schema-id in aux (per-callsite preservation
+  // not yet wired). Body must be a guaranteed-return form — fallthrough fallback i32.const 0
+  // would be a valid offset 0 of the narrowed kind, not undefined.
+  const PTR_RESULT_KINDS = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
+  const alwaysReturns = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '=>') return false
+    if (op === 'return' || op === 'throw') return true
+    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+    return false
+  }
+  for (const func of valTypeNarrowable) {
+    if (!func.valResult || !PTR_RESULT_KINDS.has(func.valResult)) continue
+    if (func.sig.results[0] !== 'f64') continue
+    if (!alwaysReturns(func.body)) continue
+    func.sig.results = ['i32']
+    func.sig.ptrKind = func.valResult
+  }
+
   const funcs = ctx.func.list.map(func => {
     // Raw WAT functions (e.g., _alloc, _reset from memory module)
     if (func.raw) return parseWat(func.raw)
@@ -692,7 +719,8 @@ export default function compile(ast) {
     } else {
       const ir = emit(body)
       for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...defaultInits, ...boxedParamInits, asParamType(ir, sig.results[0]))
+      const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
+      fn.push(...defaultInits, ...boxedParamInits, finalIR)
     }
 
     // Restore schema.vars so param bindings don't leak to next function.
