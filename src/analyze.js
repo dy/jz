@@ -158,11 +158,24 @@ export function typedElemAux(ctor) {
   return isView ? et | 8 : et
 }
 
+// Per-body memoization: analyzeLocals and collectValTypes are pure functions of
+// `body`. compile.js calls each ~2-3× per function (scan-fixpoint, narrowing,
+// final lowering); cache the result keyed on body identity and clone-on-read so
+// callers can still mutate the returned Map.
+const _localsCache = new WeakMap()
+const _valTypesCache = new WeakMap()
+
 /**
  * Lightweight walk: collect var→valType from let/const/= assignments.
  * Shared between analyzeValTypes and compile.js pre-compile call-site scan.
  */
-export function collectValTypes(body, types = new Map()) {
+export function collectValTypes(body, types) {
+  const cacheable = !types && body && typeof body === 'object'
+  if (cacheable) {
+    const hit = _valTypesCache.get(body)
+    if (hit) return new Map(hit)
+  }
+  if (!types) types = new Map()
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -180,6 +193,7 @@ export function collectValTypes(body, types = new Map()) {
     for (const a of args) walk(a)
   }
   walk(body)
+  if (cacheable) _valTypesCache.set(body, new Map(types))
   return types
 }
 
@@ -303,6 +317,10 @@ export function exprType(expr, locals) {
  * A local is i32 if ALL assignments produce i32. Any f64 widens to f64.
  */
 export function analyzeLocals(body) {
+  if (body && typeof body === 'object') {
+    const hit = _localsCache.get(body)
+    if (hit) return new Map(hit)
+  }
   const locals = new Map()
 
   function walk(node) {
@@ -359,6 +377,7 @@ export function analyzeLocals(body) {
   }
   widenPass(body)
 
+  if (body && typeof body === 'object') _localsCache.set(body, new Map(locals))
   return locals
 }
 
