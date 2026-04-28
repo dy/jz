@@ -393,7 +393,7 @@ export function readVar(name) {
   const rep = repOf(name)
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
-    const aux = rep.ptrAux ?? rep.schemaId ?? ctx.schema.vars?.get(name)
+    const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)
     if (aux != null) node.ptrAux = aux
   }
   return node

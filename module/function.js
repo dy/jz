@@ -53,7 +53,7 @@ export default (ctx) => {
     for (const name of captures) {
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
-      const schemaId = repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+      const schemaId = ctx.schema.idOf(name)
       if (schemaId != null) captureSchemaVars.set(name, schemaId)
       const elemType = ctx.types.typedElem?.get(name)
       if (elemType != null) captureTypedElems.set(name, elemType)

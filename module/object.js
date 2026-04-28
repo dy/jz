@@ -37,7 +37,7 @@ export default (ctx) => {
     const target = ctx.schema.targetStack.at(-1)
     if (target) {
       const merged = ctx.schema.resolve(target)
-      if (merged) schemaId = repOf(target)?.schemaId ?? ctx.schema.vars.get(target)
+      if (merged) schemaId = ctx.schema.idOf(target)
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')

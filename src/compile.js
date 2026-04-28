@@ -83,6 +83,22 @@ const NAN_PREFIX_BITS = 0x7FF8n
 
 // === Module compilation ===
 
+/** Decode a `['{}', ...]` AST's children into `{names, values}`, or null if any
+ *  property is non-static-key (computed key, spread, shorthand). Matches the
+ *  emitter's flatten rule for comma-grouped props. Used by narrowSignatures and
+ *  collectProgramFacts to register/observe schemas without re-deriving the AST
+ *  shape; the emitter (module/object.js) does its own decoding because it must
+ *  handle the spread/computed-key fall-through paths. */
+function staticObjectProps(args) {
+  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  const names = [], values = []
+  for (const p of raw) {
+    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    names.push(p[1]); values.push(p[2])
+  }
+  return names.length ? { names, values } : null
+}
+
 /**
  * Phase: signature narrowing.
  *
@@ -121,16 +137,8 @@ function narrowSignatures(programFacts) {
         return id != null ? id : null
       }
       if (Array.isArray(expr) && expr[0] === '{}') {
-        const rawProps = expr.slice(1)
-        const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
-          ? rawProps[0].slice(1) : rawProps
-        const names = []
-        for (const p of props) {
-          if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
-          names.push(p[1])
-        }
-        if (!names.length) return null
-        return ctx.schema.register(names)
+        const parsed = staticObjectProps(expr.slice(1))
+        return parsed ? ctx.schema.register(parsed.names) : null
       }
       return null
     }
@@ -425,16 +433,9 @@ function narrowSignatures(programFacts) {
     if (!Array.isArray(expr)) return null
     const [op, ...args] = expr
     if (op === '{}') {
-      // Object literal: children are `:` nodes (or one comma-wrapped list of them).
-      // If parsing fails (block body, dynamic key, spread), fall through to null.
-      const rawProps = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
-      const names = []
-      for (const p of rawProps) {
-        if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
-        names.push(p[1])
-      }
-      if (!names.length) return null
-      return ctx.schema.register(names)
+      // Object literal: bail to null on block body, dynamic key, or spread.
+      const parsed = staticObjectProps(args)
+      return parsed ? ctx.schema.register(parsed.names) : null
     }
     if (op === '()' && typeof args[0] === 'string') {
       const f = ctx.func.map.get(args[0])
@@ -566,19 +567,13 @@ function collectProgramFacts(ast) {
       anyDyn = true
       if (typeof args[1] === 'string') dynVars.add(args[1])
     }
-    // Object literal: register schema + slot val types. Static-key, non-spread only;
-    // dynamic-key shapes route through __dyn_set and don't have a fixed slot mapping.
-    if (op === '{}' && doSchema && args[0]?.[0] === ':') {
-      const rawProps = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
-      const names = [], values = []
-      let ok = true
-      for (const p of rawProps) {
-        if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') { ok = false; break }
-        names.push(p[1]); values.push(p[2])
-      }
-      if (ok && names.length) {
-        const sid = ctx.schema.register(names)
-        for (let i = 0; i < values.length; i++) observeSlot(sid, i, valTypeOf(values[i]))
+    // Object literal: register schema + observe slot val types. Static-key only;
+    // dynamic-key/spread shapes route through __dyn_set and have no fixed slot mapping.
+    if (op === '{}' && doSchema) {
+      const parsed = staticObjectProps(args)
+      if (parsed) {
+        const sid = ctx.schema.register(parsed.names)
+        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, valTypeOf(parsed.values[i]))
       }
     }
     // closure ABI arity

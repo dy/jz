@@ -34,15 +34,20 @@ export function initSchema(ctx) {
     return id
   }
 
+  /** schemaId for a variable name: ValueRep first, then module-level ctx.schema.vars.
+   *  Both paths exist because vars covers names without a per-function ValueRep
+   *  (prepare-phase rest/destructure tracking, module-level autoboxes). */
+  ctx.schema.idOf = (name) => repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
+
   /** Resolve variable name to its schema props array, or null. */
   ctx.schema.resolve = (varName) => {
-    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
+    const id = ctx.schema.idOf(varName)
     return id != null ? ctx.schema.list[id] : null
   }
 
   /** Check if variable has a boxed schema (slot 0 = __inner__). */
   ctx.schema.isBoxed = (varName) => {
-    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
+    const id = ctx.schema.idOf(varName)
     return id != null && ctx.schema.list[id]?.[0] === '__inner__'
   }
 
@@ -64,7 +69,7 @@ export function initSchema(ctx) {
    *  values, which callers can tolerate. */
   ctx.schema.find = (varName, prop, safe = false) => {
     // Precise: variable has known schema
-    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
+    const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
     // Known non-object pointer-backed values must use dynamic property lookup,
     // not structural object schemas registered elsewhere in the function.
@@ -91,11 +96,9 @@ export function initSchema(ctx) {
    *  schema. That mistyping then routes downstream property accesses
    *  through __hash_get instead of __dyn_get_any, growing the binary. */
   ctx.schema.slotVT = (varName, prop) => {
-    const types = ctx.schema.slotTypes
-    if (!types) return null
-    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
+    const id = ctx.schema.idOf(varName)
     if (id == null) return null
     const idx = ctx.schema.list[id]?.indexOf(prop)
-    return idx >= 0 ? (types.get(id)?.[idx] ?? null) : null
+    return idx >= 0 ? (ctx.schema.slotTypes.get(id)?.[idx] ?? null) : null
   }
 }
