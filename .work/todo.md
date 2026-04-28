@@ -55,8 +55,20 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   no longer captures outer closure state. compile() body shrunk from
   one ~1300-line blob (1529 → 1395 lines) to a sequence of named-phase
   calls. 922/922 PASS, golden sizes unchanged.
-  Remaining: section-assembly tail (start fn build, stdlib pull,
-  per-func optimize, treeshake, sort, module assembly).
+  Apr 27 (extension) — three additional tail phases extracted:
+  `dedupClosureBodies(closureFuncs, sec)` → alpha-rename + structural
+  hash dedup of closure bodies, redirect through elem table;
+  `finalizeClosureTable(sec)` → drop dead $ftN/table/elem when no
+  call_indirect remains, then per-body ABI shrink (drop unused
+  $__env/$__argc/$__a{i} params and matching args);
+  `stripStaticDataPrefix(sec)` → R-mode prefix-shift when __static_str
+  unused. compile() tail blocks collapsed to single calls. 922/922 PASS,
+  golden sizes unchanged.
+  Remaining: __start fn build (~90 lines: moduleInits, init, boxInit,
+  schemaInit, typeofInit, strPoolInit), stdlib pull (~30 lines:
+  resolveIncludes + memory + extStdlib + factory stdlibs), and the
+  module-assembly tail (treeshake, sort by call count, final
+  section concat).
 
 * [x] **Strict core mode** — Apr 27. `compile(code, { strict: true })` and `jz(code, { strict: true })`
   now reject (with clear `strict mode: ...` errors): `obj[runtimeKey]` falling to `__dyn_get`

@@ -821,6 +821,220 @@ function emitClosureBody(cb) {
 }
 
 /**
+ * Phase: closure-body dedup.
+ *
+ * Two closures with structurally-equal bodies (same shape after alpha-renaming
+ * locals/params) are emitted as a single function — duplicates redirect through
+ * the elem table to the canonical name. Closure bodies often share shape because
+ * the same inner arrow can be instantiated in many places (e.g. parser combinators).
+ *
+ * IN:  closureFuncs (the WAT IR list emitted by emitClosureBody),
+ *      sec.funcs (already contains closureFuncs + regular funcs),
+ *      ctx.closure.table (elem-section names).
+ * OUT: sec.funcs filtered to canonical bodies, ctx.closure.table redirected.
+ *
+ * Runs AFTER all closures (including those compiled during __start emit) are
+ * collected so structural duplicates across batches collapse together.
+ */
+function dedupClosureBodies(closureFuncs, sec) {
+  if (closureFuncs.length <= 1) return
+  const canonicalize = (fn) => {
+    const localNames = new Set()
+    const collect = (node) => {
+      if (!Array.isArray(node)) return
+      if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
+        localNames.add(node[1])
+      for (const c of node) collect(c)
+    }
+    collect(fn)
+    let counter = 0
+    const renameMap = new Map()
+    const walk = node => {
+      if (typeof node === 'string') {
+        if (!localNames.has(node)) return node
+        let r = renameMap.get(node)
+        if (!r) { r = `$_c${counter++}`; renameMap.set(node, r) }
+        return r
+      }
+      if (!Array.isArray(node)) return node
+      return node.map(walk)
+    }
+    return JSON.stringify(['func', ...fn.slice(2).map(walk)])
+  }
+  const hashToName = new Map()
+  const redirect = new Map()
+  const keepSet = new Set()
+  for (const fn of closureFuncs) {
+    const key = canonicalize(fn)
+    const name = fn[1].slice(1)
+    const canonical = hashToName.get(key)
+    if (canonical) redirect.set(name, canonical)
+    else { hashToName.set(key, name); keepSet.add(name) }
+  }
+  if (!redirect.size) return
+  ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
+  const kept = sec.funcs.filter(fn => {
+    if (!Array.isArray(fn) || fn[0] !== 'func') return true
+    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    return !name || !redirect.has(name)
+  })
+  sec.funcs.length = 0
+  sec.funcs.push(...kept)
+}
+
+/**
+ * Phase: closure-table finalize + ABI shrink.
+ *
+ * Two opportunities, both gated on a post-emit scan for `call_indirect`:
+ *
+ *   1. Drop dead $ftN type / table / elem when the scan finds zero call_indirect
+ *      sites (every closure call was direct-dispatched via A3 + capture-boundary
+ *      propagation, AND no top-level fn was taken as a value). Closure pointers
+ *      still carry funcIdx in their NaN-box aux bits, but those bits become dead
+ *      state with no reader.
+ *
+ *   2. Per-body ABI shrink: with no call_indirect, every closure is direct-only,
+ *      so the uniform `(env, argc, a0..a{W-1})` ABI is no longer required.
+ *      Each body sheds:
+ *        • $__env     when captures.length === 0
+ *        • $__argc    when no rest param (defaults check param value, not argc)
+ *        • $__a{i}    for i ≥ fixedN when no rest (caller's UNDEF padding is dead)
+ *      Rest closures keep all W slots — argc + slot{fixedN..W-1} are how rest packs.
+ *      Both `call` and `return_call` (tail call) sites are rewritten in the same walk.
+ */
+function finalizeClosureTable(sec) {
+  if (!ctx.closure.table?.length) return
+  let indirectUsed = false
+  const scan = (n) => {
+    if (!Array.isArray(n) || indirectUsed) return
+    if (n[0] === 'call_indirect') { indirectUsed = true; return }
+    for (const c of n) if (Array.isArray(c)) scan(c)
+  }
+  for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
+  if (!indirectUsed) for (const fn of sec.start) scan(fn)
+  if (indirectUsed) {
+    sec.table = [['table', ctx.closure.table.length, 'funcref']]
+    sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
+    return
+  }
+  sec.table = []
+  sec.elem = []
+  sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const abiOf = new Map()
+  for (const cb of (ctx.closure.bodies || [])) {
+    const fixedN = cb.params.length - (cb.rest ? 1 : 0)
+    abiOf.set(cb.name, {
+      needEnv: cb.captures.length > 0,
+      needArgc: !!cb.rest,
+      usedSlots: cb.rest ? W : fixedN,
+      rest: !!cb.rest,
+    })
+  }
+  for (const fn of sec.funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func') continue
+    const fnName = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    const abi = abiOf.get(fnName)
+    if (!abi) continue
+    for (let i = fn.length - 1; i >= 0; i--) {
+      const node = fn[i]
+      if (!Array.isArray(node) || node[0] !== 'param') continue
+      const pname = node[1]
+      if (pname === '$__env' && !abi.needEnv) fn.splice(i, 1)
+      else if (pname === '$__argc' && !abi.needArgc) fn.splice(i, 1)
+      else if (typeof pname === 'string' && pname.startsWith('$__a') && !abi.rest) {
+        const idx = parseInt(pname.slice(4), 10)
+        if (Number.isFinite(idx) && idx >= abi.usedSlots) fn.splice(i, 1)
+      }
+    }
+  }
+  const rewriteCalls = (node) => {
+    if (!Array.isArray(node)) return
+    for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
+    if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
+      const callee = node[1].slice(1)
+      const abi = abiOf.get(callee)
+      if (!abi) return
+      const newArgs = []
+      if (abi.needEnv) newArgs.push(node[2])
+      if (abi.needArgc) newArgs.push(node[3])
+      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
+      node.splice(2, node.length - 2, ...newArgs)
+    }
+  }
+  for (const fn of sec.funcs) rewriteCalls(fn)
+  for (const fn of sec.start) rewriteCalls(fn)
+}
+
+/**
+ * Phase: strip static-data prefix.
+ *
+ * R: when `__static_str` runtime helper isn't included, the leading prefix of the
+ * data segment (the static string-table header) is dead — strip it and shift all
+ * pointer offsets in user code, embedded data slots, and constant-folded NaN-box
+ * literals down by `prefix` bytes. ATOM/SSO have no offset, so they're unaffected.
+ *
+ * Patches both runtime-call form (`__mkptr(T, A, off)`) and the constant-folded
+ * form (`f64.reinterpret_i64 (i64.const ...)`) when offset >= prefix.
+ */
+function stripStaticDataPrefix(sec) {
+  if (!ctx.runtime.staticDataLen || ctx.core.includes.has('__static_str')) return
+  const prefix = ctx.runtime.staticDataLen
+  const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
+  const data = ctx.runtime.data || ''
+  const buf = new Uint8Array(data.length)
+  for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
+  const dv = new DataView(buf.buffer)
+  if (ctx.runtime.staticPtrSlots) {
+    for (const slotOff of ctx.runtime.staticPtrSlots) {
+      if (slotOff < prefix) continue
+      const bits = dv.getBigUint64(slotOff, true)
+      if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX_BITS) continue
+      const ty = Number((bits >> 47n) & 0xFn)
+      if (!SHIFTABLE.has(ty)) continue
+      const off = Number(bits & 0xFFFFFFFFn)
+      if (off < prefix) continue
+      const hi = bits & ~0xFFFFFFFFn
+      dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
+    }
+  }
+  let s = ''
+  for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
+  ctx.runtime.data = s
+  if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
+    .filter(o => o >= prefix).map(o => o - prefix)
+  const shift = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) {
+      const child = node[i]
+      if (!Array.isArray(child)) continue
+      if (child[0] === 'call' && child[1] === '$__mkptr' &&
+        Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
+        Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
+        typeof child[4][1] === 'number' && child[4][1] >= prefix) {
+        child[4][1] -= prefix
+      } else if (child[0] === 'f64.const' &&
+        typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
+        const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
+        if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+          const ty = Number((bits >> 47n) & 0xFn)
+          if (SHIFTABLE.has(ty)) {
+            const off = Number(bits & 0xFFFFFFFFn)
+            if (off >= prefix) {
+              const hi = bits & ~0xFFFFFFFFn
+              const newBits = hi | BigInt(off - prefix)
+              child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
+            }
+          }
+        }
+      }
+      shift(child)
+    }
+  }
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
+}
+
+/**
  * Compile prepared AST to WASM module IR.
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
  * @returns {Array} Complete WASM module as S-expression
@@ -1126,135 +1340,9 @@ export default function compile(ast) {
   if (closureFuncs.length > beforeLen)
     sec.funcs.unshift(...closureFuncs.slice(beforeLen))
 
-  // Function-body dedup: alpha-rename locals/params, hash, redirect dupes through elem section.
-  // Runs AFTER all closures (including late ones compiled during __start) are collected so that
-  // structural duplicates across batches collapse into a single emitted body.
-  if (closureFuncs.length > 1) {
-    const canonicalize = (fn) => {
-      const localNames = new Set()
-      const collect = (node) => {
-        if (!Array.isArray(node)) return
-        if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
-          localNames.add(node[1])
-        for (const c of node) collect(c)
-      }
-      collect(fn)
-      let counter = 0
-      const renameMap = new Map()
-      const walk = node => {
-        if (typeof node === 'string') {
-          if (!localNames.has(node)) return node
-          let r = renameMap.get(node)
-          if (!r) { r = `$_c${counter++}`; renameMap.set(node, r) }
-          return r
-        }
-        if (!Array.isArray(node)) return node
-        return node.map(walk)
-      }
-      return JSON.stringify(['func', ...fn.slice(2).map(walk)])
-    }
-    const hashToName = new Map()
-    const redirect = new Map()
-    const keepSet = new Set()
-    for (const fn of closureFuncs) {
-      const key = canonicalize(fn)
-      const name = fn[1].slice(1)
-      const canonical = hashToName.get(key)
-      if (canonical) redirect.set(name, canonical)
-      else { hashToName.set(key, name); keepSet.add(name) }
-    }
-    if (redirect.size) {
-      // Rewrite closure table to point all dupes at canonical names
-      ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
-      // Filter sec.funcs in place: keep non-closures + canonical closures
-      const kept = sec.funcs.filter(fn => {
-        if (!Array.isArray(fn) || fn[0] !== 'func') return true
-        const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
-        return !name || !redirect.has(name)
-      })
-      sec.funcs.length = 0
-      sec.funcs.push(...kept)
-    }
-  }
+  dedupClosureBodies(closureFuncs, sec)
 
-  // Finalize function table + element section (table may grow during __start emit).
-  // Drop $ftN type, table, and elem when no `call_indirect` remains in the program —
-  // happens when every closure call site is direct-dispatched (A3 + capture-boundary
-  // propagation). Closure pointers still carry funcIdx in their NaN-box aux bits,
-  // but those bits become dead state with no reader. ref.func isn't emitted user-side,
-  // so a single call_indirect scan over closure bodies + user funcs + start is enough.
-  if (ctx.closure.table?.length) {
-    let indirectUsed = false
-    const scan = (n) => {
-      if (!Array.isArray(n) || indirectUsed) return
-      if (n[0] === 'call_indirect') { indirectUsed = true; return }
-      for (const c of n) if (Array.isArray(c)) scan(c)
-    }
-    for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
-    if (!indirectUsed) for (const fn of sec.start) scan(fn)
-    if (indirectUsed) {
-      sec.table = [['table', ctx.closure.table.length, 'funcref']]
-      sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
-    } else {
-      sec.table = []
-      sec.elem = []
-      sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
-      // Per-body ABI shrink: with no call_indirect, every closure is direct-only.
-      // Drop unused params from each body and matching args at call sites:
-      //   • $__env when captures.length === 0 (body never reads env)
-      //   • $__argc when no rest param (defaults check param value, not argc)
-      //   • $__a{i} for i >= fixedN when no rest (caller's UNDEF padding is dead)
-      // Rest closures keep all W slots — argc + slot{fixedN..W-1} are how rest packs.
-      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-      const abiOf = new Map()
-      for (const cb of (ctx.closure.bodies || [])) {
-        const fixedN = cb.params.length - (cb.rest ? 1 : 0)
-        abiOf.set(cb.name, {
-          needEnv: cb.captures.length > 0,
-          needArgc: !!cb.rest,
-          usedSlots: cb.rest ? W : fixedN,
-          rest: !!cb.rest,
-        })
-      }
-      // Shrink body param decls.
-      for (const fn of sec.funcs) {
-        if (!Array.isArray(fn) || fn[0] !== 'func') continue
-        const fnName = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
-        const abi = abiOf.get(fnName)
-        if (!abi) continue
-        for (let i = fn.length - 1; i >= 0; i--) {
-          const node = fn[i]
-          if (!Array.isArray(node) || node[0] !== 'param') continue
-          const pname = node[1]
-          if (pname === '$__env' && !abi.needEnv) fn.splice(i, 1)
-          else if (pname === '$__argc' && !abi.needArgc) fn.splice(i, 1)
-          else if (typeof pname === 'string' && pname.startsWith('$__a') && !abi.rest) {
-            const idx = parseInt(pname.slice(4), 10)
-            if (Number.isFinite(idx) && idx >= abi.usedSlots) fn.splice(i, 1)
-          }
-        }
-      }
-      // Rewrite all matching call sites to drop the same argument positions.
-      // Both `call` and `return_call` (tail call) carry the same arg layout.
-      const rewriteCalls = (node) => {
-        if (!Array.isArray(node)) return
-        for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
-        if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
-          const callee = node[1].slice(1)
-          const abi = abiOf.get(callee)
-          if (!abi) return
-          // Original layout: [call, $name, env, argc, a0, a1, ..., a{W-1}]
-          const newArgs = []
-          if (abi.needEnv) newArgs.push(node[2])
-          if (abi.needArgc) newArgs.push(node[3])
-          for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
-          node.splice(2, node.length - 2, ...newArgs)
-        }
-      }
-      for (const fn of sec.funcs) rewriteCalls(fn)
-      for (const fn of sec.start) rewriteCalls(fn)
-    }
-  }
+  finalizeClosureTable(sec)
 
   // Resolve stdlib AFTER __start emit — inc() calls during __start must be captured
   resolveIncludes()
@@ -1287,68 +1375,7 @@ export default function compile(ast) {
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
   sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
 
-  // R: Strip static string table if __static_str not used (saves 57 bytes)
-  if (ctx.runtime.staticDataLen && !ctx.core.includes.has('__static_str')) {
-    const prefix = ctx.runtime.staticDataLen
-    // User strings/objects/arrays computed offsets with static prefix present — shift down.
-    // Patches both the runtime-call form `__mkptr(...)` and the constant-folded form
-    // `f64.reinterpret_i64 (i64.const ...)`. Ptr types pointing at heap (offset >= prefix)
-    // are addresses into ctx.runtime.data — shift them. ATOM/SSO have no offset to shift.
-    const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
-    // Patch embedded pointer slots inside static data (STRING refs in static arrays/objects).
-    // Slot offsets are absolute pre-strip; rewrite each i64, then slice off the prefix.
-    const data = ctx.runtime.data || ''
-    const buf = new Uint8Array(data.length)
-    for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
-    const dv = new DataView(buf.buffer)
-    if (ctx.runtime.staticPtrSlots) {
-      for (const slotOff of ctx.runtime.staticPtrSlots) {
-        if (slotOff < prefix) continue  // slot itself stripped
-        const bits = dv.getBigUint64(slotOff, true)
-        if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX_BITS) continue
-        const ty = Number((bits >> 47n) & 0xFn)
-        if (!SHIFTABLE.has(ty)) continue
-        const off = Number(bits & 0xFFFFFFFFn)
-        if (off < prefix) continue
-        const hi = bits & ~0xFFFFFFFFn
-        dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
-      }
-    }
-    let s = ''
-    for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
-    ctx.runtime.data = s
-    if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
-      .filter(o => o >= prefix).map(o => o - prefix)
-    const shift = (node) => {
-      if (!Array.isArray(node)) return
-      for (let i = 0; i < node.length; i++) {
-        const child = node[i]
-        if (!Array.isArray(child)) continue
-        if (child[0] === 'call' && child[1] === '$__mkptr' &&
-          Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
-          Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
-          typeof child[4][1] === 'number' && child[4][1] >= prefix) {
-          child[4][1] -= prefix
-        } else if (child[0] === 'f64.const' &&
-          typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
-          const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
-          if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
-            const ty = Number((bits >> 47n) & 0xFn)
-            if (SHIFTABLE.has(ty)) {
-              const off = Number(bits & 0xFFFFFFFFn)
-              if (off >= prefix) {
-                const hi = bits & ~0xFFFFFFFFn
-                const newBits = hi | BigInt(off - prefix)
-                child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
-              }
-            }
-          }
-        }
-        shift(child)
-      }
-    }
-    for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
-  }
+  stripStaticDataPrefix(sec)
 
   // Whole-module: specialize __mkptr(T, A, off) per (T, A) combo — saves ~4 B/site (see optimize.js).
   // Run BEFORE per-function passes so new specialized helpers are included.
