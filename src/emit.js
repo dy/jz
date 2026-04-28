@@ -2,7 +2,7 @@
  * AST → WASM IR emission.
  *
  * # Stage contract
- *   IN:  prepared AST node + ctx state (func.locals, func.valTypes, types.typedElem, etc.)
+ *   IN:  prepared AST node + ctx state (func.locals, func.repByLocal, types.typedElem, etc.)
  *   OUT: IR node (array) with `.type` ('i32' | 'f64' | 'void'). For statements, a flat
  *        list of WASM instructions (no type tag).
  *   NO-MUTATE: emit does not rewrite the AST. Side effects go to ctx.runtime.*,
@@ -1436,7 +1436,7 @@ export const emitter = {
           ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
           ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
           const spreadVT = valTypeOf(spreadExpr)
-          if (spreadVT) ctx.func.valTypes?.set(arr, spreadVT)
+          if (spreadVT) updateRep(arr, { val: spreadVT })
 
           // In-place spread methods modify target; accumulating methods (concat) return new values
           const inPlace = SPREAD_MUTATORS.has(method)
@@ -1500,7 +1500,7 @@ export const emitter = {
               const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
               ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
               const spreadVT = valTypeOf(spreadExpr)
-              if (spreadVT) ctx.func.valTypes?.set(arrL, spreadVT)
+              if (spreadVT) updateRep(arrL, { val: spreadVT })
               const n = multiCount(spreadExpr)
               irG.push(
                 ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
@@ -1539,7 +1539,7 @@ export const emitter = {
             const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
             ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
             const spreadVT = valTypeOf(spreadExpr)
-            if (spreadVT) ctx.func.valTypes?.set(arrL, spreadVT)
+            if (spreadVT) updateRep(arrL, { val: spreadVT })
             const n = multiCount(spreadExpr)
             irG.push(
               ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
@@ -1564,7 +1564,7 @@ export const emitter = {
 
       // Boxed object: delegate method to inner value (slot 0)
       if (typeof obj === 'string' && ctx.schema.isBoxed?.(obj)) {
-        const innerVt = ctx.func.valTypes?.get(obj)
+        const innerVt = repOf(obj)?.val
         const emitter = ctx.core.emit[`.${innerVt}:${method}`] || ctx.core.emit[`.${method}`]
         if (emitter) {
           const innerName = `${obj}${T}inner`

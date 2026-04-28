@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, repOf } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
@@ -126,7 +126,7 @@ export default (ctx) => {
 
   ctx.core.emit['Object.assign'] = (target, ...sources) => {
     if (typeof target === 'string') {
-      const vt = ctx.func.valTypes?.get(target)
+      const vt = repOf(target)?.val
       if (vt && vt !== VAL.OBJECT) {
         const allProps = []
         for (const src of sources) {

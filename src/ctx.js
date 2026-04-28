@@ -129,7 +129,7 @@ export function reset(proto, globals) {
     exports: {},
     current: null,
     locals: new Map(),
-    valTypes: new Map(),
+    repByLocal: null,
     refinements: new Map(),  // flow-sensitive: name → VAL.* inside a type-guarded branch
     boxed: new Map(),
     stack: [],

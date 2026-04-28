@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, updateRep } from '../src/compile.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
 
 
@@ -381,7 +381,7 @@ export default (ctx) => {
     if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
       const vtArr = valTypeOf(arr)
       const h = temp('ai')
-      if (vtArr) ctx.func.valTypes.set(h, vtArr)
+      if (vtArr) updateRep(h, { val: vtArr })
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
       return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')

@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/compile.js'
+import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, repOf, updateRep } from '../src/compile.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 
@@ -451,7 +451,7 @@ export default (ctx) => {
     }
 
     if (prop === 'length') {
-      const vt = typeof obj === 'string' ? ctx.func.valTypes?.get(obj) : valTypeOf(obj)
+      const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
       return emitLengthAccess(asF64(emit(obj)), vt)
     }
 
@@ -466,7 +466,7 @@ export default (ctx) => {
   ctx.core.emit['?.'] = (obj, prop) => {
     const t = temp()
     const va = asF64(emit(obj))
-    const vt = typeof obj === 'string' ? ctx.func.valTypes?.get(obj) : valTypeOf(obj)
+    const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
     let access
     if (prop === 'length') {
       access = emitLengthAccess(['local.get', `$${t}`], vt)
@@ -504,8 +504,8 @@ export default (ctx) => {
     const t = temp()
     const va = asF64(emit(arr))
     // Propagate source type to temp so [] dispatch (string, typed, etc.) works
-    const srcType = typeof arr === 'string' ? ctx.func.valTypes?.get(arr) : null
-    if (srcType) ctx.func.valTypes.set(t, srcType)
+    const srcType = typeof arr === 'string' ? repOf(arr)?.val : null
+    if (srcType) updateRep(t, { val: srcType })
     if (typeof arr === 'string' && ctx.types.typedElem?.has(arr)) {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))

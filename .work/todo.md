@@ -63,15 +63,25 @@ a cleaner substrate before pointer ABI or closure dispatch work.
     Four touch sites migrated (ctx.js, compile.js writer, emit.js global
     init, ir.js readVar global branch). 923/923 PASS, all goldens
     byte-identical, watr metacircular byte-parity holds.
-  * [ ] **S2c** — subsume `ctx.func.valTypes` and `ctx.schema.vars`(local-key
-    portion) into the same per-local rep. Drops the schema.vars fallback in
-    readVar; consolidates `lookupValType` to read `repOf(name).val` for the
-    function-local case.
-  * [ ] **S2d** — decide whether the IR-sidecar `.type` and `ctx.func.boxed` /
-    `ctx.func.refinements` belong in ValueRep or stay separate. Likely
-    separate: `.type` is per-emitted-node (not per-name), `boxed` carries a
-    storage cell name (not a type), `refinements` is a flow-sensitive overlay.
-    The "one record" goal applies to per-name type/representation facts only.
+  * [x] **S2c — collapse `ctx.func.valTypes` → `repByLocal.val`.** Apr 28.
+    `ctx.func.valTypes` retired; per-local value-type facts now live in
+    `repByLocal.val`. `lookupValType` consolidated to `repOf(name)?.val`
+    with global fallback; `analyzeValTypes` rewritten with `setVal/getVal`
+    helpers. `updateRep` now drops empty entries (undefined-as-delete +
+    empty-rep cleanup) so the map stays sparse. ~14 touch sites migrated
+    across analyze.js, compile.js (param seeding, closure-body seed,
+    buildStartFn reset), emit.js (spread propagation), ctx.js (drop
+    field), and module/ (array.js, core.js, object.js readers/writers).
+    repOf/updateRep re-exported through compile.js for module/* imports.
+    923/923 PASS, all goldens byte-identical (3306 / 6062 / 3921 / 1968),
+    watr metacircular byte-parity holds.
+  * [ ] **S2d** — subsume `ctx.schema.vars`(local-key portion) into the
+    same per-local rep, and decide whether the IR-sidecar `.type` and
+    `ctx.func.boxed` / `ctx.func.refinements` belong in ValueRep or stay
+    separate. Likely separate: `.type` is per-emitted-node (not per-name),
+    `boxed` carries a storage cell name (not a type), `refinements` is a
+    flow-sensitive overlay. The "one record" goal applies to per-name
+    type/representation facts only.
 
 * [x] **Explicit compile pipeline** — split `compile.js` by phase:
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.

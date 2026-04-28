@@ -3,7 +3,7 @@
  *
  * # Stage contract
  *   IN:  prepared AST + ctx.func.list (from prepare).
- *   OUT: per-function populated `ctx.func.valTypes` + `ctx.func.locals` + `ctx.func.boxed`,
+ *   OUT: per-function populated `ctx.func.repByLocal` (val field) + `ctx.func.locals` + `ctx.func.boxed`,
  *        module-global `ctx.scope.globalValTypes`, type-analysis `ctx.types.typedElem` /
  *        `.dynKeyVars` / `.anyDynKey`.
  *
@@ -43,13 +43,13 @@ export const VAL = {
  * ValueRep — unified per-local representation record. (S2 unification target.)
  *
  * Currently populated fields:
+ *   val:     VAL.* — value-type for method dispatch, schema resolution, length lookup.
  *   ptrKind: VAL.* — when this local stores an unboxed i32 pointer offset.
  *   ptrAux:  i32   — kind-dependent aux (TYPED elem code, OBJECT schemaId, …).
  *
- * Future fields (per todo.md S2; absent today, will be lifted from existing
+ * Future fields (per todo.md S2d; absent today, will be lifted from existing
  * scattered maps as later stages collapse them):
  *   wasm:        'i32' | 'f64'  (today: ctx.func.locals)
- *   val:         VAL.*          (today: ctx.func.valTypes)
  *   schemaId:    i32            (today: ctx.schema.vars at param binding)
  *   nullable, stableOffset                              (not yet tracked)
  *
@@ -60,11 +60,15 @@ export const VAL = {
 /** Get the rep for a local name, or undefined if not tracked. */
 export const repOf = name => ctx.func.repByLocal?.get(name)
 
-/** Merge fields into a local's rep. Lazily allocates the map and the rep. */
+/** Merge fields into a local's rep. Lazily allocates the map and the rep.
+ *  Field set to `undefined` removes that field; empty rep is dropped from the map. */
 export const updateRep = (name, fields) => {
   const m = ctx.func.repByLocal ||= new Map()
-  const prev = m.get(name)
-  m.set(name, prev ? { ...prev, ...fields } : { ...fields })
+  const prev = m.get(name) || {}
+  const next = { ...prev, ...fields }
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+  if (Object.keys(next).length === 0) m.delete(name)
+  else m.set(name, next)
 }
 
 /** Get the rep for a global name, or undefined if not tracked. */
@@ -84,7 +88,7 @@ export const updateGlobalRep = (name, fields) => {
 export const lookupValType = name => {
   const r = ctx.func.refinements
   if (r && r.size) { const v = r.get(name); if (v) return v }
-  return ctx.func.valTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
+  return ctx.func.repByLocal?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
 }
 
 /** Infer value type of an AST expression (without emitting). */
@@ -237,10 +241,12 @@ export function collectValTypes(body, types) {
 
 /**
  * Analyze all local value types from declarations and assignments.
- * Builds ctx.func.valTypes map for method dispatch and schema resolution.
+ * Writes the per-name `val` field of `ctx.func.repByLocal` for method dispatch
+ * and schema resolution.
  */
 export function analyzeValTypes(body) {
-  const types = ctx.func.valTypes
+  const setVal = (name, vt) => updateRep(name, { val: vt || undefined })
+  const getVal = name => ctx.func.repByLocal?.get(name)?.val
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
@@ -259,8 +265,8 @@ export function analyzeValTypes(body) {
       const callee = rhs[1]
       if (!Array.isArray(callee) || callee[0] !== '.') return
       const src = callee[1], method = callee[2]
-      if (typeof src === 'string' && types.get(src) === VAL.TYPED && method === 'map') {
-        types.set(name, VAL.TYPED)
+      if (typeof src === 'string' && getVal(src) === VAL.TYPED && method === 'map') {
+        setVal(name, VAL.TYPED)
         if (ctx.types.typedElem?.has(src)) {
           const srcCtor = ctx.types.typedElem.get(src)
           ctx.types.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
@@ -271,8 +277,7 @@ export function analyzeValTypes(body) {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         const vt = valTypeOf(a[2])
-        if (vt) types.set(a[1], vt)
-        else types.delete(a[1])
+        setVal(a[1], vt)
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
         propagateTyped(a[1], a[2])
@@ -280,8 +285,7 @@ export function analyzeValTypes(body) {
     }
     if (op === '=' && typeof args[0] === 'string') {
       const vt = valTypeOf(args[1])
-      if (vt) types.set(args[0], vt)
-      else types.delete(args[0])
+      setVal(args[0], vt)
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
@@ -289,7 +293,7 @@ export function analyzeValTypes(body) {
     // Track property assignments for auto-boxing: x.prop = val
     if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && typeof args[0][1] === 'string') {
       const [, obj, prop] = args[0]
-      const vt = types.get(obj)
+      const vt = getVal(obj)
       if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
         if (!ctx.func.localProps) ctx.func.localProps = new Map()
         if (!ctx.func.localProps.has(obj)) ctx.func.localProps.set(obj, new Set())
@@ -441,9 +445,10 @@ export function analyzeLocals(body) {
  *
  * Returns Map<name, VAL> of locals to unbox.
  */
-export function analyzePtrUnboxable(body, valTypes, locals, boxed) {
+export function analyzePtrUnboxable(body, locals, boxed) {
   const candidates = new Set()
   const disqualified = new Set()
+  const valOf = name => ctx.func.repByLocal?.get(name)?.val
 
   const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED])
 
@@ -482,7 +487,7 @@ export function analyzePtrUnboxable(body, valTypes, locals, boxed) {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         const name = a[1]
-        const vt = valTypes.get(name)
+        const vt = valOf(name)
         if (!UNBOXABLE_KINDS.has(vt)) continue
         if (locals.get(name) !== 'f64') continue
         if (boxed?.has(name)) continue
@@ -540,7 +545,7 @@ export function analyzePtrUnboxable(body, valTypes, locals, boxed) {
   for (const [name, count] of assignCount) if (count > 0) disqualified.add(name)
 
   const result = new Map()
-  for (const name of candidates) if (!disqualified.has(name)) result.set(name, valTypes.get(name))
+  for (const name of candidates) if (!disqualified.has(name)) result.set(name, valOf(name))
   return result
 }
 

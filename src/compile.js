@@ -31,7 +31,7 @@ import {
   T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
-  updateRep, updateGlobalRep,
+  repOf, updateRep, repOfGlobal, updateGlobalRep,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -49,7 +49,7 @@ import {
 } from './ir.js'
 
 // Re-export for backward compatibility (modules import from compile.js)
-export { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, collectParamNames }
+export { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, collectParamNames, repOf, updateRep, repOfGlobal, updateGlobalRep }
 export { emit, emitter, emitFlat }
 // IR helpers — re-export from ir.js so module/*.js keep their existing import paths.
 export {
@@ -105,7 +105,7 @@ function narrowSignatures(programFacts) {
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
   // For non-exported internal functions, if all call sites agree on a param's type,
-  // propagate that type to ctx.func.valTypes during per-function compilation.
+  // seed the param's val rep (ctx.func.repByLocal) during per-function compilation.
   // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
@@ -539,7 +539,7 @@ function collectProgramFacts(ast) {
  * Phase: emit one user function to WAT IR.
  *
  * Reads the (already-narrowed) `func.sig` and `programFacts.paramValTypes/paramSchemas`
- * to seed local valTypes / schema bindings; emits body via emit / emitBody.
+ * to seed per-param val reps / schema bindings; emits body via emit / emitBody.
  *
  * Mutates ctx.func.* per-function state (locals, boxed, repByLocal, …) and
  * ctx.schema.vars (restored on exit so bindings don't leak across functions).
@@ -564,7 +564,6 @@ function emitFunc(func, programFacts) {
   // Block body vs object literal: object has ':' property nodes
   const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
   ctx.func.locals = block ? analyzeLocals(body) : new Map()
-  ctx.func.valTypes = new Map()
   ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
   ctx.func.localProps = null  // reset per function
   ctx.func.repByLocal = null  // Map<name, ValueRep> — populated lazily; reset per function
@@ -573,7 +572,7 @@ function emitFunc(func, programFacts) {
     analyzeValTypes(body)
     analyzeBoxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
-    const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
+    const unbox = analyzePtrUnboxable(body, ctx.func.locals, ctx.func.boxed)
     if (unbox.size > 0) {
       for (const [n, kind] of unbox) {
         ctx.func.locals.set(n, 'i32')
@@ -598,8 +597,10 @@ function emitFunc(func, programFacts) {
   const ptypes = paramValTypes.get(name)
   if (ptypes) {
     for (const [k, vt] of ptypes) {
-      if (vt && k < sig.params.length && !ctx.func.valTypes.has(sig.params[k].name))
-        ctx.func.valTypes.set(sig.params[k].name, vt)
+      if (vt && k < sig.params.length) {
+        const pname = sig.params[k].name
+        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: vt })
+      }
     }
   }
   // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
@@ -676,7 +677,7 @@ function emitFunc(func, programFacts) {
  * so any closure can be invoked via call_indirect on $ftN. This function
  * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
- * Mutates ctx.func.* per-body state (locals, boxed, valTypes) and
+ * Mutates ctx.func.* per-body state (locals, boxed, repByLocal) and
  * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
  * leaks don't poison the next body). Returns the WAT IR for the func node.
  */
@@ -685,8 +686,8 @@ function emitClosureBody(cb) {
   const prevTypedElems = ctx.types.typedElem
   // Reset per-function state for closure body
   ctx.func.locals = new Map()
-  ctx.func.valTypes = new Map()
-  if (cb.valTypes) for (const [name, vt] of cb.valTypes) ctx.func.valTypes.set(name, vt)
+  ctx.func.repByLocal = null
+  if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
   const globalTE = ctx.scope.globalTypedElem
   if (cb.typedElems) {
@@ -827,7 +828,7 @@ function emitClosureBody(cb) {
  * imports/globals are bound but before any export is called. It threads together
  * everything that must happen before user code observes a ready module:
  *
- *   1. Reset per-function emit state (locals/valTypes/boxed/stack) — __start is
+ *   1. Reset per-function emit state (locals/repByLocal/boxed/stack) — __start is
  *      a fresh function context with no params.
  *   2. analyzeValTypes(ast) so emit sees correct ptrKind on top-level decls.
  *   3. Sub-module init (foreign module bootstrap) emits first — its globals
@@ -846,7 +847,7 @@ function emitClosureBody(cb) {
  */
 function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.locals = new Map()
-  ctx.func.valTypes = new Map()
+  ctx.func.repByLocal = null
   ctx.func.boxed = new Map()
   ctx.func.stack = []
   ctx.func.current = { params: [], results: [] }
