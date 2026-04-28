@@ -64,11 +64,19 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `stripStaticDataPrefix(sec)` → R-mode prefix-shift when __static_str
   unused. compile() tail blocks collapsed to single calls. 922/922 PASS,
   golden sizes unchanged.
-  Remaining: __start fn build (~90 lines: moduleInits, init, boxInit,
-  schemaInit, typeofInit, strPoolInit), stdlib pull (~30 lines:
-  resolveIncludes + memory + extStdlib + factory stdlibs), and the
-  module-assembly tail (treeshake, sort by call count, final
-  section concat).
+  Apr 27 (continuation) — three more phases:
+  `buildStartFn(ast, sec, closureFuncs, compilePendingClosures)` →
+  reset per-fn state, emit moduleInits + ast, build boxInit/schemaInit
+  /strPoolInit/typeofInit, assemble __start, flush late closures;
+  `pullStdlib(sec)` → resolveIncludes, memory section, extStdlib +
+  factory stdlibs;
+  `optimizeModule(sec)` → ordered specializeMkptr → specializePtrBase
+  → sortStrPoolByFreq → optimizeFunc per fn → hoistConstantPool +
+  $__heap base bump.
+  compile() body is now a flat sequence of named phase calls.
+  922/922 PASS, golden sizes unchanged.
+  Remaining: assembly tail (data/customs/exports/treeshake/sort) — a
+  modest cleanup, not architectural.
 
 * [x] **Strict core mode** — Apr 27. `compile(code, { strict: true })` and `jz(code, { strict: true })`
   now reject (with clear `strict mode: ...` errors): `obj[runtimeKey]` falling to `__dyn_get`

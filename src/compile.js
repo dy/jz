@@ -1080,6 +1080,100 @@ function finalizeClosureTable(sec) {
 }
 
 /**
+ * Phase: pull stdlib + memory.
+ *
+ * Runs AFTER __start is built — emit calls during __start (e.g. typeofStrs,
+ * boxInit, schemaInit) trigger `inc()` for any helpers they need, and those
+ * additions must be observed before resolveIncludes() expands the dependency
+ * closure.
+ *
+ * Steps:
+ *   1. resolveIncludes() — close the include set under stdlib dependencies.
+ *   2. Emit memory section ONLY when some included helper uses memory ops
+ *      (G optimization: pure scalar programs ship without memory + __heap).
+ *      When memory is needed, the allocator (__alloc + __alloc_hdr + __reset)
+ *      is force-included since stdlib funcs may call into it.
+ *   3. Pull external (host) stdlibs into sec.extStdlib (must precede normal
+ *      imports in the module byte order).
+ *   4. Pull resolved factory stdlibs (those keyed by feature gates) into
+ *      sec.stdlib via parseWat.
+ *
+ * Also reports any unresolved stdlib name (logged, not thrown — keeps test
+ * output readable when a missing helper is the actual bug).
+ */
+function pullStdlib(sec) {
+  resolveIncludes()
+
+  const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
+  if (!needsMemory) ctx.scope.globals.delete('__heap')
+  if (needsMemory && ctx.module.modules.core) {
+    for (const fn of ['__alloc', '__alloc_hdr', '__reset']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
+    const pages = ctx.memory.pages || 1
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
+    else sec.memory.push(['memory', ['export', '"memory"'], pages])
+    if (ctx.core._allocRawFuncs) sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
+  }
+
+  const stdlibStr = (name) => {
+    const v = ctx.core.stdlib[name]
+    return typeof v === 'function' ? v() : v
+  }
+  for (const name of Object.keys(ctx.core.stdlib)) {
+    if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
+      const parsed = parseWat(stdlibStr(name))
+      sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
+      ctx.core.includes.delete(name)
+    }
+  }
+  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
+  sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
+}
+
+/**
+ * Phase: whole-module + per-function optimization passes.
+ *
+ * Order matters and is non-obvious — fixed deliberately:
+ *
+ *   1. specializeMkptr — replaces `call $__mkptr (T, A, off)` with `$__mkptr_T_A_d`
+ *      for known (T, A) pairs (saves ~4 B/site). Must run BEFORE per-function
+ *      passes so the new variants exist when fusedRewrite folds calls into them.
+ *   2. specializePtrBase — folds `call F (add (global G) const)` to a `_p`
+ *      variant (saves ~3 B/site). After specializeMkptr so mkptr variants
+ *      ($__mkptr_T_A_d) are visible to it.
+ *   3. sortStrPoolByFreq — reorders string-pool entries so hot strings get low
+ *      offsets (shrinking i32.const LEB128). Shared-memory only (passive segment).
+ *   4. optimizeFunc per fn — hoistPtrType + fusedRewrite + sortLocalsByUse.
+ *      Must run after specializeMkptr/specializePtrBase introduce new helpers.
+ *   5. hoistConstantPool — repeated f64 literals → mutable globals.
+ *      Last because earlier passes might fold/eliminate constants.
+ *
+ * Also adjusts $__heap base when data segment exceeds 1024 bytes (default
+ * heap base) — keeps user code at offset 0 from clobbering the data segment.
+ */
+function optimizeModule(sec) {
+  specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  if (ctx.runtime.strPool) {
+    const poolRef = { pool: ctx.runtime.strPool }
+    sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
+    ctx.runtime.strPool = poolRef.pool
+  }
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s)
+  hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
+
+  const dataLen = ctx.runtime.data?.length || 0
+  if (dataLen > 1024 && !ctx.memory.shared) {
+    const heapBase = (dataLen + 7) & ~7
+    ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
+    for (const s of sec.stdlib)
+      if (s[0] === 'func' && s[1] === '$__reset')
+        for (let i = 2; i < s.length; i++)
+          if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
+            s[i][2][1] = `${heapBase}`
+  }
+}
+
+/**
  * Phase: strip static-data prefix.
  *
  * R: when `__static_str` runtime helper isn't included, the leading prefix of the
@@ -1363,73 +1457,11 @@ export default function compile(ast) {
 
   finalizeClosureTable(sec)
 
-  // Resolve stdlib AFTER __start emit — inc() calls during __start must be captured
-  resolveIncludes()
-
-  // Emit memory section when any included stdlib uses memory instructions.
-  const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
-  // G: Elide __heap global when no memory needed — saves 9 bytes for pure scalar functions
-  if (!needsMemory) ctx.scope.globals.delete('__heap')
-  if (needsMemory && ctx.module.modules.core) {
-    // Include allocator when memory is needed — stdlib funcs may call $__alloc
-    for (const fn of ['__alloc', '__alloc_hdr', '__reset']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
-    const pages = ctx.memory.pages || 1
-    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
-    else sec.memory.push(['memory', ['export', '"memory"'], pages])
-    if (ctx.core._allocRawFuncs) sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
-  }
-
-  // Resolve factory stdlibs (ctx.features-aware lazy generation).
-  const stdlibStr = (name) => {
-    const v = ctx.core.stdlib[name]
-    return typeof v === 'function' ? v() : v
-  }
-  for (const name of Object.keys(ctx.core.stdlib)) {
-    if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
-      const parsed = parseWat(stdlibStr(name))
-      sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
-      ctx.core.includes.delete(name)
-    }
-  }
-  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
-  sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
+  pullStdlib(sec)
 
   stripStaticDataPrefix(sec)
 
-  // Whole-module: specialize __mkptr(T, A, off) per (T, A) combo — saves ~4 B/site (see optimize.js).
-  // Run BEFORE per-function passes so new specialized helpers are included.
-  specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-
-  // Whole-module: specialize `call F (add (global G) (const N))` — saves ~3 B/site.
-  // Runs AFTER specializeMkptr so mkptr variants (e.g. $__mkptr_4_0_d) are present.
-  specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-
-  // Whole-module: reorder strings in strPool by reference frequency — hot strings get low offsets,
-  // shrinking their `i32.const N` LEB128 encoding. Shared-memory mode only (passive strPool segment).
-  if (ctx.runtime.strPool) {
-    const poolRef = { pool: ctx.runtime.strPool }
-    sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
-    ctx.runtime.strPool = poolRef.pool
-  }
-
-  // Per-function IR optimizations: ptr-type hoist, memarg-offset fold (see optimize.js).
-  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s)
-
-  // Whole-module: hoist repeated f64 constants into mutable globals (see optimize.js).
-  hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
-
-  // Adjust heap base past data section (data at offset 0 may exceed 1024 bytes)
-  const dataLen = ctx.runtime.data?.length || 0
-  if (dataLen > 1024 && !ctx.memory.shared) {
-    const heapBase = (dataLen + 7) & ~7 // align to 8
-    ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
-    // Patch __reset in stdlib to use correct heap base
-    for (const s of sec.stdlib)
-      if (s[0] === 'func' && s[1] === '$__reset')
-        for (let i = 2; i < s.length; i++)
-          if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
-            s[i][2][1] = `${heapBase}`
-  }
+  optimizeModule(sec)
 
   // Populate globals (after __start — const folding may update declarations)
   sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
