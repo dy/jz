@@ -83,262 +83,23 @@ const NAN_PREFIX_BITS = 0x7FF8n
 // === Module compilation ===
 
 /**
- * Compile prepared AST to WASM module IR.
- * @param {import('./prepare.js').ASTNode} ast - Prepared AST
- * @returns {Array} Complete WASM module as S-expression
+ * Phase: signature narrowing.
+ *
+ * Reads programFacts.callSites + valueUsed; mutates each user func's `sig`:
+ *   - param types  (f64 → i32 / pointer-ABI i32+ptrKind, when call sites agree)
+ *   - param schemas (per-arg schemaId, recorded into programFacts.paramSchemas)
+ *   - result type  (f64 → i32, when body always returns i32)
+ *   - result valType (`func.valResult`) and pointer narrowing (sig.ptrKind)
+ *
+ * Pure w.r.t. the AST — only the function `sig` records change. The maps in
+ * programFacts (paramValTypes/paramWasmTypes/paramSchemas) are populated here
+ * and consumed by the per-function emit phase below.
+ *
+ * Encoded structurally as a phase so future S3 work can move it into a
+ * pipeline runner without re-deriving the in/out contract from comments.
  */
-export default function compile(ast) {
-  // Populate known function names + lookup map on ctx.func for direct call detection
-  ctx.func.names.clear()
-  ctx.func.map.clear()
-  for (const f of ctx.func.list) { ctx.func.names.add(f.name); ctx.func.map.set(f.name, f) }
-  // Include imported functions for call resolution (e.g. template interpolations)
-  for (const imp of ctx.module.imports)
-    if (imp[3]?.[0] === 'func') ctx.func.names.add(imp[3][1].replace(/^\$/, ''))
-
-  // Check user globals don't conflict with runtime globals (modules loaded after user decls)
-  for (const name of ctx.scope.userGlobals)
-    if (!ctx.scope.globals.get(name)?.includes('mut f64'))
-      err(`'${name}' conflicts with a compiler internal — choose a different name`)
-
-  // Pre-fold const globals: evaluate constant initializers before function compilation
-  // so functions see the correct global types (i32 vs f64).
-  if (ast) {
-    const evalConst = n => {
-      if (typeof n === 'number') return n
-      if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return n[1]
-      if (!Array.isArray(n)) return null
-      const [op, a, b] = n
-      const va = evalConst(a), vb = b !== undefined ? evalConst(b) : null
-      if (va == null) return null
-      if (op === 'u-' || (op === '-' && b === undefined)) return -va
-      if (vb == null) return null
-      if (op === '+') return va + vb; if (op === '-') return va - vb
-      if (op === '*') return va * vb; if (op === '%' && vb) return va % vb
-      if (op === '/' && vb) return va / vb; if (op === '**') return va ** vb
-      if (op === '&') return va & vb; if (op === '|') return va | vb
-      if (op === '^') return va ^ vb; if (op === '<<') return va << vb
-      if (op === '>>') return va >> vb; if (op === '>>>') return va >>> vb
-      return null
-    }
-    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1)
-      : Array.isArray(ast) && ast[0] === 'const' ? [ast] : []
-    for (const s of stmts) {
-      if (!Array.isArray(s) || s[0] !== 'const') continue
-      for (const decl of s.slice(1)) {
-        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-        const [, name, init] = decl
-        if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
-        const v = evalConst(init)
-        if (v == null || !isFinite(v)) continue
-        const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
-        ctx.scope.globals.set(name, isInt
-          ? `(global $${name} i32 (i32.const ${v}))`
-          : `(global $${name} f64 (f64.const ${v}))`)
-        ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
-      }
-    }
-  }
-
-  // Pre-scan module-scope value types so functions can dispatch methods on globals.
-  // Also scan moduleInits so cross-module imports (e.g. regex literals from util.js)
-  // resolve to the correct static dispatch path.
-  const scanStmts = (root) => {
-    if (!root) return
-    const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
-    for (const s of stmts) {
-      if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let')) continue
-      for (const decl of s.slice(1)) {
-        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-        const vt = valTypeOf(decl[2])
-        if (vt) {
-          if (!ctx.scope.globalValTypes) ctx.scope.globalValTypes = new Map()
-          ctx.scope.globalValTypes.set(decl[1], vt)
-          if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(decl[1], decl[2])
-        }
-        const ctor = typedElemCtor(decl[2])
-        if (ctor) {
-          if (!ctx.scope.globalTypedElem) ctx.scope.globalTypedElem = new Map()
-          ctx.scope.globalTypedElem.set(decl[1], ctor)
-        }
-      }
-    }
-  }
-  scanStmts(ast)
-  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
-
-  // Unbox const TYPED globals: change `(mut f64)` slot to `(mut i32)` and store the raw
-  // pointer offset. Reads tag the global.get with ptrKind=TYPED + ptrAux=elemType so
-  // typed-array consumers (.[]/.buffer/…) can resolve through ptrOffsetIR without ever
-  // calling __ptr_offset on a NaN-box. Init still flows through emit.js, but the assign
-  // coerces via asPtrOffset(val, VAL.TYPED) — one bit-extract at startup, then every
-  // hot read is a plain `global.get` of an i32.
-  if (ctx.scope.globalTypedElem && ctx.scope.consts) {
-    for (const [name, ctor] of ctx.scope.globalTypedElem) {
-      if (!ctx.scope.consts.has(name)) continue
-      if (ctx.scope.globalValTypes?.get(name) !== VAL.TYPED) continue
-      const aux = typedElemAux(ctor)
-      if (aux == null) continue
-      const decl = ctx.scope.globals.get(name)
-      if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
-      ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
-      ctx.scope.globalTypes.set(name, 'i32')
-      ;(ctx.scope.unboxedTypedGlobals ||= new Map()).set(name, aux)
-    }
-  }
-
-  // === ProgramFacts: single whole-program walk over ast + user funcs + moduleInits ===
-  // Collects (in `programFacts`):
-  //   dynVars/anyDyn   — vars accessed via runtime key
-  //   propMap          — property assignments for auto-boxing schemas
-  //   valueUsed        — ctx.func.names passed as first-class values (not specializable)
-  //   maxDef/maxCall   — closure ABI width
-  //   hasRest/hasSpread
-  //   callSites        — `{ callee, argList, callerFunc }` for static-name calls (to drive
-  //                      the type/schema fixpoint without re-walking the AST)
-  // Three visit modes:
-  //   full=true  (ast + user funcs)  → all facts including call-site collection
-  //   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/callSites:
-  //                                     moduleInits don't own user props/funcs, and the
-  //                                     pre-fusion scanCalls didn't walk them either)
-  // `inArrow=true` flips off call-site collection — matching the prior scanCalls that
-  // bailed at any '=>' boundary so closure-internal calls don't poison caller-context
-  // type inference.
-  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
-  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
-  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
-  const valueUsed = new Set()
-  const dynVars = new Set()
-  let anyDyn = false
-  const propMap = new Map()
-  const callSites = []  // { callee, argList, callerFunc /* func obj or null */ }
-  const doSchema = ast && ctx.schema.register
-  const doArity = !!ctx.closure.make
-  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
-  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
-  const walkFacts = (node, full, inArrow, callerFunc) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
-    // Float64Array uses typed-array load, not __dyn_get — only the actual
-    // dynamic-dispatch fallback should error in strict mode).
-    if (op === '[]') {
-      const [obj, idx] = args
-      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
-    } else if (op === 'for-in') {
-      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
-      anyDyn = true
-      if (typeof args[1] === 'string') dynVars.add(args[1])
-    }
-    // closure ABI arity
-    if (doArity) {
-      if (op === '=>') {
-        let fixedN = 0
-        for (const r of extractParams(args[0])) {
-          if (classifyParam(r).kind === 'rest') hasRest = true
-          else fixedN++
-        }
-        if (fixedN > maxDef) maxDef = fixedN
-      } else if (op === '()') {
-        const a = args[1]
-        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
-        if (callArgs.length > maxCall) maxCall = callArgs.length
-      }
-    }
-    // Crossing into a closure body: from now on, no call-site collection (matches the
-    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
-    if (op === '=>') {
-      for (const a of args) walkFacts(a, full, true, callerFunc)
-      return
-    }
-    if (full) {
-      // property-assignment scan for auto-box
-      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
-        const [, obj, prop] = args[0]
-        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
-          if (!propMap.has(obj)) propMap.set(obj, new Set())
-          propMap.get(obj).add(prop)
-        }
-      }
-      // first-class function-value + static-call-site scan
-      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
-        if (!inArrow) {
-          // Record call site for the type/schema fixpoint. Filtering by
-          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
-          const a = args[1]
-          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-          callSites.push({ callee: args[0], argList, callerFunc })
-        }
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i]
-          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-          else walkFacts(a, true, inArrow, callerFunc)
-        }
-        return
-      }
-      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
-      for (const a of args) {
-        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-        else walkFacts(a, true, inArrow, callerFunc)
-      }
-    } else {
-      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
-    }
-  }
-  walkFacts(ast, true, false, null)
-  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
-  // Single explicit handle on collected facts. Downstream phases below read from these
-  // bindings directly today; when compile.js splits into phase functions (S3), the
-  // programFacts object is what they receive as input. ctx.types.* mirrors are kept
-  // because ir.js consumes them at emit time (will be replaced when emit takes facts
-  // explicitly — S3).
-  const programFacts = {
-    dynVars, anyDyn, propMap, valueUsed, callSites,
-    maxDef, maxCall, hasRest, hasSpread,
-    paramValTypes, paramWasmTypes, paramSchemas,
-  }
-  ctx.types.dynKeyVars = programFacts.dynVars
-  ctx.types.anyDynKey = programFacts.anyDyn
-
-  // Materialize auto-box schemas from collected propMap
-  if (doSchema) {
-    for (const [name, props] of propMap) {
-      if (ctx.schema.vars.has(name)) {
-        const existing = ctx.schema.resolve(name)
-        const newProps = [...props].filter(p => !existing.includes(p))
-        if (newProps.length) {
-          const merged = [...existing, ...newProps]
-          const mergedId = ctx.schema.register(merged)
-          ctx.schema.vars.set(name, mergedId)
-        }
-        continue
-      }
-      const valueProps = [...props].filter(p => !ctx.func.names.has(`${name}$${p}`))
-      if (!valueProps.length) continue
-      const allProps = [...props]
-      const schema = ['__inner__', ...allProps]
-      const schemaId = ctx.schema.register(schema)
-      ctx.schema.vars.set(name, schemaId)
-      if (ctx.func.names.has(name) && !ctx.scope.globals.has(name))
-        ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
-      if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
-      ctx.schema.autoBox.set(name, { schemaId, schema })
-    }
-  }
-
-  // Dynamic closure ABI width: max param count (`=>` defs), max call arity, rest/spread
-  // accumulated by walkFacts above. $ftN type, call-site padding, and body slot decls
-  // use this instead of the static MAX_CLOSURE_ARITY cap. hasRest adds +1 for rest
-  // overflow. hasSpread + hasRest together force MAX (spread expands unknown element
-  // count at runtime, and any rest receiver may consume them).
-  if (ctx.closure.make) {
-    const floor = ctx.closure.floor ?? 0
-    ctx.closure.width = (hasSpread && hasRest)
-      ? MAX_CLOSURE_ARITY
-      : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
-  }
+function narrowSignatures(programFacts) {
+  const { callSites, valueUsed, paramValTypes, paramWasmTypes, paramSchemas } = programFacts
 
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
@@ -543,7 +304,6 @@ export default function compile(ast) {
       if (func.sig.results[0] === 'i32') continue
       const body = func.body
       const exprs = []
-      let hasFallthrough = false
       if (Array.isArray(body) && body[0] === '{}') {
         collectReturnExprs(body, exprs)
         // Conservative: if body could fall through without return, trailing fallback is
@@ -652,131 +412,418 @@ export default function compile(ast) {
     func.sig.results = ['i32']
     func.sig.ptrKind = func.valResult
   }
+}
 
-  const funcs = ctx.func.list.map(func => {
-    // Raw WAT functions (e.g., _alloc, _reset from memory module)
-    if (func.raw) return parseWat(func.raw)
+/**
+ * Phase: program-fact collection.
+ *
+ * Single whole-program walk over the module AST + each user function body
+ * + all moduleInits. Collects:
+ *   dynVars/anyDyn   — vars accessed via runtime key (drives strict mode +
+ *                      __dyn_get fallback gating)
+ *   propMap          — property assignments per receiver (auto-box schemas)
+ *   valueUsed        — ctx.func.names passed as first-class values (excluded
+ *                      from internal narrowing — they need uniform $ftN ABI)
+ *   maxDef/maxCall   — closure ABI width inputs
+ *   hasRest/hasSpread
+ *   callSites        — `{ callee, argList, callerFunc }` for static-name
+ *                      calls (drives the type/schema fixpoint without
+ *                      re-walking the AST)
+ *   paramValTypes/paramWasmTypes/paramSchemas — empty Maps populated later
+ *                      by narrowSignatures and read by emitFunc.
+ *
+ * Three visit modes:
+ *   full=true  (ast + user funcs)  → all facts including call-site collection
+ *   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/
+ *                                     callSites: moduleInits don't own user
+ *                                     props/funcs)
+ *   inArrow=true                    → flips off call-site collection so
+ *                                     closure-internal calls don't poison
+ *                                     caller-context type inference.
+ */
+function collectProgramFacts(ast) {
+  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
+  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
+  const valueUsed = new Set()
+  const dynVars = new Set()
+  let anyDyn = false
+  const propMap = new Map()
+  const callSites = []  // { callee, argList, callerFunc /* func obj or null */ }
+  const doSchema = ast && ctx.schema.register
+  const doArity = !!ctx.closure.make
+  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  const walkFacts = (node, full, inArrow, callerFunc) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
+    // Float64Array uses typed-array load, not __dyn_get — only the actual
+    // dynamic-dispatch fallback should error in strict mode).
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
+    } else if (op === 'for-in') {
+      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
+      anyDyn = true
+      if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    // closure ABI arity
+    if (doArity) {
+      if (op === '=>') {
+        let fixedN = 0
+        for (const r of extractParams(args[0])) {
+          if (classifyParam(r).kind === 'rest') hasRest = true
+          else fixedN++
+        }
+        if (fixedN > maxDef) maxDef = fixedN
+      } else if (op === '()') {
+        const a = args[1]
+        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
+        if (callArgs.length > maxCall) maxCall = callArgs.length
+      }
+    }
+    // Crossing into a closure body: from now on, no call-site collection (matches the
+    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
+    if (op === '=>') {
+      for (const a of args) walkFacts(a, full, true, callerFunc)
+      return
+    }
+    if (full) {
+      // property-assignment scan for auto-box
+      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, prop] = args[0]
+        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+          if (!propMap.has(obj)) propMap.set(obj, new Set())
+          propMap.get(obj).add(prop)
+        }
+      }
+      // first-class function-value + static-call-site scan
+      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
+        if (!inArrow) {
+          // Record call site for the type/schema fixpoint. Filtering by
+          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
+          const a = args[1]
+          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          callSites.push({ callee: args[0], argList, callerFunc })
+        }
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i]
+          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+          else walkFacts(a, true, inArrow, callerFunc)
+        }
+        return
+      }
+      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
+      for (const a of args) {
+        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+        else walkFacts(a, true, inArrow, callerFunc)
+      }
+    } else {
+      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
+    }
+  }
+  walkFacts(ast, true, false, null)
+  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+  return {
+    dynVars, anyDyn, propMap, valueUsed, callSites,
+    maxDef, maxCall, hasRest, hasSpread,
+    paramValTypes, paramWasmTypes, paramSchemas,
+  }
+}
 
-    const { name, body, exported, sig } = func
+/**
+ * Phase: emit one user function to WAT IR.
+ *
+ * Reads the (already-narrowed) `func.sig` and `programFacts.paramValTypes/paramSchemas`
+ * to seed local valTypes / schema bindings; emits body via emit / emitBody.
+ *
+ * Mutates ctx.func.* per-function state (locals, boxed, ptrKinds, …) and
+ * ctx.schema.vars (restored on exit so bindings don't leak across functions).
+ */
+function emitFunc(func, programFacts) {
+  const { paramValTypes, paramSchemas } = programFacts
 
-    const multi = sig.results.length > 1
+  // Raw WAT functions (e.g., _alloc, _reset from memory module)
+  if (func.raw) return parseWat(func.raw)
 
-    // Reset per-function state
-    ctx.func.stack = []
-    ctx.func.uniq = 0
-    ctx.func.current = sig
-    ctx.func.body = body
-    ctx.func.directClosures = null
+  const { name, body, exported, sig } = func
+  const multi = sig.results.length > 1
 
-    // Pre-analyze local types from body
-    // Block body vs object literal: object has ':' property nodes
-    const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
-    ctx.func.locals = block ? analyzeLocals(body) : new Map()
-    ctx.func.valTypes = new Map()
-    ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
-    ctx.func.localProps = null  // reset per function
-    ctx.func.ptrKinds = null    // populated after boxed analysis; reset per function
-    ctx.func.ptrAuxes = null    // per-local aux bits for unboxed PTR.* (TYPED elemType, OBJECT schemaId, …)
-    ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
-    if (block) {
-      analyzeValTypes(body)
-      analyzeBoxedCaptures(body)
-      // Lower provably-monomorphic pointer locals to i32 offset storage.
-      const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
-      if (unbox.size > 0) {
-        ctx.func.ptrKinds = unbox
-        for (const [name, kind] of unbox) {
-          ctx.func.locals.set(name, 'i32')
-          if (kind === VAL.TYPED) {
-            const aux = typedElemAux(ctx.types.typedElem?.get(name))
-            if (aux != null) (ctx.func.ptrAuxes ||= new Map()).set(name, aux)
-          }
+  // Reset per-function state
+  ctx.func.stack = []
+  ctx.func.uniq = 0
+  ctx.func.current = sig
+  ctx.func.body = body
+  ctx.func.directClosures = null
+
+  // Pre-analyze local types from body
+  // Block body vs object literal: object has ':' property nodes
+  const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+  ctx.func.locals = block ? analyzeLocals(body) : new Map()
+  ctx.func.valTypes = new Map()
+  ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
+  ctx.func.localProps = null  // reset per function
+  ctx.func.ptrKinds = null    // populated after boxed analysis; reset per function
+  ctx.func.ptrAuxes = null    // per-local aux bits for unboxed PTR.* (TYPED elemType, OBJECT schemaId, …)
+  ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
+  if (block) {
+    analyzeValTypes(body)
+    analyzeBoxedCaptures(body)
+    // Lower provably-monomorphic pointer locals to i32 offset storage.
+    const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
+    if (unbox.size > 0) {
+      ctx.func.ptrKinds = unbox
+      for (const [n, kind] of unbox) {
+        ctx.func.locals.set(n, 'i32')
+        if (kind === VAL.TYPED) {
+          const aux = typedElemAux(ctx.types.typedElem?.get(n))
+          if (aux != null) (ctx.func.ptrAuxes ||= new Map()).set(n, aux)
         }
       }
     }
-    // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
-    // ptrKind set. Register them in ctx.func.ptrKinds so readVar tags local.gets correctly.
-    // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
-    // so asF64 reboxes to NaN-form before f64.store to the cell.
-    for (const p of sig.params) {
-      if (p.ptrKind == null) continue
-      if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
-      ctx.func.ptrKinds.set(p.name, p.ptrKind)
+  }
+  // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
+  // ptrKind set. Register them in ctx.func.ptrKinds so readVar tags local.gets correctly.
+  // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
+  // so asF64 reboxes to NaN-form before f64.store to the cell.
+  for (const p of sig.params) {
+    if (p.ptrKind == null) continue
+    if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
+    ctx.func.ptrKinds.set(p.name, p.ptrKind)
+  }
+  // D: Apply call-site param types (only if body analysis didn't already set them)
+  const ptypes = paramValTypes.get(name)
+  if (ptypes) {
+    for (const [k, vt] of ptypes) {
+      if (vt && k < sig.params.length && !ctx.func.valTypes.has(sig.params[k].name))
+        ctx.func.valTypes.set(sig.params[k].name, vt)
     }
-    // D: Apply call-site param types (only if body analysis didn't already set them)
-    const ptypes = paramValTypes.get(name)
-    if (ptypes) {
-      for (const [k, vt] of ptypes) {
-        if (vt && k < sig.params.length && !ctx.func.valTypes.has(sig.params[k].name))
-          ctx.func.valTypes.set(sig.params[k].name, vt)
+  }
+  // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
+  // are restored after this function's emit so bindings don't leak across functions
+  // that reuse param names (e.g. `o`). Requires all call sites to agree on schemaId.
+  const stypes = paramSchemas.get(name)
+  const schemaVarsPrev = new Map(ctx.schema.vars)
+  if (stypes && !exported) {
+    for (const [k, sid] of stypes) {
+      if (sid == null || k >= sig.params.length) continue
+      const pname = sig.params[k].name
+      if (!ctx.schema.vars.has(pname)) ctx.schema.vars.set(pname, sid)
+    }
+  }
+
+  const fn = ['func', `$${name}`]
+  if (exported) fn.push(['export', `"${name}"`])
+  fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
+  fn.push(...sig.results.map(t => ['result', t]))
+
+  // Default params: missing JS args become canonical NaN (0x7FF8000000000000) in WASM f64 params.
+  // Check for canonical NaN specifically — NaN-boxed pointers are also NaN but have non-zero payload.
+  const defaults = func.defaults || {}
+  const defaultInits = []
+  for (const [pname, defVal] of Object.entries(defaults)) {
+    const p = sig.params.find(p => p.name === pname)
+    const t = p?.type || 'f64'
+    defaultInits.push(
+      ['if', isNullish(typed(['local.get', `$${pname}`], 'f64')),
+        ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
+  }
+
+  // Box params that are mutably captured: allocate cell, copy param value
+  const boxedParamInits = []
+  for (const p of sig.params) {
+    if (ctx.func.boxed.has(p.name)) {
+      const cell = ctx.func.boxed.get(p.name)
+      ctx.func.locals.set(cell, 'i32')
+      const lget = typed(['local.get', `$${p.name}`], p.type)
+      if (p.ptrKind != null) lget.ptrKind = p.ptrKind
+      boxedParamInits.push(
+        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
+    }
+  }
+
+  if (block) {
+    const stmts = emitBody(body)
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    // I: Skip trailing fallback when last statement is return (unreachable code)
+    const lastStmt = stmts.at(-1)
+    const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
+    fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
+  } else if (multi && body[0] === '[') {
+    const values = body.slice(1).map(e => asF64(emit(e)))
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    fn.push(...boxedParamInits, ...values)
+  } else {
+    const ir = emit(body)
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
+    fn.push(...defaultInits, ...boxedParamInits, finalIR)
+  }
+
+  // Restore schema.vars so param bindings don't leak to next function.
+  ctx.schema.vars = schemaVarsPrev
+  return fn
+}
+
+/**
+ * Compile prepared AST to WASM module IR.
+ * @param {import('./prepare.js').ASTNode} ast - Prepared AST
+ * @returns {Array} Complete WASM module as S-expression
+ */
+export default function compile(ast) {
+  // Populate known function names + lookup map on ctx.func for direct call detection
+  ctx.func.names.clear()
+  ctx.func.map.clear()
+  for (const f of ctx.func.list) { ctx.func.names.add(f.name); ctx.func.map.set(f.name, f) }
+  // Include imported functions for call resolution (e.g. template interpolations)
+  for (const imp of ctx.module.imports)
+    if (imp[3]?.[0] === 'func') ctx.func.names.add(imp[3][1].replace(/^\$/, ''))
+
+  // Check user globals don't conflict with runtime globals (modules loaded after user decls)
+  for (const name of ctx.scope.userGlobals)
+    if (!ctx.scope.globals.get(name)?.includes('mut f64'))
+      err(`'${name}' conflicts with a compiler internal — choose a different name`)
+
+  // Pre-fold const globals: evaluate constant initializers before function compilation
+  // so functions see the correct global types (i32 vs f64).
+  if (ast) {
+    const evalConst = n => {
+      if (typeof n === 'number') return n
+      if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return n[1]
+      if (!Array.isArray(n)) return null
+      const [op, a, b] = n
+      const va = evalConst(a), vb = b !== undefined ? evalConst(b) : null
+      if (va == null) return null
+      if (op === 'u-' || (op === '-' && b === undefined)) return -va
+      if (vb == null) return null
+      if (op === '+') return va + vb; if (op === '-') return va - vb
+      if (op === '*') return va * vb; if (op === '%' && vb) return va % vb
+      if (op === '/' && vb) return va / vb; if (op === '**') return va ** vb
+      if (op === '&') return va & vb; if (op === '|') return va | vb
+      if (op === '^') return va ^ vb; if (op === '<<') return va << vb
+      if (op === '>>') return va >> vb; if (op === '>>>') return va >>> vb
+      return null
+    }
+    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1)
+      : Array.isArray(ast) && ast[0] === 'const' ? [ast] : []
+    for (const s of stmts) {
+      if (!Array.isArray(s) || s[0] !== 'const') continue
+      for (const decl of s.slice(1)) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const [, name, init] = decl
+        if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
+        const v = evalConst(init)
+        if (v == null || !isFinite(v)) continue
+        const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+        ctx.scope.globals.set(name, isInt
+          ? `(global $${name} i32 (i32.const ${v}))`
+          : `(global $${name} f64 (f64.const ${v}))`)
+        ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
       }
     }
-    // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
-    // are restored after this function's emit so bindings don't leak across functions
-    // that reuse param names (e.g. `o`). Requires all call sites to agree on schemaId.
-    const stypes = paramSchemas.get(name)
-    const schemaVarsPrev = new Map(ctx.schema.vars)
-    if (stypes && !exported) {
-      for (const [k, sid] of stypes) {
-        if (sid == null || k >= sig.params.length) continue
-        const pname = sig.params[k].name
-        if (!ctx.schema.vars.has(pname)) ctx.schema.vars.set(pname, sid)
+  }
+
+  // Pre-scan module-scope value types so functions can dispatch methods on globals.
+  // Also scan moduleInits so cross-module imports (e.g. regex literals from util.js)
+  // resolve to the correct static dispatch path.
+  const scanStmts = (root) => {
+    if (!root) return
+    const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
+    for (const s of stmts) {
+      if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let')) continue
+      for (const decl of s.slice(1)) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const vt = valTypeOf(decl[2])
+        if (vt) {
+          if (!ctx.scope.globalValTypes) ctx.scope.globalValTypes = new Map()
+          ctx.scope.globalValTypes.set(decl[1], vt)
+          if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(decl[1], decl[2])
+        }
+        const ctor = typedElemCtor(decl[2])
+        if (ctor) {
+          if (!ctx.scope.globalTypedElem) ctx.scope.globalTypedElem = new Map()
+          ctx.scope.globalTypedElem.set(decl[1], ctor)
+        }
       }
     }
+  }
+  scanStmts(ast)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
 
-    const fn = ['func', `$${name}`]
-    if (exported) fn.push(['export', `"${name}"`])
-    fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
-    fn.push(...sig.results.map(t => ['result', t]))
-
-    // Default params: missing JS args become canonical NaN (0x7FF8000000000000) in WASM f64 params.
-    // Check for canonical NaN specifically — NaN-boxed pointers are also NaN but have non-zero payload.
-    const defaults = func.defaults || {}
-    const defaultInits = []
-    for (const [pname, defVal] of Object.entries(defaults)) {
-      const p = sig.params.find(p => p.name === pname)
-      const t = p?.type || 'f64'
-      defaultInits.push(
-        ['if', isNullish(typed(['local.get', `$${pname}`], 'f64')),
-          ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
+  // Unbox const TYPED globals: change `(mut f64)` slot to `(mut i32)` and store the raw
+  // pointer offset. Reads tag the global.get with ptrKind=TYPED + ptrAux=elemType so
+  // typed-array consumers (.[]/.buffer/…) can resolve through ptrOffsetIR without ever
+  // calling __ptr_offset on a NaN-box. Init still flows through emit.js, but the assign
+  // coerces via asPtrOffset(val, VAL.TYPED) — one bit-extract at startup, then every
+  // hot read is a plain `global.get` of an i32.
+  if (ctx.scope.globalTypedElem && ctx.scope.consts) {
+    for (const [name, ctor] of ctx.scope.globalTypedElem) {
+      if (!ctx.scope.consts.has(name)) continue
+      if (ctx.scope.globalValTypes?.get(name) !== VAL.TYPED) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      const decl = ctx.scope.globals.get(name)
+      if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
+      ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
+      ctx.scope.globalTypes.set(name, 'i32')
+      ;(ctx.scope.unboxedTypedGlobals ||= new Map()).set(name, aux)
     }
+  }
 
-    // Box params that are mutably captured: allocate cell, copy param value
-    const boxedParamInits = []
-    for (const p of sig.params) {
-      if (ctx.func.boxed.has(p.name)) {
-        const cell = ctx.func.boxed.get(p.name)
-        ctx.func.locals.set(cell, 'i32')
-        const lget = typed(['local.get', `$${p.name}`], p.type)
-        if (p.ptrKind != null) lget.ptrKind = p.ptrKind
-        boxedParamInits.push(
-          ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-          ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
+  // === ProgramFacts: single whole-program walk over ast + user funcs + moduleInits ===
+  // See collectProgramFacts (top of file) for the contract. ctx.types.* mirrors are
+  // kept here because ir.js consumes them at emit time (will be replaced when emit
+  // takes facts explicitly — S3).
+  const programFacts = collectProgramFacts(ast)
+  ctx.types.dynKeyVars = programFacts.dynVars
+  ctx.types.anyDynKey = programFacts.anyDyn
+
+  // Materialize auto-box schemas from collected propMap
+  if (ast && ctx.schema.register) {
+    for (const [name, props] of programFacts.propMap) {
+      if (ctx.schema.vars.has(name)) {
+        const existing = ctx.schema.resolve(name)
+        const newProps = [...props].filter(p => !existing.includes(p))
+        if (newProps.length) {
+          const merged = [...existing, ...newProps]
+          const mergedId = ctx.schema.register(merged)
+          ctx.schema.vars.set(name, mergedId)
+        }
+        continue
       }
+      const valueProps = [...props].filter(p => !ctx.func.names.has(`${name}$${p}`))
+      if (!valueProps.length) continue
+      const allProps = [...props]
+      const schema = ['__inner__', ...allProps]
+      const schemaId = ctx.schema.register(schema)
+      ctx.schema.vars.set(name, schemaId)
+      if (ctx.func.names.has(name) && !ctx.scope.globals.has(name))
+        ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+      if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
+      ctx.schema.autoBox.set(name, { schemaId, schema })
     }
+  }
 
-    if (block) {
-      const stmts = emitBody(body)
-      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-      // I: Skip trailing fallback when last statement is return (unreachable code)
-      const lastStmt = stmts.at(-1)
-      const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
-      fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
-    } else if (multi && body[0] === '[') {
-      const values = body.slice(1).map(e => asF64(emit(e)))
-      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-      fn.push(...boxedParamInits, ...values)
-    } else {
-      const ir = emit(body)
-      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-      const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
-      fn.push(...defaultInits, ...boxedParamInits, finalIR)
-    }
+  // Dynamic closure ABI width: max param count (`=>` defs), max call arity, rest/spread
+  // accumulated by walkFacts above. $ftN type, call-site padding, and body slot decls
+  // use this instead of the static MAX_CLOSURE_ARITY cap. hasRest adds +1 for rest
+  // overflow. hasSpread + hasRest together force MAX (spread expands unknown element
+  // count at runtime, and any rest receiver may consume them).
+  if (ctx.closure.make) {
+    const { hasSpread, hasRest, maxCall, maxDef } = programFacts
+    const floor = ctx.closure.floor ?? 0
+    ctx.closure.width = (hasSpread && hasRest)
+      ? MAX_CLOSURE_ARITY
+      : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
+  }
 
-    // Restore schema.vars so param bindings don't leak to next function.
-    ctx.schema.vars = schemaVarsPrev
-    return fn
-  })
+  narrowSignatures(programFacts)
+
+  const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
 
   const closureFuncs = []
   let compiledBodyCount = 0

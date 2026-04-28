@@ -8,7 +8,7 @@ the next task harder to choose. Verify benchmark claims before using them for de
 
 Current verified baseline:
 
-- `npm test`: 912/912 pass on Apr 27 2026.
+- `npm test`: 922/922 pass on Apr 27 2026 (+10 from strict-mode + golden-size tests).
 - Compiler shape: compact and effective, but `compile.js` still owns too many phases.
 - Main risk: representation facts are scattered across ctx maps, IR `.type` sidecars,
   schema state, pointer annotations, and ad hoc inference.
@@ -41,10 +41,20 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `ptrKind`, `ptrAux`, `schema.vars`, `globalTypes`, and local inference with one record:
   `{ wasm, val, ptrKind, ptrAux, schemaId, nullable, stableOffset }`.
 
-* [ ] **Explicit compile pipeline** — split `compile.js` by phase:
+* [~] **Explicit compile pipeline** — split `compile.js` by phase:
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.
   Each phase should have an input/output contract. Ordering should be encoded structurally,
   not remembered through comments.
+  Apr 27 — three phases extracted as top-level functions with docstring
+  contracts: `collectProgramFacts(ast)` → programFacts record;
+  `narrowSignatures(programFacts)` → mutates func.sig records;
+  `emitFunc(func, programFacts)` → returns one func's WAT IR. Inline blocks
+  at the call sites collapsed to single calls; per-function emit no longer
+  captures outer closure state. compile() body shrunk from one ~1300-line
+  blob to a sequence of named-phase calls. 922/922 PASS, golden sizes
+  unchanged. Remaining: `compilePendingClosures` (incremental — called
+  twice during start emission), and the section-assembly tail (start fn
+  build, stdlib pull, per-func optimize, treeshake, sort, module assembly).
 
 * [x] **Strict core mode** — Apr 27. `compile(code, { strict: true })` and `jz(code, { strict: true })`
   now reject (with clear `strict mode: ...` errors): `obj[runtimeKey]` falling to `__dyn_get`
@@ -57,10 +67,10 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 
 * [x] **Golden size tests** — Apr 27. `test/perf.js` now snapshots WASM byte counts
   for known-shape object (3306 b), typed-array loop (1968 b), closure-heavy parser
-  (4084 b), unknown/dynamic object (6072 b); ±5% tolerance (min ±20 b). Existing
-  scalar add `< 150` covers the trivial case. Catches accidental stdlib /
-  feature-gate regressions; prerequisite for landing strict-core mode safely.
-  916/916 PASS.
+  (4042 b post-A3, was 4084 b), unknown/dynamic object (6072 b); ±5% tolerance
+  (min ±20 b). Existing scalar add `< 150` covers the trivial case. Catches
+  accidental stdlib / feature-gate regressions; prerequisite for landing
+  strict-core mode safely. 916/916 PASS at landing.
 
 ### Tier A — Runtime / Output Wins
 
