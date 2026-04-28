@@ -31,7 +31,7 @@ import {
   T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
-  updateRep,
+  updateRep, updateGlobalRep,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -1342,7 +1342,7 @@ export default function compile(ast) {
       if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
       ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
       ctx.scope.globalTypes.set(name, 'i32')
-      ;(ctx.scope.unboxedTypedGlobals ||= new Map()).set(name, aux)
+      updateGlobalRep(name, { ptrKind: VAL.TYPED, ptrAux: aux })
     }
   }
 

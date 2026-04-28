@@ -21,7 +21,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, repOf } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal } from './analyze.js'
 
 // === Type helpers ===
 
@@ -381,8 +381,11 @@ export function readVar(name) {
     return typed(['f64.load', boxedAddr(name)], 'f64')
   if (isGlobal(name)) {
     const node = typed(['global.get', `$${name}`], ctx.scope.globalTypes.get(name) || 'f64')
-    const aux = ctx.scope.unboxedTypedGlobals?.get(name)
-    if (aux != null) { node.ptrKind = VAL.TYPED; node.ptrAux = aux }
+    const grep = repOfGlobal(name)
+    if (grep?.ptrKind != null) {
+      node.ptrKind = grep.ptrKind
+      if (grep.ptrAux != null) node.ptrAux = grep.ptrAux
+    }
     return node
   }
   const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'

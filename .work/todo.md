@@ -53,10 +53,16 @@ a cleaner substrate before pointer ABI or closure dispatch work.
     ir.js (readVar, writeVar, emitDecl, emitFunc unbox seed, param-narrowing
     seed). 923/923 PASS, all goldens unchanged (3306 / 6062 / 3921 / 1968),
     watr metacircular byte-parity holds across all 10 vendored examples.
-  * [ ] **S2b** — collapse `unboxedTypedGlobals` (and the read-side of
-    `globalTypes` for typed-array path) → `ctx.scope.repByGlobal`. Targets
-    ir.js readVar global branch (lines 383–385) where the two maps are read
-    together.
+  * [x] **S2b — collapse `unboxedTypedGlobals` → `repByGlobal`.** Apr 28.
+    `ctx.scope.unboxedTypedGlobals` retired; pointer-rep facts for module-
+    level globals now live in `ctx.scope.repByGlobal: Map<name, ValueRep>`
+    via parallel helpers `repOfGlobal(name)` / `updateGlobalRep(name, fields)`.
+    The TYPED-global path now stores `{ ptrKind: VAL.TYPED, ptrAux }` instead
+    of a hardcoded VAL.TYPED at the read site, generalizing to any unboxed
+    pointer-kind global (room for unboxed CLOSURE / OBJECT globals later).
+    Four touch sites migrated (ctx.js, compile.js writer, emit.js global
+    init, ir.js readVar global branch). 923/923 PASS, all goldens
+    byte-identical, watr metacircular byte-parity holds.
   * [ ] **S2c** — subsume `ctx.func.valTypes` and `ctx.schema.vars`(local-key
     portion) into the same per-local rep. Drops the schema.vars fallback in
     readVar; consolidates `lookupValType` to read `repOf(name).val` for the

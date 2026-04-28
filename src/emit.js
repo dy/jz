@@ -23,7 +23,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal } from './analyze.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -350,9 +350,10 @@ export function emitDecl(...inits) {
       continue
     }
     if (isGlobal(name)) {
-      // Unboxed-TYPED const globals carry the raw i32 offset; init coerces via asPtrOffset.
-      if (ctx.scope.unboxedTypedGlobals?.has(name)) {
-        result.push(['global.set', `$${name}`, asPtrOffset(val, VAL.TYPED)])
+      // Unboxed pointer const globals carry the raw i32 offset; init coerces via asPtrOffset.
+      const grep = repOfGlobal(name)
+      if (grep?.ptrKind != null) {
+        result.push(['global.set', `$${name}`, asPtrOffset(val, grep.ptrKind)])
         continue
       }
       // Pre-folded numeric const globals have their init baked into the decl — skip.

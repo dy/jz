@@ -67,6 +67,16 @@ export const updateRep = (name, fields) => {
   m.set(name, prev ? { ...prev, ...fields } : { ...fields })
 }
 
+/** Get the rep for a global name, or undefined if not tracked. */
+export const repOfGlobal = name => ctx.scope.repByGlobal?.get(name)
+
+/** Merge fields into a global's rep. Lazily allocates the map and the rep. */
+export const updateGlobalRep = (name, fields) => {
+  const m = ctx.scope.repByGlobal ||= new Map()
+  const prev = m.get(name)
+  m.set(name, prev ? { ...prev, ...fields } : { ...fields })
+}
+
 /** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →
  *  function-local scope → module-global scope.
  *  Refinements are pushed by the 'if' emitter when the condition is a type guard

@@ -118,7 +118,7 @@ export function reset(proto, globals) {
     globalTypes: new Map(),
     globalValTypes: null,
     globalTypedElem: null,
-    unboxedTypedGlobals: null, // Map<name, aux> — const TYPED globals stored as raw i32 offset
+    repByGlobal: null, // Map<name, ValueRep> — module-level pointer reps (TYPED const globals stored as raw i32 offset, etc.)
     consts: null,
   }
 
