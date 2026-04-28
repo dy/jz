@@ -8,7 +8,7 @@ the next task harder to choose. Verify benchmark claims before using them for de
 
 Current verified baseline:
 
-- `npm test`: 922/922 pass on Apr 27 2026.
+- `npm test`: 935/935 pass on Apr 28 2026.
 - Compiler shape: `compile.js` split into ten named phases with docstring contracts;
   compile() body is a flat pipeline (~300 lines of orchestration).
 - Main risk: representation facts are still scattered across ctx maps, IR `.type` sidecars,
@@ -158,6 +158,21 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 * [ ] **Internal narrow ABI** — make internal non-exported calls use the narrowest proven
   representation. Exported boundaries keep the JS-compatible f64 NaN-box ABI; internal
   code should use i32 offsets/tags where proven safe.
+  Apr 28 — first slice landed: narrow OBJECT result with constant `schemaId` carried in
+  `sig.ptrAux` (commit 25010aa). Apr 28 — second slice: program-wide slot-type tracking
+  (commit eb294e0). `collectProgramFacts` observes the value-kind of each static-key
+  object literal slot and stores it on `ctx.schema.slotTypes`; `ctx.schema.slotVT(name,
+  prop)` answers on the precise (bound-`schemaId`) path; `valTypeOf` consults it on
+  `.prop` AST nodes so `+`, `===`, method dispatch elide `__is_str_key` runtime checks
+  on monomorphic-numeric props of known shapes. `analyzeValTypes` propagates `schemaId`
+  from a narrowed call return into the local's ValueRep. Structural-subtyping fallback
+  intentionally off — without per-call-site flow inference, structural agreement on a
+  slot would mistype non-object holders as VAL.NUMBER and grow the binary by routing
+  property accesses through `__hash_get`. 935/935 tests pass; goldens unchanged
+  (3306/6062/3921/1968); watr metacircular byte-parity holds at 149314 bytes; one
+  `__is_str_key` call eliminated in watr metacircular (173 → 172). Future slices: i32
+  pointer-ABI for non-pointer-returning narrowed funcs; ptrKind propagation through
+  `?:` conditional results (see Discovered Bugs).
 
 * [ ] **Devirtualize non-escaping closures** — `let f = (...) => ...` that is never
   reassigned or escaped should lower to a direct call with explicit env, not a closure
@@ -254,6 +269,20 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 * [ ] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
+
+## Discovered Bugs
+
+* [ ] **Conditional with narrowed-OBJECT branches reboxes via numeric convert.**
+  `let o = which == 0 ? mkA() : mkB()` where both helpers return narrowed-i32 OBJECT
+  pointers emits `(local.set $o (f64.convert_i32_s (if (result i32) ...)))`. The
+  numeric convert treats the i32 *offset* as a value, so subsequent `o.prop` reads
+  from invalid memory. Pre-existing on main and earlier commits — surfaced when
+  writing slot-type tracking tests. Repro:
+  `let n=()=>({x:11}); let s=()=>({x:22}); export let h=(w)=>{let o=w==0?n():s(); return o.x}`
+  returns 0 instead of 11/22. Fix: `?:` emit must propagate `ptrKind` to the IR node
+  when both branches are pointer-narrowed i32 with the same `ptrKind`, so `asF64`
+  takes the NaN-rebox path. `module/object.js` and other narrowed-OBJECT consumers
+  may have related patterns worth auditing once the primary fix lands.
 
 ## Deferred / No-Go
 
