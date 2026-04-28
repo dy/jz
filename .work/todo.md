@@ -143,8 +143,12 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 * [ ] **Cross-block pointer-type CSE** — current pointer-type CSE is local. A dominator-aware
   version may help common `if/else` dispatch shapes, but should wait until ProgramFacts.
 
-* [ ] **Elide `argc` for fixed closures** — fixed-arity, non-default, non-rest closures do
-  not need argc in their call ABI.
+* [x] **Elide `argc` for fixed closures** — Apr 27. Done as part of the per-body
+  ABI shrink in the no-`call_indirect` path: when the table is dropped, every
+  closure becomes direct-only, and bodies shed `$__env` (when no captures),
+  `$__argc` (when no rest), and trailing `$__a{i}` slots beyond fixedN.
+  Programs with at least one genuinely-indirect closure call still pay the
+  uniform `$ftN` ABI — that's the cost of the call_indirect dispatch shape.
 
 * [ ] **Hot stdlib partial evaluation** — specialize shapes like `__dyn_get(obj, "literal")`
   by precomputing key hash/probe skeletons. Do this after strict capability gating.
