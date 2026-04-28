@@ -161,8 +161,13 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   single-walk structural hash only if measurement shows it beats V8's optimized stringify
   path. Previous ad hoc rewrites regressed.
 
-* [ ] **Cross-block pointer-type CSE** — current pointer-type CSE is local. A dominator-aware
-  version may help common `if/else` dispatch shapes, but should wait until ProgramFacts.
+* [x] **Cross-block pointer-type CSE** — Apr 27. `hoistPtrType` now walks structured AST
+  tracking per-variable "alive" state with one open region per X. Splits on
+  `local.set`/`local.tee`, intersects alive states across `if`/`else` arms (entry alive
+  iff alive on both paths with same region ref), and conservatively clears at `loop`
+  boundaries. One shared `$__ptN` local per X reused across regions; per-region
+  threshold ≥2 (singletons skipped at commit). Goldens: unknown/dynamic 6072 → 6062
+  (-10), closure-parser 3933 → 3921 (-12). 922/922 PASS.
 
 * [x] **Elide `argc` for fixed closures** — Apr 27. Done as part of the per-body
   ABI shrink in the no-`call_indirect` path: when the table is dropped, every
@@ -171,8 +176,16 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   Programs with at least one genuinely-indirect closure call still pay the
   uniform `$ftN` ABI — that's the cost of the call_indirect dispatch shape.
 
-* [ ] **Hot stdlib partial evaluation** — specialize shapes like `__dyn_get(obj, "literal")`
-  by precomputing key hash/probe skeletons. Do this after strict capability gating.
+* [-] **Hot stdlib partial evaluation** — Apr 27 attempt rolled back. Wired `__dyn_get_h`
+  / `__hash_get_h` / `__dyn_get_or_h` / `__dyn_get_expr_h` / `__dyn_get_any_h` variants
+  taking precomputed `i32` hash; emitted FNV-1a in JS at literal-key call sites
+  (`emitPropAccess`, `emit['?.']`, object-spread). Result: each literal-key call site
+  grew by ~5 bytes (full 32-bit LEB128 const), helper body savings only ~3 bytes once;
+  net **+5.1% on unknown/dynamic golden** (6072 → 6379, beyond ±5%) and **+0.7% on
+  watr metacircular** (149305 → 150352). Runtime savings (skip `__str_hash` ≈ 100 ops
+  per call) are real but unmeasured. Not worth the concrete code-size regression at
+  current call-site cost. Reconsider when string interning lets the literal hash
+  travel as a small index instead of a 32-bit constant.
 
 ## Product / Validation
 
