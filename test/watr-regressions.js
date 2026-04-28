@@ -2,9 +2,10 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
 import nativeCompile from '../node_modules/watr/src/compile.js'
-import { readFileSync } from 'fs'
+import { readFileSync, readdirSync } from 'fs'
 
 const watrSrc = file => readFileSync(new URL(`../node_modules/watr/src/${file}`, import.meta.url), 'utf8')
+const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
 test('watr: compiled compile.js handles empty func module', async () => {
   const inst = await jz(watrSrc('compile.js'), {
@@ -66,4 +67,40 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
   `)
   // log2(8)=3, 3%1=0. If log2 applied twice: log2(3) ≈ 1.585, %1 ≠ 0.
   is(exports.f(8), 0)
+})
+
+// Metacircular byte-parity: jz compiles watr's own compile.js → watr.wasm.
+// The resulting WASM-side compiler must produce byte-identical output to the
+// JS-side reference watr compiler when fed real .wat sources. This is the
+// strongest end-to-end check the project has — any regression in pointer
+// representation, string interning, hash, ABI, or stdlib emission tends to
+// surface here as a byte mismatch on at least one example.
+test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
+  const inst = await jz(watrSrc('compile.js'), {
+    jzify: true,
+    memoryPages: 4096,
+    modules: {
+      './encode.js': watrSrc('encode.js'),
+      './const.js':  watrSrc('const.js'),
+      './parse.js':  watrSrc('parse.js'),
+      './util.js':   watrSrc('util.js'),
+    },
+  })
+  const jzCompile = inst.exports.default
+  ok(typeof jzCompile === 'function', 'watr.wasm exports default compile()')
+
+  const dir = new URL('./watr-examples/', import.meta.url)
+  const files = readdirSync(dir).filter(f => f.endsWith('.wat')).sort()
+  ok(files.length > 0, 'vendored watr-examples present')
+
+  for (const f of files) {
+    const src = watrExample(f)
+    const jsOut = nativeCompile(src)
+    const jzOut = jzCompile(src)
+    is(jzOut.length, jsOut.length, `${f}: length match`)
+    // Byte-by-byte; locate first diff for diagnostics.
+    let diff = -1
+    for (let i = 0; i < jsOut.length; i++) if (jsOut[i] !== jzOut[i]) { diff = i; break }
+    is(diff, -1, `${f}: byte-identical (first diff at ${diff})`)
+  }
 })
