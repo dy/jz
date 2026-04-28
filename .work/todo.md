@@ -102,6 +102,11 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   closures instead of going through `call_indirect`. watr metacircular:
   21 → 34 of 66 closure calls direct (~52%, was ~32%); 153484 → 153220 b (-264 b).
   Closure-heavy parser golden: 4042 → 4022 b. 922/922 PASS.
+  Apr 27 (cleanup) — drop dead `$ftN` type / table / elem when post-emit scan
+  finds zero `call_indirect` (i.e. every closure call site direct-dispatched
+  AND no top-level fn taken as value). Closure pointers still carry funcIdx
+  in their NaN-box aux bits, but those bits become dead state with no reader.
+  Closure-heavy parser golden: 4022 → 4005 b. 922/922 PASS.
 
 * [ ] **Head-offset `Array.shift`** — replace O(n) `memory.copy` shift with amortized O(1)
   head offset. High leverage, high touch surface: every array index/iteration path must

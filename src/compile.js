@@ -1177,10 +1177,29 @@ export default function compile(ast) {
     }
   }
 
-  // Finalize function table + element section (table may grow during __start emit)
+  // Finalize function table + element section (table may grow during __start emit).
+  // Drop $ftN type, table, and elem when no `call_indirect` remains in the program —
+  // happens when every closure call site is direct-dispatched (A3 + capture-boundary
+  // propagation). Closure pointers still carry funcIdx in their NaN-box aux bits,
+  // but those bits become dead state with no reader. ref.func isn't emitted user-side,
+  // so a single call_indirect scan over closure bodies + user funcs + start is enough.
   if (ctx.closure.table?.length) {
-    sec.table = [['table', ctx.closure.table.length, 'funcref']]
-    sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
+    let indirectUsed = false
+    const scan = (n) => {
+      if (!Array.isArray(n) || indirectUsed) return
+      if (n[0] === 'call_indirect') { indirectUsed = true; return }
+      for (const c of n) if (Array.isArray(c)) scan(c)
+    }
+    for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
+    if (!indirectUsed) for (const fn of sec.start) scan(fn)
+    if (indirectUsed) {
+      sec.table = [['table', ctx.closure.table.length, 'funcref']]
+      sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
+    } else {
+      sec.table = []
+      sec.elem = []
+      sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
+    }
   }
 
   // Resolve stdlib AFTER __start emit — inc() calls during __start must be captured
