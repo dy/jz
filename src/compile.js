@@ -670,6 +670,154 @@ function emitFunc(func, programFacts) {
 }
 
 /**
+ * Phase: emit one closure body to WAT IR.
+ *
+ * Closures share a uniform signature (env f64, argc i32, a0..a{W-1} f64) → f64
+ * so any closure can be invoked via call_indirect on $ftN. This function
+ * builds one body fn given the body record (cb) created by ctx.closure.make.
+ *
+ * Mutates ctx.func.* per-body state (locals, boxed, valTypes) and
+ * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
+ * leaks don't poison the next body). Returns the WAT IR for the func node.
+ */
+function emitClosureBody(cb) {
+  const prevSchemaVars = ctx.schema.vars
+  const prevTypedElems = ctx.types.typedElem
+  // Reset per-function state for closure body
+  ctx.func.locals = new Map()
+  ctx.func.valTypes = new Map()
+  if (cb.valTypes) for (const [name, vt] of cb.valTypes) ctx.func.valTypes.set(name, vt)
+  if (cb.schemaVars) ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+  const globalTE = ctx.scope.globalTypedElem
+  if (cb.typedElems) {
+    ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
+  } else if (globalTE) {
+    ctx.types.typedElem = new Map(globalTE)
+  } else {
+    ctx.types.typedElem = prevTypedElems
+  }
+  // In closure bodies, boxed captures use the original name as both var and cell local
+  ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+  ctx.func.stack = []
+  ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
+  ctx.func.body = cb.body
+  ctx.func.directClosures = null
+  // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
+  for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
+  ctx.func.current = { params: paramDecls, results: ['f64'] }
+
+  const fn = ['func', `$${cb.name}`]
+  fn.push(['param', '$__env', 'f64'])
+  fn.push(['param', '$__argc', 'i32'])
+  for (let i = 0; i < W; i++) fn.push(['param', `$__a${i}`, 'f64'])
+  fn.push(['result', 'f64'])
+
+  // Params are locals, assigned directly from inline slots
+  for (const p of cb.params) ctx.func.locals.set(p, 'f64')
+
+  // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
+  for (let i = 0; i < cb.captures.length; i++) {
+    const name = cb.captures[i]
+    ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
+  }
+
+  // Emit body
+  const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
+  let bodyIR
+  if (block) {
+    for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
+    analyzeBoxedCaptures(cb.body)
+    for (const name of ctx.func.boxed.keys()) {
+      if (ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
+    }
+    bodyIR = emitBody(cb.body)
+  } else {
+    bodyIR = [asF64(emit(cb.body))]
+  }
+
+  // Pre-allocate cache locals for env unpacking
+  const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
+  if (envBase) ctx.func.locals.set(envBase, 'i32')
+  // Rest param: allocate helper locals (len + offset) before emitting decls
+  let restOff, restLen
+  if (cb.rest) {
+    restOff = `${T}restOff${ctx.func.uniq++}`
+    restLen = `${T}restLen${ctx.func.uniq++}`
+    ctx.func.locals.set(restOff, 'i32')
+    ctx.func.locals.set(restLen, 'i32')
+    inc('__alloc_hdr', '__mkptr')
+  }
+
+  // Insert locals (captures + params + declared)
+  for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+
+  // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
+  // env is the CLOSURE pointer (PTR.CLOSURE) — never an ARRAY, no forwarding chain.
+  // Inline the offset extraction (low 32 bits) instead of calling __ptr_offset per invocation.
+  if (envBase) {
+    fn.push(['local.set', `$${envBase}`,
+      ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$__env']]]])
+    for (let i = 0; i < cb.captures.length; i++) {
+      const name = cb.captures[i]
+      const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
+      fn.push(['local.set', `$${name}`,
+        ctx.func.boxed.has(name) ? ['i32.load', addr] : ['f64.load', addr]])
+    }
+  }
+
+  // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
+  // Rest name (if present) is last in cb.params — handled separately below.
+  const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
+  for (let i = 0; i < fixedParamN && i < W; i++) {
+    fn.push(['local.set', `$${cb.params[i]}`, ['local.get', `$__a${i}`]])
+  }
+
+  // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
+  // len = clamp(argc - fixedParams, 0, restSlots). Rest-param closures receive
+  // at most (width - fixedParams) rest args — spread callers with
+  // more dynamic elements lose the overflow (documented limitation).
+  if (cb.rest) {
+    const fixedN = fixedParamN
+    const restSlots = W - fixedN
+    fn.push(['local.set', `$${restLen}`,
+      ['select',
+        ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
+        ['i32.const', 0],
+        ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
+    fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
+      ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
+    fn.push(['local.set', `$${restOff}`,
+      ['call', '$__alloc_hdr',
+        ['local.get', `$${restLen}`], ['local.get', `$${restLen}`], ['i32.const', 8]]])
+    for (let i = 0; i < restSlots; i++) {
+      fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
+        ['then', ['f64.store',
+          ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
+          ['local.get', `$__a${fixedN + i}`]]]])
+    }
+    fn.push(['local.set', `$${cb.rest}`,
+      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]])
+  }
+
+  // Default params for closures (check sentinel after unpack)
+  if (cb.defaults) {
+    for (const [pname, defVal] of Object.entries(cb.defaults)) {
+      fn.push(['if', isNullish(['local.get', `$${pname}`]),
+        ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+    }
+  }
+  fn.push(...bodyIR)
+  // I: Skip trailing fallback when last statement is return
+  if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
+  ctx.schema.vars = prevSchemaVars
+  ctx.types.typedElem = prevTypedElems
+  return fn
+}
+
+/**
  * Compile prepared AST to WASM module IR.
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
  * @returns {Array} Complete WASM module as S-expression
@@ -830,141 +978,7 @@ export default function compile(ast) {
   const compilePendingClosures = () => {
     const bodies = ctx.closure.bodies || []
     for (let bodyIndex = compiledBodyCount; bodyIndex < bodies.length; bodyIndex++) {
-      const cb = bodies[bodyIndex]
-      const prevSchemaVars = ctx.schema.vars
-      const prevTypedElems = ctx.types.typedElem
-      // Reset per-function state for closure body
-      ctx.func.locals = new Map()
-      ctx.func.valTypes = new Map()
-      if (cb.valTypes) for (const [name, vt] of cb.valTypes) ctx.func.valTypes.set(name, vt)
-      if (cb.schemaVars) ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
-      const globalTE = ctx.scope.globalTypedElem
-      if (cb.typedElems) {
-        ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
-      } else if (globalTE) {
-        ctx.types.typedElem = new Map(globalTE)
-      } else {
-        ctx.types.typedElem = prevTypedElems
-      }
-      // In closure bodies, boxed captures use the original name as both var and cell local
-      ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
-      ctx.func.stack = []
-      ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
-      ctx.func.body = cb.body
-      ctx.func.directClosures = null
-      // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
-      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-      const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
-      for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
-      ctx.func.current = { params: paramDecls, results: ['f64'] }
-
-      const fn = ['func', `$${cb.name}`]
-      fn.push(['param', '$__env', 'f64'])
-      fn.push(['param', '$__argc', 'i32'])
-      for (let i = 0; i < W; i++) fn.push(['param', `$__a${i}`, 'f64'])
-      fn.push(['result', 'f64'])
-
-      // Params are locals, assigned directly from inline slots
-      for (const p of cb.params) ctx.func.locals.set(p, 'f64')
-
-      // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
-      for (let i = 0; i < cb.captures.length; i++) {
-        const name = cb.captures[i]
-        ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
-      }
-
-      // Emit body
-      const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
-      let bodyIR
-      if (block) {
-        for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
-        // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
-        analyzeBoxedCaptures(cb.body)
-        for (const name of ctx.func.boxed.keys()) {
-          if (ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
-        }
-        bodyIR = emitBody(cb.body)
-      } else {
-        bodyIR = [asF64(emit(cb.body))]
-      }
-
-      // Pre-allocate cache locals for env unpacking
-      const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
-      if (envBase) ctx.func.locals.set(envBase, 'i32')
-      // Rest param: allocate helper locals (len + offset) before emitting decls
-      let restOff, restLen
-      if (cb.rest) {
-        restOff = `${T}restOff${ctx.func.uniq++}`
-        restLen = `${T}restLen${ctx.func.uniq++}`
-        ctx.func.locals.set(restOff, 'i32')
-        ctx.func.locals.set(restLen, 'i32')
-        inc('__alloc_hdr', '__mkptr')
-      }
-
-      // Insert locals (captures + params + declared)
-      for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-
-      // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
-      // env is the CLOSURE pointer (PTR.CLOSURE) — never an ARRAY, no forwarding chain.
-      // Inline the offset extraction (low 32 bits) instead of calling __ptr_offset per invocation.
-      if (envBase) {
-        fn.push(['local.set', `$${envBase}`,
-          ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$__env']]]])
-        for (let i = 0; i < cb.captures.length; i++) {
-          const name = cb.captures[i]
-          const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
-          fn.push(['local.set', `$${name}`,
-            ctx.func.boxed.has(name) ? ['i32.load', addr] : ['f64.load', addr]])
-        }
-      }
-
-      // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
-      // Rest name (if present) is last in cb.params — handled separately below.
-      const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
-      for (let i = 0; i < fixedParamN && i < W; i++) {
-        fn.push(['local.set', `$${cb.params[i]}`, ['local.get', `$__a${i}`]])
-      }
-
-      // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
-      // len = clamp(argc - fixedParams, 0, restSlots). Rest-param closures receive
-      // at most (width - fixedParams) rest args — spread callers with
-      // more dynamic elements lose the overflow (documented limitation).
-      if (cb.rest) {
-        const fixedN = fixedParamN
-        const restSlots = W - fixedN
-        fn.push(['local.set', `$${restLen}`,
-          ['select',
-            ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
-            ['i32.const', 0],
-            ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
-        fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
-          ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
-        fn.push(['local.set', `$${restOff}`,
-          ['call', '$__alloc_hdr',
-            ['local.get', `$${restLen}`], ['local.get', `$${restLen}`], ['i32.const', 8]]])
-        for (let i = 0; i < restSlots; i++) {
-          fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
-            ['then', ['f64.store',
-              ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
-              ['local.get', `$__a${fixedN + i}`]]]])
-        }
-        fn.push(['local.set', `$${cb.rest}`,
-          ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]])
-      }
-
-      // Default params for closures (check sentinel after unpack)
-      if (cb.defaults) {
-        for (const [pname, defVal] of Object.entries(cb.defaults)) {
-          fn.push(['if', isNullish(['local.get', `$${pname}`]),
-            ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
-        }
-      }
-      fn.push(...bodyIR)
-      // I: Skip trailing fallback when last statement is return
-      if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
-      closureFuncs.push(fn)
-      ctx.schema.vars = prevSchemaVars
-      ctx.types.typedElem = prevTypedElems
+      closureFuncs.push(emitClosureBody(bodies[bodyIndex]))
     }
     compiledBodyCount = bodies.length
   }

@@ -45,16 +45,18 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.
   Each phase should have an input/output contract. Ordering should be encoded structurally,
   not remembered through comments.
-  Apr 27 — three phases extracted as top-level functions with docstring
+  Apr 27 — four phases extracted as top-level functions with docstring
   contracts: `collectProgramFacts(ast)` → programFacts record;
   `narrowSignatures(programFacts)` → mutates func.sig records;
-  `emitFunc(func, programFacts)` → returns one func's WAT IR. Inline blocks
-  at the call sites collapsed to single calls; per-function emit no longer
-  captures outer closure state. compile() body shrunk from one ~1300-line
-  blob to a sequence of named-phase calls. 922/922 PASS, golden sizes
-  unchanged. Remaining: `compilePendingClosures` (incremental — called
-  twice during start emission), and the section-assembly tail (start fn
-  build, stdlib pull, per-func optimize, treeshake, sort, module assembly).
+  `emitFunc(func, programFacts)` → returns one func's WAT IR;
+  `emitClosureBody(cb)` → returns one closure-body's WAT IR (parallel
+  to emitFunc, used by incremental `compilePendingClosures`). Inline
+  blocks at the call sites collapsed to single calls; per-function emit
+  no longer captures outer closure state. compile() body shrunk from
+  one ~1300-line blob (1529 → 1395 lines) to a sequence of named-phase
+  calls. 922/922 PASS, golden sizes unchanged.
+  Remaining: section-assembly tail (start fn build, stdlib pull,
+  per-func optimize, treeshake, sort, module assembly).
 
 * [x] **Strict core mode** — Apr 27. `compile(code, { strict: true })` and `jz(code, { strict: true })`
   now reject (with clear `strict mode: ...` errors): `obj[runtimeKey]` falling to `__dyn_get`
