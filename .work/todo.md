@@ -8,10 +8,11 @@ the next task harder to choose. Verify benchmark claims before using them for de
 
 Current verified baseline:
 
-- `npm test`: 922/922 pass on Apr 27 2026 (+10 from strict-mode + golden-size tests).
-- Compiler shape: compact and effective, but `compile.js` still owns too many phases.
-- Main risk: representation facts are scattered across ctx maps, IR `.type` sidecars,
-  schema state, pointer annotations, and ad hoc inference.
+- `npm test`: 922/922 pass on Apr 27 2026.
+- Compiler shape: `compile.js` split into ten named phases with docstring contracts;
+  compile() body is a flat pipeline (~300 lines of orchestration).
+- Main risk: representation facts are still scattered across ctx maps, IR `.type` sidecars,
+  schema state, pointer annotations, and ad hoc inference (see ValueRep unification).
 
 ## Guiding Questions
 
