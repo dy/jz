@@ -41,7 +41,7 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `ptrKind`, `ptrAux`, `schema.vars`, `globalTypes`, and local inference with one record:
   `{ wasm, val, ptrKind, ptrAux, schemaId, nullable, stableOffset }`.
 
-* [~] **Explicit compile pipeline** — split `compile.js` by phase:
+* [x] **Explicit compile pipeline** — split `compile.js` by phase:
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.
   Each phase should have an input/output contract. Ordering should be encoded structurally,
   not remembered through comments.
