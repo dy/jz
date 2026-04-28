@@ -174,9 +174,19 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   pointer-ABI for non-pointer-returning narrowed funcs; ptrKind propagation through
   `?:` conditional results (see Discovered Bugs).
 
-* [ ] **Devirtualize non-escaping closures** — `let f = (...) => ...` that is never
-  reassigned or escaped should lower to a direct call with explicit env, not a closure
-  pointer plus `call_indirect`.
+* [x] **Devirtualize non-escaping closures** — Apr 28 (gap-fill). The `directClosures`
+  path already lowered const-bound, non-escaping closures to `call $bodyFn` (no
+  call_indirect). Remaining waste: when watrOptimize's inliner inlines that body into
+  the caller, the call-site's `asF64(local.get $g)` (rebox to f64 for body's
+  `__env: f64`) immediately meets the body's `i32.wrap_i64(i64.reinterpret_f64 __env)`
+  (unbox back to envPtr i32). Our `fusedRewrite` peephole folds exactly this pattern,
+  but ran *before* watr's inline pass — so the inlined-output rebox roundtrip survived.
+  Fix: run `optimizeFunc` once more after `watrOptimize` in `index.js`. Watr's own
+  `peephole` table doesn't include reinterpret/wrap_i64+extend folds. Impact:
+  • Trivial closure-call probe: 284 → 252 b (-32, 2 → 0 reboxes).
+  • `let a = …; let b = …; a(1) + b(2)`: 345 → 313 b (-32).
+  • Watr metacircular: 149559 → 149402 b (-157).
+  949/949 PASS; goldens unchanged (3306 / 6062 / 3957 / 1968).
 
 * [x] **CLOSURE local unboxing** — Apr 28. `VAL.CLOSURE` now in `UNBOXABLE_KINDS`.
   Closure NaN-box has [type=PTR.CLOSURE, aux=funcIdx, offset=envPtr]; unboxing to i32

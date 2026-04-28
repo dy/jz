@@ -19,6 +19,9 @@
  *        Also calls optimizeFunc (src/optimize.js): `hoistPtrType` + fused peephole/inline/memarg walk.
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
  *     ↓  watrOptimize (opt-out via opts.optimize=false) — CSE, DCE, const folding at WAT level
+ *     ↓  optimizeFunc 2nd pass — re-folds rebox/unbox roundtrips that watrOptimize's inliner
+ *        re-introduces at inline boundaries (caller's boxPtrIR meets callee's
+ *        i32.wrap_i64(i64.reinterpret_f64 __env)). watr's peephole doesn't cover this.
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
  *
  * # State
@@ -40,6 +43,7 @@ import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } 
 import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
+import { optimizeFunc } from './src/optimize.js'
 import jzify from './src/jzify.js'
 import {
   UNDEF_NAN, NULL_NAN, ptr as makePtr, offset as getOffset, type as getType, aux as getAux,
@@ -108,6 +112,12 @@ jz.compile = (code, opts = {}) => {
   const module = compile(ast)
 
   const optimized = opts.optimize !== false ? watrOptimize(module) : module
+  // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
+  // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
+  // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
+  if (opts.optimize !== false) {
+    for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node)
+  }
   return opts.wat ? watrPrint(optimized) : watrCompile(optimized)
 }
 
