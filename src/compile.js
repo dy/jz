@@ -821,6 +821,119 @@ function emitClosureBody(cb) {
 }
 
 /**
+ * Phase: build module-init function `__start`.
+ *
+ * `__start` is the WebAssembly start function: runs once at instantiation, after
+ * imports/globals are bound but before any export is called. It threads together
+ * everything that must happen before user code observes a ready module:
+ *
+ *   1. Reset per-function emit state (locals/valTypes/boxed/stack) — __start is
+ *      a fresh function context with no params.
+ *   2. analyzeValTypes(ast) so emit sees correct ptrKind on top-level decls.
+ *   3. Sub-module init (foreign module bootstrap) emits first — its globals
+ *      must be assigned before main-module code reads them.
+ *   4. emit(ast) — user top-level statements (let/const, call expressions, …).
+ *   5. boxInit — auto-boxing globals (vars with prop assignments lifted to OBJECT).
+ *   6. schemaInit — runtime schema-name table for JSON.stringify.
+ *   7. strPoolInit — copy passive string-pool segment to heap (shared memory).
+ *   8. typeofInit — preallocate typeof-result string globals.
+ *
+ * Order in the assembled body: strPool → typeof → box → schema → moduleInits → init.
+ *
+ * Late closures (those compiled during __start emit, e.g. arrows declared at
+ * module scope) are flushed via `compilePendingClosures` and prepended to
+ * `sec.funcs` so closure indices stay stable across the table.
+ */
+function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
+  ctx.func.locals = new Map()
+  ctx.func.valTypes = new Map()
+  ctx.func.boxed = new Map()
+  ctx.func.stack = []
+  ctx.func.current = { params: [], results: [] }
+  analyzeValTypes(ast)
+  const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
+
+  const moduleInits = []
+  if (ctx.module.moduleInits) {
+    for (const mi of ctx.module.moduleInits) {
+      analyzeValTypes(mi)
+      moduleInits.push(...normalizeIR(emit(mi)))
+    }
+  }
+  const init = emit(ast)
+
+  const boxInit = []
+  if (ctx.schema.autoBox) {
+    const bt = `${T}box`
+    ctx.func.locals.set(bt, 'i32')
+    for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
+      inc('__alloc', '__mkptr')
+      boxInit.push(
+        ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+        ['f64.store', ['local.get', `$${bt}`],
+          ctx.func.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+        ...schema.slice(1).map((_, i) =>
+          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
+        ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
+    }
+  }
+
+  const schemaInit = []
+  if (ctx.core.includes.has('__stringify') && ctx.schema.list.length) {
+    const nSchemas = ctx.schema.list.length
+    const stbl = `${T}stbl`
+    const sarr = `${T}sarr`
+    ctx.func.locals.set(stbl, 'i32')
+    ctx.func.locals.set(sarr, 'i32')
+    inc('__alloc', '__alloc_hdr', '__mkptr')
+    schemaInit.push(
+      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', nSchemas * 8]]],
+      ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
+    for (let s = 0; s < nSchemas; s++) {
+      const keys = ctx.schema.list[s]
+      const n = keys.length
+      schemaInit.push(
+        ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]])
+      for (let k = 0; k < n; k++)
+        schemaInit.push(
+          ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
+            emit(['str', String(keys[k])])])
+      schemaInit.push(
+        ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
+          mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
+    }
+  }
+
+  const strPoolInit = []
+  if (ctx.runtime.strPool) {
+    const total = ctx.runtime.strPool.length
+    strPoolInit.push(
+      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
+      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
+      ['data.drop', '$__strPool'],
+    )
+  }
+
+  const typeofInit = []
+  if (ctx.runtime.typeofStrs) {
+    for (const s of ctx.runtime.typeofStrs)
+      typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
+  }
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length) {
+    const initIR = normalizeIR(init)
+    const startFn = ['func', '$__start']
+    for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
+    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    sec.start.push(startFn, ['start', '$__start'])
+  }
+
+  const beforeLen = closureFuncs.length
+  compilePendingClosures()
+  if (closureFuncs.length > beforeLen)
+    sec.funcs.unshift(...closureFuncs.slice(beforeLen))
+}
+
+/**
  * Phase: closure-body dedup.
  *
  * Two closures with structurally-equal bodies (same shape after alpha-renaming
@@ -1244,101 +1357,7 @@ export default function compile(ast) {
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
-  // Module-scope init code (__start): reset per-function state, emit, collect locals
-  ctx.func.locals = new Map()
-  ctx.func.valTypes = new Map()
-  ctx.func.boxed = new Map()
-  ctx.func.stack = []
-  ctx.func.current = { params: [], results: [] }
-  analyzeValTypes(ast)
-  const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
-  // Emit sub-module init code first (imports must be initialized before main module)
-  const moduleInits = []
-  if (ctx.module.moduleInits) {
-    for (const mi of ctx.module.moduleInits) {
-      analyzeValTypes(mi)
-      moduleInits.push(...normalizeIR(emit(mi)))
-    }
-  }
-  const init = emit(ast)
-
-  // Auto-boxing: emit boxing code for variables with property assignments
-  const boxInit = []
-  if (ctx.schema.autoBox) {
-    const bt = `${T}box`
-    ctx.func.locals.set(bt, 'i32')
-    for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
-      inc('__alloc', '__mkptr')
-      boxInit.push(
-        ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
-        // Store inner value (slot 0) — 0 for functions (calls go direct), current val for others
-        ['f64.store', ['local.get', `$${bt}`],
-          ctx.func.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
-        // Initialize property slots to 0
-        ...schema.slice(1).map((_, i) =>
-          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
-        // Create boxed OBJECT pointer and store back
-        ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
-    }
-  }
-
-  // Schema name table: if JSON.stringify is used, build runtime table mapping schemaId → key arrays
-  const schemaInit = []
-  if (ctx.core.includes.has('__stringify') && ctx.schema.list.length) {
-    const nSchemas = ctx.schema.list.length
-    const stbl = `${T}stbl`
-    const sarr = `${T}sarr`
-    ctx.func.locals.set(stbl, 'i32')
-    ctx.func.locals.set(sarr, 'i32')
-    inc('__alloc', '__alloc_hdr', '__mkptr')
-    schemaInit.push(
-      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', nSchemas * 8]]],
-      ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
-    for (let s = 0; s < nSchemas; s++) {
-      const keys = ctx.schema.list[s]
-      const n = keys.length
-      schemaInit.push(
-        ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]])
-      for (let k = 0; k < n; k++)
-        schemaInit.push(
-          ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
-            emit(['str', String(keys[k])])])
-      schemaInit.push(
-        ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
-          mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
-    }
-  }
-
-  // Allocate shared-memory string pool and copy bytes from passive segment — MUST run
-  // before anything else, since all heap-string emissions resolve via $__strBase.
-  const strPoolInit = []
-  if (ctx.runtime.strPool) {
-    const total = ctx.runtime.strPool.length
-    strPoolInit.push(
-      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
-      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
-      ['data.drop', '$__strPool'],  // free segment bytes once copied
-    )
-  }
-  // Preallocate typeof result strings into globals (emit['str'] needs __start's fresh locals map).
-  const typeofInit = []
-  if (ctx.runtime.typeofStrs) {
-    for (const s of ctx.runtime.typeofStrs)
-      typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
-  }
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length) {
-    const initIR = normalizeIR(init)
-    const startFn = ['func', '$__start']
-    for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
-    sec.start.push(startFn, ['start', '$__start'])
-  }
-
-  // Late closures (compiled during __start emit) — prepend before earlier closures
-  const beforeLen = closureFuncs.length
-  compilePendingClosures()
-  if (closureFuncs.length > beforeLen)
-    sec.funcs.unshift(...closureFuncs.slice(beforeLen))
+  buildStartFn(ast, sec, closureFuncs, compilePendingClosures)
 
   dedupClosureBodies(closureFuncs, sec)
 
