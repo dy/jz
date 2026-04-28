@@ -378,6 +378,10 @@ export function emitDecl(...inits) {
     let coerced
     if (ptrKind != null) {
       // Unboxed pointer local — extract i32 offset from NaN-boxed f64 via reinterpret, not numeric trunc.
+      // CLOSURE init carries funcIdx in val.closureFuncIdx; persist it on the rep so a later
+      // asF64 (escape: store, return, indirect-call rebox) reconstructs the correct table slot.
+      if (ptrKind === VAL.CLOSURE && val.closureFuncIdx != null && repOf(name)?.ptrAux == null)
+        updateRep(name, { ptrAux: val.closureFuncIdx })
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
     } else {

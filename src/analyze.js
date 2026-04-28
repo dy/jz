@@ -473,7 +473,7 @@ export function analyzePtrUnboxable(body, locals, boxed) {
   const disqualified = new Set()
   const valOf = name => ctx.func.repByLocal?.get(name)?.val
 
-  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED])
+  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.
   //   OBJECT  ← `{…}`

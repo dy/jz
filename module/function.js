@@ -84,6 +84,7 @@ export default (ctx) => {
       // No captures — just a function reference
       const ir = mkPtrIR(PTR.CLOSURE, tableIdx, 0)
       ir.closureBodyName = fnName
+      ir.closureFuncIdx = tableIdx
       return ir
     }
 
@@ -105,6 +106,7 @@ export default (ctx) => {
 
     const ir = typed(['block', ['result', 'f64'], ...block], 'f64')
     ir.closureBodyName = fnName
+    ir.closureFuncIdx = tableIdx
     return ir
   }
 

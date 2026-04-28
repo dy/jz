@@ -178,9 +178,22 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   reassigned or escaped should lower to a direct call with explicit env, not a closure
   pointer plus `call_indirect`.
 
-* [ ] **CLOSURE and TYPED local unboxing** — `analyzePtrUnboxable` already has most of
-  the shape. Enable only with focused tests for aux preservation, nullish comparisons,
-  capture behavior, and typed-array method results.
+* [x] **CLOSURE local unboxing** — Apr 28. `VAL.CLOSURE` now in `UNBOXABLE_KINDS`.
+  Closure NaN-box has [type=PTR.CLOSURE, aux=funcIdx, offset=envPtr]; unboxing to i32
+  envPtr loses funcIdx, so `closure.make` now stamps `ir.closureFuncIdx = tableIdx` on
+  the returned IR (alongside existing `ir.closureBodyName`), and `emitDecl`'s unbox path
+  copies it into `repByLocal[name].ptrAux`. Result: `asF64(local.get $g)` reboxes via
+  `boxPtrIR(localGet, PTR.CLOSURE, ptrAux)` reconstructing the correct call_indirect
+  target on every escape (array store, fn-param, capture by inner arrow). Direct dispatch
+  is unaffected — it bypasses the rebox via `directClosures`. 9 focused tests in
+  `test/closure-unbox.js`, 949/949 PASS, all 4 goldens unchanged. Pre-existing bug:
+  `o.fn(g)` (closure stored in object dispatched via `__dyn_get_expr` / `__ext_call`)
+  hits `RuntimeError: table index is out of bounds` *with or without* unboxing; root
+  cause not in this change — logged for follow-up.
+
+* [ ] **TYPED local unboxing extension** — TYPED is already in `UNBOXABLE_KINDS`; the
+  remaining win is broader call-result acceptance (typed-array methods like `.subarray()`,
+  `.slice()` returning narrowed-TYPED i32 ptr).
 
 * [x] **Known table-slot direct calls** — Apr 27. const-bound, non-escaping local closures
   now lower their call sites to `call $<bodyFn>` (same uniform `(env, argc, a0..)` ABI as
