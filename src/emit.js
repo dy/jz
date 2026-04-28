@@ -1086,9 +1086,19 @@ export const emitter = {
     const vc = withRefinements(elseRefs, c, () => emit(c))
     // L: Use WASM select for pure ternaries — branchless, smaller bytecode
     if (vb.type === 'i32' && vc.type === 'i32') {
+      // Propagate matching ptrKind/ptrAux so a downstream asF64 takes the NaN-rebox
+      // path instead of `f64.convert_i32_s`. Mismatched kinds drop both — caller's
+      // asF64 will treat the i32 as numeric, which is correct for non-pointer i32s.
+      const tagPtr = (n) => {
+        if (vb.ptrKind != null && vb.ptrKind === vc.ptrKind) {
+          n.ptrKind = vb.ptrKind
+          if (vb.ptrAux != null && vb.ptrAux === vc.ptrAux) n.ptrAux = vb.ptrAux
+        }
+        return n
+      }
       if (isPureIR(vb) && isPureIR(vc))
-        return typed(['select', vb, vc, cond], 'i32')
-      return typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32')
+        return tagPtr(typed(['select', vb, vc, cond], 'i32'))
+      return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
     }
     const fb = asF64(vb), fc = asF64(vc)
     if (isPureIR(fb) && isPureIR(fc))
