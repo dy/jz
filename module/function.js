@@ -11,6 +11,7 @@
  */
 
 import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, lookupValType } from '../src/compile.js'
+import { isReassigned } from '../src/emit.js'
 import { PTR, inc, err } from '../src/ctx.js'
 
 
@@ -44,6 +45,11 @@ export default (ctx) => {
     const captureValTypes = new Map()
     const captureSchemaVars = new Map()
     const captureTypedElems = new Map()
+    // Propagate parent's directClosures across captures: a const-bound closure captured
+    // by an inner arrow can still be direct-dispatched in the inner body (skip
+    // call_indirect on the captured pointer). Gated on isReassigned over the inner body
+    // so a local rewrite of the captured name disables propagation.
+    const captureDirectClosures = new Map()
     for (const name of captures) {
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
@@ -51,6 +57,8 @@ export default (ctx) => {
       if (schemaId != null) captureSchemaVars.set(name, schemaId)
       const elemType = ctx.types.typedElem?.get(name)
       if (elemType != null) captureTypedElems.set(name, elemType)
+      const bodyName = ctx.func.directClosures?.get(name)
+      if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
     }
 
     // All closures use uniform convention: (env: f64, args_array: f64) → f64
@@ -62,7 +70,8 @@ export default (ctx) => {
       ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }),
       ...(captureValTypes.size && { valTypes: captureValTypes }),
       ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
-      ...(captureTypedElems.size && { typedElems: captureTypedElems }) }
+      ...(captureTypedElems.size && { typedElems: captureTypedElems }),
+      ...(captureDirectClosures.size && { directClosures: captureDirectClosures }) }
     ctx.closure.bodies.push(bodyFn)
 
     const tableIdx = addToTable(fnName)

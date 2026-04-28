@@ -701,7 +701,10 @@ function emitClosureBody(cb) {
   ctx.func.stack = []
   ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
   ctx.func.body = cb.body
-  ctx.func.directClosures = null
+  // Seed direct-call dispatch for captured const-bound closures (A3 across capture boundary).
+  // closure.make snapshotted the parent's directClosures for each capture; here we restore
+  // them so calls to a captured `peek` lower to `call $closureN` instead of call_indirect.
+  ctx.func.directClosures = cb.directClosures ? new Map(cb.directClosures) : null
   // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]

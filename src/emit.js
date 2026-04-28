@@ -161,7 +161,7 @@ function extractRefinements(cond, out, sense = true) {
  *  Conservative over-reject: if unsure, treat as written.
  *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
  *  inside them are scanned. (Treating `let g = ...` as a write of `g` would defeat A3.) */
-function isReassigned(body, name) {
+export function isReassigned(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%='

@@ -95,6 +95,13 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   is non-boxed, non-global, and not reassigned in the function body. Also fixed
   `isReassigned` to not flag `let g = …` initialization as a write of `g`. Closure-heavy
   parser golden: 4084 → 4042 b. 922/922 PASS.
+  Apr 27 (extension) — direct dispatch now propagates across capture boundaries:
+  `closure.make` snapshots parent's `directClosures` for each capture (gated on
+  `isReassigned(body, captureName)`), `emitClosureBody` seeds `ctx.func.directClosures`
+  from the snapshot. Inner arrows can therefore direct-call captured const-bound
+  closures instead of going through `call_indirect`. watr metacircular:
+  21 → 34 of 66 closure calls direct (~52%, was ~32%); 153484 → 153220 b (-264 b).
+  Closure-heavy parser golden: 4042 → 4022 b. 922/922 PASS.
 
 * [ ] **Head-offset `Array.shift`** — replace O(n) `memory.copy` shift with amortized O(1)
   head offset. High leverage, high touch surface: every array index/iteration path must
