@@ -81,4 +81,21 @@ export function initSchema(ctx) {
     for (let i = 1; i < bucket.length; i++) if (bucket[i].slot !== slot) return -1
     return slot
   }
+
+  /** Resolve the monomorphic slot value-type for `varName.prop`, or null.
+   *  Precise path only: requires the variable to have a bound `schemaId`
+   *  (ValueRep or `ctx.schema.vars`). Structural-subtyping is intentionally
+   *  off — without per-call-site flow inference, structural agreement on a
+   *  slot can lead `analyzeValTypes` to bind locals as VAL.NUMBER (or other
+   *  kinds) when in fact the holder isn't an object of any registered
+   *  schema. That mistyping then routes downstream property accesses
+   *  through __hash_get instead of __dyn_get_any, growing the binary. */
+  ctx.schema.slotVT = (varName, prop) => {
+    const types = ctx.schema.slotTypes
+    if (!types) return null
+    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
+    if (id == null) return null
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    return idx >= 0 ? (types.get(id)?.[idx] ?? null) : null
+  }
 }

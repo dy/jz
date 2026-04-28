@@ -537,6 +537,21 @@ function collectProgramFacts(ast) {
   const doArity = !!ctx.closure.make
   let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
   const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  // Slot-type collection: monomorphic property val types per schema, populated from
+  // every static `{a: e1, b: e2, …}` literal in the program. Read by ctx.schema.slotVT
+  // → valTypeOf on `.prop` AST nodes so downstream `+`, `===`, method dispatch can
+  // skip the "is it a string?" runtime check on numeric props of known shapes.
+  // Merge rule: first observation wins; second distinct kind → null (ambiguous).
+  const slotTypes = ctx.schema.slotTypes
+  const observeSlot = (sid, idx, vt) => {
+    if (!vt) return
+    let arr = slotTypes.get(sid)
+    if (!arr) { arr = []; slotTypes.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = vt
+    else if (arr[idx] !== vt) arr[idx] = null
+  }
   const walkFacts = (node, full, inArrow, callerFunc) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -550,6 +565,21 @@ function collectProgramFacts(ast) {
       if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
       anyDyn = true
       if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    // Object literal: register schema + slot val types. Static-key, non-spread only;
+    // dynamic-key shapes route through __dyn_set and don't have a fixed slot mapping.
+    if (op === '{}' && doSchema && args[0]?.[0] === ':') {
+      const rawProps = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+      const names = [], values = []
+      let ok = true
+      for (const p of rawProps) {
+        if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') { ok = false; break }
+        names.push(p[1]); values.push(p[2])
+      }
+      if (ok && names.length) {
+        const sid = ctx.schema.register(names)
+        for (let i = 0; i < values.length; i++) observeSlot(sid, i, valTypeOf(values[i]))
+      }
     }
     // closure ABI arity
     if (doArity) {

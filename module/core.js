@@ -367,9 +367,10 @@ export default (ctx) => {
 
   // Known-schema fields live in the object payload. Dynamic sidecars are only
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
+  // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
+  // (read on the AST `.prop` node), not via tagging this IR node.
   function emitSchemaSlotRead(baseExpr, idx) {
     const base = baseExpr?.type === 'f64' ? baseExpr : typed(baseExpr, 'f64')
-    // Schema-backed objects are never ARRAY → skip __ptr_offset forwarding helper.
     return typed(['f64.load', ['i32.add', ptrOffsetIR(base, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
   }
 
@@ -472,9 +473,7 @@ export default (ctx) => {
       access = emitLengthAccess(['local.get', `$${t}`], vt)
     } else {
       const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
-      if (propIdx >= 0) {
-        access = emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
-      }
+      if (propIdx >= 0) access = emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
       else {
         if (typeof obj === 'string') {
           const objType = lookupValType(obj)

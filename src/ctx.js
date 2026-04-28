@@ -151,6 +151,13 @@ export function reset(proto, globals) {
     find: null,
     targetStack: [],
     autoBox: null,
+    slotTypes: new Map(),  // schemaId → Array<VAL.* | null | undefined>
+                           //   undefined: no observation, null: ≥2 distinct kinds, VAL.*: monomorphic
+                           // Populated by collectProgramFacts on object literals;
+                           // read by ctx.schema.slotVT (precise-only) so valTypeOf
+                           // returns the slot's kind for `.prop` AST nodes, letting
+                           // `+`/`===`/method dispatch elide `__is_str_key` checks
+                           // on numeric properties of known shapes.
   }
 
   ctx.closure = {

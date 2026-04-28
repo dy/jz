@@ -115,6 +115,15 @@ export function valTypeOf(expr) {
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+  // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
+  // to a slot whose VAL kind is monomorphic across program-wide observations,
+  // return that kind. Lets `+`, `===`, method dispatch skip runtime str-key
+  // checks on numeric properties of known shapes. Precise-only — see
+  // ctx.schema.slotVT for why structural subtyping is intentionally off.
+  if (op === '.' && typeof args[1] === 'string' && ctx.schema?.slotVT) {
+    const slotVT = ctx.schema.slotVT(args[0], args[1])
+    if (slotVT) return slotVT
+  }
   // Arithmetic expressions: BigInt if either operand is BigInt, else number
   if (['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
     if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
@@ -284,6 +293,15 @@ export function analyzeValTypes(body) {
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
         propagateTyped(a[1], a[2])
+        // Propagate schemaId from a narrowed call result so subsequent valTypeOf
+        // calls in this function body see the precise schema. emitDecl rebinds
+        // this at emission time too — analyze-time binding is what unlocks the
+        // slotVT lookup chain in `analyzeValTypes`'s own walk + per-func emit
+        // dispatch reading repByLocal.
+        if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '()' && typeof a[2][1] === 'string') {
+          const f = ctx.func.map?.get(a[2][1])
+          if (f?.sig?.ptrAux != null) updateRep(a[1], { schemaId: f.sig.ptrAux })
+        }
       }
     }
     if (op === '=' && typeof args[0] === 'string') {
