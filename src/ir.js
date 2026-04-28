@@ -21,7 +21,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, repOf } from './analyze.js'
 
 // === Type helpers ===
 
@@ -374,7 +374,7 @@ export function boxedAddr(name) {
 }
 
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get.
- *  Unboxed pointer locals (ctx.func.ptrKinds) tag the returned node with `.ptrKind`
+ *  Unboxed pointer locals (repOf(name).ptrKind) tag the returned node with `.ptrKind`
  *  so downstream coercions know it's an i32 offset, not a numeric. */
 export function readVar(name) {
   if (ctx.func.boxed?.has(name))
@@ -387,10 +387,10 @@ export function readVar(name) {
   }
   const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
   const node = typed(['local.get', `$${name}`], t)
-  const kind = ctx.func.ptrKinds?.get(name)
-  if (kind != null) {
-    node.ptrKind = kind
-    const aux = ctx.func.ptrAuxes?.get(name) ?? ctx.schema.vars?.get(name)
+  const rep = repOf(name)
+  if (rep?.ptrKind != null) {
+    node.ptrKind = rep.ptrKind
+    const aux = rep.ptrAux ?? ctx.schema.vars?.get(name)
     if (aux != null) node.ptrAux = aux
   }
   return node
@@ -419,7 +419,7 @@ export function writeVar(name, valIR, void_) {
       ['local.get', `$${t}`]], 'f64')
   }
   const t = ctx.func.locals.get(name) || 'f64'
-  const ptrKind = ctx.func.ptrKinds?.get(name)
+  const ptrKind = repOf(name)?.ptrKind
   let coerced
   if (ptrKind != null) {
     // Local stores unboxed i32 offset. If RHS is already a same-kind offset, pass through;

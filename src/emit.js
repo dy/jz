@@ -23,7 +23,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep } from './analyze.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -361,14 +361,13 @@ export function emitDecl(...inits) {
       continue
     }
     const localType = ctx.func.locals.get(name) || 'f64'
-    let ptrKind = ctx.func.ptrKinds?.get(name)
+    let ptrKind = repOf(name)?.ptrKind
     // Inherit ptrKind from a pointer-ABI RHS: destructure temps (`__d0 = v`) and other
     // fresh let-bindings whose init is already an unboxed pointer. Without this, readVar
     // returns an untyped i32 local.get and later `asF64` emits a numeric convert instead
     // of a ptr-rebox. Safe because emitDecl runs once per let/const binding.
     if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
-      if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
-      ctx.func.ptrKinds.set(name, val.ptrKind)
+      updateRep(name, { ptrKind: val.ptrKind })
       ptrKind = val.ptrKind
       if (val.ptrAux != null && !ctx.schema.vars?.has(name)) ctx.schema.vars.set(name, val.ptrAux)
     }

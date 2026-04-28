@@ -31,6 +31,7 @@ import {
   T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
+  updateRep,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -540,7 +541,7 @@ function collectProgramFacts(ast) {
  * Reads the (already-narrowed) `func.sig` and `programFacts.paramValTypes/paramSchemas`
  * to seed local valTypes / schema bindings; emits body via emit / emitBody.
  *
- * Mutates ctx.func.* per-function state (locals, boxed, ptrKinds, …) and
+ * Mutates ctx.func.* per-function state (locals, boxed, repByLocal, …) and
  * ctx.schema.vars (restored on exit so bindings don't leak across functions).
  */
 function emitFunc(func, programFacts) {
@@ -566,8 +567,7 @@ function emitFunc(func, programFacts) {
   ctx.func.valTypes = new Map()
   ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
   ctx.func.localProps = null  // reset per function
-  ctx.func.ptrKinds = null    // populated after boxed analysis; reset per function
-  ctx.func.ptrAuxes = null    // per-local aux bits for unboxed PTR.* (TYPED elemType, OBJECT schemaId, …)
+  ctx.func.repByLocal = null  // Map<name, ValueRep> — populated lazily; reset per function
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
   if (block) {
     analyzeValTypes(body)
@@ -575,24 +575,24 @@ function emitFunc(func, programFacts) {
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     const unbox = analyzePtrUnboxable(body, ctx.func.valTypes, ctx.func.locals, ctx.func.boxed)
     if (unbox.size > 0) {
-      ctx.func.ptrKinds = unbox
       for (const [n, kind] of unbox) {
         ctx.func.locals.set(n, 'i32')
+        const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
           const aux = typedElemAux(ctx.types.typedElem?.get(n))
-          if (aux != null) (ctx.func.ptrAuxes ||= new Map()).set(n, aux)
+          if (aux != null) fields.ptrAux = aux
         }
+        updateRep(n, fields)
       }
     }
   }
   // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
-  // ptrKind set. Register them in ctx.func.ptrKinds so readVar tags local.gets correctly.
+  // ptrKind set. Register them in ctx.func.repByLocal so readVar tags local.gets correctly.
   // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
   // so asF64 reboxes to NaN-form before f64.store to the cell.
   for (const p of sig.params) {
     if (p.ptrKind == null) continue
-    if (!ctx.func.ptrKinds) ctx.func.ptrKinds = new Map()
-    ctx.func.ptrKinds.set(p.name, p.ptrKind)
+    updateRep(p.name, { ptrKind: p.ptrKind })
   }
   // D: Apply call-site param types (only if body analysis didn't already set them)
   const ptypes = paramValTypes.get(name)

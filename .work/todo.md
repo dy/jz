@@ -42,6 +42,31 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `ptrKind`, `ptrAux`, `schema.vars`, `globalTypes`, and local inference with one record:
   `{ wasm, val, ptrKind, ptrAux, schemaId, nullable, stableOffset }`.
 
+  Staged plan (a full single-pass refactor would touch ~80+ sites; doing it
+  in stages keeps each landable independently with byte-parity guarantee):
+
+  * [x] **S2a — collapse `ptrKinds`+`ptrAuxes` → `repByLocal`.** Apr 28.
+    Introduced `ValueRep` record + `repOf(name)` / `updateRep(name, fields)` helpers
+    in `analyze.js`. Two per-function maps (`ctx.func.ptrKinds`,
+    `ctx.func.ptrAuxes`) replaced by one (`ctx.func.repByLocal:
+    Map<name, ValueRep>`); 14 touch sites migrated across compile.js / emit.js /
+    ir.js (readVar, writeVar, emitDecl, emitFunc unbox seed, param-narrowing
+    seed). 923/923 PASS, all goldens unchanged (3306 / 6062 / 3921 / 1968),
+    watr metacircular byte-parity holds across all 10 vendored examples.
+  * [ ] **S2b** — collapse `unboxedTypedGlobals` (and the read-side of
+    `globalTypes` for typed-array path) → `ctx.scope.repByGlobal`. Targets
+    ir.js readVar global branch (lines 383–385) where the two maps are read
+    together.
+  * [ ] **S2c** — subsume `ctx.func.valTypes` and `ctx.schema.vars`(local-key
+    portion) into the same per-local rep. Drops the schema.vars fallback in
+    readVar; consolidates `lookupValType` to read `repOf(name).val` for the
+    function-local case.
+  * [ ] **S2d** — decide whether the IR-sidecar `.type` and `ctx.func.boxed` /
+    `ctx.func.refinements` belong in ValueRep or stay separate. Likely
+    separate: `.type` is per-emitted-node (not per-name), `boxed` carries a
+    storage cell name (not a type), `refinements` is a flow-sensitive overlay.
+    The "one record" goal applies to per-name type/representation facts only.
+
 * [x] **Explicit compile pipeline** — split `compile.js` by phase:
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.
   Each phase should have an input/output contract. Ordering should be encoded structurally,

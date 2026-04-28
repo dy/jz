@@ -39,6 +39,34 @@ export const VAL = {
   BIGINT: 'bigint', BUFFER: 'buffer',
 }
 
+/**
+ * ValueRep — unified per-local representation record. (S2 unification target.)
+ *
+ * Currently populated fields:
+ *   ptrKind: VAL.* — when this local stores an unboxed i32 pointer offset.
+ *   ptrAux:  i32   — kind-dependent aux (TYPED elem code, OBJECT schemaId, …).
+ *
+ * Future fields (per todo.md S2; absent today, will be lifted from existing
+ * scattered maps as later stages collapse them):
+ *   wasm:        'i32' | 'f64'  (today: ctx.func.locals)
+ *   val:         VAL.*          (today: ctx.func.valTypes)
+ *   schemaId:    i32            (today: ctx.schema.vars at param binding)
+ *   nullable, stableOffset                              (not yet tracked)
+ *
+ * Stored at ctx.func.repByLocal: Map<name, ValueRep> — null when no locals
+ * have a rep (small-prog optimization, no allocation when nothing to record).
+ */
+
+/** Get the rep for a local name, or undefined if not tracked. */
+export const repOf = name => ctx.func.repByLocal?.get(name)
+
+/** Merge fields into a local's rep. Lazily allocates the map and the rep. */
+export const updateRep = (name, fields) => {
+  const m = ctx.func.repByLocal ||= new Map()
+  const prev = m.get(name)
+  m.set(name, prev ? { ...prev, ...fields } : { ...fields })
+}
+
 /** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →
  *  function-local scope → module-global scope.
  *  Refinements are pushed by the 'if' emitter when the condition is a type guard
