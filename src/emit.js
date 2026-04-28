@@ -1343,6 +1343,7 @@ export const emitter = {
             emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
           const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
           if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+          if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
           return callIR
         }
       }
@@ -1703,6 +1704,7 @@ export const emitter = {
           ...emittedFixed,
           arrayIR], func.sig.results[0])
         if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+        if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
         return callIR
       }
 
@@ -1716,6 +1718,7 @@ export const emitter = {
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
       if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
+      if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
       return callIR
     }
 

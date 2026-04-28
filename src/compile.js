@@ -365,7 +365,9 @@ function narrowSignatures(programFacts) {
       if (func.valResult) continue
       const body = func.body
       const exprs = []
-      if (Array.isArray(body) && body[0] === '{}') {
+      // Block: `'{}'` with non-`:` first child (else it's an expression-bodied object literal)
+      const isBlock = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+      if (isBlock) {
         collectReturnExprs(body, exprs)
         const hasBareReturn = (n) => {
           if (!Array.isArray(n)) return false
@@ -378,7 +380,7 @@ function narrowSignatures(programFacts) {
         exprs.push(body)
       }
       if (!exprs.length) continue
-      const localValTypes = (Array.isArray(body) && body[0] === '{}') ? collectValTypes(body) : new Map()
+      const localValTypes = isBlock ? collectValTypes(body) : new Map()
       // Params of this function contribute no known VAL type yet (paramValTypes may help later).
       const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
       if (!vt0) continue
@@ -388,15 +390,20 @@ function narrowSignatures(programFacts) {
   }
 
   // E3: Result-type pointer narrowing — when valResult is a non-ambiguous pointer kind
-  // with constant aux (SET/MAP/BUFFER, all aux=0), narrow sig.results[0] from f64 to i32
-  // and tag sig.ptrKind. Eliminates the f64.reinterpret_i64+i64.or rebox at every return
-  // and the i32.wrap_i64+i64.reinterpret_f64 unbox at every callsite that uses the value
-  // as a pointer (load .[], .length, method dispatch).
-  // Safety: ARRAY forwards on realloc; STRING dual-encoded SSO/heap; CLOSURE/TYPED carry
-  // table-idx/element-type in aux; OBJECT carries schema-id in aux (per-callsite preservation
-  // not yet wired). Body must be a guaranteed-return form — fallthrough fallback i32.const 0
-  // would be a valid offset 0 of the narrowed kind, not undefined.
-  const PTR_RESULT_KINDS = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
+  // with constant aux, narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
+  // Eliminates the f64.reinterpret_i64+i64.or rebox at every return and the
+  // i32.wrap_i64+i64.reinterpret_f64 unbox at every callsite that uses the value as a
+  // pointer (load .[], .length, .prop slot dispatch).
+  //   - SET/MAP/BUFFER: aux always 0 — no per-callsite aux preservation needed.
+  //   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
+  //     schema (literal `{a,b,c}`, paramSchemas-bound param, module-bound var, or call to
+  //     another OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
+  //     repByLocal.schemaId, restoring property-slot dispatch through the call boundary.
+  // Safety: ARRAY forwards on realloc (no narrowing). STRING dual-encoded SSO/heap.
+  // CLOSURE/TYPED also carry meaningful aux — TYPED narrowing is a follow-up. Body must
+  // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
+  // offset 0 of the narrowed kind, not undefined.
+  const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
   const alwaysReturns = (n) => {
     if (!Array.isArray(n)) return false
     const op = n[0]
@@ -406,12 +413,87 @@ function narrowSignatures(programFacts) {
     if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
     return false
   }
-  for (const func of valTypeNarrowable) {
-    if (!func.valResult || !PTR_RESULT_KINDS.has(func.valResult)) continue
-    if (func.sig.results[0] !== 'f64') continue
-    if (!alwaysReturns(func.body)) continue
-    func.sig.results = ['i32']
-    func.sig.ptrKind = func.valResult
+  // Schema-id inference for a return expression. Returns id (number), or null if unknown
+  // / not constant. Mirrors inferArgSchema but extends with calls to already-narrowed
+  // OBJECT-result funcs (fixpoint propagation through helper chains).
+  const schemaIdOfReturn = (expr, paramSchemasMap) => {
+    if (typeof expr === 'string') {
+      if (paramSchemasMap?.has(expr)) return paramSchemasMap.get(expr)
+      if (ctx.schema.vars.has(expr)) return ctx.schema.vars.get(expr)
+      return null
+    }
+    if (!Array.isArray(expr)) return null
+    const [op, ...args] = expr
+    if (op === '{}') {
+      // Object literal: children are `:` nodes (or one comma-wrapped list of them).
+      // If parsing fails (block body, dynamic key, spread), fall through to null.
+      const rawProps = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+      const names = []
+      for (const p of rawProps) {
+        if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+        names.push(p[1])
+      }
+      if (!names.length) return null
+      return ctx.schema.register(names)
+    }
+    if (op === '()' && typeof args[0] === 'string') {
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult === VAL.OBJECT && f.sig.ptrAux != null) return f.sig.ptrAux
+      return null
+    }
+    if (op === '?:') {
+      const a = schemaIdOfReturn(args[1], paramSchemasMap)
+      const b = schemaIdOfReturn(args[2], paramSchemasMap)
+      return a != null && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = schemaIdOfReturn(args[0], paramSchemasMap)
+      const b = schemaIdOfReturn(args[1], paramSchemasMap)
+      return a != null && a === b ? a : null
+    }
+    return null
+  }
+  // Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so outer's
+  // call to inner contributes a known schema-id.
+  let narrowChanged = true
+  while (narrowChanged) {
+    narrowChanged = false
+    for (const func of valTypeNarrowable) {
+      if (!func.valResult) continue
+      if (func.sig.results[0] !== 'f64') continue
+      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      if (isBlock && !alwaysReturns(func.body)) continue
+      if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
+        func.sig.results = ['i32']
+        func.sig.ptrKind = func.valResult
+        narrowChanged = true
+        continue
+      }
+      if (func.valResult === VAL.OBJECT) {
+        const exprs = []
+        if (isBlock) collectReturnExprs(func.body, exprs)
+        else exprs.push(func.body)
+        if (!exprs.length) continue
+        const ps = paramSchemas.get(func.name)
+        let paramSchemasMap = null
+        if (ps) {
+          for (const [k, sid] of ps) {
+            if (sid != null && k < func.sig.params.length) {
+              paramSchemasMap ||= new Map()
+              paramSchemasMap.set(func.sig.params[k].name, sid)
+            }
+          }
+        }
+        const sid0 = schemaIdOfReturn(exprs[0], paramSchemasMap)
+        if (sid0 == null) continue
+        const allSame = exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)
+        if (!allSame) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.OBJECT
+        func.sig.ptrAux = sid0
+        narrowChanged = true
+      }
+    }
   }
 }
 

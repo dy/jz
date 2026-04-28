@@ -465,17 +465,30 @@ export function analyzePtrUnboxable(body, locals, boxed) {
   // that helper grows (e.g. `Array.from` → ARRAY), we don't drift out of sync.
   const isFreshInit = (expr, kind) => {
     if (!Array.isArray(expr)) return false
-    if (kind === VAL.OBJECT) return expr[0] === '{}'
+    if (kind === VAL.OBJECT) {
+      if (expr[0] === '{}') return true
+      // Call to a narrow-ABI'd helper: returns i32 ptr-offset of the same VAL kind.
+      // Unboxing skips the f64-rebox at the callsite. Verifying via sig (not just
+      // valResult) ensures the call already produces an i32 — which dual-write picks
+      // up to bind ptrKind/schemaId on the local.
+      if (expr[0] === '()' && typeof expr[1] === 'string') {
+        const f = ctx.func.map?.get(expr[1])
+        return f?.sig?.ptrKind === kind
+      }
+      return false
+    }
     if (kind === VAL.CLOSURE) return expr[0] === '=>'
-    if (expr[0] !== '()') return false
-    const callee = expr[1]
-    if (typeof callee !== 'string' || !callee.startsWith('new.')) return false
-    if (kind === VAL.SET) return callee === 'new.Set'
-    if (kind === VAL.MAP) return callee === 'new.Map'
-    if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer' || callee === 'new.DataView'
-    if (kind === VAL.TYPED) {
-      // Any typed-array ctor: new.Int8Array, new.Uint32Array, new.Float64Array, …
-      return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
+    if (expr[0] === '()' && typeof expr[1] === 'string') {
+      const callee = expr[1]
+      if (callee.startsWith('new.')) {
+        if (kind === VAL.SET) return callee === 'new.Set'
+        if (kind === VAL.MAP) return callee === 'new.Map'
+        if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer' || callee === 'new.DataView'
+        if (kind === VAL.TYPED) return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
+      }
+      // Call to narrow-ABI'd helper of matching VAL kind.
+      const f = ctx.func.map?.get(callee)
+      if (f?.sig?.ptrKind === kind) return true
     }
     return false
   }
