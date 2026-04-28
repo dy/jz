@@ -7,7 +7,7 @@
  * @module schema
  */
 
-import { emit, typed, asF64, VAL, lookupValType } from '../src/compile.js'
+import { emit, typed, asF64, VAL, lookupValType, repOf } from '../src/compile.js'
 import { err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -36,13 +36,13 @@ export function initSchema(ctx) {
 
   /** Resolve variable name to its schema props array, or null. */
   ctx.schema.resolve = (varName) => {
-    const id = ctx.schema.vars.get(varName)
+    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
     return id != null ? ctx.schema.list[id] : null
   }
 
   /** Check if variable has a boxed schema (slot 0 = __inner__). */
   ctx.schema.isBoxed = (varName) => {
-    const id = ctx.schema.vars.get(varName)
+    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
     return id != null && ctx.schema.list[id]?.[0] === '__inner__'
   }
 
@@ -64,7 +64,7 @@ export function initSchema(ctx) {
    *  values, which callers can tolerate. */
   ctx.schema.find = (varName, prop, safe = false) => {
     // Precise: variable has known schema
-    const id = ctx.schema.vars.get(varName)
+    const id = repOf(varName)?.schemaId ?? ctx.schema.vars.get(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
     // Known non-object pointer-backed values must use dynamic property lookup,
     // not structural object schemas registered elsewhere in the function.

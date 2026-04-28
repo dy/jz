@@ -612,7 +612,10 @@ function emitFunc(func, programFacts) {
     for (const [k, sid] of stypes) {
       if (sid == null || k >= sig.params.length) continue
       const pname = sig.params[k].name
-      if (!ctx.schema.vars.has(pname)) ctx.schema.vars.set(pname, sid)
+      if (!ctx.schema.vars.has(pname)) {
+        ctx.schema.vars.set(pname, sid)
+        updateRep(pname, { schemaId: sid })
+      }
     }
   }
 
@@ -688,7 +691,10 @@ function emitClosureBody(cb) {
   ctx.func.locals = new Map()
   ctx.func.repByLocal = null
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
-  if (cb.schemaVars) ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+  if (cb.schemaVars) {
+    ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+    for (const [name, sid] of cb.schemaVars) updateRep(name, { schemaId: sid })
+  }
   const globalTE = ctx.scope.globalTypedElem
   if (cb.typedElems) {
     ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)

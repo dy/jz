@@ -370,7 +370,10 @@ export function emitDecl(...inits) {
     if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
       updateRep(name, { ptrKind: val.ptrKind })
       ptrKind = val.ptrKind
-      if (val.ptrAux != null && !ctx.schema.vars?.has(name)) ctx.schema.vars.set(name, val.ptrAux)
+      if (val.ptrAux != null && !ctx.schema.vars?.has(name)) {
+        ctx.schema.vars.set(name, val.ptrAux)
+        updateRep(name, { schemaId: val.ptrAux })
+      }
     }
     let coerced
     if (ptrKind != null) {
@@ -383,8 +386,8 @@ export function emitDecl(...inits) {
     if (!(isLit(coerced) && coerced[1] === 0 && !ctx.func.stack.length))
       result.push(['local.set', `$${name}`, coerced])
 
-    if (ctx.func.localProps?.has(name) && ctx.schema.vars.has(name)) {
-      const schemaId = ctx.schema.vars.get(name)
+    if (ctx.func.localProps?.has(name) && (repOf(name)?.schemaId != null || ctx.schema.vars.has(name))) {
+      const schemaId = repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
       const schema = ctx.schema.resolve(name)
       if (schema?.[0] === '__inner__') {
         inc('__alloc', '__mkptr')

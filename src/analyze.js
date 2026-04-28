@@ -43,14 +43,17 @@ export const VAL = {
  * ValueRep — unified per-local representation record. (S2 unification target.)
  *
  * Currently populated fields:
- *   val:     VAL.* — value-type for method dispatch, schema resolution, length lookup.
- *   ptrKind: VAL.* — when this local stores an unboxed i32 pointer offset.
- *   ptrAux:  i32   — kind-dependent aux (TYPED elem code, OBJECT schemaId, …).
+ *   val:      VAL.* — value-type for method dispatch, schema resolution, length lookup.
+ *   ptrKind:  VAL.* — when this local stores an unboxed i32 pointer offset.
+ *   ptrAux:   i32   — kind-dependent aux (TYPED elem code, etc.).
+ *   schemaId: i32   — schema binding for boxed/known-shape OBJECTs. Mirrors
+ *                     `ctx.schema.vars[name]` for function-local names; readers
+ *                     prefer rep.schemaId then fall back to ctx.schema.vars
+ *                     (which still holds prepare-time + module-level entries).
  *
- * Future fields (per todo.md S2d; absent today, will be lifted from existing
+ * Future fields (per todo.md; absent today, will be lifted from existing
  * scattered maps as later stages collapse them):
  *   wasm:        'i32' | 'f64'  (today: ctx.func.locals)
- *   schemaId:    i32            (today: ctx.schema.vars at param binding)
  *   nullable, stableOffset                              (not yet tracked)
  *
  * Stored at ctx.func.repByLocal: Map<name, ValueRep> — null when no locals
@@ -309,7 +312,9 @@ export function analyzeValTypes(body) {
     for (const [name, props] of ctx.func.localProps) {
       if (ctx.schema.vars.has(name)) continue
       const schema = ['__inner__', ...props]
-      ctx.schema.vars.set(name, ctx.schema.register(schema))
+      const sid = ctx.schema.register(schema)
+      ctx.schema.vars.set(name, sid)
+      updateRep(name, { schemaId: sid })
     }
   }
 }

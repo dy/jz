@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, repOf } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, repOf, updateRep } from '../src/compile.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 
@@ -37,7 +37,7 @@ export default (ctx) => {
     const target = ctx.schema.targetStack.at(-1)
     if (target) {
       const merged = ctx.schema.resolve(target)
-      if (merged) schemaId = ctx.schema.vars.get(target)
+      if (merged) schemaId = repOf(target)?.schemaId ?? ctx.schema.vars.get(target)
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
@@ -137,6 +137,7 @@ export default (ctx) => {
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
         ctx.schema.vars.set(target, schemaId)
+        updateRep(target, { schemaId })
         const t = tempI32('bx'), s = temp('bs')
         const body = [
           ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],

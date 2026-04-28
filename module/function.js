@@ -10,7 +10,7 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, lookupValType } from '../src/compile.js'
+import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, lookupValType, repOf } from '../src/compile.js'
 import { isReassigned } from '../src/emit.js'
 import { PTR, inc, err } from '../src/ctx.js'
 
@@ -53,7 +53,7 @@ export default (ctx) => {
     for (const name of captures) {
       const vt = lookupValType(name)
       if (vt != null) captureValTypes.set(name, vt)
-      const schemaId = ctx.schema.vars.get(name)
+      const schemaId = repOf(name)?.schemaId ?? ctx.schema.vars.get(name)
       if (schemaId != null) captureSchemaVars.set(name, schemaId)
       const elemType = ctx.types.typedElem?.get(name)
       if (elemType != null) captureTypedElems.set(name, elemType)

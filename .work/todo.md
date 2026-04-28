@@ -38,9 +38,14 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   `ctx.types.dynKeyVars/anyDynKey` (read by `ir.js` at emit). Will be lifted when emit
   takes facts explicitly (paired with phase split S3).
 
-* [ ] **ValueRep unification** — replace the current spread of `.type`, `ctx.func.valTypes`,
-  `ptrKind`, `ptrAux`, `schema.vars`, `globalTypes`, and local inference with one record:
-  `{ wasm, val, ptrKind, ptrAux, schemaId, nullable, stableOffset }`.
+* [x] **ValueRep unification** — replaced the spread of `.type`, `ctx.func.valTypes`,
+  `ptrKind`, `ptrAux`, `schema.vars` (local-key portion), `globalTypes`, and local
+  inference with one record: `{ val, ptrKind, ptrAux, schemaId, … }` stored at
+  `ctx.func.repByLocal: Map<name, ValueRep>` (per-function, auto-resets) and
+  `ctx.scope.repByGlobal: Map<name, ValueRep>` (module-level). Helpers `repOf` /
+  `repOfGlobal` / `updateRep` / `updateGlobalRep` are the canonical access pattern.
+  Apr 28 — landed in four stages (S2a–d), each preserving 923/923 + goldens +
+  watr metacircular byte-parity. `wasm`, `nullable`, `stableOffset` not yet tracked.
 
   Staged plan (a full single-pass refactor would touch ~80+ sites; doing it
   in stages keeps each landable independently with byte-parity guarantee):
@@ -75,13 +80,25 @@ a cleaner substrate before pointer ABI or closure dispatch work.
     repOf/updateRep re-exported through compile.js for module/* imports.
     923/923 PASS, all goldens byte-identical (3306 / 6062 / 3921 / 1968),
     watr metacircular byte-parity holds.
-  * [ ] **S2d** — subsume `ctx.schema.vars`(local-key portion) into the
-    same per-local rep, and decide whether the IR-sidecar `.type` and
-    `ctx.func.boxed` / `ctx.func.refinements` belong in ValueRep or stay
-    separate. Likely separate: `.type` is per-emitted-node (not per-name),
-    `boxed` carries a storage cell name (not a type), `refinements` is a
-    flow-sensitive overlay. The "one record" goal applies to per-name
-    type/representation facts only.
+  * [x] **S2d — collapse `ctx.schema.vars` (local-key portion) → `repByLocal.schemaId`.** Apr 28.
+    Per-name schema bindings for function-local names now live in
+    `repByLocal.schemaId`. Dual-write pattern at every emit-time write
+    site (compile.js paramSchemas seed, emit.js decl ptrAux mirror,
+    analyze.js auto-box localProps register, module/object.js Object.assign
+    target, closure body `cb.schemaVars` seed). All emit-time readers
+    prefer `repOf(name)?.schemaId` and fall back to `ctx.schema.vars` only
+    for names missing from rep (covers prepare-time + module-level
+    bindings still resident there). Migrated readers: ir.js readVar
+    fallback chain, emit.js auto-box reader, module/object.js merged
+    target, module/function.js capture snapshot, module/schema.js
+    `resolve` / `isBoxed` / `find`. `ctx.schema.vars` retained as
+    backward-compat backing store and module-level/prepare-time storage —
+    full removal would require splitting prepare.js scope-tracking and is
+    deferred. The IR-sidecar `.type`, `ctx.func.boxed`, and
+    `ctx.func.refinements` decided to stay separate (not per-name facts):
+    `.type` is per-emitted-node, `boxed` carries a storage cell name,
+    `refinements` is a flow-sensitive overlay. 923/923 PASS, all goldens
+    byte-identical, watr metacircular byte-parity holds.
 
 * [x] **Explicit compile pipeline** — split `compile.js` by phase:
   `facts -> specialize signatures -> emit funcs -> emit start -> assemble module -> optimize module`.
