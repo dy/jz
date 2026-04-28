@@ -107,6 +107,16 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   AND no top-level fn taken as value). Closure pointers still carry funcIdx
   in their NaN-box aux bits, but those bits become dead state with no reader.
   Closure-heavy parser golden: 4022 → 4005 b. 922/922 PASS.
+  Apr 27 (per-body ABI shrink) — when no `call_indirect` remains, every
+  closure body is direct-only, so the uniform `(env, argc, a0..a{W-1})`
+  ABI is no longer required. Each body now sheds unused params:
+  • `$__env` when captures.length === 0
+  • `$__argc` when no rest param (defaults check the param value, not argc)
+  • `$__a{i}` for i ≥ fixedN when no rest param
+  Matching args are dropped at every `call`/`return_call` site. Rest-param
+  closures keep all W slots (that's how rest packs). Closure-heavy parser
+  golden: 4005 → 3933 b. Cumulative session win on parser fixture:
+  4084 → 3933 b (-151 b, -3.7%). 922/922 PASS.
 
 * [ ] **Head-offset `Array.shift`** — replace O(n) `memory.copy` shift with amortized O(1)
   head offset. High leverage, high touch surface: every array index/iteration path must

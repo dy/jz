@@ -1199,6 +1199,60 @@ export default function compile(ast) {
       sec.table = []
       sec.elem = []
       sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
+      // Per-body ABI shrink: with no call_indirect, every closure is direct-only.
+      // Drop unused params from each body and matching args at call sites:
+      //   • $__env when captures.length === 0 (body never reads env)
+      //   • $__argc when no rest param (defaults check param value, not argc)
+      //   • $__a{i} for i >= fixedN when no rest (caller's UNDEF padding is dead)
+      // Rest closures keep all W slots — argc + slot{fixedN..W-1} are how rest packs.
+      const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+      const abiOf = new Map()
+      for (const cb of (ctx.closure.bodies || [])) {
+        const fixedN = cb.params.length - (cb.rest ? 1 : 0)
+        abiOf.set(cb.name, {
+          needEnv: cb.captures.length > 0,
+          needArgc: !!cb.rest,
+          usedSlots: cb.rest ? W : fixedN,
+          rest: !!cb.rest,
+        })
+      }
+      // Shrink body param decls.
+      for (const fn of sec.funcs) {
+        if (!Array.isArray(fn) || fn[0] !== 'func') continue
+        const fnName = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+        const abi = abiOf.get(fnName)
+        if (!abi) continue
+        for (let i = fn.length - 1; i >= 0; i--) {
+          const node = fn[i]
+          if (!Array.isArray(node) || node[0] !== 'param') continue
+          const pname = node[1]
+          if (pname === '$__env' && !abi.needEnv) fn.splice(i, 1)
+          else if (pname === '$__argc' && !abi.needArgc) fn.splice(i, 1)
+          else if (typeof pname === 'string' && pname.startsWith('$__a') && !abi.rest) {
+            const idx = parseInt(pname.slice(4), 10)
+            if (Number.isFinite(idx) && idx >= abi.usedSlots) fn.splice(i, 1)
+          }
+        }
+      }
+      // Rewrite all matching call sites to drop the same argument positions.
+      // Both `call` and `return_call` (tail call) carry the same arg layout.
+      const rewriteCalls = (node) => {
+        if (!Array.isArray(node)) return
+        for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
+        if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
+          const callee = node[1].slice(1)
+          const abi = abiOf.get(callee)
+          if (!abi) return
+          // Original layout: [call, $name, env, argc, a0, a1, ..., a{W-1}]
+          const newArgs = []
+          if (abi.needEnv) newArgs.push(node[2])
+          if (abi.needArgc) newArgs.push(node[3])
+          for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
+          node.splice(2, node.length - 2, ...newArgs)
+        }
+      }
+      for (const fn of sec.funcs) rewriteCalls(fn)
+      for (const fn of sec.start) rewriteCalls(fn)
     }
   }
 
