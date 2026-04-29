@@ -127,3 +127,70 @@ test('closure-unbox: codegen — local declared as i32', () => {
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')
   ok(!/\(local \$g f64\)/.test(body), '$g not f64')
 })
+
+// Regression: `o.fn(g)` — closure stored in an object property and dispatched
+// through `__dyn_get`/`__ext_call`. Previously failed with table-index trap
+// (function-scope) or `Unknown local $g` (module-scope). Fixed by the
+// polymorphic ?: + schema-aware __dyn_get OBJECT-arm: receiver carries
+// per-instance schemaId, runtime resolves the slot, and the dispatched
+// closure has its funcIdx preserved through the f64 rebox.
+test('closure-unbox: o.fn(g) — object-property closure dispatch', () => {
+  const { f } = run(`export let f = () => {
+    let g = (n) => n + 100
+    let o = { fn: g }
+    return o.fn(5)
+  }`)
+  is(f(), 105)
+})
+
+// Module-level variant: previously "Unknown local $g" at compile time.
+// Root cause: `let g = (n) => …` at module scope is extracted via defFunc
+// into ctx.func.list (top-level function, not a closure literal), so the
+// `fn` module isn't auto-loaded by the depth>0 arrow path. Without fn,
+// ctx.closure.table is null, so emit.js's func-as-value branch falls
+// through to the unconditional `(local.get $name)` fallback — bogus WAT.
+// Fix: post-prep scan in prepare.js detects top-level func names used in
+// value positions across ast/func.bodies/moduleInits and includeModule('fn').
+test('closure-unbox: o.fn(g) — module-level binding', () => {
+  const { f } = run(`
+    let g = (n) => n + 100
+    let o = { fn: g }
+    export let f = () => o.fn(5)
+  `)
+  is(f(), 105)
+})
+
+// Pin the post-watrOptimize fusedRewrite pass (commit 712d768) — without it
+// watr's inliner re-introduces a rebox/unbox roundtrip across the closure-
+// body inline boundary. The roundtrip is invisible to behavior tests but
+// costs ~32 bytes per simple closure call site. Threshold tracks the ≤252b
+// figure recorded in .work/todo.md (Tier A "Devirtualize non-escaping
+// closures") with a small headroom; loosen if a deliberate codegen change
+// pushes it over.
+test('closure-unbox: trivial closure-call program stays compact (post-watr fusedRewrite)', () => {
+  const src = `
+    let g = (x) => x + 1
+    export let f = () => g(41)
+  `
+  const bytes = jz.compile(src).length
+  ok(bytes <= 260, `closure-call probe ${bytes}b — rebox/unbox roundtrip likely re-introduced (>260b)`)
+})
+
+test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call', () => {
+  // Structural pin: after watrOptimize inlines the closure body, the
+  // call-site `asF64(local.get $g)` (rebox to f64) immediately meets the
+  // body's `i32.wrap_i64 (i64.reinterpret_f64 …)` (unbox back to envPtr).
+  // The post-watr fusedRewrite pass folds this — assert the WAT for $f
+  // doesn't contain the surviving roundtrip pattern.
+  const w = wat(`
+    let g = (x) => x + 1
+    export let f = () => g(41)
+  `)
+  const body = fnBody(w, 'f')
+  ok(body, '$f present')
+  // The roundtrip leaves a `wrap_i64 (i64.reinterpret_f64 …)` somewhere in
+  // $f when un-folded. After the fold, $f's body is just the (possibly
+  // inlined) addition + return.
+  ok(!/i32\.wrap_i64\s*\(\s*i64\.reinterpret_f64/.test(body),
+    '$f contains wrap_i64(reinterpret_f64 …) — rebox roundtrip survived')
+})

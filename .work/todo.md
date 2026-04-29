@@ -170,9 +170,22 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   slot would mistype non-object holders as VAL.NUMBER and grow the binary by routing
   property accesses through `__hash_get`. 935/935 tests pass; goldens unchanged
   (3306/6062/3921/1968); watr metacircular byte-parity holds at 149314 bytes; one
-  `__is_str_key` call eliminated in watr metacircular (173 → 172). Future slices: i32
-  pointer-ABI for non-pointer-returning narrowed funcs; ptrKind propagation through
-  `?:` conditional results (see Discovered Bugs).
+  `__is_str_key` call eliminated in watr metacircular (173 → 172).
+  Apr 28 — third slice: TYPED narrowing. `narrowSignatures` now narrows
+  helpers whose every return produces a TYPED with the same constant `elemAux`
+  (Float64=7, Int32=4, etc.); `sig.results = ['i32']`, `sig.ptrAux = elemAux`.
+  Caller-side dual-write was incorrectly mirroring TYPED/CLOSURE aux into
+  `ctx.schema.vars` (treating it as schemaId) — split the dual-write so only
+  OBJECT mirrors to schemaId, while `rep.ptrAux` is set unconditionally. New
+  `analyze.js` helper `ctorFromElemAux` reverse-maps the aux through
+  `ctx.types.typedElem` so `analyzePtrUnboxable` picks up the same aux on
+  unboxed locals. Probe `let mk = () => new Float64Array([…]); export f = i =>
+  { let a = mk(); return a[i] }`: 2614 → 807 b (-69%). Watr metacircular size
+  unchanged (no narrowable typed returns there). 9 focused tests in
+  `test/typed-narrow.js`; 966/966 PASS; goldens 3306/6036/3931/1968 unchanged;
+  watr metacircular byte-parity holds. Future slices: i32 pointer-ABI for
+  non-pointer-returning narrowed funcs; CLOSURE narrowing (blocked — funcIdx
+  isn't determined until emit-time, requires sig-update after emit phase).
 
 * [x] **Devirtualize non-escaping closures** — Apr 28 (gap-fill). The `directClosures`
   path already lowered const-bound, non-escaping closures to `call $bodyFn` (no
@@ -295,17 +308,39 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 
 ## Discovered Bugs
 
-* [ ] **Conditional with narrowed-OBJECT branches reboxes via numeric convert.**
-  `let o = which == 0 ? mkA() : mkB()` where both helpers return narrowed-i32 OBJECT
-  pointers emits `(local.set $o (f64.convert_i32_s (if (result i32) ...)))`. The
-  numeric convert treats the i32 *offset* as a value, so subsequent `o.prop` reads
-  from invalid memory. Pre-existing on main and earlier commits — surfaced when
-  writing slot-type tracking tests. Repro:
-  `let n=()=>({x:11}); let s=()=>({x:22}); export let h=(w)=>{let o=w==0?n():s(); return o.x}`
-  returns 0 instead of 11/22. Fix: `?:` emit must propagate `ptrKind` to the IR node
-  when both branches are pointer-narrowed i32 with the same `ptrKind`, so `asF64`
-  takes the NaN-rebox path. `module/object.js` and other narrowed-OBJECT consumers
-  may have related patterns worth auditing once the primary fix lands.
+* [x] **Conditional with narrowed-OBJECT branches reboxes via numeric convert.**
+  Apr 28 — fixed earlier; `?:` emit now propagates matching `ptrKind`/`ptrAux`
+  so downstream `asF64` takes the NaN-rebox path. Regression coverage:
+  `test/object-regressions.js` lines 61–122 (same-schema cases).
+
+* [x] **Polymorphic `?:` with different-shape OBJECT schemas — `.prop` returns null.**
+  Apr 28 — fixed (path (a)). `?:` emit now preserves per-arm `ptrAux` even when
+  arms have different `schemaId`s, falling through to the f64 rebox path so each
+  arm carries its own aux. `__dyn_get` gained an OBJECT-schema arm: reads receiver
+  aux as schemaId, looks up `__schema_tbl[sid]` for the keys array, iterates and
+  returns the matching slot. `__schema_tbl` declaration lifted into core (it was
+  json-module-private) when any `__dyn_get*` family is used. Regression coverage:
+  3 active tests in `test/object-regressions.js` (different-shape `.y`, different-
+  shape `.x`, polymorphic TYPED arrays with distinct elemType bits).
+
+* [x] **`o.fn(g)` — closure stored in object property fails dispatch.**
+  Apr 28 — fixed in two parts.
+  (1) Function-scope variant (was: `RuntimeError: table index is out of bounds`)
+  fell out of the polymorphic `?:` + schema-aware `__dyn_get` fix above: receiver
+  now carries the correct schemaId, dispatch resolves the slot, the stored closure
+  has its funcIdx preserved through the f64 rebox.
+  (2) Module-scope variant (was: compile-time `Unknown local $g`) had a separate
+  root cause: `let g = (n) => …` at module level is extracted via `defFunc` into
+  `ctx.func.list` (top-level function, not a closure literal). The arrow-handler's
+  `includeMods('core', 'fn')` only fires at depth>0, so the fn module never loaded
+  for purely top-level functions; `ctx.closure.table` stayed null; emit.js's
+  func-as-value branch (line 1819) was gated on `ctx.closure.table` and fell
+  through to the unconditional `(local.get $name)` fallback — bogus WAT.
+  Fix: post-prep scan in `prepare.js` walks the prepared AST + every func body +
+  moduleInits looking for top-level func names appearing in value positions
+  (anything other than `()` callee or `.` property name). If found, includes the
+  `fn` module so trampoline emission has its closure.table machinery. Regression:
+  two active tests in `test/closure-unbox.js` (function-scope + module-scope).
 
 ## Deferred / No-Go
 

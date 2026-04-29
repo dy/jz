@@ -211,6 +211,19 @@ export function typedElemAux(ctor) {
   if (et == null) return null
   return isView ? et | 8 : et
 }
+const _ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
+  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
+/** Reverse of typedElemAux: pick a canonical ctor string for a 4-bit elem aux. Used
+ *  to round-trip TYPED-narrowed call results through ctx.types.typedElem so the
+ *  unboxed local's rep picks up the same aux. aux=7 is shared with BigInt typed
+ *  arrays — Float64Array is canonical (read-side compares aux only). */
+export function ctorFromElemAux(aux) {
+  if (aux == null) return null
+  const isView = (aux & 8) !== 0
+  const name = _ELEM_NAMES[aux & 7]
+  if (!name) return null
+  return isView ? `new.${name}.view` : `new.${name}`
+}
 
 // Per-body memoization: analyzeLocals and collectValTypes are pure functions of
 // `body`. compile.js calls each ~2-3× per function (scan-fixpoint, narrowing,
@@ -265,7 +278,17 @@ export function analyzeValTypes(body) {
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
     const ctor = typedElemCtor(rhs)
-    if (ctor) ctx.types.typedElem.set(name, ctor)
+    if (ctor) { ctx.types.typedElem.set(name, ctor); return }
+    // TYPED-narrowed call result carries elem aux on f.sig.ptrAux — reverse-map it
+    // back to a canonical ctor string so analyzePtrUnboxable's typedElemAux lookup
+    // (compile.js) restores the same aux on the unboxed local's rep.
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+      const f = ctx.func.map?.get(rhs[1])
+      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
+        const ctor = ctorFromElemAux(f.sig.ptrAux)
+        if (ctor) ctx.types.typedElem.set(name, ctor)
+      }
+    }
   }
   function walk(node) {
     if (!Array.isArray(node)) return

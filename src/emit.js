@@ -370,9 +370,15 @@ export function emitDecl(...inits) {
     if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
       updateRep(name, { ptrKind: val.ptrKind })
       ptrKind = val.ptrKind
-      if (val.ptrAux != null && !ctx.schema.vars?.has(name)) {
-        ctx.schema.vars.set(name, val.ptrAux)
-        updateRep(name, { schemaId: val.ptrAux })
+      if (val.ptrAux != null) {
+        updateRep(name, { ptrAux: val.ptrAux })
+        // OBJECT-only: aux *is* the schemaId; mirror to ctx.schema.vars + rep.schemaId so
+        // .prop slot resolution sees a precise binding. TYPED/CLOSURE aux carries other
+        // semantics (elem code / funcIdx) and must not leak into schema lookups.
+        if (val.ptrKind === VAL.OBJECT && !ctx.schema.vars?.has(name)) {
+          ctx.schema.vars.set(name, val.ptrAux)
+          updateRep(name, { schemaId: val.ptrAux })
+        }
       }
     }
     let coerced
@@ -1093,16 +1099,27 @@ export const emitter = {
       // Propagate matching ptrKind/ptrAux so a downstream asF64 takes the NaN-rebox
       // path instead of `f64.convert_i32_s`. Mismatched kinds drop both — caller's
       // asF64 will treat the i32 as numeric, which is correct for non-pointer i32s.
-      const tagPtr = (n) => {
-        if (vb.ptrKind != null && vb.ptrKind === vc.ptrKind) {
-          n.ptrKind = vb.ptrKind
-          if (vb.ptrAux != null && vb.ptrAux === vc.ptrAux) n.ptrAux = vb.ptrAux
+      // ptrKind matches but ptrAux differs (e.g. polymorphic OBJECT with two
+      // distinct schemaIds, or TYPED with two element types) — fall through to
+      // the f64 path. There each arm reboxes independently, preserving its own
+      // aux in the NaN-box. The single-i32 path can only carry one aux on the
+      // result, so `boxPtrIR` would default to 0 and lose the runtime schema /
+      // elemType bits needed by downstream lookups (e.g. __dyn_get's OBJECT-
+      // schema fallback uses receiver aux to resolve `.prop`).
+      const auxMismatch = vb.ptrKind != null && vb.ptrKind === vc.ptrKind
+        && (vb.ptrAux ?? null) !== (vc.ptrAux ?? null)
+      if (!auxMismatch) {
+        const tagPtr = (n) => {
+          if (vb.ptrKind != null && vb.ptrKind === vc.ptrKind) {
+            n.ptrKind = vb.ptrKind
+            if (vb.ptrAux != null && vb.ptrAux === vc.ptrAux) n.ptrAux = vb.ptrAux
+          }
+          return n
         }
-        return n
+        if (isPureIR(vb) && isPureIR(vc))
+          return tagPtr(typed(['select', vb, vc, cond], 'i32'))
+        return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
       }
-      if (isPureIR(vb) && isPureIR(vc))
-        return tagPtr(typed(['select', vb, vc, cond], 'i32'))
-      return tagPtr(typed(['if', ['result', 'i32'], cond, ['then', vb], ['else', vc]], 'i32'))
     }
     const fb = asF64(vb), fc = asF64(vc)
     if (isPureIR(fb) && isPureIR(fc))

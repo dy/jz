@@ -43,7 +43,49 @@ export default function prepare(node) {
   depth = 0
   scopes = []
   includeModule('core')
-  return prep(node)
+  const ast = prep(node)
+  // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
+  // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
+  // module's closure.table machinery. defFunc paths don't trigger fn-module load,
+  // so scan post-prep and include `fn` if any user func appears in a value position.
+  if (!ctx.module.modules.fn && ctx.func.list.length) {
+    const funcNames = new Set(ctx.func.list.map(f => f.name))
+    const visit = (n) => {
+      if (!Array.isArray(n)) return false
+      const [op, ...args] = n
+      if (op === '()') {
+        // callee at args[0]: skip if it's a bare func name (direct call); recurse rest
+        if (typeof args[0] !== 'string' || !funcNames.has(args[0])) {
+          if (visit(args[0])) return true
+        }
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i]
+          if (typeof a === 'string' && funcNames.has(a)) return true
+          if (visit(a)) return true
+        }
+        return false
+      }
+      if (op === '.' || op === '?.') {
+        // obj at args[0] can be a func ref; prop at args[1] is a name, never a ref
+        if (typeof args[0] === 'string' && funcNames.has(args[0])) return true
+        return visit(args[0])
+      }
+      if (op === '=>') {
+        // body only — params are bindings, not refs
+        return visit(args[1])
+      }
+      for (const a of args) {
+        if (typeof a === 'string' && funcNames.has(a)) return true
+        if (visit(a)) return true
+      }
+      return false
+    }
+    let needs = visit(ast)
+    if (!needs) for (const f of ctx.func.list) if (f.body && visit(f.body)) { needs = true; break }
+    if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
+    if (needs) includeModule('fn')
+  }
+  return ast
 }
 
 // Named constants → numeric literals

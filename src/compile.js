@@ -454,6 +454,54 @@ function narrowSignatures(programFacts) {
     }
     return null
   }
+  // Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so
+  // a return like `let a = new Float64Array(...); return a` resolves to a constant
+  // aux. Result calls + ?: are handled inline in typedAuxOfReturn.
+  const localElemAuxMap = (body) => {
+    const m = new Map()
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === '=>') return
+      if ((op === 'let' || op === 'const') && n.length > 1) {
+        for (let i = 1; i < n.length; i++) {
+          const a = n[i]
+          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+            const aux = typedElemAux(typedElemCtor(a[2]))
+            if (aux != null) m.set(a[1], aux)
+          }
+        }
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(body)
+    return m
+  }
+  const typedAuxOfReturn = (expr, localElemMap) => {
+    if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
+    if (!Array.isArray(expr)) return null
+    const [op, ...args] = expr
+    if (op === '()' && typeof args[0] === 'string') {
+      if (args[0].startsWith('new.')) {
+        const ctor = typedElemCtor(expr)
+        return ctor != null ? typedElemAux(ctor) : null
+      }
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
+      return null
+    }
+    if (op === '?:') {
+      const a = typedAuxOfReturn(args[1], localElemMap)
+      const b = typedAuxOfReturn(args[2], localElemMap)
+      return a != null && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = typedAuxOfReturn(args[0], localElemMap)
+      const b = typedAuxOfReturn(args[1], localElemMap)
+      return a != null && a === b ? a : null
+    }
+    return null
+  }
   // Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so outer's
   // call to inner contributes a known schema-id.
   let narrowChanged = true
@@ -492,6 +540,21 @@ function narrowSignatures(programFacts) {
         func.sig.results = ['i32']
         func.sig.ptrKind = VAL.OBJECT
         func.sig.ptrAux = sid0
+        narrowChanged = true
+      }
+      if (func.valResult === VAL.TYPED) {
+        const exprs = []
+        if (isBlock) collectReturnExprs(func.body, exprs)
+        else exprs.push(func.body)
+        if (!exprs.length) continue
+        const localMap = isBlock ? localElemAuxMap(func.body) : null
+        const aux0 = typedAuxOfReturn(exprs[0], localMap)
+        if (aux0 == null) continue
+        const allSame = exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)
+        if (!allSame) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.TYPED
+        func.sig.ptrAux = aux0
         narrowChanged = true
       }
     }
@@ -993,7 +1056,21 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   }
 
   const schemaInit = []
-  if (ctx.core.includes.has('__stringify') && ctx.schema.list.length) {
+  // Schema name table is needed by JSON.stringify (legacy), and by __dyn_get's
+  // OBJECT-schema fallback for polymorphic-receiver `.prop` access. Lift the
+  // gate to also populate when any __dyn_get* family helper is included so
+  // polymorphic OBJECT patterns (mismatched-schema `?:`, unknown-schema
+  // params) resolve via runtime aux→sid lookup. Direct dependents of
+  // __dyn_get (set transitively by resolveIncludes() later) are listed
+  // explicitly here because the dep graph hasn't been expanded yet at
+  // start-fn build time.
+  const needsSchemaTbl = ctx.schema.list.length && (
+    ctx.core.includes.has('__stringify') ||
+    ctx.core.includes.has('__dyn_get') ||
+    ctx.core.includes.has('__dyn_get_any') ||
+    ctx.core.includes.has('__dyn_get_expr') ||
+    ctx.core.includes.has('__dyn_get_or'))
+  if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length
     const stbl = `${T}stbl`
     const sarr = `${T}sarr`

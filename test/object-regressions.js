@@ -120,3 +120,66 @@ test('Regression: ?: with both arms plain i32 numeric stays numeric', () => {
   is(f(0), 12)
   is(f(1), 23)
 })
+
+test('Regression: ?: polymorphic — same-shape distinct OBJECT schemas dedup', () => {
+  // Two distinct-but-structurally-identical schemas {x,y} dedup to the same
+  // schemaId, so the receiver carries a consistent aux and `.prop` resolves
+  // statically. Pinned so any future schema-id assignment change still
+  // preserves this case.
+  const { hx, hy } = run(`
+    let p = () => ({ x: 11, y: 100 })
+    let q = () => ({ x: 22, y: 200 })
+    export let hx = (w) => { let o = w == 0 ? p() : q(); return o.x }
+    export let hy = (w) => { let o = w == 0 ? p() : q(); return o.y }
+  `)
+  is(hx(0), 11)
+  is(hx(1), 22)
+  is(hy(0), 100)
+  is(hy(1), 200)
+})
+
+// Polymorphic `?:` with two narrowed-OBJECT arms of structurally distinct
+// schemas — `.prop` falls through `__dyn_get_any` → `__dyn_get`'s OBJECT-
+// schema fallback (added in commit) which reads receiver aux as schemaId,
+// looks up the schema name table, and resolves the slot at runtime.
+// Each `?:` arm reboxes via the f64 path with its own ptrAux so the
+// receiver carries the correct schemaId at runtime.
+test('Regression: ?: polymorphic — different-shape OBJECT schemas resolve .prop', () => {
+  const { hy } = run(`
+    let n = () => ({ x: 11, y: 100 })
+    let s = () => ({ y: 200, x: 22 })
+    export let hy = (w) => { let o = w == 0 ? n() : s(); return o.y }
+  `)
+  is(hy(0), 100)
+  is(hy(1), 200)
+})
+
+test('Regression: ?: polymorphic — different-shape OBJECT schemas resolve shared .prop', () => {
+  // Field that exists in both schemas at different slot offsets — must
+  // resolve to its per-arm slot value via runtime aux→sid dispatch.
+  const { hx } = run(`
+    let n = () => ({ x: 11, y: 100 })
+    let s = () => ({ y: 200, x: 22 })
+    export let hx = (w) => { let o = w == 0 ? n() : s(); return o.x }
+  `)
+  is(hx(0), 11)
+  is(hx(1), 22)
+})
+
+test('Regression: ?: polymorphic — TYPED arrays with different element types', () => {
+  // Same fix axis as polymorphic OBJECT — different ptrAux on TYPED arms
+  // (Float64Array vs Int32Array elemType bits) must be preserved per arm
+  // so element reads dispatch on the correct elemType at runtime.
+  const { pick } = run(`
+    let mkF = () => new Float64Array([1.5, 2.5, 3.5])
+    let mkI = () => new Int32Array([10, 20, 30])
+    export let pick = (w, i) => {
+      let a = w == 0 ? mkF() : mkI()
+      return a[i]
+    }
+  `)
+  is(pick(0, 0), 1.5)
+  is(pick(0, 1), 2.5)
+  is(pick(1, 0), 10)
+  is(pick(1, 1), 20)
+})

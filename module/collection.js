@@ -264,6 +264,12 @@ export default (ctx) => {
 
   if (!ctx.scope.globals.has('__dyn_props'))
     ctx.scope.globals.set('__dyn_props', '(global $__dyn_props (mut f64) (f64.const 0))')
+  // Schema name table for __dyn_get's OBJECT-schema fallback (polymorphic-receiver
+  // `.prop` access). Same declaration as json.js — defined here too so collection
+  // doesn't transitively require json. compile.js's schemaInit populates it when
+  // schema list is non-empty AND (__stringify OR __dyn_get) is included.
+  if (!ctx.scope.globals.has('__schema_tbl'))
+    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
 
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param f64 f64) (result f64)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param f64 f64) (result i32)))'
@@ -399,16 +405,46 @@ export default (ctx) => {
   // single hottest stdlib symbol in watr self-host (~95M calls). props returned by
   // __ihash_get_local is always HASH (or NULL_NAN, filtered by __is_nullish), so the
   // inlined probe skips a redundant type check + bit unboxing per call.
+  //
+  // OBJECT receivers fall back to schema-aware slot lookup when __dyn_props has no
+  // entry — covers polymorphic-receiver patterns (e.g. `let o = w?n():s()` with
+  // structurally distinct schemas) where receiver schemaId is unknown at compile
+  // time but lives at runtime in the NaN-box aux bits. Gated on schema name table
+  // presence (lifted in compile.js whenever __dyn_get is included). Static-shape
+  // monomorphic OBJECTs hit the compile-time slot read path and never reach here.
+  const hasSchemas = ctx.schema.list.length > 0
+  const objectSchemaArm = hasSchemas ? `
+    (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+      (then
+        (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
+          (then
+            (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u
+              (i64.reinterpret_f64 (local.get $obj)) (i64.const 32)) (i64.const 0x7FFF))))
+            (local.set $kbits (i64.reinterpret_f64
+              (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+            (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const 0xFFFFFFFF))))
+            (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
+            (local.set $idx (i32.const 0))
+            (block $kdone (loop $kloop
+              (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
+              (if (call $__str_eq
+                    (f64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                    (local.get $key))
+                (then (return (f64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
+              (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
+              (br $kloop)))))))` : ''
+  const objectSchemaLocals = hasSchemas
+    ? '(local $type i32) (local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
+    : '(local $type i32)'
+
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (local $props f64) (local $bits i64) (local $off i32)
     (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    (if (f64.eq (global.get $__dyn_props) (f64.const 0))
-      (then (return (f64.const nan:${UNDEF_NAN}))))
+    ${objectSchemaLocals}
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
-          (i32.const ${PTR.ARRAY}))
+    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
           (loop $follow
@@ -417,25 +453,25 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
-    (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
-      (f64.convert_i32_s (local.get $off))))
-    (if (call $__is_nullish (local.get $props))
-      (then (return (f64.const nan:${UNDEF_NAN}))))
-    (local.set $bits (i64.reinterpret_f64 (local.get $props)))
-    (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
-    (local.set $h (call $__str_hash (local.get $key)))
-    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
-    (block $hdone (loop $hprobe
-      (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
-      (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
-        (then (return (f64.const nan:${UNDEF_NAN}))))
-      (if (call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
-        (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
-      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
-      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
-      (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
-      (br $hprobe)))
+    (block $dynDone
+      (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
+      (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
+        (f64.convert_i32_s (local.get $off))))
+      (br_if $dynDone (call $__is_nullish (local.get $props)))
+      (local.set $bits (i64.reinterpret_f64 (local.get $props)))
+      (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+      (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
+      (local.set $h (call $__str_hash (local.get $key)))
+      (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
+      (block $hdone (loop $hprobe
+        (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
+        (br_if $dynDone (f64.eq (f64.load (local.get $slot)) (f64.const 0)))
+        (if (call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+          (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
+        (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
+        (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
+        (br $hprobe))))${objectSchemaArm}
     (f64.const nan:${UNDEF_NAN}))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
