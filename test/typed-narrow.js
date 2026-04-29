@@ -135,3 +135,75 @@ test('typed-narrow: escape via store does not break narrowed helper', () => {
   `)
   is(f(), 2.5)
 })
+
+// === Receiver unbox after .map on TYPED ===
+// Extension B: analyzePtrUnboxable.isFreshInit accepts `arr.map(fn)` shape when
+// `arr` is in ctx.types.typedElem (locally TYPED with a known elem ctor). Only
+// `.typed:map` qualifies — `.filter`/`.slice` fall back to ARRAY emit, so the
+// typedElem.has(src) gate keeps us safe from the polymorphic-receiver path.
+
+test('typed-narrow: receiver unbox after .map on TYPED', () => {
+  const { f } = run(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 10)
+      return b[i]
+    }
+  `)
+  is(f(0), 11.5)
+  is(f(1), 12.5)
+  is(f(2), 13.5)
+})
+
+test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
+  // Both $a (narrowed-call result) and $b (.map receiver) unbox to i32.
+  // Index access on $b collapses to direct f64.load — no __is_str_key.
+  const w = wat(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 10)
+      return b[i]
+    }
+  `)
+  const body = fnBody(w, 'f')
+  ok(body, '$f present')
+  ok(/\(local \$b i32\)/.test(body), '$b unboxed to i32 (.map receiver)')
+  ok(!/__is_str_key/.test(body), '$f has no __is_str_key after .map receiver unbox')
+})
+
+test('typed-narrow: chained .map preserves elem type', () => {
+  // a.map(...).map(...) — first .map's result is locally TYPED with the same
+  // elem ctor (propagateTyped strips .view). Second .map's receiver is also
+  // accepted by isFreshInit, so the chain unboxes end-to-end.
+  const { f } = run(`
+    let mk = () => new Float64Array([1.0, 2.0, 3.0])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x * 2)
+      let c = b.map(x => x + 1)
+      return c[i]
+    }
+  `)
+  is(f(0), 3)
+  is(f(1), 5)
+  is(f(2), 7)
+})
+
+test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
+  // Int32Array elemAux=4, Float64Array elemAux=7. The receiver's static-load
+  // uses 4-byte stride + i32.load (signed convert), not 8-byte f64.load. If
+  // the wrong aux leaked through propagateTyped → wrong stride → wrong values.
+  const { f } = run(`
+    let mk = () => new Int32Array([10, 20, 30])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 100)
+      return b[i]
+    }
+  `)
+  is(f(0), 110)
+  is(f(1), 120)
+  is(f(2), 130)
+})

@@ -531,6 +531,18 @@ export function analyzePtrUnboxable(body, locals, boxed) {
       const f = ctx.func.map?.get(callee)
       if (f?.sig?.ptrKind === kind) return true
     }
+    // Method call returning TYPED: `arr.map(fn)` where `arr` is in typedElem
+    // (locally TYPED with a known elem ctor). Only `.typed:map` is registered
+    // as TYPED-returning — `.filter`/`.slice` fall back to ARRAY emit. The
+    // typedElem.has(src) gate ensures we don't accept the polymorphic-receiver
+    // path that emits a plain ARRAY result. propagateTyped already mirrored
+    // the src ctor onto the receiver, so the unbox path picks up its aux.
+    if (kind === VAL.TYPED && expr[0] === '()' &&
+        Array.isArray(expr[1]) && expr[1][0] === '.' &&
+        typeof expr[1][1] === 'string' && expr[1][2] === 'map' &&
+        ctx.types.typedElem?.has(expr[1][1])) {
+      return true
+    }
     return false
   }
   const isNullishLit = (expr) =>

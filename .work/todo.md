@@ -214,9 +214,26 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   hits `RuntimeError: table index is out of bounds` *with or without* unboxing; root
   cause not in this change — logged for follow-up.
 
-* [ ] **TYPED local unboxing extension** — TYPED is already in `UNBOXABLE_KINDS`; the
-  remaining win is broader call-result acceptance (typed-array methods like `.subarray()`,
-  `.slice()` returning narrowed-TYPED i32 ptr).
+* [x] **TYPED local unboxing extension — `.map` receiver** — Apr 28.
+  `analyzePtrUnboxable.isFreshInit` now accepts `arr.map(fn)` for VAL.TYPED when
+  `arr` is in `ctx.types.typedElem` (locally TYPED with a known elem ctor). Only
+  `.typed:map` registers as TYPED-returning emitter; `.filter`/`.slice` fall back
+  to ARRAY emit, so the `typedElem.has(src)` gate prevents accepting the
+  polymorphic-receiver path. `propagateTyped` already mirrors src ctor onto the
+  receiver, so the unbox path's `typedElemAux` lookup populates `rep.ptrAux`
+  → static elem load (direct `f64.load`) on subsequent index access.
+  Concretely:
+  ```
+  let mk = () => new Float64Array([1.5, 2.5, 3.5])
+  export let f = (i) => { let a = mk(); let b = a.map(x => x + 10); return b[i] }
+  ```
+  Now `$a` AND `$b` are both `i32` locals; `b[i]` is one `f64.load` with
+  shifted offset — no `__is_str_key`, no `__pt0` kind dispatch, no
+  `__typed_idx` fallback. 4 regression tests in `test/typed-narrow.js` (added
+  to the existing 9). 970/970 PASS, watr metacircular byte-identical, all 4
+  goldens unchanged. `.subarray()` / typed `.filter` / `.slice` deferred —
+  none currently registered as TYPED-returning emitters in `module/`; would
+  require new emitters (out of scope for this slice).
 
 * [x] **Known table-slot direct calls** — Apr 27. const-bound, non-escaping local closures
   now lower their call sites to `call $<bodyFn>` (same uniform `(env, argc, a0..)` ABI as
