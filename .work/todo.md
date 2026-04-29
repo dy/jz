@@ -1,6 +1,6 @@
 # jz Todo
 
-Last cleaned: Apr 27 2026.
+Last cleaned: Apr 28 2026.
 
 This file is the active roadmap only. Historical benchmark notes, completed phase logs,
 old line-number anchors, and stale implementation claims were removed because they made
@@ -8,7 +8,7 @@ the next task harder to choose. Verify benchmark claims before using them for de
 
 Current verified baseline:
 
-- `npm test`: 935/935 pass on Apr 28 2026.
+- `npm test`: 970/970 pass on Apr 28 2026.
 - Compiler shape: `compile.js` split into ten named phases with docstring contracts;
   compile() body is a flat pipeline (~300 lines of orchestration).
 - Main risk: representation facts are still scattered across ctx maps, IR `.type` sidecars,
@@ -155,9 +155,11 @@ a cleaner substrate before pointer ABI or closure dispatch work.
 
 ### Tier A — Runtime / Output Wins
 
-* [ ] **Internal narrow ABI** — make internal non-exported calls use the narrowest proven
+* [~] **Internal narrow ABI** — make internal non-exported calls use the narrowest proven
   representation. Exported boundaries keep the JS-compatible f64 NaN-box ABI; internal
-  code should use i32 offsets/tags where proven safe.
+  code should use i32 offsets/tags where proven safe. Multi-slice umbrella: 3 slices
+  shipped (OBJECT-with-schemaId, slot-type tracking, TYPED-with-elemAux); remaining
+  slices below are blocked or speculative.
   Apr 28 — first slice landed: narrow OBJECT result with constant `schemaId` carried in
   `sig.ptrAux` (commit 25010aa). Apr 28 — second slice: program-wide slot-type tracking
   (commit eb294e0). `collectProgramFacts` observes the value-kind of each static-key
@@ -265,9 +267,22 @@ a cleaner substrate before pointer ABI or closure dispatch work.
   golden: 4005 → 3933 b. Cumulative session win on parser fixture:
   4084 → 3933 b (-151 b, -3.7%). 922/922 PASS.
 
-* [ ] **Head-offset `Array.shift`** — replace O(n) `memory.copy` shift with amortized O(1)
-  head offset. High leverage, high touch surface: every array index/iteration path must
-  account for the shifted base.
+* [-] **Head-offset `Array.shift`** — Apr 28. Assessed and deferred.
+  Two viable approaches, both rejected:
+  (1) **Pointer-bump on the NaN-box offset** — fastest in theory (no header bytes),
+  but breaks JS reference semantics. Aliased copies (`let q = arr; arr.shift();
+  q[0]`) wouldn't see the bumped offset because each NaN-box copy carries its
+  own offset bits. Correctness fail.
+  (2) **12-byte header `[head, len, cap]` with `head` summed into every offset
+  load** — preserves reference semantics, but touches ~40+ header read/write
+  sites across `module/{core,array,string,json,collection,typedarray}.js` (every
+  `i32.const 4` / `i32.const 8` magic offset becomes 8/12 + a third store for
+  head). Estimated +1-3% bundle bloat (per-site ~4 bytes); the perf win
+  concentrates only on shift-heavy programs (queue patterns) — typical
+  push/index workloads gain nothing while paying the size tax. Conditional
+  ("must not significantly increase bundle size") fails. Reconsider only with
+  a representative shift-heavy benchmark + a way to gate the wider header on
+  detected `.shift()` use.
 
 * [x] **Fast-path `Array.push`** — Apr 27. For known-ARRAY pushes, hoist `__ptr_offset`
   once and check `cap < len + N` inline; only call `__arr_grow` (and re-extract offset)
