@@ -32,7 +32,7 @@ import {
   isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
-  temp, tempI32, allocPtr,
+  temp, tempI32, tempI64, allocPtr,
   boxedAddr, readVar, writeVar, isNullish,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads,
@@ -199,6 +199,29 @@ function isTerminator(body) {
     return false
   }
   return false
+}
+
+/** Emit pending `finally` cleanups for an abrupt control-flow exit.
+ *  Inner cleanups run before outer cleanups. While emitting each cleanup, remove
+ *  it from the active stack so `return` inside `finally` does not re-enter it. */
+function emitFinalizers() {
+  const stack = ctx.func.finallyStack || []
+  if (stack.length === 0) return []
+  const saved = stack.slice()
+  const out = []
+  for (let i = saved.length - 1; i >= 0; i--) {
+    ctx.func.finallyStack = saved.slice(0, i)
+    out.push(...emitFlat(saved[i]))
+  }
+  ctx.func.finallyStack = saved
+  return out
+}
+
+function withFinallyStack(stack, fn) {
+  const prev = ctx.func.finallyStack || []
+  ctx.func.finallyStack = stack
+  try { return fn() }
+  finally { ctx.func.finallyStack = prev }
 }
 
 /** Apply refinements for the duration of `fn()`. Restores prior state on return/throw. */
@@ -687,16 +710,62 @@ export const emitter = {
       ['f64.const', 0]], 'f64')
   },
 
+  'finally': (body, cleanup) => {
+    ctx.runtime.throws = true
+    const id = ctx.func.uniq++
+    const errLocal = temp('err')
+    const parentStack = ctx.func.finallyStack || []
+    const activeStack = parentStack.concat([cleanup])
+
+    const prevTry = ctx.func.inTry
+    ctx.func.inTry = true
+    const bodyIR = withFinallyStack(activeStack, () => {
+      try { return emitFlat(body) }
+      finally { ctx.func.inTry = prevTry }
+    })
+    const normalCleanup = withFinallyStack(parentStack, () => emitFlat(cleanup))
+    const throwCleanup = withFinallyStack(parentStack, () => emitFlat(cleanup))
+
+    return ['block', `$fin_done${id}`,
+      ['block', `$fin_catch${id}`, ['result', 'f64'],
+        ['try_table', ['catch', '$__jz_err', `$fin_catch${id}`],
+          ...bodyIR],
+        ...normalCleanup,
+        ['br', `$fin_done${id}`]],
+      ['local.set', `$${errLocal}`],
+      ...throwCleanup,
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${errLocal}`]]],
+      ['throw', '$__jz_err', ['local.get', `$${errLocal}`]]]
+  },
+
   'return': expr => {
-    if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[')
-      return typed(['return', ...expr.slice(1).map(e => asF64(emit(e)))], 'void')
-    if (expr == null) return typed(['return', NULL_IR], 'void')
+    const finalizers = emitFinalizers()
+    if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[') {
+      const vals = expr.slice(1).map(e => asF64(emit(e)))
+      if (finalizers.length === 0) return typed(['return', ...vals], 'void')
+      const names = vals.map(() => temp('ret'))
+      return [
+        ...vals.map((v, i) => ['local.set', `$${names[i]}`, v]),
+        ...finalizers,
+        typed(['return', ...names.map(n => ['local.get', `$${n}`])], 'void'),
+      ]
+    }
+    if (expr == null) return [...finalizers, typed(['return', NULL_IR], 'void')]
     const rt = ctx.func.current?.results[0] || 'f64'
     const pk = ctx.func.current?.ptrKind
     const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
     if (!ctx.func.inTry && !ctx.transform.noTailCall &&
         Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
       return typed(['return_call', ...ir.slice(1)], 'void')
+    if (finalizers.length > 0) {
+      const ty = pk != null ? 'i32' : rt
+      const name = ty === 'i32' ? tempI32('ret') : ty === 'i64' ? tempI64('ret') : temp('ret')
+      return [
+        ['local.set', `$${name}`, ir],
+        ...finalizers,
+        typed(['return', ['local.get', `$${name}`]], 'void'),
+      ]
+    }
     return typed(['return', ir], 'void')
   },
 
@@ -1272,15 +1341,20 @@ export const emitter = {
     if (body === undefined) return err('for-in/for-of not supported')
     const id = ctx.func.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
-    ctx.func.stack.push({ brk, loop })
+    const cont = step ? `$cont${id}` : loop
+    ctx.func.stack.push({ brk, loop: cont })
     const result = []
     if (init != null) result.push(...emitFlat(init))
     // J: Single-test loop — condition evaluated once per iteration at the top.
-    // (block $brk (loop $loop (br_if $brk (eqz cond)) body step (br $loop)))
+    // With a step expression, `continue` targets a body wrapper so step still runs.
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
-    loopBody.push(...emitFlat(body))
-    if (step) loopBody.push(...emitFlat(step))
+    if (step) {
+      loopBody.push(['block', cont, ...emitFlat(body)])
+      loopBody.push(...emitFlat(step))
+    } else {
+      loopBody.push(...emitFlat(body))
+    }
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])
     ctx.func.stack.pop()
@@ -1310,8 +1384,8 @@ export const emitter = {
   },
 
   'while': (cond, body) => emitter['for'](null, cond, null, body),
-  'break': () => ['br', loopTop().brk],
-  'continue': () => ['br', loopTop().loop],
+  'break': () => [...emitFinalizers(), ['br', loopTop().brk]],
+  'continue': () => [...emitFinalizers(), ['br', loopTop().loop]],
 
   // === Call ===
 

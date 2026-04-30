@@ -708,12 +708,19 @@ const handlers = {
   'try'(body, ...clauses) {
     const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
     const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
-    if (finallyClause) err('finally not supported: use catch')
+    const tryBody = prep(body)
+    const caught = catchClause
+      ? (() => {
+          const [, errName, handler] = catchClause
+          return ['catch', tryBody, errName, prep(handler)]
+        })()
+      : tryBody
+    if (finallyClause) return ['finally', caught, prep(finallyClause[1])]
     if (catchClause) {
       const [, errName, handler] = catchClause
-      return ['catch', prep(body), errName, prep(handler)]
+      return ['catch', tryBody, errName, prep(handler)]
     }
-    return ['try', prep(body)]
+    return tryBody
   },
   'throw'(expr) { return ['throw', prep(expr)] },
 

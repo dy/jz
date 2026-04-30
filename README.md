@@ -58,11 +58,11 @@ flowchart TB
     subgraph JS[JS — not supported]
         subgraph JZify[JZ + jzify]
             subgraph JZ[JZ strict]
-                j1["let/const, arrows, flow, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
+                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch/finally, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
             end
             z1["var, function, arguments, switch, new Foo(), ==, !=, instanceof"]:::plain
         end
-        n1["async/await, Promise, generators, this, class, eval, Function, with, Proxy, Reflect, WeakMap, WeakSet"]:::plain
+        n1["async/await, Promise, generators, this, class, eval, Function, with, Proxy, Reflect, WeakMap, WeakSet, dynamic import, DOM, fetch, Intl, Node APIs"]:::plain
     end
 
     style JZ fill:#ffe0b2,stroke-width:0
@@ -78,6 +78,7 @@ flowchart TB
 │   async/await  Promise  function*  yield                                   │
 │   this  class  super  extends  delete                                      │
 │   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet                   │
+│   dynamic import  DOM  fetch  Intl  Node APIs                              │
 │                                                                            │
 │ ┌────────────────────────────────────────────────────────────────────────┐ │
 │ │ JZify                                                                  │ │
@@ -86,8 +87,9 @@ flowchart TB
 │ │                                                                        │ │
 │ │ ┌────────────────────────────────────────────────────────────────────┐ │ │
 │ │ │ JZ                                                                 │ │ │
-│ │ │   let/const  =>  ...  destructuring  import/export  `${}`          │ │ │
-│ │ │   if/else  for/while/of  try/catch  throw                          │ │ │
+│ │ │   let/const  =>  x=1  ...xs  destructuring  modules  `${}`         │ │ │
+│ │ │   if/else  for/while/of/in  break/continue                         │ │ │
+│ │ │   try/catch/finally  throw                                         │ │ │
 │ │ │   a[]  a()  a.b  ?:  ??  ?.  typeof  in                            │ │ │
 │ │ │   operators  strings  booleans  numbers  arrays  objects           │ │ │
 │ │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │ │

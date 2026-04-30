@@ -174,6 +174,30 @@ test('try/catch: nested', () => {
   is(run('export let f = (x) => { try { try { if (x < 0) throw -1; return x } catch (e) { throw e + 10 } } catch (e2) { return e2 + 100 } }').f(-1), 109)
 })
 
+test('try/finally: normal completion runs cleanup', () => {
+  is(run('export let f = () => { let x = 1; try { x += 2 } finally { x *= 10 }; return x }').f(), 30)
+})
+
+test('try/finally: throw runs cleanup before catch', () => {
+  is(run('export let f = () => { let x = 0; try { try { throw 2 } finally { x += 10 } } catch (e) { return x + e } }').f(), 12)
+})
+
+test('try/finally: return preserves returned value and runs cleanup', () => {
+  is(run('export let f = () => { let x = 1; try { return x } finally { x = 9 } }').f(), 1)
+})
+
+test('try/finally: finally return overrides return', () => {
+  is(run('export let f = () => { try { return 1 } finally { return 2 } }').f(), 2)
+})
+
+test('try/finally: finally throw overrides return', () => {
+  is(run('export let f = () => { try { try { return 1 } finally { throw 2 } } catch (e) { return e } }').f(), 2)
+})
+
+test('try/catch/finally: cleanup runs after handled throw', () => {
+  is(run('export let f = () => { let x = 0; try { throw 2 } catch (e) { x = e } finally { x += 10 }; return x }').f(), 12)
+})
+
 // === Timers ===
 
 test('setTimeout: callback fires', async () => {
@@ -575,6 +599,22 @@ test('for: nested', () => {
     return s
   }`)
   is(f(3, 3), 9)  // (0*0+0*1+0*2) + (1*0+1*1+1*2) + (2*0+2*1+2*2) = 0+3+6
+})
+
+test('break: exits loop', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 3) break; s += i } return s }').f(), 3)
+})
+
+test('continue: skips iteration', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 2) continue; s += i } return s }').f(), 8)
+})
+
+test('try/finally: break runs cleanup before exit', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i == 2) break; s += i } finally { s += 10 } } return s }').f(), 31)
+})
+
+test('try/finally: continue runs cleanup before next iteration', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 3; i++) { try { if (i == 1) continue; s += i } finally { s += 10 } } return s }').f(), 32)
 })
 
 // === Logical operators ===
