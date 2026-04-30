@@ -345,6 +345,107 @@ export function hoistAddrBase(fn) {
 }
 
 /**
+ * Hoist `(call $__ptr_offset (local.get $X))` to a function-entry snapshot
+ * when X is an f64-NaN-boxed parameter that's never reassigned and only ever
+ * passed to known-pure helpers. Aos-style hot loops read `rows[i]` once per
+ * iteration; without this, V8 keeps re-extracting the offset each time.
+ *
+ * Safety: __ptr_offset on an Array follows the realloc-forwarding chain. Once
+ * a function commits to "this param won't realloc inside me", caching is
+ * sound for the duration. The whitelist below is the read-only set
+ * (no mutation possible); any other callee touching X invalidates hoisting.
+ */
+const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux', '$__len'])
+
+export function hoistInvariantPtrOffset(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  const params = new Set()
+  for (let i = 2; i < fn.length; i++) {
+    const c = fn[i]
+    if (!Array.isArray(c)) continue
+    if (c[0] !== 'param') continue
+    if (typeof c[1] === 'string' && c[2] === 'f64') params.add(c[1])
+  }
+  if (!params.size) return
+
+  const sites = new Map()
+  const unsafe = new Set()
+
+  const walk = (node, parent, pi) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    if (op === 'local.set' || op === 'local.tee') {
+      if (typeof node[1] === 'string' && params.has(node[1])) unsafe.add(node[1])
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      return
+    }
+
+    if (op === 'call') {
+      const callee = node[1]
+      if (callee === '$__ptr_offset' && node.length === 3) {
+        const a = node[2]
+        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && params.has(a[1])) {
+          let arr = sites.get(a[1])
+          if (!arr) { arr = []; sites.set(a[1], arr) }
+          arr.push({ parent, idx: pi })
+          return
+        }
+      }
+      const isSafe = SAFE_OFFSET_CALLS.has(callee)
+      for (let i = 2; i < node.length; i++) {
+        const arg = node[i]
+        if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string' && params.has(arg[1])) {
+          if (!isSafe) unsafe.add(arg[1])
+          continue
+        }
+        walk(arg, node, i)
+      }
+      return
+    }
+
+    if (op === 'call_indirect' || op === 'call_ref') {
+      for (let i = 1; i < node.length; i++) {
+        const arg = node[i]
+        if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string' && params.has(arg[1])) {
+          unsafe.add(arg[1])
+          continue
+        }
+        walk(arg, node, i)
+      }
+      return
+    }
+
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+
+  if (sites.size === 0) return
+
+  let hoistId = 0
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__po${hoistId}`)) hoistId++
+
+  const newLocals = []
+  const snaps = []
+  for (const [X, arr] of sites) {
+    if (unsafe.has(X)) continue
+    if (arr.length < 2) continue
+    const tLocal = `$__po${hoistId++}`
+    newLocals.push(['local', tLocal, 'i32'])
+    snaps.push(['local.set', tLocal, ['call', '$__ptr_offset', ['local.get', X]]])
+    for (const { parent, idx } of arr) {
+      parent[idx] = ['local.get', tLocal]
+    }
+  }
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals, ...snaps)
+}
+
+/**
  * Hoist loop-invariant boxed-cell reads out of loops.
  *
  * Boxed-capture cells (`$cell_X`, allocated by the closure-capture pass) are
@@ -887,6 +988,7 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  */
 export function optimizeFunc(fn) {
   hoistPtrType(fn)
+  hoistInvariantPtrOffset(fn)
   const counts = new Map()
   fusedRewrite(fn, counts)
   hoistAddrBase(fn)

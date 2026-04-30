@@ -30,7 +30,7 @@ const PINS = {
   biquad:    { v8: 'win',  as: 'todo' },
   bitwise:   { v8: 'win',  as: 'win'  },
   tokenizer: { v8: 'win',  as: 'diff' },
-  aos:       { v8: 'todo', as: 'todo' },
+  aos:       { v8: 'win',  as: 'win'  },
   json:      { v8: 'todo', as: 'na'   },
 }
 const TOLERANCE = { win: 1.0, tie: 1.05 }
