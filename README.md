@@ -72,36 +72,31 @@ jz --help
 
 ## Language
 
-JZ supports complete JS syntax with Crockford "best parts" constraints.<br>
-Built-in `jzify` transform unlocks legacy JS.
+JZ runs modern JS — `let`/`const`, arrow fns, spread/rest, destructuring, `?.`, `??`, `try`/`catch`/`throw`, ES modules — plus a curated runtime: `JSON`, `Map`, `Set`, `Symbol`, `BigInt`, regex, typed arrays, `ArrayBuffer`/`DataView`, SIMD-vectorized `Math.*`, `console.log`, host timers, `Date.now`/`performance.now`, WASI Preview 1.
 
-| Excluded | Reason | jzify |
-|----------|--------|--------|
-| `var` | Hoisting. Use `let`/`const`. | `var` → `let` |
-| `function` | Hoisting, `this`, `arguments`. Use arrows. | `function f(){}` → `const f = () => {}` |
-| `class`, `this`, `super` | OOP. Use plain objects and functions. | — |
-| `async`/`await` | WASM is synchronous. Use callbacks. | — |
-| `do`...`while` | Use `while` or `for`. | — |
-| `eval`, `with` | Dynamic scope. Not compilable. | — |
-| `arguments` | Implicit. Use rest params `...args`. | — |
-| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
-| `null` vs `undefined` | Both nullish. `== null` / `??` match both. `===` treats them equal. Preserved at host boundary. | — |
-| `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
-| `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
-| `new X()` | Constructor syntax. | `new X()` → `X()` |
+Constraints follow Crockford "best parts"; built-in `jzify` transform auto-fixes most legacy patterns.
 
-### Platform
-
-Standard library is provided via importable modules; I/O is _WASI Preview 1_.
-
-**Available**: numbers, strings, arrays, objects, typed arrays, `ArrayBuffer`, `DataView` · `JSON`, `BigInt`, `Map`, `Set`, `Symbol`, regex · `Math.*` (with SIMD vectorization) · spread/rest, destructuring, optional chaining `?.`, nullish `??` · `try`/`catch`/`throw`, `Error` · `console.log`, `Date.now`, `performance.now` · `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` · ES `import` / `export` · WASI Preview 1 file I/O.
-
-**Not available**: `WeakMap`, `WeakSet`, `Promise`, `Proxy`, `Reflect` · generators (`function*`, `yield`), `delete`, `instanceof` · `Intl`, `new Date()` (only `Date.now`) · DOM, `fetch` · `require`, dynamic `import()`.
+| | Note | jzify |
+|---|------|-------|
+| `var`, `function` decl | hoisting; use `let`/`const` and arrows | `var`→`let`, `function f(){}`→`const f=()=>{}` |
+| `class`, `this`, `super` | use plain objects + closures | — |
+| `async`/`await`, `Promise`, generators (`function*`, `yield`) | no async runtime — use callbacks (`setTimeout`) | — |
+| `eval`, `with`, `arguments` | dynamic scope; use `...rest` for arguments | — |
+| `do`...`while` | use `while` or `for` | — |
+| `==`/`!=` | no loose equality | `==`→`===`, `!=`→`!==` |
+| `switch` | use `if`/`else` chains | `switch`→`if`/`else` |
+| `new X()` | call as `X()` | `new X()`→`X()` |
+| `delete`, `instanceof` | not supported | — |
+| `Proxy`, `Reflect`, `WeakMap`, `WeakSet` | needs GC introspection | — |
+| `Intl`, `new Date()`, DOM, `fetch` | use `Date.now()` for time, host imports for I/O | — |
+| `require`, dynamic `import()` | static ES `import` only | — |
+| `null` / `undefined` | both nullish; `== null` / `??` / `===` treat equal; distinct sentinels preserved at host boundary | jzify: `undefined`→`null` |
+| `typeof` (string result) | compile-time check only (`typeof x === 'string'`) | — |
 
 
 ## Benchmarks
 
-| | **jz** | Node | AssemblyScript | Porffor | WAT | C | Go | Rust |
+| | **jz** | Node | AS | Porf | WAT | C | Go | Rust |
 |---|---|---|---|---|---|---|---|---|
 | **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
 | **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
