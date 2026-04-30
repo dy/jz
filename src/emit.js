@@ -938,16 +938,25 @@ export const emitter = {
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
-    // Runtime string dispatch: if either operand type is unknown and string module loaded, check at runtime
+    // Runtime string dispatch when at least one side could be a string. When one side has
+    // a known non-STRING vtype, skip its `__is_str_key` (statically false). Common in
+    // chained additions `s + a*b + c.d` — left grows as `+` (=NUMBER), only the new right
+    // operand needs the runtime check.
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
       inc('__str_concat', '__is_str_key')
-      return typed(['if', ['result', 'f64'],
-        ['i32.or',
-          ['call', '$__is_str_key', ['local.tee', `$${tA}`, asF64(emit(a))]],
-          ['call', '$__is_str_key', ['local.tee', `$${tB}`, asF64(emit(b))]]],
-        ['then', ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]],
-        ['else', ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]]
+      const checkA = vtA == null ? ['call', '$__is_str_key', ['local.tee', `$${tA}`, asF64(emit(a))]] : null
+      const checkB = vtB == null ? ['call', '$__is_str_key', ['local.tee', `$${tB}`, asF64(emit(b))]] : null
+      const concat = ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      const add    = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      if (checkA && checkB) {
+        return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')
+      }
+      // Exactly one side is checked. Pre-eval the known side first, then the if branches on the unknown.
+      const preEval = vtA == null ? ['local.set', `$${tB}`, asF64(emit(b))] : ['local.set', `$${tA}`, asF64(emit(a))]
+      return typed(['block', ['result', 'f64'],
+        preEval,
+        ['if', ['result', 'f64'], checkA ?? checkB, ['then', concat], ['else', add]]
       ], 'f64')
     }
     const va = emit(a), vb = emit(b)
