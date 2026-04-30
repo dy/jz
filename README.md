@@ -1,8 +1,5 @@
 <img src="logo.svg" alt="jz logo" width="120"/>
 
-# ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
-
-
 ```js
 import jz from 'jz'
 
@@ -10,7 +7,8 @@ const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + f
 fib(40)  // 102334155
 ```
 
-## What
+## ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
+
 
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, producing minimal wasm with near-native performance.<br/> Static by design: no runtime, no GC, no dynamic constructs.
 
