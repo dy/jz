@@ -104,7 +104,7 @@ No runtime, no GC, no dynamic constructs. Standard library is provided via impor
 
 | Category | Available | Not available |
 |----------|-----------|---------------|
-| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON` | `null` (use `undefined`), `BigInt` |
+| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` | `undefined` (merged with `null`) |
 | **Collections** | Arrays, `Map`, `Set`, dynamic string-keyed objects | `WeakMap`, `WeakSet` |
 | **Math** | `Math.*`, SIMD vectorization | — |
 | **Text** | String methods, regex | `Intl` |
