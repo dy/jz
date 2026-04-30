@@ -252,6 +252,15 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $sl)))
         (return (call $__mkptr (i32.const ${PTR.SSO}) (local.get $len) (local.get $sso)))))
+    ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
+    ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
+    (if (local.get $simple)
+      (then
+        (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+        (local.set $off (i32.add (local.get $off) (i32.const 4)))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
+        (memory.copy (local.get $off) (i32.add (global.get $__jpstr) (local.get $start)) (local.get $len))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))))
     ;; Copy chars to new string (handles escapes inline)
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))

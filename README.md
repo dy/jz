@@ -47,7 +47,7 @@ jz --help
 
 ## Language
 
-JZ is a strict functional JS subset with Crockford's "the best parts" constraints. Built-in `jzify` extends support to legacy patterns.
+JZ is a strict functional JS subset with Crockford's "the best parts" constraints. Built-in `jzify` transform extends support to legacy patterns.
 
 <!--
 ```mermaid
@@ -105,17 +105,26 @@ flowchart TB
 
 ### Why?
 
-JS became complex and with regrets (coercions, hoisting, `this`, classes, precision loss, `null`). Ongoing proposals keep shaping language which is already good.
+_JZ_ (javascript zero) is an attempt to distill and secure best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest.
 
-_JZ_ (javascript zero) is an attempt to secure best JS parts from platform, spec, and engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
+Write normal JS and get WASM – portable, fast, long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
 * **Minimal output** — produced WAT/WASM is on par with hand-written.
 
-Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
+| Useful for                                   | Not for                                      |
+|----------------------------------------------|----------------------------------------------|
+| Numeric kernels / math                       | Browser apps                                 |
+| DSP, audio, bytebeats                        | DOM / UI code                                |
+| Small portable utilities                     | Node / backend apps                          |
+| Parsers, tokenizers, transforms              | Async / networking-heavy systems             |
+| Deterministic compute (pure, reproducible)   | Full JavaScript compat                       |
+| Embedded / WASM runtimes                     | Large-scale application architecture         |
+| Sandboxed user code                          | Replacing TypeScript/Rust/C                  |
 
 ### How to pass data between JS and WASM?
 
