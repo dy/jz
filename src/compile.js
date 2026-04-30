@@ -1952,8 +1952,10 @@ function finalizeClosureTable(sec) {
   }
   for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
   if (!indirectUsed) for (const fn of sec.start) scan(fn)
-  if (indirectUsed) {
-    sec.table = [['table', ctx.closure.table.length, 'funcref']]
+  // Keep table if host may call closures (timers, etc.)
+  const hostCallsClosures = ctx.module.imports.some(i => i[1] === '"jz"')
+  if (indirectUsed || hostCallsClosures) {
+    sec.table = [['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref']]
     sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
     return
   }
@@ -2372,7 +2374,7 @@ export default function compile(ast) {
   }
 
   if (ctx.closure.table?.length)
-    sec.table.push(['table', ctx.closure.table.length, 'funcref'])
+    sec.table.push(['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref'])
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
@@ -2473,5 +2475,3 @@ export default function compile(ast) {
   ]
   return ['module', ...sections]
 }
-
-

@@ -160,7 +160,7 @@ test('features.closure ON: first-class function — closure table present', () =
     export let apply = (fn, x) => fn(x)
     export let f = () => apply((y) => y * 2, 5)
   `)
-  ok(/\(table \d+ funcref\)/.test(w))
+  ok(/\(table[\s\S]*?funcref/.test(w))
 })
 
 // === Runtime autowiring: passing a JS object to exported fn ===

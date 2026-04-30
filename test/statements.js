@@ -187,18 +187,85 @@ test('setTimeout: callback fires', async () => {
   await new Promise(r => setTimeout(r, 50))
 })
 
-test('setInterval + clearInterval', async () => {
+test('setTimeout: returns timer ID', () => {
   const result = jz(`
     export let start = () => {
-      let count = 0
-      let id = setInterval(() => { count = count + 1 }, 20)
-      setTimeout(() => { clearInterval(id) }, 70)
-      return () => count
+      let id = setTimeout(() => {}, 10)
+      return id
     }
   `)
-  // Note: returned closure is not callable from JS, but interval still runs
-  result.exports.start()
+  const id = result.exports.start()
+  ok(typeof id === 'number' && id > 0)
+})
+
+test('clearTimeout: prevents callback', async () => {
+  const result = jz(`
+    export let fired = 0
+    export let start = () => {
+      let id = setTimeout(() => { fired = 1 }, 10)
+      clearTimeout(id)
+      return 1
+    }
+  `)
+  is(result.exports.start(), 1)
+  await new Promise(r => setTimeout(r, 50))
+  is(result.exports.fired.value, 0)
+})
+
+test('setInterval: returns timer ID', () => {
+  const result = jz(`
+    export let start = () => {
+      let id = setInterval(() => {}, 10)
+      clearInterval(id)
+      return id
+    }
+  `)
+  const id = result.exports.start()
+  ok(typeof id === 'number' && id > 0)
+})
+
+test('clearInterval: stops interval', async () => {
+  const result = jz(`
+    export let count = 0
+    export let start = () => {
+      let id = setInterval(() => { count = count + 1 }, 20)
+      setTimeout(() => { clearInterval(id) }, 70)
+      return 1
+    }
+  `)
+  is(result.exports.start(), 1)
   await new Promise(r => setTimeout(r, 120))
+  // Interval fires at ~20, 40, 60ms; cleared at 70ms → 3 ticks
+  is(result.exports.count.value, 3)
+})
+
+test('timer callback captures outer scope', async () => {
+  const result = jz(`
+    export let result = 0
+    export let start = () => {
+      let x = 41
+      setTimeout(() => { result = x + 1 }, 10)
+      return 1
+    }
+  `)
+  is(result.exports.start(), 1)
+  await new Promise(r => setTimeout(r, 50))
+  is(result.exports.result.value, 42)
+})
+
+test('multiple simultaneous timers', async () => {
+  const result = jz(`
+    export let a = 0, b = 0
+    export let start = () => {
+      setTimeout(() => { a = 1 }, 10)
+      setTimeout(() => { b = 2 }, 20)
+      return 1
+    }
+  `)
+  is(result.exports.start(), 1)
+  await new Promise(r => setTimeout(r, 50))
+  is(result.exports.a.value, 1)
+  is(result.exports.b.value, 2)
 })
 
 // === Auto-boxing: property assignment ===

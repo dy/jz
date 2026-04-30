@@ -94,14 +94,18 @@ export default function prepare(node) {
     setInterval: [['param', 'f64'], ['param', 'f64'], ['result', 'f64']],
     clearInterval: [['param', 'f64'], ['result', 'f64']],
   }
+  const usedTimers = new Set()
   const scanTimers = (n) => {
-    if (!Array.isArray(n)) return typeof n === 'string' && TIMER_NAMES.has(n)
-    for (let i = 0; i < n.length; i++) if (scanTimers(n[i])) return true
-    return false
+    if (!Array.isArray(n)) {
+      if (typeof n === 'string' && TIMER_NAMES.has(n)) usedTimers.add(n)
+      return
+    }
+    for (let i = 0; i < n.length; i++) scanTimers(n[i])
   }
   const allNodes = [ast, ...ctx.func.list.map(f => f.body), ...(ctx.module.moduleInits || [])]
-  for (const name of TIMER_NAMES) {
-    if (allNodes.some(scanTimers) && !ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
+  for (const node of allNodes) scanTimers(node)
+  for (const name of usedTimers) {
+    if (!ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
       ctx.module.imports.push(['import', '"jz"', `"${name}"`, ['func', `$${name}`, ...TIMER_SIGS[name]]])
     }
   }
