@@ -72,11 +72,9 @@ jz --help
 
 ## Language
 
-JZ runs modern JS — `let`/`const`, arrow fns, spread/rest, destructuring, `?.`, `??`, `try`/`catch`/`throw`, ES modules — plus a curated runtime: `JSON`, `Map`, `Set`, `Symbol`, `BigInt`, regex, typed arrays, `ArrayBuffer`/`DataView`/`TypedArray`, SIMD-vectorized `Math.*`, `console.log`, host timers, `Date.now`/`performance.now`, WASI Preview 1.
+JZ supports complete JS syntax with Crockford "best parts" constraints. Built-in `jzify` transform auto-fixes most legacy patterns.
 
-Constraints follow Crockford "best parts"; built-in `jzify` transform auto-fixes most legacy patterns.
-
-| | Note | jzify |
+|  | Note | jzify |
 |---|------|-------|
 | `var`, `function` decl | hoisting; use `let`/`const` and arrows | `var`→`let`, `function f(){}`→`const f=()=>{}` |
 | `class`, `this`, `super` | use plain objects + closures | — |
