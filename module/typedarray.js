@@ -634,8 +634,11 @@ export default (ctx) => {
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (et === 7) return ['f64.store', off, vv] // Float64Array
     if (et === 6) return ['f32.store', off, ['f32.demote_f64', vv]] // Float32Array
-    // Integer types: truncate f64 to i32, then store (unsigned types use unsigned truncation)
-    return [STORE[et], off, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', vv]]
+    // Integer types: truncate f64 to i32, then store. Peel f64.convert_i32_*(x) → x:
+    // store of bitwise-result already-i32 needs no round-trip.
+    const isConv = Array.isArray(vv) && (vv[0] === 'f64.convert_i32_s' || vv[0] === 'f64.convert_i32_u')
+    const i32val = isConv ? vv[1] : [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', vv]
+    return [STORE[et], off, i32val]
   }
 
   // .map() on TypedArrays — SIMD auto-vectorization when pattern detected

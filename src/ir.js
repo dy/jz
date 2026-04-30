@@ -74,7 +74,17 @@ export const asPtrOffset = (n, ptrKind) =>
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative). */
-export const toI32 = n => n.type === 'i32' ? n : typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
+export const toI32 = n => {
+  if (n.type === 'i32') return n
+  // Peephole: i32.wrap_i64(i64.trunc_sat_f64_s(f64.convert_i32_*(x))) === x for all i32
+  // inputs (both signed and unsigned variants round-trip identically). The argument of
+  // f64.convert_i32_* is i32 by WASM validation, so peel unconditionally and re-tag.
+  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')) {
+    const inner = n[1]
+    return Array.isArray(inner) ? typed(inner, 'i32') : inner
+  }
+  return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
+}
 
 /** Extract i64 from BigInt-as-f64. */
 export const asI64 = n => typed(['i64.reinterpret_f64', asF64(n)], 'i64')
@@ -295,6 +305,12 @@ export function toNumF64(node, v) {
   if (v.type === 'i32' || isLit(v)) return asF64(v)
   const vt = keyValType(node)
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
+  // IR-level shapes that produce real f64 numbers (never NaN-boxed pointers):
+  // i32→f64 conversions, stdlib clock helper. Skip the __to_num call wrapper.
+  if (Array.isArray(v)) {
+    if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
+    if (v[0] === 'call' && v[1] === '$__time_ms') return v
+  }
   if (!ctx.core.stdlib['__to_num']) return asF64(v)
   inc('__to_num')
   return typed(['call', '$__to_num', asF64(v)], 'f64')
