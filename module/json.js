@@ -197,10 +197,12 @@ export default (ctx) => {
   ctx.scope.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
   ctx.scope.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
 
+  // Sentinel-driven peek: __jp copies input to a scratch buffer with 0xFF bytes
+  // appended past the end. i32.load8_s sign-extends, so the sentinel reads as -1
+  // — exactly the EOF value all callers already test for. Bounds check and
+  // function-call overhead both gone; ~50 calls/parse char in well-formed JSON.
   ctx.core.stdlib['__jp_peek'] = `(func $__jp_peek (result i32)
-    (if (result i32) (i32.ge_s (global.get $__jppos) (global.get $__jplen))
-      (then (i32.const -1))
-      (else (i32.load8_u (i32.add (global.get $__jpstr) (global.get $__jppos))))))`
+    (i32.load8_s (i32.add (global.get $__jpstr) (global.get $__jppos))))`
 
   ctx.core.stdlib['__jp_adv'] = `(func $__jp_adv (param $n i32)
     (global.set $__jppos (i32.add (global.get $__jppos) (local.get $n))))`
@@ -385,24 +387,29 @@ export default (ctx) => {
       (then (call $__jp_adv (i32.const 4)) (return (f64.const 0))))
     (f64.const 0))`
 
-  // Entry point — converts SSO to heap first so __jp_peek works uniformly
+  // Entry point — copies input to a scratch buffer with 0xFF sentinel padding
+  // past the end so __jp_peek can omit its bounds check. Pad is 8 bytes so any
+  // overshoot from speculative peek/adv on malformed input still hits sentinel,
+  // not unallocated memory.
   ctx.core.stdlib['__jp'] = `(func $__jp (param $str f64) (result f64)
     (local $len i32) (local $buf i32) (local $i i32)
     (local.set $len (call $__str_byteLen (local.get $str)))
-    ;; SSO: unpack to heap buffer
+    (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
+    ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
+    (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
+    ;; SSO: byte-by-byte via __sso_char; STRING: bulk memcpy from string offset.
     (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
       (then
-        (local.set $buf (call $__alloc (local.get $len)))
         (local.set $i (i32.const 0))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (i32.store8 (i32.add (local.get $buf) (local.get $i))
             (call $__sso_char (local.get $str) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $l)))
-        (global.set $__jpstr (local.get $buf)))
+          (br $l))))
       (else
-        (global.set $__jpstr (call $__ptr_offset (local.get $str)))))
+        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
+    (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
     (call $__jp_val))`
