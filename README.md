@@ -28,9 +28,6 @@ add(2, 3)  // 5
 const wasm = compile('export let f = (x) => x * 2')
 const mod = new WebAssembly.Module(wasm)
 const inst = new WebAssembly.Instance(mod)
-
-// Inspect generated WAT
-const wat = compile('export let f = (x) => x * 2', { wat: true })
 ```
 
 ## CLI
