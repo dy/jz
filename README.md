@@ -47,7 +47,7 @@ jz --help
 
 ## Language
 
-JZ is a strict functional JS subset with Crockford's "the best parts" constraints. Built-in `jzify` transform extends support to legacy patterns.
+JZ is a strict functional JS subset. Built-in `jzify` transform extends support to legacy patterns.
 
 <!--
 ```mermaid
