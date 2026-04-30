@@ -116,15 +116,12 @@ Write normal JS and get WASM – portable, fast, long-lasting.
 
 Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 
-| Useful for                                   | Not for                                      |
-|----------------------------------------------|----------------------------------------------|
-| Numeric kernels / math                       | Browser apps                                 |
-| DSP, audio, bytebeats                        | DOM / UI code                                |
-| Small portable utilities                     | Node / backend apps                          |
-| Parsers, tokenizers, transforms              | Async / networking-heavy systems             |
-| Deterministic compute (pure, reproducible)   | Full JavaScript compat                       |
-| Embedded / WASM runtimes                     | Large-scale application architecture         |
-| Sandboxed user code                          | Replacing TypeScript/Rust/C                  |
+| Good for                    | Not for                    |
+|-----------------------------|----------------------------|
+| Numeric / math compute      | UI / frontend              |
+| DSP / audio / bytebeats     | Backend / APIs             |
+| Parsing / transforms        | Async / I/O-heavy logic    |
+| WASM utilities              | JavaScript runtime         |
 
 ### How to pass data between JS and WASM?
 
