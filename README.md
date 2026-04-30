@@ -1,7 +1,5 @@
 <img src="logo.svg" alt="jz logo" width="120"/>
 
-Functional JS subset compiling to WASM.
-
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
 
@@ -12,19 +10,15 @@ const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + f
 fib(40)  // 102334155
 ```
 
-## Why?
-
-_jz_ (javascript zero) is a personal attempt to secure the functional JS subset I use from platform, spec, and engine drift. I want to write normal JS and get WASM – portable, long-lasting, canonical.
-
-_jz_ takes a modern functional subset, drops legacy constructs, and [optimizes](#optimizations) heavily under these constraints. Output is aimed to be theoretically minimal wasm with near-native performance. By design it is aot: has no runtime, no GC, no dynamic constructs. Built-in `jzify` transformer enables legacy JS.
-
-Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor), [piezo](https://github.com/dy/piezo) and others.
-
+**JZ** (_javascript zero_) is **minimal modern functional JS subset** without legacy or regrets, [optimized](#optimizations) to produce minimal wasm with near-native performance. Static by design: no runtime, no GC, no dynamic constructs. Built-in `jzify` transform enables legacy JS.
 
 * **Valid jz = valid js** — any jz program is normal js: test in browser, compile to wasm.
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
 * **Readable** — produced WAT/WASM is on par with hand-written.
 * **Modular** — arrays, strings, objects, regex, math are (auto)importable modules.
+
+It is an attempt to secure Crockford "best parts" from platform, spec, and engine drift. Write normal JS and get WASM – portable, low-level, long-lasting.
+Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
 
 
 ## Usage
@@ -75,49 +69,44 @@ jz -e "1 + 2"
 jz --help
 ```
 
-## Language
+## Features
 
-jz is a **minimal functional subset** of JavaScript — the Crockford "good parts".
+JZ supports complete JS syntax with constraints:
 
-### Syntax
-
-These JS constructs are intentionally excluded:
-
-| Excluded | Reason | jzify? |
+| Excluded | Reason | jzify |
 |----------|--------|--------|
 | `var` | Hoisting. Use `let`/`const`. | `var` → `let` |
-| `function` | Hoisting, context, arguments. Use arrows. | `function f(){}` → `const f = () => {}` |
+| `function` | Hoisting, `this`, `arguments`. Use arrows. | `function f(){}` → `const f = () => {}` |
 | `class`, `this`, `super` | OOP. Use plain objects and functions. | — |
-| `async`/`await` | WASM is synchronous. Use host callbacks. | — |
+| `async`/`await` | WASM is synchronous. Use callbacks. | — |
 | `do`...`while` | Use `while` or `for`. | — |
 | `eval`, `with` | Dynamic scope. Not compilable. | — |
 | `arguments` | Implicit. Use rest params `...args`. | — |
 | `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
-| `null` vs `undefined` | One nullish value (`null`). `??` works for both. | `undefined` → `null` |
+| `undefined` | One of regrets, see [no-undefined rule](https://eslint.org/docs/latest/rules/no-undefined). | enables `undefined` |
 | `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
 | `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
-| `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
+| `new X()` | Constructor syntax. | `new X()` → `X()` |
 
-### Capabilities
+### Platform
 
-No runtime, no GC, no dynamic constructs. Standard library is provided via importable modules; I/O is WASI Preview 1.
+<!-- FIXME: just do list **Available**: ..., **Not available**: ... -->
+Standard library is provided via importable modules; I/O is _WASI Preview 1_.
 
 | Category | Available | Not available |
 |----------|-----------|---------------|
-| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` | `undefined` (merged with `null`) |
+| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` |  |
 | **Collections** | Arrays, `Map`, `Set`, dynamic string-keyed objects | `WeakMap`, `WeakSet` |
 | **Math** | `Math.*`, SIMD vectorization | — |
 | **Text** | String methods, regex | `Intl` |
 | **I/O & Host** | `console.log`, `Date.now`, `performance.now` | DOM, `fetch`, `setTimeout`, filesystem |
 | **Modules** | ES `import` / `export` | `require`, dynamic `import()` |
-| **Errors** | `try` / `catch` / `throw` (native WASM exceptions) | — |
-| **Async** | — (WASM is synchronous) | `Promise`, `async` / `await` |
+
 
 ## Benchmarks
 
-[bench/](bench/) · Darwin arm64 · `node bench/bench.mjs <case> --targets=…`
-
-| | C | Rust | Go | AS | WAT | **jz** | Node |
+<!-- FIXME: jz should come first, then node, then AssembleScript, then porf, WAT, then C, then Go, then Rust -->
+| | C | Rust | Go | AssembleScript | WAT | **jz** | Node |
 |---|---|---|---|---|---|---|---|
 | **biquad** | 5.32 ms<br>32.8 kB | 5.26 ms<br>471.9 kB | 8.93 ms<br>2.39 MB | 8.99 ms<br>1.9 kB | 6.42 ms<br>767 B | **11.07 ms**<br>**8.0 kB** | 12.19 ms<br>5.3 kB |
 | **tokenizer** | 0.13 ms<br>32.9 kB | 0.12 ms<br>471.8 kB | 0.07 ms<br>2.39 MB | 0.06 ms<br>1.5 kB | — | **0.15 ms**<br>**7.7 kB** | 0.19 ms<br>1.4 kB |
@@ -128,13 +117,11 @@ No runtime, no GC, no dynamic constructs. Standard library is provided via impor
 | **callback** | 0.08 ms<br>32.9 kB | 0.07 ms<br>471.8 kB | 0.20 ms<br>2.39 MB | 1.48 ms<br>1.9 kB | — | **5.13 ms**<br>**8.6 kB** | 3.31 ms<br>828 B |
 | **json** | 0.02 ms<br>32.9 kB | 0.03 ms<br>471.9 kB | 1.04 ms<br>2.93 MB | — | — | **0.54 ms**<br>**11.2 kB** | 0.38 ms<br>923 B |
 
-Additional biquad targets: jz→w2c 11.37 ms (68.4 kB), QuickJS 1103.95 ms (5.7 kB).
-
 
 
 ## FAQ
 
-### How do I pass data between JS and WASM?
+### How to pass data between JS and WASM?
 
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
@@ -286,9 +273,8 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 
 All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-### What optimizations does jz apply?
+<!-- ### What optimizations does jz apply?
 
-<!-- FIXME: this must be updated. Also - possibly can be a separate readme section -->
 | Optimization | Layer | What it does |
 |--------------|-------|-------------|
 | Constant folding | jz | Evaluates `2 * 3` → `6`, `x + 0` → `x`, `x * 1` → `x` at compile time |
@@ -311,7 +297,9 @@ All modules sharing a memory use a single bump allocator (heap pointer at byte 1
 | Dispatch hoisting | jz | SSO/heap branch lifted out of inner byte loop in slice/case/pad/indexOf/etc. |
 | Inline dyn property probe | jz | `__dyn_get` (95M calls in self-host) inlines `__hash_get_local`'s probe loop — skips redundant type check + bit unboxing on already-validated props hash |
 | Inline/peephole | watr | Instruction-level optimization on WAT output |
+-->
 
+<!--
 ### How do TypedArrays and SIMD work?
 
 TypedArrays (`Float64Array`, `Int32Array`, etc.) compile to typed WASM memory with correct byte strides. `.map()` auto-vectorizes recognized patterns to SIMD:
@@ -324,6 +312,7 @@ const { exports, memory } = jz(`export let f = () => {
 }`)
 memory.read(exports.f())  // Float64Array with doubled values
 ```
+-->
 
 ### How do I run compiled WASM outside the browser?
 
