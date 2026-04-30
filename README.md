@@ -93,7 +93,7 @@ These JS constructs are intentionally excluded:
 | `eval`, `with` | Dynamic scope. Not compilable. | — |
 | `arguments` | Implicit. Use rest params `...args`. | — |
 | `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
-| `null` vs `undefined` | One nullish value (`null`). `??` works for both. | `undefined` → `null`, `void 0` → `null` |
+| `null` vs `undefined` | Both nullish. `== null` / `??` match both. `===` treats them equal. Preserved at host boundary. | — |
 | `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
 | `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
 | `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
@@ -104,7 +104,7 @@ No runtime, no GC, no dynamic constructs. Standard library is provided via impor
 
 | Category | Available | Not available |
 |----------|-----------|---------------|
-| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` | `undefined` (merged with `null`) |
+| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` | — |
 | **Collections** | Arrays, `Map`, `Set`, dynamic string-keyed objects | `WeakMap`, `WeakSet` |
 | **Math** | `Math.*`, SIMD vectorization | — |
 | **Text** | String methods, regex | `Intl` |

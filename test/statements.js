@@ -158,6 +158,49 @@ test('Error(): throw surfaces readable message', () => {
   is(error.message, 'test')
 })
 
+test('try/catch: catches thrown value', () => {
+  is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(-1), 99)
+})
+
+test('try/catch: no throw takes normal path', () => {
+  is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(5), 10)
+})
+
+test('try/catch: thrown string', () => {
+  is(run('export let f = () => { try { throw \"err\" } catch (e) { return e.length } }').f(), 3)
+})
+
+test('try/catch: nested', () => {
+  is(run('export let f = (x) => { try { try { if (x < 0) throw -1; return x } catch (e) { throw e + 10 } } catch (e2) { return e2 + 100 } }').f(-1), 109)
+})
+
+// === Timers ===
+
+test('setTimeout: callback fires', async () => {
+  const result = jz(`
+    export let start = () => {
+      setTimeout(() => console.log('timer-fired'), 10)
+      return 1
+    }
+  `)
+  is(result.exports.start(), 1)
+  await new Promise(r => setTimeout(r, 50))
+})
+
+test('setInterval + clearInterval', async () => {
+  const result = jz(`
+    export let start = () => {
+      let count = 0
+      let id = setInterval(() => { count = count + 1 }, 20)
+      setTimeout(() => { clearInterval(id) }, 70)
+      return () => count
+    }
+  `)
+  // Note: returned closure is not callable from JS, but interval still runs
+  result.exports.start()
+  await new Promise(r => setTimeout(r, 120))
+})
+
 // === Auto-boxing: property assignment ===
 
 test('fn.prop: auto-box write + read', () => {
@@ -307,6 +350,69 @@ test('void preserves side effects', () => {
 
 test('void returns 0', () => {
   is(run('export let f = () => void 42').f(), 0)
+})
+
+test('strict mode prohibits void', () => {
+  throws(() => run('export let f = () => void 42', { strict: true }), /strict mode: `void` is prohibited/)
+})
+
+// NOTE: subscript/jessie parses `undefined` as empty AST `[]`, so it never reaches
+// prepare's strict-mode check. The behavior is correct (returns 0 / null).
+
+// === null/undefined semantics ===
+
+test('undefined keyword returns undefined', () => {
+  const r = jz('export let f = () => undefined')
+  is(r.exports.f(), undefined)
+})
+
+test('null keyword returns null', () => {
+  const r = jz('export let f = () => null')
+  is(r.exports.f(), null)
+})
+
+test('null and undefined are both nullish inside jz', () => {
+  const r = jz('export let f = (x) => x == null')
+  is(r.exports.f(null), 1)
+  is(r.exports.f(undefined), 1)
+  is(r.exports.f(0), 0)
+})
+
+test('null === undefined: both nullish, == and === treat them equal', () => {
+  // jz merges === → ==; null and undefined are both nullish so compare equal
+  const r = jz('export let f = () => null === undefined')
+  is(r.exports.f(), 1)
+})
+
+test('?? triggers on null/undefined', () => {
+  const r = jz('export let f = (x) => x ?? 42')
+  is(r.exports.f(null), 42)
+  is(r.exports.f(undefined), 42)
+  is(r.exports.f(0), 0)
+  is(r.exports.f(10), 10)
+})
+
+test('default params trigger on null/undefined', () => {
+  const r = jz('export let f = (x = 99) => x')
+  is(r.exports.f(), 99)
+  is(r.exports.f(null), 99)
+  is(r.exports.f(undefined), 99)
+  is(r.exports.f(5), 5)
+})
+
+test('host boundary: null and undefined preserve identity', () => {
+  const r = jz('export let id = (x) => x')
+  is(r.exports.id(null), null)
+  is(r.exports.id(undefined), undefined)
+  is(r.exports.id(42), 42)
+})
+
+test('host boundary: returning null vs undefined', () => {
+  const r = jz('export let n = () => null; export let u = () => undefined')
+  is(r.exports.n(), null)
+  is(typeof r.exports.n(), 'object')
+  is(r.exports.u(), undefined)
+  is(typeof r.exports.u(), 'undefined')
 })
 
 // === for...of ===

@@ -1890,7 +1890,7 @@ export function emit(node, expect) {
   // Literal node [, value] — handle null/undefined values
   if (op == null && args.length === 1) {
     const v = args[0]
-    return v == null ? nullExpr() : emit(v)
+    return v === undefined ? undefExpr() : v === null ? nullExpr() : emit(v)
   }
 
   const handler = ctx.core.emit[op]

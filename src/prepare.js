@@ -85,6 +85,27 @@ export default function prepare(node) {
     if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
     if (needs) includeModule('fn')
   }
+
+  // Auto-import timer functions from host "jz" module when referenced
+  const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
+  const TIMER_SIGS = {
+    setTimeout: [['param', 'f64'], ['param', 'f64'], ['result', 'f64']],
+    clearTimeout: [['param', 'f64'], ['result', 'f64']],
+    setInterval: [['param', 'f64'], ['param', 'f64'], ['result', 'f64']],
+    clearInterval: [['param', 'f64'], ['result', 'f64']],
+  }
+  const scanTimers = (n) => {
+    if (!Array.isArray(n)) return typeof n === 'string' && TIMER_NAMES.has(n)
+    for (let i = 0; i < n.length; i++) if (scanTimers(n[i])) return true
+    return false
+  }
+  const allNodes = [ast, ...ctx.func.list.map(f => f.body), ...(ctx.module.moduleInits || [])]
+  for (const name of TIMER_NAMES) {
+    if (allNodes.some(scanTimers) && !ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
+      ctx.module.imports.push(['import', '"jz"', `"${name}"`, ['func', `$${name}`, ...TIMER_SIGS[name]]])
+    }
+  }
+
   return ast
 }
 
@@ -262,6 +283,7 @@ function prep(node) {
   }
 
   const [op, ...args] = node
+  if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited. It diverges from JS by evaluating to 0.')
   if (op == null) {
     if (typeof args[0] === 'string') {
       includeMods('core', 'string', 'number')
@@ -524,13 +546,18 @@ const handlers = {
   },
 
   // try/catch/throw
-  'catch'(tryNode, errName, handler) {
-    const body = Array.isArray(tryNode) && tryNode[0] === 'try' ? tryNode[1] : tryNode
-    return ['catch', prep(body), errName, prep(handler)]
+  // Parser produces ['try', body, ['catch', param, handler]?, ['finally', cleanup]?]
+  'try'(body, ...clauses) {
+    const catchClause = clauses.find(c => Array.isArray(c) && c[0] === 'catch')
+    const finallyClause = clauses.find(c => Array.isArray(c) && c[0] === 'finally')
+    if (finallyClause) err('finally not supported: use catch')
+    if (catchClause) {
+      const [, errName, handler] = catchClause
+      return ['catch', prep(body), errName, prep(handler)]
+    }
+    return ['try', prep(body)]
   },
-  'try'(body) { return ['try', prep(body)] },
   'throw'(expr) { return ['throw', prep(expr)] },
-  'finally'() { err('finally not supported: use catch') },
 
   // Template literal: [``, part, ...] → chain of str_concat calls
   // First node is always a string (empty if template starts with ${...}) so concat dispatches correctly.

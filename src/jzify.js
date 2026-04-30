@@ -208,10 +208,8 @@ const handlers = {
 
 /** Transform a single AST node recursively. */
 function transform(node) {
-  if (node === 'undefined') return [, null]
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
   const [op, ...args] = node
-  if (op === 'void') return [, null]
   if (op == null) return node
   const h = handlers[op]
   return (h && h(...args)) ?? (h ? [op, ...args.map(transform)] : [op, ...args.map(transform)])
