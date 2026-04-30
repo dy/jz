@@ -127,9 +127,11 @@ dist
 .pnp.*
 /.work/backup
 /.work/*.mjs
+/.work/*.js
 /.work/*.wasm
 /.claude
 /CLAUDE.md
 .DS_Store
 /out.wat
 /output.txt
+__pycache__
