@@ -98,20 +98,20 @@ These JS constructs are intentionally excluded:
 | `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
 | `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
 
-### Platform
+### Capabilities
 
 No runtime, no GC, no dynamic constructs. Standard library is provided via importable modules; I/O is WASI Preview 1.
 
 | Category | Available | Not available |
 |----------|-----------|---------------|
-| **Data** | Numbers, strings, arrays, objects, typed arrays | `null` (use `undefined`), dynamic object keys |
-| **Collections** | Arrays, `Map`, `Set`, HASH | — |
-| **Math** | `Math.*`, SIMD vectorization | `BigInt` |
+| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON` | `null` (use `undefined`), `BigInt` |
+| **Collections** | Arrays, `Map`, `Set`, dynamic string-keyed objects | `WeakMap`, `WeakSet` |
+| **Math** | `Math.*`, SIMD vectorization | — |
 | **Text** | String methods, regex | `Intl` |
-| **I/O** | `console.log`, `Date.now`, `performance.now` | `fetch`, `setTimeout`, filesystem |
+| **I/O & Host** | `console.log`, `Date.now`, `performance.now` | DOM, `fetch`, `setTimeout`, filesystem |
 | **Modules** | ES `import` / `export` | `require`, dynamic `import()` |
-| **Errors** | `try` / `catch` / `throw` | — |
-| **Async** | — | `Promise`, `async` / `await` |
+| **Errors** | `try` / `catch` / `throw` (native WASM exceptions) | — |
+| **Async** | — (WASM is synchronous) | `Promise`, `async` / `await` |
 
 ## Benchmarks
 
