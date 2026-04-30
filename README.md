@@ -72,7 +72,7 @@ jz --help
 
 ## Language
 
-JZ runs modern JS — `let`/`const`, arrow fns, spread/rest, destructuring, `?.`, `??`, `try`/`catch`/`throw`, ES modules — plus a curated runtime: `JSON`, `Map`, `Set`, `Symbol`, `BigInt`, regex, typed arrays, `ArrayBuffer`/`DataView`, SIMD-vectorized `Math.*`, `console.log`, host timers, `Date.now`/`performance.now`, WASI Preview 1.
+JZ runs modern JS — `let`/`const`, arrow fns, spread/rest, destructuring, `?.`, `??`, `try`/`catch`/`throw`, ES modules — plus a curated runtime: `JSON`, `Map`, `Set`, `Symbol`, `BigInt`, regex, typed arrays, `ArrayBuffer`/`DataView`/`TypedArray`, SIMD-vectorized `Math.*`, `console.log`, host timers, `Date.now`/`performance.now`, WASI Preview 1.
 
 Constraints follow Crockford "best parts"; built-in `jzify` transform auto-fixes most legacy patterns.
 
@@ -92,23 +92,6 @@ Constraints follow Crockford "best parts"; built-in `jzify` transform auto-fixes
 | `require`, dynamic `import()` | static ES `import` only | — |
 | `null` / `undefined` | both nullish; `== null` / `??` / `===` treat equal; distinct sentinels preserved at host boundary | jzify: `undefined`→`null` |
 | `typeof` (string result) | compile-time check only (`typeof x === 'string'`) | — |
-
-
-## Benchmarks
-
-| | **jz** | Node | AS | Porf | WAT | C | Go | Rust |
-|---|---|---|---|---|---|---|---|---|
-| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
-| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
-| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
-| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
-| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
-| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
-| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
-| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
-
-_Porffor currently fails to compile this bench suite (codegen bug). Numbers from `node bench/bench.mjs` on Apple Silicon._
-
 
 
 ## FAQ
@@ -186,12 +169,12 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
 ```js
-jz\`export let f = () => \${'hello'}.length\`              // 5 — string compiled as literal
-jz\`export let f = () => \${[10, 20, 30]}[1]\`             // 20 — array compiled as literal
-jz\`export let f = () => \${{name: 'jz', count: 3}}.count\` // 3 — object compiled as literal
+jz`export let f = () => \${'hello'}.length`              // 5 — string compiled as literal
+jz`export let f = () => \${[10, 20, 30]}[1]`             // 20 — array compiled as literal
+jz`export let f = () => \${{name: 'jz', count: 3}}.count` // 3 — object compiled as literal
 
 // Nested values work too
-jz\`export let f = () => \${{label: 'origin', x: 0, y: 0}}.label.length\`  // 6
+jz`export let f = () => \${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 ```
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
@@ -319,19 +302,37 @@ deno run program.wasm
 
 `console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
 
-### What WASI features are supported?
+### What host features are supported?
 
-<!-- WASI can be a separate readme section -->
-jz targets WASI Preview 1. The compiled `.wasm` uses standard WASI imports — runs natively on wasmtime, wasmer, deno without polyfills.
+The compiled `.wasm` uses two import namespaces:
 
-| JS API | WASI call | Notes |
-|--------|-----------|-------|
-| `console.log()` | `fd_write` (fd=1) | Multiple args space-separated, newline appended |
-| `console.warn()`, `console.error()` | `fd_write` (fd=2) | Writes to stderr |
-| `Date.now()` | `clock_time_get` (realtime) | Returns ms since epoch |
-| `performance.now()` | `clock_time_get` (monotonic) | Returns ms, high-resolution |
+- `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
+- `jz` — host imports for features WASI doesn't cover. Supplied only by the `jz()` runtime (browser/Node event loop). Pure wasmtime/wasmer can stub them or use modules that don't call them.
 
-For browser/Node environments without native WASI, jz ships a tiny polyfill (`jz/wasi`) that maps these calls to `console.log` and `performance.now()`. The `jz()` function applies it automatically.
+| JS API | Maps to | Notes |
+|--------|---------|-------|
+| `console.log()` | WASI `fd_write` (fd=1) | Multiple args space-separated, newline appended |
+| `console.warn()`, `console.error()` | WASI `fd_write` (fd=2) | Writes to stderr |
+| `Date.now()` | WASI `clock_time_get` (realtime) | Returns ms since epoch |
+| `performance.now()` | WASI `clock_time_get` (monotonic) | Returns ms, high-resolution |
+| `setTimeout`, `clearTimeout` | `jz` host import | Callback dispatched via exported `__jz_table`; requires JS event loop |
+| `setInterval`, `clearInterval` | `jz` host import | Same — only under `jz()` runtime |
+
+### Is it fast?
+
+Competitive. See benchmark:
+
+| | **jz** | Node | AS | Porf | WAT | C | Go | Rust |
+|---|---|---|---|---|---|---|---|---|
+| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
+| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
+| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
+| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
+| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
+| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
+| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
+| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+
 
 ### Can I compile jz to C?
 
