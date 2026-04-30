@@ -10,13 +10,14 @@
 ```js
 import jz from 'jz'
 
-const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + fib(n-2)`
-fib(40)  // 102334155
+// Distance between two points
+const { exports: { dist } } = jz`export let dist = (x, y) => (x*x + y*y) ** 0.5`
+dist(3, 4) // 5
 ```
 
 ## Why?
 
-It is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
+It is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write plain JS, compile to WASM – portable, fast, long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
@@ -106,7 +107,7 @@ flowchart TB
 │ ┌────────────────────────────────────────────────────────────────────────┐ │
 │ │ JZify                                                                  │ │
 │ │   var  function  arguments  switch  new Foo()                          │ │
-│ │   ==  !=  instanceof  undefined                                        │ │
+│ │   ==  !=  instanceof  undefined  do/while                              │ │
 │ │                                                                        │ │
 │ │ ┌────────────────────────────────────────────────────────────────────┐ │ │
 │ │ │ JZ                                                                 │ │ │
