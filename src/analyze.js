@@ -761,7 +761,13 @@ export function exprType(expr, locals) {
   // a 32-bit integer; recognising this here keeps `let x = Math.imul(...)` (and
   // chains like `x = Math.imul(x, k) + 12345`) on the i32 ABI all the way
   // through, instead of widening the local to f64 because exprType defaulted.
-  if (op === '()' && (args[0] === 'math.imul' || args[0] === 'math.clz32')) return 'i32'
+  if (op === '()') {
+    if (args[0] === 'math.imul' || args[0] === 'math.clz32') return 'i32'
+    // Method calls returning i32: charCodeAt → byte (0..255). Lets tokenizer-shape
+    // hot loops keep `c` as i32 across `c >= 48 && c <= 57`, `c - 48`, etc.,
+    // skipping the f64.convert_i32_u widen at every char read.
+    if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'charCodeAt') return 'i32'
+  }
   return 'f64'
 }
 
@@ -880,6 +886,15 @@ export function analyzePtrUnboxable(body, locals, boxed) {
       if (expr[0] === '()' && typeof expr[1] === 'string') {
         const f = ctx.func.map?.get(expr[1])
         return f?.sig?.ptrKind === kind
+      }
+      // `let p = arr[i]` where arr has a known elem schema: the runtime helper
+      // returns f64 (NaN-box of an OBJECT pointer), but its low 32 bits are
+      // exactly the pointer offset. Dual-write coerces once via reinterpret/wrap;
+      // subsequent `p.x` reads then become direct `f64.load offset=K (local.get $p)`
+      // (since ptrOffsetIR sees ptrKind=OBJECT and skips the per-access wrap).
+      if (expr[0] === '[]' && typeof expr[1] === 'string') {
+        const repSid = ctx.func.repByLocal?.get(expr[1])?.arrayElemSchema
+        return repSid != null
       }
       return false
     }

@@ -2,8 +2,8 @@
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { UNDEF_NAN, NULL_NAN } from '../src/host.js'
 
-const { UNDEF_NAN, NULL_NAN } = jz
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
 function run(code, opts) {

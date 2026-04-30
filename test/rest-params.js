@@ -287,10 +287,10 @@ test('array.concat: preserves values', () => {
   is(f(), 60)
 })
 
-// === Public API: jz.instantiate wraps rest params ===
+// === Public API: jz wraps rest params ===
 
-test('jz.instantiate: rest-only params', () => {
-  const { exports } = jz.instantiate(`export let sum = (...args) => {
+test('jz: rest-only params', () => {
+  const { exports } = jz(`export let sum = (...args) => {
     let s = 0
     for (let i = 0; i < args.length; i++) s += args[i]
     return s
@@ -298,7 +298,7 @@ test('jz.instantiate: rest-only params', () => {
   is(exports.sum(1, 2, 3), 6)
 })
 
-test('jz.instantiate: fixed + rest params', () => {
-  const { exports } = jz.instantiate(`export let f = (a, ...rest) => a + rest.length`)
+test('jz: fixed + rest params', () => {
+  const { exports } = jz(`export let f = (a, ...rest) => a + rest.length`)
   is(exports.f(10, 1, 2, 3), 13)
 })

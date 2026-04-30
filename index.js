@@ -33,7 +33,7 @@
  * Feature flags (ctx.features.*) gate conditional stdlib branches for dead-code elimination.
  * Capability hooks (ctx.schema.register, ctx.closure.make) are installed by capability modules.
  *
- * Interop runtime (memory marshaling, wrap, instantiate) lives in src/runtime.js.
+ * Interop host layer (memory marshaling, wrap, instantiate) lives in src/host.js.
  *
  * @module jz
  */
@@ -46,9 +46,8 @@ import compile, { emitter } from './src/compile.js'
 import { optimizeFunc } from './src/optimize.js'
 import jzify from './src/jzify.js'
 import {
-  UNDEF_NAN, NULL_NAN, ptr as makePtr, offset as getOffset, type as getType, aux as getAux,
-  memory as enhanceMemory, wrap as wrapExports, instantiate as instantiateRuntime,
-} from './src/runtime.js'
+  memory as enhanceMemory, instantiate as instantiateRuntime,
+} from './src/host.js'
 
 /**
  * jz — JS subset → WASM compiler.
@@ -56,22 +55,13 @@ import {
  * jz('code') or jz`code` → { exports, memory, instance, module }
  * jz.compile('code') → Uint8Array (raw WASM binary)
  * jz.compile('code', { wat: true }) → string (WAT text)
- * jz.wrap(mod, inst) → wrapped exports (defaults, rest params)
  * jz.memory([src]) → enhanced WebAssembly.Memory (read/write JS↔WASM values)
  *
  * @example
  * const { exports: { add } } = jz('export let add = (a, b) => a + b')
  * add(2, 3)  // 5
  */
-jz.UNDEF_NAN = UNDEF_NAN
-jz.NULL_NAN = NULL_NAN
-jz.ptr = makePtr
-jz.offset = getOffset
-jz.type = getType
-jz.aux = getAux
 jz.memory = enhanceMemory
-jz.wrap = wrapExports
-jz.instantiate = (code, opts = {}) => instantiateRuntime(jz.compile, code, opts)
 
 /**
  * Compile jz source to WASM binary or WAT text. Low-level — no instantiation.
@@ -177,7 +167,7 @@ export default function jz(code, ...args) {
     }
     if (hoisted.length) src = hoisted.join('; ') + '; ' + src
     const hasInterp = Object.keys(interp).length
-    const result = jz.instantiate(src, { _interp: hasInterp ? interp : null })
+    const result = instantiateRuntime(jz.compile, src, { _interp: hasInterp ? interp : null })
     // Patch data getters: allocate values in WASM memory, update closure refs
     for (const [, { val, ref }] of Object.entries(data)) {
       if (typeof val === 'string') ref.ptr = result.memory.String(val)
@@ -188,7 +178,7 @@ export default function jz(code, ...args) {
   }
 
   // String call: jz('code', opts?) — compile + instantiate + wrap
-  return jz.instantiate(code, args[0] || {})
+  return instantiateRuntime(jz.compile, code, args[0] || {})
 }
 
 export { jz }

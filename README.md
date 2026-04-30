@@ -8,16 +8,15 @@ Functional JS subset compiling to WASM.
 ```js
 import jz from 'jz'
 
-// Math.sin compiled into the WASM — not a callback, not an import
-const { tone } = jz`export let tone = (t) => ${Math.sin}(t * 440 * ${Math.PI} * 2 / 44100)`
-tone(0)  // 0, tone(1) → 0.9999...
+const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + fib(n-2)`
+fib(40)  // 102334155
 ```
 
 ## Why?
 
 _jz_ (javascript zero) is a personal attempt to secure the functional JS subset I use from platform, spec, and engine drift. I want to write normal JS and get WASM – portable, long-lasting, canonical.
 
-_jz_ takes a modern Crockford-aligned subset, drops legacy constructs, and [optimizes](#optimizations) heavily under these constraints. Output is aimed to be theoretically minimal wasm with near-native performance. By design it is aot: has no runtime, no GC, no dynamic constructs. Built-in `jzify` transformer enables legacy JS.
+_jz_ takes a modern functional subset, drops legacy constructs, and [optimizes](#optimizations) heavily under these constraints. Output is aimed to be theoretically minimal wasm with near-native performance. By design it is aot: has no runtime, no GC, no dynamic constructs. Built-in `jzify` transformer enables legacy JS.
 
 Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor), [piezo](https://github.com/dy/piezo) and others.
 
@@ -37,16 +36,18 @@ import jz, { compile } from 'jz'
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
 add(2, 3)  // 5
 
-// Interpolate numbers, functions, strings, arrays, objects
-const { exports: { sine } } = jz`
-  export let sine = (freq, t, i) => ${Math.sin}((t + i) * freq * ${Math.PI} * 2 / 44100)
-`
-sine(440, 0, 0)
+// Interpolate numbers, arrays, strings
+const { exports: { pick } } = jz`export let pick = (i) => ${[10, 20, 30]}[i]`
+pick(1)  // 20
 
 
 // Low-level: compile only — returns raw WASM binary (no JS adaptation)
 const wasm = compile('export let f = (x) => x * 2')
 const wat = compile('export let f = (x) => x * 2', { wat: true })
+
+// Instantiate manually
+const mod = new WebAssembly.Module(wasm)
+const inst = new WebAssembly.Instance(mod)
 ```
 
 ## CLI
@@ -74,6 +75,43 @@ jz -e "1 + 2"
 jz --help
 ```
 
+## Language
+
+jz is a **minimal functional subset** of JavaScript — the Crockford "good parts".
+
+### Syntax
+
+These JS constructs are intentionally excluded:
+
+| Excluded | Reason | jzify? |
+|----------|--------|--------|
+| `var` | Hoisting. Use `let`/`const`. | `var` → `let` |
+| `function` | Hoisting, context, arguments. Use arrows. | `function f(){}` → `const f = () => {}` |
+| `class`, `this`, `super` | OOP. Use plain objects and functions. | — |
+| `async`/`await` | WASM is synchronous. Use host callbacks. | — |
+| `do`...`while` | Use `while` or `for`. | — |
+| `eval`, `with` | Dynamic scope. Not compilable. | — |
+| `arguments` | Implicit. Use rest params `...args`. | — |
+| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
+| `null` vs `undefined` | One nullish value. `??` just works. | — |
+| `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
+| `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
+| `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
+
+### Platform
+
+No runtime, no GC, no dynamic constructs. Standard library is provided via importable modules; I/O is WASI Preview 1.
+
+| Category | Available | Not available |
+|----------|-----------|---------------|
+| **Data** | Numbers, strings, arrays, objects, typed arrays | `null` (use `undefined`), dynamic object keys |
+| **Collections** | Arrays, `Map`, `Set`, HASH | — |
+| **Math** | `Math.*`, SIMD vectorization | `BigInt` |
+| **Text** | String methods, regex | `Intl` |
+| **I/O** | `console.log`, `Date.now`, `performance.now` | `fetch`, `setTimeout`, filesystem |
+| **Modules** | ES `import` / `export` | `require`, dynamic `import()` |
+| **Errors** | `try` / `catch` / `throw` | — |
+| **Async** | — | `Promise`, `async` / `await` |
 
 ## Benchmarks
 
@@ -96,41 +134,7 @@ Additional biquad targets: jz→w2c 11.37 ms (68.4 kB), QuickJS 1103.95 ms (5.7 
 
 ## FAQ
 
-#### What's the difference between `jz()` and `compile()`?
-
-```js
-import jz, { compile } from 'jz'
-
-// jz() — compile + instantiate + wrap. Handles defaults, rest params, WASI.
-const { exports: { f } } = jz('export let f = (x = 5) => x')
-f()  // 5
-
-// compile() — returns raw WASM binary. You handle instantiation.
-const wasm = compile('export let f = (x) => x * 2')
-// Use jz.wrap() if you need the JS calling convention:
-const mod = new WebAssembly.Module(wasm)
-const inst = new WebAssembly.Instance(mod)
-const wrapped = jz.wrap(mod, inst)
-```
-
-#### What JS features are excluded and why?
-
-| Excluded | Reason | jzify? |
-|----------|--------|--------|
-| `var` | Hoisting. Use `let`/`const`. | `var` → `let` |
-| `function` | Hoisting. Use arrows. | `function f(){}` → `const f = () => {}` |
-| `class`, `this`, `super` | OOP. Use plain objects and functions. | — |
-| `async`/`await` | WASM is synchronous. Use host callbacks. | — |
-| `do`...`while` | Use `while` or `for`. | — |
-| `eval`, `with` | Dynamic scope. Not compilable. | — |
-| `arguments` | Implicit. Use rest params `...args`. | — |
-| `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
-| `null` vs `undefined` | One nullish value. `??` just works. | — |
-| `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
-| `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
-| `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
-
-#### How do I pass data between JS and WASM?
+### How do I pass data between JS and WASM?
 
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
@@ -170,7 +174,35 @@ Template interpolation handles most of this automatically — strings, arrays, n
 jz\`export let f = () => \${'hello'}.length + \${[1,2,3]}[0] + \${{x: 5, y: 10}}.x\`
 ```
 
-#### How does template interpolation work?
+<!--
+### How does everything fit in f64?
+
+All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. Heap types use [NaN-boxing](https://nachtimwald.com/2019/11/06/nan-boxing/): quiet NaN (`0x7FF8`) + 51-bit payload `[type:4][aux:15][offset:32]`.
+
+| Type | Code | Payload | Example |
+|------|------|---------|---------|
+| Number | — | regular f64 | `3.14`, `42`, `NaN` |
+| Null | 0 | reserved pattern | `null` (distinct from `0` and `NaN`) |
+| Array | 1 | aux=length, offset=heap | `[1, 2, 3]` |
+| ArrayBuffer | 2 | offset=heap | `new ArrayBuffer(16)` |
+| TypedArray | 3 | aux=elemType, offset=heap | `new Float64Array(n)` |
+| String | 4 | offset=heap | `"hello world"` (>4 chars) |
+| SSO String | 5 | aux=packed chars | `"hi"` (<=4 ASCII chars, zero alloc) |
+| Object | 6 | aux=schemaId, offset=heap | `{x: 1, y: 2}` |
+| Hash | 7 | offset=heap | dynamic string-keyed objects |
+| Set | 8 | offset=heap | `new Set()` |
+| Map | 9 | offset=heap | `new Map()` |
+| Closure | 10 | aux=funcIdx, offset=env | `x => x + captured` |
+| External | 11 | offset=hostMap index | JS host object references |
+
+**Why NaN-boxing?** used by LuaJIT, JavaScriptCore, SpiderMonkey. The alternatives — tagged unions (OCaml, Haskell), pointer tagging (V8 Smis), or separate type+value pairs — all require branching at call boundaries or multi-word passing. NaN-boxing fits any value in one 64-bit word: one calling convention, one memory layout, one comparison instruction.
+
+**The f64 tradeoff**: f64 arithmetic is ~1.2x slower than i32 for pure integer work on most architectures. jz mitigates this — `analyzeLocals` preserves i32 for loop counters, bitwise ops, and comparisons, so the penalty only applies to mixed-type parameters. The gain: zero interop cost at the JS↔WASM boundary (f64 is WASM's native JS-compatible type), no marshaling, no boxing/unboxing. For jz's target workloads (DSP, typed arrays, math), f64 is the natural type anyway.
+
+**NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
+-->
+
+### How does template interpolation work?
 
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
@@ -185,7 +217,7 @@ jz\`export let f = () => \${{label: 'origin', x: 0, y: 0}}.label.length\`  // 6
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
-#### Does it support imports?
+### Does it support imports?
 
 Yes — standard ES `import` syntax, bundled at compile time into a single WASM module.
 
@@ -229,7 +261,7 @@ let utilsSrc = await fetch('./utils.jz').then(r => r.text())
 const { exports } = jz(mainSrc, { modules: { './math.jz': mathSrc, './utils.jz': utilsSrc } })
 ```
 
-#### Can two modules share data?
+### Can two modules share data?
 
 Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
 
@@ -254,7 +286,7 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 
 All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-#### What optimizations does jz apply?
+### What optimizations does jz apply?
 
 <!-- FIXME: this must be updated. Also - possibly can be a separate readme section -->
 | Optimization | Layer | What it does |
@@ -280,7 +312,7 @@ All modules sharing a memory use a single bump allocator (heap pointer at byte 1
 | Inline dyn property probe | jz | `__dyn_get` (95M calls in self-host) inlines `__hash_get_local`'s probe loop — skips redundant type check + bit unboxing on already-validated props hash |
 | Inline/peephole | watr | Instruction-level optimization on WAT output |
 
-#### How do TypedArrays and SIMD work?
+### How do TypedArrays and SIMD work?
 
 TypedArrays (`Float64Array`, `Int32Array`, etc.) compile to typed WASM memory with correct byte strides. `.map()` auto-vectorizes recognized patterns to SIMD:
 
@@ -293,7 +325,7 @@ const { exports, memory } = jz(`export let f = () => {
 memory.read(exports.f())  // Float64Array with doubled values
 ```
 
-#### How do I run compiled WASM outside the browser?
+### How do I run compiled WASM outside the browser?
 
 ```sh
 jz program.js -o program.wasm
@@ -306,7 +338,7 @@ deno run program.wasm
 
 `console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
 
-#### What WASI features are supported?
+### What WASI features are supported?
 
 <!-- WASI can be a separate readme section -->
 jz targets WASI Preview 1. The compiled `.wasm` uses standard WASI imports — runs natively on wasmtime, wasmer, deno without polyfills.
@@ -320,7 +352,7 @@ jz targets WASI Preview 1. The compiled `.wasm` uses standard WASI imports — r
 
 For browser/Node environments without native WASI, jz ships a tiny polyfill (`jz/wasi`) that maps these calls to `console.log` and `performance.now()`. The `jz()` function applies it automatically.
 
-#### Can I compile jz to C?
+### Can I compile jz to C?
 
 Yes, via [wasm2c](https://github.com/nicbarker/wasm2c) or [w2c2](https://github.com/nicbarker/w2c2):
 
@@ -331,34 +363,6 @@ cc program.c -o program
 ```
 
 jz → WASM → C → native binary.
-
-<!--
-#### How does everything fit in f64?
-
-All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. Heap types use [NaN-boxing](https://nachtimwald.com/2019/11/06/nan-boxing/): quiet NaN (`0x7FF8`) + 51-bit payload `[type:4][aux:15][offset:32]`.
-
-| Type | Code | Payload | Example |
-|------|------|---------|---------|
-| Number | — | regular f64 | `3.14`, `42`, `NaN` |
-| Null | 0 | reserved pattern | `null` (distinct from `0` and `NaN`) |
-| Array | 1 | aux=length, offset=heap | `[1, 2, 3]` |
-| ArrayBuffer | 2 | offset=heap | `new ArrayBuffer(16)` |
-| TypedArray | 3 | aux=elemType, offset=heap | `new Float64Array(n)` |
-| String | 4 | offset=heap | `"hello world"` (>4 chars) |
-| SSO String | 5 | aux=packed chars | `"hi"` (<=4 ASCII chars, zero alloc) |
-| Object | 6 | aux=schemaId, offset=heap | `{x: 1, y: 2}` |
-| Hash | 7 | offset=heap | dynamic string-keyed objects |
-| Set | 8 | offset=heap | `new Set()` |
-| Map | 9 | offset=heap | `new Map()` |
-| Closure | 10 | aux=funcIdx, offset=env | `x => x + captured` |
-| External | 11 | offset=hostMap index | JS host object references |
-
-**Why NaN-boxing?** used by LuaJIT, JavaScriptCore, SpiderMonkey. The alternatives — tagged unions (OCaml, Haskell), pointer tagging (V8 Smis), or separate type+value pairs — all require branching at call boundaries or multi-word passing. NaN-boxing fits any value in one 64-bit word: one calling convention, one memory layout, one comparison instruction.
-
-**The f64 tradeoff**: f64 arithmetic is ~1.2x slower than i32 for pure integer work on most architectures. jz mitigates this — `analyzeLocals` preserves i32 for loop counters, bitwise ops, and comparisons, so the penalty only applies to mixed-type parameters. The gain: zero interop cost at the JS↔WASM boundary (f64 is WASM's native JS-compatible type), no marshaling, no boxing/unboxing. For jz's target workloads (DSP, typed arrays, math), f64 is the natural type anyway.
-
-**NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
--->
 
 ## Used by
 
@@ -372,7 +376,7 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 ## Alternatives
 
 * [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
-* [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — requires type annotations and uses its own stdlib.
+* [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
 
 ## Build with

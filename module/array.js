@@ -479,9 +479,29 @@ export default (ctx) => {
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
       // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
       // plus type-dispatch overhead irrelevant for plain arrays).
+      const keyIsNum = keyType === VAL.NUMBER
+      // Inline fast path: when arr has a known element schema and key is a
+      // known number, the type-tag check and bounds check inside __arr_idx are
+      // dead weight in hot kernels. Emit (f64.load (i32.add base (shl i 3)))
+      // directly. base goes through __ptr_offset (still does forwarding follow),
+      // and hoistAddrBase will CSE the (base, i) pair across the iteration body.
+      const hasElemSchema = typeof arr === 'string' &&
+        ctx.func.repByLocal?.get(arr)?.arrayElemSchema != null
+      if (hasElemSchema && keyIsNum) {
+        inc('__ptr_offset')
+        // __ptr_offset returns i32 — base local must be i32 (not the default
+        // f64 NaN-box temp). Flat tee form so downstream peepholes can fold
+        // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
+        // when this load feeds a ptrUnboxed OBJECT field.
+        const baseI32 = tempI32('ab')
+        return typed(['f64.load',
+          ['i32.add',
+            ['local.tee', `$${baseI32}`,
+              ['call', '$__ptr_offset', ptrExpr]],
+            ['i32.shl', vi, ['i32.const', 3]]]], 'f64')
+      }
       inc('__arr_idx')
       const baseTmp = temp()
-      const keyIsNum = keyType === VAL.NUMBER
       // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;
       // arrays don't honor string-key access for numeric keys (keys aren't coerced
       // back to numbers for ARRAY index reads). Mirrors the VAL.TYPED branch below.
