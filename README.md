@@ -72,7 +72,8 @@ jz --help
 
 ## Language
 
-JZ supports complete JS syntax with Crockford "best parts" constraints. Built-in `jzify` transform auto-fixes most legacy patterns.
+JZ supports complete JS syntax with Crockford "best parts" constraints.<br>
+Built-in `jzify` transform auto-fixes most legacy patterns.
 
 |  | Note | jzify |
 |---|------|-------|
