@@ -14,6 +14,24 @@ const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + f
 fib(40)  // 102334155
 ```
 
+## Why?
+
+_JZ_ is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
+
+* **Static** – no runtime, no GC, no dynamic constructs.
+* **Valid jz = valid js** — test in browser, compile to wasm.
+* **Minimal** — produced WAT/WASM is on par with hand-written.
+<!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
+
+Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+
+| Good for                    | Not for                    |
+|-----------------------------|----------------------------|
+| Numeric / math compute      | UI / frontend              |
+| DSP / audio / bytebeats     | Backend / APIs             |
+| Parsing / transforms        | Async / I/O-heavy logic    |
+| WASM utilities              | JavaScript runtime         |
+
 
 ## Usage
 
@@ -99,24 +117,6 @@ flowchart TB
 │ └────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
-
-## Why?
-
-_JZ_ is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
-
-* **Static** – no runtime, no GC, no dynamic constructs.
-* **Valid jz = valid js** — test in browser, compile to wasm.
-* **Minimal** — produced WAT/WASM is on par with hand-written.
-<!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
-
-Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
-
-| Good for                    | Not for                    |
-|-----------------------------|----------------------------|
-| Numeric / math compute      | UI / frontend              |
-| DSP / audio / bytebeats     | Backend / APIs             |
-| Parsing / transforms        | Async / I/O-heavy logic    |
-| WASM utilities              | JavaScript runtime         |
 
 
 ## FAQ
