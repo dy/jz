@@ -218,21 +218,40 @@ export default (ctx) => {
       (call $__jp_adv (i32.const 1))
       (br $l))))`
 
-  // Parse string (after opening " consumed)
+  // Parse string (after opening " consumed). Two-phase: scan to closing quote
+  // tracking whether all chars are simple ASCII (no escapes, no high-bit), then
+  // either pack into SSO (≤4 simple chars) or heap-alloc + escape-decode.
   ctx.core.stdlib['__jp_str'] = `(func $__jp_str (result f64)
-    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32)
+    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32)
     (local.set $start (global.get $__jppos))
-    ;; Scan to closing quote
+    (local.set $simple (i32.const 1))
     (block $d (loop $l
       (local.set $ch (call $__jp_peek))
       (br_if $d (i32.eq (local.get $ch) (i32.const 34)))
       (br_if $d (i32.eq (local.get $ch) (i32.const -1)))
+      ;; Mark non-simple: escape (\\=92) or non-ASCII (load8_s gives <0 for byte≥128).
+      (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_s (local.get $ch) (i32.const 0)))
+        (then (local.set $simple (i32.const 0))))
       (if (i32.eq (local.get $ch) (i32.const 92))
         (then (call $__jp_adv (i32.const 2)))
         (else (call $__jp_adv (i32.const 1))))
       (br $l)))
     (local.set $len (i32.sub (global.get $__jppos) (local.get $start)))
     (call $__jp_adv (i32.const 1))  ;; skip "
+    ;; SSO fast path: ≤4 ASCII chars, no escapes — pack bytes into the offset slot,
+    ;; skip alloc + memcopy entirely. The dominant case for object keys (id/kind/meta/bias).
+    (if (i32.and (local.get $simple) (i32.le_u (local.get $len) (i32.const 4)))
+      (then
+        (local.set $i (i32.const 0))
+        (block $sd (loop $sl
+          (br_if $sd (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $sso
+            (i32.or (local.get $sso)
+              (i32.shl (i32.load8_u (i32.add (i32.add (global.get $__jpstr) (local.get $start)) (local.get $i)))
+                       (i32.shl (local.get $i) (i32.const 3)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $sl)))
+        (return (call $__mkptr (i32.const ${PTR.SSO}) (local.get $len) (local.get $sso)))))
     ;; Copy chars to new string (handles escapes inline)
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
