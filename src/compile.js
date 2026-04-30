@@ -1218,6 +1218,101 @@ function specializeBimorphicTyped(programFacts) {
 }
 
 /**
+ * Phase: refine ctx.types.anyDynKey using post-narrowSignatures type info.
+ *
+ * collectProgramFacts conservatively flags `anyDynKey=true` whenever it sees
+ * `obj[idx]` with a non-literal-string index — but typed-array / array /
+ * string `[]` is element access (sound for that base type), not a true
+ * dyn-key lookup that needs the hash-table shadow on object literals.
+ *
+ * After narrowSignatures populates paramValTypes (call-site fixpoint), we can
+ * type each `obj` in `obj[idx]` and skip the ones that are provably non-object.
+ * If no genuine dyn-key access remains program-wide, drop anyDynKey to false
+ * — object literals then skip the __dyn_set shadow loop (large code + perf win,
+ * especially on hot allocators like aos.initRows).
+ *
+ * Live-function gate: walking dead funcs (e.g. unused benchlib helpers) would
+ * pollute analysis with `out` params we never narrowed. Restrict to functions
+ * reachable from exports / first-class value uses.
+ */
+const NON_DYN_VTS = new Set([VAL.TYPED, VAL.ARRAY, VAL.STRING, VAL.BUFFER])
+const TYPED_ARRAY_CTOR = /^(Float|Int|Uint|BigInt|BigUint)(8|16|32|64)(Clamped)?Array$/
+
+function refineDynKeys(programFacts) {
+  if (!ctx.types.anyDynKey) return
+  const { paramValTypes, valueUsed } = programFacts
+  const isLitStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+
+  // Per-function type map: param vtypes from paramValTypes, plus locals
+  // we can prove are typed arrays from `let v = new TypedArray(...)`. After
+  // prepare, that node is `['()', 'new.Float64Array', ...args]`.
+  const buildTypeMap = (funcName, body, params) => {
+    const map = new Map()
+    if (params) {
+      const pvt = paramValTypes.get(funcName)
+      if (pvt) for (let i = 0; i < params.length; i++) {
+        const t = pvt.get(i)
+        if (t != null) map.set(params[i].name, t)
+      }
+    }
+    const walk = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+          const init = d[2]
+          let ctor = null
+          if (Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string' && init[1].startsWith('new.'))
+            ctor = init[1].slice(4)
+          if (ctor && TYPED_ARRAY_CTOR.test(ctor)) map.set(d[1], VAL.TYPED)
+          else if (typeof init === 'string' && map.has(init)) map.set(d[1], map.get(init))
+        }
+      }
+      if (op === '=>') return  // don't cross into nested arrows; they're separate funcs
+      for (let i = 1; i < node.length; i++) walk(node[i])
+    }
+    walk(body)
+    return map
+  }
+
+  let real = false
+  const visit = (typeMap, node) => {
+    if (real || !Array.isArray(node)) return
+    const op = node[0]
+    if (op === '[]') {
+      const idx = node[2]
+      if (!isLitStr(idx)) {
+        const obj = node[1]
+        const vt = typeof obj === 'string' ? typeMap.get(obj) : null
+        if (!NON_DYN_VTS.has(vt)) real = true
+      }
+    } else if (op === 'for-in') real = true
+    if (op === '=>') return
+    for (let i = 1; i < node.length; i++) visit(typeMap, node[i])
+  }
+
+  // Live: anything reachable from exports/first-class value uses. Skipping
+  // dead helpers (unused benchlib imports) keeps their generic params from
+  // pretending to be dyn-key access.
+  const isLive = f => f.exported || paramValTypes.has(f.name) || (valueUsed && valueUsed.has(f.name))
+
+  const topMap = buildTypeMap(null, null, null)
+  for (const f of ctx.func.list) {
+    if (real) break
+    if (!f.body || !isLive(f)) continue
+    visit(buildTypeMap(f.name, f.body, f.sig?.params), f.body)
+  }
+  if (!real && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
+    if (real) break
+    visit(topMap, mi)
+  }
+
+  if (!real) ctx.types.anyDynKey = false
+}
+
+/**
  * Phase: program-fact collection.
  *
  * Single whole-program walk over the module AST + each user function body
@@ -1850,7 +1945,11 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
-    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit,
+      ...(ctx.features.nativeTimers ? [['call', '$__timer_init']] : []),
+      ...moduleInits, ...initIR,
+      ...(ctx.features.nativeTimers ? [['call', '$__timer_loop']] : []),
+    )
     sec.start.push(startFn, ['start', '$__start'])
   }
 
@@ -1952,6 +2051,10 @@ function finalizeClosureTable(sec) {
   }
   for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
   if (!indirectUsed) for (const fn of sec.start) scan(fn)
+  // Also scan raw stdlib strings (pullStdlib hasn't run yet, so stdlib funcs aren't in sec.funcs)
+  if (!indirectUsed) for (const s of Object.keys(ctx.core.stdlib)) {
+    if (ctx.core.stdlib[s]?.includes?.('call_indirect')) { indirectUsed = true; break }
+  }
   // Keep table if host may call closures (timers, etc.)
   const hostCallsClosures = ctx.module.imports.some(i => i[1] === '"jz"')
   if (indirectUsed || hostCallsClosures) {
@@ -2324,6 +2427,7 @@ export default function compile(ast) {
 
   narrowSignatures(programFacts)
   specializeBimorphicTyped(programFacts)
+  refineDynKeys(programFacts)
 
   const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
 
