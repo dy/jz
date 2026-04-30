@@ -322,7 +322,7 @@ The compiled `.wasm` uses two import namespaces:
 
 Competitive. See benchmark:
 
-| | **jz** | Node | AS | Porf | WAT | C | Go | Rust |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | [Porf](https://github.com/CanadaHonk/porffor) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
 |---|---|---|---|---|---|---|---|---|
 | **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
 | **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
