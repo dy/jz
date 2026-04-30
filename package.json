@@ -28,13 +28,14 @@
     "test262:runner": "node test/runner.js",
     "dev": "node cli.js",
     "build": "node cli.js compile examples/*.js",
-    "bench": "node bench.js"
+    "bench": "node bench/bench.mjs",
+    "bench:biquad": "node bench/bench.mjs biquad"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
     "subscript": "^10.3.3",
-    "watr": "^4.4.4"
+    "watr": "^4.5.0"
   },
   "keywords": [
     "javascript",
