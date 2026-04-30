@@ -370,6 +370,21 @@ export function hoistInvariantCellLoads(fn) {
   while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__sc${snapId}`)) snapId++
   const newLocals = []
 
+  // Build refcount of array nodes: how many positions in `fn` reference each
+  // array. Earlier passes (fusedRewrite, hoistAddrBase) introduce shared
+  // subtrees; mutating `parent[idx]` for a shared parent would also affect
+  // references outside the current loop. Sites whose immediate parent has
+  // refcount > 1 are skipped.
+  const refcount = new Map()
+  const countRefs = (node) => {
+    if (!Array.isArray(node)) return
+    const n = (refcount.get(node) || 0) + 1
+    refcount.set(node, n)
+    if (n > 1) return  // already counted children below
+    for (let i = 0; i < node.length; i++) countRefs(node[i])
+  }
+  countRefs(fn)
+
   // Process one loop node: find cell_X reads, check no writes, hoist.
   // Returns { snapDecls } — list of (local.set $snap (f64.load (local.get $cell_X))) IR
   // to emit before the loop in its parent.
@@ -431,7 +446,12 @@ export function hoistInvariantCellLoads(fn) {
         if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
             && addr[1].startsWith('$cell_')) {
           const cell = addr[1]
-          if (!writes.has(cell)) {
+          // Skip if the f64.load node or its immediate parent is shared
+          // (refcount>1): mutating parent[idx] would propagate the rewrite to
+          // references outside this loop.
+          if (!writes.has(cell)
+              && (refcount.get(node) || 0) <= 1
+              && (refcount.get(parent) || 0) <= 1) {
             let arr = reads.get(cell)
             if (!arr) { arr = []; reads.set(cell, arr) }
             arr.push({ parent, idx })
@@ -955,6 +975,18 @@ function walkRewrite(node, doInline, counts) {
     const a = node[1]
     if (Array.isArray(a) && (a[0] === 'i64.extend_i32_u' || a[0] === 'i64.extend_i32_s') && a.length === 2)
       return a[1]
+    // (i32.wrap_i64 (i64.reinterpret_f64 (f64.load ADDR ?offset))) → (i32.load ADDR ?offset).
+    // Wasm is little-endian; the low 32 bits of the f64 at ADDR are exactly
+    // i32.load(ADDR). Saves two ops on every NaN-box pointer extraction from
+    // an array slot or struct field.
+    if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) {
+      const inner = a[1]
+      if (Array.isArray(inner) && inner[0] === 'f64.load') {
+        const out = ['i32.load']
+        for (let i = 1; i < inner.length; i++) out.push(inner[i])
+        return out
+      }
+    }
     if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
       const l = a[1], r = a[2]
       const isHighOnly = (n) => {
