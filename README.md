@@ -10,14 +10,14 @@ fib(40)  // 102334155
 ## ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
 
-**JZ** (_javascript zero_) is **minimal modern functional JS subset**, producing minimal wasm with near-native performance.<br/> Static by design: no runtime, no GC, no dynamic constructs.
+**JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
 
+* **Static by design** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — any jz program is normal js: test in browser, compile to wasm.
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
-* **Readable** — produced WAT/WASM is on par with hand-written.
-* **Modular** — arrays, strings, objects, regex, math are (auto)importable modules.
+* **Minimal WAT** — produced WAT/WASM is on par with hand-written.
 
-It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, low-level, long-lasting.
+It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, fast, long-lasting.
 
 Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
 
