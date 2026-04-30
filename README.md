@@ -13,7 +13,7 @@ fib(40)  // 102334155
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
 
 * **Static by design** – no runtime, no GC, no dynamic constructs.
-* **Valid jz = valid js** — any jz program is normal js: test in browser, compile to wasm.
+* **Valid jz = valid js** — test in browser, compile to wasm.
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
 * **Minimal WAT** — produced WAT/WASM is on par with hand-written.
 
