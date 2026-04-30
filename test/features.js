@@ -251,3 +251,60 @@ test('Map: size', () => {
   }`)
   is(f(), 3)
 })
+
+// === instanceof (jzify transforms to typeof / Array.isArray) ===
+
+function runJzify(code) {
+  return new WebAssembly.Instance(new WebAssembly.Module(compile(code, { jzify: true })), { env: interp }).exports
+}
+
+test('instanceof jzify: Array → Array.isArray', () => {
+  const { f } = runJzify(`export let f = () => {
+    let x = [1, 2, 3]
+    return x instanceof Array
+  }`)
+  is(f(), 1)
+})
+
+test('instanceof jzify: Array.isArray rejects non-array', () => {
+  const { f } = runJzify(`export let f = (x) => x instanceof Array`)
+  is(f(42), 0)
+  is(f('hello'), 0)
+})
+
+test('instanceof jzify: Object → typeof === object', () => {
+  const { f } = runJzify(`export let f = () => {
+    let x = {}
+    return x instanceof Object
+  }`)
+  is(f(), 1)
+})
+
+test('instanceof jzify: Object rejects primitives', () => {
+  const { f } = runJzify(`export let f = () => {
+    return (1 instanceof Object) + ('hi' instanceof Object)
+  }`)
+  is(f(), 0)
+})
+
+test('instanceof jzify: Float64Array → typeof === object', () => {
+  const { f } = runJzify(`export let f = () => {
+    let x = new Float64Array(1)
+    return x instanceof Float64Array
+  }`)
+  is(f(), 1)
+})
+
+test('instanceof jzify: unknown constructor falls back to typeof === object', () => {
+  const { f } = runJzify(`export let f = (x) => x instanceof MyClass`)
+  is(f({}), 1)
+  is(f(42), 0)
+})
+
+test('instanceof jzify: nested expression', () => {
+  const { f } = runJzify(`export let f = () => {
+    let a = [1, 2]
+    return (a instanceof Array) + (a instanceof Object)
+  }`)
+  is(f(), 2)
+})

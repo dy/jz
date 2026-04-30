@@ -47,57 +47,56 @@ jz --help
 
 ## Language
 
-JZ is a **strict functional JS subset** with optional auto-transformation. The diagram shows what's supported directly vs what gets auto-fixed by `jzify`:
+JZ is a strict functional JS subset with Crockford's "the best parts" constraints. Built-in `jzify` extends support to legacy patterns.
 
+<!--
 ```mermaid
-graph TD
-    A[Full JavaScript] --> B[JZ Strict Subset]
-    A --> C[Not Supported]
-    B --> D[JZ with jzify (auto-transform)]
+%%{init: {'flowchart': {'titleTopMargin': 0, 'padding': 0, 'margin': 0}}}%%
+flowchart TB
+    classDef plain fill:none,stroke:none,font-size:14px,font-weight:bold,padding:0px,margin:0px
 
-    B --> E[Supported Directly]
-    E --> F[let/const, arrows, destructuring]
-    E --> G[if/else, for/while, switch→if/else]
-    E --> H[==→===, !=→!==, new→call]
-    E --> I[numeric literals, strings, arrays, objects]
-    E --> J[ES imports/exports]
-    E --> K[typed arrays, math, bitwise ops]
+    subgraph JS[JS — not supported]
+        subgraph JZify[JZ + jzify]
+            subgraph JZ[JZ strict]
+                j1["let/const, arrows, flow, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
+            end
+            z1["var, function, arguments, switch, new Foo(), ==, !=, instanceof"]:::plain
+        end
+        n1["async/await, Promise, generators, this, class, eval, Function, with, Proxy, Reflect, WeakMap, WeakSet"]:::plain
+    end
 
-    D --> L[Auto-transformed by jzify]
-    L --> M[var→let, function→arrow]
-    L --> N[undefined→null]
-    L --> O[loose equality→strict]
-
-    C --> P[Async/await, Promise, generators]
-    C --> Q[classes, this, super]
-    C --> R[eval, with, arguments]
-    C --> S[Proxy, Reflect, WeakMap/WeakSet]
-    C --> T[Date, DOM, fetch, Intl]
-    C --> U[instanceof, delete]
-    C --> V[dynamic imports]
+    style JZ fill:#ffe0b2,stroke-width:0
+    style JZify fill:#fff9c4,stroke-width:0
+    style JS fill:#ffffff,stroke:#ccc,stroke-width:1px
+    style n1 min-width:720px
 ```
+-->
 
-**Supported directly** (JZ strict subset):
-- Modern syntax: `let`/`const`, arrow functions, destructuring
-- Control flow: `if`/`else`, `for`/`while`, `switch` (compiles to `if`/`else`)
-- Equality: strict only (`===`, `!==`)
-- Data structures: arrays, objects, strings, numbers
-- Modules: `import`/`export`
-- Typed arrays and math operations
-
-**Auto-transformed by `jzify`**:
-- Legacy patterns: `var`→`let`, `function`→arrow
-- `undefined`→`null` (nullish semantics)
-- Loose equality→strict
-
-**Not supported**:
-- Async features, classes, `this`/`super`
-- Dynamic scope features (`eval`, `with`, `arguments`)
-- GC-dependent features (`Proxy`, `WeakMap`)
-- Host APIs (`Date`, `DOM`, `fetch`)
-- `instanceof`, `delete`, dynamic imports
-
-JZ compiles to WASM with **no runtime**, **no GC**, and **no dynamic features** — just pure functional code that runs fast and predictably.
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Not supported                                                              │
+│   async/await  Promise  function*  yield                                   │
+│   this  class  super  extends  delete                                      │
+│   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet                   │
+│                                                                            │
+│ ┌────────────────────────────────────────────────────────────────────────┐ │
+│ │ JZify                                                                  │ │
+│ │   var  function  arguments  switch  new Foo()                          │ │
+│ │   ==  !=  instanceof                                                   │ │
+│ │                                                                        │ │
+│ │ ┌────────────────────────────────────────────────────────────────────┐ │ │
+│ │ │ JZ                                                                 │ │ │
+│ │ │   let/const  =>  ...  destructuring  import/export  `${}`          │ │ │
+│ │ │   if/else  for/while/of  try/catch  throw                          │ │ │
+│ │ │   a[]  a()  a.b  ?:  ??  ?.  typeof  in                            │ │ │
+│ │ │   operators  strings  booleans  numbers  arrays  objects           │ │ │
+│ │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │ │
+│ │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │ │
+│ │ │   console  timers  Date  performance                               │ │ │
+│ │ └────────────────────────────────────────────────────────────────────┘ │ │
+│ └────────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
 
 ## FAQ

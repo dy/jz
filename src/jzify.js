@@ -193,6 +193,16 @@ const handlers = {
     return ['()', transform(ctor), ...cargs.map(transform)]
   },
 
+  // instanceof → typeof / Array.isArray (jzify allows what strict mode prohibits)
+  'instanceof'(val, ctor) {
+    const t = transform(val)
+    const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+    if (name === 'Array') return ['()', ['.', 'Array', 'isArray'], t]
+    if (name === 'Object') return ['===', ['typeof', t], [null, 'object']]
+    if (typeof name === 'string' && TYPED_ARRAYS.has(name)) return ['===', ['typeof', t], [null, 'object']]
+    return ['===', ['typeof', t], [null, 'object']]
+  },
+
   // Block body: recurse as scope for hoisting
   '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
 
