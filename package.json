@@ -29,7 +29,8 @@
     "dev": "node cli.js",
     "build": "node cli.js compile examples/*.js",
     "bench": "node bench/bench.mjs",
-    "bench:biquad": "node bench/bench.mjs biquad"
+    "bench:biquad": "node bench/bench.mjs biquad",
+    "test:bench-pin": "node test/bench-pin.js"
   },
   "author": "",
   "license": "MIT",
