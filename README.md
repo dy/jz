@@ -7,11 +7,6 @@
 
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
 
-* **Static by design** – no runtime, no GC, no dynamic constructs.
-* **Valid jz = valid js** — test in browser, compile to wasm.
-* **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
-* **Minimal WAT** — produced WAT/WASM is on par with hand-written.
-
 ```js
 import jz from 'jz'
 
@@ -93,6 +88,20 @@ Built-in `jzify` transform auto-fixes most legacy patterns.
 
 ## FAQ
 
+## Why?
+
+JS became complex and with regrets (coercions, hoisting, `this`, classes, precision loss). Ongoing proposals keep shaping language which is already good.
+
+_JZ_ (javascript zero) is an attempt to secure best JS parts from platform, spec, and engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
+
+* **Static** – no runtime, no GC, no dynamic constructs.
+* **Valid jz = valid js** — test in browser, compile to wasm.
+* **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
+* **Minimal output** — produced WAT/WASM is on par with hand-written.
+
+Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+
+
 ### How to pass data between JS and WASM?
 
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
@@ -106,14 +115,14 @@ const { exports, memory } = jz(\`
 \`)
 
 // JS → WASM (write)
-memory.String('hello')               // → NaN-boxed string pointer
-memory.Array([1, 2, 3])              // → NaN-boxed array pointer
-memory.Float64Array([1.0, 2.0])      // → NaN-boxed typed array pointer
+memory.String('hello')               // → string pointer
+memory.Array([1, 2, 3])              // → array pointer
+memory.Float64Array([1.0, 2.0])      // → typed array pointer
 memory.Int32Array([10, 20, 30])      // all typed array constructors available
 
 // Objects: keys and order must match the jz source declaration.
 // jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-memory.Object({ x: 3, y: 4 })       // → NaN-boxed object pointer
+memory.Object({ x: 3, y: 4 })       // → object pointer
 
 // Strings/arrays inside objects are auto-wrapped to pointers:
 memory.Object({ name: 'jz', count: 3 })  // name auto-wrapped via memory.String
@@ -178,46 +187,39 @@ Functions are imported as host calls. Non-serializable values (host objects, cla
 
 ### Does it support imports?
 
-Yes — standard ES `import` syntax, bundled at compile time into a single WASM module.
+Yes — standard ES `import` syntax, bundled at compile-time into one WASM.
 
 ```js
-// Source modules: provide source strings, jz bundles them
+// modules: jz source bundled at compile time
 const { exports } = jz(
   'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
   { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
 )
 
-// Host functions: import JS functions into WASM
+// imports: JS functions wired at instantiation
 const { exports } = jz(
   'import { log } from "host"; export let f = (x) => { log(x); return x }',
   { imports: { host: { log: console.log } } }
 )
 ```
 
-**CLI** resolves imports automatically — relative paths from the filesystem, bare specifiers from `package.json` `"imports"` field:
+Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
+
+**CLI** resolves filesystem imports automatically.
 
 ```sh
 jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
 ```
 
-**Browser**: pass resolved sources via `{ modules }`. No filesystem access needed — the host fetches sources and provides them. The compiler stays synchronous and pure.
-
-**How it works**: imported modules are parsed, prepared, and merged into the main module's function table during compilation. The output is always one WASM binary — no multi-module linking, no runtime resolution. Transitive imports work. Circular imports error at compile time.
+**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
 
 ```js
-// Transitive: main → math → utils (all bundled into one WASM)
-const { exports } = jz(
-  'import { dist } from "./math.jz"; export let f = (x, y) => dist(x, y)',
-  { modules: {
-    './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
-    './utils.jz': 'export let sq = (x) => x * x'
-  }}
-)
-
-// Browser: fetch sources yourself, pass them in
-let mathSrc = await fetch('./math.jz').then(r => r.text())
-let utilsSrc = await fetch('./utils.jz').then(r => r.text())
-const { exports } = jz(mainSrc, { modules: { './math.jz': mathSrc, './utils.jz': utilsSrc } })
+// Transitive bundling — all merged into one WASM
+const { exports } = jz(mainSrc, { modules: {
+  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
+  // Fetch sources yourself, pass them in
+  './utils.jz': await fetch('./util.jz').then(r => r.text())
+} })
 ```
 
 ### Can two modules share data?
@@ -245,23 +247,91 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 
 All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
-<!-- ### What optimizations does jz apply?
 
-| Optimization | Layer | What it does |
-|--------------|-------|-------------|
-| Constant folding | jz | Evaluates `2 * 3` → `6`, `x + 0` → `x`, `x * 1` → `x` at compile time |
-| Dead code elimination | jz | Removes `if (false)` branches, unreachable code after `return` |
-| i32 preservation | jz | Keeps integer locals as `i32` instead of promoting to `f64` — faster bitwise, comparison, indexing |
-| SIMD vectorization | jz | `Float64Array.map(x => x * 2)` → `f64x2.mul` SIMD instructions |
-| Tail call optimization | jz | `return f(x)` → `return_call` — no stack growth for recursive calls |
-| Loop-invariant hoisting | jz | `arr.length` in `for` conditions evaluated once, cached in local |
-| Callback inlining | jz | `.map(x => x * 2)` inlined — no closure alloc, no `call_indirect` per iteration |
-| Inline closure ABI | jz | Uniform `(env, argc, a0..a7)` signature — no per-call heap args-array allocation |
-| Chain fusion | jz | `.map(f).filter(g)` → single loop, no intermediate array |
-| Monomorphic dispatch | jz | Known types skip runtime type checks for `.length`, `[]`, method calls |
-| Branchless select | jz | Pure ternaries `a ? b : c` → WASM `select` (no branching) |
-| Schema slot reads | jz | `obj.prop` on inferred shape → `f64.load (base + idx*8)` — no hash, no dispatch |
-| Pointer-type subexpression elimination | jz | Repeated `__ptr_type x` in same block → single `local.tee`, reused |
+### How do I run compiled WASM outside the browser?
+
+```sh
+jz program.js -o program.wasm
+
+# Run with any WASM runtime
+wasmtime program.wasm     # WASI support built in
+wasmer run program.wasm
+deno run program.wasm
+```
+
+`console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
+
+
+### What host features are supported?
+
+The compiled `.wasm` uses two import namespaces:
+
+- `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
+- `jz` — host imports for features WASI doesn't cover. Supplied only by the `jz()` runtime (browser/Node event loop). Pure wasmtime/wasmer can stub them or use modules that don't call them.
+
+| JS API | Maps to | Notes |
+|--------|---------|-------|
+| `console.log()` | WASI `fd_write` (fd=1) | Multiple args space-separated, newline appended |
+| `console.warn()`, `console.error()` | WASI `fd_write` (fd=2) | Writes to stderr |
+| `Date.now()` | WASI `clock_time_get` (realtime) | Returns ms since epoch |
+| `performance.now()` | WASI `clock_time_get` (monotonic) | Returns ms, high-resolution |
+| `setTimeout`, `clearTimeout` | `jz` host import | Callback dispatched via exported `__jz_table`; requires JS event loop |
+| `setInterval`, `clearInterval` | `jz` host import | Same — only under `jz()` runtime |
+
+### Is it fast?
+
+Competitive. See benchmark:
+
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|
+| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
+| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
+| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
+| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
+| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
+| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
+| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
+| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+
+_Numbers from `node bench/bench.mjs` on Apple Silicon._
+
+
+### Can I compile jz to C?
+
+Yes, via [wasm2c](https://github.com/nicbarker/wasm2c) or [w2c2](https://github.com/nicbarker/w2c2):
+
+```sh
+jz program.js -o program.wasm
+wasm2c program.wasm -o program.c
+cc program.c -o program
+```
+
+jz → WASM → C → native binary.
+
+
+## Used by
+
+* [web-audio-api](https://github.com/audiojs/web-audio-api)
+* [color-space](https://github.com/colorjs/color-space)
+* [audiojs](https://github.com/colorjs/audiojs)
+<!-- * [audio-filter](https://github.com/audiojs/audio-filter)
+* [digital-filter](https://github.com/audiojs/digital-filter)
+* [time-stretch](https://github.com/audiojs/time-stretch) -->
+
+## Alternatives
+
+* [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
+* [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
+* [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
+
+## Build with
+
+* [subscript](https://github.com/dy/subscript) — JS parser. Minimal, extensible, builds the exact AST jz needs without a full ES parser. Jessie subset keeps the grammar small and deterministic.
+* [watr](https://www.npmjs.com/package/watr) — WAT to WASM compiler. Handles binary encoding, validation, and peephole optimization. jz emits WAT text, watr turns it into a valid `.wasm` binary.
+
+
+<p align=center>MIT • <a href="https://github.com/krishnized/license/">ॐ</a></p>
+n | jz | Repeated `__ptr_type x` in same block → single `local.tee`, reused |
 | Memarg fold | jz | `(i32.load (i32.add ptr (i32.const k)))` → `(i32.load offset=k ptr)` — fewer instructions |
 | Bulk memory ops | jz | String copy/slice/repeat/pad/encode → `memory.copy` (lowers to memcpy) |
 | Chunked compare | jz | `__str_eq` does 4-byte unaligned `i32.load` per step (~4× inner-loop throughput) |
@@ -344,13 +414,6 @@ cc program.c -o program
 ```
 
 jz → WASM → C → native binary.
-
-## Motivation
-
-It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, fast, long-lasting.
-
-Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
-
 
 ## Used by
 
