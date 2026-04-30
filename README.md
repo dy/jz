@@ -24,18 +24,13 @@ import jz, { compile } from 'jz'
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
 add(2, 3)  // 5
 
-// Interpolate numbers, arrays, strings
-const { exports: { pick } } = jz`export let pick = (i) => ${[10, 20, 30]}[i]`
-pick(1)  // 20
-
-
-// Low-level: compile only — returns raw WASM binary (no JS adaptation)
+// Compile only — returns raw WASM binary (no JS adaptation)
 const wasm = compile('export let f = (x) => x * 2')
-const wat = compile('export let f = (x) => x * 2', { wat: true })
-
-// Instantiate manually
 const mod = new WebAssembly.Module(wasm)
 const inst = new WebAssembly.Instance(mod)
+
+// Inspect generated WAT
+const wat = compile('export let f = (x) => x * 2', { wat: true })
 ```
 
 ## CLI
