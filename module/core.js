@@ -352,8 +352,10 @@ export default (ctx) => {
     if (vt === VAL.TYPED)
       return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
     // Known string → byteLen (handles SSO + heap)
-    if (vt === VAL.STRING)
+    if (vt === VAL.STRING) {
+      inc('__str_byteLen')
       return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
+    }
     // Unknown → runtime dispatch via stdlib. Receiver could be any ptr-bearing type;
     // enable the type-specific __length branches so the dispatch handles them.
     // Host-passed values (via jz.memory or direct export calls) may carry types

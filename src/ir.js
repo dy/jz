@@ -45,16 +45,24 @@ function boxPtrIR(i32node, ptrType, aux = 0) {
       ['i64.extend_i32_u', i32node]]], 'f64')
 }
 
-/** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert. */
+/** Coerce node to f64. Pointer-kinded i32 offsets rebox via NaN-tag fusion, not numeric convert.
+ *  The `unsigned` flag (set by `>>>` codegen) opts into `convert_i32_u` so the canonical
+ *  `(x >>> 0)` uint32 idiom converts to a positive f64 in [0, 2^32) instead of sign-flipping. */
 export const asF64 = n => {
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
   if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n[1]], 'f64')
-  return typed(['f64.convert_i32_s', n], 'f64')
+  return typed([n.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', n], 'f64')
 }
 
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
-export const asI32 = n => n.type === 'i32' ? n : typed(['i32.trunc_sat_f64_s', n], 'i32')
+export const asI32 = n => {
+  if (n.type === 'i32') return n
+  // Peephole: trunc_sat_f64_s(convert_i32_s(x)) === x. Common via emitLengthAccess
+  // (returns convert_i32_s(__len)) being stored to an i32-narrowed counter local.
+  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n[1]?.type === 'i32') return n[1]
+  return typed(['i32.trunc_sat_f64_s', n], 'i32')
+}
 
 /** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed
  *  ptr passes through; otherwise extract low 32 bits from the NaN-boxed f64

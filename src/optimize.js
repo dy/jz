@@ -179,6 +179,311 @@ export function hoistPtrType(fn) {
 }
 
 /**
+ * CSE repeated `(i32.add (local.get $A) (i32.shl (local.get $B) (i32.const K)))`
+ * — the shape jz emits for `arr[idx + k]` typed-array reads after foldMemargOffsets
+ * absorbs the constant K into `offset=`. The remaining base expression is
+ * recomputed once per `arr[…]` read; biquad's inner cascade has 9 such reads
+ * sharing 2 base shapes per iteration. V8's CSE usually catches this, but emitting
+ * the share explicitly avoids relying on tier-up and helps wasm2c / wasm-opt too.
+ *
+ * Same region-tracking discipline as hoistPtrType: open region per key, closed
+ * by re-assignment to either A or B; loop entry/exit clears all open regions.
+ *
+ * Must run AFTER fusedRewrite — relies on shl-distribution + assoc-lift +
+ * foldMemargOffsets having normalized the base shape.
+ */
+export function hoistAddrBase(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Per key (`$A|$B|K`): array of regions; region: array of {parent, idx, role}.
+  const regions = new Map()
+  // Open regions keyed by string key; also indexed by local name → set of keys
+  // depending on it (so `local.set X` can close any region whose key references X).
+  const open = new Map()
+  const localToKeys = new Map()
+
+  const ensureRegions = (k) => {
+    let arr = regions.get(k)
+    if (!arr) { arr = []; regions.set(k, arr) }
+    return arr
+  }
+  const addLocalDep = (name, key) => {
+    let s = localToKeys.get(name)
+    if (!s) { s = new Set(); localToKeys.set(name, s) }
+    s.add(key)
+  }
+  const closeKey = (key) => {
+    const r = open.get(key)
+    if (!r) return
+    open.delete(key)
+    // Don't bother removing from localToKeys; stale entries are filtered on close.
+  }
+  const closeForLocal = (name) => {
+    const s = localToKeys.get(name)
+    if (!s) return
+    for (const k of s) if (open.has(k)) closeKey(k)
+    localToKeys.delete(name)
+  }
+
+  // Returns { A, B, K } if node matches the pattern, else null.
+  const matchPattern = (node) => {
+    if (!Array.isArray(node) || node[0] !== 'i32.add' || node.length !== 3) return null
+    const a = node[1], b = node[2]
+    // Two orderings: (add (get A) (shl (get B) (const K))) or (add (shl …) (get A))
+    let baseGet, shlNode
+    if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' &&
+        Array.isArray(b) && b[0] === 'i32.shl' && b.length === 3) {
+      baseGet = a; shlNode = b
+    } else if (Array.isArray(b) && b[0] === 'local.get' && typeof b[1] === 'string' &&
+               Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3) {
+      baseGet = b; shlNode = a
+    } else return null
+    const idx = shlNode[1], shamt = shlNode[2]
+    if (!Array.isArray(idx) || idx[0] !== 'local.get' || typeof idx[1] !== 'string') return null
+    if (!Array.isArray(shamt) || shamt[0] !== 'i32.const' || typeof shamt[1] !== 'number') return null
+    return { A: baseGet[1], B: idx[1], K: shamt[1] }
+  }
+
+  const walk = (node, parent, pi) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    const m = matchPattern(node)
+    if (m) {
+      const key = `${m.A}|${m.B}|${m.K}`
+      let region = open.get(key)
+      if (!region) {
+        region = []
+        ensureRegions(key).push(region)
+        open.set(key, region)
+        addLocalDep(m.A, key)
+        addLocalDep(m.B, key)
+        region.push({ parent, idx: pi, role: 'tee' })
+      } else {
+        region.push({ parent, idx: pi, role: 'get' })
+      }
+      return  // children are local.gets — they're reads, not interesting
+    }
+
+    if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
+      const x = node[1]
+      // Walk value first — it may match patterns referencing pre-write X.
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      closeForLocal(x)
+      return
+    }
+
+    if (op === 'if') {
+      let i = 1
+      while (i < node.length && Array.isArray(node[i]) && node[i][0] === 'result') i++
+      if (i < node.length) walk(node[i], node, i)
+      i++
+      let thenArm = null, elseArm = null
+      for (; i < node.length; i++) {
+        const c = node[i]
+        if (Array.isArray(c)) {
+          if (c[0] === 'then') thenArm = c
+          else if (c[0] === 'else') elseArm = c
+        }
+      }
+      const beforeArms = new Map(open)
+      let afterThen = beforeArms
+      if (thenArm) {
+        for (let j = 1; j < thenArm.length; j++) walk(thenArm[j], thenArm, j)
+        afterThen = new Map(open)
+      }
+      open.clear()
+      for (const [k, v] of beforeArms) open.set(k, v)
+      let afterElse = beforeArms
+      if (elseArm) {
+        for (let j = 1; j < elseArm.length; j++) walk(elseArm[j], elseArm, j)
+        afterElse = new Map(open)
+      }
+      open.clear()
+      for (const [k, vT] of afterThen) {
+        if (afterElse.get(k) === vT) open.set(k, vT)
+      }
+      return
+    }
+
+    if (op === 'loop') {
+      open.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      open.clear()
+      return
+    }
+
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+
+  if (regions.size === 0) return
+
+  let hoistId = 0
+  const locals = []
+  // Find next free $__abN id by scanning existing locals.
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__ab${hoistId}`)) hoistId++
+  for (const [, regs] of regions) {
+    let usable = false
+    for (const r of regs) if (r.length >= 2) { usable = true; break }
+    if (!usable) continue
+    const tLocal = `$__ab${hoistId++}`
+    locals.push(['local', tLocal, 'i32'])
+    for (const r of regs) {
+      if (r.length < 2) continue
+      for (let i = 0; i < r.length; i++) {
+        const { parent, idx, role } = r[i]
+        if (role === 'tee') parent[idx] = ['local.tee', tLocal, parent[idx]]
+        else parent[idx] = ['local.get', tLocal]
+      }
+    }
+  }
+  if (locals.length) fn.splice(bodyStart, 0, ...locals)
+}
+
+/**
+ * Hoist loop-invariant boxed-cell reads out of loops.
+ *
+ * Boxed-capture cells (`$cell_X`, allocated by the closure-capture pass) are
+ * private to the enclosing function — no other code path can write to that
+ * memory. So if a loop body contains `(f64.load (local.get $cell_X))` reads
+ * and *no* `(f64.store (local.get $cell_X) …)` writes, the load is loop-
+ * invariant and can be hoisted to a snapshot local set just before the loop.
+ *
+ * Necessary because V8's wasm tier doesn't perform LICM across f64.load:
+ * memory may alias with f64.stores in the loop body, and even though we
+ * know the cell can't alias with array stores, the engine has to assume it
+ * can. Hand-hoisting unblocks register-keeping of the captured value.
+ *
+ * Inside-out per-loop processing — inner loops handled first, so reads
+ * already replaced by snap-locals don't appear as cell reads at outer levels.
+ */
+export function hoistInvariantCellLoads(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  let snapId = 0
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__sc${snapId}`)) snapId++
+  const newLocals = []
+
+  // Process one loop node: find cell_X reads, check no writes, hoist.
+  // Returns { snapDecls } — list of (local.set $snap (f64.load (local.get $cell_X))) IR
+  // to emit before the loop in its parent.
+  const processLoop = (loopNode) => {
+    // Recurse first — inner loops handled bottom-up. Each inner-loop processor
+    // returns a list of pre-loop snap decls; we splice them just before the inner
+    // loop within this loop's body.
+    for (let i = 1; i < loopNode.length; i++) {
+      const child = loopNode[i]
+      if (!Array.isArray(child)) continue
+      processNode(child, loopNode, i)
+    }
+
+    // Scan this loop's body for cell reads & writes (excluding nested loop bodies,
+    // since their reads were already hoisted at their level).
+    const reads = new Map()  // cellName → array of {parent, idx}
+    const writes = new Set()
+    let hasCall = false
+    const scanWrites = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
+        hasCall = true
+      }
+      // DESCEND into nested loops here — we need to know if any nested-loop
+      // body writes to cell_X (which would invalidate hoisting THIS loop's reads).
+      if (op === 'f64.store' && node.length >= 3) {
+        const addr = node[1]
+        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
+            && addr[1].startsWith('$cell_')) {
+          writes.add(addr[1])
+        }
+        // Continue scan into value expr
+        for (let i = 2; i < node.length; i++) scanWrites(node[i])
+        return
+      }
+      if (op === 'f64.load' && node.length === 2) {
+        const addr = node[1]
+        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
+            && addr[1].startsWith('$cell_')) {
+          // Defer; we'll handle in a parent-tracking second pass.
+        }
+      }
+      for (let i = 1; i < node.length; i++) scanWrites(node[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scanWrites(loopNode[i])
+    // Sound bailout: a call inside the loop could mutate a captured cell
+    // via a closure we can't see. Without escape analysis we can't prove
+    // non-aliasing, so we skip hoisting from any loop containing calls.
+    if (hasCall) return []
+
+    // Parent-tracking pass to collect read sites.
+    const collect = (node, parent, idx) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'loop') return
+      if (op === 'f64.load' && node.length === 2) {
+        const addr = node[1]
+        if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string'
+            && addr[1].startsWith('$cell_')) {
+          const cell = addr[1]
+          if (!writes.has(cell)) {
+            let arr = reads.get(cell)
+            if (!arr) { arr = []; reads.set(cell, arr) }
+            arr.push({ parent, idx })
+          }
+          return
+        }
+      }
+      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
+    }
+    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
+
+    // For each cell with reads but no writes (and confirmed no calls above),
+    // hoist a snap. Single-read hoist is fine semantically: the cell address
+    // doesn't change once allocated, and snap is loaded unconditionally before
+    // the loop, then the body uses the snap local.
+    const snaps = []
+    for (const [cell, sites] of reads) {
+      if (sites.length < 1) continue
+      const snapName = `$__sc${snapId++}`
+      newLocals.push(['local', snapName, 'f64'])
+      snaps.push(['local.set', snapName, ['f64.load', ['local.get', cell]]])
+      for (const { parent, idx } of sites) {
+        parent[idx] = ['local.get', snapName]
+      }
+    }
+    return snaps
+  }
+
+  // Recursive node walker that splices snap decls before nested loops.
+  const processNode = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'loop') {
+      const snaps = processLoop(node)
+      if (snaps.length) {
+        // Splice snaps just before this loop in its parent. The parent could be
+        // a `block` or a top-level func body or any other container.
+        parent.splice(idx, 0, ...snaps)
+      }
+      return
+    }
+    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) {
+    processNode(fn[i], fn, i)
+  }
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
  * Find the index of the first body-content child in a func node.
  * Skips `$name`, (export …), (import …), (type …), (param …), (result …), (local …).
  */
@@ -564,7 +869,9 @@ export function optimizeFunc(fn) {
   hoistPtrType(fn)
   const counts = new Map()
   fusedRewrite(fn, counts)
-  sortLocalsByUse(fn, counts)
+  hoistAddrBase(fn)
+  hoistInvariantCellLoads(fn)
+  sortLocalsByUse(fn)
 }
 
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:
@@ -663,6 +970,42 @@ function walkRewrite(node, doInline, counts) {
       const isExtend = (n) => Array.isArray(n) && (n[0] === 'i64.extend_i32_u' || n[0] === 'i64.extend_i32_s') && n.length === 2
       if (isHighOnly(l) && isExtend(r)) return r[1]
       if (isHighOnly(r) && isExtend(l)) return l[1]
+    }
+  }
+
+  // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))
+  // → (i32.add (i32.shl x S) (i32.const K<<S)). Overflow-safe — both forms wrap
+  // mod 2^32 identically. Unlocks memarg offset= folding for biquad-style
+  // `arr[c+K0..KN]` reads where idx is precomputed but K is a small literal.
+  if (op === 'i32.shl' && node.length === 3) {
+    const a = node[1], b = node[2]
+    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 &&
+        Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 32) {
+      const ka = a[1], kb = a[2]
+      let inner, k
+      if (Array.isArray(kb) && kb[0] === 'i32.const' && typeof kb[1] === 'number') { inner = ka; k = kb[1] }
+      else if (Array.isArray(ka) && ka[0] === 'i32.const' && typeof ka[1] === 'number') { inner = kb; k = ka[1] }
+      if (inner != null) {
+        const shifted = (k * (1 << b[1])) | 0
+        return ['i32.add', ['i32.shl', inner, b], ['i32.const', shifted]]
+      }
+    }
+  }
+
+  // assoc-lift-const-add: (i32.add A (i32.add B (i32.const K))) → (i32.add (i32.add A B) (i32.const K))
+  // and mirror for left side. Lifts constant to top level so foldMemargOffsets
+  // recognizes the canonical (i32.add base const) shape.
+  if (op === 'i32.add' && node.length === 3) {
+    const a = node[1], b = node[2]
+    if (Array.isArray(b) && b[0] === 'i32.add' && b.length === 3) {
+      const bb1 = b[1], bb2 = b[2]
+      if (Array.isArray(bb2) && bb2[0] === 'i32.const') return ['i32.add', ['i32.add', a, bb1], bb2]
+      if (Array.isArray(bb1) && bb1[0] === 'i32.const') return ['i32.add', ['i32.add', a, bb2], bb1]
+    }
+    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3) {
+      const aa1 = a[1], aa2 = a[2]
+      if (Array.isArray(aa2) && aa2[0] === 'i32.const') return ['i32.add', ['i32.add', aa1, b], aa2]
+      if (Array.isArray(aa1) && aa1[0] === 'i32.const') return ['i32.add', ['i32.add', aa2, b], aa1]
     }
   }
 

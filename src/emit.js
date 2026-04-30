@@ -1224,7 +1224,17 @@ export const emitter = {
     }
     return typed([`i32.${fn}`, toI32(va), toI32(vb)], 'i32')
   }])),
-  '>>>': (a, b) => { const va = emit(a), vb = emit(b); return isLit(va) && isLit(vb) ? emitNum(litVal(va) >>> litVal(vb)) : typed(['i32.shr_u', toI32(va), toI32(vb)], 'i32') },
+  '>>>': (a, b) => {
+    const va = emit(a), vb = emit(b)
+    if (isLit(va) && isLit(vb)) return emitNum(litVal(va) >>> litVal(vb))
+    // F: Mark unsigned so `asF64` lifts via `f64.convert_i32_u` (preserving the
+    // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
+    // signed for negative-high-bit s values, flipping sign and breaking the
+    // canonical "uint32 → f64" idiom used in PRNGs and bit-manipulation code.
+    const node = typed(['i32.shr_u', toI32(va), toI32(vb)], 'i32')
+    node.unsigned = true
+    return node
+  },
 
   // === Control flow ===
 

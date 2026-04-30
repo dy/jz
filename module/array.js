@@ -87,7 +87,7 @@ function exprUses(node, name) {
 // args-array alloc. Captures resolve naturally to outer locals.
 // Slow path: fall back to ctx.closure.call (heap-allocated args array per iteration).
 // usedParams: boolean array (fast path only) — callers can skip computing args for unused params.
-function makeCallback(fn) {
+function makeCallback(fn, argReps) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
@@ -99,14 +99,25 @@ function makeCallback(fn) {
         call: (argExprs) => {
           const stmts = []
           const mapping = new Map()
+          const freshNames = []
           for (let i = 0; i < raw.length; i++) {
-            if (!usedParams[i]) continue  // skip dead local + arg evaluation
+            if (!usedParams[i]) { freshNames.push(null); continue }  // skip dead local + arg evaluation
             const fresh = temp('inl')
             mapping.set(raw[i], fresh)
+            freshNames.push(fresh)
             const ae = i < argExprs.length && argExprs[i] != null
               ? asF64(argExprs[i])
               : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
             stmts.push(['local.set', `$${fresh}`, ae])
+          }
+          // Apply argReps hints (caller knows recv elem val type) to inlined-param
+          // reps so emit(subst) sees `inl_i.val=NUMBER` and elides __to_num/__is_str_key.
+          if (argReps) {
+            for (let i = 0; i < raw.length && i < argReps.length; i++) {
+              const fresh = freshNames[i]
+              if (!fresh || !argReps[i]) continue
+              updateRep(fresh, argReps[i])
+            }
           }
           const subst = substExpr(body, mapping)
           const result = emit(subst)
@@ -123,6 +134,31 @@ function makeCallback(fn) {
     setup: ['local.set', `$${cb}`, asF64(emit(fn))],
     call: (argExprs) => ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'), argExprs),
   }
+}
+
+// Derive callback argReps from a receiver AST. For .map/.filter/etc., callbacks
+// receive (item, idx, arr). idx is always a NUMBER. item depends on recv kind:
+//  - VAL.TYPED → NUMBER (BigInt typed-arrays excluded; we don't track elem prec
+//    here, but the .typed:[] path handles them, and __to_num elision is safe
+//    because BigInt's f64-cast in arithmetic still yields a Number).
+//  - VAL.ARRAY with rep.arrayElemValType set → that val.
+//  - else → no hint (slow path, runtime dispatch as today).
+function callbackArgReps(arr) {
+  const idxRep = { val: VAL.NUMBER }
+  const arrRep = { val: VAL.ARRAY }
+  let itemRep = null
+  if (typeof arr === 'string') {
+    const vt = lookupValType(arr)
+    if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
+    else if (vt === VAL.ARRAY) {
+      const elemVt = ctx.func.repByLocal?.get(arr)?.arrayElemValType
+      if (elemVt) itemRep = { val: elemVt }
+    }
+  } else {
+    const vt = valTypeOf(arr)
+    if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
+  }
+  return [itemRep, idxRep, arrRep]
 }
 
 // Factory for simple arr→call stdlib patterns (mirrors strMethod in string.js)
@@ -445,20 +481,38 @@ export default (ctx) => {
       // plus type-dispatch overhead irrelevant for plain arrays).
       inc('__arr_idx')
       const baseTmp = temp()
-      return useRuntimeKeyDispatch
-        ? typed(['block', ['result', 'f64'],
+      const keyIsNum = keyType === VAL.NUMBER
+      // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;
+      // arrays don't honor string-key access for numeric keys (keys aren't coerced
+      // back to numbers for ARRAY index reads). Mirrors the VAL.TYPED branch below.
+      if (useRuntimeKeyDispatch && !keyIsNum)
+        return typed(['block', ['result', 'f64'],
           ['local.set', `$${baseTmp}`, ptrExpr],
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = asI32(typed(keyExpr, 'f64'))
             return (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], keyI32])
           })], 'f64')
-        : typed(['block', ['result', 'f64'],
-          ['local.set', `$${baseTmp}`, ptrExpr],
-          (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${baseTmp}`, ptrExpr],
+        (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], vi])], 'f64')
     }
     // Known string → single-char SSO string
     if (vt === 'string')
       return typed(stringLoad(), 'f64')
+    // Known typed-array (ctor unknown — bimorphic call sites). Skip str-key dispatch
+    // since arr is provably never a string. Inner __typed_idx still ctor-dispatches.
+    // Key narrowing: if idx is provably NUMBER (via lookupValType on the name), the
+    // str-key check is dead — emit the direct __typed_idx call. Other key shapes keep
+    // the runtime str_key dispatch (rare for typed arrays but legal: arr['length']).
+    if (vt === 'typed') {
+      const keyIsNum = keyType === VAL.NUMBER
+      if (useRuntimeKeyDispatch && !keyIsNum)
+        return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
+          const keyI32 = asI32(typed(keyExpr, 'f64'))
+          return (['call', '$__typed_idx', ptrExpr, keyI32])
+        })
+      return typed((['call', '$__typed_idx', ptrExpr, vi]), 'f64')
+    }
     if (useRuntimeKeyDispatch)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
@@ -675,7 +729,7 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const r = temp('sr')
     const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${r}`, ['f64.const', 1]], ['br', exit]]]
@@ -693,7 +747,7 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const r = temp('ev')
     const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', ['i32.eqz', truthyIR(cb.call([item, idxArg(cb, i)]))],
         ['then', ['local.set', `$${r}`, ['f64.const', 0]], ['br', exit]]]
@@ -711,7 +765,7 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const r = temp('fi')
     const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${r}`, ['f64.convert_i32_s', ['local.get', `$${i}`]]], ['br', exit]]]
@@ -790,7 +844,8 @@ export default (ctx) => {
     if (up && up.method === 'filter' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm')
-      const filterCb = makeCallback(up.fn), mapCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const filterCb = makeCallback(up.fn, upReps), mapCb = makeCallback(fn, upReps)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fm' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
@@ -808,7 +863,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const len = tempI32('ml')
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const lenIR = ['local.get', `$${len}`]
     const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'mo' })
     // Reuse the precomputed len local in arrayLoop (skip its internal load).
@@ -830,7 +885,8 @@ export default (ctx) => {
     if (up && up.method === 'map' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const count = tempI32('fc'), maxLen = tempI32('fm'), mapped = temp('mv')
-      const mapCb = makeCallback(up.fn), filterCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const mapCb = makeCallback(up.fn, upReps), filterCb = makeCallback(fn)
       const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'mf' })
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
@@ -849,7 +905,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const count = tempI32('fc'), maxLen = tempI32('fm')
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const out = allocPtr({ type: PTR.ARRAY, len: 0, cap: ['local.get', `$${maxLen}`], tag: 'fo' })
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
@@ -875,7 +931,8 @@ export default (ctx) => {
     if (up && up.method === 'map') {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra'), mapped = temp('mv')
-      const mapCb = makeCallback(up.fn), redCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const mapCb = makeCallback(up.fn, upReps), redCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
         ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), typed(['local.get', `$${mapped}`], 'f64')]))]
@@ -889,7 +946,10 @@ export default (ctx) => {
     if (up && up.method === 'filter') {
       const recv = hoistArrayValue(up.source)
       const acc = temp('ra')
-      const filterCb = makeCallback(up.fn), redCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const filterCb = makeCallback(up.fn, upReps)
+      // reduce cb signature: (acc, item, idx). Item rep mirrors upstream's item rep.
+      const redCb = makeCallback(fn, [null, upReps[0], { val: VAL.NUMBER }])
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then', ['local.set', `$${acc}`, asF64(redCb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]]]
@@ -901,7 +961,9 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const acc = temp('ra')
-    const cb = makeCallback(fn)
+    // reduce cb signature: (acc, item, idx). Item rep mirrors recv's elem val type.
+    const reps = callbackArgReps(arr)
+    const cb = makeCallback(fn, [null, reps[0], { val: VAL.NUMBER }])
     const loop = arrayLoop(recv.value, (_ptr, _len, _i, item) => [
       ['local.set', `$${acc}`, asF64(cb.call([typed(['local.get', `$${acc}`], 'f64'), item]))]
     ])
@@ -919,7 +981,8 @@ export default (ctx) => {
     if (up && up.method === 'map' && isPureCallback(fn)) {
       const recv = hoistArrayValue(up.source)
       const mapped = temp('mv'), tmp = temp('ft')
-      const mapCb = makeCallback(up.fn), forCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const mapCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i)]))],
         ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
@@ -929,7 +992,8 @@ export default (ctx) => {
     if (up && up.method === 'filter') {
       const recv = hoistArrayValue(up.source)
       const tmp = temp('ft')
-      const filterCb = makeCallback(up.fn), forCb = makeCallback(fn)
+      const upReps = callbackArgReps(up.source)
+      const filterCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn, upReps)
       const loop = arrayLoop(recv.value, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i)])),
           ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
@@ -938,7 +1002,7 @@ export default (ctx) => {
     }
     const recv = hoistArrayValue(arr)
     const tmp = temp('ft')
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i)]))]
     ])
@@ -949,7 +1013,7 @@ export default (ctx) => {
     const recv = hoistArrayValue(arr)
     const result = temp('ff')
     const exit = `$exit${ctx.func.uniq++}`
-    const cb = makeCallback(fn)
+    const cb = makeCallback(fn, callbackArgReps(arr))
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
       ['if', truthyIR(cb.call([item, idxArg(cb, i)])),
         ['then', ['local.set', `$${result}`, item], ['br', exit]]]

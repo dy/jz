@@ -156,8 +156,10 @@ export default (ctx) => {
           (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
           (local.set $i (i32.sub (local.get $i) (i32.const 1)))
           (br $fl)))))
-    ;; Default mode: strip trailing zeros and dot
-    (if (i32.eqz (local.get $mode))
+    ;; Default mode: strip trailing zeros and dot — only when a fractional part was emitted.
+    ;; Gating on $prec>0 prevents stripping zeros from the integer part (e.g. 1079623680 → 107962368)
+    ;; for values where auto-fit reduced prec to 0 because the scaled integer wouldn't fit i32.
+    (if (i32.and (i32.eqz (local.get $mode)) (i32.gt_s (local.get $prec) (i32.const 0)))
       (then
         (block $sd (loop $sl
           (br_if $sd (i32.le_s (local.get $pos) (i32.const 0)))

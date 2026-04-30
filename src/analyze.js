@@ -115,6 +115,23 @@ export function valTypeOf(expr) {
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+  // `[]` op covers both array literals (1 arg) and index access (2 args).
+  // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
+  // Index access:  `arr[i]` → ['[]', arr, i].
+  if (op === '[]') {
+    if (args.length < 2) return VAL.ARRAY
+    // Indexed read on a known typed-array receiver yields a number (BigInt64/BigUint64Array
+    // would yield BigInt, but they're rare and we don't track per-elem type here — the
+    // .typed:[] emit path already handles their f64-cast correctly; this only affects
+    // arithmetic-time __to_num elision, where assuming Number is safe-by-construction).
+    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) return VAL.NUMBER
+    // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
+    // Set by analyzeValTypes from body observations + emitFunc preseed for params.
+    if (typeof args[0] === 'string') {
+      const elemVt = ctx.func.repByLocal?.get(args[0])?.arrayElemValType
+      if (elemVt) return elemVt
+    }
+  }
   // Schema slot read: when `varName` has a bound schemaId and `.prop` resolves
   // to a slot whose VAL kind is monomorphic across program-wide observations,
   // return that kind. Lets `+`, `===`, method dispatch skip runtime str-key
@@ -153,6 +170,9 @@ export function valTypeOf(expr) {
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
+      // Math.* always returns Number — let `+` skip string-concat dispatch and
+      // let exprType propagate i32 for the integer-returning subset.
+      if (typeof callee === 'string' && callee.startsWith('math.')) return VAL.NUMBER
       // User-defined func with monomorphic VAL return (populated in compile.js E2 pass).
       const f = ctx.func.map?.get(callee)
       if (f?.valResult) return f.valResult
@@ -183,6 +203,244 @@ export function valTypeOf(expr) {
     }
   }
   return null
+}
+
+/** Schema-id for an object literal expression. Returns null on dynamic keys, spread,
+ *  shorthand. Mirrors `staticObjectProps` in compile.js (kept here to avoid the import). */
+export function objLiteralSchemaId(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
+  const args = expr.slice(1)
+  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  const names = []
+  for (const p of raw) {
+    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    names.push(p[1])
+  }
+  return names.length ? ctx.schema.register(names) : null
+}
+
+/** Resolve schemaId of an expression, given a per-function schemaId map for locals.
+ *  Used for both intra-function arr elem-schema observation and func.arrayElemSchema
+ *  return inference. Recognizes: object literals, var names with bound schemaId,
+ *  user fn calls with narrowed result schema, ?: / && / || when both branches agree. */
+export function exprSchemaId(expr, localSchemaMap) {
+  if (typeof expr === 'string') {
+    if (localSchemaMap?.has(expr)) return localSchemaMap.get(expr)
+    return ctx.schema?.idOf?.(expr) ?? null
+  }
+  if (!Array.isArray(expr)) return null
+  const op = expr[0]
+  if (op === '{}') return objLiteralSchemaId(expr)
+  if (op === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (f?.valResult === VAL.OBJECT && f.sig?.ptrAux != null) return f.sig.ptrAux
+    return null
+  }
+  if (op === '?:') {
+    const a = exprSchemaId(expr[2], localSchemaMap)
+    const b = exprSchemaId(expr[3], localSchemaMap)
+    return a != null && a === b ? a : null
+  }
+  if (op === '&&' || op === '||') {
+    const a = exprSchemaId(expr[1], localSchemaMap)
+    const b = exprSchemaId(expr[2], localSchemaMap)
+    return a != null && a === b ? a : null
+  }
+  return null
+}
+
+/** Walk a function body to observe per-local "this is Array<VAL.*>" facts.
+ *  Mirrors collectArrElemSchemas but tracks the element val-kind (NUMBER, STRING,
+ *  OBJECT, …) instead of a schema id. Drives `arr[i]` → VAL.NUMBER inference for
+ *  regular Arrays (typed-array case is handled directly by valTypeOf), unlocking
+ *  `__to_num` elision on hot `arr.map(x => x*k)` style callbacks where the elem
+ *  type was previously unknown.
+ *
+ *  Sources: `const arr = [n1, n2, …]` (uniform val), `arr.push(num)` /
+ *  `arr.push(rhs1, rhs2, …)` where each `rhs` resolves to a stable VAL.*,
+ *  alias chains, calls to user fns with bound `arrayElemValType`. */
+export function collectArrElemValTypes(body) {
+  const out = new Map()
+  if (!body) return out
+  const observe = (arr, vt) => {
+    if (typeof arr !== 'string') return
+    if (!ctx.func.locals?.has(arr) && !ctx.scope.globalTypes?.has(arr)) return
+    if (out.get(arr) === null) return
+    if (!vt) { out.set(arr, null); return }
+    if (!out.has(arr)) out.set(arr, vt)
+    else if (out.get(arr) !== vt) out.set(arr, null)
+  }
+  // Resolve a name's array-elem-val, preferring rep.arrayElemValType (set from
+  // paramArrElemValTypes at emit start) over local body observations.
+  const elemValOf = (name) => {
+    if (typeof name !== 'string') return null
+    const repVt = ctx.func.repByLocal?.get(name)?.arrayElemValType
+    if (repVt) return repVt
+    const localVt = out.get(name)
+    return localVt || null
+  }
+  const exprElemSourceVal = (expr) => {
+    // Returns the val type of an element expression for `[lit,lit,…]` / `arr.push(arg)`.
+    if (typeof expr === 'string') {
+      // Ignore param names for now — they have no val rep at collect time. The
+      // walk here is body-local; param-bound elem-vals come via paramArrElemValTypes.
+      const repVt = ctx.func.repByLocal?.get(expr)?.val
+      if (repVt) return repVt
+      return ctx.scope.globalValTypes?.get(expr) || null
+    }
+    return valTypeOf(expr)
+  }
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const a = n[i]
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') {
+          walk(a)
+          continue
+        }
+        const name = a[1], rhs = a[2]
+        // Array literal init: `let arr = [n1, n2]` — observe elem val
+        if (Array.isArray(rhs) && rhs[0] === '[]') {
+          const elems = rhs.slice(1).filter(e => e != null)
+          if (elems.length) {
+            let common = exprElemSourceVal(elems[0])
+            for (let k = 1; k < elems.length && common != null; k++) {
+              if (exprElemSourceVal(elems[k]) !== common) common = null
+            }
+            if (common != null) observe(name, common)
+          }
+        }
+        // Call to user fn whose return arr-elem-val is known
+        if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+          const f = ctx.func.map?.get(rhs[1])
+          if (f?.arrayElemValType) observe(name, f.arrayElemValType)
+        }
+        // Alias: `let b = a` where a is a known Array<vt>
+        if (typeof rhs === 'string') {
+          const v = elemValOf(rhs)
+          if (v) observe(name, v)
+        }
+        walk(rhs)
+      }
+      return
+    }
+    // arr.push(...) call
+    if (op === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'push' && typeof n[1][1] === 'string') {
+      const arr = n[1][1]
+      const callArgs = n[2]
+      const list = callArgs == null ? [] :
+        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
+      for (const a of list) {
+        if (Array.isArray(a) && a[0] === '...') { observe(arr, null); continue }
+        observe(arr, exprElemSourceVal(a))
+      }
+    }
+    // Reassignment to non-array-producing rhs invalidates
+    if (op === '=' && typeof n[1] === 'string' && out.has(n[1])) {
+      const rhs = n[2]
+      if (!Array.isArray(rhs) || (rhs[0] !== '[]' && !(rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' && (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))) {
+        observe(n[1], null)
+      }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
+  return out
+}
+
+/** Walk a function body to observe per-local "this is Array<schemaId>" facts.
+ *  Sources: `const arr = [{lit}, {lit}, ...]` (uniform schema), `arr.push(rhs)` /
+ *  `arr.push(rhs1, rhs2, ...)` where each `rhs` resolves to a stable schemaId.
+ *  Returns Map<varName, schemaId | null>; null = ambiguous (observed conflict),
+ *  absent = no observation. Conflict bias: unsafe to bind, callers skip. */
+export function collectArrElemSchemas(body) {
+  const out = new Map()
+  if (!body || !ctx.schema?.register) return out
+  // Per-walk local schema map for chained assignments: `const v = obj; arr.push(v)`.
+  // Filled greedily during the walk; only consulted for `arr.push(name)` lookups.
+  const localSchemaMap = new Map()
+  const observe = (arr, sid) => {
+    if (typeof arr !== 'string') return
+    if (!ctx.func.locals?.has(arr) && !ctx.scope.globalTypes?.has(arr)) return
+    if (out.get(arr) === null) return
+    if (sid == null) { out.set(arr, null); return }
+    if (!out.has(arr)) out.set(arr, sid)
+    else if (out.get(arr) !== sid) out.set(arr, null)
+  }
+  const walk = (n, parentIsInit) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === '=>') return  // don't cross closure boundary
+    // const/let RHS schema bindings (for chained name lookups + uniform-array literals)
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const a = n[i]
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') {
+          // not a name=expr decl (e.g. destructuring) — still walk for nested stmts
+          walk(a, true)
+          continue
+        }
+        const name = a[1], rhs = a[2]
+        const sid = exprSchemaId(rhs, localSchemaMap)
+        if (sid != null) localSchemaMap.set(name, sid)
+        // Array literal init: `const arr = [{lit}, {lit}]` — observe elem schema
+        if (Array.isArray(rhs) && rhs[0] === '[]') {
+          const elems = rhs.slice(1).filter(e => e != null)
+          if (elems.length) {
+            let common = exprSchemaId(elems[0], localSchemaMap)
+            for (let k = 1; k < elems.length && common != null; k++) {
+              if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
+            }
+            if (common != null) observe(name, common)
+          }
+        }
+        // Call to user fn whose return arr-elem-schema is known: `const rows = initRows()`
+        if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+          const f = ctx.func.map?.get(rhs[1])
+          if (f?.arrayElemSchema != null) observe(name, f.arrayElemSchema)
+        }
+        // Alias: `const b = a` where a is already observed as Array<sid>
+        if (typeof rhs === 'string' && out.has(rhs)) {
+          const sid2 = out.get(rhs)
+          if (sid2 != null) observe(name, sid2)
+        }
+        // Aliased from a param with known elem schema (set by emit-time pre-seed).
+        if (typeof rhs === 'string') {
+          const repSid = ctx.func.repByLocal?.get(rhs)?.arrayElemSchema
+          if (repSid != null) observe(name, repSid)
+        }
+        // Walk rhs only — never enter the `=` node so the reassignment-invalidation
+        // rule below won't misfire on init.
+        walk(rhs, false)
+      }
+      return
+    }
+    // arr.push(...) call
+    if (op === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'push' && typeof n[1][1] === 'string') {
+      const arr = n[1][1]
+      const callArgs = n[2]
+      const list = callArgs == null ? [] :
+        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
+      for (const a of list) {
+        if (Array.isArray(a) && a[0] === '...') { observe(arr, null); continue }
+        observe(arr, exprSchemaId(a, localSchemaMap))
+      }
+    }
+    // Reassignment of arr to non-array → invalidate. Only fires on `arr = …` (not on
+    // `let/const arr = …` initializers — let/const handler returns above).
+    if (op === '=' && typeof n[1] === 'string' && out.has(n[1])) {
+      const rhs = n[2]
+      if (!Array.isArray(rhs) || (rhs[0] !== '[]' && !(rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' && (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))) {
+        observe(n[1], null)
+      }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i], false)
+  }
+  walk(body, false)
+  return out
 }
 
 /** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
@@ -229,8 +487,26 @@ export function ctorFromElemAux(aux) {
 // `body`. compile.js calls each ~2-3× per function (scan-fixpoint, narrowing,
 // final lowering); cache the result keyed on body identity and clone-on-read so
 // callers can still mutate the returned Map.
+// Note: analyzeLocals' exprType now consults ctx.func.repByLocal for `.length`
+// receiver type — emitFunc invalidates this entry after seeding cross-call
+// param VAL facts so the final emit-time walk picks up the refined types.
 const _localsCache = new WeakMap()
 const _valTypesCache = new WeakMap()
+const _typedElemsCache = new WeakMap()
+
+/** Drop a cached analyzeLocals entry so the next call re-walks with the current
+ *  ctx.func.repByLocal. Used by emitFunc after seeding cross-call param VAL facts. */
+export function invalidateLocalsCache(body) {
+  if (body && typeof body === 'object') _localsCache.delete(body)
+}
+
+/** Drop a cached collectValTypes entry. Used after E2-phase valResult narrowing so
+ *  the next collectValTypes call re-walks with up-to-date `f.valResult` lookups —
+ *  required for the D-pass paramValTypes/paramArrSchemas re-fixpoint to see
+ *  `const rows = initRows()` as VAL.ARRAY (initRows.valResult set by E2). */
+export function invalidateValTypesCache(body) {
+  if (body && typeof body === 'object') _valTypesCache.delete(body)
+}
 
 /**
  * Lightweight walk: collect var→valType from let/const/= assignments.
@@ -265,6 +541,48 @@ export function collectValTypes(body, types) {
 }
 
 /**
+ * Lightweight walk: collect var → typed-array ctor (e.g. 'new.Float64Array',
+ * 'new.Int32Array.view') from let/const/= where the RHS is a typed-array
+ * constructor or a TYPED-narrowed call. Used by call-site param propagation
+ * so callees can pick up the caller's element type for inline f64.load.
+ */
+export function collectTypedElems(body) {
+  if (body && typeof body === 'object') {
+    const hit = _typedElemsCache.get(body)
+    if (hit) return new Map(hit)
+  }
+  const result = new Map()
+  const track = (name, rhs) => {
+    const ctor = typedElemCtor(rhs)
+    if (ctor) { result.set(name, ctor); return }
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+      const f = ctx.func.map?.get(rhs[1])
+      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
+        const c = ctorFromElemAux(f.sig.ptrAux)
+        if (c) result.set(name, c)
+      }
+    }
+  }
+  function walk(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        track(a[1], a[2])
+      }
+    } else if (op === '=' && typeof args[0] === 'string') {
+      track(args[0], args[1])
+    }
+    for (const a of args) walk(a)
+  }
+  walk(body)
+  if (body && typeof body === 'object') _typedElemsCache.set(body, new Map(result))
+  return result
+}
+
+/**
  * Analyze all local value types from declarations and assignments.
  * Writes the per-name `val` field of `ctx.func.repByLocal` for method dispatch
  * and schema resolution.
@@ -272,6 +590,25 @@ export function collectValTypes(body, types) {
 export function analyzeValTypes(body) {
   const setVal = (name, vt) => updateRep(name, { val: vt || undefined })
   const getVal = name => ctx.func.repByLocal?.get(name)?.val
+  // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
+  // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
+  const arrElems = collectArrElemSchemas(body)
+  // Parallel walk for Array<VAL.*> facts (numeric/string/etc. element kinds).
+  // Records into rep.arrayElemValType so valTypeOf's `arr[i]` rule can elide
+  // __to_num and route through the right method dispatch on `arr[i].method()`.
+  const arrElemVals = collectArrElemValTypes(body)
+  for (const [name, vt] of arrElemVals) {
+    if (vt != null) updateRep(name, { arrayElemValType: vt })
+  }
+  // Resolve a name's array-elem-schema, preferring rep.arrayElemSchema (set from
+  // paramArrSchemas at emit start) over local body observations.
+  const arrElemSchemaOf = (name) => {
+    if (typeof name !== 'string') return null
+    const repSid = ctx.func.repByLocal?.get(name)?.arrayElemSchema
+    if (repSid != null) return repSid
+    const localSid = arrElems.get(name)
+    return localSid != null ? localSid : null
+  }
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
@@ -324,6 +661,17 @@ export function analyzeValTypes(body) {
         if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '()' && typeof a[2][1] === 'string') {
           const f = ctx.func.map?.get(a[2][1])
           if (f?.sig?.ptrAux != null) updateRep(a[1], { schemaId: f.sig.ptrAux })
+        }
+        // `const p = arr[i]` — when arr's element schema is known (from .push observations
+        // or from paramArrSchemas binding), p inherits the schema. Unlocks slotVT-driven
+        // numeric typing on `.prop` reads + slot-direct loads.
+        if (Array.isArray(a[2]) && a[2][0] === '[]' && typeof a[2][1] === 'string') {
+          const elemSid = arrElemSchemaOf(a[2][1])
+          if (elemSid != null) {
+            updateRep(a[1], { schemaId: elemSid })
+            // Also set the val so structural call dispatch + valTypeOf see VAL.OBJECT.
+            setVal(a[1], VAL.OBJECT)
+          }
         }
       }
     }
@@ -379,7 +727,19 @@ export function exprType(expr, locals) {
   if (op == null) return exprType(args[0], locals) // literal [, value]
 
   // Always f64
-  if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === '.' || op === 'str') return 'f64'
+  if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === 'str') return 'f64'
+  // `.length` on a known sized receiver returns i32 directly (__len/__str_byteLen
+  // both return i32). Letting it stay i32 lets analyzeLocals keep the counter
+  // local i32 too, eliminating the per-iteration `f64.convert_i32_s` widen and
+  // the matching `i32.trunc_sat_f64_s` truncs at every `arr[i]` / `i*k` site.
+  // Only safe when receiver type is statically known to expose an integer length.
+  if (op === '.') {
+    if (args[1] === 'length' && typeof args[0] === 'string') {
+      const vt = lookupValType(args[0])
+      if (vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER) return 'i32'
+    }
+    return 'f64'
+  }
   // Always i32
   if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
   // Preserve i32 if both operands i32
@@ -397,6 +757,11 @@ export function exprType(expr, locals) {
     return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
   }
   if (op === '[') return 'f64'
+  // Builtin calls with known i32 result. Math.imul / Math.clz32 always produce
+  // a 32-bit integer; recognising this here keeps `let x = Math.imul(...)` (and
+  // chains like `x = Math.imul(x, k) + 12345`) on the i32 ABI all the way
+  // through, instead of widening the local to f64 because exprType defaulted.
+  if (op === '()' && (args[0] === 'math.imul' || args[0] === 'math.clz32')) return 'i32'
   return 'f64'
 }
 

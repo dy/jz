@@ -101,9 +101,11 @@ export default (ctx) => {
   ctx.core.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
   ctx.core.emit['math.hypot'] = (a, b) => call('math.hypot', a, b)
 
-  // Integer/bit operations (coerce to i32 internally, return f64)
-  ctx.core.emit['math.clz32'] = a => typed(['f64.convert_i32_u', ['i32.clz', asI32(emit(a))]], 'f64')
-  ctx.core.emit['math.imul'] = (a, b) => typed(['f64.convert_i32_s', ['i32.mul', asI32(emit(a)), asI32(emit(b))]], 'f64')
+  // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
+  // store/return boundaries; consumers staying in i32 (bit chains, i32 locals)
+  // skip the convert/trunc round-trip entirely.
+  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', asI32(emit(a))], 'i32')
+  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', asI32(emit(a)), asI32(emit(b))], 'i32')
 
   // Random
   ctx.core.emit['math.random'] = () => (inc('math.random'), typed(['call', '$math.random'], 'f64'))

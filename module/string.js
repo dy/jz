@@ -24,13 +24,13 @@ export default (ctx) => {
     __str_startswith: ['__str_byteLen'],
     __str_endswith: ['__str_byteLen'],
     __str_case: ['__str_byteLen', '__alloc'],
-    __str_trim: ['__str_slice'],
-    __str_trimStart: ['__str_slice'],
-    __str_trimEnd: ['__str_slice'],
+    __str_trim: ['__str_slice', '__str_byteLen', '__char_at'],
+    __str_trimStart: ['__str_slice', '__str_byteLen', '__char_at'],
+    __str_trimEnd: ['__str_slice', '__str_byteLen', '__char_at'],
     __str_repeat: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
-    __str_split: ['__str_slice'],
+    __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
     __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
     __str_eq: ['__char_at'],
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
@@ -684,8 +684,9 @@ export default (ctx) => {
       (br $l2)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
-  // Always include base helpers
-  inc('__sso_char', '__str_char', '__char_at', '__str_byteLen')
+  // Base helpers (__sso_char/__str_char/__char_at/__str_byteLen) are referenced
+  // from other helpers' WAT bodies and from emit sites; their `stdlibDeps`
+  // entries pull them transitively when actually used. No unconditional inc.
 
   // === Method emitters ===
 
@@ -772,6 +773,7 @@ export default (ctx) => {
 
   // .charAt(i) → 1-char string from char code at index i
   ctx.core.emit['.charAt'] = (str, idx) => {
+    inc('__char_at')
     const t = tempI32('ch')
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
@@ -781,6 +783,7 @@ export default (ctx) => {
 
   // .charCodeAt(i) → integer char code
   ctx.core.emit['.charCodeAt'] = (str, idx) => {
+    inc('__char_at')
     return typed(['f64.convert_i32_u', ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]], 'f64')
   }
 
@@ -821,6 +824,7 @@ export default (ctx) => {
 
   // .at(i) → charAt with negative index support
   ctx.core.emit['.at'] = (str, idx) => {
+    inc('__char_at', '__str_byteLen')
     const t = tempI32('at'), s = temp('as')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],

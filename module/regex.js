@@ -777,7 +777,7 @@ export default (ctx) => {
     const id = resolveRegex(search)
     if (id == null) {
       // Fall back to string match
-      inc('__str_indexof', '__str_slice', '__wrap1')
+      inc('__str_indexof', '__str_slice', '__wrap1', '__str_byteLen')
       const s = temp('ms'), q = temp('mq'), idx = tempI32('mi')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
@@ -810,7 +810,7 @@ export default (ctx) => {
       inc('__str_replace')
       return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
     }
-    inc('__str_slice', '__str_concat')
+    inc('__str_slice', '__str_concat', '__str_byteLen')
     const s = temp('sr'), r = temp('srr'), ms = tempI32('srms'), me = tempI32('srme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
