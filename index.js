@@ -86,6 +86,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.jzify) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
+  if (opts.nativeTimers) ctx.features.nativeTimers = true
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {

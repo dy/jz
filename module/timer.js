@@ -1,0 +1,242 @@
+/**
+ * Timer module — setTimeout/setInterval/clearTimeout/clearInterval.
+ *
+ * Pure-WASM timer queue using WASI clock_time_get for deadlines.
+ * Runs inline after __start — no JS host, no Rust runner needed.
+ *
+ * Timer queue: heap-allocated array of entries in linear memory.
+ *   Each entry (40 bytes):
+ *     [0]  id (i32)           — unique timer ID
+ *     [4]  pad (i32)
+ *     [8]  closure_ptr (f64)  — NaN-boxed closure to invoke
+ *     [16] deadline_ns (i64)  — absolute nanoseconds (monotonic clock)
+ *     [24] interval_ms (f64)  — 0 for setTimeout, >0 for setInterval
+ *     [32] alive (i32)        — 1=active, 0=cleared
+ *     [36] pad (i32)
+ *
+ * @module timer
+ */
+
+import { emit, typed, asF64, UNDEF_NAN, MAX_CLOSURE_ARITY } from '../src/compile.js'
+import { inc, PTR } from '../src/ctx.js'
+import { temp } from '../src/ir.js'
+
+const MAX_TIMERS = 64
+const ENTRY_SIZE = 40
+
+export default (ctx) => {
+  // Always include init + loop when timer module loads (structural, not per-emitter)
+  inc('__timer_init', '__timer_loop')
+
+  Object.assign(ctx.core.stdlibDeps, {
+    __timer_init: ['__alloc'],
+    __timer_add: ['__time_ns'],
+    __timer_cancel: [],
+    __timer_dispatch: [],
+    __timer_loop: ['__time_ns', '__timer_dispatch'],
+  })
+
+  // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
+  // call_indirect always matches the $ftN type (env, argc, a0..a7)
+  ctx.closure.floor = MAX_CLOSURE_ARITY
+
+  // Import WASI clock_time_get if not already imported (console.js may have done it)
+  if (!ctx.module.imports.some(i => i[1] === '"wasi_snapshot_preview1"' && i[2] === '"clock_time_get"')) {
+    ctx.module.imports.push(
+      ['import', '"wasi_snapshot_preview1"', '"clock_time_get"',
+        ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']]])
+  }
+
+  // __time_ns() → i64 — current monotonic nanoseconds
+  // Reuses address 0-7 for the i64 output (same as __time_ms in console.js)
+  ctx.core.stdlib['__time_ns'] = `(func $__time_ns (result i64)
+    (drop (call $__clock_time_get (i32.const 1) (i64.const 1) (i32.const 0)))
+    (i64.load (i32.const 0)))`
+
+  // __timer_init() — allocate timer queue, zero-fill, init next_id
+  // Queue layout: [next_id i32 @ -4] [entry0 .. entry{MAX_TIMERS-1}]
+  // We store next_id as a global to survive across calls
+  ctx.core.stdlib['__timer_init'] = `(func $__timer_init
+    (global.set $__timer_next_id (i32.const 1))
+    (global.set $__timer_count (i32.const 0))
+    (global.set $__timer_queue (call $__alloc (i32.const ${MAX_TIMERS * ENTRY_SIZE})))
+    (memory.fill (global.get $__timer_queue) (i32.const 0) (i32.const ${MAX_TIMERS * ENTRY_SIZE})))`
+
+  // __timer_add(closure_ptr: f64, delay_ms: f64, interval: i32) → f64 (timer ID)
+  // interval=0 → setTimeout, interval=1 → setInterval
+  ctx.core.stdlib['__timer_add'] = `(func $__timer_add (param $clos f64) (param $delay f64) (param $is_interval i32) (result f64)
+    (local $id i32)
+    (local $slot i32)
+    (local $base i32)
+    (local $deadline i64)
+    ;; Find free slot
+    (local.set $slot (i32.const -1))
+    (local.set $base (global.get $__timer_queue))
+    (block $found (loop $scan
+      ;; slot starts at -1, increment first
+      (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
+      (br_if $found (i32.ge_s (local.get $slot) (i32.const ${MAX_TIMERS})))
+      ;; Check alive field at slot*ENTRY_SIZE + 32
+      (br_if $scan (i32.load (i32.add (local.get $base)
+        (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32)))))
+      ;; alive==0 → free slot, break
+      (br $found)))
+    ;; No free slot? Return 0 (error)
+    (if (i32.ge_s (local.get $slot) (i32.const ${MAX_TIMERS}))
+      (then (return (f64.const 0))))
+    ;; Compute deadline = now + delay_ms * 1_000_000
+    (local.set $deadline (i64.add
+      (call $__time_ns)
+      (i64.trunc_f64_u (f64.mul (local.get $delay) (f64.const 1000000)))))
+    ;; Allocate ID
+    (local.set $id (global.get $__timer_next_id))
+    (global.set $__timer_next_id (i32.add (local.get $id) (i32.const 1)))
+    ;; Write entry
+    ;; id @ offset+0
+    (i32.store (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))
+      (local.get $id))
+    ;; closure_ptr @ offset+8
+    (f64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))
+      (local.get $clos))
+    ;; deadline_ns @ offset+16
+    (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 16)))
+      (local.get $deadline))
+    ;; interval_ms @ offset+24 — store delay for intervals, 0 for timeouts
+    (f64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 24)))
+      (select (local.get $delay) (f64.const 0) (local.get $is_interval)))
+    ;; alive @ offset+32
+    (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32)))
+      (i32.const 1))
+    ;; Increment active count
+    (global.set $__timer_count (i32.add (global.get $__timer_count) (i32.const 1)))
+    ;; Return ID as f64
+    (f64.convert_i32_u (local.get $id)))`
+
+  // __timer_cancel(id: f64) → f64 (0)
+  ctx.core.stdlib['__timer_cancel'] = `(func $__timer_cancel (param $id f64) (result f64)
+    (local $slot i32)
+    (local $base i32)
+    (local $target i32)
+    (local.set $target (i32.trunc_f64_u (local.get $id)))
+    (local.set $base (global.get $__timer_queue))
+    (local.set $slot (i32.const 0))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_s (local.get $slot) (i32.const ${MAX_TIMERS})))
+      ;; Check if id matches and alive
+      (if (i32.and
+            (i32.eq (i32.load (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))) (local.get $target))
+            (i32.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32)))))
+        (then
+          ;; Mark dead
+          (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))) (i32.const 0))
+          ;; Decrement count
+          (global.set $__timer_count (i32.sub (global.get $__timer_count) (i32.const 1)))
+          (br $done)))
+      (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
+      (br $scan)))
+    (f64.const 0))`
+
+  // __timer_dispatch(now_ns: i64) → i32 (number of callbacks dispatched)
+  // Finds all due timers (deadline <= now), invokes them, reschedules intervals
+  ctx.core.stdlib['__timer_dispatch'] = `(func $__timer_dispatch (param $now i64) (result i32)
+    (local $slot i32)
+    (local $base i32)
+    (local $dispatched i32)
+    (local $clos f64)
+    (local $interval f64)
+    (local $id i32)
+    (local.set $dispatched (i32.const 0))
+    (local.set $base (global.get $__timer_queue))
+    (local.set $slot (i32.const 0))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_s (local.get $slot) (i32.const ${MAX_TIMERS})))
+      ;; Check alive
+      (if (i32.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))))
+        (then
+          ;; Check deadline <= now
+          (if (i64.le_u
+                (i64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 16))))
+                (local.get $now))
+            (then
+              ;; Read closure and interval before potentially clearing
+              (local.set $clos (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))))
+              (local.set $interval (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 24)))))
+              (local.set $id (i32.load (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))))
+              ;; Interval? Reschedule
+              (if (f64.gt (local.get $interval) (f64.const 0))
+                (then
+                  ;; New deadline = now + interval_ms * 1_000_000
+                  (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 16)))
+                    (i64.add (local.get $now) (i64.trunc_f64_u (f64.mul (local.get $interval) (f64.const 1000000))))))
+                (else
+                  ;; Timeout: mark dead
+                  (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))) (i32.const 0))
+                  (global.set $__timer_count (i32.sub (global.get $__timer_count) (i32.const 1)))))
+              ;; Invoke closure via call_indirect on $ftN
+              ;; (env f64, argc i32, a0..a7 f64) → f64
+              (drop (call_indirect (type \$ftN)
+                (local.get $clos)                        ;; env = closure pointer itself
+                (i32.const 0)                             ;; argc = 0
+                ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n                ')}
+                (i32.wrap_i64 (i64.and
+                  (i64.shr_u (i64.reinterpret_f64 (local.get $clos)) (i64.const 32))
+                  (i64.const 0x7FFF)))))
+              (local.set $dispatched (i32.add (local.get $dispatched) (i32.const 1)))))))
+      (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
+      (br $scan)))
+    (local.get $dispatched))`
+
+  // __timer_loop() — blocking event loop. Polls clock, dispatches due timers.
+  // Exits when no active timers remain (all timeouts fired, all intervals cleared).
+  // Busy-waits with short yield. On wasmtime/wasmer, this blocks the process — intended.
+  ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop
+    (local $now i64)
+    (local $any i32)
+    (block $exit (loop $poll
+      ;; Exit if no active timers
+      (br_if $exit (i32.le_s (global.get $__timer_count) (i32.const 0)))
+      ;; Get current time
+      (local.set $now (call $__time_ns))
+      ;; Dispatch due timers
+      (drop (call $__timer_dispatch (local.get $now)))
+      ;; Loop
+      (br $poll))))`
+
+  // Register globals for timer state
+  // $__timer_queue: i32 — base address of timer array
+  // $__timer_next_id: i32 — next timer ID
+  // $__timer_count: i32 — number of active timers
+  ctx.scope.globals.set('__timer_queue', '(global $__timer_queue (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__timer_next_id', '(global $__timer_next_id (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__timer_count', '(global $__timer_count (mut i32) (i32.const 0))')
+
+  // Emitter: setTimeout(closure, delay) → timer_id
+  ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
+    inc('__timer_add')
+    const t = temp('tc')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 0]]], 'f64')
+  }
+
+  // Emitter: setInterval(closure, delay) → timer_id
+  ctx.core.emit['setInterval'] = (closureExpr, delayExpr) => {
+    inc('__timer_add')
+    const t = temp('tc')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 1]]], 'f64')
+  }
+
+  // Emitter: clearTimeout(id) → undefined
+  ctx.core.emit['clearTimeout'] = (idExpr) => {
+    inc('__timer_cancel')
+    return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
+  }
+
+  // Emitter: clearInterval(id) → undefined
+  ctx.core.emit['clearInterval'] = (idExpr) => {
+    inc('__timer_cancel')
+    return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
+  }
+}

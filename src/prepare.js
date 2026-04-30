@@ -106,7 +106,12 @@ export default function prepare(node) {
   const allNodes = [ast, ...ctx.func.list.map(f => f.body), ...(ctx.module.moduleInits || [])]
   for (const node of allNodes) scanTimers(node)
   for (const name of usedTimers) {
-    if (!ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
+    if (ctx.features.nativeTimers) {
+      // Native timers: inline WASM timer queue (wasmtime/wasmer), no JS host imports
+      includeModule('timer')
+      includeModule('fn')   // call_indirect dispatch for callbacks
+      break                 // timer module handles all timer types
+    } else if (!ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
       ctx.module.imports.push(['import', '"jz"', `"${name}"`, ['func', `$${name}`, ...TIMER_SIGS[name]]])
     }
   }
@@ -1322,7 +1327,11 @@ function defFunc(name, node) {
 
   const sig = { params, results: detectResults(body) }
   const hasDefaults = Object.keys(defaults).length > 0
-  const funcInfo = { name, body, exported: !!ctx.func.exports[name], sig, ...(hasDefaults && { defaults }) }
+  // Only main-module top-level exports become wasm-boundary exports.
+  // Sub-module `export let X` is just a re-importable symbol — staying internal
+  // unlocks treeshake + type specialization once main stops referencing it.
+  const exported = !!ctx.func.exports[name] && ctx.module.moduleStack.length === 0
+  const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
   if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
   ctx.func.list.push(funcInfo)
   return true
