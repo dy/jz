@@ -97,31 +97,29 @@ flowchart TB
 -->
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│ Not supported                                                              │
-│   async/await  Promise  function*  yield                                   │
-│   this  class  super  extends  delete                                      │
-│   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet                   │
-│   dynamic import  DOM  fetch  Intl  Node APIs                              │
-│                                                                            │
-│ ┌────────────────────────────────────────────────────────────────────────┐ │
-│ │ JZify                                                                  │ │
-│ │   var  function  arguments  switch  new Foo()                          │ │
-│ │   ==  !=  instanceof  undefined  do/while                              │ │
-│ │                                                                        │ │
-│ │ ┌────────────────────────────────────────────────────────────────────┐ │ │
-│ │ │ JZ                                                                 │ │ │
-│ │ │   let/const  =>  x=1  ...xs  destructuring  modules  `${}`         │ │ │
-│ │ │   if/else  for/while/of/in  break/continue                         │ │ │
-│ │ │   try/catch/finally  throw                                         │ │ │
-│ │ │   a[]  a()  a.b  ?:  ??  ?.  typeof  in                            │ │ │
-│ │ │   operators  strings  booleans  numbers  arrays  objects  null     │ │ │
-│ │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │ │
-│ │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │ │
-│ │ │   console  timers  Date  performance                               │ │ │
-│ │ └────────────────────────────────────────────────────────────────────┘ │ │
-│ └────────────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────────┘
+Not supported
+  async/await  Promise  function*  yield
+  this  class  super  extends  delete  labels
+  eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
+  dynamic import  DOM  fetch  Intl  Node APIs
+
+┌────────────────────────────────────────────────────────────────────────┐
+│ JZify                                                                  │
+│   var  function  arguments  switch  new Foo()                          │
+│   ==  !=  instanceof  undefined                                        │
+│                                                                        │
+│ ┌────────────────────────────────────────────────────────────────────┐ │
+│ │ JZ                                                                 │ │
+│ │   let/const  =>  x=1  ...xs  destructuring  modules  `${}`         │ │
+│ │   if/else  for/while/do-while/of/in  break/continue                │ │
+│ │   try/catch/finally  throw                                         │ │
+│ │   a[]  a()  a.b  ?:  ??  ?.  typeof  void  in  **                  │ │
+│ │   operators  strings  booleans  numbers  arrays  objects  null     │ │
+│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
+│ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
+│ │   console  timers  Date  performance                               │ │
+│ └────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 
@@ -313,7 +311,7 @@ cc program.c -o program
 ```
 
 
-### Benchmark
+## Benchmark
 
 | | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
 |---|---|---|---|---|---|---|---|
