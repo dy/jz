@@ -92,32 +92,27 @@ Built-in `jzify` transform unlocks legacy JS.
 
 ### Platform
 
-<!-- FIXME: just do list **Available**: ..., **Not available**: ... -->
 Standard library is provided via importable modules; I/O is _WASI Preview 1_.
 
-| Category | Available | Not available |
-|----------|-----------|---------------|
-| **Data** | Numbers, strings, arrays, objects, typed arrays, `JSON`, `BigInt` | — |
-| **Collections** | Arrays, `Map`, `Set`, dynamic string-keyed objects | `WeakMap`, `WeakSet` |
-| **Math** | `Math.*`, SIMD vectorization | — |
-| **Text** | String methods, regex | `Intl` |
-| **I/O & Host** | `console.log`, `Date.now`, `performance.now` | DOM, `fetch`, `setTimeout`, filesystem |
-| **Modules** | ES `import` / `export` | `require`, dynamic `import()` |
+**Available**: numbers, strings, arrays, objects, typed arrays, `ArrayBuffer`, `DataView` · `JSON`, `BigInt`, `Map`, `Set`, `Symbol`, regex · `Math.*` (with SIMD vectorization) · spread/rest, destructuring, optional chaining `?.`, nullish `??` · `try`/`catch`/`throw`, `Error` · `console.log`, `Date.now`, `performance.now` · `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` · ES `import` / `export` · WASI Preview 1 file I/O.
+
+**Not available**: `WeakMap`, `WeakSet`, `Promise`, `Proxy`, `Reflect` · generators (`function*`, `yield`), `delete`, `instanceof` · `Intl`, `new Date()` (only `Date.now`) · DOM, `fetch` · `require`, dynamic `import()`.
 
 
 ## Benchmarks
 
-<!-- FIXME: jz should come first, then node, then AssembleScript, then porf, WAT, then C, then Go, then Rust -->
-| | C | Rust | Go | AssembleScript | WAT | **jz** | Node |
-|---|---|---|---|---|---|---|---|
-| **biquad** | 5.32 ms<br>32.8 kB | 5.26 ms<br>471.9 kB | 8.93 ms<br>2.39 MB | 8.99 ms<br>1.9 kB | 6.42 ms<br>767 B | **11.07 ms**<br>**8.0 kB** | 12.19 ms<br>5.3 kB |
-| **tokenizer** | 0.13 ms<br>32.9 kB | 0.12 ms<br>471.8 kB | 0.07 ms<br>2.39 MB | 0.06 ms<br>1.5 kB | — | **0.15 ms**<br>**7.7 kB** | 0.19 ms<br>1.4 kB |
-| **mat4** | 2.60 ms<br>32.9 kB | 0.81 ms<br>471.9 kB | 11.48 ms<br>2.39 MB | 9.10 ms<br>1.5 kB | — | **8.54 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB |
-| **aos** | 1.20 ms<br>32.9 kB | 1.22 ms<br>471.8 kB | 0.90 ms<br>2.39 MB | 1.92 ms<br>2.2 kB | — | **3.86 ms**<br>**9.6 kB** | 1.79 ms<br>1.1 kB |
-| **bitwise** | 1.30 ms<br>32.9 kB | 1.30 ms<br>471.8 kB | 5.23 ms<br>2.39 MB | 11.96 ms<br>1.5 kB | — | **8.35 ms**<br>**7.4 kB** | 5.32 ms<br>1005 B |
-| **poly** | 0.52 ms<br>32.9 kB | 0.52 ms<br>471.8 kB | 0.80 ms<br>2.39 MB | 1.13 ms<br>1.3 kB | — | **4.82 ms**<br>**7.4 kB** | 2.30 ms<br>1014 B |
-| **callback** | 0.08 ms<br>32.9 kB | 0.07 ms<br>471.8 kB | 0.20 ms<br>2.39 MB | 1.48 ms<br>1.9 kB | — | **5.13 ms**<br>**8.6 kB** | 3.31 ms<br>828 B |
-| **json** | 0.02 ms<br>32.9 kB | 0.03 ms<br>471.9 kB | 1.04 ms<br>2.93 MB | — | — | **0.54 ms**<br>**11.2 kB** | 0.38 ms<br>923 B |
+| | **jz** | Node | AssemblyScript | Porffor | WAT | C | Go | Rust |
+|---|---|---|---|---|---|---|---|---|
+| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
+| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
+| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
+| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
+| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
+| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
+| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
+| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+
+_Porffor currently fails to compile this bench suite (codegen bug). Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 
 
