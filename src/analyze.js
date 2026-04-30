@@ -323,6 +323,47 @@ export function collectArrElemValTypes(body) {
           const v = elemValOf(rhs)
           if (v) observe(name, v)
         }
+        // `.map`/`.filter`/`.slice`/`.concat` on a known Array<vt> receiver: derive
+        // elem-val from arrow body (.map) or preserve recv elem (.filter/.slice/.concat).
+        // Unblocks the fast `b[j]` read path on `b = a.map(x => x*k)` shapes where
+        // the result element is provably numeric. Observe-only — body's valTypeOf
+        // returns null for genuinely heterogeneous bodies, leaving observation absent.
+        if (Array.isArray(rhs) && rhs[0] === '()' &&
+            Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
+            typeof rhs[1][1] === 'string') {
+          const recvName = rhs[1][1], method = rhs[1][2]
+          if (method === 'filter' || method === 'slice' || method === 'concat') {
+            const v = elemValOf(recvName)
+            if (v) observe(name, v)
+          } else if (method === 'map') {
+            const arrowFn = rhs[2]
+            const recvVt = elemValOf(recvName)
+            // Single-param arrow: `x => body` (param is bare string) or `(x) => body`
+            // (param is `['()', 'x']`). Skip multi-param/destructured forms — rare
+            // for chained pipelines and the body wouldn't be uniform anyway.
+            const param = Array.isArray(arrowFn) && arrowFn[0] === '=>' ? arrowFn[1] : null
+            const paramName = typeof param === 'string' ? param :
+              (Array.isArray(param) && param[0] === '()' && typeof param[1] === 'string' ? param[1] : null)
+            const arrowBody = paramName ? arrowFn[2] : null
+            // Block-bodied arrow `{ return expr }` → unwrap to the return expression.
+            const exprBody = (Array.isArray(arrowBody) && arrowBody[0] === '{}' &&
+              Array.isArray(arrowBody[1]) && arrowBody[1][0] === 'return') ? arrowBody[1][1] : arrowBody
+            if (paramName && exprBody != null) {
+              const refs = ctx.func.refinements
+              const hadParam = refs?.has(paramName)
+              const prev = hadParam ? refs.get(paramName) : undefined
+              if (refs && recvVt) refs.set(paramName, recvVt)
+              let bodyVt = null
+              try { bodyVt = valTypeOf(exprBody) }
+              finally {
+                if (refs && recvVt) {
+                  if (hadParam) refs.set(paramName, prev); else refs.delete(paramName)
+                }
+              }
+              if (bodyVt) observe(name, bodyVt)
+            }
+          }
+        }
         walk(rhs)
       }
       return

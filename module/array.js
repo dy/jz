@@ -485,9 +485,14 @@ export default (ctx) => {
       // dead weight in hot kernels. Emit (f64.load (i32.add base (shl i 3)))
       // directly. base goes through __ptr_offset (still does forwarding follow),
       // and hoistAddrBase will CSE the (base, i) pair across the iteration body.
-      const hasElemSchema = typeof arr === 'string' &&
-        ctx.func.repByLocal?.get(arr)?.arrayElemSchema != null
-      if (hasElemSchema && keyIsNum) {
+      // Array<NUMBER>/<STRING>/<OBJECT> all use 8-byte f64 slot layout — direct
+      // f64.load is correct regardless of elem kind (returns raw f64 for NUMBER,
+      // NaN-boxed pointer for OBJECT/STRING; downstream typed() handles both).
+      // Fast path fires on schemaId (Array<{x,y,z}> shapes) OR plain elem-val
+      // (Array<NUMBER> from `.map(x => x*k)` etc.).
+      const rep = typeof arr === 'string' ? ctx.func.repByLocal?.get(arr) : null
+      const hasElemFact = rep?.arrayElemSchema != null || rep?.arrayElemValType != null
+      if (hasElemFact && keyIsNum) {
         inc('__ptr_offset')
         // __ptr_offset returns i32 — base local must be i32 (not the default
         // f64 NaN-box temp). Flat tee form so downstream peepholes can fold
