@@ -10,14 +10,17 @@ const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + f
 fib(40)  // 102334155
 ```
 
-**JZ** (_javascript zero_) is **minimal modern functional JS subset** without legacy or regrets, [optimized](#optimizations) to produce minimal wasm with near-native performance. Static by design: no runtime, no GC, no dynamic constructs. Built-in `jzify` transform enables legacy JS.
+## What
+
+**JZ** (_javascript zero_) is **minimal modern functional JS subset**, producing minimal wasm with near-native performance.<br/> Static by design: no runtime, no GC, no dynamic constructs.
 
 * **Valid jz = valid js** — any jz program is normal js: test in browser, compile to wasm.
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
 * **Readable** — produced WAT/WASM is on par with hand-written.
 * **Modular** — arrays, strings, objects, regex, math are (auto)importable modules.
 
-It is an attempt to secure Crockford "best parts" from platform, spec, and engine drift. Write normal JS and get WASM – portable, low-level, long-lasting.
+It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, low-level, long-lasting.
+
 Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
 
 
@@ -69,9 +72,10 @@ jz -e "1 + 2"
 jz --help
 ```
 
-## Features
+## Language
 
-JZ supports complete JS syntax with constraints:
+JZ supports complete JS syntax with Crockford "best parts" constraints.<br>
+Built-in `jzify` transform unlocks legacy JS.
 
 | Excluded | Reason | jzify |
 |----------|--------|--------|
