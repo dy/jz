@@ -302,9 +302,18 @@ The compiled `.wasm` uses one import namespace:
 | `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
 | `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
 
-### Is it fast?
+### Can I compile jz to C?
 
-Competitive, faster than v8. See [benchmark](./bench/):
+Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
+
+```sh
+jz program.js -o program.wasm
+wasm2c program.wasm -o program.c
+cc program.c -o program
+```
+
+
+### Benchmark
 
 | | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
 |---|---|---|---|---|---|---|---|
@@ -317,18 +326,9 @@ Competitive, faster than v8. See [benchmark](./bench/):
 | **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
 | **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon._
+_Numbers from `node bench/bench.mjs` on Apple Silicon. See [benchmark](./bench/)._
 
 
-### Can I compile jz to C?
-
-Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
-
-```sh
-jz program.js -o program.wasm
-wasm2c program.wasm -o program.c
-cc program.c -o program
-```
 
 
 ## Alternatives
