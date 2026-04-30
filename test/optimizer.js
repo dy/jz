@@ -107,3 +107,37 @@ test('arrayElemValType: typed-array .map runtime correctness', () => {
   // (3 + 5 + 7 + 9) = 24
   is(main(), 24)
 })
+
+test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
+  // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
+  // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
+  // i64.trunc_sat_f64_s, no f64.convert_i32_u of the char code.
+  const wat = jz.compile(`
+    export const main = (s) => {
+      let n = 0
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i)
+        if (c >= 48 && c <= 57) n = n * 10 + (c - 48)
+      }
+      return n | 0
+    }
+  `, { wat: true })
+  ok(/\(local \$c i32\)/.test(wat), 'expected $c declared as i32')
+  is((wat.match(/\(call \$__to_num/g) || []).length, 0)
+  is((wat.match(/i64\.trunc_sat_f64_s/g) || []).length, 0)
+})
+
+test('charCodeAt: runtime correctness — digit parse', () => {
+  const { main } = run(`
+    export const main = (s) => {
+      let n = 0
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i)
+        if (c >= 48 && c <= 57) n = n * 10 + (c - 48)
+      }
+      return n | 0
+    }
+  `)
+  is(main('abc12345xyz'), 12345)
+  is(main('  9  '), 9)
+})

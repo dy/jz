@@ -781,10 +781,13 @@ export default (ctx) => {
       mkPtrIR(PTR.SSO, 1, ['local.get', `$${t}`])], 'f64')
   }
 
-  // .charCodeAt(i) → integer char code
+  // .charCodeAt(i) → integer char code (0..255 for ASCII bytes — unsigned, always
+  // representable as i32). Returning i32 directly lets `let c = s.charCodeAt(i)`
+  // stay on the i32 ABI: chained comparisons (`c >= 48 && c <= 57`), bit-ops, and
+  // `c - 48` arithmetic skip the per-iteration f64 widen + i32 trunc round-trip.
   ctx.core.emit['.charCodeAt'] = (str, idx) => {
     inc('__char_at')
-    return typed(['f64.convert_i32_u', ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]], 'f64')
+    return typed(['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))], 'i32')
   }
 
   // String.fromCharCode(code) → 1-char SSO string
