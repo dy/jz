@@ -104,14 +104,14 @@ flowchart TB
 │                                                                        │
 │ ┌────────────────────────────────────────────────────────────────────┐ │
 │ │ JZ                                                                 │ │
-│ │   let/const  =>  x=1  ...xs  destructuring  modules  `${}`         │ │
+│ │   let/const  =>  ...xs  destructuring  import/export  `${}`        │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
 │ │   try/catch/finally  throw                                         │ │
 │ │   a[]  a()  a.b  ?:  ??  ?.  typeof  void  in  **                  │ │
 │ │   operators  strings  booleans  numbers  arrays  objects  null     │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
-│ │   console  timers  Date  performance                               │ │
+│ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────┘
 
