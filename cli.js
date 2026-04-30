@@ -12,23 +12,27 @@ import jzifyFn, { codegen } from './src/jzify.js'
 
 function showHelp() {
   console.log(`
-jz - JS subset → WASM compiler (Crockford-aligned)
+jz - min JS → WASM compiler
 
 Usage:
-  jz <file.jz>              Compile jz to WASM
-  jz <file.js>              Auto-jzify JS, then compile to WASM
-  jz --jzify <file.js>      Transform JS → jz (output to stdout)
+  jz <file.js>              Compile JS to WASM (auto-jzify)
+  jz --strict <file.js>     Strict mode (no auto-transform)
+  jz --jzify <file.js>      Transform JS → jz (auto-derives output file)
   jz -e <expression>        Evaluate expression
   jz --help                 Show this help
 
 Examples:
-  jz program.jz -o program.wasm
-  jz program.js -o program.wasm     # auto-jzify
-  jz --jzify lib.js > lib.jz        # transform only
+  jz program.js                    # → program.wasm
+  jz program.js --wat              # → program.wat
+  jz program.js -o out.wasm        # custom output name
+  jz program.js -o -               # write to stdout
+  jz --strict program.js           # strict mode
+  jz --jzify lib.js                # → lib.jz
   jz -e "1 + 2"
 
 Options:
-  --output, -o <file>       Output file (.wat or .wasm)
+  --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
+  --strict                  Strict jz mode (no auto-transform)
   --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
@@ -72,30 +76,38 @@ async function handleEvaluate(args) {
 }
 
 async function handleJzify(args) {
-  const inputFile = args[0]
+  let inputFile = null, outputFile = null
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
+    else if (!inputFile) inputFile = args[i]
+  }
   if (!inputFile) throw new Error('No input file specified')
+  if (!outputFile) outputFile = inputFile.replace(/\.js$/, '.jz')
   const code = readFileSync(inputFile, 'utf8')
   const ast = parse(code)
   const transformed = jzifyFn(ast)
-  process.stdout.write(codegen(transformed) + '\n')
+  const out = codegen(transformed) + '\n'
+  if (outputFile === '-') {
+    process.stdout.write(out)
+  } else {
+    writeFileSync(outputFile, out)
+    console.log(`${inputFile} → ${outputFile} (${out.length} chars)`)
+  }
 }
 
 async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false
+  let inputFile = null, outputFile = null, wat = false, strict = false
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
+    else if (args[i] === '--strict') strict = true
     else if (!inputFile) inputFile = args[i]
   }
 
   if (!inputFile) throw new Error('No input file specified')
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
-
-  // .js = auto-jzify (function→arrow, var→let, ASI allowed)
-  // .jz = strict jz (mandatory ;, no function/var/switch)
-  const isJs = inputFile.endsWith('.js')
 
   const code = readFileSync(inputFile, 'utf8')
 
@@ -124,15 +136,19 @@ async function handleCompile(args) {
     }
   }
 
+  // .jz = strict (no auto-transform), .js = auto-jzify
+  // --strict forces strict for any extension
   const opts = {
     wat,
-    jzify: isJs,  // .js → accept full JS subset; .jz → strict jz (no function/var/switch)
+    jzify: !strict && !inputFile.endsWith('.jz'),
     ...(Object.keys(modules).length && { modules }),
   }
 
   const result = compile(code, opts)
 
-  if (wat) {
+  if (outputFile === '-') {
+    process.stdout.write(result)
+  } else if (wat) {
     writeFileSync(outputFile, result)
     console.log(`${inputFile} → ${outputFile} (${result.length} chars)`)
   } else {

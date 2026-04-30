@@ -38,21 +38,11 @@ const wat = compile('export let f = (x) => x * 2', { wat: true })
 `npm install -g jz`
 
 ```sh
-# Compile jz to WASM
-jz program.jz -o program.wasm
+# Compile
+jz program.js # → program.wasm
 
-# Compile any jz (auto-jzify: function→arrow, var→let, switch→if/else)
-jz program.js -o program.wasm
-
-# Compile strict jz to WAT
-jz program.jz -o program.wat
-
-# Transform js to jz (no compilation)
-jz --jzify lib.js > lib.jz
-
-# Evaluate expression
-jz -e "1 + 2"
-# 3
+# Evaluate
+jz -e "1 + 2" # 3
 
 # Show help
 jz --help
@@ -60,7 +50,7 @@ jz --help
 
 ## Language
 
-JZ supports complete JS syntax with Crockford "best parts" constraints.<br>
+JZ supports complete JS syntax with Crockford's "the best parts" constraints.<br>
 Built-in `jzify` transform auto-fixes most legacy patterns.
 
 |  | Note | jzify |
