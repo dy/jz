@@ -16,7 +16,7 @@ fib(40)  // 102334155
 
 ## Why?
 
-_JZ_ is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
+It is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
@@ -31,6 +31,15 @@ Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/
 | DSP / audio / bytebeats     | Backend / APIs             |
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
+
+### Used by
+
+* [web-audio-api](https://github.com/audiojs/web-audio-api)
+* [color-space](https://github.com/colorjs/color-space)
+* [audiojs](https://github.com/colorjs/audiojs)
+<!-- * [audio-filter](https://github.com/audiojs/audio-filter)
+* [digital-filter](https://github.com/audiojs/digital-filter)
+* [time-stretch](https://github.com/audiojs/time-stretch) -->
 
 
 ## Usage
@@ -324,15 +333,6 @@ wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
 
-
-## Used by
-
-* [web-audio-api](https://github.com/audiojs/web-audio-api)
-* [color-space](https://github.com/colorjs/color-space)
-* [audiojs](https://github.com/colorjs/audiojs)
-<!-- * [audio-filter](https://github.com/audiojs/audio-filter)
-* [digital-filter](https://github.com/audiojs/digital-filter)
-* [time-stretch](https://github.com/audiojs/time-stretch) -->
 
 ## Alternatives
 
