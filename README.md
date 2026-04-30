@@ -93,7 +93,7 @@ These JS constructs are intentionally excluded:
 | `eval`, `with` | Dynamic scope. Not compilable. | — |
 | `arguments` | Implicit. Use rest params `...args`. | — |
 | `typeof` (string result) | `typeof x === 'string'` works as compile-time check. | — |
-| `null` vs `undefined` | One nullish value (`null`). `??` works for both. | `undefined` → `null` |
+| `null` vs `undefined` | One nullish value (`null`). `??` works for both. | `undefined` → `null`, `void 0` → `null` |
 | `==`/`!=` | No loose equality. | `==` → `===`, `!=` → `!==` |
 | `switch` | Use `if`/`else` chains. | `switch` → `if`/`else` |
 | `new X()` | Constructor syntax. | `new X()` → `X()` (except TypedArrays) |
