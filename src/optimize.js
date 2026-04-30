@@ -1113,6 +1113,15 @@ function walkRewrite(node, doInline, counts) {
   // `arr[c+K0..KN]` reads where idx is precomputed but K is a small literal.
   if (op === 'i32.shl' && node.length === 3) {
     const a = node[1], b = node[2]
+    // shl-shl-merge: (i32.shl (i32.shl x K1) K2) → (i32.shl x (K1+K2))
+    // when K1+K2 < 32. Biquad: `sb = s<<2` then `__ab1 = state + (sb<<3)` ⇒
+    // `s<<5` directly.
+    if (Array.isArray(a) && a[0] === 'i32.shl' && a.length === 3 &&
+        Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' &&
+        Array.isArray(a[2]) && a[2][0] === 'i32.const' && typeof a[2][1] === 'number') {
+      const sum = a[2][1] + b[1]
+      if (sum >= 0 && sum < 32) return ['i32.shl', a[1], ['i32.const', sum]]
+    }
     if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 &&
         Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 32) {
       const ka = a[1], kb = a[2]
