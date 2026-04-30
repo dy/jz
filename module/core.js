@@ -454,6 +454,26 @@ export default (ctx) => {
     }
 
     if (prop === 'length') {
+      // Fast path: typed-narrowed local (ptrKind=TYPED with known ptrAux) — bypass
+      // the f64 NaN-rebox + __len ptr-type/aux re-extraction round-trip.
+      // Owned typed (aux & 8 == 0): byteLen at off-8, shifted by element shift.
+      // View typed (aux & 8): byteLen stored at off+0 (descriptor head), shifted.
+      if (typeof obj === 'string') {
+        const r = repOf(obj)
+        if (r?.ptrKind === VAL.TYPED && r.ptrAux != null) {
+          const aux = r.ptrAux, isView = (aux & 8) !== 0
+          const et = aux & 7
+          const shift = et === 7 ? 3 : et >= 4 ? 2 : et >> 1
+          const off = ['local.get', `$${obj}`]
+          const byteLen = isView
+            ? ['i32.load', off]
+            : ['i32.load', ['i32.sub', off, ['i32.const', 8]]]
+          const lenI32 = shift === 0
+            ? typed(byteLen, 'i32')
+            : typed(['i32.shr_u', byteLen, ['i32.const', shift]], 'i32')
+          return typed(['f64.convert_i32_s', lenI32], 'f64')
+        }
+      }
       const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
       return emitLengthAccess(asF64(emit(obj)), vt)
     }
