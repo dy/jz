@@ -28,7 +28,7 @@ const PINS = {
   mat4:      { v8: 'win',  as: 'win'  },
   poly:      { v8: 'win',  as: 'tie'  },
   biquad:    { v8: 'win',  as: 'todo' },
-  bitwise:   { v8: 'todo', as: 'win'  },
+  bitwise:   { v8: 'win',  as: 'win'  },
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'todo', as: 'todo' },
   json:      { v8: 'todo', as: 'na'   },
@@ -114,14 +114,14 @@ for (const [id, claims] of Object.entries(PINS)) {
 // Tolerances absorb harmless codegen jitter; tighten/loosen by editing the
 // budget. Sizes encode the snapshot from the perf-fusion landing.
 const SIZE_BUDGET = {
-  callback:  8800,
-  mat4:      7900,
-  poly:      7800,
-  biquad:    8400,
-  bitwise:   7800,
-  tokenizer: 7900,
-  aos:       9800,
-  json:     11700,
+  callback:  6500,
+  mat4:      5800,
+  poly:      5400,
+  biquad:    6300,
+  bitwise:   5400,
+  tokenizer: 5500,
+  aos:       7100,
+  json:     10900,
 }
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
   test(`bench-pin: ${id} jz wasm size ≤ ${budget} B`, () => {
