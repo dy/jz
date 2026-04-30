@@ -97,12 +97,6 @@ flowchart TB
 -->
 
 ```
-Not supported
-  async/await  Promise  function*  yield
-  this  class  super  extends  delete  labels
-  eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
-  dynamic import  DOM  fetch  Intl  Node APIs
-
 ┌────────────────────────────────────────────────────────────────────────┐
 │ JZify                                                                  │
 │   var  function  arguments  switch  new Foo()                          │
@@ -120,6 +114,12 @@ Not supported
 │ │   console  timers  Date  performance                               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────┘
+
+Not supported
+  async/await  Promise  function*  yield
+  this  class  super  extends  delete  labels
+  eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
+  dynamic import  DOM  fetch  Intl  Node APIs
 ```
 
 
