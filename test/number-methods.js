@@ -45,6 +45,25 @@ test('Number: toString 1e15', () => {
   is(run(`export let f = () => { let n = 1000000000000000; return n.toString().length }`).f(), 16)
 })
 
+// __ftoa was stripping trailing zeros from the integer part when prec=0 (auto-fit
+// reduces prec because scaled value won't fit i32). Repro: 1079623680 → "107962368".
+// Found via biquad bench when `(s >>> 0) / 4294967296` style PRNG output got
+// stringified via template literal. Fix: gate strip-trailing-zeros on prec>0.
+test('Number: toString preserves trailing zero in integer', () => {
+  is(run(`export let f = () => { let n = 1079623680; return n.toString().length }`).f(), 10)
+})
+
+test('Number: toString preserves multiple trailing zeros in integer', () => {
+  is(run(`export let f = () => { let n = 1234567000; return n.toString().length }`).f(), 10)
+})
+
+test('Number: toString preserves trailing zero through computed value', () => {
+  // The original bench bug surfaced via template-literal interpolation of an
+  // i32-shaped value. Compute a value with trailing zero so it can't fold,
+  // then stringify. Without the fix, "1079623680" became "107962368" (length 9).
+  is(run(`export let f = () => { let n = 539811840 + 539811840; return n.toString().length }`).f(), 10)
+})
+
 // === toFixed ===
 
 test('Number: toFixed(2)', () => {

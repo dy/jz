@@ -399,3 +399,31 @@ test('modulo - compound assignment (%=)', () => {
   is(run('export let f = () => { let x = 10.5; x %= 3; return x }').f(), 10.5 % 3)
   is(run('export let f = () => { let x = 10; x %= 3; return x }').f(), 1)
 })
+
+// ============================================
+// Unsigned right shift — `>>> 0` is the canonical "to uint32" idiom.
+// When the result crosses to f64 (division, template literal, return),
+// the bit pattern must be interpreted unsigned. jz used to lift via
+// f64.convert_i32_s, sign-flipping any value with high bit set.
+// Repro found via biquad bench: `(s >>> 0) / 4294967296` PRNG idiom produced
+// negative outputs for negative-i32 s. Fix: `>>>` marks node.unsigned=true;
+// asF64 honors it and emits f64.convert_i32_u.
+// ============================================
+
+test('unsigned right shift - high bit f64 conversion', async () => {
+  is(await evaluate('(-1 | 0) >>> 0'), 4294967295)
+})
+
+test('unsigned right shift - PRNG idiom produces [-1, 1)', () => {
+  const code = `export let f = () => {
+    let s = 0x80000001 | 0
+    return ((s >>> 0) / 4294967296) * 2 - 1
+  }`
+  const got = run(code).f()
+  ok(got >= -1 && got < 1, 'PRNG output must be in [-1, 1)')
+})
+
+test('unsigned right shift - division of high-bit value', async () => {
+  // 3959422976 = 0xEC000000 — high bit set, fits u32, exceeds i31.
+  is(await evaluate('((-335544320 | 0) >>> 0) / 4294967296'), 3959422976 / 4294967296)
+})
