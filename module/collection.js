@@ -497,22 +497,26 @@ export default (ctx) => {
   // Used at call sites where receiver type is statically unknown.
   // When features.external is off, collapses to __dyn_get_expr shape (no EXTERNAL probe).
   ctx.core.stdlib['__dyn_get_any'] = () => {
+    // Fast path: HASH check first, route directly to __hash_get_local. Hashes never carry
+    // dyn_props (those are for OBJECT/ARRAY attached props), so the original __dyn_get
+    // call was always wasted work on hashes — and JSON.parse / Map-style code is the
+    // dominant HASH consumer.
     const extArm = ctx.features.external
-      ? `(else (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+      ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
             (then (call $__ext_prop (local.get $obj) (local.get $key)))
-            (else (f64.const nan:${NULL_NAN}))))`
-      : `(else (f64.const nan:${NULL_NAN}))`
+            (else (f64.const nan:${NULL_NAN})))`
+      : `(f64.const nan:${NULL_NAN})`
     return `(func $__dyn_get_any (param $obj f64) (param $key f64) (result f64)
     (local $val f64) (local $t i32)
-    (local.set $val (call $__dyn_get (local.get $obj) (local.get $key)))
-    (if (result f64)
-      (i64.ne (i64.reinterpret_f64 (local.get $val)) (i64.const ${UNDEF_NAN}))
-      (then (local.get $val))
+    (local.set $t (call $__ptr_type (local.get $obj)))
+    (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then (call $__hash_get_local (local.get $obj) (local.get $key)))
       (else
-        (local.set $t (call $__ptr_type (local.get $obj)))
-        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
-          (then (call $__hash_get_local (local.get $obj) (local.get $key)))
-          ${extArm}))))`
+        (local.set $val (call $__dyn_get (local.get $obj) (local.get $key)))
+        (if (result f64)
+          (i64.ne (i64.reinterpret_f64 (local.get $val)) (i64.const ${UNDEF_NAN}))
+          (then (local.get $val))
+          (else ${extArm})))))`
   }
 
   // Hot for `node.loc = pos` patterns (e.g. watr's parser tags every nested level).
