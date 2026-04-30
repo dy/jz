@@ -181,7 +181,7 @@ const OP_MODULES = {
   // '.' handled inline (see '.' handler) for property-based narrowing
   '?.': ['core', 'string', 'collection'],
   '?.[]': ['core', 'array', 'collection'],
-  '?.()': ['core'],
+  '?.()': ['core', 'fn'],
   'u+': ['number', 'string'],
   'in': ['core', 'collection', 'string'],
   '==': ['core', 'string'],
@@ -725,6 +725,22 @@ const handlers = {
     return nodes.reduce((acc, n) => ['()', ['.', acc, 'concat'], n])
   },
 
+  // Tagged template: tag`a${x}b` → tag(['a','b'], x)
+  // Parser drops empty string segments; reinsert them to satisfy the strings.length === exprs.length + 1 invariant.
+  '``'(tag, ...parts) {
+    const strs = [], exprs = []
+    let prev = false
+    for (const p of parts) {
+      const isStr = Array.isArray(p) && p[0] == null && typeof p[1] === 'string'
+      if (isStr) { strs.push(p); prev = true }
+      else { if (!prev) strs.push([null, '']); exprs.push(p); prev = false }
+    }
+    if (!prev) strs.push([null, ''])
+    const arr = strs.length === 1 ? ['[]', strs[0]] : ['[]', [',', ...strs]]
+    const callArgs = exprs.length === 0 ? arr : [',', arr, ...exprs]
+    return prep(['()', tag, callArgs])
+  },
+
   // Import
   'import'(fromNode) {
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
@@ -945,12 +961,27 @@ const handlers = {
   // Optional chaining / typeof — need ptr module
   '?.'(obj, prop) { return ['?.', prep(obj), prop] },
   '?.[]'(obj, idx) { return ['?.[]', prep(obj), prep(idx)] },
-  '?.()'(callee, ...args) { return ['?.()', prep(callee), ...args.filter(a => a != null).map(prep)] },
-  'typeof'(a) { return ['typeof', prep(a)] },
+  '?.()'(callee, callArgs) {
+    // Parser wraps multi-args in a comma list, like '()'. Unwrap so emit gets flat positional args.
+    const items = callArgs == null ? []
+      : Array.isArray(callArgs) && callArgs[0] === ',' ? callArgs.slice(1)
+      : [callArgs]
+    return ['?.()', prep(callee), ...items.map(prep)]
+  },
+  // Boolean literals NaN-box as f64 — typeof at runtime returns 'number'. Fold here so the JS-spec value survives.
+  'typeof'(a) {
+    if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeMods('core', 'string'); return ['str', 'boolean'] }
+    return ['typeof', prep(a)]
+  },
 
   // Unary +/- disambiguation
   '+'(a, b) {
-    if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' ? na : ['u+', na] }
+    if (b === undefined) {
+      const na = prep(a)
+      if (isLit(na) && typeof na[1] === 'number') return na
+      includeMods('number', 'string')
+      return ['u+', na]
+    }
     return ['+', prep(a), prep(b)]
   },
   '-'(a, b) {

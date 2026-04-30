@@ -25,6 +25,7 @@
 export default function jzify(ast) {
   swIdx = 0
   argsIdx = 0
+  doIdx = 0
   return transformScope(ast)
 }
 
@@ -83,6 +84,7 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32
 // Arrow functions inherit `arguments` from enclosing function — don't stop at '=>'.
 // Nested `function` introduces its own `arguments` — stop recursion there.
 let argsIdx = 0
+let doIdx = 0
 
 function usesArguments(node) {
   if (node === 'arguments') return true
@@ -203,6 +205,18 @@ const handlers = {
     return ['===', ['typeof', t], [null, 'object']]
   },
 
+  // do { body } while (cond) → for (let _once = true; _once || cond; _once = false) body
+  // Avoids body duplication; matches JS continue semantics (continue runs cond, not body).
+  'do'(body, cond) {
+    const flag = `do${doIdx++}`
+    return ['for',
+      [';',
+        ['let', ['=', flag, [null, true]]],
+        ['||', flag, transform(cond)],
+        ['=', flag, [null, false]]],
+      transform(body)]
+  },
+
   // Block body: recurse as scope for hoisting
   '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
 
@@ -296,7 +310,7 @@ export function codegen(node, depth = 0) {
       ? 'if (' + cond + ') ' + then + ' else ' + wrapBlock(a[2], depth)
       : 'if (' + cond + ') ' + then
   }
-  if (op === 'while') return 'while (' + codegen(a[0]) + ') ' + codegen(a[1], depth)
+  if (op === 'while') return 'while (' + codegen(a[0]) + ') ' + wrapBlock(a[1], depth)
   if (op === 'for') {
     if (a.length === 2) { // for...of / for...in
       const [head, body] = a

@@ -90,6 +90,18 @@ test('assignment: ??= on uninitialized local', () => {
   is(run('export let f = () => { let a; a ??= 42; return a }').f(), 42)
 })
 
+test('assignment: ??= on null', () => {
+  is(run('export let f = () => { let a = null; a ??= 42; return a }').f(), 42)
+})
+
+test('assignment: ??= leaves 0 alone (not nullish)', () => {
+  is(run('export let f = () => { let a = 0; a ??= 42; return a }').f(), 0)
+})
+
+test('assignment: ??= leaves defined value alone', () => {
+  is(run('export let f = () => { let a = 5; a ??= 42; return a }').f(), 5)
+})
+
 // === Comma operator ===
 
 test('comma: returns last value', () => {
@@ -439,8 +451,8 @@ test('void preserves side effects', () => {
   is(run('export let f = () => { let x = 0; void (x = 5); return x }').f(), 5)
 })
 
-test('void returns 0', () => {
-  is(run('export let f = () => void 42').f(), 0)
+test('void returns undefined', () => {
+  is(jz('export let f = () => void 42').exports.f(), undefined)
 })
 
 test('strict mode prohibits void', () => {
@@ -599,6 +611,61 @@ test('for: nested', () => {
     return s
   }`)
   is(f(3, 3), 9)  // (0*0+0*1+0*2) + (1*0+1*1+1*2) + (2*0+2*1+2*2) = 0+3+6
+})
+
+// === Do-while loop (jzify lowers to for + once-flag) ===
+
+test('do-while: basic', () => {
+  const { f } = run(`export let f = (n) => {
+    let s = 0, i = 0
+    do { s += i; i++ } while (i < n)
+    return s
+  }`, { jzify: true })
+  is(f(5), 10)
+  is(f(0), 0)
+})
+
+test('do-while: executes body at least once', () => {
+  is(run('export let f = () => { let x = 0; do { x++ } while (0); return x }', { jzify: true }).f(), 1)
+})
+
+test('do-while: break', () => {
+  is(run('export let f = () => { let s = 0; do { s++; if (s == 3) break } while (1); return s }', { jzify: true }).f(), 3)
+})
+
+test('do-while: continue runs cond, not body', () => {
+  // JS semantics: continue branches to cond test; body never runs again unless cond true.
+  // The desugared form uses for(_once; _once||cond; _once=false), so continue → step → cond.
+  const { f } = run(`export let f = () => {
+    let s = 0, i = 0
+    do { i++; if (i == 3) continue; s += i } while (i < 5)
+    return s
+  }`, { jzify: true })
+  is(f(), 12)  // 1+2+4+5 = 12 (skip 3)
+})
+
+test('do-while: continue at terminating cond exits cleanly (no infinite loop)', () => {
+  // Regression for the naive `loop { body; br_if loop cond }` shape:
+  // continue would jump past the cond check, re-running body → infinite loop.
+  const { f } = run(`export let f = () => {
+    let count = 0
+    do { count++; if (count >= 3) continue } while (count < 3)
+    return count
+  }`, { jzify: true })
+  is(f(), 3)
+})
+
+test('do-while: nested', () => {
+  const { f } = run(`export let f = () => {
+    let s = 0, i = 0
+    do {
+      let j = 0
+      do { s++; j++ } while (j < 3)
+      i++
+    } while (i < 2)
+    return s
+  }`, { jzify: true })
+  is(f(), 6)  // 2 outer × 3 inner
 })
 
 test('break: exits loop', () => {

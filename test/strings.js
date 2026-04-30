@@ -217,3 +217,45 @@ test('string: .padEnd', () => {
 test('string: chain .toUpperCase.slice', () => {
   is(run(`export let f = () => "hello".toUpperCase().slice(0, 2).length`).f(), 2)
 })
+
+// === Tagged template literals ===
+
+test('tagged template: receives strings array and values', () => {
+  const { f } = run(`export let f = () => {
+    let tag = (strs, val) => strs[0].length * 100 + val
+    return tag\`hello \${42} world\`
+  }`)
+  is(f(), 642)  // 'hello '.length=6 → 600 + 42
+})
+
+test('tagged template: strings.length === exprs.length + 1', () => {
+  const { f } = run(`export let f = () => {
+    let tag = (strs, a, b) => strs.length * 10 + a + b
+    return tag\`x=\${1}, y=\${2}.\`
+  }`)
+  is(f(), 33)  // 3 strings → 30 + 1 + 2
+})
+
+test('tagged template: leading interpolation has empty first string', () => {
+  const { f } = run(`export let f = () => {
+    let tag = (strs, val) => strs[0].length === 0 ? val : -1
+    return tag\`\${7}rest\`
+  }`)
+  is(f(), 7)
+})
+
+test('tagged template: trailing interpolation has empty last string', () => {
+  const { f } = run(`export let f = () => {
+    let tag = (strs, val) => strs[strs.length - 1].length === 0 ? val : -1
+    return tag\`rest\${9}\`
+  }`)
+  is(f(), 9)
+})
+
+test('tagged template: no interpolation', () => {
+  const { f } = run(`export let f = () => {
+    let tag = (strs) => strs[0].length
+    return tag\`bare\`
+  }`)
+  is(f(), 4)
+})

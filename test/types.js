@@ -134,8 +134,81 @@ test('??: null IS nullish (returns right)', () => {
 
 // === void ===
 
-test('void: returns 0', () => {
-  is(run('export let f = (x) => void x').f(42), 0)
+test('void: returns undefined', () => {
+  is(jz('export let f = (x) => void x').exports.f(42), undefined)
+})
+
+// === typeof ===
+
+test('typeof: number literal', () => {
+  is(jz('export let f = () => typeof 5').exports.f(), 'number')
+})
+
+test('typeof: string literal', () => {
+  is(jz('export let f = () => typeof "hi"').exports.f(), 'string')
+})
+
+test('typeof: undefined', () => {
+  is(jz('export let f = () => typeof undefined').exports.f(), 'undefined')
+})
+
+test('typeof: boolean true (compile-time fold)', () => {
+  // Booleans NaN-box as f64 → runtime typeof returns 'number'. Prepare folds literal to 'boolean'.
+  is(jz('export let f = () => typeof true').exports.f(), 'boolean')
+})
+
+test('typeof: boolean false (compile-time fold)', () => {
+  is(jz('export let f = () => typeof false').exports.f(), 'boolean')
+})
+
+test('typeof: comparison still works', () => {
+  is(jz('export let f = (x) => typeof x === "number"').exports.f(5), 1)
+})
+
+// === Unary + ===
+
+test('unary +: number literal stays number', () => {
+  is(jz('export let f = () => +5').exports.f(), 5)
+})
+
+test('unary +: coerce string to number', () => {
+  is(jz('export let f = (s) => +s').exports.f('42'), 42)
+})
+
+test('unary +: coerce boolean to number', () => {
+  is(jz('export let f = (b) => +b').exports.f(true), 1)
+  is(jz('export let f = (b) => +b').exports.f(false), 0)
+})
+
+test('unary +: numeric variable returns same value', () => {
+  is(jz('export let f = (x) => +x').exports.f(7), 7)
+})
+
+// === Optional call ?.() ===
+
+test('?.(): non-null callable returns value', () => {
+  const { f } = jz(`export let f = () => {
+    let g = () => 42
+    return g?.()
+  }`).exports
+  is(f(), 42)
+})
+
+test('?.(): null short-circuits to null', () => {
+  const { f } = jz(`export let f = (n) => {
+    let g = n > 0 ? () => 42 : null
+    return g?.()
+  }`).exports
+  is(f(1), 42)
+  is(f(0), null)
+})
+
+test('?.(): with arguments', () => {
+  const { f } = jz(`export let f = () => {
+    let add = (a, b) => a + b
+    return add?.(3, 4)
+  }`).exports
+  is(f(), 7)
 })
 
 // === switch ===

@@ -1270,17 +1270,16 @@ export const emitter = {
 
   'void': a => {
     const v = emit(a)
-    if (v == null) return typed(['f64.const', 0], 'f64')
-    // Detect WASM-void instructions (local.set, *.store) that don't leave a value on stack
+    const dropAndUndef = (instr) => typed(['block', ['result', 'f64'], instr, 'drop', undefExpr()], 'f64')
+    if (v == null) return undefExpr()
     const op = Array.isArray(v) ? v[0] : null
     const wasmVoid = op === 'local.set' || (typeof op === 'string' && op.endsWith('.store'))
       || op === 'memory.copy' || op === 'global.set'
     if (wasmVoid)
-      return typed(['block', ['result', 'f64'], v, ['f64.const', 0]], 'f64')
-    // Value-producing instructions: include, drop result, return 0
+      return typed(['block', ['result', 'f64'], v, undefExpr()], 'f64')
     if (v.type && v.type !== 'void')
-      return typed(['block', ['result', 'f64'], v, 'drop', ['f64.const', 0]], 'f64')
-    return typed(['block', ['result', 'f64'], ...flat(v), ['f64.const', 0]], 'f64')
+      return dropAndUndef(v)
+    return typed(['block', ['result', 'f64'], ...flat(v), undefExpr()], 'f64')
   },
 
   '(': a => emit(a),

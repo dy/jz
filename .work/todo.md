@@ -12,6 +12,11 @@
 
 ## Backlog
 
+* [ ] Update benchmark
+* [ ] Find the most proper way for template tags
+* [ ] Compile floatbeats
+* [ ]
+
 ### Build & tooling
 
 * [x] Static string literals → data segment (own memory); heap-allocate for shared memory
