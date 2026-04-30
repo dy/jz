@@ -1,0 +1,9 @@
+# Build artifacts — produced by bench.mjs each run.
+biquad
+biquad-gcc
+biquad-w2c
+biquad-w2c.c
+biquad-w2c.h
+biquad-porffor
+biquad-porffor.c
+*.wasm

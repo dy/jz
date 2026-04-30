@@ -1,0 +1,605 @@
+/**
+ * Number module — toString, toFixed, toPrecision, toExponential, String().
+ *
+ * Core: __ftoa(f64, precision, mode) → f64 (NaN-boxed string pointer).
+ * Modes: 0=default (shortest repr), 1=fixed (toFixed).
+ * Uses integer-based digit extraction to avoid float drift.
+ * Static string table at address 0 for NaN, Infinity, etc.
+ *
+ * @module number
+ */
+
+import { emit, typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, valTypeOf, VAL, temp, tempI32, tempI64 } from '../src/compile.js'
+import { inc, PTR } from '../src/ctx.js'
+
+export default (ctx) => {
+  Object.assign(ctx.core.stdlibDeps, {
+    __mkstr: ['__alloc'],
+    __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10'],
+    __parseInt: ['__char_at', '__str_byteLen'],
+  })
+
+
+  // __pow10(n: i32) → f64 — compute 10^n via loop
+  ctx.core.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
+    (local $r f64)
+    (local.set $r (f64.const 1))
+    (block $d (loop $l
+      (br_if $d (i32.le_s (local.get $n) (i32.const 0)))
+      (local.set $r (f64.mul (local.get $r) (f64.const 10)))
+      (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+      (br $l)))
+    (local.get $r))`
+
+  // __itoa(val: i32, buf: i32) → i32 (digit count). Writes decimal digits to buf.
+  ctx.core.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
+    (local $len i32) (local $i i32) (local $j i32) (local $tmp i32)
+    (if (i32.eqz (local.get $val))
+      (then (i32.store8 (local.get $buf) (i32.const 48)) (return (i32.const 1))))
+    (local.set $tmp (local.get $val))
+    (block $d (loop $l
+      (br_if $d (i32.eqz (local.get $tmp)))
+      (i32.store8 (i32.add (local.get $buf) (local.get $len))
+        (i32.add (i32.const 48) (i32.rem_u (local.get $tmp) (i32.const 10))))
+      (local.set $tmp (i32.div_u (local.get $tmp) (i32.const 10)))
+      (local.set $len (i32.add (local.get $len) (i32.const 1)))
+      (br $l)))
+    ;; Reverse
+    (local.set $j (i32.sub (local.get $len) (i32.const 1)))
+    (block $rd (loop $rl
+      (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
+      (local.set $tmp (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $i))
+        (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+      (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $tmp))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+      (br $rl)))
+    (local.get $len))`
+
+  // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
+  // Hot (~60M calls in watr self-host via __ftoa). bulk memory.copy is ~10× faster than
+  // a hand-rolled byte loop (wasm2c lowers it to memcpy under PGO+LTO).
+  ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
+    (local $off i32)
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (i32.store (local.get $off) (local.get $len))
+    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (memory.copy (local.get $off) (local.get $buf) (local.get $len))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+
+  // __ftoa(val: f64, prec: i32, mode: i32) → f64 (NaN-boxed string)
+  // mode 0: default (shortest repr, strip trailing zeros)
+  // mode 1: fixed (exactly prec decimal places)
+  // Uses integer-scaled digit extraction to avoid float drift.
+  ctx.core.stdlib['__ftoa'] = `(func $__ftoa (param $val f64) (param $prec i32) (param $mode i32) (result f64)
+    (local $buf i32) (local $pos i32) (local $neg i32)
+    (local $abs f64) (local $scale f64) (local $scaled f64)
+    (local $int i32) (local $frac i32) (local $ilen i32) (local $flen i32)
+    (local $i i32) (local $j i32)
+    ;; Special values
+    (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
+    (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
+    (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
+    (local.set $buf (call $__alloc (i32.const 40)))
+    ;; Sign
+    (if (f64.lt (local.get $val) (f64.const 0))
+      (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
+    (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
+      (then (local.set $neg (i32.const 0))))
+    (if (local.get $neg)
+      (then (i32.store8 (local.get $buf) (i32.const 45))
+        (local.set $pos (i32.const 1))))
+    ;; Default mode: auto-select precision (up to 9 digits, must fit i32 when scaled)
+    (if (i32.eqz (local.get $mode))
+      (then (local.set $prec (i32.const 9))))
+    ;; Round and scale to integer: scaled = nearest(val * 10^prec)
+    (local.set $scale (call $__pow10 (local.get $prec)))
+    (local.set $scaled (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
+    ;; If scaled doesn't fit i32, reduce precision until it does (min prec=0)
+    (block $fit (loop $fitl
+      (br_if $fit (f64.lt (local.get $scaled) (f64.const 2147483648)))
+      (br_if $fit (i32.le_s (local.get $prec) (i32.const 0)))
+      (local.set $prec (i32.sub (local.get $prec) (i32.const 1)))
+      (local.set $scale (call $__pow10 (local.get $prec)))
+      (local.set $scaled (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
+      (br $fitl)))
+    ;; Split: int = scaled / scale, frac = scaled % scale
+    (if (f64.lt (local.get $scaled) (f64.const 2147483648))
+      (then
+        (local.set $int (i32.trunc_f64_u (f64.div (local.get $scaled) (local.get $scale))))
+        (local.set $frac (i32.trunc_f64_u (f64.sub (local.get $scaled)
+          (f64.mul (f64.convert_i32_u (local.get $int)) (local.get $scale))))))
+      (else
+        (local.set $int (i32.const 0))
+        (local.set $frac (i32.const 0))
+        (local.set $prec (i32.const 0))
+        (local.set $abs (f64.trunc (local.get $val)))
+        ;; Write large integer digits reversed
+        (local.set $ilen (local.get $pos))
+        (block $ld (loop $ll
+          (br_if $ld (f64.lt (local.get $abs) (f64.const 1)))
+          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+            (i32.add (i32.const 48) (i32.trunc_f64_u (f64.sub (local.get $abs)
+              (f64.mul (f64.trunc (f64.div (local.get $abs) (f64.const 10))) (f64.const 10))))))
+          (local.set $abs (f64.trunc (f64.div (local.get $abs) (f64.const 10))))
+          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+          (br $ll)))
+        ;; Reverse
+        (local.set $i (local.get $ilen)) (local.set $j (i32.sub (local.get $pos) (i32.const 1)))
+        (block $rd (loop $rl
+          (br_if $rd (i32.ge_s (local.get $i) (local.get $j)))
+          (local.set $int (i32.load8_u (i32.add (local.get $buf) (local.get $i))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $i))
+            (i32.load8_u (i32.add (local.get $buf) (local.get $j))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $j)) (local.get $int))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (local.set $j (i32.sub (local.get $j) (i32.const 1)))
+          (br $rl)))
+        (return (call $__mkstr (local.get $buf) (local.get $pos)))))
+    ;; Write integer part
+    (local.set $ilen (call $__itoa (local.get $int) (i32.add (local.get $buf) (local.get $pos))))
+    (local.set $pos (i32.add (local.get $pos) (local.get $ilen)))
+    ;; Write fractional part: extract digits from $frac by dividing by 10^(prec-1), 10^(prec-2), ...
+    (if (i32.gt_s (local.get $prec) (i32.const 0))
+      (then
+        (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 46))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (local.set $i (i32.sub (local.get $prec) (i32.const 1)))
+        (block $fd (loop $fl
+          (br_if $fd (i32.lt_s (local.get $i) (i32.const 0)))
+          (local.set $j (i32.div_u (local.get $frac) (i32.trunc_f64_u (call $__pow10 (local.get $i)))))
+          (i32.store8 (i32.add (local.get $buf) (local.get $pos))
+            (i32.add (i32.const 48) (i32.rem_u (local.get $j) (i32.const 10))))
+          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+          (br $fl)))))
+    ;; Default mode: strip trailing zeros and dot — only when a fractional part was emitted.
+    ;; Gating on $prec>0 prevents stripping zeros from the integer part (e.g. 1079623680 → 107962368)
+    ;; for values where auto-fit reduced prec to 0 because the scaled integer wouldn't fit i32.
+    (if (i32.and (i32.eqz (local.get $mode)) (i32.gt_s (local.get $prec) (i32.const 0)))
+      (then
+        (block $sd (loop $sl
+          (br_if $sd (i32.le_s (local.get $pos) (i32.const 0)))
+          (br_if $sd (i32.ne (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $pos) (i32.const 1)))) (i32.const 48)))
+          (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+          (br $sl)))
+        (if (i32.and (i32.gt_s (local.get $pos) (i32.const 0))
+              (i32.eq (i32.load8_u (i32.add (local.get $buf) (i32.sub (local.get $pos) (i32.const 1)))) (i32.const 46)))
+          (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))
+    (call $__mkstr (local.get $buf) (local.get $pos)))`
+
+  // __toExp(val: f64, prec: i32) → f64 (NaN-boxed string)
+  // Format: [-]d.ddd...e[+/-]dd — integer-based digit extraction
+  ctx.core.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (result f64)
+    (local $buf i32) (local $pos i32) (local $neg i32) (local $exp i32)
+    (local $len i32) (local $i i32) (local $j i32)
+    (local $mantissa f64) (local $scale f64)
+    (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
+    (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
+    (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
+    (local.set $buf (call $__alloc (i32.const 32)))
+    ;; Sign
+    (if (f64.lt (local.get $val) (f64.const 0))
+      (then (local.set $neg (i32.const 1)) (local.set $val (f64.neg (local.get $val)))))
+    (if (i32.and (f64.eq (local.get $val) (f64.const 0)) (local.get $neg))
+      (then (local.set $neg (i32.const 0))))
+    (if (local.get $neg)
+      (then (i32.store8 (local.get $buf) (i32.const 45))
+        (local.set $pos (i32.const 1))))
+    ;; Normalize: 1 <= val < 10
+    (if (f64.gt (local.get $val) (f64.const 0))
+      (then
+        (block $d1 (loop $l1
+          (br_if $d1 (f64.lt (local.get $val) (f64.const 10)))
+          (local.set $val (f64.div (local.get $val) (f64.const 10)))
+          (local.set $exp (i32.add (local.get $exp) (i32.const 1)))
+          (br $l1)))
+        (block $d2 (loop $l2
+          (br_if $d2 (f64.ge (local.get $val) (f64.const 1)))
+          (local.set $val (f64.mul (local.get $val) (f64.const 10)))
+          (local.set $exp (i32.sub (local.get $exp) (i32.const 1)))
+          (br $l2)))))
+    ;; Scale to integer mantissa: nearest(val * 10^prec)
+    (local.set $scale (call $__pow10 (local.get $prec)))
+    (local.set $mantissa (f64.nearest (f64.mul (local.get $val) (local.get $scale))))
+    ;; Rounding overflow (e.g. 9.95 → 1000 when prec=1, scale=10)
+    (if (f64.ge (local.get $mantissa) (f64.mul (f64.const 10) (local.get $scale)))
+      (then
+        (local.set $mantissa (f64.div (local.get $mantissa) (f64.const 10)))
+        (local.set $exp (i32.add (local.get $exp) (i32.const 1)))))
+    ;; Write mantissa digits via itoa
+    (local.set $len (call $__itoa (i32.trunc_f64_u (local.get $mantissa)) (i32.add (local.get $buf) (local.get $pos))))
+    ;; Insert '.' after first digit
+    (if (i32.gt_s (local.get $prec) (i32.const 0))
+      (then
+        (local.set $i (local.get $len))
+        (block $md (loop $ml
+          (br_if $md (i32.le_s (local.get $i) (i32.const 1)))
+          (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (local.get $i)))
+            (i32.load8_u (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.sub (local.get $i) (i32.const 1))))))
+          (local.set $i (i32.sub (local.get $i) (i32.const 1)))
+          (br $ml)))
+        (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.const 1))) (i32.const 46))
+        (local.set $pos (i32.add (local.get $pos) (i32.add (local.get $len) (i32.const 1)))))
+      (else (local.set $pos (i32.add (local.get $pos) (local.get $len)))))
+    ;; Write 'e', sign, exponent
+    (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 101))
+    (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+    (if (i32.lt_s (local.get $exp) (i32.const 0))
+      (then (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 45))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+        (local.set $exp (i32.sub (i32.const 0) (local.get $exp))))
+      (else (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 43))
+        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
+    (local.set $pos (i32.add (local.get $pos) (call $__itoa (local.get $exp) (i32.add (local.get $buf) (local.get $pos)))))
+    (call $__mkstr (local.get $buf) (local.get $pos)))`
+
+  // __static_str(id: i32) → f64 — create heap string from data segment
+  // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
+  ctx.core.stdlib['__static_str'] = `(func $__static_str (param $id i32) (result f64)
+    (local $src i32) (local $len i32)
+    (local.set $src (i32.const 0)) (local.set $len (i32.const 0))
+    (if (i32.eqz (local.get $id))                   (then (local.set $len (i32.const 3))))
+    (if (i32.eq (local.get $id) (i32.const 1)) (then (local.set $src (i32.const 3))  (local.set $len (i32.const 8))))
+    (if (i32.eq (local.get $id) (i32.const 2)) (then (local.set $src (i32.const 11)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 3)) (then (local.set $src (i32.const 20)) (local.set $len (i32.const 4))))
+    (if (i32.eq (local.get $id) (i32.const 4)) (then (local.set $src (i32.const 24)) (local.set $len (i32.const 5))))
+    (if (i32.eq (local.get $id) (i32.const 5)) (then (local.set $src (i32.const 29)) (local.set $len (i32.const 4))))
+    (if (i32.eq (local.get $id) (i32.const 6)) (then (local.set $src (i32.const 33)) (local.set $len (i32.const 9))))
+    (if (i32.eq (local.get $id) (i32.const 7)) (then (local.set $src (i32.const 42)) (local.set $len (i32.const 7))))
+    (if (i32.eq (local.get $id) (i32.const 8)) (then (local.set $src (i32.const 49)) (local.set $len (i32.const 8))))
+    (call $__mkstr (local.get $src) (local.get $len)))`
+
+  // R: Static strings seeded at address 0. Compile.js strips if __static_str unused.
+  // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
+  const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]'
+  ctx.runtime.staticDataLen = staticStr.length
+  ctx.runtime.data = (ctx.runtime.data || '') + staticStr
+
+  // === Number constants ===
+
+  ctx.core.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
+  ctx.core.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
+  ctx.core.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
+  ctx.core.emit['Number.MAX_VALUE'] = () => typed(['f64.const', 1.7976931348623157e+308], 'f64')
+  ctx.core.emit['Number.MIN_VALUE'] = () => typed(['f64.const', 5e-324], 'f64')
+  ctx.core.emit['Number.POSITIVE_INFINITY'] = () => typed(['f64.const', Infinity], 'f64')
+  ctx.core.emit['Number.NEGATIVE_INFINITY'] = () => typed(['f64.const', -Infinity], 'f64')
+  ctx.core.emit['Number.NaN'] = () => typed(['f64.const', NaN], 'f64')
+
+  // === Number static methods ===
+
+  const emitIsNaN = (x) => {
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]], 'i32')
+  }
+
+  const emitIsFinite = (x) => {
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['i32.and',
+      ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
+  }
+
+  ctx.core.emit['Number.isNaN'] = emitIsNaN
+  ctx.core.emit['Number.isFinite'] = emitIsFinite
+
+  // Global isNaN/isFinite — coerce string→number first (unlike Number.isNaN/isFinite)
+  ctx.core.emit['isNaN'] = (x) => {
+    inc('__to_num')
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['f64.ne',
+      ['local.tee', `$${t}`, ['call', '$__to_num', v]],
+      ['local.get', `$${t}`]], 'i32')
+  }
+  ctx.core.emit['isFinite'] = (x) => {
+    inc('__to_num')
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['i32.and',
+      ['f64.eq', ['local.tee', `$${t}`, ['call', '$__to_num', v]], ['local.get', `$${t}`]],
+      ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
+  }
+
+  ctx.core.emit['Number.isInteger'] = (x) => {
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['i32.and',
+      ['i32.and',
+        ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]],
+      ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
+  }
+
+  // parseInt(str, radix) — parse string to integer
+  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
+    (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
+    (local $result f64) (local $digit i32) (local $seen i32)
+    ;; If input is a number, just truncate
+    (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
+    ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
+    (if (i32.and
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
+      (then (return (f64.const nan))))
+    (local.set $off (call $__ptr_offset (local.get $str)))
+    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $i (i32.const 0))
+    ;; Skip whitespace
+    (block $ws (loop $wsl
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $str) (local.get $i)) (i32.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $wsl)))
+    ;; Sign
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 45)))
+      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 43)))
+      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; 0x prefix → radix 16
+    (if (i32.and (i32.eqz (local.get $radix))
+      (i32.and (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+        (i32.and (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 48))
+          (i32.or (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+            (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 88))))))
+      (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
+    (if (i32.eqz (local.get $radix)) (then (local.set $radix (i32.const 10))))
+    ;; Parse digits
+    (local.set $result (f64.const 0))
+    (block $done (loop $lp
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+      ;; Digit value
+      (local.set $digit (i32.const -1))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 48)))))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 122)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 87)))))
+      (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
+        (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
+      (br_if $done (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix))))
+      (local.set $seen (i32.const 1))
+      (local.set $result (f64.add (f64.mul (local.get $result) (f64.convert_i32_s (local.get $radix))) (f64.convert_i32_s (local.get $digit))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $lp)))
+    ;; No digits consumed → NaN
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+
+  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v f64) (result f64)
+    (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
+    (local $seen i32) (local $exp i32) (local $expNeg i32)
+    (local $result f64) (local $scale f64)
+    (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
+    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
+    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    (if (i32.eqz
+          (i32.or
+            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
+            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+      (then (return (f64.const nan))))
+    (local.set $len (call $__str_byteLen (local.get $v)))
+    ;; Skip leading whitespace.
+    (block $ws (loop $wsl
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $wsl)))
+    ;; Sign.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; 0x prefix → hex parse and early return
+    (if (i32.and
+      (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
+        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 2)))
+        (block $hexDone (loop $hexLoop
+          (br_if $hexDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 102)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 87)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
+          (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 70)))
+            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 55)))))
+              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))))
+        (return (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))))
+    ;; Integer part.
+    (block $intDone (loop $intLoop
+      (br_if $intDone (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+      (br_if $intDone
+        (i32.or
+          (i32.lt_s (local.get $c) (i32.const 48))
+          (i32.gt_s (local.get $c) (i32.const 57))))
+      (local.set $result
+        (f64.add
+          (f64.mul (local.get $result) (f64.const 10))
+          (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
+      (local.set $seen (i32.const 1))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $intLoop)))
+    ;; Fractional part.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 46)))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (local.set $scale (f64.const 0.1))
+        (block $fracDone (loop $fracLoop
+          (br_if $fracDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $fracDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $result
+            (f64.add
+              (local.get $result)
+              (f64.mul
+                (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))
+                (local.get $scale))))
+          (local.set $scale (f64.mul (local.get $scale) (f64.const 0.1)))
+          (local.set $seen (i32.const 1))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $fracLoop)))))
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    ;; Scientific notation.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.or
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (block $expDone (loop $expLoop
+          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $expDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $exp
+            (i32.add
+              (i32.mul (local.get $exp) (i32.const 10))
+              (i32.sub (local.get $c) (i32.const 48))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $expLoop)))
+        (if (local.get $expNeg)
+          (then (local.set $result (f64.div (local.get $result) (call $__pow10 (local.get $exp)))))
+          (else (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $exp))))))))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+
+  ctx.core.emit['Number.parseInt'] = (x, radix) => {
+    inc('__parseInt')
+    return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
+  }
+  ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
+  ctx.core.emit['Number.parseFloat'] = (x) => {
+    inc('__to_num')
+    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+  }
+  ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
+
+  // Boolean(x) → truthiness (non-zero → 1, zero → 0)
+  ctx.core.emit['Boolean'] = (x) => {
+    inc('__is_truthy')
+    const v = asF64(emit(x))
+    return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
+  }
+
+  // === Instance method emitters ===
+
+  ctx.core.emit['.number:toString'] = (n) => {
+    inc('__ftoa')
+    return typed(['call', '$__ftoa', asF64(emit(n)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+  }
+
+  ctx.core.emit['.number:toFixed'] = (n, d) => {
+    inc('__ftoa')
+    return typed(['call', '$__ftoa', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 1]], 'f64')
+  }
+
+  ctx.core.emit['.number:toExponential'] = (n, d) => {
+    inc('__toExp')
+    return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0]))], 'f64')
+  }
+
+  ctx.core.emit['.number:toPrecision'] = (n, p) => {
+    inc('__ftoa', '__toExp')
+    const val = temp('pv'), t = temp('tp'), exp = tempI32('te'), pr = tempI32('pp')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${val}`, asF64(emit(n))],
+      ['local.set', `$${pr}`, asI32(emit(p))],
+      ['local.set', `$${t}`, ['f64.abs', ['local.get', `$${val}`]]],
+      ['local.set', `$${exp}`, ['i32.const', 0]],
+      ['if', ['f64.gt', ['local.get', `$${t}`], ['f64.const', 0]],
+        ['then',
+          ['block', '$d1', ['loop', '$l1',
+            ['br_if', '$d1', ['f64.lt', ['local.get', `$${t}`], ['f64.const', 10]]],
+            ['local.set', `$${t}`, ['f64.div', ['local.get', `$${t}`], ['f64.const', 10]]],
+            ['local.set', `$${exp}`, ['i32.add', ['local.get', `$${exp}`], ['i32.const', 1]]],
+            ['br', '$l1']]],
+          ['block', '$d2', ['loop', '$l2',
+            ['br_if', '$d2', ['f64.ge', ['local.get', `$${t}`], ['f64.const', 1]]],
+            ['local.set', `$${t}`, ['f64.mul', ['local.get', `$${t}`], ['f64.const', 10]]],
+            ['local.set', `$${exp}`, ['i32.sub', ['local.get', `$${exp}`], ['i32.const', 1]]],
+            ['br', '$l2']]]]],
+      ['if', ['result', 'f64'],
+        ['i32.or',
+          ['i32.lt_s', ['local.get', `$${exp}`], ['i32.const', -6]],
+          ['i32.ge_s', ['local.get', `$${exp}`], ['local.get', `$${pr}`]]],
+        ['then', ['call', '$__toExp', ['local.get', `$${val}`], ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]]]],
+        ['else', ['call', '$__ftoa', ['local.get', `$${val}`],
+          ['i32.sub', ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['local.get', `$${exp}`]],
+          ['i32.const', 1]]]]], 'f64')
+  }
+
+  ctx.core.emit['String'] = (x) => {
+    inc('__ftoa')
+    if (Array.isArray(x) && x[0] === 'str') return emit(x)
+    return typed(['call', '$__ftoa', asF64(emit(x)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+  }
+
+  // Number(x) — identity for numbers, i64→f64 conversion for BigInt
+  ctx.core.emit['Number'] = (x) => {
+    if (valTypeOf(x) === VAL.BIGINT)
+      return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
+    inc('__to_num')
+    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+  }
+
+  // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64).
+  // For number input: truncate directly. For string / unknown: first coerce via __to_num
+  // (handles both decimal and hex string parse), then truncate.
+  ctx.core.emit['BigInt'] = (x) => {
+    const vt = valTypeOf(x)
+    if (vt === VAL.BIGINT) return emit(x)
+    if (vt === VAL.NUMBER)
+      return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
+    inc('__to_num')
+    return typed(['f64.reinterpret_i64',
+      ['i64.trunc_sat_f64_s', ['call', '$__to_num', asF64(emit(x))]]], 'f64')
+  }
+
+  // BigInt.asIntN(bits, bigint) — truncate to signed N-bit
+  ctx.core.emit['BigInt.asIntN'] = (bits, val) => {
+    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    // (val << (64 - bits)) >> (64 - bits)  — arithmetic shift for sign extension
+    const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')
+    const t = tempI64('bi')
+    return typed(['f64.reinterpret_i64', ['block', ['result', 'i64'],
+      ['local.set', `$${t}`, shift],
+      ['i64.shr_s', ['i64.shl', vval, ['local.get', `$${t}`]], ['local.get', `$${t}`]]]], 'f64')
+  }
+
+  // BigInt.asUintN(bits, bigint) — truncate to unsigned N-bit
+  ctx.core.emit['BigInt.asUintN'] = (bits, val) => {
+    const vbits = asI32(emit(bits)), vval = asI64(emit(val))
+    // val & ((1 << bits) - 1)
+    return typed(['f64.reinterpret_i64',
+      ['i64.and', vval, ['i64.sub', ['i64.shl', ['i64.const', 1], ['i64.extend_i32_s', vbits]], ['i64.const', 1]]]], 'f64')
+  }
+}

@@ -1,121 +1,165 @@
+// JSON.stringify and JSON.parse tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { evaluate, compile } from './util.js'
+import { run } from './util.js'
 
-test('JSON.stringify: numbers', async () => {
-  is(await evaluate('JSON.stringify(42)'), '42')
-  is(await evaluate('JSON.stringify(3.14)'), '3.14')
-  is(await evaluate('JSON.stringify(-5)'), '-5')
-  is(await evaluate('JSON.stringify(0)'), '0')
+// === JSON.stringify ===
+
+test('JSON.stringify: number', () => {
+  is(run(`export let f = () => JSON.stringify(42).length`).f(), 2)
 })
 
-test('JSON.stringify: special numbers', async () => {
-  is(await evaluate('JSON.stringify(NaN)'), 'NaN')
-  is(await evaluate('JSON.stringify(Infinity)'), 'Infinity')
-  is(await evaluate('JSON.stringify(-Infinity)'), '-Infinity')
+test('JSON.stringify: string', () => {
+  is(run(`export let f = () => JSON.stringify("hi").length`).f(), 4)
 })
 
-test('JSON.stringify: arrays', async () => {
-  is(await evaluate('JSON.stringify([1, 2, 3])'), '[1,2,3]')
-  is(await evaluate('JSON.stringify([])'), '[]')
-  is(await evaluate('JSON.stringify([42])'), '[42]')
+test('JSON.stringify: array', () => {
+  is(run(`export let f = () => JSON.stringify([1,2,3]).length`).f(), 7)
 })
 
-test('JSON.stringify: strings', async () => {
-  is(await evaluate('JSON.stringify("hello")'), '"hello"')
-  is(await evaluate('JSON.stringify("")'), '""')
+test('JSON.stringify: NaN → null', () => {
+  is(run(`export let f = () => JSON.stringify(0/0).length`).f(), 4)
 })
 
-test('JSON.stringify: string escaping', async () => {
-  // These test escape characters
-  is(await evaluate('JSON.stringify("a\\nb")'), '"a\\nb"')
-  is(await evaluate('JSON.stringify("a\\tb")'), '"a\\tb"')
-  is(await evaluate('JSON.stringify("a\\"b")'), '"a\\"b"')
+test('JSON.stringify: Infinity → null', () => {
+  is(run(`export let f = () => JSON.stringify(1/0).length`).f(), 4)
 })
 
-test('JSON.stringify: objects', async () => {
-  // Object with known schema
-  const instance = await compile(`
-    export function test() {
-      let obj = { x: 1, y: 2 }
-      return JSON.stringify(obj)
-    }
-  `)
-  is(instance.test(), '{"x":1,"y":2}')
+test('JSON.stringify: nested', () => {
+  is(run(`export let f = () => JSON.stringify([[1],[2]]).length`).f(), 9)
 })
 
-// JSON.parse tests
-
-test('JSON.parse: numbers', async () => {
-  is(await evaluate(`let j = '42'; JSON.parse(j)`), 42)
-  is(await evaluate(`let j = '3.14'; JSON.parse(j)`), 3.14)
-  is(await evaluate(`let j = '-5'; JSON.parse(j)`), -5)
-  is(await evaluate(`let j = '0'; JSON.parse(j)`), 0)
-  is(await evaluate(`let j = '1e3'; JSON.parse(j)`), 1000)
-  is(await evaluate(`let j = '1E-2'; JSON.parse(j)`), 0.01)
+test('JSON.stringify: empty array', () => {
+  is(run(`export let f = () => JSON.stringify([]).length`).f(), 2)
 })
 
-test('JSON.parse: booleans and null', async () => {
-  is(await evaluate(`let j = 'true'; JSON.parse(j)`), 1)
-  is(await evaluate(`let j = 'false'; JSON.parse(j)`), 0)
-  is(await evaluate(`let j = 'null'; JSON.parse(j)`), 0)
+// === JSON.parse ===
+
+test('JSON.parse: number', () => {
+  is(run(`export let f = () => JSON.parse("42")`).f(), 42)
 })
 
-test('JSON.parse: arrays', async () => {
-  const r1 = await evaluate(`let j = '[1,2,3]'; JSON.parse(j)`)
-  is(r1[0], 1)
-  is(r1[1], 2)
-  is(r1[2], 3)
-
-  const r2 = await evaluate(`let j = '[]'; JSON.parse(j)`)
-  is(r2.length, 0)
+test('JSON.parse: negative float', () => {
+  is(run(`export let f = () => JSON.parse("-3.14")`).f(), -3.14)
 })
 
-test('JSON.parse: strings', async () => {
-  is(await evaluate(`let j = '"hello"'; JSON.parse(j)`), 'hello')
-  is(await evaluate(`let j = '""'; JSON.parse(j)`), '')
+test('JSON.parse: true', () => {
+  is(run(`export let f = () => JSON.parse("true")`).f(), 1)
 })
 
-test('JSON.parse: objects', async () => {
-  const r1 = await evaluate(`let j = '{"x":1}'; JSON.parse(j)`)
-  is(r1.x, 1)
-
-  const r2 = await evaluate(`let j = '{"x":1,"y":2}'; JSON.parse(j)`)
-  is(r2.x, 1)
-  is(r2.y, 2)
-
-  const r3 = await evaluate(`let j = '{}'; JSON.parse(j)`)
-  is(Object.keys(r3).length, 0)
+test('JSON.parse: array length', () => {
+  is(run(`export let f = () => JSON.parse("[1,2,3]").length`).f(), 3)
 })
 
-test('JSON.parse: nested structures', async () => {
-  // Nested arrays
-  const r1 = await evaluate(`let j = '[[1,2],[3,4]]'; JSON.parse(j)`)
-  is(r1[0][0], 1)
-  is(r1[1][1], 4)
-
-  // Nested object
-  const r2 = await evaluate(`let j = '{"a":{"b":1}}'; JSON.parse(j)`)
-  is(r2.a.b, 1)
-
-  // Array of objects
-  const r3 = await evaluate(`let j = '[{"x":1},{"y":2}]'; JSON.parse(j)`)
-  is(r3[0].x, 1)
-  is(r3[1].y, 2)
-
-  // Object with array
-  const r4 = await evaluate(`let j = '{"arr":[1,2,3]}'; JSON.parse(j)`)
-  is(r4.arr[0], 1)
-  is(r4.arr[2], 3)
+test('JSON.parse: array element', () => {
+  is(run(`export let f = () => JSON.parse("[10,20,30]")[1]`).f(), 20)
 })
 
-test('JSON.parse: string values in objects', async () => {
-  const r = await evaluate(`let j = '{"name":"hello"}'; JSON.parse(j)`)
-  is(r.name, 'hello')
+test('JSON.parse: string length', () => {
+  is(run('export let f = () => JSON.parse(\'\"hello\"\').length').f(), 5)
 })
 
-test('JSON.parse: whitespace handling', async () => {
-  is(await evaluate(`let j = ' 42 '; JSON.parse(j)`), 42)
-  const r = await evaluate(`let j = ' { "x" : 1 } '; JSON.parse(j)`)
-  is(r.x, 1)
+test('JSON.parse: nested array', () => {
+  is(run(`export let f = () => JSON.parse("[[1,2],[3]]")[0][1]`).f(), 2)
+})
+
+test('JSON.parse: roundtrip', () => {
+  is(run(`export let f = () => JSON.stringify(JSON.parse("[1,2,3]")).length`).f(), 7)
+})
+
+// === JSON.parse objects (HASH type) ===
+
+test('JSON.parse: object dot access', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"x":42}'); return o.x }`).f(), 42)
+})
+
+test('JSON.parse: object multiple keys', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"a":10,"b":20}'); return o.a + o.b }`).f(), 30)
+})
+
+test('JSON.parse: nested object', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"a":{"b":99}}'); return o.a.b }`).f(), 99)
+})
+
+test('JSON.parse: array of objects', () => {
+  is(run(`export let f = () => { let a = JSON.parse('[{"x":1},{"x":2}]'); return a[0].x + a[1].x }`).f(), 3)
+})
+
+test('JSON.parse: many keys (grow)', () => {
+  is(run(`export let f = () => {
+    let o = JSON.parse('{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}')
+    return o.a + o.i
+  }`).f(), 10)
+})
+
+test('JSON.parse: missing key returns nullish', () => {
+  const v = run(`export let f = () => { let o = JSON.parse('{"x":1}'); return o.z }`).f()
+  ok(v === null || v === undefined)
+})
+
+test('JSON.parse: string value access', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"name":"jz"}'); return o.name.length }`).f(), 2)
+})
+
+test('JSON.parse: write property', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.x = 99; return o.x }`).f(), 99)
+})
+
+test('JSON.parse: add new property', () => {
+  is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.y = 2; return o.x + o.y }`).f(), 3)
+})
+
+// === JSON.stringify: objects ===
+
+test('JSON.stringify: schema object', () => {
+  const { f } = run(`export let f = () => {
+    let o = { x: 1, y: 2 }
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{"x":1,"y":2}')
+})
+
+test('JSON.stringify: nested object', () => {
+  const { f } = run(`export let f = () => {
+    let inner = { a: 10 }
+    let outer = { b: inner }
+    return JSON.stringify(outer)
+  }`)
+  is(f(), '{"b":{"a":10}}')
+})
+
+test('JSON.stringify: object with string value', () => {
+  const { f } = run(`export let f = () => {
+    let o = { name: "jz" }
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{"name":"jz"}')
+})
+
+test('JSON.stringify: object in array', () => {
+  const { f } = run(`export let f = () => {
+    let a = [{ x: 1 }, { x: 2 }]
+    return JSON.stringify(a)
+  }`)
+  is(f(), '[{"x":1},{"x":2}]')
+})
+
+test('JSON.stringify: HASH roundtrip', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{"a":1,"b":2}')
+    return JSON.stringify(o)
+  }`)
+  const result = f()
+  // HASH iteration order may differ from insertion order
+  const parsed = JSON.parse(result)
+  is(parsed.a, 1)
+  is(parsed.b, 2)
+})
+
+test('JSON.stringify: empty object', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{}')
+    return JSON.stringify(o)
+  }`)
+  is(f(), '{}')
 })

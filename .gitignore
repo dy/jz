@@ -125,3 +125,11 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+/.work/backup
+/.work/*.mjs
+/.work/*.wasm
+/.claude
+/CLAUDE.md
+.DS_Store
+/out.wat
+/output.txt

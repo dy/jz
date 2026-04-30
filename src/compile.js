@@ -1,3873 +1,2477 @@
 /**
- * jz compiler - AST to WAT
+ * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
- * Data flow: compile() → gen(ast) → operators[op] → genFunctions() → assemble()
+ * # Stage contract
+ *   IN:  prepared AST (from prepare) + `ctx.func.list` with raw bodies.
+ *   OUT: WAT IR `['module', ...sections]` ready for watrCompile/watrPrint.
+ *   FLOW: orchestrator only. Calls analyze passes per function, then emit(body) via
+ *         src/emit.js's dispatch, then optimizeFunc (src/optimize.js) per function,
+ *         finally assembles module sections in canonical order.
+ *
+ * # Core abstraction
+ * Emitter table (ctx.core.emit) maps AST ops → WASM IR generators. Base operators defined
+ * in `emitter` export (src/emit.js); on reset, ctx.core.emit starts as a flat copy of emitter
+ * and modules add/override entries directly. No prototype chain.
+ * emit(node) dispatches: numbers → i32/f64.const, strings → local.get, arrays → ctx.core.emit[op].
+ *
+ * # Type system
+ * Every emitted node carries .type ('i32' | 'f64').
+ * Operators preserve i32 when both operands are i32.
+ * Division/power always produce f64. Bitwise/comparisons always produce i32.
+ * Variables are typed by pre-analysis: if any assignment is f64, local is f64.
+ *
+ * Per-function state on ctx: locals (Map name→type), stack (loop labels), uniq (counter), sig.
  *
  * @module compile
  */
 
-import * as ARRAY_METHODS from './array.js'
-import * as STRING_METHODS from './string.js'
-import { parseRegex, compileRegex, REGEX_METHODS } from './regex.js'
-import { NUMBER_METHODS } from './number.js'
-import { SET_METHODS } from './set.js'
-import { MAP_METHODS } from './map.js'
+import { parse as parseWat } from 'watr'
+import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
+import {
+  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, collectTypedElems, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType, invalidateLocalsCache, invalidateValTypesCache,
+  extractParams, classifyParam, collectParamNames,
+  findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
+  collectArrElemSchemas, collectArrElemValTypes, exprSchemaId,
+  repOf, updateRep, repOfGlobal, updateGlobalRep,
+} from './analyze.js'
+import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
+import { emit, emitter, emitFlat, emitBody } from './emit.js'
+import {
+  typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
+  NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
+  MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, extractF64Bits, appendStaticSlots,
+  isLit, litVal, isNullishLit, isPureIR, isPostfix, emitNum,
+  temp, tempI32, tempI64, f64rem, toNumF64, truthyIR, toBoolFromEmitted,
+  keyValType, usesDynProps, needsDynShadow,
+  isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish,
+  slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
+  multiCount, loopTop, flat, reconstructArgsWithSpreads,
+} from './ir.js'
 
-import { PTR_TYPE, ELEM_TYPE, TYPED_ARRAY_CTORS, ELEM_STRIDE, HEAP_START, STRING_STRIDE, wat, fmtNum, f64, i32, bool, falsy, conciliate, isF64, isI32, isString, isArray, isObject, isClosure, isRef, isRefArray, isBoxedString, isBoxedNumber, isBoxedBoolean, isBoxedArray, isBoxed, isTypedArray, isRegex, isSet, isMap, isSymbol, bothI32, isHeapRef, hasSchema, Rational, isIntLiteral, isNumLiteral } from './types.js'
-import { extractParams, extractParamInfo, analyzeScope, preanalyze, findF64Vars, inferObjectSchemas } from './analyze.js'
-import { f64ops, i32ops, MATH_OPS } from './ops.js'
-import { createContext } from './context.js'
-import { assemble } from './assemble.js'
-import { nullRef, undefRef, mkString, envGet, arrGet, arrGetTyped, arrGetI32, arrLen, arrLenI32, directArrLen, objGet, objGetI32, objSet, objSetI32, strCharAt, strLen, strLenI32, strCharAtI32, mkArrayLiteral, callClosure, typedArrNew, typedArrGet, typedArrSet, typedArrLen, typedArrGetI32, typedArrSetI32, typedArrLenI32, typedArrOffsetI32 } from './memory.js'
-import { TYPED_ARRAY_METHODS } from './typedarray.js'
-import { genClosureCall, genClosureCallExpr, genClosureValue } from './closures.js'
-import { genArrayDestructDecl, genObjectDestructDecl } from './destruct.js'
+// Re-export for backward compatibility (modules import from compile.js)
+export { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, collectParamNames, repOf, updateRep, repOfGlobal, updateGlobalRep }
+export { emit, emitter, emitFlat }
+// IR helpers — re-export from ir.js so module/*.js keep their existing import paths.
+export {
+  typed, asF64, asI32, asParamType, toI32, asI64, fromI64,
+  NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
+  MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
+  mkPtrIR, ptrOffsetIR, ptrTypeIR, extractF64Bits, appendStaticSlots,
+  isLit, litVal, isNullishLit, isPureIR, isPostfix, emitNum,
+  temp, tempI32, tempI64, f64rem, toNumF64, truthyIR, toBoolFromEmitted,
+  keyValType, usesDynProps, needsDynShadow,
+  isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish,
+  slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
+  multiCount, loopTop, flat, reconstructArgsWithSpreads,
+}
+// Emit-dependent helpers (emitTypeofCmp, toBool, materializeMulti, emitDecl,
+// buildArrayWithSpreads) live in emit.js and are re-exported there for modules.
+export { emitTypeofCmp, toBool, materializeMulti, emitDecl, buildArrayWithSpreads } from './emit.js'
 
-// Check if type is array-like (for aliasing warnings)
-const isArrayType = t => t === 'array' || t === 'refarray'
+// Per-compile func name set + map live on ctx.func.names / ctx.func.map,
+// populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
 
-// Check if AST node is an array literal or array-returning expression
-const isArrayExpr = node => {
-  if (!Array.isArray(node)) return false
-  const op = node[0]
-  // Array literal: ['[', ...]
-  if (op === '[') return true
-  // Array constructor: ['()', ['.', 'Array', method], ...]
-  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Array') return true
-  // Array methods that return arrays: .map, .filter, .slice, .reverse, .concat
-  if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
-    const method = node[1][2]
-    if (['map', 'filter', 'slice', 'reverse', 'concat', 'fill'].includes(method)) return true
+// NaN-box high-bits mask: used by the static-prefix-strip pass below to
+// identify pointer slots in the data segment. Kept local (ir.js owns the
+// runtime packing via mkPtrIR).
+const NAN_PREFIX_BITS = 0x7FF8n
+
+// Typed-array element-ctor decoding from `ptrAux` bits (low 3 bits = elem type
+// index, bit 3 = view-vs-bytes). Used by narrowSignatures F-phase and the
+// bimorphic-typed specialization pass to materialize a ctor name from a
+// narrowed callee result aux.
+const _TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
+  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
+const ctorFromAux = (aux) => {
+  if (aux == null) return null
+  const name = _TYPED_ELEM_NAMES[aux & 7]
+  if (!name) return null
+  return (aux & 8) ? `new.${name}.view` : `new.${name}`
+}
+// Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a
+// call site. Sources: caller's body-local typedElems, caller's typed params,
+// literal `new TypedArray(...)`, calls to typed-narrowed user funcs. Returns
+// null when the ctor can't be determined (i.e. truly unknown to the caller).
+const inferArgTypedCtor = (expr, callerTypedElems, callerTypedParams) => {
+  if (typeof expr === 'string') {
+    if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
+    if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
+    return null
   }
-  return false
-}
-
-// Current compilation state (module-level for nested access)
-export let ctx = null
-
-
-// Set context only (for nested function generation)
-export function setCtx(context) {
-  const prev = ctx
-  ctx = context
-  return prev
-}
-
-// Public API
-export function compile(ast, options = {}) {
-  // Initialize shared state for method modules
-  setCtx(createContext())
-  // Single pre-analysis pass: f64 vars, func return types, object schemas, array params, export analysis
-  const { f64Vars, funcReturnTypes, inferredSchemas, arrayParams, exportedFuncs, funcParamPtrTypes, funcCallGraph, allFuncs } = preanalyze(ast)
-  ctx.f64Vars = f64Vars
-  ctx.funcReturnTypes = funcReturnTypes
-  ctx.inferredSchemas = inferredSchemas
-  ctx.arrayParams = arrayParams  // funcName → Set<paramName> for params used as arrays
-  ctx.exportedFuncs = exportedFuncs // Set<funcName> - functions at JS boundary
-  ctx.funcParamPtrTypes = funcParamPtrTypes // funcName → Map<paramName, Set<'array'|'string'|'object'>>
-  ctx.funcCallGraph = funcCallGraph // funcName → Set<calledFuncName>
-
-  // Compute internal functions: can use i32 params for pointers (not called from JS)
-  // A function is internal if it's not exported AND not called by any exported function (transitively)
-  ctx.internalFuncs = computeInternalFuncs(exportedFuncs, funcCallGraph, allFuncs)
-
-  const bodyWat = String(f64(gen(ast)))
-  const funcs = genFunctions()
-  return assemble(bodyWat, ctx, funcs)
-}
-
-/**
- * Compute which functions are purely internal (can use i32 pointer params).
- * A function is internal if it's not directly exported to JS.
- * Even if called by exported functions, internal functions control both sides
- * of the call (caller extracts offset, callee expects i32).
- */
-function computeInternalFuncs(exportedFuncs, funcCallGraph, allFuncs) {
-  const internal = new Set()
-  for (const funcName of allFuncs) {
-    if (!exportedFuncs.has(funcName)) internal.add(funcName)
-  }
-  return internal
-}
-
-
-/**
- * Check if an AST node is a constant expression (can be computed at compile time).
- * Used for optimizations like constant folding in array literals and static objects.
- *
- * @param {any} ast - AST node to check
- * @returns {boolean} True if expression can be evaluated at compile time
- * @example isConstant([null, 42]) → true
- * @example isConstant(['+', [null, 1], [null, 2]]) → true
- * @example isConstant(['{', ['a', [null, 1]]]) → true (object with constant values)
- * @example isConstant('x') → false (variable reference)
- */
-function isConstant(ast) {
-  if (ast == null) return true
-  if (Array.isArray(ast) && ast[0] == null) return typeof ast[1] === 'number'
-  if (typeof ast === 'string') return /^(true|false|null|undefined|Infinity|-Infinity|NaN)$/.test(ast) || !isNaN(Number(ast))
-  if (!Array.isArray(ast)) return false
-  const [op] = ast
-  // Arithmetic operations
-  if (op === '+' || op === '-' || op === '*' || op === '/' || op === '%') {
-    return ast.slice(1).every(isConstant)
-  }
-  // Object literals: ['{', [key, value], ...] - all values must be constant numbers
-  if (op === '{') {
-    return ast.slice(1).every(([, val]) => isConstant(val))
-  }
-  return false
-}
-
-/**
- * Get schema array from value's schema field.
- * Handles both: schemaId (number) → lookup in ctx.objectSchemas, or schema array directly.
- * @param {object} v - Typed WAT value with .schema
- * @returns {string[]|undefined} Schema array or undefined
- */
-const getSchema = v => Array.isArray(v?.schema) ? v.schema : ctx.objectSchemas[v?.schema]
-
-/**
- * Get schemaId from value's schema field (for WASM pointer embedding).
- * If schema is array, find or create schemaId in ctx.objectSchemas.
- * @param {object} v - Typed WAT value with .schema
- * @returns {number|undefined} Schema ID or undefined
- */
-function getSchemaId(v) {
-  if (typeof v?.schema === 'number') return v.schema
-  if (!Array.isArray(v?.schema)) return undefined
-  // Find existing schemaId or use the one embedded in pointer
-  for (const [id, s] of Object.entries(ctx.objectSchemas)) {
-    if (JSON.stringify(s) === JSON.stringify(v.schema)) return Number(id)
-  }
-  return undefined
-}
-
-/**
- * Check if AST is a numeric constant (compile-time number).
- * @param {any} ast - AST node to check
- * @returns {boolean}
- */
-function isNumericConstant(ast) {
-  return Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'number'
-}
-
-/**
- * Check if an AST node is a constant string expression (compile-time string).
- * Used for string concatenation folding: "a" + "b" → "ab"
- *
- * @param {any} ast - AST node to check
- * @returns {boolean} True if expression evaluates to a constant string
- * @example isStringConstant([undefined, "hello"]) → true
- * @example isStringConstant(['+', [undefined, "a"], [undefined, "b"]]) → true
- */
-function isStringConstant(ast) {
-  if (Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'string') return true
-  if (!Array.isArray(ast)) return false
-  // String concatenation with +
-  if (ast[0] === '+' && ast.length === 3) {
-    return isStringConstant(ast[1]) && isStringConstant(ast[2])
-  }
-  return false
-}
-
-/**
- * Check if AST can be coerced to string at compile-time (string or number constant).
- */
-function isCoercibleToStringConstant(ast) {
-  return isStringConstant(ast) || isNumericConstant(ast)
-}
-
-/**
- * Evaluate a constant string expression at compile time.
- * @param {any} ast - Constant string AST node (must pass isStringConstant check)
- * @returns {string} Evaluated string value
- */
-function evalStringConstant(ast) {
-  if (Array.isArray(ast) && ast[0] === undefined && typeof ast[1] === 'string') return ast[1]
-  if (ast[0] === '+') return evalStringConstant(ast[1]) + evalStringConstant(ast[2])
-  throw new Error(`Cannot evaluate string constant: ${JSON.stringify(ast)}`)
-}
-
-/**
- * Evaluate AST to string, coercing numbers. For compile-time string concat.
- */
-function evalToString(ast) {
-  if (isNumericConstant(ast)) return String(ast[1])
-  return evalStringConstant(ast)
-}
-
-/**
- * Detect if AST is a fixed-size array literal eligible for multi-value return.
- * Must be 2-8 elements, no spread, all numeric expressions.
- * @param {any} ast - AST node to check
- * @returns {number|false} Element count if eligible, false otherwise
- */
-function isFixedArrayLiteral(ast) {
-  if (!Array.isArray(ast) || ast[0] !== '[') return false
-  const elems = ast.slice(1)
-  // 2-8 elements, no spread
-  if (elems.length < 2 || elems.length > 8) return false
-  for (const e of elems) {
-    // Spread disqualifies
-    if (Array.isArray(e) && e[0] === '...') return false
-  }
-  return elems.length
-}
-
-/**
- * Pre-scan function body to detect if all return statements use same-size fixed array literal.
- * Also handles implicit return (arrow function expression body that is array literal).
- * Returns the count if all returns match, 0 otherwise.
- * @param {any} ast - Function body AST
- * @returns {number} Multi-value count (2-8) or 0 if not eligible
- */
-function detectMultiReturn(ast) {
-  // Direct array literal body (implicit return): () => [a, b, c]
-  const directN = isFixedArrayLiteral(ast)
-  if (directN) return directN
-
-  let count = 0
-  function scan(node) {
-    if (!Array.isArray(node)) return true
-    const [op, ...args] = node
-    if (op === 'return') {
-      const n = isFixedArrayLiteral(args[0])
-      if (!n) return false  // Non-array return disqualifies
-      if (count === 0) count = n
-      else if (count !== n) return false  // Inconsistent sizes
-      return true
-    }
-    // Skip nested function definitions
-    if (op === '=>' || op === 'function') return true
-    // Recurse into children
-    for (const arg of args) {
-      if (!scan(arg)) return false
-    }
-    return true
-  }
-  return scan(ast) ? count : 0
-}
-
-/**
- * Evaluate a constant expression at compile time using rational arithmetic.
- * Preserves exact fractions (1/3 * 3 = 1) until final conversion to f64.
- *
- * @param {any} ast - Constant AST node (must pass isConstant check)
- * @returns {number|Rational} Evaluated result (Rational if exact, number otherwise)
- * @example evalConstant([null, 42]) → Rational(42, 1)
- * @example evalConstant(['/', [null, 1], [null, 3]]) → Rational(1, 3)
- * @example evalConstant(['*', ['/', [null, 1], [null, 3]], [null, 3]]) → Rational(1, 1)
- */
-function evalConstant(ast) {
-  if (ast == null) return new Rational(0)
-  if (Array.isArray(ast) && ast[0] == null) {
-    const v = ast[1]
-    if (Number.isInteger(v)) return new Rational(v)
-    // Try to convert f64 to rational (e.g., 0.5 → 1/2)
-    const r = Rational.fromF64(v)
-    return r || v  // Return f64 if can't be rationalized
-  }
-  if (typeof ast === 'string') {
-    const val = parseFloat(ast)
-    if (isNaN(val)) return ast === 'true' ? new Rational(1) : new Rational(0)
-    if (Number.isInteger(val)) return new Rational(val)
-    return val
-  }
-  if (!Array.isArray(ast)) return new Rational(0)
-  const [op, ...args] = ast
-  const vals = args.map(evalConstant)
-
-  // Helper: convert to Rational if needed, or return null if can't
-  const toRat = v => v instanceof Rational ? v : (typeof v === 'number' ? Rational.fromF64(v) : null)
-  // Helper: convert to f64
-  const toF64 = v => v instanceof Rational ? v.toF64() : v
-
-  // If any operand is non-rationalizable f64, fall back to f64 arithmetic
-  const rats = vals.map(toRat)
-  const allRational = rats.every(r => r !== null)
-
-  switch (op) {
-    case '+':
-      if (allRational) {
-        const r = rats[0].add(rats[1])
-        return r.fitsI32() ? r : r.toF64()
-      }
-      return toF64(vals[0]) + toF64(vals[1])
-    case '-':
-      if (vals.length === 1) {
-        if (allRational) return rats[0].neg()
-        return -toF64(vals[0])
-      }
-      if (allRational) {
-        const r = rats[0].sub(rats[1])
-        return r.fitsI32() ? r : r.toF64()
-      }
-      return toF64(vals[0]) - toF64(vals[1])
-    case '*':
-      if (allRational) {
-        const r = rats.reduce((a, b) => a.mul(b), new Rational(1))
-        return r.fitsI32() ? r : r.toF64()
-      }
-      return vals.map(toF64).reduce((a, b) => a * b, 1)
-    case '/':
-      if (allRational && rats[1].num !== 0) {
-        const r = rats[0].div(rats[1])
-        return r.fitsI32() ? r : r.toF64()
-      }
-      return toF64(vals[0]) / toF64(vals[1])
-    case '%':
-      // Modulo breaks rational exactness
-      return toF64(vals[0]) % toF64(vals[1])
-    default:
-      return new Rational(0)
-  }
-}
-
-/**
- * Convert evalConstant result to f64 number for emission
- * @param {number|Rational} v
- * @returns {number}
- */
-const toNumber = v => v instanceof Rational ? v.toF64() : v
-
-/**
- * Core AST generator: converts an AST node to a typed WAT value.
- * Dispatches to genLiteral, genIdent, or operators based on node type.
- *
- * @param {any} ast - AST node: null, [undefined, literal], string (identifier), or [op, ...args]
- * @returns {object} Typed WAT value with {type, wat, schema?}
- * @example gen(['+', [null, 1], [null, 2]]) → {type:'f64', wat:'(f64.add (f64.const 1) (f64.const 2))'}
- * @example gen('x') → {type:'f64', wat:'(local.get $x)'}
- */
-export function gen(ast) {
-  if (ast == null) return wat('(f64.const 0)', 'f64')
-  if (Array.isArray(ast) && ast[0] === undefined) return genLiteral(ast[1])
-  if (typeof ast === 'string') return genIdent(ast)
-  if (!Array.isArray(ast)) throw new Error(`Invalid AST: ${JSON.stringify(ast)}`)
-  const [op, ...args] = ast
-  if (op in operators) return operators[op](args)
-  throw new Error(`Unknown operator: ${op}`)
-}
-
-/**
- * Get i32 offset for a pointer expression.
- * If the expression is a param with cached offset, returns the cached local.
- * Otherwise, generates `(call $__ptr_offset expr)`.
- *
- * @param {string} ptrExpr - WAT expression that evaluates to NaN-boxed pointer
- * @param {string|null} paramName - If this is a param access, the param name
- * @returns {string} WAT i32 expression for the offset
- */
-export function ptrOffset(ptrExpr, paramName = null) {
-  // Check if we have a cached offset for this param
-  if (paramName && ctx.cachedOffsets?.has(paramName)) {
-    return `(local.get $${ctx.cachedOffsets.get(paramName)})`
-  }
-  return `(call $__ptr_offset ${ptrExpr})`
-}
-
-/**
- * Calculate closure nesting depth: how many nested arrows before reaching a non-arrow expression.
- * Used to track return types for curried functions.
- *
- * @param {any} body - Function body AST
- * @returns {number} 0 for f64 result, 1+ for closure result
- * @example closureDepth(['+', 'x', 'y']) → 0 (returns f64)
- * @example closureDepth(['=>', 'y', ['+', 'x', 'y']]) → 1 (returns closure)
- * @example closureDepth(['=>', 'y', ['=>', 'z', 'x']]) → 2 (returns closure returning closure)
- */
-function closureDepth(body) {
-  if (!Array.isArray(body) || body[0] !== '=>') return 0
-  return 1 + closureDepth(body[2])  // body[2] is the arrow body
-}
-
-/**
- * Generate WAT for a literal value (number, boolean, string, null).
- *
- * @param {any} v - Literal value: number, boolean, string, null, or undefined
- * @returns {object} Typed WAT value
- * @example genLiteral(42) → {type:'i32', wat:'(i32.const 42)'}
- * @example genLiteral(3.14) → {type:'f64', wat:'(f64.const 3.14)'}
- * @example genLiteral(true) → {type:'i32', wat:'(i32.const 1)'}
- * @example genLiteral('hello') → {type:'string', wat:'(call $__strconst ...)'}
- */
-function genLiteral(v) {
-  if (v == null) return nullRef()
-  // Rational from constant folding: convert to f64
-  if (v instanceof Rational) return wat(`(f64.const ${fmtNum(v.toF64())})`, 'f64')
-  if (typeof v === 'number') {
-    // no-loss-of-precision: integer literals > MAX_SAFE_INTEGER lose precision
-    if (Number.isInteger(v) && (v > Number.MAX_SAFE_INTEGER || v < Number.MIN_SAFE_INTEGER)) {
-      ctx.warn('no-loss-of-precision', `Integer literal ${v} exceeds MAX_SAFE_INTEGER; precision may be lost`)
-    }
-    // Integer literals stay i32, float literals become f64
-    if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
-      return wat(`(i32.const ${v})`, 'i32')
-    }
-    return wat(`(f64.const ${fmtNum(v)})`, 'f64')
-  }
-  if (typeof v === 'boolean') return wat(`(i32.const ${v ? 1 : 0})`, 'i32')
-  if (typeof v === 'string') return mkString(ctx, v)
-  throw new Error(`Unsupported literal: ${JSON.stringify(v)}`)
-}
-
-/**
- * Generate WAT for an identifier reference.
- * Resolves: builtins (true/false/null), global constants (PI, Infinity),
- * hoisted vars (closure env), captured vars, locals, and globals.
- *
- * @param {string} name - Identifier name
- * @returns {object} Typed WAT value
- * @throws {Error} If identifier is unknown
- * @example genIdent('true') → {type:'i32', wat:'(i32.const 1)'}
- * @example genIdent('PI') → {type:'f64', wat:'(f64.const 3.14159...)'}
- * @example genIdent('x') → {type:'f64', wat:'(local.get $x)'}
- */
-function genIdent(name) {
-  if (name === 'null') return nullRef()
-  if (name === 'undefined') return undefRef()
-  if (name === 'true') return wat('(i32.const 1)', 'i32')
-  if (name === 'false') return wat('(i32.const 0)', 'i32')
-  if (name === 'Infinity') return wat(`(f64.const ${fmtNum(Infinity)})`, 'f64')
-  if (name === 'NaN') return wat(`(f64.const ${fmtNum(NaN)})`, 'f64')
-
-  // Check if this is a captured variable (from closure environment passed to us)
-  // Closures capture by value - the env contains immutable copies
-  if (ctx.capturedVars && name in ctx.capturedVars) {
-    const { index, type, schema } = ctx.capturedVars[name]
-    return wat(envGet('$__env', index), type || 'f64', schema)
-  }
-
-  const loc = ctx.getLocal(name)
-  if (loc) {
-    // Use semanticType for method dispatch (array/string/object/typedarray), actual type for wasm codegen
-    const effectiveType = loc.semanticType || loc.type
-    // Schema can come from localSchemas (objects) or loc.schema (typedarrays, i32 objects)
-    const schema = ctx.localSchemas[loc.scopedName] ?? loc.schema
-    const result = wat(`(local.get $${loc.scopedName})`, effectiveType, schema)
-    result.paramName = name  // Track original name for array param inference
-    result.isI32Ptr = loc.type === 'i32' && loc.semanticType  // Mark as i32 pointer for codegen
-    return result
-  }
-  const glob = ctx.getGlobal(name)
-  if (glob) return wat(`(global.get $${name})`, glob.type)
-  throw new Error(`Unknown identifier: ${name}`)
-}
-
-/**
- * Check if target is a primitive literal (can't hold properties in JS).
- * Primitives: string literals, number literals, boolean literals
- * Non-primitives: arrays, objects, regex, closures, sets, maps, boxed wrappers
- */
-function isPrimitiveLiteral(target, targetAst) {
-  // String literals are primitives (but String objects from new String() are not)
-  if (isString(target)) return true
-  // Boolean literals
-  if (targetAst === 'true' || targetAst === 'false') return true
-  if (Array.isArray(targetAst) && targetAst[0] === undefined && typeof targetAst[1] === 'boolean') return true
-  // Number literals
-  if ((isI32(target) || isF64(target)) && !isObject(target)) return true
-  return false
-}
-
-/**
- * Get schema prefix for pointer types that can hold properties.
- * Returns prefix to embed in schema slot 0, or null for plain objects.
- * @param {object} target - Typed WAT value
- * @returns {string|null} Schema prefix like '__array__' or null
- */
-function getPointerPrefix(target) {
-  if (isArray(target)) return '__array__'
-  if (isRegex(target)) return '__regex__'
-  if (isClosure(target)) return '__function__'
-  if (isSet(target)) return '__set__'
-  if (isMap(target)) return '__map__'
-  // Wrapper objects from new String/Number/Boolean
-  if (isObject(target) && hasSchema(target)) {
-    const schema = getSchema(target)
-    if (schema[0]?.startsWith('__') && schema[0]?.endsWith('__')) return schema[0]
+  const ctor = typedElemCtor(expr)
+  if (ctor) return ctor
+  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromAux(f.sig.ptrAux)
   }
   return null
 }
 
-/**
- * Allocate object with given schema and values. Core helper for object/boxed allocation.
- * @param {number} schemaId - Schema ID (already registered in ctx.objectSchemas)
- * @param {string[]|number} schemaArr - Schema array for type tracking (or schemaId)
- * @param {string[]} vals - WAT expressions for slot values
- * @param {string} tmpPrefix - Prefix for temp local variable
- * @returns {object} Typed WAT value with type='object'
- */
-function allocObject(schemaId, schemaArr, vals, tmpPrefix) {
-  const id = ctx.uniqueId++
-  const tmp = `$_${tmpPrefix}_${id}`
-  ctx.addLocal(tmp, 'f64')
+// Low-level IR helpers previously lived here. Pure ones moved to src/ir.js;
+// emit-calling ones (toBool, emitTypeofCmp, emitDecl, materializeMulti,
+// buildArrayWithSpreads) moved to src/emit.js.
 
-  const stores = vals.map((v, i) =>
-    `(f64.store (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})) ${v})`).join('\n      ')
 
-  return wat(`
-    (block (result f64)
-      (local.set ${tmp} (call $__alloc (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${vals.length})))
-      (local.set ${tmp} (call $__ptr_with_id (local.get ${tmp}) (i32.const ${schemaId})))
-      ${stores}
-      (local.get ${tmp}))`, 'object', schemaArr)
+// === Module compilation ===
+
+/** Decode a `['{}', ...]` AST's children into `{names, values}`, or null if any
+ *  property is non-static-key (computed key, spread, shorthand). Matches the
+ *  emitter's flatten rule for comma-grouped props. Used by narrowSignatures and
+ *  collectProgramFacts to register/observe schemas without re-deriving the AST
+ *  shape; the emitter (module/object.js) does its own decoding because it must
+ *  handle the spread/computed-key fall-through paths. */
+function staticObjectProps(args) {
+  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  const names = [], values = []
+  for (const p of raw) {
+    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    names.push(p[1]); values.push(p[2])
+  }
+  return names.length ? { names, values } : null
 }
 
 /**
- * Generate declaration with forward-inferred schema.
- * Handles both plain object literals and Object.assign on pointer types.
+ * Narrow return arr-elem-schema: for each non-exported, non-value-used user func with
+ * `valResult === VAL.ARRAY`, walk its return exprs (and trailing-fallthrough literal),
+ * resolve each to a per-body local arr-elem-schema map, and if all match, set
+ * `func.arrayElemSchema`. Lets callers' `const rows = initRows()` observations gain
+ * the elem-schema, propagating through to the runKernel param via paramArrSchemas.
  *
- * @param {string} name - Variable name
- * @param {any[]} value - AST node (object literal or Object.assign call)
- * @param {object} inferred - Inferred schema info from ctx.inferredSchemas
- * @param {boolean} isConst - true for const, false for let
- * @returns {object|null} Typed WAT value or null if not applicable
+ * Sources for return-expr arr-elem inference:
+ *   - body-local arr-elem map (collectArrElemSchemas, observes `.push`+literal-init)
+ *   - param-bound arr-elem (paramArrSchemas[func.name][k] when populated)
+ *   - call to another arr-narrowed user fn (`f.arrayElemSchema`)
  */
-function genInferredDecl(name, value, inferred, isConst) {
-  // Detect Object.assign: ['()', ['.', 'Object', 'assign'], targetAst, sourceAst]
-  const isObjAssign = inferred.isBoxed
-
-  let prefix = null, target = null, litProps = []
-
-  if (isObjAssign) {
-    // Object.assign(target, {props})
-    const argsNode = value[2]
-    const targetAst = argsNode[1], sourceAst = argsNode[2]
-
-    if (!Array.isArray(sourceAst) || (sourceAst[0] !== '{' && sourceAst[0] !== '{}')) {
-      throw new Error('Object.assign source must be object literal')
+function narrowReturnArrayElemSchemas(paramArrSchemas, valueUsed) {
+  const collectReturnExprs = (node, out) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+    for (const a of args) collectReturnExprs(a, out)
+  }
+  const alwaysReturns = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '=>') return false
+    if (op === 'return' || op === 'throw') return true
+    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+    return false
+  }
+  const targets = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) &&
+    f.valResult === VAL.ARRAY && f.arrayElemSchema == null
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of targets) {
+      if (func.arrayElemSchema != null) continue
+      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      if (isBlock && !alwaysReturns(func.body)) continue
+      const exprs = []
+      if (isBlock) collectReturnExprs(func.body, exprs)
+      else exprs.push(func.body)
+      if (!exprs.length) continue
+      // Body-local observations. Need ctx.func.locals seeded for collectArrElemSchemas's
+      // `observe()` filter (which checks the var is a known local).
+      const savedLocals = ctx.func.locals
+      ctx.func.locals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
+      const localArrElems = collectArrElemSchemas(func.body)
+      ctx.func.locals = savedLocals
+      // Param-bound arr-elem (transitive): paramArrSchemas[name][k] → name lookup map.
+      const paramArrMap = new Map()
+      const ps = paramArrSchemas.get(func.name)
+      if (ps) for (const [k, v] of ps) {
+        if (v != null && k < func.sig.params.length) paramArrMap.set(func.sig.params[k].name, v)
+      }
+      const resolveExpr = (expr) => {
+        if (typeof expr === 'string') {
+          if (localArrElems.has(expr)) {
+            const v = localArrElems.get(expr)
+            if (v != null) return v
+          }
+          if (paramArrMap.has(expr)) return paramArrMap.get(expr)
+          return null
+        }
+        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+          const f = ctx.func.map?.get(expr[1])
+          if (f?.arrayElemSchema != null) return f.arrayElemSchema
+        }
+        if (Array.isArray(expr) && expr[0] === '?:') {
+          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
+          return a != null && a === b ? a : null
+        }
+        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
+          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
+          return a != null && a === b ? a : null
+        }
+        return null
+      }
+      const sid0 = resolveExpr(exprs[0])
+      if (sid0 == null) continue
+      const allSame = exprs.every(e => resolveExpr(e) === sid0)
+      if (!allSame) continue
+      func.arrayElemSchema = sid0
+      changed = true
     }
-    litProps = sourceAst[0] === '{}' ? [[sourceAst[1][1], sourceAst[1][2]]] :
-      sourceAst.slice(1).map(p => p[0] === ':' ? [p[1], p[2]] : [p[0], p[1]])
+  }
+}
 
-    target = gen(targetAst)
+/**
+ * Narrow return arr-elem-val: parallel to narrowReturnArrayElemSchemas but tracks
+ * the element val-kind (NUMBER/STRING/…) instead of a schema id. Lets callers'
+ * `const a = init()` observations gain the elem-val-type, propagating through
+ * to the runKernel param via paramArrElemValTypes — unlocking `__to_num`
+ * elision in `arr.map(x => x*k)` style hot loops where elements are numeric.
+ */
+function narrowReturnArrayElemValTypes(paramArrElemValTypes, valueUsed) {
+  const collectReturnExprs = (node, out) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+    for (const a of args) collectReturnExprs(a, out)
+  }
+  const alwaysReturns = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '=>') return false
+    if (op === 'return' || op === 'throw') return true
+    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+    return false
+  }
+  const targets = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) &&
+    f.valResult === VAL.ARRAY && f.arrayElemValType == null
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of targets) {
+      if (func.arrayElemValType != null) continue
+      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      if (isBlock && !alwaysReturns(func.body)) continue
+      const exprs = []
+      if (isBlock) collectReturnExprs(func.body, exprs)
+      else exprs.push(func.body)
+      if (!exprs.length) continue
+      const savedLocals = ctx.func.locals
+      ctx.func.locals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
+      const localArrElemVals = collectArrElemValTypes(func.body)
+      ctx.func.locals = savedLocals
+      const paramArrMap = new Map()
+      const ps = paramArrElemValTypes.get(func.name)
+      if (ps) for (const [k, v] of ps) {
+        if (v != null && k < func.sig.params.length) paramArrMap.set(func.sig.params[k].name, v)
+      }
+      const resolveExpr = (expr) => {
+        if (typeof expr === 'string') {
+          if (localArrElemVals.has(expr)) {
+            const v = localArrElemVals.get(expr)
+            if (v != null) return v
+          }
+          if (paramArrMap.has(expr)) return paramArrMap.get(expr)
+          return null
+        }
+        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+          const f = ctx.func.map?.get(expr[1])
+          if (f?.arrayElemValType != null) return f.arrayElemValType
+        }
+        if (Array.isArray(expr) && expr[0] === '?:') {
+          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
+          return a != null && a === b ? a : null
+        }
+        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
+          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
+          return a != null && a === b ? a : null
+        }
+        return null
+      }
+      const vt0 = resolveExpr(exprs[0])
+      if (vt0 == null) continue
+      const allSame = exprs.every(e => resolveExpr(e) === vt0)
+      if (!allSame) continue
+      func.arrayElemValType = vt0
+      changed = true
+    }
+  }
+}
 
-    // Primitives can't hold properties
-    if (isPrimitiveLiteral(target, targetAst)) {
-      ctx.warn('Object.assign on primitive has no effect (primitives cannot hold properties)')
+/**
+ * Phase: signature narrowing.
+ *
+ * Reads programFacts.callSites + valueUsed; mutates each user func's `sig`:
+ *   - param types  (f64 → i32 / pointer-ABI i32+ptrKind, when call sites agree)
+ *   - param schemas (per-arg schemaId, recorded into programFacts.paramSchemas)
+ *   - result type  (f64 → i32, when body always returns i32)
+ *   - result valType (`func.valResult`) and pointer narrowing (sig.ptrKind)
+ *
+ * Pure w.r.t. the AST — only the function `sig` records change. The maps in
+ * programFacts (paramValTypes/paramWasmTypes/paramSchemas) are populated here
+ * and consumed by the per-function emit phase below.
+ *
+ * Encoded structurally as a phase so future S3 work can move it into a
+ * pipeline runner without re-deriving the in/out contract from comments.
+ */
+function narrowSignatures(programFacts) {
+  const { callSites, valueUsed, paramValTypes, paramWasmTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors } = programFacts
+
+  // D: Call-site type propagation — infer param types from how functions are called.
+  // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
+  // For non-exported internal functions, if all call sites agree on a param's type,
+  // seed the param's val rep (ctx.func.repByLocal) during per-function compilation.
+  // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
+  // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
+  // Also propagate schema ID — when all call sites pass objects with the same schema,
+  // bind the callee's param to that schema so `p.x` becomes a direct slot load.
+    // Infer schemaId for an argument expression. Returns null if not inferrable.
+    // Safe sources: object literal with all string keys and no spreads, or a variable
+    // whose schema is already bound in ctx.schema.vars (module-level) or callerSchemas.
+    const inferArgSchema = (expr, callerSchemas) => {
+      if (typeof expr === 'string') {
+        if (callerSchemas && callerSchemas.has(expr)) return callerSchemas.get(expr)
+        const id = ctx.schema.vars.get(expr)
+        return id != null ? id : null
+      }
+      if (Array.isArray(expr) && expr[0] === '{}') {
+        const parsed = staticObjectProps(expr.slice(1))
+        return parsed ? ctx.schema.register(parsed.names) : null
+      }
       return null
     }
+    // Infer arg type using global valTypes + caller-local valTypes
+    const inferArgType = (expr, callerValTypes) => {
+      if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+      return valTypeOf(expr)
+    }
+    // Per-caller analysis is stable across fixpoint iterations — precompute once.
+    // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
+    const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
+    callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+    for (const func of ctx.func.list) {
+      if (!func.body || func.raw) continue
+      const callerLocals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
+      callerCtx.set(func, { callerLocals, callerValTypes: collectValTypes(func.body) })
+    }
+    // Per-caller arr-elem-schema observations. Recomputed each fixpoint iteration so
+    // newly-narrowed func.arrayElemSchema results propagate from `const rows = initRows()`
+    // observations (collectArrElemSchemas reads `f.arrayElemSchema` from `ctx.func.map`).
+    const buildCallerArrElems = () => {
+      const m = new Map()
+      m.set(null, ctx.scope.globalArrElems || new Map())
+      for (const func of ctx.func.list) {
+        if (!func.body || func.raw) continue
+        // Set ctx.func.locals so collectArrElemSchemas's `observe()` filter passes.
+        const savedLocals = ctx.func.locals
+        ctx.func.locals = callerCtx.get(func).callerLocals
+        m.set(func, collectArrElemSchemas(func.body))
+        ctx.func.locals = savedLocals
+      }
+      return m
+    }
+    // Infer arr-elem-schema of an arg expression. Returns sid or null.
+    // Sources: caller's body observations, caller's param arrSchema (transitive),
+    // user fn returning Array<sid>, alias to a known-array param.
+    const inferArgArrElemSchema = (expr, callerArrElems, callerArrParams) => {
+      if (typeof expr === 'string') {
+        if (callerArrElems?.has(expr)) {
+          const v = callerArrElems.get(expr)
+          if (v != null) return v
+        }
+        if (callerArrParams?.has(expr)) {
+          const v = callerArrParams.get(expr)
+          if (v != null) return v
+        }
+        return null
+      }
+      if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+        const f = ctx.func.map?.get(expr[1])
+        if (f?.arrayElemSchema != null) return f.arrayElemSchema
+      }
+      return null
+    }
+    // Two-pass fixpoint: first pass learns from literals + module vars; second pass
+    // lets callers forward propagated schemas (for chained helpers: f→addXY→{getX,getY}).
+    let callerArrElemsCtx = buildCallerArrElems()
+    const rebuildArrElems = () => { callerArrElemsCtx = buildCallerArrElems() }
+    // Parallel: per-caller arr-elem-VAL observations (NUMBER/STRING/etc.) for the
+    // paramArrElemValTypes fixpoint. Same structure as callerArrElemsCtx but tracks
+    // val-kinds. Recomputed after E2 so newly-narrowed func.arrayElemValType results
+    // propagate from `const a = init()` observations.
+    const buildCallerArrElemVals = () => {
+      const m = new Map()
+      m.set(null, new Map())
+      for (const func of ctx.func.list) {
+        if (!func.body || func.raw) continue
+        const savedLocals = ctx.func.locals
+        ctx.func.locals = callerCtx.get(func).callerLocals
+        m.set(func, collectArrElemValTypes(func.body))
+        ctx.func.locals = savedLocals
+      }
+      return m
+    }
+    let callerArrElemValsCtx = buildCallerArrElemVals()
+    const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerArrElemVals() }
+    // Infer arr-elem-VAL of an arg expression. Sources mirror inferArgArrElemSchema.
+    const inferArgArrElemValType = (expr, callerArrElemVals, callerArrValParams) => {
+      if (typeof expr === 'string') {
+        if (callerArrElemVals?.has(expr)) {
+          const v = callerArrElemVals.get(expr)
+          if (v != null) return v
+        }
+        if (callerArrValParams?.has(expr)) {
+          const v = callerArrValParams.get(expr)
+          if (v != null) return v
+        }
+        return null
+      }
+      if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+        const f = ctx.func.map?.get(expr[1])
+        if (f?.arrayElemValType != null) return f.arrayElemValType
+      }
+      return null
+    }
+    const runFixpoint = () => {
+      for (let s = 0; s < callSites.length; s++) {
+        const { callee, argList, callerFunc } = callSites[s]
+        const func = ctx.func.map.get(callee)
+        if (!func || func.exported || valueUsed.has(callee)) continue
+        const ctxEntry = callerCtx.get(callerFunc)
+        if (!ctxEntry) continue
+        const { callerLocals, callerValTypes } = ctxEntry
+        // Caller's schema bindings: params inferred so far (for transitive propagation).
+        let callerSchemas = null
+        if (callerFunc) {
+          const cs = paramSchemas.get(callerFunc.name)
+          if (cs) {
+            for (const [k, v] of cs) if (v != null) {
+              callerSchemas ||= new Map()
+              callerSchemas.set(callerFunc.sig.params[k].name, v)
+            }
+          }
+        }
+        // Caller's arr-elem-schema bindings on its own params (transitive propagation).
+        let callerArrParams = null
+        if (callerFunc) {
+          const ca = paramArrSchemas.get(callerFunc.name)
+          if (ca) {
+            for (const [k, v] of ca) if (v != null) {
+              callerArrParams ||= new Map()
+              callerArrParams.set(callerFunc.sig.params[k].name, v)
+            }
+          }
+        }
+        const callerArrElems = callerArrElemsCtx.get(callerFunc)
+        if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
+        if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
+        if (!paramSchemas.has(callee)) paramSchemas.set(callee, new Map())
+        const ptypes = paramValTypes.get(callee)
+        const wtypes = paramWasmTypes.get(callee)
+        const stypes = paramSchemas.get(callee)
+        for (let k = 0; k < func.sig.params.length; k++) {
+          if (k < argList.length) {
+            if (ptypes.get(k) !== null) {
+              const argType = inferArgType(argList[k], callerValTypes)
+              if (!argType) ptypes.set(k, null)
+              else {
+                const prev = ptypes.get(k)
+                if (prev === undefined) ptypes.set(k, argType)
+                else if (prev !== argType) ptypes.set(k, null)
+              }
+            }
+            if (wtypes.get(k) !== null) {
+              const wt = exprType(argList[k], callerLocals)
+              const prev = wtypes.get(k)
+              if (prev === undefined) wtypes.set(k, wt)
+              else if (prev !== wt) wtypes.set(k, null)
+            }
+            if (stypes.get(k) !== null) {
+              const sId = inferArgSchema(argList[k], callerSchemas)
+              if (sId == null) stypes.set(k, null)
+              else {
+                const prev = stypes.get(k)
+                if (prev === undefined) stypes.set(k, sId)
+                else if (prev !== sId) stypes.set(k, null)
+              }
+            }
+          } else {
+            // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
+            ptypes.set(k, null)
+            wtypes.set(k, null)
+            stypes.set(k, null)
+          }
+        }
+      }
+    }
+    // Dedicated paramArrSchemas fixpoint. Run after E2 (so f.valResult+arrayElemSchema
+    // are populated) so that aetypes[k] starts undefined and isn't sticky-null'd by
+    // the early passes when valResult was unset. Mirrors runFixpoint structure.
+    const runArrFixpoint = () => {
+      for (let s = 0; s < callSites.length; s++) {
+        const { callee, argList, callerFunc } = callSites[s]
+        const func = ctx.func.map.get(callee)
+        if (!func || func.exported || valueUsed.has(callee)) continue
+        const ctxEntry = callerCtx.get(callerFunc)
+        if (!ctxEntry) continue
+        let callerArrParams = null
+        if (callerFunc) {
+          const ca = paramArrSchemas.get(callerFunc.name)
+          if (ca) {
+            for (const [k, v] of ca) if (v != null) {
+              callerArrParams ||= new Map()
+              callerArrParams.set(callerFunc.sig.params[k].name, v)
+            }
+          }
+        }
+        const callerArrElems = callerArrElemsCtx.get(callerFunc)
+        if (!paramArrSchemas.has(callee)) paramArrSchemas.set(callee, new Map())
+        const aetypes = paramArrSchemas.get(callee)
+        for (let k = 0; k < func.sig.params.length; k++) {
+          if (k >= argList.length) { aetypes.set(k, null); continue }
+          if (aetypes.get(k) === null) continue
+          const aeId = inferArgArrElemSchema(argList[k], callerArrElems, callerArrParams)
+          if (aeId == null) aetypes.set(k, null)
+          else {
+            const prev = aetypes.get(k)
+            if (prev === undefined) aetypes.set(k, aeId)
+            else if (prev !== aeId) aetypes.set(k, null)
+          }
+        }
+      }
+    }
+    // Dedicated paramArrElemValTypes fixpoint. Same shape as runArrFixpoint but for
+    // VAL.* element kinds. Run after E2 so f.arrayElemValType is populated.
+    const runArrValTypeFixpoint = () => {
+      for (let s = 0; s < callSites.length; s++) {
+        const { callee, argList, callerFunc } = callSites[s]
+        const func = ctx.func.map.get(callee)
+        if (!func || func.exported || valueUsed.has(callee)) continue
+        const ctxEntry = callerCtx.get(callerFunc)
+        if (!ctxEntry) continue
+        let callerArrValParams = null
+        if (callerFunc) {
+          const ca = paramArrElemValTypes.get(callerFunc.name)
+          if (ca) {
+            for (const [k, v] of ca) if (v != null) {
+              callerArrValParams ||= new Map()
+              callerArrValParams.set(callerFunc.sig.params[k].name, v)
+            }
+          }
+        }
+        const callerArrElemVals = callerArrElemValsCtx.get(callerFunc)
+        if (!paramArrElemValTypes.has(callee)) paramArrElemValTypes.set(callee, new Map())
+        const aevtypes = paramArrElemValTypes.get(callee)
+        for (let k = 0; k < func.sig.params.length; k++) {
+          if (k >= argList.length) { aevtypes.set(k, null); continue }
+          if (aevtypes.get(k) === null) continue
+          const v = inferArgArrElemValType(argList[k], callerArrElemVals, callerArrValParams)
+          if (v == null) aevtypes.set(k, null)
+          else {
+            const prev = aevtypes.get(k)
+            if (prev === undefined) aevtypes.set(k, v)
+            else if (prev !== v) aevtypes.set(k, null)
+          }
+        }
+      }
+    }
+    runFixpoint()
+    runFixpoint()
 
-    prefix = getPointerPrefix(target)
-    if (!prefix) return null
+  // Apply i32 specialization: for non-exported/non-value-used funcs with consistent
+  // i32 call sites and no defaults/rest at that position, narrow sig.params[k].type.
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const wtypes = paramWasmTypes.get(func.name)
+    if (!wtypes) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, wt] of wtypes) {
+      if (wt !== 'i32' || k === restIdx) continue
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) continue  // defaults need nullish-sentinel f64
+      func.sig.params[k].type = 'i32'
+    }
+  }
+
+  // Pointer-ABI specialization: for non-forwarding pointer params consistent across
+  // call sites, narrow from NaN-boxed f64 to i32 offset. Eliminates per-call __ptr_offset
+  // extraction + f64→i64→i32 reinterpret chains that dominate watr-style compilers.
+  // Safety:
+  //   - exclude ARRAY (forwards on realloc — f64 NaN-box is a stable identity) and
+  //     STRING (SSO vs heap dual encoding depends on ptr-type bits we'd drop).
+  //   - exclude CLOSURE/TYPED (aux bits carry schema/element-type, lost with offset).
+  //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
+  //   - exclude rest position (array pack/unpack stays f64).
+  const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const ptypes = paramValTypes.get(func.name)
+    if (!ptypes) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, vt] of ptypes) {
+      if (!PTR_ABI_KINDS.has(vt)) continue
+      if (k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue  // already narrowed by numeric pass
+      if (func.defaults?.[p.name] != null) continue
+      p.type = 'i32'
+      p.ptrKind = vt
+    }
+  }
+
+  // E: Result-type monomorphization — narrow sig.results[0] to 'i32' when body only
+  // produces i32 values. Fixpoint: a call to another narrowed func now contributes i32;
+  // iterate until stable so chains of i32-only helpers all narrow together.
+  // Safety: skip exported (JS boundary preserves number semantics), value-used (closure
+  // trampolines assume f64 result), raw WAT, multi-value. `undefined` return = skip.
+  const collectReturnExprs = (node, out) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+    for (const a of args) collectReturnExprs(a, out)
+  }
+  const exprTypeWithCalls = (expr, locals) => {
+    // Shim: recognize calls to already-narrowed funcs as i32, everything else via exprType.
+    if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+      const f = ctx.func.map.get(expr[1])
+      if (f?.sig.results.length === 1 && f.sig.results[0] === 'i32') return 'i32'
+      return 'f64'
+    }
+    // Ternary / logical / arith: recurse with our shim so nested calls contribute.
+    if (Array.isArray(expr) && expr.length > 1) {
+      const [op, ...args] = expr
+      if (op === '?:') {
+        const a = exprTypeWithCalls(args[1], locals), b = exprTypeWithCalls(args[2], locals)
+        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
+      }
+      if (op === '&&' || op === '||') {
+        const a = exprTypeWithCalls(args[0], locals), b = exprTypeWithCalls(args[1], locals)
+        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
+      }
+      if (['+', '-', '*', '%'].includes(op)) {
+        const a = exprTypeWithCalls(args[0], locals), b = args[1] != null ? exprTypeWithCalls(args[1], locals) : a
+        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
+      }
+      if (op === 'u-' || op === 'u+') return exprTypeWithCalls(args[0], locals)
+    }
+    return exprType(expr, locals)
+  }
+  const narrowableFuncs = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) && f.sig.results.length === 1
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of narrowableFuncs) {
+      if (func.sig.results[0] === 'i32') continue
+      const body = func.body
+      const exprs = []
+      if (Array.isArray(body) && body[0] === '{}') {
+        collectReturnExprs(body, exprs)
+        // Conservative: if body could fall through without return, trailing fallback is
+        // of result type — matches narrowed i32 fine. But bare-return (`return;`) → undef (f64).
+        // Detect bare returns by walking for `['return']` with no expr → exprs.push(null).
+        const hasBareReturn = (n) => {
+          if (!Array.isArray(n)) return false
+          if (n[0] === '=>') return false
+          if (n[0] === 'return' && n[1] == null) return true
+          return n.some(hasBareReturn)
+        }
+        if (hasBareReturn(body)) continue  // undef is f64 — can't narrow
+      } else {
+        exprs.push(body)
+      }
+      if (!exprs.length) continue
+      const savedCurrent = ctx.func.current
+      ctx.func.current = func.sig
+      const locals = (Array.isArray(body) && body[0] === '{}') ? analyzeLocals(body) : new Map()
+      for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
+      const allI32 = exprs.every(e => exprTypeWithCalls(e, locals) === 'i32')
+      ctx.func.current = savedCurrent
+      if (allI32) { func.sig.results = ['i32']; changed = true }
+    }
+  }
+
+  // E2: VAL-type result inference — if a function always returns the same VAL kind,
+  // record it so callers inherit that type (enables static dispatch on .length, .[],
+  // .prop through a call chain). Fixpoint propagates through helper chains.
+  // Safety: skip exported (host sees raw f64), value-used (indirect call signature).
+  // Shim so calls to already-typed funcs contribute their result type.
+  const valTypeOfWithCalls = (expr, localValTypes) => {
+    if (expr == null) return null
+    if (typeof expr === 'string') return localValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+    if (!Array.isArray(expr)) return valTypeOf(expr)
+    const [op, ...args] = expr
+    if (op === '()' && typeof args[0] === 'string') {
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult) return f.valResult
+    }
+    if (op === '?:') {
+      const a = valTypeOfWithCalls(args[1], localValTypes), b = valTypeOfWithCalls(args[2], localValTypes)
+      return a && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
+      return a && a === b ? a : null
+    }
+    return valTypeOf(expr)
+  }
+  const valTypeNarrowable = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) && f.sig.results.length === 1
+  )
+  changed = true
+  while (changed) {
+    changed = false
+    for (const func of valTypeNarrowable) {
+      if (func.valResult) continue
+      const body = func.body
+      const exprs = []
+      // Block: `'{}'` with non-`:` first child (else it's an expression-bodied object literal)
+      const isBlock = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+      if (isBlock) {
+        collectReturnExprs(body, exprs)
+        const hasBareReturn = (n) => {
+          if (!Array.isArray(n)) return false
+          if (n[0] === '=>') return false
+          if (n[0] === 'return' && n[1] == null) return true
+          return n.some(hasBareReturn)
+        }
+        if (hasBareReturn(body)) continue
+      } else {
+        exprs.push(body)
+      }
+      if (!exprs.length) continue
+      const localValTypes = isBlock ? collectValTypes(body) : new Map()
+      // Params of this function contribute no known VAL type yet (paramValTypes may help later).
+      const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+      if (!vt0) continue
+      const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
+      if (allSame) { func.valResult = vt0; changed = true }
+    }
+  }
+
+  // Now that E2 set `valResult` on funcs, narrow per-func `arrayElemSchema` for
+  // VAL.ARRAY-returning funcs (via push observations + call chains). Then re-run the
+  // D-pass paramArrSchemas / paramValTypes fixpoint so `const rows = initRows()` in
+  // main resolves to VAL.ARRAY (lets runKernel pick up paramValTypes[0]=ARRAY) and
+  // its arr-elem-schema (sets paramArrSchemas[runKernel][0]=sid).
+  // Cache invalidation: collectValTypes results are body-keyed, and entries cached
+  // during the first D pass have stale (null) `valTypeOf(call)` results because
+  // valResult was unset back then.
+  narrowReturnArrayElemSchemas(paramArrSchemas, valueUsed)
+  narrowReturnArrayElemValTypes(paramArrElemValTypes, valueUsed)
+  for (const func of ctx.func.list) {
+    if (func.body && !func.raw) invalidateValTypesCache(func.body)
+  }
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const entry = callerCtx.get(func)
+    if (entry) entry.callerValTypes = collectValTypes(func.body)
+  }
+  rebuildArrElems()
+  rebuildArrElemVals()
+  // Clear sticky null entries in paramValTypes/paramSchemas — the first 2 passes ran
+  // with valResult unset, so call args resolving via `f.valResult` returned null and
+  // got stuck. Re-running with refreshed callerValTypes lets these flow.
+  for (const m of paramValTypes.values()) for (const [k, v] of m) if (v == null) m.delete(k)
+  for (const m of paramSchemas.values()) for (const [k, v] of m) if (v == null) m.delete(k)
+  runFixpoint()
+  // Now that paramValTypes is refreshed, dedicated arr-elem-schema fixpoint.
+  runArrFixpoint()
+  runArrFixpoint()
+  // Parallel arr-elem-val fixpoint (NUMBER/STRING/…). Twice for transitive closure
+  // through helper chains: `init()→main→runKernel`.
+  runArrValTypeFixpoint()
+  runArrValTypeFixpoint()
+  // E3: Result-type pointer narrowing — when valResult is a non-ambiguous pointer kind
+  // with constant aux, narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
+  // Eliminates the f64.reinterpret_i64+i64.or rebox at every return and the
+  // i32.wrap_i64+i64.reinterpret_f64 unbox at every callsite that uses the value as a
+  // pointer (load .[], .length, .prop slot dispatch).
+  //   - SET/MAP/BUFFER: aux always 0 — no per-callsite aux preservation needed.
+  //   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
+  //     schema (literal `{a,b,c}`, paramSchemas-bound param, module-bound var, or call to
+  //     another OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
+  //     repByLocal.schemaId, restoring property-slot dispatch through the call boundary.
+  // Safety: ARRAY forwards on realloc (no narrowing). STRING dual-encoded SSO/heap.
+  // CLOSURE/TYPED also carry meaningful aux — TYPED narrowing is a follow-up. Body must
+  // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
+  // offset 0 of the narrowed kind, not undefined.
+  const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
+  const alwaysReturns = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '=>') return false
+    if (op === 'return' || op === 'throw') return true
+    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+    return false
+  }
+  // Schema-id inference for a return expression. Returns id (number), or null if unknown
+  // / not constant. Mirrors inferArgSchema but extends with calls to already-narrowed
+  // OBJECT-result funcs (fixpoint propagation through helper chains).
+  const schemaIdOfReturn = (expr, paramSchemasMap) => {
+    if (typeof expr === 'string') {
+      if (paramSchemasMap?.has(expr)) return paramSchemasMap.get(expr)
+      if (ctx.schema.vars.has(expr)) return ctx.schema.vars.get(expr)
+      return null
+    }
+    if (!Array.isArray(expr)) return null
+    const [op, ...args] = expr
+    if (op === '{}') {
+      // Object literal: bail to null on block body, dynamic key, or spread.
+      const parsed = staticObjectProps(args)
+      return parsed ? ctx.schema.register(parsed.names) : null
+    }
+    if (op === '()' && typeof args[0] === 'string') {
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult === VAL.OBJECT && f.sig.ptrAux != null) return f.sig.ptrAux
+      return null
+    }
+    if (op === '?:') {
+      const a = schemaIdOfReturn(args[1], paramSchemasMap)
+      const b = schemaIdOfReturn(args[2], paramSchemasMap)
+      return a != null && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = schemaIdOfReturn(args[0], paramSchemasMap)
+      const b = schemaIdOfReturn(args[1], paramSchemasMap)
+      return a != null && a === b ? a : null
+    }
+    return null
+  }
+  // Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so
+  // a return like `let a = new Float64Array(...); return a` resolves to a constant
+  // aux. Result calls + ?: are handled inline in typedAuxOfReturn.
+  const localElemAuxMap = (body) => {
+    const m = new Map()
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      const op = n[0]
+      if (op === '=>') return
+      if ((op === 'let' || op === 'const') && n.length > 1) {
+        for (let i = 1; i < n.length; i++) {
+          const a = n[i]
+          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+            const aux = typedElemAux(typedElemCtor(a[2]))
+            if (aux != null) m.set(a[1], aux)
+          }
+        }
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(body)
+    return m
+  }
+  const typedAuxOfReturn = (expr, localElemMap) => {
+    if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
+    if (!Array.isArray(expr)) return null
+    const [op, ...args] = expr
+    if (op === '()' && typeof args[0] === 'string') {
+      if (args[0].startsWith('new.')) {
+        const ctor = typedElemCtor(expr)
+        return ctor != null ? typedElemAux(ctor) : null
+      }
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
+      return null
+    }
+    if (op === '?:') {
+      const a = typedAuxOfReturn(args[1], localElemMap)
+      const b = typedAuxOfReturn(args[2], localElemMap)
+      return a != null && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = typedAuxOfReturn(args[0], localElemMap)
+      const b = typedAuxOfReturn(args[1], localElemMap)
+      return a != null && a === b ? a : null
+    }
+    return null
+  }
+  // Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so outer's
+  // call to inner contributes a known schema-id.
+  let narrowChanged = true
+  while (narrowChanged) {
+    narrowChanged = false
+    for (const func of valTypeNarrowable) {
+      if (!func.valResult) continue
+      if (func.sig.results[0] !== 'f64') continue
+      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      if (isBlock && !alwaysReturns(func.body)) continue
+      if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
+        func.sig.results = ['i32']
+        func.sig.ptrKind = func.valResult
+        narrowChanged = true
+        continue
+      }
+      if (func.valResult === VAL.OBJECT) {
+        const exprs = []
+        if (isBlock) collectReturnExprs(func.body, exprs)
+        else exprs.push(func.body)
+        if (!exprs.length) continue
+        const ps = paramSchemas.get(func.name)
+        let paramSchemasMap = null
+        if (ps) {
+          for (const [k, sid] of ps) {
+            if (sid != null && k < func.sig.params.length) {
+              paramSchemasMap ||= new Map()
+              paramSchemasMap.set(func.sig.params[k].name, sid)
+            }
+          }
+        }
+        const sid0 = schemaIdOfReturn(exprs[0], paramSchemasMap)
+        if (sid0 == null) continue
+        const allSame = exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)
+        if (!allSame) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.OBJECT
+        func.sig.ptrAux = sid0
+        narrowChanged = true
+      }
+      if (func.valResult === VAL.TYPED) {
+        const exprs = []
+        if (isBlock) collectReturnExprs(func.body, exprs)
+        else exprs.push(func.body)
+        if (!exprs.length) continue
+        const localMap = isBlock ? localElemAuxMap(func.body) : null
+        const aux0 = typedAuxOfReturn(exprs[0], localMap)
+        if (aux0 == null) continue
+        const allSame = exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)
+        if (!allSame) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.TYPED
+        func.sig.ptrAux = aux0
+        narrowChanged = true
+      }
+    }
+  }
+
+  // F: Cross-call typed-array element ctor propagation. Runs AFTER E3 so that
+  // calls to user functions returning a TYPED-narrowed pointer (with constant
+  // ptrAux, e.g. mkInput → Float64Array) contribute their element type to the
+  // caller's local typedElem map. Result: callees pick up `ctx.types.typedElem`
+  // for their own params and `arr[i]` reads emit a direct `f64.load` instead of
+  // the runtime `__is_str_key + __typed_idx` dispatch — closes the largest
+  // chunk of the JS→wasm gap on f64-heavy hot loops.
+  // (Helpers `inferArgTypedCtor`/`ctorFromAux` lifted to file scope so the
+  //  bimorphic-typed specialization pass below can reuse them.)
+  // Per-caller typed-elem map, recomputed now that E3 has tagged helper sigs.
+  const callerTypedCtx = new Map()
+  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    callerTypedCtx.set(func, collectTypedElems(func.body))
+  }
+  // Two-pass fixpoint: lets a caller's params, once typed, propagate further to
+  // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
+  // for outer, the second pass picks it up for inner).
+  const runTypedFixpoint = () => {
+    for (let s = 0; s < callSites.length; s++) {
+      const { callee, argList, callerFunc } = callSites[s]
+      const func = ctx.func.map.get(callee)
+      if (!func || func.exported || valueUsed.has(callee)) continue
+      const callerTypedElems = callerTypedCtx.get(callerFunc)
+      let callerTypedParams = null
+      if (callerFunc) {
+        const tc = paramTypedCtors.get(callerFunc.name)
+        if (tc) {
+          for (const [k, c] of tc) if (c != null) {
+            callerTypedParams ||= new Map()
+            callerTypedParams.set(callerFunc.sig.params[k].name, c)
+          }
+        }
+      }
+      if (!paramTypedCtors.has(callee)) paramTypedCtors.set(callee, new Map())
+      const tctypes = paramTypedCtors.get(callee)
+      for (let k = 0; k < func.sig.params.length; k++) {
+        if (k >= argList.length) { tctypes.set(k, null); continue }
+        if (tctypes.get(k) === null) continue
+        const c = inferArgTypedCtor(argList[k], callerTypedElems, callerTypedParams)
+        if (c == null) tctypes.set(k, null)
+        else {
+          const prev = tctypes.get(k)
+          if (prev === undefined) tctypes.set(k, c)
+          else if (prev !== c) tctypes.set(k, null)
+        }
+      }
+    }
+  }
+  runTypedFixpoint()
+  runTypedFixpoint()
+
+  // G: TYPED pointer-ABI narrowing — once paramTypedCtors agrees on a single
+  // ctor across all call sites, narrow the param from NaN-boxed f64 to raw
+  // i32 offset (with ptrAux carrying the elem-type bits). Eliminates the
+  // per-read `i32.wrap_i64 (i64.reinterpret_f64 (local.get $arr))` unbox dance
+  // that today dominates hot loops dominated by typed-array indexing.
+  // Call sites coerce via emitArgForParam → ptrOffsetIR(arg, VAL.TYPED).
+  // Safety: same exclusions as the OBJECT/SET/MAP/BUFFER narrowing above —
+  // exported, value-used, raw, defaults, rest position.
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const tctors = paramTypedCtors.get(func.name)
+    if (!tctors) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, ctor] of tctors) {
+      if (ctor == null) continue
+      if (k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue
+      if (func.defaults?.[p.name] != null) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      p.type = 'i32'
+      p.ptrKind = VAL.TYPED
+      p.ptrAux = aux
+    }
+  }
+
+  // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
+  // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
+  // → both VAL.TYPED, different ctors). Without this, callerValTypes carries no entry
+  // for caller's params, so inferArgType returns null and paramValTypes[callee][k] is
+  // sticky null. With ptrKind enriching callerValTypes, sum's arr gets val=TYPED in
+  // its rep, letting array.js skip __is_str_key + __str_idx dispatch on `arr[i]`.
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const entry = callerCtx.get(func)
+    if (!entry) continue
+    for (const p of func.sig.params) {
+      if (p.ptrKind == null) continue
+      if (entry.callerValTypes.has(p.name)) continue
+      entry.callerValTypes.set(p.name, p.ptrKind)
+    }
+  }
+  for (const m of paramValTypes.values()) for (const [k, v] of m) if (v == null) m.delete(k)
+  runFixpoint()
+}
+
+/**
+ * Phase: bimorphic typed-array param specialization.
+ *
+ * For each non-exported user function with a typed-array param that F/G-phase
+ * left bimorphic (paramTypedCtors[k] === null because two or more call sites
+ * disagreed on the elem-ctor — e.g. `sum(f64)` and `sum(i32)`), clone the
+ * function once per concrete ctor seen at the call sites, narrow each clone's
+ * sig.params[k] to a monomorphic typed pointer ABI (type='i32', ptrKind=TYPED,
+ * ptrAux=ctor's aux), and rewrite the call AST nodes to dispatch to the right
+ * clone. The original survives as a fallback for any non-static call sites
+ * (e.g. inside arrow bodies); treeshake removes it if every site got rewritten.
+ *
+ * Why this matters: without specialization, `arr[i]` inside `sum` falls into
+ * the runtime `__typed_idx` path on every iteration — V8 can't inline a wasm
+ * call dominated by a switch on elem type. After specialization, each clone's
+ * `arr[i]` lowers to a direct `f64.load` (or `i32.load + f64.convert`) with
+ * the elem-ctor known at compile time. On poly bench this is the difference
+ * between ~5 ms and matching AS at ~1 ms.
+ *
+ * Safety mirrors G-phase: skip exported, raw, value-used, defaulted, rest, or
+ * already-i32 params. Bounded by MAX_CLONES_PER_FN to guard against polymorphic
+ * blow-up (≥5 distinct ctors at one site → no specialization).
+ */
+function specializeBimorphicTyped(programFacts) {
+  const { callSites, valueUsed, paramTypedCtors, paramValTypes, paramSchemas, paramArrSchemas } = programFacts
+  const MAX_CLONES_PER_FN = 4
+
+  // Per-callee static-call-site index. Built once; cheap.
+  const sitesByCallee = new Map()
+  for (const cs of callSites) {
+    const list = sitesByCallee.get(cs.callee)
+    if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+  }
+
+  // Per-caller typedElem map (literal `new TypedArray(N)` bindings inside body).
+  const callerTypedCtx = new Map()
+  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    callerTypedCtx.set(func, collectTypedElems(func.body))
+  }
+  // Per-caller typed-param map: caller's own params that F/G already narrowed
+  // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
+  const callerTypedParamsCtx = new Map()
+  for (const func of ctx.func.list) {
+    let m = null
+    const tc = paramTypedCtors.get(func.name)
+    if (tc) for (const [k, c] of tc) {
+      if (c != null) { m ||= new Map(); m.set(func.sig.params[k].name, c) }
+    }
+    if (func.sig?.params) for (const p of func.sig.params) {
+      if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
+        m ||= new Map()
+        if (!m.has(p.name)) m.set(p.name, ctorFromAux(p.ptrAux))
+      }
+    }
+    if (m) callerTypedParamsCtx.set(func, m)
+  }
+
+  // Snapshot ctx.func.list — we'll be appending clones during the loop.
+  const originals = ctx.func.list.slice()
+  for (const func of originals) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (!func.body) continue
+    if (func.rest) continue
+    const tctors = paramTypedCtors.get(func.name)
+    if (!tctors) continue
+    const sites = sitesByCallee.get(func.name)
+    if (!sites || sites.length < 2) continue
+
+    // Find sticky-bimorphic typed-param positions left by F-phase.
+    const bimorphic = []
+    for (let k = 0; k < func.sig.params.length; k++) {
+      if (tctors.get(k) !== null) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue
+      if (func.defaults?.[p.name] != null) continue
+      bimorphic.push(k)
+    }
+    if (bimorphic.length === 0) continue
+
+    // For each site, infer the ctor combination across bimorphic positions.
+    // Abort if any site has unknown ctor at any bimorphic position — we can't
+    // route that call to a specific clone without it.
+    const siteCombos = []
+    let abort = false
+    for (const site of sites) {
+      const callerTypedElems = callerTypedCtx.get(site.callerFunc)
+      const callerTypedParams = callerTypedParamsCtx.get(site.callerFunc)
+      const combo = []
+      for (const k of bimorphic) {
+        if (k >= site.argList.length) { abort = true; break }
+        const c = inferArgTypedCtor(site.argList[k], callerTypedElems, callerTypedParams)
+        if (c == null || typedElemAux(c) == null) { abort = true; break }
+        combo.push(c)
+      }
+      if (abort) break
+      siteCombos.push(combo)
+    }
+    if (abort) continue
+
+    // Distinct combos seen across call sites.
+    const distinct = new Map()
+    for (const combo of siteCombos) {
+      const key = combo.join('|')
+      if (!distinct.has(key)) distinct.set(key, combo)
+    }
+    if (distinct.size < 2) continue          // F-phase already mono — nothing to do
+    if (distinct.size > MAX_CLONES_PER_FN) continue  // polymorphic blow-up
+
+    // Build one clone per distinct combo.
+    const cloneByKey = new Map()
+    for (const [key, combo] of distinct) {
+      const suffix = combo.map(c => c.replace(/^new\./, '').replace(/\./g, '_')).join('$')
+      let cloneName = `${func.name}$${suffix}`
+      let n = 0
+      while (ctx.func.names.has(cloneName)) cloneName = `${func.name}$${suffix}$${++n}`
+
+      const cloneSig = {
+        ...func.sig,
+        params: func.sig.params.map(p => ({ ...p })),
+        results: [...func.sig.results],
+      }
+      for (let i = 0; i < bimorphic.length; i++) {
+        const k = bimorphic[i]
+        const aux = typedElemAux(combo[i])
+        const p = cloneSig.params[k]
+        p.type = 'i32'
+        p.ptrKind = VAL.TYPED
+        p.ptrAux = aux
+      }
+      const clone = { ...func, name: cloneName, sig: cloneSig }
+      ctx.func.list.push(clone)
+      ctx.func.map.set(cloneName, clone)
+      ctx.func.names.add(cloneName)
+
+      // Mirror programFacts under the clone's name with mono ctors at bimorphic
+      // positions. emitFunc's preseed reads paramTypedCtors → seeds typedElem
+      // map → `arr[i]` lowers to direct typed load.
+      const cloneTctors = new Map(tctors)
+      for (let i = 0; i < bimorphic.length; i++) cloneTctors.set(bimorphic[i], combo[i])
+      paramTypedCtors.set(cloneName, cloneTctors)
+
+      const origPvt = paramValTypes.get(func.name)
+      const clonePvt = origPvt ? new Map(origPvt) : new Map()
+      for (const k of bimorphic) clonePvt.set(k, VAL.TYPED)
+      paramValTypes.set(cloneName, clonePvt)
+
+      if (paramSchemas.has(func.name)) paramSchemas.set(cloneName, new Map(paramSchemas.get(func.name)))
+      if (paramArrSchemas.has(func.name)) paramArrSchemas.set(cloneName, new Map(paramArrSchemas.get(func.name)))
+
+      cloneByKey.set(key, clone)
+    }
+
+    // Rewrite each site's call AST to point at the matching clone.
+    for (let i = 0; i < sites.length; i++) {
+      const clone = cloneByKey.get(siteCombos[i].join('|'))
+      sites[i].node[1] = clone.name
+    }
+  }
+}
+
+/**
+ * Phase: program-fact collection.
+ *
+ * Single whole-program walk over the module AST + each user function body
+ * + all moduleInits. Collects:
+ *   dynVars/anyDyn   — vars accessed via runtime key (drives strict mode +
+ *                      __dyn_get fallback gating)
+ *   propMap          — property assignments per receiver (auto-box schemas)
+ *   valueUsed        — ctx.func.names passed as first-class values (excluded
+ *                      from internal narrowing — they need uniform $ftN ABI)
+ *   maxDef/maxCall   — closure ABI width inputs
+ *   hasRest/hasSpread
+ *   callSites        — `{ callee, argList, callerFunc }` for static-name
+ *                      calls (drives the type/schema fixpoint without
+ *                      re-walking the AST)
+ *   paramValTypes/paramWasmTypes/paramSchemas — empty Maps populated later
+ *                      by narrowSignatures and read by emitFunc.
+ *
+ * Three visit modes:
+ *   full=true  (ast + user funcs)  → all facts including call-site collection
+ *   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/
+ *                                     callSites: moduleInits don't own user
+ *                                     props/funcs)
+ *   inArrow=true                    → flips off call-site collection so
+ *                                     closure-internal calls don't poison
+ *                                     caller-context type inference.
+ */
+function collectProgramFacts(ast) {
+  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
+  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
+  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
+  const paramArrSchemas = new Map()// funcName → Map<paramIdx, schemaId | null> (Array<schema>)
+  const paramArrElemValTypes = new Map() // funcName → Map<paramIdx, VAL.* | null> (Array<vt>)
+  const paramTypedCtors = new Map()// funcName → Map<paramIdx, ctor string | null>
+  const valueUsed = new Set()
+  const dynVars = new Set()
+  let anyDyn = false
+  const propMap = new Map()
+  const callSites = []  // { callee, argList, callerFunc /* func obj or null */, node /* the ('()' callee args) AST node, mutable for specialization */ }
+  const doSchema = ast && ctx.schema.register
+  const doArity = !!ctx.closure.make
+  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  // Slot-type collection: monomorphic property val types per schema, populated from
+  // every static `{a: e1, b: e2, …}` literal in the program. Read by ctx.schema.slotVT
+  // → valTypeOf on `.prop` AST nodes so downstream `+`, `===`, method dispatch can
+  // skip the "is it a string?" runtime check on numeric props of known shapes.
+  // Merge rule: first observation wins; second distinct kind → null (ambiguous).
+  const slotTypes = ctx.schema.slotTypes
+  const observeSlot = (sid, idx, vt) => {
+    if (!vt) return
+    let arr = slotTypes.get(sid)
+    if (!arr) { arr = []; slotTypes.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = vt
+    else if (arr[idx] !== vt) arr[idx] = null
+  }
+  const walkFacts = (node, full, inArrow, callerFunc) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
+    // Float64Array uses typed-array load, not __dyn_get — only the actual
+    // dynamic-dispatch fallback should error in strict mode).
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
+    } else if (op === 'for-in') {
+      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
+      anyDyn = true
+      if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    // Object literal: register schema + observe slot val types. Static-key only;
+    // dynamic-key/spread shapes route through __dyn_set and have no fixed slot mapping.
+    if (op === '{}' && doSchema) {
+      const parsed = staticObjectProps(args)
+      if (parsed) {
+        const sid = ctx.schema.register(parsed.names)
+        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, valTypeOf(parsed.values[i]))
+      }
+    }
+    // closure ABI arity
+    if (doArity) {
+      if (op === '=>') {
+        let fixedN = 0
+        for (const r of extractParams(args[0])) {
+          if (classifyParam(r).kind === 'rest') hasRest = true
+          else fixedN++
+        }
+        if (fixedN > maxDef) maxDef = fixedN
+      } else if (op === '()') {
+        const a = args[1]
+        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
+        if (callArgs.length > maxCall) maxCall = callArgs.length
+      }
+    }
+    // Crossing into a closure body: from now on, no call-site collection (matches the
+    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
+    if (op === '=>') {
+      for (const a of args) walkFacts(a, full, true, callerFunc)
+      return
+    }
+    if (full) {
+      // property-assignment scan for auto-box
+      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, prop] = args[0]
+        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+          if (!propMap.has(obj)) propMap.set(obj, new Set())
+          propMap.get(obj).add(prop)
+        }
+      }
+      // first-class function-value + static-call-site scan
+      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
+        if (!inArrow) {
+          // Record call site for the type/schema fixpoint. Filtering by
+          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
+          // `node` is the call AST node itself; specializeBimorphicTyped mutates
+          // node[1] (the callee name) to point at a per-ctor clone.
+          const a = args[1]
+          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          callSites.push({ callee: args[0], argList, callerFunc, node })
+        }
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i]
+          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+          else walkFacts(a, true, inArrow, callerFunc)
+        }
+        return
+      }
+      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
+      for (const a of args) {
+        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+        else walkFacts(a, true, inArrow, callerFunc)
+      }
+    } else {
+      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
+    }
+  }
+  walkFacts(ast, true, false, null)
+  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+  return {
+    dynVars, anyDyn, propMap, valueUsed, callSites,
+    maxDef, maxCall, hasRest, hasSpread,
+    paramValTypes, paramWasmTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors,
+  }
+}
+
+/**
+ * Phase: emit one user function to WAT IR.
+ *
+ * Reads the (already-narrowed) `func.sig` and `programFacts.paramValTypes/paramSchemas`
+ * to seed per-param val reps / schema bindings; emits body via emit / emitBody.
+ *
+ * Mutates ctx.func.* per-function state (locals, boxed, repByLocal, …) and
+ * ctx.schema.vars (restored on exit so bindings don't leak across functions).
+ */
+function emitFunc(func, programFacts) {
+  const { paramValTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors } = programFacts
+
+  // Raw WAT functions (e.g., _alloc, _reset from memory module)
+  if (func.raw) return parseWat(func.raw)
+
+  const { name, body, exported, sig } = func
+  const multi = sig.results.length > 1
+
+  // Reset per-function state
+  ctx.func.stack = []
+  ctx.func.uniq = 0
+  ctx.func.current = sig
+  ctx.func.body = body
+  ctx.func.directClosures = null
+
+  // Pre-analyze local types from body
+  // Block body vs object literal: object has ':' property nodes
+  const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+  ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
+  ctx.func.localProps = null  // reset per function
+  ctx.func.repByLocal = null  // Map<name, ValueRep> — populated lazily; reset per function
+  ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
+  // Pre-seed cross-call param facts BEFORE analyzeLocals/analyzeValTypes(body) so that
+  // when the walker sees `const b0 = arr[i]` or `let n = arr.length`, lookupValType(arr)
+  // already resolves to VAL.TYPED — letting valTypeOf's `[]` rule propagate VAL.NUMBER
+  // to b0 (skips __to_num) and exprType's `.length` rule keep n as i32 (skips per-iter
+  // f64.convert_i32_s + i32.trunc_sat_f64_s on the loop counter). Without this seed,
+  // params don't gain VAL.TYPED until after analyzeLocals freezes counter widths.
+  // (See narrowSignatures F-phase for paramTypedCtors source.)
+  const _preTctors = paramTypedCtors.get(name)
+  if (_preTctors) {
+    for (const [k, ctor] of _preTctors) {
+      if (ctor && k < sig.params.length) {
+        const pname = sig.params[k].name
+        if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
+        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, ctor)
+        updateRep(pname, { val: VAL.TYPED })
+      }
+    }
+  }
+  const _prePtypes = paramValTypes.get(name)
+  if (_prePtypes) {
+    for (const [k, vt] of _prePtypes) {
+      if (vt && k < sig.params.length) {
+        const pname = sig.params[k].name
+        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: vt })
+      }
+    }
+  }
+  // Pre-seed paramArrSchemas so analyzeValTypes's `arrElemSchemaOf(name)` finds
+  // rep.arrayElemSchema for params bound to Array<sid> across all call sites.
+  // Unlocks `const p = rows[i]` → bind p's schemaId → `p.x .y .z` → slot reads.
+  const _preAetypes = paramArrSchemas.get(name)
+  if (_preAetypes) {
+    for (const [k, sid] of _preAetypes) {
+      if (sid != null && k < sig.params.length) {
+        const pname = sig.params[k].name
+        updateRep(pname, { arrayElemSchema: sid })
+      }
+    }
+  }
+  // Pre-seed paramArrElemValTypes so valTypeOf's `arr[i]` rule finds
+  // rep.arrayElemValType for params bound to Array<NUMBER/STRING/…>. Unlocks
+  // `const x = a[i]` → x.val=NUMBER → `x*k` skips __to_num. Also unblocks
+  // .map's argRep hint for inlined callback params.
+  const _preAevtypes = paramArrElemValTypes.get(name)
+  if (_preAevtypes) {
+    for (const [k, vt] of _preAevtypes) {
+      if (vt != null && k < sig.params.length) {
+        const pname = sig.params[k].name
+        updateRep(pname, { arrayElemValType: vt })
+      }
+    }
+  }
+  // Drop any earlier-cached analyzeLocals for this body — narrowSignatures called
+  // it before our pre-seed, when params still had no inferred VAL.TYPED, so the
+  // cached widths reflect the pre-narrow state. Re-walk now with reps in place.
+  invalidateLocalsCache(body)
+  ctx.func.locals = block ? analyzeLocals(body) : new Map()
+  if (block) {
+    analyzeValTypes(body)
+    analyzeBoxedCaptures(body)
+    // Lower provably-monomorphic pointer locals to i32 offset storage.
+    const unbox = analyzePtrUnboxable(body, ctx.func.locals, ctx.func.boxed)
+    if (unbox.size > 0) {
+      for (const [n, kind] of unbox) {
+        ctx.func.locals.set(n, 'i32')
+        const fields = { ptrKind: kind }
+        if (kind === VAL.TYPED) {
+          const aux = typedElemAux(ctx.types.typedElem?.get(n))
+          if (aux != null) fields.ptrAux = aux
+        }
+        updateRep(n, fields)
+      }
+    }
+  }
+  // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
+  // ptrKind set. Register them in ctx.func.repByLocal so readVar tags local.gets correctly.
+  // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
+  // so asF64 reboxes to NaN-form before f64.store to the cell.
+  for (const p of sig.params) {
+    if (p.ptrKind == null) continue
+    const fields = { ptrKind: p.ptrKind }
+    if (p.ptrAux != null) fields.ptrAux = p.ptrAux
+    updateRep(p.name, fields)
+  }
+  // D: Apply call-site param types (only if body analysis didn't already set them)
+  const ptypes = paramValTypes.get(name)
+  if (ptypes) {
+    for (const [k, vt] of ptypes) {
+      if (vt && k < sig.params.length) {
+        const pname = sig.params[k].name
+        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: vt })
+      }
+    }
+  }
+  // D: Apply call-site typed-array element ctors so `arr[i]` reads emit the
+  // direct f64.load fast path inside the body (resolveElem(arr) hits a known
+  // ctor instead of falling through to the runtime __typed_idx dispatch).
+  // Also seeds val=TYPED on the param's rep if call-site valType propagation
+  // didn't already pick it up — having the ctor implies TYPED (the array.js
+  // indexed-access fast path keys off `lookupValType(arr) === 'typed'`).
+  const tctors = paramTypedCtors.get(name)
+  if (tctors) {
+    for (const [k, ctor] of tctors) {
+      if (ctor && k < sig.params.length) {
+        const pname = sig.params[k].name
+        if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
+        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, ctor)
+        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
+      }
+    }
+  }
+  // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
+  // are restored after this function's emit so bindings don't leak across functions
+  // that reuse param names (e.g. `o`). Requires all call sites to agree on schemaId.
+  const stypes = paramSchemas.get(name)
+  const schemaVarsPrev = new Map(ctx.schema.vars)
+  if (stypes && !exported) {
+    for (const [k, sid] of stypes) {
+      if (sid == null || k >= sig.params.length) continue
+      const pname = sig.params[k].name
+      if (!ctx.schema.vars.has(pname)) {
+        ctx.schema.vars.set(pname, sid)
+        updateRep(pname, { schemaId: sid })
+      }
+    }
+  }
+
+  const fn = ['func', `$${name}`]
+  if (exported) fn.push(['export', `"${name}"`])
+  fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
+  fn.push(...sig.results.map(t => ['result', t]))
+
+  // Default params: missing JS args become canonical NaN (0x7FF8000000000000) in WASM f64 params.
+  // Check for canonical NaN specifically — NaN-boxed pointers are also NaN but have non-zero payload.
+  const defaults = func.defaults || {}
+  const defaultInits = []
+  for (const [pname, defVal] of Object.entries(defaults)) {
+    const p = sig.params.find(p => p.name === pname)
+    const t = p?.type || 'f64'
+    defaultInits.push(
+      ['if', isNullish(typed(['local.get', `$${pname}`], 'f64')),
+        ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
+  }
+
+  // Box params that are mutably captured: allocate cell, copy param value
+  const boxedParamInits = []
+  for (const p of sig.params) {
+    if (ctx.func.boxed.has(p.name)) {
+      const cell = ctx.func.boxed.get(p.name)
+      ctx.func.locals.set(cell, 'i32')
+      const lget = typed(['local.get', `$${p.name}`], p.type)
+      if (p.ptrKind != null) lget.ptrKind = p.ptrKind
+      boxedParamInits.push(
+        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
+    }
+  }
+
+  if (block) {
+    const stmts = emitBody(body)
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    // I: Skip trailing fallback when last statement is return (unreachable code)
+    const lastStmt = stmts.at(-1)
+    const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
+    fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
+  } else if (multi && body[0] === '[') {
+    const values = body.slice(1).map(e => asF64(emit(e)))
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    fn.push(...boxedParamInits, ...values)
   } else {
-    // Plain object literal
-    litProps = value.slice(1).map(p => [p[0], p[1]])
+    const ir = emit(body)
+    for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
+    const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
+    fn.push(...defaultInits, ...boxedParamInits, finalIR)
   }
 
-  const literalKeys = litProps.map(p => p[0])
-  const allKeys = [...new Set([...literalKeys, ...inferred.props])]
-
-  if (allKeys.length === 0 && !prefix) return null
-
-  ctx.usedArrayType = true
-  ctx.usedMemory = true
-  const schemaId = ctx.objectCounter + 1
-  ctx.objectCounter++
-  if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-  ctx.objectPropTypes[schemaId] = {}
-
-  // Schema: with prefix = [prefix, ...keys], without = [...keys]
-  const schemaArr = prefix ? [prefix, ...allKeys] : allKeys
-  ctx.objectSchemas[schemaId] = schemaArr
-
-  if (prefix) {
-    ctx.objectPropTypes[schemaId][prefix] = { type: prefix.slice(2, -2) }
-  }
-  for (const key of inferred.closures || []) {
-    ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-  }
-
-  // Static object optimization (plain objects only, no prefix)
-  if (!prefix) {
-    const noInferredProps = inferred.props.every(p => literalKeys.includes(p))
-    const allConstant = litProps.every(([, val]) => isConstant(val))
-    const noClosures = !inferred.closures?.size
-    if (noInferredProps && allConstant && noClosures) {
-      const objectId = Object.keys(ctx.staticObjects).length
-      const values = litProps.map(([, val]) => toNumber(evalConstant(val)))
-      const arraySpace = Object.keys(ctx.staticArrays).length * 64
-      const objectSpace = objectId * 64
-      const offset = HEAP_START + 4096 + arraySpace + objectSpace
-      ctx.staticObjects[objectId] = { offset, values, schemaId }
-      const scopedName = ctx.declareVar(name, isConst)
-      ctx.addLocal(name, 'object', schemaId, scopedName)
-      return wat(`(local.tee $${scopedName} (call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset})))`, 'object', schemaId)
-    }
-  }
-
-  // Build values array: [target, ...propVals] if prefix, else [...propVals]
-  const vals = prefix ? [String(f64(target))] : []
-  for (const key of allKeys) {
-    const litProp = litProps.find(p => p[0] === key)
-    if (litProp) {
-      const g = gen(litProp[1])
-      vals.push(String(f64(g)))
-      if (g.type === 'closure' || (Array.isArray(litProp[1]) && litProp[1][0] === '=>')) {
-        ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-      } else if (g.type === 'object' && g.schema) {
-        ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-      } else if (g.type === 'string') {
-        ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-      }
-    } else {
-      vals.push('(f64.const 0)')  // Placeholder for inferred-only props
-    }
-  }
-
-  const objWat = allocObject(schemaId, schemaArr, vals, 'obj')
-  const scopedName = ctx.declareVar(name, isConst)
-  ctx.addLocal(name, 'object', schemaArr, scopedName)
-  return wat(`(local.tee $${scopedName} ${objWat})`, 'object', schemaArr)
+  // Restore schema.vars so param bindings don't leak to next function.
+  ctx.schema.vars = schemaVarsPrev
+  return fn
 }
 
-
 /**
- * Resolve a function/method call to WAT code.
- * Handles: Math.*, Number.*, global functions, user-defined functions, method calls on arrays/strings.
+ * Phase: emit one closure body to WAT IR.
  *
- * @param {string|null} namespace - 'Math', 'Number', or null for global/user functions
- * @param {string} name - Function/method name (e.g. 'sin', 'isNaN', 'myFunc', 'map')
- * @param {any[]} args - Array of AST argument nodes
- * @param {object|null} receiver - For method calls, the typed value being called on (e.g. array for arr.map)
- * @returns {object} Typed WAT value with {type, wat, schema?}
- * @example resolveCall('Math', 'sin', [[null, 1]]) → {type:'f64', wat:'(call $sin (f64.const 1))'}
- * @example resolveCall(null, 'myFunc', [args...]) → {type:'f64', wat:'(call $myFunc ...)'}
- */
-function resolveCall(namespace, name, args, receiver = null) {
-  // Method calls
-  if (receiver !== null) {
-    const rt = receiver.type, rw = String(receiver)
-
-    // TypedArray methods - dispatch with compile-time elemType
-    if (isTypedArray(receiver) && TYPED_ARRAY_METHODS[name]) {
-      ctx.usedTypedArrays = true
-      ctx.usedMemory = true
-      const elemType = receiver.schema  // elemType stored in schema field
-      return TYPED_ARRAY_METHODS[name](elemType, rw, args)
-    }
-
-    // Dispatch to method modules - f64 can be array pointer
-    // flat_array/ring_array are specialized array types for static dispatch
-    const isArrayLike = rt === 'array' || rt === 'flat_array' || rt === 'ring_array' || rt === 'f64'
-    if (isArrayLike && ARRAY_METHODS[name]) {
-      // Track param usage for JS interop
-      if (receiver.paramName) {
-        ctx.inferredArrayParams.add(receiver.paramName)
-      }
-      const result = ARRAY_METHODS[name](rw, args, receiver)
-      if (result) return result
-    }
-    if (rt === 'string' && STRING_METHODS[name]) {
-      const result = STRING_METHODS[name](rw, args)
-      if (result) return result
-    }
-
-    // Number methods (f64/i32)
-    if ((rt === 'f64' || rt === 'i32') && NUMBER_METHODS[name]) {
-      return NUMBER_METHODS[name](receiver, args, ctx, gen)
-    }
-
-    // Regex methods
-    if (isRegex(receiver) && REGEX_METHODS[name]) {
-      ctx.usedMemory = true
-      return REGEX_METHODS[name](receiver, args, ctx)
-    }
-
-    // Set methods
-    if (isSet(receiver) && SET_METHODS[name]) {
-      return SET_METHODS[name](rw, args, ctx, gen)
-    }
-
-    // Map methods
-    if (isMap(receiver) && MAP_METHODS[name]) {
-      return MAP_METHODS[name](rw, args, ctx, gen)
-    }
-
-    // Check if receiver is a closure/function property from an object
-    if (receiver.type === 'closure' && receiver.objWat) {
-      // Object method call: obj.method(args)
-      ctx.usedMemory = true
-      const argWats = args.map(a => f64(gen(a))).join(' ')
-      const closureWat = receiver.toString()
-      const result = wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
-      return result
-    }
-
-    throw new Error(`Unknown method: .${name}`)
-  }
-
-  // Math namespace
-  if (namespace === 'Math') {
-    if (name in MATH_OPS.f64_unary && args.length === 1)
-      return wat(`(${MATH_OPS.f64_unary[name]} ${f64(gen(args[0]))})`, 'f64')
-    if (name in MATH_OPS.i32_unary && args.length === 1)
-      return wat(`(${MATH_OPS.i32_unary[name]} ${i32(gen(args[0]))})`, 'i32')
-    if (name in MATH_OPS.f64_binary && args.length === 2)
-      return wat(`(${MATH_OPS.f64_binary[name]} ${f64(gen(args[0]))} ${f64(gen(args[1]))})`, 'f64')
-    if (name in MATH_OPS.f64_binary && args.length > 2) {
-      let result = String(f64(gen(args[0])))
-      for (let i = 1; i < args.length; i++) result = `(${MATH_OPS.f64_binary[name]} ${result} ${f64(gen(args[i]))})`
-      return wat(result, 'f64')
-    }
-    if (MATH_OPS.stdlib_unary.includes(name) && args.length === 1) {
-      ctx.usedStdlib.push(name)
-      return wat(`(call $${name} ${f64(gen(args[0]))})`, 'f64')
-    }
-    if (MATH_OPS.stdlib_binary.includes(name) && args.length === 2) {
-      ctx.usedStdlib.push(name)
-      return wat(`(call $${name} ${f64(gen(args[0]))} ${f64(gen(args[1]))})`, 'f64')
-    }
-    if (name === 'random' && args.length === 0) {
-      ctx.usedStdlib.push('random')
-      return wat('(call $random)', 'f64')
-    }
-    throw new Error(`Unknown Math.${name}`)
-  }
-
-  // Number namespace
-  if (namespace === 'Number') {
-    if (name === 'isNaN' && args.length === 1) {
-      const w = f64(gen(args[0]))
-      return wat(`(f64.ne ${w} ${w})`, 'i32')
-    }
-    if (name === 'isFinite' && args.length === 1) {
-      const w = f64(gen(args[0]))
-      return wat(`(i32.and (f64.eq ${w} ${w}) (f64.ne (f64.abs ${w}) (f64.const inf)))`, 'i32')
-    }
-    if (name === 'isInteger' && args.length === 1) {
-      ctx.usedStdlib.push('isInteger')
-      return wat(`(i32.trunc_f64_s (call $isInteger ${f64(gen(args[0]))}))`, 'i32')
-    }
-    throw new Error(`Unknown Number.${name}`)
-  }
-
-  // Array namespace
-  if (namespace === 'Array') {
-    if (name === 'isArray' && args.length === 1) {
-      const w = gen(args[0])
-      // Check: 1) is NaN (pointer), 2) type is ARRAY (1)
-      // Type is in bits 48-50 (3 bits) in new encoding
-      const v = f64(w)
-      const isNaN = `(f64.ne ${v} ${v})`
-      const typeVal = `(i32.and (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const 48))) (i32.const 7))`
-      return wat(`(i32.and ${isNaN} (i32.eq ${typeVal} (i32.const ${PTR_TYPE.ARRAY})))`, 'i32')
-    }
-    if (name === 'from' && args.length >= 1) {
-      // Array.from(arr) - shallow copy of array
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      ctx.returnsArrayPointer = true
-      const src = gen(args[0])
-      const id = ctx.uniqueId++
-      const srcLocal = `$_afrom_src_${id}`, len = `$_afrom_len_${id}`, result = `$_afrom_res_${id}`
-      ctx.addLocal(srcLocal, 'f64')
-      ctx.addLocal(len, 'i32')
-      ctx.addLocal(result, 'f64')
-      return wat(`
-        (local.set ${srcLocal} ${src})
-        (local.set ${len} (call $__ptr_len (local.get ${srcLocal})))
-        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${len})))
-        (memory.copy
-          (call $__ptr_offset (local.get ${result}))
-          (call $__ptr_offset (local.get ${srcLocal}))
-          (i32.shl (local.get ${len}) (i32.const 3)))
-        (local.get ${result})`, 'flat_array')
-    }
-    throw new Error(`Unknown Array.${name}`)
-  }
-
-  // Object namespace
-  if (namespace === 'Object') {
-    if (name === 'assign' && args.length >= 2) {
-      // Object.assign(target, source)
-      const targetAst = args[0], sourceAst = args[1]
-      const target = gen(targetAst), source = gen(sourceAst)
-
-      // Extract props from source (must be object literal at compile time)
-      if (!Array.isArray(sourceAst) || sourceAst[0] !== '{') {
-        throw new Error('Object.assign source must be object literal')
-      }
-      const props = sourceAst.slice(1)
-
-      // Primitives can't hold properties - warn and return primitive unchanged
-      if (isPrimitiveLiteral(target, targetAst)) {
-        ctx.warn('Object.assign on primitive has no effect (primitives cannot hold properties)')
-        return target
-      }
-
-      // Pointer types (arrays, regex, etc.) - create new object with prefix + props
-      const prefix = getPointerPrefix(target)
-      if (prefix) {
-        ctx.usedArrayType = true
-        ctx.usedMemory = true
-
-        const propKeys = props.map(p => p[0])
-        const schemaArr = [prefix, ...propKeys]
-        const schemaId = ctx.objectCounter + 1
-        ctx.objectCounter++
-        ctx.objectSchemas[schemaId] = schemaArr
-
-        if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-        ctx.objectPropTypes[schemaId] = { [prefix]: { type: prefix.slice(2, -2) } }
-
-        const vals = [String(f64(target))]  // First slot = pointer
-        for (const [key, valueAst] of props) {
-          const g = gen(valueAst)
-          vals.push(String(f64(g)))
-          if (g.type === 'object' && g.schema) ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-          else if (g.type === 'string') ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-          else if (g.type === 'array') ctx.objectPropTypes[schemaId][key] = { type: 'array' }
-        }
-
-        return allocObject(schemaId, schemaArr, vals, 'obj')
-      }
-
-      // Object.assign on existing object: extend with new properties
-      // Forward schema inference has already added these props to the schema
-      if (isObject(target) && hasSchema(target)) {
-        ctx.usedMemory = true
-        const schema = getSchema(target)
-        let code = ''
-        for (const prop of props) {
-          const propName = prop[0]
-          const idx = schema.indexOf(propName)
-          if (idx < 0) {
-            throw new Error(`Property '${propName}' not found in object schema (forward inference may have missed it)`)
-          }
-          const vw = f64(gen(prop[1]))
-          code += objSet(String(target), idx, vw) + '\n      '
-        }
-        return wat(`(block (result f64) ${code}${target})`, target.type, target.schema)
-      }
-
-      throw new Error('Object.assign target must be an object (not a primitive)')
-    }
-
-    // Object.keys(obj) - returns array of property names (strings)
-    if (name === 'keys' && args.length === 1) {
-      const obj = gen(args[0])
-      if (!isObject(obj) || !hasSchema(obj)) {
-        throw new Error('Object.keys requires object with known schema')
-      }
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      ctx.usedStringType = true
-      ctx.returnsArrayPointer = true
-      const schema = getSchema(obj)
-      // Filter out internal schema markers like __string__, __number__, __boolean__
-      const keys = schema.filter(k => !k.startsWith('__'))
-      // Create static array of interned strings
-      const keyStrs = keys.map(k => mkString(ctx, k))
-      const id = ctx.uniqueId++
-      const result = `$_okeys_${id}`
-      ctx.addLocal(result, 'f64')
-      const stores = keyStrs.map((s, i) =>
-        `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${s})`).join('\n      ')
-      return wat(`
-        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
-        ${stores}
-        (local.get ${result})`, 'flat_array')
-    }
-
-    // Object.values(obj) - returns array of property values
-    if (name === 'values' && args.length === 1) {
-      const obj = gen(args[0])
-      if (!isObject(obj) || !hasSchema(obj)) {
-        throw new Error('Object.values requires object with known schema')
-      }
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      ctx.returnsArrayPointer = true
-      const schema = getSchema(obj)
-      const keys = schema.filter(k => !k.startsWith('__'))
-      const id = ctx.uniqueId++
-      const result = `$_ovals_${id}`, src = `$_ovsrc_${id}`
-      ctx.addLocal(result, 'f64')
-      ctx.addLocal(src, 'f64')
-      // Find indices of non-internal keys
-      const indices = keys.map(k => schema.indexOf(k))
-      const stores = indices.map((idx, i) =>
-        `(f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) ${objGet(`(local.get ${src})`, idx)})`).join('\n      ')
-      return wat(`
-        (local.set ${src} ${obj})
-        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
-        ${stores}
-        (local.get ${result})`, 'flat_array')
-    }
-
-    // Object.entries(obj) - returns array of [key, value] pairs
-    if (name === 'entries' && args.length === 1) {
-      const obj = gen(args[0])
-      if (!isObject(obj) || !hasSchema(obj)) {
-        throw new Error('Object.entries requires object with known schema')
-      }
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      ctx.usedStringType = true
-      ctx.returnsArrayPointer = true
-      const schema = getSchema(obj)
-      const keys = schema.filter(k => !k.startsWith('__'))
-      const id = ctx.uniqueId++
-      const result = `$_oent_${id}`, src = `$_oesrc_${id}`, pair = `$_oepair_${id}`
-      ctx.addLocal(result, 'f64')
-      ctx.addLocal(src, 'f64')
-      ctx.addLocal(pair, 'f64')
-      // Each entry is [key, value] - a 2-element array
-      const indices = keys.map(k => schema.indexOf(k))
-      const keyStrs = keys.map(k => mkString(ctx, k))
-      const pairs = indices.map((idx, i) => `
-        (local.set ${pair} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const 2)))
-        (f64.store (call $__ptr_offset (local.get ${pair})) ${keyStrs[i]})
-        (f64.store (i32.add (call $__ptr_offset (local.get ${pair})) (i32.const 8)) ${objGet(`(local.get ${src})`, idx)})
-        (f64.store (i32.add (call $__ptr_offset (local.get ${result})) (i32.const ${i * 8})) (local.get ${pair}))`).join('\n      ')
-      return wat(`
-        (local.set ${src} ${obj})
-        (local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (i32.const ${keys.length})))
-        ${pairs}
-        (local.get ${result})`, 'flat_array')
-    }
-
-    throw new Error(`Unknown Object.${name}`)
-  }
-
-  // JSON namespace
-  if (namespace === 'JSON') {
-    if (name === 'stringify' && args.length >= 1) {
-      ctx.usedStringType = true
-      ctx.usedMemory = true
-      ctx.usedStdlib.push('numToString')
-      ctx.usedStdlib.push('escapeJsonString')
-
-      const val = gen(args[0])
-      const id = ctx.uniqueId++
-
-      // Static string helpers
-      const strTrue = mkString(ctx, 'true')
-      const strFalse = mkString(ctx, 'false')
-      const strNull = mkString(ctx, 'null')
-      const strQuote = mkString(ctx, '"')
-      const strColon = mkString(ctx, ':')
-      const strComma = mkString(ctx, ',')
-      const strLBrace = mkString(ctx, '{')
-      const strRBrace = mkString(ctx, '}')
-      const strLBracket = mkString(ctx, '[')
-      const strRBracket = mkString(ctx, ']')
-
-      // Generate stringifier for a value with known type info
-      const genStringify = (valExpr, type, schema) => {
-        const v = `$_jsv_${ctx.uniqueId++}`
-        const r = `$_jsr_${ctx.uniqueId++}`
-        ctx.addLocal(v, 'f64')
-        ctx.addLocal(r, 'f64')
-
-        // String type - wrap in quotes, escape special chars
-        if (type === 'string') {
-          return `(local.set ${v} ${valExpr})
-            (local.set ${r} (call $__strcat3 ${strQuote} (call $escapeJsonString (local.get ${v})) ${strQuote}))
-            (local.get ${r})`
-        }
-
-        // Number type - convert to string
-        if (type === 'f64' || type === 'i32') {
-          return `(call $numToString ${f64(valExpr)})`
-        }
-
-        // Boolean
-        if (type === 'bool') {
-          return `(select ${strTrue} ${strFalse} ${i32(valExpr)})`
-        }
-
-        // Object with known schema - unroll properties
-        const schemaArr = Array.isArray(schema) ? schema : ctx.objectSchemas[schema]
-        if (type === 'object' && schemaArr) {
-          const schemaKeys = schemaArr.filter(k => !k.startsWith('__'))
-          const obj = `$_jso_${ctx.uniqueId++}`
-          ctx.addLocal(obj, 'f64')
-
-          let code = `(local.set ${obj} ${valExpr})\n`
-          code += `(local.set ${r} ${strLBrace})\n`
-
-          schemaKeys.forEach((key, i) => {
-            const keyStr = mkString(ctx, `"${key}":`)
-            const propIdx = schemaArr.indexOf(key)
-            const propVal = objGet(`(local.get ${obj})`, propIdx)
-            // Recursively stringify - for simplicity, assume number values
-            // TODO: detect property types for proper recursion
-            // Note: objGet returns f64 (f64.load), so no conversion needed
-            const propStr = `(call $numToString ${propVal})`
-            code += `(local.set ${r} (call $__strcat (local.get ${r}) ${keyStr}))\n`
-            code += `(local.set ${r} (call $__strcat (local.get ${r}) ${propStr}))\n`
-            if (i < schemaKeys.length - 1) {
-              code += `(local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))\n`
-            }
-          })
-
-          code += `(local.set ${r} (call $__strcat (local.get ${r}) ${strRBrace}))\n`
-          code += `(local.get ${r})`
-          return code
-        }
-
-        // Array - generate loop
-        if (type === 'array') {
-          const arr = `$_jsa_${ctx.uniqueId++}`
-          const idx = `$_jsai_${ctx.uniqueId++}`
-          const len = `$_jsal_${ctx.uniqueId++}`
-          const elem = `$_jsae_${ctx.uniqueId++}`
-          ctx.addLocal(arr, 'f64')
-          ctx.addLocal(idx, 'i32')
-          ctx.addLocal(len, 'i32')
-          ctx.addLocal(elem, 'f64')
-
-          return `(local.set ${arr} ${valExpr})
-            (local.set ${len} ${arrLen(`(local.get ${arr})`)})
-            (local.set ${r} ${strLBracket})
-            (local.set ${idx} (i32.const 0))
-            (block $jsa_done_${id} (loop $jsa_loop_${id}
-              (br_if $jsa_done_${id} (i32.ge_s (local.get ${idx}) (local.get ${len})))
-              (local.set ${elem} ${arrGet(`(local.get ${arr})`, `(local.get ${idx})`)})
-              ;; For each element, convert to string (assume number for now)
-              (local.set ${r} (call $__strcat (local.get ${r}) (call $numToString (local.get ${elem}))))
-              ;; Add comma if not last
-              (if (i32.lt_s (local.get ${idx}) (i32.sub (local.get ${len}) (i32.const 1)))
-                (then (local.set ${r} (call $__strcat (local.get ${r}) ${strComma}))))
-              (local.set ${idx} (i32.add (local.get ${idx}) (i32.const 1)))
-              (br $jsa_loop_${id})))
-            (local.set ${r} (call $__strcat (local.get ${r}) ${strRBracket}))
-            (local.get ${r})`
-        }
-
-        // Default - try to detect type at runtime
-        return `(local.set ${v} ${valExpr})
-          (if (result f64) (call $__is_pointer (local.get ${v}))
-            (then
-              (if (result f64) (i32.eq (call $__ptr_type (local.get ${v})) (i32.const ${PTR_TYPE.STRING}))
-                (then (call $__strcat3 ${strQuote} (call $escapeJsonString (local.get ${v})) ${strQuote}))
-                (else (call $numToString (local.get ${v})))))
-            (else (call $numToString (local.get ${v}))))`
-      }
-
-      // Ensure strcat functions are available
-      ctx.needsStrcat = true
-
-      return wat(genStringify(val, val.type, val.schema), 'string')
-    }
-
-    if (name === 'parse' && args.length >= 1) {
-      ctx.usedStringType = true
-      ctx.usedMemory = true
-      ctx.usedStdlib.push('__json_parse')
-      const str = gen(args[0])
-      // Returns f64 (could be number, string ptr, array ptr, or Map ptr)
-      return wat(`(call $__json_parse ${str})`, 'f64')
-    }
-
-    throw new Error(`Unknown JSON.${name}`)
-  }
-
-  // Global functions
-  if (namespace === null) {
-    if (name === 'isNaN' || name === 'isFinite') return resolveCall('Number', name, args)
-    if (name === 'Array' && args.length === 1) {
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      return wat(`(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) ${i32(gen(args[0]))})`, 'f64')
-    }
-    if (name === 'parseInt') {
-      const val = gen(args[0])
-      // Warn if no radix provided (JZ defaults to 10, but JS behavior varies)
-      if (args.length < 2) {
-        ctx.warn('parseInt', 'parseInt() without radix; JZ defaults to 10, consider explicit radix')
-      }
-      const radix = args.length >= 2 ? String(i32(gen(args[1]))) : '(i32.const 10)'
-      if (isString(val)) {
-        ctx.usedStdlib.push('parseInt')
-        ctx.usedStringType = true
-        return wat(`(call $parseInt ${val} ${radix})`, 'f64')
-      }
-      ctx.usedStdlib.push('parseIntFromCode')
-      return wat(`(call $parseIntFromCode ${i32(val)} ${radix})`, 'f64')
-    }
-  }
-
-  // User-defined function (including closures)
-  if (namespace === null && name in ctx.functions) {
-    const fn = ctx.functions[name]
-
-    // Check for rest param in target function
-    const restParam = fn.paramInfo?.find(p => p.rest)
-    const fixedParamCount = restParam
-      ? fn.params.indexOf(restParam.name)
-      : fn.params.length
-
-    // Check for spread args: [...arr] in call
-    const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
-
-    // Calculate required params (those without defaults, excluding rest)
-    const requiredParams = fn.paramInfo
-      ? fn.paramInfo.filter(p => p.default === undefined && !p.rest && !p.destruct).length
-      : fn.params.length
-
-    // Generate args for rest param functions
-    const genRestArgs = () => {
-      // Fixed args first
-      const fixedArgs = args.slice(0, fixedParamCount)
-      const restArgs = args.slice(fixedParamCount)
-      const fixedWats = fixedArgs.map(a => String(f64(gen(a))))
-
-      // Build rest array from remaining args
-      if (hasSpread && restArgs.length === 1 && Array.isArray(restArgs[0]) && restArgs[0][0] === '...') {
-        // Single spread: fn(a, ...arr) -> pass arr directly as rest param
-        const spreadArr = gen(restArgs[0][1])
-        return [...fixedWats, String(spreadArr)].join(' ')
-      } else {
-        // Normal args: fn(a, b, c) -> build array [b, c] for rest
-        ctx.usedArrayType = true
-        const restVals = restArgs.map(a => gen(a))
-        const restArrayWat = mkArrayLiteral(ctx, restVals, () => false, () => null, restArgs)
-        return [...fixedWats, String(restArrayWat)].join(' ')
-      }
-    }
-
-    // Detect destructuring params
-    const destructParams = fn.paramInfo?.filter(p => p.destruct) || []
-
-    // Check if callee is internal (uses i32 for pointer params)
-    const calleeInternal = ctx.internalFuncs?.has(name)
-    const calleePtrParams = ctx.funcParamPtrTypes?.get(name) // Map<paramName, Set<type>>
-
-    // Generate args for normal functions
-    const genArgs = () => {
-      if (hasSpread) {
-        throw new Error(`Cannot spread into function ${name} - use rest params or fixed array`)
-      }
-      // Map args to WAT, handling destructuring params specially
-      const argWats = args.map((a, i) => {
-        const paramInfo = fn.paramInfo?.[i]
-        if (paramInfo?.destruct) {
-          // Destructuring param - pass the array/object directly
-          return String(gen(a))
-        }
-
-        // Check if callee expects i32 for this param
-        const paramName = fn.params[i]
-        // Check both usage-based detection and typeHint from defaults
-        const usageType = calleePtrParams?.get(paramName)?.values().next().value
-        const hintType = paramInfo?.typeHint
-        // Prefer typeHint for typedarray (default is more specific than usage)
-        const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
-        // TypedArray (with known elemType), Object (with schema), and Array use i32 optimization
-        // String is NOT optimized (SSO and runtime methods need f64)
-        const calleeExpectsI32 = calleeInternal && (
-          (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
-          (semanticType === 'object' && paramInfo?.schema) ||
-          (semanticType === 'array')
-        )
-
-        if (calleeExpectsI32) {
-          // Callee is internal and expects i32 offset for this param
-          // semanticType already determined above
-
-          // Try to pass offset directly if available, otherwise extract it
-          if (typeof a === 'string') {
-            // Simple identifier - check if we have cached offset or i32 param
-            if (ctx.cachedOffsets?.has(a)) {
-              return `(local.get $${ctx.cachedOffsets.get(a)})`
-            }
-            if (ctx.i32PtrParams?.has(a)) {
-              return `(local.get $${a})`
-            }
-          }
-          // Fall back: generate value and extract offset based on type
-          const argVal = gen(a)
-          if (semanticType === 'typedarray') {
-            // TypedArray: extract viewOff (not dataPtr)
-            return `(call $__typed_view ${argVal})`
-          } else {
-            return `(call $__ptr_offset ${argVal})`
-          }
-        }
-
-        return String(f64(gen(a)))
-      })
-      // Pad missing optional args with NaN (undefined) for f64 params, 0 for i32
-      while (argWats.length < fn.params.length) {
-        const idx = argWats.length
-        const paramName = fn.params[idx]
-        const paramInfo = fn.paramInfo?.[idx]
-        const usageType = calleePtrParams?.get(paramName)?.values().next().value
-        const hintType = paramInfo?.typeHint
-        const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
-        const expectsI32 = calleeInternal && (
-          (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
-          (semanticType === 'object' && paramInfo?.schema) ||
-          (semanticType === 'array')
-        )
-        argWats.push(expectsI32 ? '(i32.const 0)' : '(f64.const nan)')
-      }
-      return argWats.join(' ')
-    }
-
-    if (fn.closure) {
-      // Closure call - need to pass environment with captured values (copy-by-value)
-      const argWats = restParam ? genRestArgs() : genArgs()
-      if (!restParam) {
-        if (args.length < requiredParams) throw new Error(`${name} expects at least ${requiredParams} args`)
-        if (args.length > fn.params.length) throw new Error(`${name} expects at most ${fn.params.length} args`)
-      }
-
-      const { envFields } = fn.closure
-
-      // Pointer type constants for reboxing i32 offsets
-      const PTR_TYPES = { array: 1, object: 5, string: 4 }
-
-      // Build environment with captured variables (copy by value into memory)
-      ctx.usedMemory = true
-      const envSize = envFields.length * 8
-      const envVals = envFields.map((f, i) => {
-        let val, needsRebox = false, reboxType = 0, reboxAux = 0
-        if (ctx.capturedVars && f.name in ctx.capturedVars) {
-          // Read from our received env (chained capture - already f64)
-          const offset = ctx.capturedVars[f.name].index * 8
-          val = `(f64.load (i32.add (call $__ptr_offset (local.get $__env)) (i32.const ${offset})))`
-        } else {
-          const loc = ctx.getLocal(f.name)
-          if (loc) {
-            val = `(local.get $${loc.scopedName})`
-            // Check if this is an i32 pointer param that needs reboxing
-            if (loc.type === 'i32' && loc.semanticType) {
-              needsRebox = true
-              reboxType = PTR_TYPES[loc.semanticType] || 0
-              // For objects, aux is schemaId
-              if (loc.semanticType === 'object' && loc.schema !== undefined) {
-                reboxAux = typeof loc.schema === 'number' ? loc.schema : 0
-              }
-            }
-          } else {
-            const glob = ctx.getGlobal(f.name)
-            if (glob) val = `(global.get $${f.name})`
-            else throw new Error(`Cannot capture ${f.name}: not found`)
-          }
-        }
-        // Rebox i32 pointer to f64 NaN-boxed pointer before storing
-        if (needsRebox) {
-          val = `(call $__mkptr (i32.const ${reboxType}) (i32.const ${reboxAux}) ${val})`
-        }
-        // Store at direct offset (no header)
-        return `(f64.store (i32.add (global.get $__heap) (i32.const ${i * 8})) ${val})`
-      }).join('\n        ')
-      // Calculate total env size (no header), aligned to 8 bytes
-      const alignedEnvSize = (envSize + 7) & ~7
-      // Allocate env, store values, call function
-      // NaN boxing: mkptr(type, id, offset) - for closure, id = envFields.length
-      return wat(`(block (result f64)
-        ${envVals}
-        (call $${name}
-          (call $__mkptr (i32.const ${PTR_TYPE.CLOSURE}) (i32.const ${envFields.length}) (global.get $__heap))
-          ${argWats})
-        (global.set $__heap (i32.add (global.get $__heap) (i32.const ${alignedEnvSize})))
-      )`, 'f64')
-    }
-
-    // Regular function call
-    const argWats = restParam ? genRestArgs() : genArgs()
-    if (!restParam) {
-      if (args.length < requiredParams) throw new Error(`${name} expects at least ${requiredParams} args`)
-      if (args.length > fn.params.length) throw new Error(`${name} expects at most ${fn.params.length} args`)
-    }
-
-    // Check if function returns a closure
-    if (fn.returnsClosure) {
-      const depth = (fn.closureDepth || 1) - 1
-      // Closure is f64 NaN-boxed, track type for chained calls
-      return wat(`(call $${name} ${argWats})`, 'closure', { closureDepth: depth })
-    }
-    // Use pre-analyzed return type if available (i32 or f64)
-    const retType = ctx.funcReturnTypes?.get(name) || 'f64'
-    return wat(`(call $${name} ${argWats})`, retType)
-  }
-
-  throw new Error(`Unknown function: ${namespace ? namespace + '.' : ''}${name}`)
-}
-
-// =============================================================================
-// Closure functions imported from ./closures.js:
-// genClosureCall, genClosureCallExpr, genClosureValue
-// Wrappers to use module-level ctx and gen
-const _genClosureCall = (name, args) => genClosureCall(ctx, gen, genIdent, name, args)
-const _genClosureCallExpr = (closureVal, args) => genClosureCallExpr(ctx, gen, closureVal, args)
-const _genClosureValue = (fnName, envType, envFields, usesOwnEnv, arity) =>
-  genClosureValue(ctx, fnName, envType, envFields, usesOwnEnv, arity)
-
-/**
- * Binary operation with automatic type selection (i32 vs f64)
- * @param {any} a - Left operand AST
- * @param {any} b - Right operand AST
- * @param {function} i32Op - i32ops method
- * @param {function} f64Op - f64ops method
- */
-const binOp = (a, b, i32Op, f64Op) => {
-  const va = gen(a), vb = gen(b)
-  return bothI32(va, vb) ? i32Op(va, vb) : f64Op(va, vb)
-}
-
-// =============================================================================
-// OPERATORS
-// All AST node handlers, keyed by operator symbol
-// Each returns a typed value [type, wat, schema?]
-// =============================================================================
-
-const operators = {
-  // Spread operator (used in array literals and call args)
-  '...'([arg]) {
-    // Mark spread for parent to handle
-    const val = gen(arg)
-    val.spread = true
-    return val
-  },
-
-  // Constructor calls: new Array(len), new TypedArray(len), new Set(), new Map()
-  'new'([ctorCall]) {
-    // ctorCall is ['()', ctor, ...args]
-    if (!Array.isArray(ctorCall) || ctorCall[0] !== '()') {
-      throw new Error(`Invalid new expression: ${JSON.stringify(ctorCall)}`)
-    }
-    const [, ctor, ...args] = ctorCall
-    const ctorName = typeof ctor === 'string' ? ctor : null
-
-    // Array constructor: new Array(len)
-    if (ctorName === 'Array') {
-      if (args.length !== 1) {
-        throw new Error('new Array(len) requires exactly 1 argument')
-      }
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      return wat(`(call $__alloc (i32.const ${PTR_TYPE.ARRAY}) ${i32(gen(args[0]))})`, 'flat_array')
-    }
-
-    // TypedArray constructors
-    if (ctorName && ctorName in TYPED_ARRAY_CTORS) {
-      if (args.length !== 1) {
-        throw new Error(`${ctorName}(len) requires exactly 1 argument`)
-      }
-      ctx.usedTypedArrays = true
-      ctx.usedMemory = true
-      const elemType = TYPED_ARRAY_CTORS[ctorName]
-      const arg = args[0]
-
-      // Check if argument is array literal: ['[', elem1, elem2, ...]
-      if (Array.isArray(arg) && arg[0] === '[') {
-        // Array initializer: new Float64Array([1, 2, 3, 4])
-        const elems = arg.slice(1)
-        const len = elems.length
-        const id = ctx.loopCounter++
-        const tmp = `$_typed_init_${id}`
-        ctx.addLocal(tmp.slice(1), 'f64')
-
-        // Allocate TypedArray and store each element in a block
-        let stores = ''
-        for (let i = 0; i < len; i++) {
-          const val = gen(elems[i])
-          stores += `${typedArrSet(elemType, `(local.get ${tmp})`, `(i32.const ${i})`, f64(val))}\n        `
-        }
-        return wat(`(block (result f64)
-        (local.set ${tmp} ${typedArrNew(elemType, `(i32.const ${len})`)})
-        ${stores}(local.get ${tmp}))`, 'typedarray', elemType)
-      }
-
-      // Length argument: new Float64Array(n)
-      const lenVal = gen(arg)
-      return wat(typedArrNew(elemType, i32(lenVal)), 'typedarray', elemType)
-    }
-
-    // Set constructor: new Set() or new Set(capacity)
-    if (ctorName === 'Set') {
-      ctx.usedMemory = true
-      ctx.usedStdlib.push('__set_new')
-      const cap = args.length > 0 ? i32(gen(args[0])) : '(i32.const 16)'
-      return wat(`(call $__set_new ${cap})`, 'set')
-    }
-
-    // Map constructor: new Map() or new Map(capacity)
-    if (ctorName === 'Map') {
-      ctx.usedMemory = true
-      ctx.usedStdlib.push('__map_new')
-      const cap = args.length > 0 ? i32(gen(args[0])) : '(i32.const 16)'
-      return wat(`(call $__map_new ${cap})`, 'map')
-    }
-
-    // Wrapper objects: new String/Number/Boolean - creates object that can hold properties
-    const WRAPPER_CTORS = { String: 'string', Number: 'number', Boolean: 'boolean' }
-    if (ctorName in WRAPPER_CTORS) {
-      if (args.length !== 1) throw new Error(`new ${ctorName}(value) requires exactly 1 argument`)
-      const value = gen(args[0])
-      if (ctorName === 'String' && !isString(value)) throw new Error('new String() argument must be a string')
-      ctx.usedArrayType = true
-      ctx.usedMemory = true
-      const prefix = `__${WRAPPER_CTORS[ctorName]}__`
-      const schemaId = ctx.objectCounter + 1
-      ctx.objectCounter++
-      ctx.objectSchemas[schemaId] = [prefix]
-      if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-      ctx.objectPropTypes[schemaId] = { [prefix]: { type: WRAPPER_CTORS[ctorName] } }
-      return allocObject(schemaId, [prefix], [String(f64(value))], 'obj')
-    }
-
-    throw new Error(`Unsupported constructor: ${ctorName || JSON.stringify(ctor)}`)
-  },
-
-  // --- Calls and Access ---
-  '()'([fn, ...args]) {
-    // Parenthesized expression: (expr) parsed as ['()', expr]
-    if (args.length === 0 && Array.isArray(fn)) return gen(fn)
-
-    // Expand comma-separated args: [',', a, b, c] -> [a, b, c]
-    args = args.filter(a => a != null).flatMap(a => Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
-
-    // Symbol() - creates unique symbol (ATOM type)
-    // Symbol('description') - description optional, not stored
-    if (fn === 'Symbol') {
-      ctx.usedMemory = true  // for $__mk_symbol
-      ctx.usedSymbol = true
-      // Each Symbol() call creates a unique symbol with incrementing id
-      return wat('(call $__mk_symbol)', 'symbol')
-    }
-
-    // Check for spread args: fn(...arr) or fn(a, ...arr)
-    const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
-
-    let name = null, namespace = null, receiver = null
-    if (typeof fn === 'string') name = fn
-    else if (Array.isArray(fn) && fn[0] === '.') {
-      const [, obj, method] = fn
-      if (typeof obj === 'string' && (obj === 'Math' || obj === 'Number' || obj === 'Array' || obj === 'Object' || obj === 'JSON')) {
-        namespace = obj
-        name = method
-      } else if (typeof obj === 'string' && ctx.namespaces[obj]) {
-        // Static namespace method call: ns.method(args) → call $ns_method
-        const ns = ctx.namespaces[obj]
-        if (ns[method]) {
-          const funcName = ns[method].funcName
-          const argWats = args.map(a => f64(gen(a))).join(' ')
-          return wat(`(call $${funcName} ${argWats})`, 'f64')
-        }
-        throw new Error(`Unknown method '${method}' in namespace '${obj}'`)
-      } else {
-        // Check if this is an object method call (closure property)
-        const objVal = gen(obj)
-        if (isObject(objVal) && hasSchema(objVal)) {
-          const schema = getSchema(objVal)
-          const schemaId = getSchemaId(objVal)
-          const propTypes = ctx.objectPropTypes?.[schemaId]
-          const idx = schema?.indexOf(method)
-          if (idx >= 0 && propTypes?.[method] === 'closure') {
-            // This is an object method call - load closure and call it
-            ctx.usedMemory = true
-            const closureWat = objGet(String(objVal), idx)
-            const argWats = args.map(a => f64(gen(a))).join(' ')
-            return wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
-          }
-        }
-        receiver = objVal
-        name = method
-      }
-    } else if (Array.isArray(fn)) {
-      // Callee is a complex expression (e.g., a(1)(2) where a(1) returns a closure)
-      // Generate the closure expression and call it directly
-      const callee = gen(fn)
-      if (isClosure(callee)) {
-        // Call the closure value from the expression
-        return _genClosureCallExpr(callee, args)
-      }
-      throw new Error(`Cannot call non-closure expression: ${JSON.stringify(fn)}`)
-    }
-    if (!name) throw new Error(`Invalid call: ${JSON.stringify(fn)}`)
-
-    // Check if this is a closure value call (variable holding a closure, not a known function)
-    if (namespace === null && !(name in ctx.functions)) {
-      // Check if it's a local or captured variable
-      const loc = ctx.getLocal(name)
-      const captured = ctx.capturedVars && name in ctx.capturedVars
-      if (loc || captured) {
-        // Check if this is a boxed function (object with __function__ prefix)
-        const schema = ctx.localSchemas[loc?.scopedName] ?? loc?.schema ?? captured?.schema
-        if (Array.isArray(schema) && schema[0] === '__function__') {
-          // Boxed function: extract closure from slot 0 and call it
-          ctx.usedMemory = true
-          const closureWat = objGet(`(local.get $${loc?.scopedName || name})`, 0)
-          const argWats = args.map(a => f64(gen(a))).join(' ')
-          return wat(callClosure(ctx, closureWat, argWats, args.length), 'f64')
-        }
-        // This is calling a closure value stored in a variable
-        return _genClosureCall(name, args)
-      }
-    }
-
-    return resolveCall(namespace, name, args, receiver)
-  },
-
-  '['(elements) {
-    // Check for spread elements
-    const hasSpread = elements.some(e => Array.isArray(e) && e[0] === '...')
-
-    if (!hasSpread) {
-      // No spread - use existing array literal codegen
-      const gens = elements.map(e => gen(e))
-      // Wrap evalConstant to convert Rational→number for static arrays
-      const evalNum = ast => toNumber(evalConstant(ast))
-      return mkArrayLiteral(ctx, gens, isConstant, evalNum, elements)
-    }
-
-    // Handle spread: [...arr1, x, ...arr2, y] -> concat arrays and elements
-    ctx.usedArrayType = true
-    ctx.usedMemory = true
-    const id = ctx.uniqueId++
-      const parts = []
-      for (const e of elements) {
-        if (Array.isArray(e) && e[0] === '...') {
-          parts.push({ spread: true, value: gen(e[1]) })
-        } else {
-          parts.push({ spread: false, value: gen(e) })
-        }
-      }
-
-      const tmpLen = `$_slen_${id}`
-      const tmpArr = `$_sarr_${id}`
-      const tmpIdx = `$_sidx_${id}`
-      ctx.addLocal(tmpLen, 'i32')
-      ctx.addLocal(tmpArr, 'f64')
-      ctx.addLocal(tmpIdx, 'i32')
-
-      // Calculate total length
-      let lenCode = '(i32.const 0)'
-      for (const p of parts) {
-        if (p.spread) {
-          lenCode = `(i32.add ${lenCode} (call $__ptr_len ${p.value}))`
-        } else {
-          lenCode = `(i32.add ${lenCode} (i32.const 1))`
-        }
-      }
-
-      // Allocate and fill
-      let code = `(local.set ${tmpLen} ${lenCode})
-      (local.set ${tmpArr} (call $__alloc (i32.const ${PTR_TYPE.ARRAY}) (local.get ${tmpLen})))
-      (local.set ${tmpIdx} (i32.const 0))\n      `
-
-      for (const p of parts) {
-        if (p.spread) {
-          // Copy spread array
-          const loopId = ctx.uniqueId++
-          const tmpSrc = `$_ssrc_${loopId}`
-          const tmpI = `$_si_${loopId}`
-          ctx.addLocal(tmpSrc, 'f64')
-          ctx.addLocal(tmpI, 'i32')
-          code += `(local.set ${tmpSrc} ${p.value})
-      (local.set ${tmpI} (i32.const 0))
-      (block $break_${loopId} (loop $loop_${loopId}
-        (br_if $break_${loopId} (i32.ge_u (local.get ${tmpI}) (call $__ptr_len (local.get ${tmpSrc}))))
-        (f64.store
-          (i32.add (call $__ptr_offset (local.get ${tmpArr})) (i32.shl (local.get ${tmpIdx}) (i32.const 3)))
-          (f64.load (i32.add (call $__ptr_offset (local.get ${tmpSrc})) (i32.shl (local.get ${tmpI}) (i32.const 3)))))
-        (local.set ${tmpIdx} (i32.add (local.get ${tmpIdx}) (i32.const 1)))
-        (local.set ${tmpI} (i32.add (local.get ${tmpI}) (i32.const 1)))
-        (br $loop_${loopId})
-      ))\n      `
-        } else {
-          // Single element
-          code += `(f64.store
-        (i32.add (call $__ptr_offset (local.get ${tmpArr})) (i32.shl (local.get ${tmpIdx}) (i32.const 3)))
-        ${f64(p.value)})
-      (local.set ${tmpIdx} (i32.add (local.get ${tmpIdx}) (i32.const 1)))\n      `
-        }
-      }
-
-      return wat(`(block (result f64)
-      ${code}(local.get ${tmpArr}))`, 'flat_array')
-  },
-
-  '{'(props) {
-    if (props.length === 0) return nullRef()
-    ctx.usedArrayType = true
-    ctx.usedMemory = true
-    const keys = props.map(p => p[0])
-    // Schema IDs start at 1 (0 = plain array)
-    const schemaId = ctx.objectCounter + 1
-    ctx.objectCounter++
-    ctx.objectSchemas[schemaId] = keys
-
-    // Check if all values are constant numbers (static object optimization)
-    const allConstant = props.every(([, val]) => isConstant(val))
-    if (allConstant) {
-      // Static object - store in data segment
-      const objectId = Object.keys(ctx.staticObjects).length
-      const values = props.map(([, val]) => toNumber(evalConstant(val)))
-      // Place after static arrays: HEAP_START + 4096 + arrays + objects
-      const arraySpace = Object.keys(ctx.staticArrays).length * 64
-      const objectSpace = objectId * 64
-      const offset = HEAP_START + 4096 + arraySpace + objectSpace
-      ctx.staticObjects[objectId] = { offset, values, schemaId }
-      // mkptr(OBJECT, schemaId, offset) - schemaId goes in id field
-      return wat(`(call $__mkptr (i32.const ${PTR_TYPE.OBJECT}) (i32.const ${schemaId}) (i32.const ${offset}))`, 'object', schemaId)
-    }
-
-    // Track property types for method call support and nested object access
-    if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-    ctx.objectPropTypes[schemaId] = {}
-    const vals = []
-    for (let i = 0; i < props.length; i++) {
-      const [key, valueAst] = props[i]
-      const g = gen(valueAst)
-      vals.push(String(f64(g)))
-      // Track property type info for nested access
-      if (g.type === 'closure' || (Array.isArray(valueAst) && valueAst[0] === '=>')) {
-        ctx.objectPropTypes[schemaId][key] = { type: 'closure' }
-      } else if (g.type === 'object' && g.schema) {
-        ctx.objectPropTypes[schemaId][key] = { type: 'object', schema: g.schema }
-      } else if (g.type === 'array') {
-        ctx.objectPropTypes[schemaId][key] = { type: 'array' }
-      } else if (g.type === 'string') {
-        ctx.objectPropTypes[schemaId][key] = { type: 'string' }
-      }
-    }
-    return allocObject(schemaId, keys, vals, 'obj')
-  },
-
-  '[]'([arr, idx]) {
-    const a = gen(arr), iw = i32(gen(idx))
-    // Memory-based array access
-    ctx.usedMemory = true
-
-    // TypedArray access
-    if (isTypedArray(a)) {
-      const elemType = a.schema  // elemType stored in schema field
-      // Use i32 accessor if receiver is an i32 viewOff param
-      if (a.isI32Ptr) {
-        return wat(typedArrGetI32(elemType, `(local.get $${a.paramName})`, iw), 'f64')
-      }
-      return wat(typedArrGet(elemType, String(a), iw), 'f64')
-    }
-
-    const schema = a.schema
-    let litIdx = null
-    if (isConstant(idx)) {
-      const v = toNumber(evalConstant(idx))
-      litIdx = Number.isFinite(v) ? (v | 0) : null
-    }
-    if (Array.isArray(schema) && litIdx !== null) {
-      const elem = schema[litIdx]
-      if (elem && elem.type === 'object' && elem.id !== undefined) {
-        return wat(`(call $__arr_get ${a} (i32.const ${litIdx}))`, 'object', elem.id)
-      }
-    }
-    if (isString(a)) {
-      // Use i32 accessor if receiver is an i32 heap offset param
-      if (a.isI32Ptr) {
-        return wat(strCharAtI32(`(local.get $${a.paramName})`, iw), 'i32')
-      }
-      return wat(strCharAt(String(a), iw), 'i32')
-    }
-    // Boxed string: delegate indexing to inner string pointer (SSO-aware)
-    if (isBoxedString(a)) {
-      return wat(`(call $__str_char_at (f64.load (call $__ptr_offset ${a})) ${iw})`, 'i32')
-    }
-    // Boxed array: index into inner array (slot 0)
-    if (isBoxedArray(a)) {
-      return wat(`(call $__arr_get (f64.load (call $__ptr_offset ${a})) ${iw})`, 'f64')
-    }
-    // Array with i32 offset param (internal function optimization)
-    if (isArray(a) && a.isI32Ptr) {
-      return wat(arrGetI32(`(local.get $${a.paramName})`, iw), 'f64')
-    }
-    return arrGetTyped(ctx, String(a), iw)
-  },
-
-  '?.[]'([arr, idx]) {
-    const aw = gen(arr), iw = i32(gen(idx))
-    // Memory-based: check if pointer is 0 (null), then use smart accessor
-    ctx.usedMemory = true
-    return wat(`(if (result f64) (f64.eq ${aw} (f64.const 0)) (then (f64.const 0)) (else (call $__arr_get ${aw} ${iw})))`, 'f64')
-  },
-
-  '.'([obj, prop]) {
-    if (obj === 'Math' && prop in MATH_OPS.constants)
-      return wat(`(f64.const ${fmtNum(MATH_OPS.constants[prop])})`, 'f64')
-    // Number constants
-    if (obj === 'Number') {
-      const NUM_CONSTS = {
-        MAX_VALUE: 1.7976931348623157e+308, MIN_VALUE: 5e-324, EPSILON: 2.220446049250313e-16,
-        MAX_SAFE_INTEGER: 9007199254740991, MIN_SAFE_INTEGER: -9007199254740991,
-        POSITIVE_INFINITY: Infinity, NEGATIVE_INFINITY: -Infinity, NaN: NaN
-      }
-      if (prop in NUM_CONSTS) return wat(`(f64.const ${fmtNum(NUM_CONSTS[prop])})`, 'f64')
-    }
-    const o = gen(obj)
-    if (prop === 'length') {
-      if (isTypedArray(o)) {
-        ctx.usedMemory = true
-        // Use i32 accessor if receiver is an i32 viewOff param
-        if (o.isI32Ptr) {
-          return wat(typedArrLenI32(`(local.get $${o.paramName})`), 'i32')
-        }
-        return wat(typedArrLen(String(o)), 'i32')
-      }
-      if (isString(o)) {
-        // String length: use i32 accessor if heap offset param, else SSO-aware strLen
-        ctx.usedMemory = true
-        if (o.isI32Ptr) {
-          return wat(strLenI32(`(local.get $${o.paramName})`), 'i32')
-        }
-        return wat(strLen(String(o)), 'i32')
-      }
-      if (isArray(o)) {
-        ctx.usedMemory = true
-        // Use i32 accessor if param is i32 offset
-        if (o.isI32Ptr) {
-          return wat(arrLenI32(`(local.get $${o.paramName})`), 'i32')
-        }
-        return wat(arrLen(String(o)), 'i32')
-      }
-      if (isBoxedArray(o)) {
-        // Boxed array length: get inner array pointer, then its length
-        ctx.usedMemory = true
-        return wat(`(call $__ptr_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
-      }
-      if (isF64(o)) {
-        ctx.usedMemory = true
-        // Track param usage for JS interop (if obj is a direct param identifier)
-        if (typeof obj === 'string' && o.paramName) {
-          ctx.inferredArrayParams.add(o.paramName)
-        }
-        // Check if this is a known array param (from preanalysis)
-        if (typeof obj === 'string' && ctx.currentFuncName && ctx.arrayParams) {
-          const funcArrayParams = ctx.arrayParams.get(ctx.currentFuncName)
-          if (funcArrayParams && funcArrayParams.has(obj)) {
-            // Known array param - use direct array length, skip type dispatch
-            return wat(directArrLen(String(o)), 'i32')
-          }
-        }
-        // Runtime f64: could be array or string, need runtime dispatch
-        // Check type: STRING=3 uses $__str_len, others use $__ptr_len
-        return wat(`(if (result i32) (i32.eq (call $__ptr_type ${o}) (i32.const 3))
-          (then (call $__str_len ${o}))
-          (else (call $__ptr_len ${o})))`, 'i32')
-      }
-      if (isBoxedString(o) && hasSchema(o)) {
-        // Boxed string length: get inner string pointer, then its length (SSO-aware)
-        ctx.usedMemory = true
-        return wat(`(call $__str_len (f64.load (call $__ptr_offset ${o})))`, 'i32')
-      }
-      throw new Error(`Cannot get length of ${o.type}`)
-    }
-    // Set/Map .size property
-    if (prop === 'size') {
-      if (isSet(o)) {
-        ctx.usedMemory = true
-        ctx.usedStdlib.push('__set_size')
-        return wat(`(call $__set_size ${o})`, 'i32')
-      }
-      if (isMap(o)) {
-        ctx.usedMemory = true
-        ctx.usedStdlib.push('__map_size')
-        return wat(`(call $__map_size ${o})`, 'i32')
-      }
-    }
-    if (prop === 'byteLength' && isTypedArray(o)) {
-      // byteLength = length * stride
-      ctx.usedMemory = true
-      const elemType = o.schema
-      const stride = ELEM_STRIDE[elemType]
-      const lenExpr = o.isI32Ptr
-        ? typedArrLenI32(`(local.get $${o.paramName})`)
-        : typedArrLen(String(o))
-      return wat(`(i32.mul ${lenExpr} (i32.const ${stride}))`, 'i32')
-    }
-    if (prop === 'BYTES_PER_ELEMENT' && isTypedArray(o)) {
-      const elemType = o.schema
-      const stride = ELEM_STRIDE[elemType]
-      return wat(`(i32.const ${stride})`, 'i32')
-    }
-    if (prop === 'byteOffset' && isTypedArray(o)) {
-      // byteOffset - always 0 for our TypedArrays (no ArrayBuffer backing)
-      return wat('(i32.const 0)', 'i32')
-    }
-
-    // Object property access (includes boxed primitives: schema[0] = __string__/__number__/__boolean__/__array__)
-    if (isObject(o) && hasSchema(o)) {
-      const schema = getSchema(o)
-      const schemaId = getSchemaId(o)
-      if (schema) {
-        const idx = schema.indexOf(prop)
-        if (idx >= 0) {
-          ctx.usedMemory = true
-          const propInfo = ctx.objectPropTypes?.[schemaId]?.[prop]
-          // Determine result type and schema from property info
-          let resultType = 'f64'
-          let resultSchema = undefined
-          if (propInfo) {
-            if (propInfo.type === 'object' && propInfo.schema) {
-              resultType = 'object'
-              resultSchema = propInfo.schema
-            } else if (propInfo.type === 'closure') {
-              resultType = 'closure'
-            } else if (propInfo.type === 'array') {
-              resultType = 'array'
-            } else if (propInfo.type === 'string') {
-              resultType = 'string'
-            }
-          }
-          // Use i32 accessor if receiver is an i32 pointer param
-          const getExpr = o.isI32Ptr
-            ? objGetI32(String(o), idx)
-            : objGet(String(o), idx)
-          const result = wat(getExpr, resultType, resultSchema)
-          // Preserve schema and property info for method calls
-          result.objSchema = o.schema
-          result.propName = prop
-          result.propIdx = idx
-          result.objWat = String(o)
-          return result
-        }
-      }
-    }
-
-    // Primitives (string, number, boolean literals) - property access returns undefined
-    if (isString(o) || isI32(o) || isF64(o)) {
-      ctx.warn(`Property access .${prop} on primitive returns undefined`)
-      return undefRef()
-    }
-
-    throw new Error(`Invalid property: .${prop}`)
-  },
-
-  '?.'([obj, prop]) {
-    const o = gen(obj)
-    if (prop === 'length') {
-      // Memory-based: arrays and strings are f64 pointers
-      if (isString(o)) {
-        ctx.usedMemory = true
-        return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__str_len ${o}))))`, 'f64')
-      }
-      if (isF64(o) || isArray(o)) {
-        ctx.usedMemory = true
-        return wat(`(if (result f64) (f64.eq ${o} (f64.const 0)) (then (f64.const 0)) (else (f64.convert_i32_s (call $__ptr_len ${o}))))`, 'f64')
-      }
-    }
-    return o
-  },
-
-  ','(args) {
-    let code = ''
-    for (let i = 0; i < args.length - 1; i++) {
-      const arg = args[i]
-      if (Array.isArray(arg) && arg[0] === '=') code += genAssign(arg[1], arg[2], false)
-      else code += `(drop ${gen(arg)})\n    `
-    }
-    const last = gen(args[args.length - 1])
-    return wat(code + String(last), last.type, last.schema)
-  },
-
-  '?'([cond, then, els]) {
-    const cw = bool(gen(cond)), [tw, ew] = conciliate(gen(then), gen(els)), t = tw.type
-    return wat(`(if (result ${t}) ${cw} (then ${tw}) (else ${ew}))`, t)
-  },
-
-  '='([target, value]) { return genAssign(target, value, true) },
-
-  'function'([name, params, body]) {
-    ctx.functions[name] = { params: extractParams(params), paramInfo: extractParamInfo(params), body, exported: ctx.exports.has(name) }
-    return wat('(f64.const 0)', 'f64')
-  },
-
-  '=>'([params, body]) {
-    // Arrow function as expression - create a closure value (capture by value)
-    // Example: `add = x => (y => x + y)` where inner arrow captures x
-    const fnParams = extractParams(params)
-    const fnParamInfo = extractParamInfo(params)
-
-    // Analyze for captured variables - need original names, not scoped names
-    // ctx.locals keys are scoped (e.g., 'n_s1'), but we need original names
-    const localNames = Object.values(ctx.locals).map(l => l.originalName || l.scopedName)
-    const capturedNames = ctx.capturedVars ? Object.keys(ctx.capturedVars) : []
-    const outerDefined = new Set([...localNames, ...capturedNames])
-
-    const analysis = analyzeScope(body, new Set(fnParams), true)
-    const captured = [...analysis.free].filter(v => outerDefined.has(v) && !fnParams.includes(v))
-
-    // Helper to get variable info for captured var (schema, semanticType for reboxing)
-    // Pointer types (array, object, string, etc.) have WASM type f64 but semantic type for dispatch
-    const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
-    const getVarInfo = (v) => {
-      const loc = ctx.getLocal(v)
-      if (loc) {
-        const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
-        return {
-          schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-          semanticType: semType,
-          wasmType: loc.type
-        }
-      }
-      if (ctx.capturedVars?.[v]) {
-        return {
-          schema: ctx.capturedVars[v].schema,
-          semanticType: ctx.capturedVars[v].semanticType,
-          wasmType: 'f64' // captured vars are always f64 in env
-        }
-      }
-      return {}
-    }
-
-    // Generate unique name for anonymous closure
-    const closureName = `__anon${ctx.closureCounter++}`
-
-    // Determine environment (always fresh copy, capture by value)
-    let envType, envFields
-    if (captured.length === 0) {
-      // No captures - simple funcref, null env
-      envType = null
-      envFields = []
-    } else {
-      const envId = ctx.closureCounter++
-      envType = `$env${envId}`
-      envFields = captured.map((v, i) => {
-        const info = getVarInfo(v)
-        return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
-      })
-    }
-
-    // Register the lifted function
-    // Always mark as closure (needs __env param) since it will be called via call_indirect
-    ctx.functions[closureName] = {
-      params: fnParams,
-      paramInfo: fnParamInfo,
-      body,
-      exported: false,
-      closure: { envType, envFields, captured }
-    }
-
-    // Return closure value
-    return _genClosureValue(closureName, envType, envFields, false, fnParams.length)
-  },
-
-  'return'([value]) {
-    // Multi-value return: if enabled and returning fixed array literal
-    // Only works when multiReturnCount was pre-detected in genFunction
-    if (ctx.multiReturnCount && value) {
-      const n = isFixedArrayLiteral(value)
-      if (n === ctx.multiReturnCount) {
-        const elems = value.slice(1).map(e => f64(gen(e))).join(' ')
-        if (ctx.returnLabel) {
-          return wat(`(br ${ctx.returnLabel} ${elems})`, 'multi')
-        }
-        return wat(elems, 'multi')
-      }
-    }
-    // Tail call optimization: return f(...args) → return_call $f args
-    // Only for direct calls to user-defined non-closure functions
-    // IMPORTANT: Do NOT use tail call inside try blocks - exception won't be caught!
-    if (value && Array.isArray(value) && value[0] === '()' && !ctx.inTryBlock) {
-      const [, fn, ...args] = value
-      // Direct call by name (not method, not closure expression)
-      if (typeof fn === 'string' && fn in ctx.functions) {
-        const fnDef = ctx.functions[fn]
-        // Skip closures - they need env setup which can't be in tail position
-        if (!fnDef.closure) {
-          // Expand comma-separated args
-          const expandedArgs = args.filter(a => a != null).flatMap(a =>
-            Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a])
-          // Check if callee is internal (uses i32 for pointer params)
-          const calleeInternal = ctx.internalFuncs?.has(fn)
-          const calleePtrParams = ctx.funcParamPtrTypes?.get(fn)
-          // Generate args with i32 extraction if needed
-          const argWats = expandedArgs.map((a, i) => {
-            const paramInfo = fnDef.paramInfo?.[i]
-            const paramName = fnDef.params[i]
-            const usageType = calleePtrParams?.get(paramName)?.values().next().value
-            const hintType = paramInfo?.typeHint
-            const semanticType = (hintType === 'typedarray') ? 'typedarray' : (usageType || hintType)
-            const calleeExpectsI32 = calleeInternal && (
-              (semanticType === 'typedarray' && paramInfo?.arrayType !== undefined) ||
-              (semanticType === 'object' && paramInfo?.schema) ||
-              (semanticType === 'array')
-            )
-            if (calleeExpectsI32) {
-              // Check if arg is already an i32 param in current function
-              if (typeof a === 'string' && ctx.i32PtrParams?.has(a)) {
-                return `(local.get $${a})`
-              }
-              const argVal = gen(a)
-              if (semanticType === 'typedarray') return `(call $__typed_view ${argVal})`
-              else return `(call $__ptr_offset ${argVal})`
-            }
-            return String(f64(gen(a)))
-          }).join(' ')
-          return wat(`(return_call $${fn} ${argWats})`, 'f64')
-        }
-      }
-    }
-    // Preserve type for NaN-boxed pointers (strings, arrays, objects)
-    const genVal = value !== undefined ? gen(value) : wat('(f64.const 0)', 'f64')
-    const retVal = isString(genVal) || isArray(genVal) || isObject(genVal) ? genVal : f64(genVal)
-    // If inside a function with a return label, use br to exit early
-    if (ctx.returnLabel) {
-      return wat(`(br ${ctx.returnLabel} ${retVal})`, retVal.type)
-    }
-    return retVal
-  },
-
-  // Unary
-  'u+'([a]) {
-    // Error: +[] nonsense coercion
-    if (Array.isArray(a) && a[0] === '[') {
-      throw new Error('jz: +[] coercion is nonsense; arrays cannot be coerced to numbers')
-    }
-    return f64(gen(a))
-  },
-  'u-'([a]) { const v = gen(a); return v.type === 'i32' ? wat(`(i32.sub (i32.const 0) ${v})`, 'i32') : wat(`(f64.neg ${f64(v)})`, 'f64') },
-  '!'([a]) { return wat(`(i32.eqz ${bool(gen(a))})`, 'i32') },
-  '~'([a]) { return wat(`(i32.xor ${i32(gen(a))} (i32.const -1))`, 'i32') },
-
-  // Arithmetic
-  '+'([a, b]) {
-    // Error: [] + {} nonsense coercion
-    const isArrayA = Array.isArray(a) && a[0] === '['
-    const isArrayB = Array.isArray(b) && b[0] === '['
-    const isObjectA = Array.isArray(a) && a[0] === '{'
-    const isObjectB = Array.isArray(b) && b[0] === '{'
-    if ((isArrayA || isObjectA) && (isArrayB || isObjectB)) {
-      throw new Error('jz: [] + {} coercion is nonsense; use explicit conversion')
-    }
-    // Compile-time rational simplification for numeric constants
-    if (isConstant(a) && isConstant(b) && !isStringConstant(a) && !isStringConstant(b)) {
-      const result = toNumber(evalConstant(['+', a, b]))
-      if (Number.isFinite(result)) {
-        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
-          return wat(`(i32.const ${result})`, 'i32')
-        }
-        return wat(`(f64.const ${result})`, 'f64')
-      }
-    }
-    // Compile-time string concatenation with coercion: "a" + 1 → "a1"
-    const strA = isCoercibleToStringConstant(a), strB = isCoercibleToStringConstant(b)
-    if (strA && strB && (isStringConstant(a) || isStringConstant(b))) {
-      ctx.usedStringType = true
-      ctx.usedMemory = true
-      return mkString(ctx, evalToString(a) + evalToString(b))
-    }
-    // Runtime string concatenation
-    const va = gen(a), vb = gen(b)
-    if (isString(va) && isString(vb)) {
-      ctx.usedStringType = true
-      ctx.usedMemory = true
-      ctx.needsStrcat = true
-      return wat(`(call $__strcat ${va} ${vb})`, 'string')
-    }
-    // Mixed: coerce non-string to string via numToString
-    if (isString(va) || isString(vb)) {
-      ctx.usedStringType = true
-      ctx.usedMemory = true
-      ctx.needsStrcat = true
-      ctx.usedStdlib.push('numToString')
-      const strA = isString(va) ? va : `(call $numToString ${f64(va)})`
-      const strB = isString(vb) ? vb : `(call $numToString ${f64(vb)})`
-      return wat(`(call $__strcat ${strA} ${strB})`, 'string')
-    }
-    return bothI32(va, vb) ? i32ops.add(va, vb) : f64ops.add(va, vb)
-  },
-  '-'([a, b]) {
-    // Compile-time rational simplification
-    if (isConstant(a) && isConstant(b)) {
-      const result = toNumber(evalConstant(['-', a, b]))
-      if (Number.isFinite(result)) {
-        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
-          return wat(`(i32.const ${result})`, 'i32')
-        }
-        return wat(`(f64.const ${result})`, 'f64')
-      }
-    }
-    return binOp(a, b, i32ops.sub, f64ops.sub)
-  },
-  '*'([a, b]) {
-    // Compile-time rational simplification
-    if (isConstant(a) && isConstant(b)) {
-      const result = toNumber(evalConstant(['*', a, b]))
-      if (Number.isFinite(result)) {
-        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
-          return wat(`(i32.const ${result})`, 'i32')
-        }
-        return wat(`(f64.const ${result})`, 'f64')
-      }
-    }
-    return binOp(a, b, i32ops.mul, f64ops.mul)
-  },
-  '/'([a, b]) {
-    // Compile-time rational simplification for constant expressions
-    if (isConstant(a) && isConstant(b)) {
-      const result = toNumber(evalConstant(['/', a, b]))
-      if (Number.isFinite(result)) {
-        // Check if result is an integer
-        if (Number.isInteger(result) && Math.abs(result) <= 0x7FFFFFFF) {
-          return wat(`(i32.const ${result})`, 'i32')
-        }
-        return wat(`(f64.const ${result})`, 'f64')
-      }
-    }
-    return f64ops.div(gen(a), gen(b))
-  },
-  '%'([a, b]) { return wat(`(call $f64.rem ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
-  '**'([a, b]) { ctx.usedStdlib.push('pow'); return wat(`(call $pow ${f64(gen(a))} ${f64(gen(b))})`, 'f64') },
-
-  // Comparisons
-  '=='([a, b]) {
-    // Warn: NaN === NaN is always false (IEEE 754), suggest Number.isNaN
-    const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
-    const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
-    if (isNaN_a || isNaN_b) {
-      ctx.warn('NaN-compare', `NaN comparison is always ${isNaN_a && isNaN_b ? 'false' : 'false for NaN'}; use Number.isNaN(x)`)
-    }
-    // Warn: x == null idiom (coercion doesn't work in JZ)
-    const isNull_a = a === 'null' || (Array.isArray(a) && a[0] === undefined && a[1] === null)
-    const isNull_b = b === 'null' || (Array.isArray(b) && b[0] === undefined && b[1] === null)
-    const isUndef_a = a === 'undefined' || (Array.isArray(a) && a[0] === undefined && a[1] === undefined)
-    const isUndef_b = b === 'undefined' || (Array.isArray(b) && b[0] === undefined && b[1] === undefined)
-    if ((isNull_a || isNull_b) && !(isNull_a && isNull_b) && !(isUndef_a || isUndef_b)) {
-      ctx.warn('null-compare', "x == null idiom won't catch undefined; JZ has no type coercion")
-    }
-    // Special-case: typeof comparison with string literal
-    // typeof returns type code internally, compare with code directly
-    const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
-    const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
-    if (isTypeofA && isStringLiteralB) {
-      const s = b[1]
-      // Type codes: undefined=0, number=1, string=2, boolean=3, object=4, function=5, symbol=6
-      const code = s === 'undefined' ? 0 : s === 'number' ? 1 : s === 'string' ? 2 : s === 'boolean' ? 3 : s === 'object' ? 4 : s === 'function' ? 5 : s === 'symbol' ? 6 : null
-      if (code !== null) {
-        // Check for literal null/undefined first (before gen)
-        const typeofArg = a[1]
-        if (Array.isArray(typeofArg) && typeofArg[0] === undefined && typeofArg[1] === undefined) {
-          // typeof undefined === "undefined"
-          return wat(`(i32.const ${code === 0 ? 1 : 0})`, 'i32')
-        }
-        if (Array.isArray(typeofArg) && typeofArg[0] === undefined && typeofArg[1] === null) {
-          // typeof null === "object" (JS quirk preserved)
-          return wat(`(i32.const ${code === 4 ? 1 : 0})`, 'i32')
-        }
-        // Check for NaN/Infinity constants - parser represents them as [null, null]
-        // In gc:false, these are always numbers (not pointers)
-        if (Array.isArray(typeofArg) && typeofArg[0] === null && typeofArg[1] === null) {
-          // Could be null, undefined, NaN, or Infinity - but at AST level we can't tell
-          // However, we know the runtime value: null/undefined generate 0, NaN/Infinity generate nan/inf
-          // At runtime, we check: if not NaN → number; if NaN with type=0 → number; else object
-          // For compile-time constant folding, we can't know here, so fall through to runtime check
-        }
-        // Get type code without generating string
-        const val = gen(typeofArg)
-        let typeCode
-        // Check AST for boolean-producing expressions
-        // Unwrap parentheses: ['()', expr] → expr
-        let innerArg = typeofArg
-        while (Array.isArray(innerArg) && innerArg[0] === '()' && innerArg.length === 2) {
-          innerArg = innerArg[1]
-        }
-        const isBoolExpr = (typeof innerArg === 'string' && (innerArg === 'true' || innerArg === 'false')) ||
-          (Array.isArray(innerArg) && innerArg[0] === undefined && typeof innerArg[1] === 'boolean') ||
-          (Array.isArray(innerArg) && ['<', '<=', '>', '>=', '==', '===', '!=', '!==', '!'].includes(innerArg[0]))
-        if (val.type === 'symbol') {
-          typeCode = '(i32.const 6)'  // symbol
-        } else if (isF64(val)) {
-          // f64 might be a regular number or an integer-packed pointer
-          // Use __typeof_code for proper runtime detection of all pointer types
-          ctx.usedMemory = true
-          typeCode = `(call $__typeof_code ${val})`
-        } else if (isI32(val)) {
-          // i32 can be boolean result or integer number - check AST
-          typeCode = isBoolExpr ? '(i32.const 3)' : '(i32.const 1)'
-        }
-        else if (isString(val)) typeCode = '(i32.const 2)'
-        else if (isRef(val)) typeCode = '(i32.const 0)'
-        else if (isArray(val) || isObject(val)) typeCode = '(i32.const 4)'
-        else typeCode = '(i32.const 1)'
-        return wat(`(i32.eq ${typeCode} (i32.const ${code}))`, 'i32')
-      }
-    }
-    // Swap check: string literal on left
-    const isStringLiteralA = Array.isArray(a) && a[0] === undefined && typeof a[1] === 'string'
-    const isTypeofB = Array.isArray(b) && b[0] === 'typeof'
-    if (isStringLiteralA && isTypeofB) {
-      return operators['==']([b, a])  // Swap and recurse
-    }
-    const va = gen(a), vb = gen(b)
-    // Symbol comparison: use __ptr_eq for NaN-boxed ATOM pointers
-    if (isSymbol(va) && isSymbol(vb)) {
-      ctx.usedMemory = true
-      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
-    }
-    // Plain string comparison: use __str_eq for value equality (compares actual content)
-    if (isString(va) && isString(vb)) {
-      ctx.usedMemory = true
-      return wat(`(call $__str_eq ${va} ${vb})`, 'i32')
-    }
-    // Boxed strings (Object.assign("str", {})) use reference equality
-    if (isBoxedString(va) && isBoxedString(vb)) {
-      ctx.usedMemory = true
-      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
-    }
-    // Array/object comparison: reference equality via __ptr_eq
-    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      ctx.usedMemory = true
-      return wat(`(call $__ptr_eq ${va} ${vb})`, 'i32')
-    }
-    // f64 comparison: use __f64_eq to handle both numbers and NaN-boxed pointers
-    // f64.eq fails on NaN (including NaN-boxed pointers with identical bits)
-    if (isF64(va) && isF64(vb)) {
-      ctx.usedMemory = true
-      return wat(`(call $__f64_eq ${va} ${vb})`, 'i32')
-    }
-    return bothI32(va, vb) ? i32ops.eq(va, vb) : f64ops.eq(va, vb)
-  },
-  '==='([a, b]) { return operators['==']([a, b]) },
-  '!='([a, b]) {
-    // Warn: NaN !== NaN is always true (IEEE 754), suggest Number.isNaN
-    const isNaN_a = a === 'NaN' || (Array.isArray(a) && a[0] === undefined && Number.isNaN(a[1]))
-    const isNaN_b = b === 'NaN' || (Array.isArray(b) && b[0] === undefined && Number.isNaN(b[1]))
-    if (isNaN_a || isNaN_b) {
-      ctx.warn('NaN-compare', `NaN comparison is always ${isNaN_a && isNaN_b ? 'true' : 'true for NaN'}; use Number.isNaN(x)`)
-    }
-    // Special-case typeof != string
-    const isTypeofA = Array.isArray(a) && a[0] === 'typeof'
-    const isStringLiteralB = Array.isArray(b) && b[0] === undefined && typeof b[1] === 'string'
-    if (isTypeofA && isStringLiteralB) {
-      const eq = operators['==']([a, b])
-      return wat(`(i32.eqz ${eq})`, 'i32')
-    }
-    const isStringLiteralA = Array.isArray(a) && a[0] === undefined && typeof a[1] === 'string'
-    const isTypeofB = Array.isArray(b) && b[0] === 'typeof'
-    if (isStringLiteralA && isTypeofB) {
-      return operators['!=']([b, a])
-    }
-    const va = gen(a), vb = gen(b)
-    // Plain string comparison: use __str_eq for value equality
-    if (isString(va) && isString(vb)) {
-      ctx.usedMemory = true
-      return wat(`(i32.eqz (call $__str_eq ${va} ${vb}))`, 'i32')
-    }
-    // Boxed strings use reference inequality
-    if (isBoxedString(va) && isBoxedString(vb)) {
-      ctx.usedMemory = true
-      return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
-    }
-    // Array/object comparison: reference inequality via __ptr_eq
-    if ((isArray(va) || isObject(va)) && (isArray(vb) || isObject(vb))) {
-      ctx.usedMemory = true
-      return wat(`(i32.eqz (call $__ptr_eq ${va} ${vb}))`, 'i32')
-    }
-    // f64 comparison: use __f64_ne to handle both numbers and NaN-boxed pointers
-    if (isF64(va) && isF64(vb)) {
-      ctx.usedMemory = true
-      return wat(`(call $__f64_ne ${va} ${vb})`, 'i32')
-    }
-    return bothI32(va, vb) ? i32ops.ne(va, vb) : f64ops.ne(va, vb)
-  },
-  '!=='([a, b]) { return operators['!=']([a, b]) },
-  '<'([a, b]) { return binOp(a, b, i32ops.lt_s, f64ops.lt) },
-  '<='([a, b]) { return binOp(a, b, i32ops.le_s, f64ops.le) },
-  '>'([a, b]) { return binOp(a, b, i32ops.gt_s, f64ops.gt) },
-  '>='([a, b]) { return binOp(a, b, i32ops.ge_s, f64ops.ge) },
-
-  // Bitwise
-  '&'([a, b]) { return i32ops.and(gen(a), gen(b)) },
-  '|'([a, b]) { return i32ops.or(gen(a), gen(b)) },
-  '^'([a, b]) { return i32ops.xor(gen(a), gen(b)) },
-  '<<'([a, b]) { return i32ops.shl(gen(a), gen(b)) },
-  '>>'([a, b]) { return i32ops.shr_s(gen(a), gen(b)) },
-  '>>>'([a, b]) { return i32ops.shr_u(gen(a), gen(b)) },
-
-  // Logical
-  '&&'([a, b]) {
-    const va = gen(a), vb = gen(b), cw = bool(va), [ca, cb] = conciliate(va, vb), t = ca.type
-    return wat(`(if (result ${t}) ${cw} (then ${cb}) (else (${t}.const 0)))`, t)
-  },
-  '||'([a, b]) {
-    const va = gen(a), vb = gen(b), cw = bool(va), [ca, cb] = conciliate(va, vb), t = ca.type
-    return wat(`(if (result ${t}) ${cw} (then ${ca}) (else ${cb}))`, t)
-  },
-  '??'([a, b]) { const va = gen(a); return isRef(va) ? gen(b) : va },
-
-  // For loop
-  'for'([init, cond, step, body]) {
-    let code = ''
-    // For loop creates its own scope for let/const declarations
-    ctx.pushScope()
-    if (init) {
-      if (Array.isArray(init) && init[0] === '=') code += genLoopInit(init[1], init[2])
-      else if (Array.isArray(init) && (init[0] === 'let' || init[0] === 'const')) {
-        // Handle let/const in for init - declare in loop scope
-        const [, assign] = init
-        const [, name, value] = assign
-        if (typeof name === 'string') {
-          const scopedName = ctx.declareVar(name, init[0] === 'const')
-          const val = gen(value)
-          ctx.addLocal(scopedName, val.type)
-          // Preserve type (i32 stays i32 for loop counters)
-          code += `(local.set $${scopedName} ${val})\n    `
-        }
-      }
-      else code += `(drop ${gen(init)})\n    `
-    }
-    const id = ctx.uniqueId++
-    const result = `$_for_result_${id}`
-    ctx.addLocal(result, 'f64')
-
-    code += `(block $break_${id} (loop $continue_${id}\n      `
-    if (cond) code += `(br_if $break_${id} ${falsy(gen(cond))})\n      `
-    code += `(local.set ${result} ${f64(gen(body))})\n      `
-    if (step) {
-      if (Array.isArray(step) && step[0] === '=') code += genAssign(step[1], step[2], false)
-      else if (Array.isArray(step) && step[0].endsWith('=')) {
-        const baseOp = step[0].slice(0, -1)
-        code += genAssign(step[1], [baseOp, step[1], step[2]], false)
-      } else code += `(drop ${gen(step)})\n      `
-    }
-    code += `(br $continue_${id})\n    ))\n    (local.get ${result})`
-    ctx.popScope()
-    return wat(code, 'f64')
-  },
-
-  // While loop
-  'while'([cond, body]) {
-    const id = ctx.uniqueId++
-    const result = `$_while_result_${id}`
-    ctx.addLocal(result, 'f64')
-    return wat(`(block $break_${id} (loop $continue_${id}
-      (br_if $break_${id} ${falsy(gen(cond))})
-      (local.set ${result} ${f64(gen(body))})
-      (br $continue_${id})))
-    (local.get ${result})`, 'f64')
-  },
-
-  // Switch statement
-  'switch'([discriminant, ...cases]) {
-    const id = ctx.uniqueId++
-    const result = `$_switch_result_${id}`
-    const discrim = `$_switch_discrim_${id}`
-    ctx.addLocal(result, 'f64')
-    ctx.addLocal(discrim, 'f64')
-
-    let code = `(local.set ${discrim} ${f64(gen(discriminant))})\n    `
-    code += `(local.set ${result} (f64.const 0))\n    `
-    code += `(block $break_${id}\n      `
-
-    // Store loop ID for break statements
-    const switchId = id
-
-    // Process cases
-    for (const caseNode of cases) {
-      if (Array.isArray(caseNode) && caseNode[0] === 'case') {
-        const [, test, consequent] = caseNode
-        const caseId = ctx.uniqueId++
-        code += `(block $case_${caseId}\n        `
-        code += `(br_if $case_${caseId} ${f64ops.ne(wat(`(local.get ${discrim})`, 'f64'), gen(test))})\n        `
-        // Execute consequent - handle as statement sequence
-        const saveId = ctx.uniqueId
-        ctx.uniqueId = switchId + 1  // So break finds $break_{switchId}
-
-        // If consequent is a statement list (;), execute each statement
-        if (Array.isArray(consequent) && consequent[0] === ';') {
-          const stmts = consequent.slice(1).filter((s, i) => i === 0 || (s !== null && typeof s !== 'number'))
-          for (let i = 0; i < stmts.length; i++) {
-            const stmt = stmts[i]
-            if (Array.isArray(stmt) && stmt[0] === 'break') {
-              code += `(br $break_${switchId})\n        `
-            } else if (Array.isArray(stmt) && stmt[0] === '=') {
-              code += genAssign(stmt[1], stmt[2], false)
-            } else if (stmt !== null) {
-              // All non-break statements should set the result
-              code += `(local.set ${result} ${f64(gen(stmt))})\n        `
-            }
-          }
-        } else {
-          code += `(local.set ${result} ${f64(gen(consequent))})\n        `
-        }
-
-        ctx.uniqueId = saveId  // Restore
-        code += `)\n      `
-      } else if (Array.isArray(caseNode) && caseNode[0] === 'default') {
-        const [, consequent] = caseNode
-        code += `(local.set ${result} ${f64(gen(consequent))})\n      `
-      }
-    }
-
-    code += `)\n    (local.get ${result})`
-    return wat(code, 'f64')
-  },
-
-  // === Exception handling ===
-
-  // throw expr - throws value as exception
-  'throw'([value]) {
-    ctx.usedException = true
-    return wat(`(throw $__error ${f64(gen(value))})`, 'f64')
-  },
-
-  // try body - just executes body (catch wraps this)
-  'try'([body]) {
-    return gen(body)
-  },
-
-  // ['catch', ['try', body], param, catchBody]
-  // WASM structure: (block $done (block $catch (try_table (catch $tag $catch) body) (br $done)) catchBody)
-  'catch'([tryNode, param, catchBody]) {
-    ctx.usedException = true
-    const id = ctx.uniqueId++
-    const catchLabel = `$_catch_${id}`
-    const doneLabel = `$_done_${id}`
-
-    // Generate try body - disable tail call inside try block
-    const savedInTry = ctx.inTryBlock
-    ctx.inTryBlock = true
-    const tryBody = tryNode && tryNode[1] ? gen(tryNode[1]) : wat('(f64.const 0)', 'f64')
-    ctx.inTryBlock = savedInTry
-
-    // Set up catch parameter as local if provided
-    let catchCode
-    if (param && typeof param === 'string') {
-      ctx.pushScope()
-      ctx.addLocal(param, 'f64')
-      // The caught value is on the stack, store it in param
-      const catchVal = gen(catchBody)
-      ctx.popScope()
-      catchCode = `(local.set $${param}) ${f64(catchVal)}`
-    } else if (catchBody) {
-      // No param - drop the caught value
-      catchCode = `(drop) ${f64(gen(catchBody))}`
-    } else {
-      catchCode = `(drop) (f64.const 0)`
-    }
-
-    // WASM try_table:
-    // - try_table catches $__error and branches to $catch with the exception value on stack
-    // - if no exception, result is on stack, br to $done skips catch
-    // - catch block receives exception value, executes catchBody
-    return wat(`(block ${doneLabel} (result f64)
-      (block ${catchLabel} (result f64)
-        (try_table (result f64) (catch $__error ${catchLabel})
-          ${f64(tryBody)})
-        (br ${doneLabel}))
-      ${catchCode})`, 'f64')
-  },
-
-  // ['finally', inner, finallyBody] where inner is try or catch result
-  'finally'([inner, finallyBody]) {
-    const id = ctx.uniqueId++
-    const result = `$_finally_result_${id}`
-    ctx.addLocal(result, 'f64')
-
-    const innerCode = gen(inner)
-    const finallyCode = gen(finallyBody)
-
-    // Execute finally block after try/catch, discard finally result
-    return wat(`(local.set ${result} ${f64(innerCode)})
-      (drop ${f64(finallyCode)})
-      (local.get ${result})`, 'f64')
-  },
-
-  // Block with scope OR object literal
-  // Parser outputs: block = ["{}", [";", ...]], object = ["{}", [":", k, v]] or ["{}", [",", ...]]
-  '{}'([body]) {
-    // Empty object
-    if (body === null) return operators['{']([] )
-    // Object literal: single property [":", key, val]
-    if (Array.isArray(body) && body[0] === ':') {
-      return operators['{']([[body[1], body[2]]])
-    }
-    // Object literal: multiple properties [",", [":", k1, v1], [":", k2, v2], ...]
-    if (Array.isArray(body) && body[0] === ',') {
-      const props = body.slice(1).map(p => [p[1], p[2]])
-      return operators['{'](props)
-    }
-    // Block scope
-    ctx.pushScope()
-    let result
-    if (!Array.isArray(body) || body[0] !== ';') {
-      result = gen(body)
-    } else {
-      result = operators[';'](body.slice(1))
-    }
-    ctx.popScope()
-    return result
-  },
-
-  // Declarations
-  'let'([assignment]) {
-    if (!Array.isArray(assignment) || assignment[0] !== '=') {
-      throw new Error('let requires assignment')
-    }
-    const [, name, value] = assignment
-
-    // Array destructuring in declaration: let [a, b] = [1, 2]
-    if (Array.isArray(name) && name[0] === '[]') {
-      return _genArrayDestructDecl(name, value, false)
-    }
-
-    // Object destructuring in declaration: let {a, b} = {a: 1, b: 2}
-    if (Array.isArray(name) && name[0] === '{}') {
-      return _genObjectDestructDecl(name, value, false)
-    }
-
-    if (typeof name !== 'string') throw new Error('let requires simple identifier or destructuring pattern')
-
-    // Special case: exported arrow function without captures -> direct function registration
-    // This enables multi-value returns for: export let rgb = (h, s, l) => [h * 255, ...]
-    if (Array.isArray(value) && value[0] === '=>' && ctx.exports.has(name) && !ctx.inFunction) {
-      const [, params, body] = value
-      const fnParams = extractParams(params)
-      const fnParamInfo = extractParamInfo(params)
-      // Check if captures anything (exclude namespace refs - they're compile-time only)
-      const analysis = analyzeScope(body, new Set(fnParams), true)
-      const localNames = Object.keys(ctx.locals)
-      const captured = [...analysis.free].filter(v =>
-        localNames.includes(v) && !fnParams.includes(v) && !ctx.namespaces[v]
-      )
-      if (captured.length === 0) {
-        // No captures - register as direct exported function
-        ctx.functions[name] = { params: fnParams, paramInfo: fnParamInfo, body, exported: true }
-        return wat('(f64.const 0)', 'f64')
-      }
-    }
-
-    // Forward schema inference for Object.assign on pointer types
-    const isObjAssign = Array.isArray(value) && value[0] === '()' &&
-      Array.isArray(value[1]) && value[1][0] === '.' &&
-      value[1][1] === 'Object' && value[1][2] === 'assign'
-    if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-      const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
-      if (result) return result
-    }
-
-    // Static namespace pattern: let ns = { fn1: (x) => ..., fn2: (a,b) => ... }
-    if (Array.isArray(value) && value[0] === '{') {
-      const props = value.slice(1)
-      const isNamespace = props.length > 0 && props.every(([key, val]) =>
-        Array.isArray(val) && val[0] === '=>'
-      )
-      if (isNamespace) {
-        const localNames = Object.keys(ctx.locals)
-        let hasCaptures = false
-        for (const [key, [, params, body]] of props) {
-          const fnParams = extractParams(params)
-          const analysis = analyzeScope(body, new Set(fnParams), true)
-          const captured = [...analysis.free].filter(v => localNames.includes(v) && !fnParams.includes(v))
-          if (captured.length > 0) { hasCaptures = true; break }
-        }
-        if (!hasCaptures) {
-          // Register as static namespace - direct function calls, no memory
-          ctx.namespaces[name] = {}
-          for (const [key, [, params, body]] of props) {
-            const fnParams = extractParams(params)
-            const fnParamInfo = extractParamInfo(params)
-            const funcName = `${name}_${key}`
-            ctx.namespaces[name][key] = { params: fnParams, body, funcName }
-            ctx.functions[funcName] = { params: fnParams, paramInfo: fnParamInfo, body, exported: false }
-          }
-          ctx.declareVar(name, false)
-          ctx.addLocal(name, 'namespace')
-          return wat('(f64.const 0)', 'f64')
-        }
-      }
-    }
-
-    // Forward schema inference for object literals
-    if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-      const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), false)
-      if (result) return result
-    }
-
-    const scopedName = ctx.declareVar(name, false)
-    const val = gen(value)
-    // Track array variables (type-based for gc:true, AST-based for gc:false)
-    const isArr = isArrayType(val.type) || isArrayExpr(value)
-    if (isArr) {
-      ctx.knownArrayVars.add(name)
-    }
-    // Warn on aliasing: b = a where a is known array
-    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
-    }
-    // Type promotion: if var is assigned f64 anywhere, use f64
-    let varType = val.type
-    if (varType === 'i32' && ctx.f64Vars && ctx.f64Vars.has(name)) {
-      varType = 'f64'
-    }
-    ctx.addLocal(name, varType, val.schema, scopedName)
-    // Convert init value to declared type
-    const coercedVal = varType === 'f64' && val.type === 'i32'
-      ? wat(`(f64.convert_i32_s ${val})`, 'f64')
-      : val
-    return wat(`(local.tee $${scopedName} ${coercedVal})`, varType, val.schema)
-  },
-
-  'const'(assignments) {
-    // Handle single or multiple declarators: const a = 1  OR  const a = 1, b = 2
-    // Single: [['=', 'a', 1]]   Multiple: [['=', 'a', 1], ['=', 'b', 2]]
-    let code = ''
-    let lastResult = wat('(f64.const 0)', 'f64')
-
-    for (const assignment of assignments) {
-      if (!Array.isArray(assignment) || assignment[0] !== '=') {
-        throw new Error('const requires assignment')
-      }
-      const [, name, value] = assignment
-
-      // Array destructuring in const declaration: const [a, b] = [1, 2]
-      if (Array.isArray(name) && name[0] === '[]') {
-        const result = _genArrayDestructDecl(name, value, true)
-        code += `(drop ${result})\n    `
-        lastResult = result
-        continue
-      }
-
-      // Object destructuring in const declaration: const {a, b} = {a: 1, b: 2}
-      if (Array.isArray(name) && name[0] === '{}') {
-        const result = _genObjectDestructDecl(name, value, true)
-        code += `(drop ${result})\n    `
-        lastResult = result
-        continue
-      }
-
-      if (typeof name !== 'string') throw new Error('const requires simple identifier or destructuring pattern')
-      // Arrow function: delegate to genAssign which handles function registration properly
-      if (Array.isArray(value) && value[0] === '=>') {
-        ctx.declareVar(name, true)
-        const result = genAssign(name, value, true)
-        code += `(drop ${result})\n    `
-        lastResult = result
-        continue
-      }
-
-      // Forward schema inference for Object.assign on pointer types
-      const isObjAssign = Array.isArray(value) && value[0] === '()' &&
-        Array.isArray(value[1]) && value[1][0] === '.' &&
-        value[1][1] === 'Object' && value[1][2] === 'assign'
-      if (isObjAssign && ctx.inferredSchemas?.has(name)) {
-        const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
-        if (result) {
-          code += `(drop ${result})\n    `
-          lastResult = result
-          continue
-        }
-      }
-
-      // Forward schema inference for const objects
-      if (Array.isArray(value) && value[0] === '{' && ctx.inferredSchemas?.has(name)) {
-        const result = genInferredDecl(name, value, ctx.inferredSchemas.get(name), true)
-        if (result) {
-          code += `(drop ${result})\n    `
-          lastResult = result
-          continue
-        }
-      }
-
-      const scopedName = ctx.declareVar(name, true)
-      const val = gen(value)
-      // Track array variables (type-based for gc:true, AST-based for gc:false)
-      const isArr = isArrayType(val.type) || isArrayExpr(value)
-      if (isArr) {
-        ctx.knownArrayVars.add(name)
-      }
-      // Warn on aliasing
-      if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-        ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
-      }
-      ctx.addLocal(name, val.type, val.schema, scopedName)
-      const result = wat(`(local.tee $${scopedName} ${val})`, val.type, val.schema)
-      code += `(drop ${result})\n    `
-      lastResult = result
-    }
-
-    // Return last value (drop the final drop)
-    if (code) code = code.slice(0, code.lastIndexOf('(drop'))
-    return wat(code + String(lastResult), lastResult.type, lastResult.schema)
-  },
-
-  'var'([assignment]) {
-    // var is function-scoped, use global scope (depth 0)
-    if (!Array.isArray(assignment) || assignment[0] !== '=') {
-      throw new Error('var requires assignment')
-    }
-    const [, name, value] = assignment
-    if (typeof name !== 'string') throw new Error('var requires simple identifier')
-    // Warn: var hoisting surprises, suggest let/const
-    ctx.warn('var', `'var ${name}' is function-scoped and hoisted; prefer 'let' or 'const'`)
-    const val = gen(value)
-    // Track array variables (type-based for gc:true, AST-based for gc:false)
-    const isArr = isArrayType(val.type) || isArrayExpr(value)
-    if (isArr) {
-      ctx.knownArrayVars.add(name)
-    }
-    // Warn on aliasing
-    if (typeof value === 'string' && ctx.knownArrayVars.has(value)) {
-      ctx.warn('array-alias', `'${name} = ${value}' copies array pointer, not values; mutations affect both`)
-    }
-    ctx.addLocal(name, val.type, val.schema, name)  // no scope prefix for var
-    return wat(`(local.tee $${name} ${val})`, val.type, val.schema)
-  },
-
-  // If statement
-  'if'([cond, then, els]) {
-    const cw = bool(gen(cond))
-    if (els === undefined) {
-      // if without else - returns 0 when false
-      const tw = f64(gen(then))
-      return wat(`(if (result f64) ${cw} (then ${tw}) (else (f64.const 0)))`, 'f64')
-    }
-    // if/else
-    const [tw, ew] = conciliate(gen(then), gen(els)), t = tw.type
-    return wat(`(if (result ${t}) ${cw} (then ${tw}) (else ${ew}))`, t)
-  },
-
-  // Break and continue
-  'break'([label]) {
-    // Find the innermost breakable block (loop or switch)
-    const id = ctx.uniqueId - 1
-    if (id < 0) throw new Error('break outside of loop/switch')
-    return wat(`(br $break_${id}) (f64.const 0)`, 'f64')
-  },
-
-  'continue'([label]) {
-    // Find the innermost loop's continue label
-    const id = ctx.uniqueId - 1
-    if (id < 0) throw new Error('continue outside of loop')
-    return wat(`(br $continue_${id}) (f64.const 0)`, 'f64')
-  },
-
-  // typeof - returns string pointer for type name
-  'typeof'([a]) {
-    ctx.usedStringType = true
-    const val = gen(a)
-    // Intern type name strings (they'll have stable IDs)
-    const typeStrings = {
-      undefined: ctx.internString('undefined'),
-      number: ctx.internString('number'),
-      string: ctx.internString('string'),
-      boolean: ctx.internString('boolean'),
-      object: ctx.internString('object'),
-      function: ctx.internString('function'),
-      symbol: ctx.internString('symbol')
-    }
-    const mkStr = (name) => {
-      const { id, length } = typeStrings[name]
-      ctx.usedMemory = true
-      // NaN boxing: mkptr(type, aux, offset)
-      // For strings, aux=0, offset points to char data (after 8-byte length header)
-      const memOffset = HEAP_START + id * STRING_STRIDE + 8  // +8 for length header
-      return `(call $__mkptr (i32.const ${PTR_TYPE.STRING}) (i32.const 0) (i32.const ${memOffset}))`
-    }
-    if (val.type === 'symbol') return wat(mkStr('symbol'), 'string')
-    if (val.type === 'f64') {
-      // f64 can be number or NaN-encoded pointer (string, object, symbol, function)
-      // Use __typeof_code for proper runtime detection
-      ctx.usedMemory = true
-      // typeof_code: 0=undefined, 1=number, 2=string, 3=boolean, 4=object, 5=function, 6=symbol
-      // Build a chain of selects based on typeof_code
-      const tcLocal = `$__tc_${ctx.uniqueId++}`
-      ctx.addLocal(tcLocal, 'i32')
-      return wat(`(local.set ${tcLocal} (call $__typeof_code ${val}))
-        (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 6))
-          (then ${mkStr('symbol')})
-          (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 2))
-            (then ${mkStr('string')})
-            (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 5))
-              (then ${mkStr('function')})
-              (else (if (result f64) (i32.eq (local.get ${tcLocal}) (i32.const 4))
-                (then ${mkStr('object')})
-                (else ${mkStr('number')}))))))))`, 'string')
-    }
-    if (val.type === 'i32') return wat(mkStr('boolean'), 'string')
-    if (val.type === 'string') return wat(mkStr('string'), 'string')
-    if (val.type === 'ref') return wat(mkStr('undefined'), 'string')
-    if (val.type === 'array' || val.type === 'object') return wat(mkStr('object'), 'string')
-    return wat(mkStr('number'), 'string')  // default
-  },
-
-  'void'([a]) {
-    // void evaluates expression and returns undefined (0)
-    const w = gen(a)
-    return wat(`(drop ${w}) (f64.const 0)`, 'f64')
-  },
-
-  // Template literals
-  '\`'(parts) {
-    // Template literal: [`parts] where parts alternate between strings and expressions
-    // parts = [[null, "literal"], expr, [null, "literal2"], ...]
-    ctx.usedStringType = true
-    ctx.usedMemory = true
-
-    // Check if all parts are compile-time constant strings
-    // Note: subscript uses undefined (not null) as the literal marker
-    const allConstStrings = parts.every(part =>
-      Array.isArray(part) && part[0] === undefined && typeof part[1] === 'string'
-    )
-
-    if (allConstStrings) {
-      // Concatenate at compile time
-      const fullString = parts.map(p => p[1]).join('')
-      return mkString(ctx, fullString)
-    }
-
-    // Dynamic template - need runtime concatenation
-    // Step 1: Collect all string parts and their lengths
-    const id = ctx.uniqueId++
-    const result = `$_tpl_result_${id}`
-    const totalLen = `$_tpl_len_${id}`
-    const offset = `$_tpl_off_${id}`
-    ctx.addLocal(result, 'string')
-    ctx.addLocal(totalLen, 'i32')
-    ctx.addLocal(offset, 'i32')
-
-    // Generate code to calculate total length and generate string values
-    let lenCalc = '(i32.const 0)'
-    const genParts = []
-    for (const part of parts) {
-      // Literal check: [undefined, "string"] (subscript parser uses undefined, not null)
-      if (Array.isArray(part) && part[0] === undefined && typeof part[1] === 'string') {
-        // String literal - add its length
-        lenCalc = `(i32.add ${lenCalc} (i32.const ${part[1].length}))`
-        genParts.push({ type: 'literal', value: part[1] })
-      } else {
-        // Expression - generate it and get length
-        const partId = ctx.uniqueId++
-        const partLocal = `$_tpl_part_${partId}`
-        ctx.addLocal(partLocal, 'f64')  // Could be string or number
-        genParts.push({ type: 'expr', local: partLocal, ast: part })
-      }
-    }
-
-    // Build the concatenation code
-    let code = `(local.set ${totalLen} ${lenCalc})\n`
-
-    // Evaluate expressions and accumulate their lengths
-    for (const part of genParts) {
-      if (part.type === 'expr') {
-        const val = gen(part.ast)
-        if (isString(val)) {
-          code += `(local.set ${part.local} ${val})\n`
-          code += `(local.set ${totalLen} (i32.add (local.get ${totalLen}) (call $__str_len (local.get ${part.local}))))\n`
-        } else {
-          // Non-string interpolation not yet supported (needs number-to-string)
-          throw new Error('Template literal interpolation requires string expression. Number-to-string conversion not yet implemented.')
-        }
-      }
-    }
-
-    // Allocate result string
-    code += `(local.set ${result} (call $__alloc (i32.const ${PTR_TYPE.STRING}) (local.get ${totalLen})))\n`
-    code += `(local.set ${offset} (i32.const 0))\n`
-
-    // Copy each part into result
-    for (const part of genParts) {
-      if (part.type === 'literal') {
-        // Copy literal string (interned) to result at offset
-        // internString stores at HEAP_START + id*STRING_STRIDE with [len:8][chars...]
-        // Char data starts at +8
-        const { id: stringId } = ctx.internString(part.value)
-        const partLen = part.value.length
-        if (partLen > 0) {
-          code += `(memory.copy
-            (i32.add (call $__ptr_offset (local.get ${result})) (i32.shl (local.get ${offset}) (i32.const 1)))
-            (i32.const ${HEAP_START + stringId * STRING_STRIDE + 8})
-            (i32.const ${partLen * 2}))\n`
-          code += `(local.set ${offset} (i32.add (local.get ${offset}) (i32.const ${partLen})))\n`
-        }
-      } else {
-        // Copy expression result (if string) to result at offset - handles SSO strings
-        const partLen = `$_tpl_plen_${ctx.uniqueId++}`
-        ctx.addLocal(partLen, 'i32')
-        code += `(if (call $__is_pointer (local.get ${part.local}))
-          (then
-            (local.set ${partLen} (call $__str_len (local.get ${part.local})))
-            (call $__str_copy (local.get ${result}) (local.get ${offset}) (local.get ${part.local}) (i32.const 0) (local.get ${partLen}))
-            (local.set ${offset} (i32.add (local.get ${offset}) (local.get ${partLen})))))\n`
-      }
-    }
-
-    code += `(local.get ${result})`
-    return wat(`(block (result f64) ${code})`, 'string')
-  },
-
-  // Regex literal: ['//', pattern, flags]
-  '//'([pattern, flags]) {
-    // Parse and compile regex at compile time
-    const ast = parseRegex(pattern, flags)
-    const regexId = ctx.regexCounter++
-    const funcName = `$__regex_${regexId}`
-    const groupCount = ast.groups || 0
-
-    // Compile regex to WASM matcher function (also generates _exec variant)
-    const watFunc = compileRegex(ast, funcName.slice(1))
-
-    // Store compiled regex function
-    if (!ctx.regexFunctions) ctx.regexFunctions = []
-    ctx.regexFunctions.push(watFunc)
-
-    // Store group count and flags for method calls
-    if (!ctx.regexGroups) ctx.regexGroups = {}
-    if (!ctx.regexFlags) ctx.regexFlags = {}
-    ctx.regexGroups[regexId] = groupCount
-    ctx.regexFlags[regexId] = flags
-
-    // Return a regex "pointer" - NaN-boxed with REGEX type
-    // New encoding: [6:3][flags:6][funcIdx:10][offset:32]
-    // flags in bits 10-15 of aux, funcIdx in bits 0-9 of aux
-    ctx.usedMemory = true
-
-    // Encode flags: g=1, i=2, m=4, s=8, u=16, y=32
-    const flagBits = (flags.includes('g') ? 1 : 0) |
-                     (flags.includes('i') ? 2 : 0) |
-                     (flags.includes('m') ? 4 : 0) |
-                     (flags.includes('s') ? 8 : 0)
-    // Combine: aux = (flags << 10) | regexId, offset stores groupCount for now
-    const auxBits = (flagBits << 10) | (regexId & 0x3FF)
-    return wat(`(call $__mkptr (i32.const ${PTR_TYPE.REGEX}) (i32.const ${auxBits}) (i32.const ${groupCount}))`, 'regex', regexId)
-  },
-
-  // Export declaration
-  'export'([decl]) {
-    // export { name } or export { name1, name2 }
-    if (Array.isArray(decl) && decl[0] === '{') {
-      for (let i = 1; i < decl.length; i++) {
-        const name = decl[i]
-        if (typeof name === 'string') ctx.exports.add(name)
-      }
-      return wat('(f64.const 0)', 'f64')
-    }
-    // export const/let/var name = value  (can have multiple declarators)
-    if (Array.isArray(decl) && (decl[0] === 'const' || decl[0] === 'let' || decl[0] === 'var')) {
-      // Handle multiple declarators: ['const', ['=', 'a', ...], ['=', 'b', ...]]
-      for (let i = 1; i < decl.length; i++) {
-        const inner = decl[i]
-        if (Array.isArray(inner) && inner[0] === '=') {
-          const name = inner[1]
-          if (typeof name === 'string') ctx.exports.add(name)
-        }
-      }
-      return gen(decl)
-    }
-    // export function name() {}
-    if (Array.isArray(decl) && decl[0] === 'function') {
-      const name = decl[1]
-      if (typeof name === 'string') ctx.exports.add(name)
-      return gen(decl)
-    }
-    // export (params) => body  - register as 'main' with parameters
-    if (Array.isArray(decl) && decl[0] === '=>') {
-      const [, params, body] = decl
-      const fnParams = extractParams(params)
-      const fnParamInfo = extractParamInfo(params)
-      // Analyze for captures (exclude namespace variables - they're compile-time only)
-      const localNames = Object.keys(ctx.locals)
-      const analysis = analyzeScope(body, new Set(fnParams), true)
-      const captured = [...analysis.free].filter(v =>
-        localNames.includes(v) && !fnParams.includes(v) && !ctx.namespaces[v]
-      )
-
-      // Helper to get variable info for captured var (schema, semanticType for reboxing)
-      // Pointer types have WASM type f64 but semantic type for dispatch
-      const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
-      const getVarInfo = (v) => {
-        const loc = ctx.getLocal(v)
-        if (loc) {
-          const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
-          return {
-            schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-            semanticType: semType,
-            wasmType: loc.type
-          }
-        }
-        return {}
-      }
-
-      if (captured.length > 0) {
-        // Has captures - register as closure with env (not added to table, just receives env)
-        // Captured vars always stored as f64 in env
-        const envId = ctx.closureCounter++
-        const envType = `$env${envId}`
-        const envFields = captured.map((v, i) => {
-          const info = getVarInfo(v)
-          return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
-        })
-        ctx.functions['main'] = {
-          params: fnParams,
-          paramInfo: fnParamInfo,
-          body,
-          exported: true,
-          closure: { envType, envFields, captured }
-        }
-      } else {
-        // No captures - simple exported function
-        ctx.functions['main'] = { params: fnParams, paramInfo: fnParamInfo, body, exported: true }
-      }
-      return wat('(f64.const 0)', 'f64')
-    }
-    return gen(decl)
-  },
-
-  // Statements
-  ';'(stmts) {
-    // Filter out trailing line number metadata
-    stmts = stmts.filter((s, i) => i === 0 || (s !== null && typeof s !== 'number'))
-
-    // Pre-scan for export { name } declarations to collect export names first
-    // This handles both direct exports and nested statement blocks
-    const collectExports = (stmt) => {
-      if (!Array.isArray(stmt)) return
-      if (stmt[0] === 'export') {
-        const decl = stmt[1]
-        // export { name } or export { name1, name2 }
-        if (Array.isArray(decl) && decl[0] === '{') {
-          for (let i = 1; i < decl.length; i++) {
-            if (typeof decl[i] === 'string') ctx.exports.add(decl[i])
-          }
-        }
-      } else if (stmt[0] === ';') {
-        // Nested statement block
-        for (let i = 1; i < stmt.length; i++) collectExports(stmt[i])
-      }
-    }
-    for (const stmt of stmts) collectExports(stmt)
-
-    let code = ''
-    for (let i = 0; i < stmts.length - 1; i++) {
-      const stmt = stmts[i]
-      if (Array.isArray(stmt) && stmt[0] === '=') code += genAssign(stmt[1], stmt[2], false)
-      else if (Array.isArray(stmt) && stmt[0] === 'function') gen(stmt)
-      else if (stmt !== null) code += `(drop ${gen(stmt)})\n    `
-    }
-    const last = stmts[stmts.length - 1]
-    if (last === null || last === undefined) return wat(code + '(f64.const 0)', 'f64')
-    const lastVal = gen(last)
-    return wat(code + String(lastVal), lastVal.type)
-  },
-}
-
-// =============================================================================
-// ASSIGNMENT
-// Assignment handling for simple variables, captured vars, closures, and arrays.
-// Compound operators (+=, -=, etc.) generated programmatically from base operators.
-// =============================================================================
-
-// Generate compound assignment operators
-for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>']) {
-  operators[op + '='] = ([a, b]) => operators['=']([a, [op, a, b]])
-}
-
-// Destructuring functions imported from ./destruct.js:
-// genArrayDestructDecl, genObjectDestructDecl
-// Wrapper to use module-level ctx and gen
-const _genArrayDestructDecl = (pattern, valueAst, isConst, srcLocal, isNested) =>
-  genArrayDestructDecl(ctx, gen, pattern, valueAst, isConst, srcLocal, isNested)
-const _genObjectDestructDecl = (pattern, valueAst, isConst) =>
-  genObjectDestructDecl(ctx, gen, pattern, valueAst, isConst)
-
-/**
- * Handle all assignment operations: variables, arrays, objects, closures, destructuring.
- * Called by '=' operator and compound operators (+=, -=, etc.).
+ * Closures share a uniform signature (env f64, argc i32, a0..a{W-1} f64) → f64
+ * so any closure can be invoked via call_indirect on $ftN. This function
+ * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
- * @param {any} target - Assignment target: string (variable), ['[]', arr, idx], or destructuring pattern
- * @param {any} value - AST node for value being assigned
- * @param {boolean} returnValue - If true, returns typed value; if false, returns WAT statements only
- * @returns {object|string} Typed WAT value (if returnValue) or WAT code string
- * @example genAssign('x', [null, 42], true) → {type:'f64', wat:'(local.tee $x (f64.const 42))'}
- * @example genAssign('x', [null, 42], false) → '(local.set $x (f64.const 42))\n    '
+ * Mutates ctx.func.* per-body state (locals, boxed, repByLocal) and
+ * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
+ * leaks don't poison the next body). Returns the WAT IR for the func node.
  */
-function genAssign(target, value, returnValue) {
-  // Arrow function assigned to object property: obj.fn = (x) => x * 2
-  if (Array.isArray(value) && value[0] === '=>' && Array.isArray(target) && target[0] === '.' && target.length === 3) {
-    const [, objAst, prop] = target
-    const o = gen(objAst)
-    if (!isObject(o) || !hasSchema(o)) {
-      throw new Error(`Cannot assign property on non-object`)
-    }
-    const schema = getSchema(o)
-    const schemaId = getSchemaId(o)
-    const idx = schema.indexOf(prop)
-    if (idx < 0) {
-      throw new Error(`Property '${prop}' not found in object schema`)
-    }
-    ctx.usedMemory = true
+function emitClosureBody(cb) {
+  const prevSchemaVars = ctx.schema.vars
+  const prevTypedElems = ctx.types.typedElem
+  // Reset per-function state for closure body
+  ctx.func.locals = new Map()
+  ctx.func.repByLocal = null
+  if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
+  if (cb.schemaVars) {
+    ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+    for (const [name, sid] of cb.schemaVars) updateRep(name, { schemaId: sid })
+  }
+  const globalTE = ctx.scope.globalTypedElem
+  if (cb.typedElems) {
+    ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
+  } else if (globalTE) {
+    ctx.types.typedElem = new Map(globalTE)
+  } else {
+    ctx.types.typedElem = prevTypedElems
+  }
+  // In closure bodies, boxed captures use the original name as both var and cell local
+  ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+  ctx.func.stack = []
+  ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
+  ctx.func.body = cb.body
+  // Seed direct-call dispatch for captured const-bound closures (A3 across capture boundary).
+  // closure.make snapshotted the parent's directClosures for each capture; here we restore
+  // them so calls to a captured `peek` lower to `call $closureN` instead of call_indirect.
+  ctx.func.directClosures = cb.directClosures ? new Map(cb.directClosures) : null
+  // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
+  for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
+  ctx.func.current = { params: paramDecls, results: ['f64'] }
 
-    // Generate closure value using the '=>' operator logic
-    const closureVal = gen(value)
+  const fn = ['func', `$${cb.name}`]
+  fn.push(['param', '$__env', 'f64'])
+  fn.push(['param', '$__argc', 'i32'])
+  for (let i = 0; i < W; i++) fn.push(['param', `$__a${i}`, 'f64'])
+  fn.push(['result', 'f64'])
 
-    // Track as closure property
-    if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-    if (!ctx.objectPropTypes[schemaId]) ctx.objectPropTypes[schemaId] = {}
-    ctx.objectPropTypes[schemaId][prop] = 'closure'
+  // Params are locals, assigned directly from inline slots
+  for (const p of cb.params) ctx.func.locals.set(p, 'f64')
 
-    const code = objSet(String(o), idx, String(closureVal))
-    return returnValue ? wat(`(block (result f64) ${code} ${closureVal})`, 'f64') : code + '\n    '
+  // Register captured variable locals: boxed = i32 cell pointer, otherwise f64 value
+  for (let i = 0; i < cb.captures.length; i++) {
+    const name = cb.captures[i]
+    ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
   }
 
-  // Function/closure definition to named variable
-  if (Array.isArray(value) && value[0] === '=>') {
-    if (typeof target !== 'string') throw new Error('Function must have name')
-    const params = extractParams(value[1])
-    const paramInfo = extractParamInfo(value[1])
-    const body = value[2]
+  // Emit body
+  const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
+  let bodyIR
+  if (block) {
+    for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
+    analyzeBoxedCaptures(cb.body)
+    for (const name of ctx.func.boxed.keys()) {
+      if (ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
+    }
+    bodyIR = emitBody(cb.body)
+  } else {
+    bodyIR = [asF64(emit(cb.body))]
+  }
 
-    // Analyze for captured variables from the CURRENT scope (capture by value)
-    // Use original names, not scoped names
-    const localNames = Object.values(ctx.locals).map(l => l.originalName || l.scopedName)
-    const capturedNames = ctx.capturedVars ? Object.keys(ctx.capturedVars) : []
-    const outerDefined = new Set([...localNames, ...capturedNames])
+  // Pre-allocate cache locals for env unpacking
+  const envBase = cb.captures.length > 0 ? `${T}envBase${ctx.func.uniq++}` : null
+  if (envBase) ctx.func.locals.set(envBase, 'i32')
+  // Rest param: allocate helper locals (len + offset) before emitting decls
+  let restOff, restLen
+  if (cb.rest) {
+    restOff = `${T}restOff${ctx.func.uniq++}`
+    restLen = `${T}restLen${ctx.func.uniq++}`
+    ctx.func.locals.set(restOff, 'i32')
+    ctx.func.locals.set(restLen, 'i32')
+    inc('__alloc_hdr', '__mkptr')
+  }
 
-    // Analyze the function body to find free variables
-    const analysis = analyzeScope(body, new Set(params), true)
+  // Insert locals (captures + params + declared)
+  for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
-    // Captured = free vars in the inner function that exist in our current scope
-    // Exclude namespace variables - they're compile-time only, no runtime capture needed
-    const captured = [...analysis.free].filter(v =>
-      outerDefined.has(v) && !params.includes(v) && !ctx.namespaces[v]
+  // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
+  // env is the CLOSURE pointer (PTR.CLOSURE) — never an ARRAY, no forwarding chain.
+  // Inline the offset extraction (low 32 bits) instead of calling __ptr_offset per invocation.
+  if (envBase) {
+    fn.push(['local.set', `$${envBase}`,
+      ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', '$__env']]]])
+    for (let i = 0; i < cb.captures.length; i++) {
+      const name = cb.captures[i]
+      const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
+      fn.push(['local.set', `$${name}`,
+        ctx.func.boxed.has(name) ? ['i32.load', addr] : ['f64.load', addr]])
+    }
+  }
+
+  // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
+  // Rest name (if present) is last in cb.params — handled separately below.
+  const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
+  for (let i = 0; i < fixedParamN && i < W; i++) {
+    fn.push(['local.set', `$${cb.params[i]}`, ['local.get', `$__a${i}`]])
+  }
+
+  // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
+  // len = clamp(argc - fixedParams, 0, restSlots). Rest-param closures receive
+  // at most (width - fixedParams) rest args — spread callers with
+  // more dynamic elements lose the overflow (documented limitation).
+  if (cb.rest) {
+    const fixedN = fixedParamN
+    const restSlots = W - fixedN
+    fn.push(['local.set', `$${restLen}`,
+      ['select',
+        ['i32.sub', ['local.get', '$__argc'], ['i32.const', fixedN]],
+        ['i32.const', 0],
+        ['i32.gt_s', ['local.get', '$__argc'], ['i32.const', fixedN]]]])
+    fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', restSlots]],
+      ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
+    fn.push(['local.set', `$${restOff}`,
+      ['call', '$__alloc_hdr',
+        ['local.get', `$${restLen}`], ['local.get', `$${restLen}`], ['i32.const', 8]]])
+    for (let i = 0; i < restSlots; i++) {
+      fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
+        ['then', ['f64.store',
+          ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
+          ['local.get', `$__a${fixedN + i}`]]]])
+    }
+    fn.push(['local.set', `$${cb.rest}`,
+      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]])
+  }
+
+  // Default params for closures (check sentinel after unpack)
+  if (cb.defaults) {
+    for (const [pname, defVal] of Object.entries(cb.defaults)) {
+      fn.push(['if', isNullish(['local.get', `$${pname}`]),
+        ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+    }
+  }
+  fn.push(...bodyIR)
+  // I: Skip trailing fallback when last statement is return
+  if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
+  ctx.schema.vars = prevSchemaVars
+  ctx.types.typedElem = prevTypedElems
+  return fn
+}
+
+/**
+ * Phase: build module-init function `__start`.
+ *
+ * `__start` is the WebAssembly start function: runs once at instantiation, after
+ * imports/globals are bound but before any export is called. It threads together
+ * everything that must happen before user code observes a ready module:
+ *
+ *   1. Reset per-function emit state (locals/repByLocal/boxed/stack) — __start is
+ *      a fresh function context with no params.
+ *   2. analyzeValTypes(ast) so emit sees correct ptrKind on top-level decls.
+ *   3. Sub-module init (foreign module bootstrap) emits first — its globals
+ *      must be assigned before main-module code reads them.
+ *   4. emit(ast) — user top-level statements (let/const, call expressions, …).
+ *   5. boxInit — auto-boxing globals (vars with prop assignments lifted to OBJECT).
+ *   6. schemaInit — runtime schema-name table for JSON.stringify.
+ *   7. strPoolInit — copy passive string-pool segment to heap (shared memory).
+ *   8. typeofInit — preallocate typeof-result string globals.
+ *
+ * Order in the assembled body: strPool → typeof → box → schema → moduleInits → init.
+ *
+ * Late closures (those compiled during __start emit, e.g. arrows declared at
+ * module scope) are flushed via `compilePendingClosures` and prepended to
+ * `sec.funcs` so closure indices stay stable across the table.
+ */
+function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
+  ctx.func.locals = new Map()
+  ctx.func.repByLocal = null
+  ctx.func.boxed = new Map()
+  ctx.func.stack = []
+  ctx.func.current = { params: [], results: [] }
+  analyzeValTypes(ast)
+  const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
+
+  const moduleInits = []
+  if (ctx.module.moduleInits) {
+    for (const mi of ctx.module.moduleInits) {
+      analyzeValTypes(mi)
+      moduleInits.push(...normalizeIR(emit(mi)))
+    }
+  }
+  const init = emit(ast)
+
+  const boxInit = []
+  if (ctx.schema.autoBox) {
+    const bt = `${T}box`
+    ctx.func.locals.set(bt, 'i32')
+    for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
+      inc('__alloc', '__mkptr')
+      boxInit.push(
+        ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+        ['f64.store', ['local.get', `$${bt}`],
+          ctx.func.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
+        ...schema.slice(1).map((_, i) =>
+          ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (i + 1) * 8]], ['f64.const', 0]]),
+        ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
+    }
+  }
+
+  const schemaInit = []
+  // Schema name table is needed by JSON.stringify (legacy), and by __dyn_get's
+  // OBJECT-schema fallback for polymorphic-receiver `.prop` access. Lift the
+  // gate to also populate when any __dyn_get* family helper is included so
+  // polymorphic OBJECT patterns (mismatched-schema `?:`, unknown-schema
+  // params) resolve via runtime aux→sid lookup. Direct dependents of
+  // __dyn_get (set transitively by resolveIncludes() later) are listed
+  // explicitly here because the dep graph hasn't been expanded yet at
+  // start-fn build time.
+  const needsSchemaTbl = ctx.schema.list.length && (
+    ctx.core.includes.has('__stringify') ||
+    ctx.core.includes.has('__dyn_get') ||
+    ctx.core.includes.has('__dyn_get_any') ||
+    ctx.core.includes.has('__dyn_get_expr') ||
+    ctx.core.includes.has('__dyn_get_or'))
+  if (needsSchemaTbl) {
+    const nSchemas = ctx.schema.list.length
+    const stbl = `${T}stbl`
+    const sarr = `${T}sarr`
+    ctx.func.locals.set(stbl, 'i32')
+    ctx.func.locals.set(sarr, 'i32')
+    inc('__alloc', '__alloc_hdr', '__mkptr')
+    schemaInit.push(
+      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', nSchemas * 8]]],
+      ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
+    for (let s = 0; s < nSchemas; s++) {
+      const keys = ctx.schema.list[s]
+      const n = keys.length
+      schemaInit.push(
+        ['local.set', `$${sarr}`, ['call', '$__alloc_hdr', ['i32.const', n], ['i32.const', n], ['i32.const', 8]]])
+      for (let k = 0; k < n; k++)
+        schemaInit.push(
+          ['f64.store', ['i32.add', ['local.get', `$${sarr}`], ['i32.const', k * 8]],
+            emit(['str', String(keys[k])])])
+      schemaInit.push(
+        ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
+          mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
+    }
+  }
+
+  const strPoolInit = []
+  if (ctx.runtime.strPool) {
+    const total = ctx.runtime.strPool.length
+    strPoolInit.push(
+      ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
+      ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
+      ['data.drop', '$__strPool'],
     )
-
-    // Helper to get variable info for captured var (schema, semanticType for reboxing)
-    // Pointer types have WASM type f64 but semantic type for dispatch
-    const isPointerType = (t) => ['array', 'flat_array', 'ring_array', 'object', 'string', 'closure', 'typedarray', 'regex', 'set', 'map', 'symbol'].includes(t)
-    const getVarInfo = (v) => {
-      const loc = ctx.getLocal(v)
-      if (loc) {
-        const semType = loc.semanticType || (isPointerType(loc.type) ? loc.type : null)
-        return {
-          schema: ctx.localSchemas[loc.scopedName] ?? loc.schema,
-          semanticType: semType,
-          wasmType: loc.type
-        }
-      }
-      if (ctx.capturedVars?.[v]) {
-        return {
-          schema: ctx.capturedVars[v].schema,
-          semanticType: ctx.capturedVars[v].semanticType,
-          wasmType: 'f64'
-        }
-      }
-      return {}
-    }
-
-    if (captured.length > 0) {
-      // Create fresh env with captured values (copy by value)
-      // Env always stores f64, so captured vars are always f64
-      const envId = ctx.closureCounter++
-      const envType = `$env${envId}`
-      const envFields = captured.map((v, i) => {
-        const info = getVarInfo(v)
-        return { name: v, index: i, type: info.semanticType || 'f64', schema: info.schema, semanticType: info.semanticType, wasmType: info.wasmType }
-      })
-
-      ctx.closures[target] = { envType, envFields, captured, params, body }
-
-      // Register the lifted function (with env param)
-      // Track closure depth for call sites
-      const depth = closureDepth(body)
-      ctx.functions[target] = {
-        params,
-        paramInfo,
-        body,
-        exported: false,
-        closure: { envType, envFields, captured },
-        closureDepth: depth
-      }
-
-      return returnValue ? wat('(f64.const 0)', 'f64') : ''
-    }
-    // Check if function body returns a closure (arrow function as body)
-    const returnsClosure = Array.isArray(body) && body[0] === '=>'
-    const depth = closureDepth(body)
-
-    // Regular function (no captures) - export only if explicitly exported
-    ctx.functions[target] = { params, paramInfo, body, exported: ctx.exports.has(target), returnsClosure, closureDepth: depth }
-    return returnValue ? wat('(f64.const 0)', 'f64') : ''
   }
 
-  // Array destructuring: [a, b] = [1, 2] or [a, b] = [b, a] (swap) or [x, y] = fn() (multi-return)
-  if (Array.isArray(target) && target[0] === '[]' && Array.isArray(target[1]) && target[1][0] === ',') {
-    const vars = target[1].slice(1).filter(v => typeof v === 'string')
-    if (vars.length < 2 || vars.length > 8) {
-      throw new Error('Destructuring requires 2-8 variables')
-    }
+  const typeofInit = []
+  if (ctx.runtime.typeofStrs) {
+    for (const s of ctx.runtime.typeofStrs)
+      typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
+  }
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length) {
+    const initIR = normalizeIR(init)
+    const startFn = ['func', '$__start']
+    for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
+    startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...moduleInits, ...initIR)
+    sec.start.push(startFn, ['start', '$__start'])
+  }
 
-    // Helper to get variable info (local or global)
-    const getVarInfo = (name) => {
-      const loc = ctx.getLocal(name)
-      if (loc) return { name, scopedName: loc.scopedName, type: loc.type || 'f64', isGlobal: false }
-      const glob = ctx.getGlobal(name)
-      if (glob) return { name, scopedName: name, type: glob.type || 'f64', isGlobal: true }
-      return null
-    }
+  const beforeLen = closureFuncs.length
+  compilePendingClosures()
+  if (closureFuncs.length > beforeLen)
+    sec.funcs.unshift(...closureFuncs.slice(beforeLen))
+}
 
-    // Check for swap/rotate pattern: [a, b, ...] = [b, a, ...] where RHS is permutation of LHS vars
-    // RHS AST for [b, a]: ['[]', [',', 'b', 'a']] or ['[', 'b', 'a']
-    const isRhsArrayLiteral = Array.isArray(value) && (value[0] === '[' || value[0] === '[]')
-    if (isRhsArrayLiteral) {
-      // Extract RHS elements from either format
-      let rhsElems
-      if (value[0] === '[') {
-        rhsElems = value.slice(1)
-      } else {
-        // ['[]', [',', 'a', 'b']] format
-        rhsElems = Array.isArray(value[1]) && value[1][0] === ',' ? value[1].slice(1) : [value[1]]
+/**
+ * Phase: closure-body dedup.
+ *
+ * Two closures with structurally-equal bodies (same shape after alpha-renaming
+ * locals/params) are emitted as a single function — duplicates redirect through
+ * the elem table to the canonical name. Closure bodies often share shape because
+ * the same inner arrow can be instantiated in many places (e.g. parser combinators).
+ *
+ * IN:  closureFuncs (the WAT IR list emitted by emitClosureBody),
+ *      sec.funcs (already contains closureFuncs + regular funcs),
+ *      ctx.closure.table (elem-section names).
+ * OUT: sec.funcs filtered to canonical bodies, ctx.closure.table redirected.
+ *
+ * Runs AFTER all closures (including those compiled during __start emit) are
+ * collected so structural duplicates across batches collapse together.
+ */
+function dedupClosureBodies(closureFuncs, sec) {
+  if (closureFuncs.length <= 1) return
+  const canonicalize = (fn) => {
+    const localNames = new Set()
+    const collect = (node) => {
+      if (!Array.isArray(node)) return
+      if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
+        localNames.add(node[1])
+      for (const c of node) collect(c)
+    }
+    collect(fn)
+    let counter = 0
+    const renameMap = new Map()
+    const walk = node => {
+      if (typeof node === 'string') {
+        if (!localNames.has(node)) return node
+        let r = renameMap.get(node)
+        if (!r) { r = `$_c${counter++}`; renameMap.set(node, r) }
+        return r
       }
-
-      if (rhsElems.length === vars.length && rhsElems.every(e => typeof e === 'string')) {
-        // Check if RHS is a permutation of LHS (all same variables)
-        const lhsSet = new Set(vars)
-        const rhsVars = rhsElems
-        if (rhsVars.every(v => lhsSet.has(v)) && new Set(rhsVars).size === vars.length) {
-          // Verify all vars are already declared and get their types
-          const varInfo = vars.map(v => {
-            const info = getVarInfo(v)
-            if (!info) throw new Error(`Variable '${v}' not declared for swap/rotate`)
-            return info
-          })
-
-          // This is a swap/rotate pattern - use temporaries, no allocation
-          const id = ctx.uniqueId++
-          let code = ''
-
-          // Generate temps for all current values (using actual variable types)
-          const temps = varInfo.map((info, i) => {
-            const tmp = `$_swap_${id}_${i}`
-            ctx.addLocal(tmp, info.type)
-            const getInstr = info.isGlobal ? 'global.get' : 'local.get'
-            code += `(local.set ${tmp} (${getInstr} $${info.scopedName}))\n    `
-            return tmp
-          })
-
-          // Now assign from temps based on RHS order
-          for (let i = 0; i < vars.length; i++) {
-            const rhsVar = rhsVars[i]
-            const srcIdx = vars.indexOf(rhsVar)
-            const setInstr = varInfo[i].isGlobal ? 'global.set' : 'local.set'
-            code += `(${setInstr} $${varInfo[i].scopedName} (local.get ${temps[srcIdx]}))\n    `
-          }
-
-          // Return type should match the last variable's type
-          const lastInfo = varInfo[varInfo.length - 1]
-          const getInstr = lastInfo.isGlobal ? 'global.get' : 'local.get'
-          return returnValue
-            ? wat(code + `(${getInstr} $${lastInfo.scopedName})`, lastInfo.type)
-            : code
-        }
-      }
+      if (!Array.isArray(node)) return node
+      return node.map(walk)
     }
+    return JSON.stringify(['func', ...fn.slice(2).map(walk)])
+  }
+  const hashToName = new Map()
+  const redirect = new Map()
+  const keepSet = new Set()
+  for (const fn of closureFuncs) {
+    const key = canonicalize(fn)
+    const name = fn[1].slice(1)
+    const canonical = hashToName.get(key)
+    if (canonical) redirect.set(name, canonical)
+    else { hashToName.set(key, name); keepSet.add(name) }
+  }
+  if (!redirect.size) return
+  ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
+  const kept = sec.funcs.filter(fn => {
+    if (!Array.isArray(fn) || fn[0] !== 'func') return true
+    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    return !name || !redirect.has(name)
+  })
+  sec.funcs.length = 0
+  sec.funcs.push(...kept)
+}
 
-    // Check for multi-value function call: [x, y] = fn() where fn returns multi-value
-    if (Array.isArray(value) && value[0] === '()') {
-      const fnAst = value[1]
-      const fnName = typeof fnAst === 'string' ? fnAst : null
-      const fnInfo = fnName && ctx.functions[fnName]
-
-      // Check if function is known to return multi-value
-      // Also check parent context for exported functions
-      const parentFnInfo = fnName && ctx.parent?.functions?.[fnName]
-      const exportSig = fnName && (ctx.exportSignatures?.[fnName] || ctx.parent?.exportSignatures?.[fnName])
-
-      const multiCount = fnInfo?.multiReturnCount || exportSig?.multiReturn || 0
-
-      if (multiCount === vars.length) {
-        // Multi-value function call - destructure directly without array allocation
-        const argsAst = value[2]
-        const args = argsAst ? (argsAst[0] === ',' ? argsAst.slice(1) : [argsAst]) : []
-        const argWats = args.map(a => f64(gen(a))).join(' ')
-
-        // Generate call and destructure via block with multi-value
-        const id = ctx.uniqueId++
-        let code = ''
-
-        // Use a block with multi-value result and local.set for each variable
-        // WASM stack order: first result is deepest, last is on top
-        // So we need to set variables in reverse order
-        for (let i = vars.length - 1; i >= 0; i--) {
-          ctx.addLocal(vars[i], 'f64')
-        }
-
-        // Call returns (v0 v1 v2 ...) on stack, set in reverse
-        code = `(call $${fnName} ${argWats})\n    `
-        for (let i = vars.length - 1; i >= 0; i--) {
-          code += `(local.set $${vars[i]})\n    `
-        }
-
-        return returnValue
-          ? wat(code + `(local.get $${vars[vars.length - 1]})`, 'f64')
-          : code
-      }
-    }
-
-    // Standard destructuring: create temp array, load elements
-    ctx.usedArrayType = true
-    ctx.usedMemory = true
-    const id = ctx.uniqueId++
-    const tmp = `$_destruct_${id}`
-    ctx.addLocal(tmp, 'array')
-    const aw = gen(value)
-    let code = `(local.set ${tmp} ${aw})\n    `
-
-    // Track variable info for proper naming and types
-    const varInfos = vars.map(v => {
-      const existing = ctx.getLocal(v)
-      if (existing) return existing
-      // New variable - add as f64
-      return ctx.addLocal(v, 'f64')
+/**
+ * Phase: closure-table finalize + ABI shrink.
+ *
+ * Two opportunities, both gated on a post-emit scan for `call_indirect`:
+ *
+ *   1. Drop dead $ftN type / table / elem when the scan finds zero call_indirect
+ *      sites (every closure call was direct-dispatched via A3 + capture-boundary
+ *      propagation, AND no top-level fn was taken as a value). Closure pointers
+ *      still carry funcIdx in their NaN-box aux bits, but those bits become dead
+ *      state with no reader.
+ *
+ *   2. Per-body ABI shrink: with no call_indirect, every closure is direct-only,
+ *      so the uniform `(env, argc, a0..a{W-1})` ABI is no longer required.
+ *      Each body sheds:
+ *        • $__env     when captures.length === 0
+ *        • $__argc    when no rest param (defaults check param value, not argc)
+ *        • $__a{i}    for i ≥ fixedN when no rest (caller's UNDEF padding is dead)
+ *      Rest closures keep all W slots — argc + slot{fixedN..W-1} are how rest packs.
+ *      Both `call` and `return_call` (tail call) sites are rewritten in the same walk.
+ */
+function finalizeClosureTable(sec) {
+  if (!ctx.closure.table?.length) return
+  let indirectUsed = false
+  const scan = (n) => {
+    if (!Array.isArray(n) || indirectUsed) return
+    if (n[0] === 'call_indirect') { indirectUsed = true; return }
+    for (const c of n) if (Array.isArray(c)) scan(c)
+  }
+  for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
+  if (!indirectUsed) for (const fn of sec.start) scan(fn)
+  if (indirectUsed) {
+    sec.table = [['table', ctx.closure.table.length, 'funcref']]
+    sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
+    return
+  }
+  sec.table = []
+  sec.elem = []
+  sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
+  const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
+  const abiOf = new Map()
+  for (const cb of (ctx.closure.bodies || [])) {
+    const fixedN = cb.params.length - (cb.rest ? 1 : 0)
+    abiOf.set(cb.name, {
+      needEnv: cb.captures.length > 0,
+      needArgc: !!cb.rest,
+      usedSlots: cb.rest ? W : fixedN,
+      rest: !!cb.rest,
     })
-
-    for (let i = 0; i < vars.length; i++) {
-      const info = varInfos[i]
-      const loadExpr = `(f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${i * 8})))`
-      // Coerce f64 to i32 if needed
-      const valueExpr = info.type === 'i32' ? `(i32.trunc_f64_s ${loadExpr})` : loadExpr
-      code += `(local.set $${info.scopedName} ${valueExpr})\n    `
-    }
-
-    const lastInfo = varInfos[varInfos.length - 1]
-    return returnValue && typeof lastInfo.scopedName === 'string'
-      ? wat(code + `(local.get $${lastInfo.scopedName})`, lastInfo.type)
-      : returnValue ? wat(code + '(f64.const 0)', 'f64') : code
   }
-
-  // Object destructuring: {a, b} = {a: 5, b: 10}
-  if (Array.isArray(target) && target[0] === '{}' && Array.isArray(target[1]) && target[1][0] === ',') {
-    const props = target[1].slice(1)
-    ctx.usedArrayType = true
-    ctx.usedMemory = true
-    const id = ctx.uniqueId++
-    const tmp = `$_destruct_${id}`
-    ctx.addLocal(tmp, 'object')
-    const obj = gen(value)
-    if (obj.type !== 'object' || obj.schema === undefined)
-      throw new Error('Object destructuring requires object literal on RHS')
-    const schema = getSchema(obj)
-    let code = `(local.set ${tmp} ${obj})\n    `
-    let lastVar = null
-    for (const p of props) {
-      const varName = typeof p === 'string' ? p : (Array.isArray(p) && p[0] === ':' ? p[1] : null)
-      if (typeof varName === 'string') {
-        const idx = schema.indexOf(varName)
-        if (idx < 0) throw new Error(`Property ${varName} not found in object`)
-        ctx.addLocal(varName, 'f64')
-        code += `(local.set $${varName} (f64.load (i32.add (call $__ptr_offset (local.get ${tmp})) (i32.const ${idx * 8}))))\n    `
-        lastVar = varName
-      }
-    }
-    return returnValue && lastVar
-      ? wat(code + `(local.get $${lastVar})`, 'f64')
-      : returnValue ? wat(code + '(f64.const 0)', 'f64') : code
-  }
-
-  // Object property assignment: obj.prop = x
-  if (Array.isArray(target) && target[0] === '.' && target.length === 3) {
-    const [, objAst, prop] = target
-    const o = gen(objAst)
-    if (!isObject(o) || !hasSchema(o)) {
-      throw new Error(`Cannot assign property on non-object`)
-    }
-    const schema = getSchema(o)
-    const schemaId = getSchemaId(o)
-    const idx = schema.indexOf(prop)
-    if (idx < 0) {
-      throw new Error(`Property '${prop}' not found in object schema`)
-    }
-    ctx.usedMemory = true
-    const vw = f64(gen(value))
-    // Track closure type if assigning a function
-    if (Array.isArray(value) && value[0] === '=>') {
-      if (!ctx.objectPropTypes) ctx.objectPropTypes = {}
-      if (!ctx.objectPropTypes[schemaId]) ctx.objectPropTypes[schemaId] = {}
-      ctx.objectPropTypes[schemaId][prop] = 'closure'
-    }
-    const code = objSet(String(o), idx, vw)
-    return returnValue ? wat(`(block (result f64) ${code} ${vw})`, 'f64') : code + '\n    '
-  }
-
-  // Array element assignment: arr[i] = x
-  if (Array.isArray(target) && target[0] === '[]' && target.length === 3) {
-    const aw = gen(target[1]), iw = i32(gen(target[2])), vw = f64(gen(value))
-    ctx.usedMemory = true
-
-    // TypedArray element assignment
-    if (isTypedArray(aw)) {
-      const elemType = aw.schema
-      // Use i32 accessor if receiver is an i32 viewOff param
-      const code = aw.isI32Ptr
-        ? typedArrSetI32(elemType, `(local.get $${aw.paramName})`, iw, vw)
-        : typedArrSet(elemType, String(aw), iw, vw)
-      return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
-    }
-
-    ctx.usedArrayType = true
-    const code = `(f64.store (i32.add (call $__ptr_offset ${aw}) (i32.shl ${iw} (i32.const 3))) ${vw})`
-    return returnValue ? wat(`${code} ${vw}`, 'f64') : code + '\n    '
-  }
-
-  // Global constant optimization (only at top level, and only for new variables)
-  if (typeof target === 'string' && !ctx.inFunction && !returnValue && !ctx.getLocal(target)) {
-    if (Array.isArray(value) && value[0] === undefined && typeof value[1] === 'number') {
-      ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(value[1])})`)
-      return ''
-    }
-    if (Array.isArray(value) && value[0] === '.' && value[1] === 'Math' && value[2] in MATH_OPS.constants) {
-      ctx.addGlobal(target, 'f64', `(f64.const ${fmtNum(MATH_OPS.constants[value[2]])})`)
-      return ''
-    }
-  }
-
-  // Static namespace: let ns = { fn1: (x) => ..., fn2: (a,b) => ... }
-  // All properties must be arrow functions without captures for namespace optimization
-  if (typeof target === 'string' && Array.isArray(value) && value[0] === '{') {
-    const props = value.slice(1)  // [['name', valueAst], ...]
-    const isNamespace = props.length > 0 && props.every(([key, val]) =>
-      Array.isArray(val) && val[0] === '=>'
-    )
-    if (isNamespace) {
-      // Check for captures - if any function has captures, can't use namespace optimization
-      const localNames = Object.keys(ctx.locals)
-      let hasCaptures = false
-      for (const [key, [, params, body]] of props) {
-        const fnParams = extractParams(params)
-        const analysis = analyzeScope(body, new Set(fnParams), true)
-        const captured = [...analysis.free].filter(v => localNames.includes(v) && !fnParams.includes(v))
-        if (captured.length > 0) {
-          hasCaptures = true
-          break
-        }
-      }
-      if (!hasCaptures) {
-        // Register as static namespace - direct function calls, no memory
-        ctx.namespaces[target] = {}
-        for (const [key, [, params, body]] of props) {
-          const fnParams = extractParams(params)
-          const fnParamInfo = extractParamInfo(params)
-          const funcName = `${target}_${key}`
-          ctx.namespaces[target][key] = { params: fnParams, body, funcName }
-          ctx.functions[funcName] = { params: fnParams, paramInfo: fnParamInfo, body, exported: false }
-        }
-        // Variable holds nothing meaningful - just a marker
-        ctx.addLocal(target, 'namespace')
-        return returnValue ? wat('(f64.const 0)', 'f64') : ''
+  for (const fn of sec.funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func') continue
+    const fnName = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    const abi = abiOf.get(fnName)
+    if (!abi) continue
+    for (let i = fn.length - 1; i >= 0; i--) {
+      const node = fn[i]
+      if (!Array.isArray(node) || node[0] !== 'param') continue
+      const pname = node[1]
+      if (pname === '$__env' && !abi.needEnv) fn.splice(i, 1)
+      else if (pname === '$__argc' && !abi.needArgc) fn.splice(i, 1)
+      else if (typeof pname === 'string' && pname.startsWith('$__a') && !abi.rest) {
+        const idx = parseInt(pname.slice(4), 10)
+        if (Number.isFinite(idx) && idx >= abi.usedSlots) fn.splice(i, 1)
       }
     }
   }
-
-  // Simple variable
-  if (typeof target !== 'string') throw new Error('Invalid assignment target')
-  const val = gen(value)
-
-  // Error: mutating captured variables is not supported (closures capture by value)
-  if (ctx.capturedVars && target in ctx.capturedVars) {
-    throw new Error(`Cannot mutate captured variable '${target}': closures capture by value, not by reference. Use a parameter or return the new value instead.`)
-  }
-
-  const glob = ctx.getGlobal(target)
-  if (glob) {
-    const code = `(global.set $${target} ${f64(val)})`
-    return returnValue ? wat(`${code} (global.get $${target})`, val.type) : code + '\n    '
-  }
-  // Check if variable exists in scope
-  const existing = ctx.getLocal(target)
-  if (existing) {
-    // Check const
-    if (existing.scopedName in ctx.constVars) {
-      throw new Error(`Assignment to constant variable: ${target}`)
+  const rewriteCalls = (node) => {
+    if (!Array.isArray(node)) return
+    for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
+    if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
+      const callee = node[1].slice(1)
+      const abi = abiOf.get(callee)
+      if (!abi) return
+      const newArgs = []
+      if (abi.needEnv) newArgs.push(node[2])
+      if (abi.needArgc) newArgs.push(node[3])
+      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
+      node.splice(2, node.length - 2, ...newArgs)
     }
-    // Coerce value to match variable's declared type
-    let coercedVal = val
-    if (existing.type === 'f64' && val.type === 'i32') {
-      coercedVal = wat(`(f64.convert_i32_s ${val})`, 'f64')
-    }
-    // Note: i32 truncation case removed - type promotion should handle it
-    return returnValue
-      ? wat(`(local.tee $${existing.scopedName} ${coercedVal})`, existing.type, existing.schema || val.schema)
-      : `(local.set $${existing.scopedName} ${coercedVal})\n    `
   }
-  // New variable - add to current scope
-  ctx.addLocal(target, val.type, val.schema)
-  const loc = ctx.getLocal(target)
-  return returnValue
-    ? wat(`(local.tee $${loc.scopedName} ${val})`, val.type, val.schema)
-    : `(local.set $${loc.scopedName} ${val})\n    `
+  for (const fn of sec.funcs) rewriteCalls(fn)
+  for (const fn of sec.start) rewriteCalls(fn)
 }
 
 /**
- * Generate WAT for loop initializer (e.g., 'let i = 0' in for loop).
- * Simpler than genAssign - only handles simple variable assignment.
+ * Phase: pull stdlib + memory.
  *
- * @param {string} target - Variable name to initialize
- * @param {any} value - AST node for initial value
- * @returns {string} WAT code for the initialization
- * @example genLoopInit('i', [null, 0]) → '(local.set $i (i32.const 0))\n    '
- */
-function genLoopInit(target, value) {
-  if (typeof target !== 'string') throw new Error('Loop init must assign to variable')
-  const v = gen(value)
-  const glob = ctx.getGlobal(target)
-  if (glob) {
-    // Globals are f64
-    return `(global.set $${target} ${f64(v)})\n    `
-  }
-  const loc = ctx.getLocal(target)
-  if (loc) {
-    // Respect existing local type
-    const locType = loc.type
-    const val = locType === 'i32' ? (isI32(v) ? v : i32(v)) : f64(v)
-    return `(local.set $${loc.scopedName} ${val})\n    `
-  }
-  // New local - use value's type
-  ctx.addLocal(target, v.type)
-  const newLoc = ctx.getLocal(target)
-  return `(local.set $${newLoc.scopedName} ${v})\n    `
-}
-
-// =============================================================================
-// FUNCTION GENERATION
-// Creates WASM function definitions from AST, handling params, locals, closures.
-// =============================================================================
-
-/**
- * Generate a complete WASM function definition from AST.
- * Handles params, locals, closure environments, return types, and body compilation.
+ * Runs AFTER __start is built — emit calls during __start (e.g. typeofStrs,
+ * boxInit, schemaInit) trigger `inc()` for any helpers they need, and those
+ * additions must be observed before resolveIncludes() expands the dependency
+ * closure.
  *
- * @param {string} name - Function name (e.g., 'add', '__anon0')
- * @param {string[]} params - Parameter names
- * @param {object[]} paramInfo - Rich param info: [{name, default?, rest?, destruct?, pattern?, names?}]
- * @param {any} bodyAst - Function body AST
- * @param {object} parentCtx - Parent compilation context
- * @param {object|null} closureInfo - Closure metadata: {envType, envFields, usesOwnEnv}, or null
- * @param {boolean} exported - Whether function should be exported
- * @returns {string} Complete WAT function definition
- * @example genFunction('add', ['a', 'b'], [...], ['+', 'a', 'b'], ctx, null, true)
- *          → '(func $add (export "add") (param $a f64) (param $b f64) (result f64) ...)'
+ * Steps:
+ *   1. resolveIncludes() — close the include set under stdlib dependencies.
+ *   2. Emit memory section ONLY when some included helper uses memory ops
+ *      (G optimization: pure scalar programs ship without memory + __heap).
+ *      When memory is needed, the allocator (__alloc + __alloc_hdr + __reset)
+ *      is force-included since stdlib funcs may call into it.
+ *   3. Pull external (host) stdlibs into sec.extStdlib (must precede normal
+ *      imports in the module byte order).
+ *   4. Pull resolved factory stdlibs (those keyed by feature gates) into
+ *      sec.stdlib via parseWat.
+ *
+ * Also reports any unresolved stdlib name (logged, not thrown — keeps test
+ * output readable when a missing helper is the actual bug).
  */
-function genFunction(name, params, paramInfo, bodyAst, parentCtx, closureInfo = null, exported = false) {
-  const newCtx = parentCtx.fork()
-  newCtx.closureCounter = parentCtx.closureCounter
-  newCtx.returnLabel = '$return_' + name
-  newCtx.currentFuncName = name  // Track current function for array param lookup
-  // Enable multi-value return detection for exported functions (not closures)
-  newCtx.allowMultiReturn = exported && !closureInfo
-  // Analyze for type promotion within this function body
-  newCtx.f64Vars = findF64Vars(bodyAst)
-  // Analyze for forward object schema inference within this function body
-  newCtx.inferredSchemas = inferObjectSchemas(bodyAst)
+function pullStdlib(sec) {
+  resolveIncludes()
 
-  // If this function is a closure, set up captured vars (immutable, copy-by-value)
-  let envParam = ''
+  const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
+  if (!needsMemory) ctx.scope.globals.delete('__heap')
+  if (needsMemory && ctx.module.modules.core) {
+    for (const fn of ['__alloc', '__alloc_hdr', '__reset']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
+    const pages = ctx.memory.pages || 1
+    if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
+    else sec.memory.push(['memory', ['export', '"memory"'], pages])
+    if (ctx.core._allocRawFuncs) sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
+  }
 
-  if (closureInfo) {
-    // This is a closure - receives env from caller (contains captured values)
-    newCtx.currentEnv = closureInfo.envType
-    newCtx.capturedVars = {}
-    newCtx.closureInfo = closureInfo  // Store for getVarType helper
-    for (const field of closureInfo.envFields) {
-      newCtx.capturedVars[field.name] = { index: field.index, type: field.type || 'f64', schema: field.schema }
+  const stdlibStr = (name) => {
+    const v = ctx.core.stdlib[name]
+    return typeof v === 'function' ? v() : v
+  }
+  for (const name of Object.keys(ctx.core.stdlib)) {
+    if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
+      const parsed = parseWat(stdlibStr(name))
+      sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
+      ctx.core.includes.delete(name)
     }
   }
+  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
+  sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
+}
 
-  const prevCtx = setCtx(newCtx)
-
-  // Add env parameter for closures (memory-based)
-  if (closureInfo) {
-    envParam = `(param $__env f64) `
-    ctx.locals.__env = { idx: ctx.localCounter++, type: 'f64' }
+/**
+ * Phase: whole-module + per-function optimization passes.
+ *
+ * Order matters and is non-obvious — fixed deliberately:
+ *
+ *   1. specializeMkptr — replaces `call $__mkptr (T, A, off)` with `$__mkptr_T_A_d`
+ *      for known (T, A) pairs (saves ~4 B/site). Must run BEFORE per-function
+ *      passes so the new variants exist when fusedRewrite folds calls into them.
+ *   2. specializePtrBase — folds `call F (add (global G) const)` to a `_p`
+ *      variant (saves ~3 B/site). After specializeMkptr so mkptr variants
+ *      ($__mkptr_T_A_d) are visible to it.
+ *   3. sortStrPoolByFreq — reorders string-pool entries so hot strings get low
+ *      offsets (shrinking i32.const LEB128). Shared-memory only (passive segment).
+ *   4. optimizeFunc per fn — hoistPtrType + fusedRewrite + sortLocalsByUse.
+ *      Must run after specializeMkptr/specializePtrBase introduce new helpers.
+ *   5. hoistConstantPool — repeated f64 literals → mutable globals.
+ *      Last because earlier passes might fold/eliminate constants.
+ *
+ * Also adjusts $__heap base when data segment exceeds 1024 bytes (default
+ * heap base) — keeps user code at offset 0 from clobbering the data segment.
+ */
+function optimizeModule(sec) {
+  specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  if (ctx.runtime.strPool) {
+    const poolRef = { pool: ctx.runtime.strPool }
+    sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
+    ctx.runtime.strPool = poolRef.pool
   }
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s)
+  hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
 
-  // Detect rest param (must be last in paramInfo)
-  const restParam = paramInfo?.find(pi => pi.rest)
-  const hasRestParam = !!restParam
+  const dataLen = ctx.runtime.data?.length || 0
+  if (dataLen > 1024 && !ctx.memory.shared) {
+    const heapBase = (dataLen + 7) & ~7
+    ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
+    for (const s of sec.stdlib)
+      if (s[0] === 'func' && s[1] === '$__reset')
+        for (let i = 2; i < s.length; i++)
+          if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
+            s[i][2][1] = `${heapBase}`
+  }
+}
 
-  // Detect destructuring params
-  const destructParams = paramInfo?.filter(pi => pi.destruct) || []
-
-  // Determine if this is an internal function (can use i32 for pointer params)
-  // Internal = not exported AND not reachable from any export (never called from JS)
-  const isInternal = !exported && !closureInfo && parentCtx.internalFuncs?.has(name)
-  const ptrParamTypes = parentCtx.funcParamPtrTypes?.get(name) // Map<paramName, Set<type>>
-
-  // Track which params use i32 (direct offset) vs f64 (NaN-boxed)
-  ctx.i32PtrParams = new Set() // params that are i32 offsets directly
-
-  // Register params as locals with appropriate types (enhanced with default-based inference)
-  for (const p of params) {
-    if (restParam && p === restParam.name) {
-      // Rest param is typed as array
-      ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
-      ctx.usedArrayType = true
-    } else {
-      // Check if destructuring param
-      const destructInfo = destructParams.find(di => di.name === p)
-      if (destructInfo) {
-        // Destructuring param - both array and object are typed as f64array
-        ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
-        ctx.usedArrayType = true
-      } else {
-        // Check for type hint from default value
-        const pi = paramInfo?.find(info => info.name === p)
-        const typeHint = pi?.typeHint
-
-        // Determine semantic type from ptrParamTypes or default value
-        const ptrTypes = ptrParamTypes?.get(p)
-        let semanticType = ptrTypes?.values().next().value
-        // Fall back to typeHint from default when no usage-based detection
-        // BUT: if typeHint is 'typedarray', prefer it (default is more specific than usage)
-        if (!semanticType && typeHint) semanticType = typeHint
-        if (typeHint === 'typedarray') semanticType = 'typedarray'
-
-        // For internal functions, use i32 for pointer params (no NaN-boxing needed)
-        if (isInternal && semanticType) {
-          // TypedArray with known elemType: pass viewOff as i32, store elemType in schema
-          if (semanticType === 'typedarray' && pi?.arrayType !== undefined) {
-            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p, schema: pi.arrayType }
-            ctx.i32PtrParams.add(p)
-            ctx.usedTypedArrays = true
-            ctx.usedMemory = true
-            continue
-          } else if (semanticType === 'typedarray') {
-            // TypedArray without known elemType: fall through to non-i32 path
-          } else if (semanticType === 'object' && pi?.schema) {
-            // For object type, also need to register schema
-            const schemaId = ++ctx.objectCounter
-            ctx.objectSchemas[schemaId] = pi.schema
-            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p, schema: schemaId }
-            ctx.localSchemas[p] = schemaId
-            ctx.i32PtrParams.add(p)
-            ctx.usedMemory = true
-            continue
-          } else if (semanticType === 'string') {
-            // String: DON'T use i32 - string methods need f64 NaN-boxed pointer
-            // SSO and runtime methods require full pointer, not just offset
-            // Fall through to non-i32 path
-          } else if (semanticType === 'array') {
-            // Array: use i32 offset directly via __ptr_offset
-            // Methods use arrLenI32/arrGetI32/arrSetI32 for i32 offset params
-            ctx.locals[p] = { idx: ctx.localCounter++, type: 'i32', semanticType, scopedName: p }
-            ctx.i32PtrParams.add(p)
-            ctx.usedArrayType = true
-            ctx.usedMemory = true
-            continue
+/**
+ * Phase: strip static-data prefix.
+ *
+ * R: when `__static_str` runtime helper isn't included, the leading prefix of the
+ * data segment (the static string-table header) is dead — strip it and shift all
+ * pointer offsets in user code, embedded data slots, and constant-folded NaN-box
+ * literals down by `prefix` bytes. ATOM/SSO have no offset, so they're unaffected.
+ *
+ * Patches both runtime-call form (`__mkptr(T, A, off)`) and the constant-folded
+ * form (`f64.reinterpret_i64 (i64.const ...)`) when offset >= prefix.
+ */
+function stripStaticDataPrefix(sec) {
+  if (!ctx.runtime.staticDataLen || ctx.core.includes.has('__static_str')) return
+  const prefix = ctx.runtime.staticDataLen
+  const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
+  const data = ctx.runtime.data || ''
+  const buf = new Uint8Array(data.length)
+  for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
+  const dv = new DataView(buf.buffer)
+  if (ctx.runtime.staticPtrSlots) {
+    for (const slotOff of ctx.runtime.staticPtrSlots) {
+      if (slotOff < prefix) continue
+      const bits = dv.getBigUint64(slotOff, true)
+      if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX_BITS) continue
+      const ty = Number((bits >> 47n) & 0xFn)
+      if (!SHIFTABLE.has(ty)) continue
+      const off = Number(bits & 0xFFFFFFFFn)
+      if (off < prefix) continue
+      const hi = bits & ~0xFFFFFFFFn
+      dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
+    }
+  }
+  let s = ''
+  for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
+  ctx.runtime.data = s
+  if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
+    .filter(o => o >= prefix).map(o => o - prefix)
+  const shift = (node) => {
+    if (!Array.isArray(node)) return
+    for (let i = 0; i < node.length; i++) {
+      const child = node[i]
+      if (!Array.isArray(child)) continue
+      if (child[0] === 'call' && child[1] === '$__mkptr' &&
+        Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
+        Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
+        typeof child[4][1] === 'number' && child[4][1] >= prefix) {
+        child[4][1] -= prefix
+      } else if (child[0] === 'f64.const' &&
+        typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
+        const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
+        if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+          const ty = Number((bits >> 47n) & 0xFn)
+          if (SHIFTABLE.has(ty)) {
+            const off = Number(bits & 0xFFFFFFFFn)
+            if (off >= prefix) {
+              const hi = bits & ~0xFFFFFFFFn
+              const newBits = hi | BigInt(off - prefix)
+              child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
+            }
           }
         }
-
-        // Non-i32 paths (including typedarray without known elemType)
-        if (typeHint === 'array') {
-          ctx.locals[p] = { idx: ctx.localCounter++, type: 'array', scopedName: p }
-          ctx.usedArrayType = true
-        } else if (typeHint === 'typedarray' && pi?.arrayType) {
-          // TypedArray from default - use normal typedarray type
-          ctx.locals[p] = { idx: ctx.localCounter++, type: 'typedarray', scopedName: p, schema: pi.arrayType }
-          ctx.usedTypedArrays = true
-        } else if (typeHint === 'object' && pi?.schema) {
-          // Object param with schema - register schema for property access
-          // Create new schema ID and register in objectSchemas
-          const schemaId = ++ctx.objectCounter
-          ctx.objectSchemas[schemaId] = pi.schema
-          ctx.locals[p] = { idx: ctx.localCounter++, type: 'object', scopedName: p, schema: schemaId }
-          ctx.localSchemas[p] = schemaId
-          ctx.usedMemory = true
-        } else {
-          // Default to f64 for params (safe for JS interop - undefined→NaN detectable)
-          // i32 hint from default is still stored as f64 for NaN-based undefined detection
-          ctx.locals[p] = { idx: ctx.localCounter++, type: 'f64', scopedName: p }
-        }
       }
+      shift(child)
     }
   }
-
-  // Add locals for destructured names
-  for (const di of destructParams) {
-    for (const name of di.names) {
-      ctx.addLocal(name, 'f64')
-    }
-  }
-
-  // Generate default param initialization code
-  let paramInit = ''
-  if (paramInfo) {
-    for (const pi of paramInfo) {
-      if (pi.default !== undefined) {
-        const defaultVal = gen(pi.default)
-        if (ctx.i32PtrParams.has(pi.name)) {
-          // i32 param: check if value is 0 (null/undefined passed as i32 offset)
-          paramInit += `(if (i32.eqz (local.get $${pi.name}))
-        (then (local.set $${pi.name} (call $__ptr_offset ${f64(defaultVal)}))))\n      `
-        } else {
-          // f64 param: check for canonical NaN (undefined)
-          // Canonical NaN = 0x7FF8_0000_0000_0000 (quiet NaN with zero payload)
-          // NaN-boxed pointers have non-zero payload, so are different bit patterns
-          // Check: bits == canonical NaN exactly (0x7FF8000000000000)
-          paramInit += `(if (i64.eq (i64.reinterpret_f64 (local.get $${pi.name})) (i64.const 0x7FF8000000000000))
-        (then (local.set $${pi.name} ${f64(defaultVal)})))\n      `
-        }
-      }
-    }
-  }
-
-  // Generate destructuring unpacking code (memory-based)
-  for (const di of destructParams) {
-    if (di.destruct === 'array') {
-      // Array destructuring: extract elements by index
-      ctx.usedMemory = true
-      di.names.forEach((name, idx) => {
-        paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
-      })
-    } else if (di.destruct === 'object') {
-      // Object destructuring: extract by index (assumes property order matches)
-      ctx.usedMemory = true
-      di.names.forEach((name, idx) => {
-        paramInit += `(local.set $${name} (f64.load (i32.add (call $__ptr_offset (local.get $${di.name})) (i32.const ${idx * 8}))))\n      `
-      })
-    }
-  }
-
-  // Cache i32 offsets for pointer params (optimization: unbox once, use throughout)
-  // For params inferred as array/string/object, extract offset at function entry
-  ctx.cachedOffsets = new Map() // paramName → localName (for i32 offset)
-  const ptrTypes = parentCtx.funcParamPtrTypes?.get(name)
-  if (ptrTypes && !closureInfo) {
-    for (const [paramName, types] of ptrTypes) {
-      // Skip if param is already i32 (internal function, no caching needed)
-      if (ctx.i32PtrParams.has(paramName)) continue
-
-      // Create i32 local to cache the offset (for f64 params)
-      const offsetLocal = `${paramName}_off`
-      ctx.addLocal(offsetLocal, 'i32')
-      ctx.cachedOffsets.set(paramName, offsetLocal)
-      paramInit += `(local.set $${offsetLocal} (call $__ptr_offset (local.get $${paramName})))\n      `
-    }
-  }
-
-  // Pre-detect multi-value return for exported non-closure functions
-  if (ctx.allowMultiReturn) {
-    const multiCount = detectMultiReturn(bodyAst)
-    if (multiCount) ctx.multiReturnCount = multiCount
-  }
-
-  // Generate body - handle implicit multi-value return (direct array literal body)
-  let bodyResult
-  if (ctx.multiReturnCount && isFixedArrayLiteral(bodyAst) === ctx.multiReturnCount) {
-    // Direct array body: () => [a, b, c] - generate multi-value directly
-    const elems = bodyAst.slice(1).map(e => f64(gen(e))).join(' ')
-    bodyResult = wat(elems, 'multi')
-  } else {
-    bodyResult = gen(bodyAst)
-  }
-
-  // Determine return type: multi-value, i32, or f64
-  // Use pre-analyzed return types if available (enables i32 function returns)
-  const multiCount = ctx.multiReturnCount
-  let returnType, bodyWat
-  if (multiCount) {
-    returnType = Array(multiCount).fill('f64').join(' ')
-    bodyWat = bodyResult.toString()
-  } else {
-    // Check if this function was analyzed as returning i32
-    const analyzedType = parentCtx.funcReturnTypes?.get(name)
-    if (analyzedType === 'i32' && !closureInfo) {
-      returnType = 'i32'
-      bodyWat = isI32(bodyResult) ? bodyResult.toString() : i32(bodyResult)
-    } else {
-      returnType = 'f64'
-      bodyWat = f64(bodyResult)
-    }
-  }
-
-  // Generate param declarations (i32 for internal pointer params, f64 otherwise)
-  const paramDecls = params.map(p =>
-    ctx.i32PtrParams.has(p) ? `(param $${p} i32)` : `(param $${p} f64)`
-  ).join(' ')
-  const localDecls = ctx.localDecls.length ? `\n    ${ctx.localDecls.join(' ')}` : ''
-
-  // Track export signature for JS wrapper generation
-  // JS wrapper in instantiate() uses this to know which params are arrays
-  if (exported && !closureInfo) {
-    const arrayParams = []
-    for (let i = 0; i < params.length; i++) {
-      const p = params[i]
-      if (restParam && p === restParam.name) {
-        arrayParams.push(i)
-      } else if (destructParams.find(di => di.name === p)) {
-        arrayParams.push(i)
-      } else if (ctx.inferredArrayParams.has(p)) {
-        // Param was used with array methods (e.g., arr.map())
-        arrayParams.push(i)
-      }
-    }
-    const returnsArray = bodyResult.type === 'array' || bodyResult.type === 'refarray' || ctx.returnsArrayPointer
-    const returnsString = bodyResult.type === 'string'
-    const returnsPointer = returnsArray || returnsString
-    // Track multi-value return count for JS interop (WebAssembly.Function returns array)
-    if (arrayParams.length > 0 || returnsPointer || multiCount) {
-      parentCtx.exportSignatures[name] = { arrayParams, returnsArray: returnsPointer, multiReturn: multiCount || 0 }
-    }
-  }
-
-  // Export only if explicitly exported and not a closure
-  const exportClause = (exported && !closureInfo) ? ` (export "${name}")` : ''
-  // Wrap body in block to support early return
-  const watCode = `(func $${name}${exportClause} ${envParam}${paramDecls} (result ${returnType})${localDecls}\n    (block ${ctx.returnLabel} (result ${returnType})\n      ${paramInit}${bodyWat}\n    )\n  )`
-
-  // Track if this function returns a closure (for call sites)
-  if (bodyResult.type === 'closure') {
-    parentCtx.functions[name].returnsClosure = true
-  }
-
-  // Propagate flags to parent context
-  if (ctx.usedMemory) parentCtx.usedMemory = true
-  if (ctx.usedClosureType) parentCtx.usedClosureType = true
-  if (ctx.usedFuncTable) parentCtx.usedFuncTable = true
-  if (ctx.usedArrayType) parentCtx.usedArrayType = true
-  if (ctx.usedStringType) parentCtx.usedStringType = true
-  if (ctx.usedRefArrayType) parentCtx.usedRefArrayType = true
-  if (ctx.usedTypedArrays) parentCtx.usedTypedArrays = true
-  if (ctx.usedException) parentCtx.usedException = true
-  if (ctx.usedFuncTypes) {
-    if (!parentCtx.usedFuncTypes) parentCtx.usedFuncTypes = new Set()
-    for (const arity of ctx.usedFuncTypes) parentCtx.usedFuncTypes.add(arity)
-  }
-  if (ctx.usedClFuncTypes) {
-    if (!parentCtx.usedClFuncTypes) parentCtx.usedClFuncTypes = new Set()
-    for (const arity of ctx.usedClFuncTypes) parentCtx.usedClFuncTypes.add(arity)
-  }
-  if (ctx.funcTableEntries) {
-    for (const fn of ctx.funcTableEntries) {
-      if (!parentCtx.funcTableEntries.includes(fn)) parentCtx.funcTableEntries.push(fn)
-    }
-  }
-  // Propagate ref.func declarations
-  if (ctx.refFuncs && ctx.refFuncs.size > 0) {
-    for (const fn of ctx.refFuncs) parentCtx.refFuncs.add(fn)
-  }
-  // Sync closure counter back to parent
-  parentCtx.closureCounter = ctx.closureCounter
-
-  setCtx(prevCtx)
-  return watCode
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) shift(s)
 }
 
 /**
- * Generate all registered functions, including closures added during generation.
- * Iterates until no new functions are added (handles nested closures).\n * \n * @returns {string[]} Array of WAT function definitions\n */
-function genFunctions() {
-  const generated = new Set()
-  const results = []
+ * Compile prepared AST to WASM module IR.
+ * @param {import('./prepare.js').ASTNode} ast - Prepared AST
+ * @returns {Array} Complete WASM module as S-expression
+ */
+export default function compile(ast) {
+  // Populate known function names + lookup map on ctx.func for direct call detection
+  ctx.func.names.clear()
+  ctx.func.map.clear()
+  for (const f of ctx.func.list) { ctx.func.names.add(f.name); ctx.func.map.set(f.name, f) }
+  // Include imported functions for call resolution (e.g. template interpolations)
+  for (const imp of ctx.module.imports)
+    if (imp[3]?.[0] === 'func') ctx.func.names.add(imp[3][1].replace(/^\$/, ''))
 
-  // Keep generating until no new functions are added
-  // This handles nested closures that get registered during generation
-  while (true) {
-    const toGenerate = Object.entries(ctx.functions).filter(([name]) => !generated.has(name))
-    if (toGenerate.length === 0) break
+  // Check user globals don't conflict with runtime globals (modules loaded after user decls)
+  for (const name of ctx.scope.userGlobals)
+    if (!ctx.scope.globals.get(name)?.includes('mut f64'))
+      err(`'${name}' conflicts with a compiler internal — choose a different name`)
 
-    for (const [name, def] of toGenerate) {
-      generated.add(name)
-      const closureInfo = def.closure || null
-      results.push(genFunction(name, def.params, def.paramInfo, def.body, ctx, closureInfo, def.exported))
+  // Pre-fold const globals: evaluate constant initializers before function compilation
+  // so functions see the correct global types (i32 vs f64).
+  if (ast) {
+    const evalConst = n => {
+      if (typeof n === 'number') return n
+      if (Array.isArray(n) && n[0] == null && typeof n[1] === 'number') return n[1]
+      if (!Array.isArray(n)) return null
+      const [op, a, b] = n
+      const va = evalConst(a), vb = b !== undefined ? evalConst(b) : null
+      if (va == null) return null
+      if (op === 'u-' || (op === '-' && b === undefined)) return -va
+      if (vb == null) return null
+      if (op === '+') return va + vb; if (op === '-') return va - vb
+      if (op === '*') return va * vb; if (op === '%' && vb) return va % vb
+      if (op === '/' && vb) return va / vb; if (op === '**') return va ** vb
+      if (op === '&') return va & vb; if (op === '|') return va | vb
+      if (op === '^') return va ^ vb; if (op === '<<') return va << vb
+      if (op === '>>') return va >> vb; if (op === '>>>') return va >>> vb
+      return null
+    }
+    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1)
+      : Array.isArray(ast) && ast[0] === 'const' ? [ast] : []
+    for (const s of stmts) {
+      if (!Array.isArray(s) || s[0] !== 'const') continue
+      for (const decl of s.slice(1)) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const [, name, init] = decl
+        if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
+        const v = evalConst(init)
+        if (v == null || !isFinite(v)) continue
+        const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+        ctx.scope.globals.set(name, isInt
+          ? `(global $${name} i32 (i32.const ${v}))`
+          : `(global $${name} f64 (f64.const ${v}))`)
+        ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
+      }
     }
   }
-  return results
+
+  // Pre-scan module-scope value types so functions can dispatch methods on globals.
+  // Also scan moduleInits so cross-module imports (e.g. regex literals from util.js)
+  // resolve to the correct static dispatch path.
+  const scanStmts = (root) => {
+    if (!root) return
+    const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
+    for (const s of stmts) {
+      if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let')) continue
+      for (const decl of s.slice(1)) {
+        if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+        const vt = valTypeOf(decl[2])
+        if (vt) {
+          if (!ctx.scope.globalValTypes) ctx.scope.globalValTypes = new Map()
+          ctx.scope.globalValTypes.set(decl[1], vt)
+          if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(decl[1], decl[2])
+        }
+        const ctor = typedElemCtor(decl[2])
+        if (ctor) {
+          if (!ctx.scope.globalTypedElem) ctx.scope.globalTypedElem = new Map()
+          ctx.scope.globalTypedElem.set(decl[1], ctor)
+        }
+      }
+    }
+  }
+  scanStmts(ast)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanStmts(init)
+
+  // Unbox const TYPED globals: change `(mut f64)` slot to `(mut i32)` and store the raw
+  // pointer offset. Reads tag the global.get with ptrKind=TYPED + ptrAux=elemType so
+  // typed-array consumers (.[]/.buffer/…) can resolve through ptrOffsetIR without ever
+  // calling __ptr_offset on a NaN-box. Init still flows through emit.js, but the assign
+  // coerces via asPtrOffset(val, VAL.TYPED) — one bit-extract at startup, then every
+  // hot read is a plain `global.get` of an i32.
+  if (ctx.scope.globalTypedElem && ctx.scope.consts) {
+    for (const [name, ctor] of ctx.scope.globalTypedElem) {
+      if (!ctx.scope.consts.has(name)) continue
+      if (ctx.scope.globalValTypes?.get(name) !== VAL.TYPED) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      const decl = ctx.scope.globals.get(name)
+      if (typeof decl !== 'string' || !decl.includes('mut f64')) continue
+      ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
+      ctx.scope.globalTypes.set(name, 'i32')
+      updateGlobalRep(name, { ptrKind: VAL.TYPED, ptrAux: aux })
+    }
+  }
+
+  // === ProgramFacts: single whole-program walk over ast + user funcs + moduleInits ===
+  // See collectProgramFacts (top of file) for the contract. ctx.types.* mirrors are
+  // kept here because ir.js consumes them at emit time (will be replaced when emit
+  // takes facts explicitly — S3).
+  const programFacts = collectProgramFacts(ast)
+  ctx.types.dynKeyVars = programFacts.dynVars
+  ctx.types.anyDynKey = programFacts.anyDyn
+
+  // Materialize auto-box schemas from collected propMap
+  if (ast && ctx.schema.register) {
+    for (const [name, props] of programFacts.propMap) {
+      if (ctx.schema.vars.has(name)) {
+        const existing = ctx.schema.resolve(name)
+        const newProps = [...props].filter(p => !existing.includes(p))
+        if (newProps.length) {
+          const merged = [...existing, ...newProps]
+          const mergedId = ctx.schema.register(merged)
+          ctx.schema.vars.set(name, mergedId)
+        }
+        continue
+      }
+      const valueProps = [...props].filter(p => !ctx.func.names.has(`${name}$${p}`))
+      if (!valueProps.length) continue
+      const allProps = [...props]
+      const schema = ['__inner__', ...allProps]
+      const schemaId = ctx.schema.register(schema)
+      ctx.schema.vars.set(name, schemaId)
+      if (ctx.func.names.has(name) && !ctx.scope.globals.has(name))
+        ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+      if (!ctx.schema.autoBox) ctx.schema.autoBox = new Map()
+      ctx.schema.autoBox.set(name, { schemaId, schema })
+    }
+  }
+
+  // Dynamic closure ABI width: max param count (`=>` defs), max call arity, rest/spread
+  // accumulated by walkFacts above. $ftN type, call-site padding, and body slot decls
+  // use this instead of the static MAX_CLOSURE_ARITY cap. hasRest adds +1 for rest
+  // overflow. hasSpread + hasRest together force MAX (spread expands unknown element
+  // count at runtime, and any rest receiver may consume them).
+  if (ctx.closure.make) {
+    const { hasSpread, hasRest, maxCall, maxDef } = programFacts
+    const floor = ctx.closure.floor ?? 0
+    ctx.closure.width = (hasSpread && hasRest)
+      ? MAX_CLOSURE_ARITY
+      : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
+  }
+
+  narrowSignatures(programFacts)
+  specializeBimorphicTyped(programFacts)
+
+  const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
+
+  const closureFuncs = []
+  let compiledBodyCount = 0
+  const compilePendingClosures = () => {
+    const bodies = ctx.closure.bodies || []
+    for (let bodyIndex = compiledBodyCount; bodyIndex < bodies.length; bodyIndex++) {
+      closureFuncs.push(emitClosureBody(bodies[bodyIndex]))
+    }
+    compiledBodyCount = bodies.length
+  }
+  compilePendingClosures()
+
+  // Build module sections — named slots, assembled at the end (no index bookkeeping)
+  const sec = {
+    extStdlib: [],  // external stdlib (imports that must precede all other imports)
+    imports: [...ctx.module.imports],
+    types: [],      // function types for call_indirect
+    memory: [],     // memory declaration
+    data: [],       // data segment (filled after emit)
+    tags: [],       // error tags + related exports
+    table: [],      // function table (at most one)
+    globals: [],    // globals (filled after __start)
+    funcs: [],      // closure funcs + regular funcs
+    elem: [],       // element section (table init)
+    start: [],      // __start func + start directive
+    stdlib: [],     // stdlib functions
+    customs: [],    // custom sections + exports
+  }
+
+  // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
+  // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
+  // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
+  // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
+  if (ctx.closure.types) {
+    const params = [['param', 'f64'], ['param', 'i32']] // env + argc
+    for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])
+    sec.types.push(['type', `$ftN`, ['func', ...params, ['result', 'f64']]])
+  }
+
+  // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
+
+  if (ctx.runtime.throws) {
+    ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
+    sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
+    sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
+  }
+
+  if (ctx.closure.table?.length)
+    sec.table.push(['table', ctx.closure.table.length, 'funcref'])
+
+  sec.funcs.push(...closureFuncs, ...funcs)
+
+  if (ctx.closure.table?.length)
+    sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
+
+  buildStartFn(ast, sec, closureFuncs, compilePendingClosures)
+
+  dedupClosureBodies(closureFuncs, sec)
+
+  finalizeClosureTable(sec)
+
+  pullStdlib(sec)
+
+  stripStaticDataPrefix(sec)
+
+  optimizeModule(sec)
+
+  // Populate globals (after __start — const folding may update declarations)
+  sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
+
+  // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
+  // Active segment at address 0 — skipped for shared memory (would collide across modules)
+  const escBytes = (s) => {
+    let esc = ''
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      if (c >= 32 && c < 127 && c !== 34 && c !== 92) esc += s[i]
+      else esc += '\\' + c.toString(16).padStart(2, '0')
+    }
+    return esc
+  }
+  if (ctx.runtime.data && !ctx.memory.shared)
+    sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
+  // Passive segment for shared-memory string literals (copied via memory.init at runtime)
+  if (ctx.runtime.strPool)
+    sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
+
+  // Custom section: embed object schemas for JS-side interop.
+  // Compact binary format: varint(nSchemas); per schema: varint(nProps); per prop:
+  //   0x00=null, 0x01=[null, <prop>], 0x02=<varint len><utf8 bytes>. Runtime decodes.
+  if (ctx.schema.list.length) {
+    const bytes = []
+    const utf8 = new TextEncoder()
+    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
+    const enc = (p) => {
+      if (p === null) bytes.push(0)
+      else if (Array.isArray(p)) { bytes.push(1); enc(p[1]) }
+      else { bytes.push(2); const b = utf8.encode(p); varint(b.length); for (const x of b) bytes.push(x) }
+    }
+    varint(ctx.schema.list.length)
+    for (const s of ctx.schema.list) { varint(s.length); for (const p of s) enc(p) }
+    sec.customs.push(['@custom', '"jz:schema"', bytes])
+  }
+
+  // Custom section: rest params for exported functions (JS-side wrapping)
+  const restParamFuncs = ctx.func.list.filter(f => f.exported && f.rest)
+    .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
+  if (restParamFuncs.length)
+    sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // Named export aliases: export { name } or export { source as alias }
+  for (const [name, val] of Object.entries(ctx.func.exports)) {
+    if (val === true) {
+      if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
+      continue
+    }
+    if (typeof val !== 'string') continue
+    const func = ctx.func.list.find(f => f.name === val)
+    if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${val}`]])
+    else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
+  }
+
+  // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
+  // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
+  // Also returns callCount Map (computed during the same walk — used below for funcidx sort).
+  const { callCount } = treeshake(
+    [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
+    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports]
+  )
+
+  // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
+  // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
+  // On watr self-host this saves ~6 KB (hot specialized helpers migrate to idx < 128).
+  // callCount was computed inline by treeshake's walk (same set of nodes).
+  const byCalls = (a, b) => (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
+  const startFn = sec.start.find(n => n[0] === 'func')
+  const startDir = sec.start.find(n => n[0] === 'start')
+  const sortedFuncs = [
+    ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
+  ].sort(byCalls)
+
+  // Assemble: named slots → flat section list.
+  const sections = [
+    ...sec.extStdlib, ...sec.imports, ...sec.types, ...sec.memory, ...sec.data,
+    ...sec.tags, ...sec.table, ...sec.globals, ...sortedFuncs,
+    ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
+  ]
+  return ['module', ...sections]
 }
+
+

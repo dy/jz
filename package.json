@@ -4,21 +4,38 @@
   "description": "Minimal modern functional JS subset that compiles to WebAssembly",
   "main": "index.js",
   "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./wasi": "./wasi.js"
+  },
+  "files": [
+    "index.js",
+    "cli.js",
+    "wasi.js",
+    "src",
+    "module",
+    "README.md"
+  ],
   "bin": {
     "jz": "cli.js"
   },
   "scripts": {
     "test": "node test/index.js",
+    "test:safe": "nice -n 15 node scripts/timebox.mjs 3000 node test/index.js",
+    "test:segments": "nice -n 15 node scripts/test-segments.mjs 3000 files",
+    "test:prefixes": "nice -n 15 node scripts/test-segments.mjs 3000 prefix",
     "test262": "node test/test262.js",
     "test262:runner": "node test/runner.js",
     "dev": "node cli.js",
     "build": "node cli.js compile examples/*.js",
-    "bench": "node bench.js"
+    "bench": "node bench/bench.mjs",
+    "bench:biquad": "node bench/bench.mjs biquad"
   },
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.1.2"
+    "subscript": "^10.3.3",
+    "watr": "^4.5.0"
   },
   "keywords": [
     "javascript",
@@ -29,7 +46,6 @@
     "wasm"
   ],
   "devDependencies": {
-    "tst": "^9.2.0",
-    "watr": "^4.2.1"
+    "tst": "^9.2.0"
   }
 }

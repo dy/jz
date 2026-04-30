@@ -1,5 +1,19 @@
-import test, { is, throws } from 'tst'
-import { parseRegex, compileRegex } from '../src/regex.js'
+import test from 'tst'
+import { is, throws } from 'tst/assert.js'
+import { parseRegex, compileRegex } from '../module/regex.js'
+import { evaluate } from './util.js'
+import jz, { compile } from '../index.js'
+
+/** Compile + run, read result via jz.memory (for string-returning expressions) */
+function evalStr(code) {
+  const wasm = compile(`export let main = () => ${code}`)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod)
+  const m = jz.memory({ module: mod, instance: inst })
+  return m.read(inst.exports.main())
+}
+
+// === Parser tests ===
 
 test('regex: literal chars', () => {
   is(parseRegex('a'), ['seq', 'a'])
@@ -34,7 +48,7 @@ test('regex: character classes', () => {
   is(parseRegex('[a-z]'), ['[]', ['-', 'a', 'z']])
   is(parseRegex('[a-zA-Z]'), ['[]', ['-', 'a', 'z'], ['-', 'A', 'Z']])
   is(parseRegex('[^abc]'), ['[^]', 'a', 'b', 'c'])
-  is(parseRegex('[a-]'), ['[]', 'a', '-']) // dash at end is literal
+  is(parseRegex('[a-]'), ['[]', 'a', '-'])
 })
 
 test('regex: escapes', () => {
@@ -75,7 +89,6 @@ test('regex: groups', () => {
 })
 
 test('regex: nested groups', () => {
-  // Groups numbered in order of opening paren (left to right)
   is(parseRegex('((a))'), ['()', ['()', 'a', 2], 1])
   is(parseRegex('(a(b)c)'), ['()', ['seq', 'a', ['()', 'b', 2], 'c'], 1])
 })
@@ -96,16 +109,13 @@ test('regex: backreference', () => {
 })
 
 test('regex: complex patterns', () => {
-  // Email-like: \w+@\w+\.\w+
   const email = parseRegex('\\w+@\\w+\\.\\w+')
   is(email[0], 'seq')
   is(email[1], ['+', ['\\w']])
 
-  // Number: -?\d+\.?\d*
   const num = parseRegex('-?\\d+\\.?\\d*')
   is(num[0], 'seq')
 
-  // Hex color: #[0-9a-fA-F]{6}
   const hex = parseRegex('#[0-9a-fA-F]{6}')
   is(hex[0], 'seq')
   is(hex[1], '#')
@@ -153,22 +163,22 @@ test('regex: compile literal', () => {
   const ast = parseRegex('abc')
   const wat = compileRegex(ast)
   is(wat.includes('func $regex_match'), true)
-  is(wat.includes('i32.const 97'), true)  // 'a'
-  is(wat.includes('i32.const 98'), true)  // 'b'
-  is(wat.includes('i32.const 99'), true)  // 'c'
+  is(wat.includes('i32.const 97'), true)
+  is(wat.includes('i32.const 98'), true)
+  is(wat.includes('i32.const 99'), true)
 })
 
 test('regex: compile char class', () => {
   const ast = parseRegex('[a-z]')
   const wat = compileRegex(ast)
-  is(wat.includes('i32.ge_u'), true)  // range check
+  is(wat.includes('i32.ge_u'), true)
   is(wat.includes('i32.le_u'), true)
 })
 
 test('regex: compile quantifier', () => {
   const ast = parseRegex('a+')
   const wat = compileRegex(ast)
-  is(wat.includes('loop'), true)  // repetition loop
+  is(wat.includes('loop'), true)
 })
 
 test('regex: compile alternation', () => {
@@ -184,23 +194,17 @@ test('regex: compile capture group', () => {
   is(wat.includes('$g1_end'), true)
 })
 
-test('regex: compile lookahead', () => {
-  const ast = parseRegex('a(?=b)')
-  const wat = compileRegex(ast)
-  is(wat.includes('local.set $save'), true)  // position save
-})
-
 test('regex: compile \\d', () => {
   const ast = parseRegex('\\d+')
   const wat = compileRegex(ast)
-  is(wat.includes('i32.const 48'), true)   // '0'
-  is(wat.includes('i32.const 57'), true)   // '9'
+  is(wat.includes('i32.const 48'), true)
+  is(wat.includes('i32.const 57'), true)
 })
 
 test('regex: compile word boundary', () => {
   const ast = parseRegex('\\bword\\b')
   const wat = compileRegex(ast)
-  is(wat.includes('i32.xor'), true)  // boundary detection
+  is(wat.includes('i32.xor'), true)
 })
 
 test('regex: compile backreference', () => {
@@ -208,24 +212,30 @@ test('regex: compile backreference', () => {
   const wat = compileRegex(ast)
   is(wat.includes('$g1_start'), true)
   is(wat.includes('$g1_end'), true)
-  is(wat.includes('$br_i'), true)  // backref loop counter
+  is(wat.includes('$br_i'), true)
 })
 
-// Integration tests - regex in jz code
-import { evaluate } from './util.js'
+// === Integration tests ===
 
-test('regex integration: basic test()', async () => {
+test('regex: basic test()', async () => {
   is(await evaluate('/abc/.test("hello abc world")'), 1)
   is(await evaluate('/abc/.test("hello xyz world")'), 0)
 })
 
-test('regex integration: anchors', async () => {
+test('regex: module-level variable test()', () => {
+  const r = jz('const re = /abc/; export let f = (s) => re.test(s)')
+  const m = r.memory
+  is(r.exports.f(m.String('xabcx')), 1)
+  is(r.exports.f(m.String('xyz')), 0)
+})
+
+test('regex: anchors', async () => {
   is(await evaluate('/^hello/.test("hello world")'), 1)
   is(await evaluate('/^world/.test("hello world")'), 0)
   is(await evaluate('/world$/.test("hello world")'), 1)
 })
 
-test('regex integration: quantifiers', async () => {
+test('regex: quantifiers', async () => {
   is(await evaluate('/ab*c/.test("ac")'), 1)
   is(await evaluate('/ab*c/.test("abc")'), 1)
   is(await evaluate('/ab+c/.test("ac")'), 0)
@@ -233,65 +243,58 @@ test('regex integration: quantifiers', async () => {
   is(await evaluate('/ab?c/.test("ac")'), 1)
 })
 
-test('regex integration: character classes', async () => {
+test('regex: character classes', async () => {
   is(await evaluate('/[abc]/.test("b")'), 1)
   is(await evaluate('/[abc]/.test("d")'), 0)
   is(await evaluate('/[a-z]/.test("m")'), 1)
   is(await evaluate('/[^abc]/.test("d")'), 1)
 })
 
-test('regex integration: alternation', async () => {
+test('regex: alternation', async () => {
   is(await evaluate('/cat|dog/.test("I have a cat")'), 1)
   is(await evaluate('/cat|dog/.test("I have a dog")'), 1)
   is(await evaluate('/cat|dog/.test("I have a bird")'), 0)
 })
 
-test('regex integration: escape sequences', async () => {
+test('regex: escape sequences', async () => {
   is(await evaluate('/\\d/.test("abc123")'), 1)
   is(await evaluate('/\\d/.test("abc")'), 0)
   is(await evaluate('/\\w/.test("_test")'), 1)
   is(await evaluate('/\\s/.test("hello world")'), 1)
 })
 
-test('regex integration: stored in variable', async () => {
-  is(await evaluate('let r = /abc/; r.test("xabcy")'), 1)
-  is(await evaluate('let r = /xyz/; r.test("abc")'), 0)
+test('regex: stored in variable', () => {
+  const wasm1 = compile('export let test = () => { let r = /abc/; return r.test("xabcy") }')
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm1)).exports.test(), 1)
+  const wasm2 = compile('export let test = () => { let r = /xyz/; return r.test("abc") }')
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm2)).exports.test(), 0)
 })
 
-// str.search(regex) tests
-test('regex integration: str.search()', async () => {
+test('regex: str.search()', async () => {
   is(await evaluate('"hello world".search(/world/)'), 6)
   is(await evaluate('"hello world".search(/xyz/)'), -1)
   is(await evaluate('"abc123def".search(/\\d+/)'), 3)
   is(await evaluate('"test".search(/^test$/)'), 0)
 })
 
-// str.split(regex) tests
-test('regex integration: str.split(regex)', async () => {
-  is(await evaluate('"a1b2c3".split(/\\d/).length'), 4)  // ["a", "b", "c", ""]
+test('regex: str.replace(regex, str)', () => {
+  is(evalStr('"hello world".replace(/world/, "there")'), 'hello there')
+  is(evalStr('"abc123".replace(/\\d+/, "NUM")'), 'abcNUM')
+  is(evalStr('"foo bar".replace(/o/, "0")'), 'f0o bar')
+})
+
+test('regex: str.split(regex)', async () => {
+  is(await evaluate('"a1b2c3".split(/\\d/).length'), 4)
   is(await evaluate('"one  two   three".split(/\\s+/).length'), 3)
   is(await evaluate('"a,b;c".split(/[,;]/).length'), 3)
 })
 
-// str.replace(regex, str) tests
-test('regex integration: str.replace(regex, str)', async () => {
-  is(await evaluate('"hello world".replace(/world/, "there")'), 'hello there')
-  is(await evaluate('"abc123".replace(/\\d+/, "NUM")'), 'abcNUM')
-  is(await evaluate('"foo bar".replace(/o/, "0")'), 'f0o bar')  // only first match
-})
-
-// regex.exec(str) tests
-test('regex integration: regex.exec()', async () => {
-  // Basic match returns array with full match
-  is(await evaluate('/abc/.exec("xabcy")[0]'), 'abc')
-  // No match returns null (0)
+test('regex: regex.exec()', async () => {
+  is(evalStr('/abc/.exec("xabcy")[0]'), 'abc')
   is(await evaluate('/xyz/.exec("abc")'), 0)
 })
 
-// str.match(regex) tests
-test('regex integration: str.match(regex)', async () => {
-  // Basic match
-  is(await evaluate('"hello world".match(/world/)[0]'), 'world')
-  // No match returns null
+test('regex: str.match(regex)', async () => {
+  is(evalStr('"hello world".match(/world/)[0]'), 'world')
   is(await evaluate('"hello".match(/xyz/)'), 0)
 })

@@ -1,0 +1,480 @@
+// Phase 1: Block bodies, control flow, statements
+import test from 'tst'
+import { is, ok, throws, almost } from 'tst/assert.js'
+import jz, { compile } from '../index.js'
+import math from '../module/math.js'
+
+function run(code, opts) {
+  const wasm = compile(code, opts)
+  const mod = new WebAssembly.Module(wasm)
+  return new WebAssembly.Instance(mod).exports
+}
+
+// === Block body with let/return ===
+
+test('block: let + return', () => {
+  is(run('export let f = (x) => { let y = x * 2; return y + 1 }').f(3), 7)
+})
+
+test('block: multiple lets', () => {
+  is(run('export let f = (x) => { let a = x + 1; let b = a * 2; return b }').f(3), 8)
+})
+
+test('block: const in body', () => {
+  is(run('export let f = (x) => { const y = x * x; return y + 1 }').f(4), 17)
+})
+
+// === Assignment operators ===
+
+test('assignment: =', () => {
+  is(run('export let f = (x) => { let y = 0; y = x * 2; return y }').f(5), 10)
+})
+
+test('assignment: +=', () => {
+  is(run('export let f = (x) => { let y = 10; y += x; return y }').f(5), 15)
+})
+
+test('assignment: -=', () => {
+  is(run('export let f = (x) => { let y = 10; y -= x; return y }').f(3), 7)
+})
+
+test('assignment: *=', () => {
+  is(run('export let f = (x) => { let y = 3; y *= x; return y }').f(4), 12)
+})
+
+test('assignment: /=', () => {
+  is(run('export let f = (x) => { let y = 20; y /= x; return y }').f(4), 5)
+})
+
+test('assignment: >>=', () => {
+  is(run('export let f = () => { let a = 256; a >>= 4; return a }').f(), 16)
+})
+
+test('assignment: <<=', () => {
+  is(run('export let f = () => { let a = 1; a <<= 4; return a }').f(), 16)
+})
+
+test('assignment: &=', () => {
+  is(run('export let f = () => { let a = 255; a &= 0x0F; return a }').f(), 15)
+})
+
+test('assignment: |=', () => {
+  is(run('export let f = () => { let a = 0; a |= 5; return a }').f(), 5)
+})
+
+test('assignment: ^=', () => {
+  is(run('export let f = () => { let a = 0xFF; a ^= 0x0F; return a }').f(), 240)
+})
+
+test('assignment: >>>=', () => {
+  is(run('export let f = () => { let a = -1; a >>>= 24; return a }').f(), 255)
+})
+
+test('assignment: ||= on falsy', () => {
+  is(run('export let f = () => { let a = 0; a ||= 42; return a }').f(), 42)
+})
+
+test('assignment: ||= on truthy', () => {
+  is(run('export let f = () => { let a = 5; a ||= 42; return a }').f(), 5)
+})
+
+test('assignment: &&= on truthy', () => {
+  is(run('export let f = () => { let a = 5; a &&= 42; return a }').f(), 42)
+})
+
+test('assignment: &&= on falsy', () => {
+  is(run('export let f = () => { let a = 0; a &&= 42; return a }').f(), 0)
+})
+
+test('assignment: ??= on uninitialized local', () => {
+  is(run('export let f = () => { let a; a ??= 42; return a }').f(), 42)
+})
+
+// === Comma operator ===
+
+test('comma: returns last value', () => {
+  is(run('export let f = () => { let a = (1, 2, 3); return a }').f(), 3)
+})
+
+test('comma: side effects', () => {
+  is(run('export let f = () => { let i = 0; i++, i++; return i }').f(), 2)
+})
+
+// === BigInt ===
+
+test('bigint: literal + Number()', () => {
+  is(run('export let f = () => Number(7n)').f(), 7)
+})
+
+test('bigint: arithmetic', () => {
+  is(run('export let f = () => Number(3n + 4n)').f(), 7)
+  is(run('export let f = () => Number(10n - 3n)').f(), 7)
+  is(run('export let f = () => Number(6n * 7n)').f(), 42)
+  is(run('export let f = () => Number(42n / 6n)').f(), 7)
+  is(run('export let f = () => Number(17n % 10n)').f(), 7)
+})
+
+test('bigint: bitwise', () => {
+  is(run('export let f = () => Number(255n & 0x7Fn)').f(), 127)
+  is(run('export let f = () => Number(0n | 5n)').f(), 5)
+  is(run('export let f = () => Number(256n >> 4n)').f(), 16)
+  is(run('export let f = () => Number(1n << 7n)').f(), 128)
+})
+
+test('bigint: hex literal', () => {
+  is(run('export let f = () => Number(0xFFn)').f(), 255)
+})
+
+test('bigint: negative literal', () => {
+  is(run('export let f = () => Number(-1n)').f(), -1)
+})
+
+test('bigint: BigInt.asIntN', () => {
+  is(run('export let f = () => Number(BigInt.asIntN(32, 0xFFFFFFFFn))').f(), -1)
+})
+
+test('bigint: BigInt.asUintN', () => {
+  is(run('export let f = () => Number(BigInt.asUintN(32, -1n))').f(), 4294967295)
+})
+
+// === Number/Error builtins ===
+
+test('Number(): identity', () => {
+  is(run('export let f = (x) => Number(x)').f(42), 42)
+})
+
+test('Error(): throw', () => {
+  throws(() => run('export let f = () => { throw Error("test") }').f())
+})
+
+test('Error(): throw surfaces readable message', () => {
+  let error
+  try {
+    jz('export let f = () => { throw Error("test") }').exports.f()
+  } catch (caught) {
+    error = caught
+  }
+  ok(error instanceof Error)
+  is(error.message, 'test')
+})
+
+// === Auto-boxing: property assignment ===
+
+test('fn.prop: auto-box write + read', () => {
+  const { g } = run(`
+    export let f = (x) => x
+    f.loc = 42
+    export let g = () => f.loc
+  `)
+  is(g(), 42)
+})
+
+test('fn.prop: auto-box write/read from functions', () => {
+  const { set, get } = run(`
+    export let err = (msg) => { throw msg }
+    err.loc = 0
+    export let set = (v) => { err.loc = v }
+    export let get = () => err.loc
+  `)
+  is(get(), 0)
+  set(42)
+  is(get(), 42)
+})
+
+test('fn.prop: function still callable after boxing', () => {
+  is(run(`
+    export let f = (x) => x + 1
+    f.tag = 0
+    export let g = () => f(41)
+  `).g(), 42)
+})
+
+test('fn.prop: arrow extraction + direct call', () => {
+  is(run(`
+    export let i32 = (n) => n + 1
+    i32.parse = (s) => s * 2
+    export let f = () => i32.parse(21)
+  `).f(), 42)
+})
+
+test('auto-box: local array property', () => {
+  is(run('export let f = () => { let a = [1, 2, 3]; a.x = 99; return a.x }').f(), 99)
+})
+
+test('auto-box: local array .length after boxing', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a.length }').f(), 3)
+})
+
+test('auto-box: local array indexing after boxing', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; a.tag = 1; return a[0] + a[1] + a[2] }').f(), 60)
+})
+
+test('auto-box: arrow property call (valueOf pattern)', () => {
+  is(run('export let f = () => { let a = [1,2]; a.myFn = () => 99; return a.myFn() }').f(), 99)
+})
+
+// === If/else ===
+
+test('if: early return', () => {
+  const { f } = run('export let f = (x) => { if (x > 0) return x; return -x }')
+  is(f(5), 5)
+  is(f(-3), 3)
+})
+
+test('if-else: both branches return', () => {
+  const { f } = run('export let f = (x) => { if (x > 0) return 1; else return -1 }')
+  is(f(5), 1)
+  is(f(-5), -1)
+})
+
+test('if: comparison ==', () => {
+  const { f } = run('export let f = (x) => { if (x == 0) return 42; return x }')
+  is(f(0), 42)
+  is(f(7), 7)
+})
+
+// === Prefix/postfix increment ===
+
+test('prefix ++i returns new', () => {
+  is(run('export let f = () => { let i = 5; return ++i }').f(), 6)
+})
+
+test('postfix i++ returns old', () => {
+  is(run('export let f = () => { let i = 5; return i++ }').f(), 5)
+})
+
+test('prefix --i returns new', () => {
+  is(run('export let f = () => { let i = 5; return --i }').f(), 4)
+})
+
+test('postfix i-- returns old', () => {
+  is(run('export let f = () => { let i = 5; return i-- }').f(), 5)
+})
+
+test('assign postfix: x = i++', () => {
+  is(run('export let f = () => { let i = 5; let x = i++; return x }').f(), 5)
+})
+
+test('assign prefix: x = ++i', () => {
+  is(run('export let f = () => { let i = 5; let x = ++i; return x }').f(), 6)
+})
+
+test('postfix increments side effect', () => {
+  is(run('export let f = () => { let i = 5; i++; return i }').f(), 6)
+})
+
+test('array[i++] uses old index', () => {
+  is(run('export let f = () => { let a = [10, 20, 30]; let i = 1; return a[i++] }').f(), 20)
+})
+
+// === NaN truthiness ===
+
+test('if(NaN) is falsy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(NaN), 0)
+})
+
+test('!NaN is true', () => {
+  is(run('export let f = (x) => { if (!x) return 1; return 0 }').f(NaN), 1)
+})
+
+test('NaN && 1 returns NaN (falsy short-circuit)', () => {
+  ok(isNaN(run('export let f = (x) => x && 1').f(NaN)))
+})
+
+test('NaN || 1 returns 1 (falsy fallthrough)', () => {
+  is(run('export let f = (x) => x || 1').f(NaN), 1)
+})
+
+test('1 && NaN returns NaN (truthy passes through)', () => {
+  ok(isNaN(run('export let f = (x) => 1 && x').f(NaN)))
+})
+
+test('1 || NaN returns 1 (truthy short-circuit)', () => {
+  is(run('export let f = (x) => 1 || x').f(NaN), 1)
+})
+
+test('NaN ?: constant-folded correctly', () => {
+  is(run('export let f = () => NaN ? 1 : 2').f(), 2)
+})
+
+test('if(NaN) constant-folded correctly', () => {
+  is(run('export let f = () => { if (NaN) return 1; return 2 }').f(), 2)
+})
+
+test('void preserves side effects', () => {
+  is(run('export let f = () => { let x = 0; void (x = 5); return x }').f(), 5)
+})
+
+test('void returns 0', () => {
+  is(run('export let f = () => void 42').f(), 0)
+})
+
+// === for...of ===
+
+test('for...of: sum array', () => {
+  is(run('export let f = () => { let s = 0; for (let x of [1, 2, 3]) s += x; return s }').f(), 6)
+})
+
+test('for...of: named array', () => {
+  is(run('export let f = () => { let a = [5, 10, 15]; let s = 0; for (let x of a) s += x; return s }').f(), 30)
+})
+
+test('for...of: early return', () => {
+  is(run('export let f = () => { for (let x of [1, 2, 3]) { if (x > 1) return x }; return 0 }').f(), 2)
+})
+
+// === for...in ===
+
+// === typeof string comparisons ===
+
+test('typeof: number check', () => {
+  is(run('export let f = (x) => typeof x === "number"').f(42), 1)
+  is(run('export let f = () => typeof "hello" === "number"').f(), 0)
+})
+
+test('typeof: string check', () => {
+  is(run('export let f = () => typeof "hello" === "string"').f(), 1)
+  is(run('export let f = () => typeof 42 === "string"').f(), 0)
+})
+
+test('typeof: undefined check', () => {
+  is(run('export let f = () => typeof null === "undefined"').f(), 1)
+  is(run('export let f = () => typeof 1 === "undefined"').f(), 0)
+})
+
+test('=== alias for ==', () => {
+  is(run('export let f = (a, b) => a === b').f(3, 3), 1)
+  is(run('export let f = (a, b) => a !== b').f(3, 4), 1)
+})
+
+test('for...in: count keys', () => {
+  is(run('export let f = () => { let o = {x: 1, y: 2, z: 3}; let c = 0; for (let k in o) c++; return c }').f(), 3)
+})
+
+test('if(0) still falsy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(0), 0)
+})
+
+test('if(1) still truthy', () => {
+  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(1), 1)
+})
+
+// === Ternary ===
+
+test('ternary: a ? b : c', () => {
+  const { f } = run('export let f = (x) => x > 0 ? x : 0')
+  is(f(5), 5)
+  is(f(-3), 0)
+})
+
+// === For loop ===
+
+test('for: sum 0..n', () => {
+  const { f } = run(`export let f = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) s += i
+    return s
+  }`)
+  is(f(0), 0)
+  is(f(1), 0)
+  is(f(5), 10)  // 0+1+2+3+4
+  is(f(10), 45)
+})
+
+test('for: factorial', () => {
+  const { f } = run(`export let f = (n) => {
+    let r = 1
+    for (let i = 1; i <= n; i++) r *= i
+    return r
+  }`)
+  is(f(0), 1)
+  is(f(1), 1)
+  is(f(5), 120)
+})
+
+test('for: nested', () => {
+  // sum of i*j for i=0..a, j=0..b
+  const { f } = run(`export let f = (a, b) => {
+    let s = 0
+    for (let i = 0; i < a; i++)
+      for (let j = 0; j < b; j++)
+        s += i * j
+    return s
+  }`)
+  is(f(3, 3), 9)  // (0*0+0*1+0*2) + (1*0+1*1+1*2) + (2*0+2*1+2*2) = 0+3+6
+})
+
+// === Logical operators ===
+
+test('&&: short-circuit', () => {
+  is(run('export let f = (a, b) => a && b').f(3, 5), 5)
+  is(run('export let f = (a, b) => a && b').f(0, 5), 0)
+})
+
+test('||: short-circuit', () => {
+  is(run('export let f = (a, b) => a || b').f(3, 5), 3)
+  is(run('export let f = (a, b) => a || b').f(0, 5), 5)
+})
+
+test('&&: chained', () => {
+  is(run('export let f = (a, b, c) => a && b && c').f(1, 2, 3), 3)
+  is(run('export let f = (a, b, c) => a && b && c').f(1, 0, 3), 0)
+})
+
+test('||: chained', () => {
+  is(run('export let f = (a, b, c) => a || b || c').f(0, 0, 3), 3)
+  is(run('export let f = (a, b, c) => a || b || c').f(0, 2, 3), 2)
+})
+
+// === Combined patterns ===
+
+test('abs via if', () => {
+  const { f } = run('export let f = (x) => { if (x < 0) return -x; return x }')
+  is(f(5), 5)
+  is(f(-5), 5)
+  is(f(0), 0)
+})
+
+test('clamp via if', () => {
+  const { f } = run(`export let f = (x, lo, hi) => {
+    if (x < lo) return lo
+    if (x > hi) return hi
+    return x
+  }`)
+  is(f(5, 0, 10), 5)
+  is(f(-1, 0, 10), 0)
+  is(f(15, 0, 10), 10)
+})
+
+test('power via loop', () => {
+  // x^n via repeated multiplication
+  const { f } = run(`export let f = (x, n) => {
+    let r = 1
+    for (let i = 0; i < n; i++) r *= x
+    return r
+  }`)
+  is(f(2, 0), 1)
+  is(f(2, 10), 1024)
+  is(f(3, 4), 81)
+})
+
+test('with math module', () => {
+  const { f } = run(`export let f = (x) => {
+    let y = Math.abs(x)
+    return Math.sqrt(y)
+  }`, { modules: [math] })
+  is(f(16), 4)
+  is(f(-16), 4)
+})
+
+test('inter-function call from block body', () => {
+  const { f } = run(`
+    let square = x => x * x
+    export let f = (x) => {
+      let y = square(x)
+      return y + 1
+    }
+  `)
+  is(f(3), 10)
+  is(f(5), 26)
+})

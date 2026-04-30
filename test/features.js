@@ -1,438 +1,253 @@
+// Spread, destruct alias, TypedArrays, Set, Map
 import test from 'tst'
-import { is, ok, throws } from 'tst/assert.js'
-import { evaluate } from './util.js'
+import { is, ok } from 'tst/assert.js'
+import { compile } from '../index.js'
 
-// Tests for new features: if/else, typeof, void, array methods, string methods
+const interp = { __ext_prop:()=>0, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0 }
+function run(code) {
+  return new WebAssembly.Instance(new WebAssembly.Module(compile(code)), { env: interp }).exports
+}
 
-// if/else statements
-test('if/else - basic if', async () => {
-  is(await evaluate('if (1) 5'), 5)
-  is(await evaluate('if (0) 5'), 0)  // no else returns 0
-  is(await evaluate('if (true) 10'), 10)
-  is(await evaluate('if (false) 10'), 0)
+// === Object destruct alias ===
+
+test('destruct: {x: a, y: b} = obj', () => {
+  is(run(`export let f = () => {
+    let o = {x: 10, y: 20}
+    let {x: a, y: b} = o
+    return a + b
+  }`).f(), 30)
 })
 
-test('if/else - with else', async () => {
-  is(await evaluate('if (1) 5 else 10'), 5)
-  is(await evaluate('if (0) 5 else 10'), 10)
-  is(await evaluate('if (true) 1 else 2'), 1)
-  is(await evaluate('if (false) 1 else 2'), 2)
+// === Array spread ===
+
+test('spread: [...a, ...b]', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2]
+    let b = [3, 4]
+    let c = [...a, ...b]
+    return c.length
+  }`)
+  is(f(), 4)
 })
 
-test('if/else - with blocks', async () => {
-  is(await evaluate('if (1) { 5 }'), 5)
-  is(await evaluate('if (0) { 5 } else { 10 }'), 10)
-  is(await evaluate('if (2 > 1) { 100 } else { 200 }'), 100)
+test('spread: [...a, ...b] values', () => {
+  const { f } = run(`export let f = () => {
+    let a = [10, 20]
+    let b = [30, 40]
+    let c = [...a, ...b]
+    return c[0] + c[1] + c[2] + c[3]
+  }`)
+  is(f(), 100)
 })
 
-test('if/else - nested', async () => {
-  is(await evaluate('if (1) { if (1) 5 else 6 } else 7'), 5)
-  is(await evaluate('if (1) { if (0) 5 else 6 } else 7'), 6)
-  is(await evaluate('if (0) { if (1) 5 else 6 } else 7'), 7)
+test('spread: [...a, 99]', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1, 2, 3]
+    let b = [...a, 99]
+    return b[3]
+  }`)
+  is(f(), 99)
 })
 
-test('if/else - with expressions', async () => {
-  // Note: if statements inside comma expressions not supported - use blocks
-  is(await evaluate('{ x = 5; if (x > 3) { x * 2 } else { x } }'), 10)
-  is(await evaluate('{ x = 2; if (x > 3) { x * 2 } else { x } }'), 2)
+test('in: array numeric index exists', () => {
+  const { f } = run(`export let f = () => {
+    let list = [7]
+    return 0 in list
+  }`)
+  is(f(), 1)
 })
 
-// typeof operator - returns strings, compare with ===
-test('typeof - number', async () => {
-  is(await evaluate('typeof 5 === "number"'), 1)
-  is(await evaluate('typeof 3.14 === "number"'), 1)
-  is(await evaluate('typeof (1 + 2) === "number"'), 1)
+test('in: array alias table resolves numeric membership', () => {
+  const { f } = run(`export let f = () => {
+    let list = [7]
+    list['$>'] = 0
+    let n = list['$>']
+    return n in list ? n : -1
+  }`)
+  is(f(), 0)
 })
 
-test('typeof - boolean', async () => {
-  is(await evaluate('typeof true === "boolean"'), 1)
-  is(await evaluate('typeof false === "boolean"'), 1)
-  is(await evaluate('typeof (1 < 2) === "boolean"'), 1)
+test('spread: preserves left-to-right evaluation order', () => {
+  const { f } = run(`export let f = () => {
+    let idx = "$>"
+    let side = () => { idx = 0/0; return [] }
+    let code = [[idx, [], []], ...side()]
+    return code[0][0] === "$>"
+  }`)
+  is(f(), 1)
 })
 
-test('typeof - string', async () => {
-  is(await evaluate('typeof "hello" === "string"'), 1)
-})
-
-test('typeof - undefined/null', async () => {
-  is(await evaluate('typeof undefined === "undefined"'), 1)
-  is(await evaluate('typeof null === "object"'), 1)  // JS quirk preserved
-})
-
-test('typeof - object/array', async () => {
-  is(await evaluate('typeof {x: 1} === "object"'), 1)
-  is(await evaluate('typeof [1, 2, 3] === "object"'), 1)  // arrays are objects
-})
-
-// void operator
-test('void - returns 0', async () => {
-  is(await evaluate('void 0'), 0)
-  is(await evaluate('void 5'), 0)
-  is(await evaluate('void (1 + 2)'), 0)
-})
-
-// Array methods
-test('array.indexOf - found', async () => {
-  is(await evaluate('[1, 2, 3].indexOf(2)'), 1)
-  is(await evaluate('[10, 20, 30, 40].indexOf(30)'), 2)
-  is(await evaluate('[5, 5, 5].indexOf(5)'), 0)  // returns first
-})
-
-test('array.indexOf - not found', async () => {
-  is(await evaluate('[1, 2, 3].indexOf(5)'), -1)
-  is(await evaluate('[].indexOf(1)'), -1)
-})
-
-test('array.includes', async () => {
-  is(await evaluate('[1, 2, 3].includes(2)'), 1)  // true = 1
-  is(await evaluate('[1, 2, 3].includes(5)'), 0)  // false = 0
-  is(await evaluate('[].includes(1)'), 0)
-})
-
-test('array.find', async () => {
-  is(await evaluate('[1, 2, 3, 4].find(x => x > 2)'), 3)
-  is(await evaluate('[10, 20, 30].find(x => x > 15)'), 20)
-})
-
-test('array.findIndex', async () => {
-  is(await evaluate('[1, 2, 3, 4].findIndex(x => x > 2)'), 2)
-  is(await evaluate('[10, 20, 30].findIndex(x => x > 15)'), 1)
-  is(await evaluate('[1, 2, 3].findIndex(x => x > 10)'), -1)
-})
-
-test('array.filter', async () => {
-  is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3)[0]'), 4)
-  is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3)[1]'), 5)
-  // Memory mode returns proper length
-  is(await evaluate('[1, 2, 3, 4, 5].filter(x => x > 3).length'), 2)
-})
-
-test('array.every', async () => {
-  is(await evaluate('[2, 4, 6].every(x => x > 0)'), 1)  // all positive
-  is(await evaluate('[2, 4, 6].every(x => x > 3)'), 0)  // not all > 3
-  is(await evaluate('[].every(x => x > 0)'), 1)  // empty array returns true
-})
-
-test('array.some', async () => {
-  is(await evaluate('[1, 2, 3].some(x => x > 2)'), 1)
-  is(await evaluate('[1, 2, 3].some(x => x > 5)'), 0)
-  is(await evaluate('[].some(x => x > 0)'), 0)  // empty array returns false
-})
-
-test('array.slice - basic', async () => {
-  is(await evaluate('[1, 2, 3, 4, 5].slice(1, 3)[0]'), 2)
-  is(await evaluate('[1, 2, 3, 4, 5].slice(1, 3)[1]'), 3)
-  is(await evaluate('[1, 2, 3, 4, 5].slice(1, 3).length'), 2)
-})
-
-test('array.slice - negative indices', async () => {
-  is(await evaluate('[1, 2, 3, 4, 5].slice(-2)[0]'), 4)
-  is(await evaluate('[1, 2, 3, 4, 5].slice(-2)[1]'), 5)
-})
-
-test('array.reverse', async () => {
-  is(await evaluate('(a = [1, 2, 3], a.reverse(), a[0])'), 3)
-  is(await evaluate('(a = [1, 2, 3], a.reverse(), a[2])'), 1)
-})
-
-// String methods
-test('string.slice - basic', async () => {
-  is(await evaluate('"hello".slice(1, 3).length'), 2)
-  is(await evaluate('"hello".slice(1, 3).charCodeAt(0)'), 101)  // 'e'
-  is(await evaluate('"hello".slice(1, 3).charCodeAt(1)'), 108)  // 'l'
-})
-
-test('string.indexOf - char code', async () => {
-  is(await evaluate('"hello".indexOf(101)'), 1)  // 'e' at index 1
-  is(await evaluate('"hello".indexOf(108)'), 2)  // 'l' at index 2
-  is(await evaluate('"hello".indexOf(120)'), -1)  // 'x' not found
-})
-
-// shift - returns first element (non-mutating for now)
-test('array.shift - basic', async () => {
-  is(await evaluate('[1, 2, 3].shift()'), 1)
-  is(await evaluate('[10, 20, 30].shift()'), 10)
-  is(await evaluate('[5].shift()'), 5)
-})
-
-test('array.shift - empty returns NaN', async () => {
-  ok(Number.isNaN(await evaluate('[].shift()')))
-})
-
-// unshift - prepends element, returns new array
-test('array.unshift - basic', async () => {
-  is(await evaluate('[2, 3].unshift(1)[0]'), 1)
-  is(await evaluate('[2, 3].unshift(1)[1]'), 2)
-  is(await evaluate('[2, 3].unshift(1).length'), 3)
-})
-
-test('array.unshift - empty array', async () => {
-  is(await evaluate('[].unshift(5)[0]'), 5)
-  is(await evaluate('[].unshift(5).length'), 1)
-})
-
-// flat - flattens nested arrays
-test('array.flat - basic', async () => {
-  is(await evaluate('[[1, 2], [3, 4]].flat()[0]'), 1)
-  is(await evaluate('[[1, 2], [3, 4]].flat()[2]'), 3)
-  is(await evaluate('[[1, 2], [3, 4]].flat().length'), 4)
-})
-
-test('array.flat - mixed scalar and array', async () => {
-  is(await evaluate('[1, [2, 3], 4].flat()[0]'), 1)
-  is(await evaluate('[1, [2, 3], 4].flat()[1]'), 2)
-  is(await evaluate('[1, [2, 3], 4].flat()[3]'), 4)
-  is(await evaluate('[1, [2, 3], 4].flat().length'), 4)
-})
-
-// flatMap - map then flatten
-test('array.flatMap - basic', async () => {
-  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[0]'), 1)
-  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[1]'), 2)
-  is(await evaluate('[1, 2].flatMap(x => [x, x * 2])[2]'), 2)
-  is(await evaluate('[1, 2].flatMap(x => [x, x * 2]).length'), 4)
-})
-
-test('array.flatMap - scalar returns', async () => {
-  is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[0]'), 2)
-  is(await evaluate('[1, 2, 3].flatMap(x => x * 2)[1]'), 4)
-  is(await evaluate('[1, 2, 3].flatMap(x => x * 2).length'), 3)
-})
-
-// flatMap callback should execute only once per element (not twice for count+copy)
-test('array.flatMap - callback executes once', async () => {
-  // If callback ran twice, counter would be 6 instead of 3
-  is(await evaluate(`
-    let counter = 0
-    const arr = [1, 2, 3]
-    const result = arr.flatMap(x => { counter = counter + 1; return [x] })
-    counter
-  `), 3)
-})
-// Template literals
-test('template literal - simple', async () => {
-  is(await evaluate('`hello`.length'), 5)
-  is(await evaluate('`hello`[0]'), 104) // 'h'
-})
-
-test('template literal - with string interpolation', async () => {
-  is(await evaluate('const s = `world`; `hello ${s}!`.length'), 12)
-})
-
-test('template literal - non-string interpolation throws', async () => {
-  try {
-    await evaluate('const n = 42; `value: ${n}`')
-    is(false, true, 'should have thrown')
-  } catch (e) {
-    is(e.message.includes('Number-to-string'), true)
-  }
-})
-
-// Closure mutation - NOT SUPPORTED (closures capture by value)
-// Note: globals CAN be mutated, only captured locals cannot
-test('closure mutation - captured local throws error', async t => {
-  try {
-    // Must nest in a function so 'n' is a captured local, not a global
-    await evaluate(`outer = () => { n = 0; inc = () => { n = n + 1; n }; inc() }; outer()`)
-    t.fail('Should have thrown')
-  } catch (e) {
-    t.ok(e.message.includes('Cannot mutate captured variable'), e.message)
-  }
-})
-
-test('closure mutation - nested read-write throws error', async t => {
-  try {
-    // a = a + 1 forces capture (read before write)
-    await evaluate(`outer = () => { a = 1; set = () => { a = a + 1 }; set() }; outer()`)
-    t.fail('Should have thrown')
-  } catch (e) {
-    t.ok(e.message.includes('Cannot mutate captured variable'), e.message)
-  }
-})
-
-// ++/-- operators
-test('prefix increment', async () => {
-  is(await evaluate('let x = 5; ++x'), 6)
-  is(await evaluate('let x = 5; ++x; x'), 6)
-})
-
-test('postfix increment', async () => {
-  is(await evaluate('let x = 5; x++'), 5)
-  is(await evaluate('let x = 5; x++; x'), 6)
-})
-
-test('prefix decrement', async () => {
-  is(await evaluate('let x = 5; --x'), 4)
-})
-
-test('postfix decrement', async () => {
-  is(await evaluate('let x = 5; x--'), 5)
-  is(await evaluate('let x = 5; x--; x'), 4)
-})
-
-// Object schema inference from dynamic assignments ("forward schema inference" / "flow typing")
-test('object schema inference - empty object with assignments', async () => {
-  is(await evaluate('let a = {}; a.x = 1; a.x'), 1)
-  is(await evaluate('let a = {}; a.x = 5; a.y = 10; a.x + a.y'), 15)
-})
-
-test('object schema inference - partial literal with additional props', async () => {
-  is(await evaluate('let a = {x: 1}; a.y = 2; a.x + a.y'), 3)
-  is(await evaluate('let a = {x: 1, y: 2}; a.z = 3; a.x + a.y + a.z'), 6)
-})
-
-test('object schema inference - function assignment', async () => {
-  is(await evaluate('let a = {}; a.fn = (x) => x * 2; a.fn(5)'), 10)
-  is(await evaluate('let a = {}; a.x = 1; a.double = (n) => n * 2; a.double(a.x)'), 2)
-})
-
-test('object schema inference - nested block scope', async () => {
-  is(await evaluate('{ let a = {}; a.x = 5; a.x }'), 5)
-})
-
-test('object schema inference - multiple objects', async () => {
-  is(await evaluate('let a = {}; let b = {}; a.x = 1; b.y = 2; a.x + b.y'), 3)
-})
-
-test('object schema inference - in function body', async () => {
-  is(await evaluate('let f = () => { let a = {}; a.x = 5; return a.x; }; f()'), 5)
-})
-
-test('object schema inference - const declaration', async () => {
-  is(await evaluate('const a = {}; a.x = 1; a.x'), 1)
-  is(await evaluate('const a = {x: 1}; a.y = 2; a.x + a.y'), 3)
-})
-
-// Object property assignment
-test('object property assignment - basic', async () => {
-  is(await evaluate('let obj = {x: 1}; obj.x = 5; obj.x'), 5)
-  is(await evaluate('let obj = {a: 1, b: 2}; obj.a = 10; obj.b = 20; obj.a + obj.b'), 30)
-})
-
-test('object property assignment - returns value', async () => {
-  is(await evaluate('let obj = {x: 0}; (obj.x = 42)'), 42)
-})
-
-// Object method calls
-test('object method call - simple', async () => {
-  is(await evaluate('let obj = { add: (a, b) => a + b }; obj.add(2, 3)'), 5)
-  is(await evaluate('let obj = { mul: (x, y) => x * y }; obj.mul(4, 5)'), 20)
-})
-
-test('object method call - multiple methods', async () => {
-  is(await evaluate(`
-    let math = { add: (a, b) => a + b, mul: (a, b) => a * b };
-    math.add(2, 3) + math.mul(4, 5)
-  `), 25)
-})
-
-test('object method call - assign function to property', async () => {
-  is(await evaluate('let obj = {fn: 0}; obj.fn = (x) => x * 2; obj.fn(5)'), 10)
-})
-
-test('object method call - color-space pattern', async () => {
-  const result = await evaluate(`
-    let rgb = {
-      gray: (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b
-    };
-    rgb.gray(100, 150, 200)
-  `)
-  is(Math.round(result * 100), 14298) // ~142.98
-})
-
-// Static namespace - compile-time function grouping (no memory overhead)
-test('static namespace - direct calls', async () => {
-  // Namespace methods become direct function calls (call $ns_method)
-  is(await evaluate(`
-    let math = { add: (a, b) => a + b, sub: (a, b) => a - b };
-    math.add(10, 5) + math.sub(10, 5)
-  `), 20) // 15 + 5
-})
-
-test('static namespace - used in exports', async () => {
-  // Namespace can be used in exported functions without capture overhead
-  const { compile } = await import('./util.js')
-  const instance = await compile(`
-    let rgb = { gray: (r, g, b) => (r + g + b) / 3 };
-    export let toGray = (r, g, b) => rgb.gray(r, g, b)
-  `)
-  is(instance.toGray(30, 60, 90), 60)
-})
-
-// Tail call optimization - WASM return_call for recursive functions
-test('tail call optimization - factorial', async () => {
-  // return f(...) generates return_call $f instead of call $f
-  is(await evaluate(`
-    const factorial = (n, acc = 1) => {
-      if (n <= 1) return acc
-      return factorial(n - 1, n * acc)
+test('for-in: compile-time unroll clones body per key', () => {
+  const { f } = run(`export let f = () => {
+    let section = {tag: 13, code: 10}
+    let ctx = []
+    for (let kind in section) {
+      ;(ctx[section[kind]] = ctx[kind] = []).name = kind
     }
-    factorial(10)
-  `), 3628800)
+    return (ctx.tag !== ctx.code) + (ctx.tag.name == "tag") + (ctx.code.name == "code")
+  }`)
+  is(f(), 3)
 })
 
-test('tail call optimization - deep recursion', async () => {
-  // 100k iterations would overflow without TCO
-  is(await evaluate(`
-    const countDown = (n, acc = 0) => {
-      if (n <= 0) return acc
-      return countDown(n - 1, acc + 1)
-    }
-    countDown(100000)
-  `), 100000)
+test('array methods: chained receiver evaluates once', () => {
+  const { f } = run(`export let f = () => {
+    let arr = [['func']]
+    let a = 0, b = 0
+    arr.filter((n) => {
+      let kind = n[0]
+      if (kind == 'func') a += 1
+      if (kind == 'tag') a += 2
+      return true
+    }).forEach((n) => {
+      let kind = n[0]
+      if (kind == 'func') b += 1
+      if (kind == 'tag') b += 2
+    })
+    return a * 10 + b
+  }`)
+  is(f(), 11)
 })
 
-// Exception handling - WASM try/catch/throw
-test('exception handling - basic throw/catch', async () => {
-  is(await evaluate(`
-    try {
-      throw 42
-    } catch(e) {
-      e + 1
-    }
-  `), 43)
+test('callbacks: captured arrays keep dynamic properties', () => {
+  const { f } = run(`export let f = () => {
+    let section = {func: 3, code: 10, tag: 13}
+    let ctx = []
+    let seq = [['func']]
+    let seen = 0
+    for (let kind in section) (ctx[section[kind]] = ctx[kind] = []).name = kind
+    seq.forEach((n) => {
+      if (n[0] == 'func') seen += (ctx.code === ctx[10]) * 10 + (ctx.tag === ctx[13])
+    })
+    return seen
+  }`)
+  is(f(), 11)
 })
 
-test('exception handling - no exception', async () => {
-  is(await evaluate(`
-    try {
-      100
-    } catch(e) {
-      e + 1
-    }
-  `), 100)
+test('callbacks: captured arrays support computed dynamic keys', () => {
+  const { f } = run(`export let f = () => {
+    let section = {func: 3, code: 10, tag: 13}
+    let ctx = []
+    let seq = [['func']]
+    let seen = 0
+    for (let kind in section) (ctx[section[kind]] = ctx[kind] = []).name = kind
+    seq.forEach((n) => {
+      let kind = n[0]
+      let items = ctx[kind]
+      items.push(1)
+      seen += (ctx[3].length == 1) * 100 + (ctx.func.length == 1) * 10 + (items.length == 1)
+    })
+    return seen
+  }`)
+  is(f(), 111)
 })
 
-test('exception handling - cross-function', async () => {
-  // Exception thrown in called function, caught in caller
-  is(await evaluate(`
-    const mayFail = (x) => {
-      if (x < 0) throw x
-      return x * 2
-    }
+// === TypedArrays ===
 
-    const safe = (x) => {
-      try {
-        return mayFail(x)
-      } catch(e) {
-        return -e
-      }
-    }
-
-    safe(5) + safe(-3)
-  `), 13) // 10 + 3
+test('Float64Array: create + length', () => {
+  const { f } = run(`export let f = () => {
+    let a = new Float64Array(10)
+    return a
+  }`)
+  ok(isNaN(f()))  // NaN-boxed pointer
 })
 
-test('exception handling - nested try/catch', async () => {
-  is(await evaluate(`
-    try {
-      try {
-        throw 10
-      } catch(inner) {
-        throw inner + 5
-      }
-    } catch(outer) {
-      outer * 2
-    }
-  `), 30) // (10 + 5) * 2
+test('Int32Array: create', () => {
+  const { f } = run(`export let f = () => {
+    let a = new Int32Array(5)
+    return a
+  }`)
+  ok(isNaN(f()))
+})
+
+// === Set ===
+
+test('Set: create + add + has', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s = s.add(42)
+    return s.has(42)
+  }`)
+  is(f(), 1)
+})
+
+test('Set: has missing', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s = s.add(1)
+    return s.has(99)
+  }`)
+  is(f(), 0)
+})
+
+test('Set: size', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s = s.add(1)
+    s = s.add(2)
+    s = s.add(3)
+    return s.size
+  }`)
+  is(f(), 3)
+})
+
+test('Set: no duplicates', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s = s.add(1)
+    s = s.add(1)
+    s = s.add(1)
+    return s.size
+  }`)
+  is(f(), 1)
+})
+
+test('Set: delete returns 1 if found', () => {
+  const { f } = run(`export let f = () => {
+    let s = new Set()
+    s = s.add(10)
+    return s.delete(10) + s.has(10)
+  }`)
+  is(f(), 1)  // delete=1, has=0
+})
+
+// === Map ===
+
+test('Map: set + get', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set(1, 100)
+    m = m.set(2, 200)
+    return m.get(1) + m.get(2)
+  }`)
+  is(f(), 300)
+})
+
+test('Map: get missing returns nullish', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set(1, 100)
+    return m.get(99)
+  }`)
+  ok(Number.isNaN(f()))
+})
+
+test('Map: overwrite', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set(1, 100)
+    m = m.set(1, 999)
+    return m.get(1)
+  }`)
+  is(f(), 999)
+})
+
+test('Map: size', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set(1, 10)
+    m = m.set(2, 20)
+    m = m.set(3, 30)
+    return m.size
+  }`)
+  is(f(), 3)
 })
