@@ -4,7 +4,7 @@ Cross-target workload suite for jz codegen quality. Each benchmark is a case
 folder under `bench/`:
 
 ```txt
-bench/<case>/<case>.js      JavaScript source used by V8, jz, Porffor, etc.
+bench/<case>/<case>.js      JavaScript source used by V8, jz, etc.
 bench/<case>/<case>.c       optional native C baseline
 bench/<case>/<case>.rs      optional Rust baseline
 bench/<case>/<case>.go      optional Go baseline
@@ -28,18 +28,12 @@ drift as `DIFF`.
 
 ```sh
 npm run bench
-node bench/bench.mjs --targets=nat,v8,jz,porffor
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
 node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
 node bench/bench.mjs --cases=biquad,mat4,tokenizer,json
 node bench/bench.mjs biquad
 node bench/bench.mjs mat4 --targets=nat,v8,jz
 ```
-
-Porffor runs by default when available. The harness prefers the patched local
-bench install at `/tmp/jz-bench-tools/node_modules/.bin/porf`, then falls back
-to `porf` on `PATH`. Override with `PORFFOR_BIN=...`. Porffor rows have a
-5 s timeout by default; override with `PORFFOR_TIMEOUT_MS=...`.
 
 ## Cases
 
@@ -91,7 +85,6 @@ correctly-rounded; cascade is the same algorithm.
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output on Node's WebAssembly runtime |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
-| `porffor` | Porffor JS to wasm with `-O3` |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |

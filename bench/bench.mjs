@@ -10,9 +10,6 @@ const ROOT = join(BENCH_DIR, '..')
 const LIB = join(BENCH_DIR, '_lib')
 const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
 const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2c'
-const LOCAL_PORFFOR_BIN = '/tmp/jz-bench-tools/node_modules/.bin/porf'
-const PORFFOR_BIN = process.env.PORFFOR_BIN || (existsSync(LOCAL_PORFFOR_BIN) ? LOCAL_PORFFOR_BIN : 'porf')
-const PORFFOR_TIMEOUT_MS = Number(process.env.PORFFOR_TIMEOUT_MS || 5000)
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes'
@@ -316,12 +313,6 @@ const targets = {
     run: c => tryRun('as', c, () => {
       execFileSync('asc', [c.as, '-O3', '--runtime', 'stub', '--noAssert', '-o', asWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', join(LIB, 'run-as.mjs'), asWasmPath(c)]),
-  },
-  porffor: {
-    name: 'Porffor (wasm, -O3)',
-    available: () => canRun(PORFFOR_BIN),
-    bin: flatPath,
-    run: c => tryRun('porffor', c, () => writeFlat(c), [PORFFOR_BIN, '-O3', flatPath(c)], { timeout: PORFFOR_TIMEOUT_MS }),
   },
   'jz-wasmtime': {
     name: 'jz → wasmtime',

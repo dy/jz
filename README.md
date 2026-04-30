@@ -321,16 +321,18 @@ The compiled `.wasm` uses two import namespaces:
 
 Competitive. See benchmark:
 
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | [Porf](https://github.com/CanadaHonk/porffor) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
-|---|---|---|---|---|---|---|---|---|
-| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | — | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
-| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
-| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
-| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
-| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
-| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
-| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
-| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|
+| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
+| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
+| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
+| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
+| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
+| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
+| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
+| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+
+_Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 
 ### Can I compile jz to C?
