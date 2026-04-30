@@ -25,14 +25,15 @@ const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
 
 export default (ctx) => {
-  // Always include init + loop when timer module loads (structural, not per-emitter)
-  inc('__timer_init', '__timer_loop')
+  // Always include init + tick + loop when timer module loads (structural, not per-emitter)
+  inc('__timer_init', '__timer_tick', '__timer_loop')
 
   Object.assign(ctx.core.stdlibDeps, {
     __timer_init: ['__alloc'],
     __timer_add: ['__time_ns'],
     __timer_cancel: [],
     __timer_dispatch: [],
+    __timer_tick: ['__time_ns', '__timer_dispatch'],
     __timer_loop: ['__time_ns', '__timer_dispatch'],
   })
 
@@ -186,10 +187,20 @@ export default (ctx) => {
       (br $scan)))
     (local.get $dispatched))`
 
+  // __timer_tick() → i32 — non-blocking tick. Dispatches due timers, returns remaining active count.
+  // Called by JS runtime (host.js) via setInterval to drive timers without blocking.
+  ctx.core.stdlib['__timer_tick'] = `(func $__timer_tick (export "__timer_tick") (result i32)
+    (local $now i64)
+    (if (i32.le_s (global.get $__timer_count) (i32.const 0))
+      (then (return (i32.const 0))))
+    (local.set $now (call $__time_ns))
+    (drop (call $__timer_dispatch (local.get $now)))
+    (global.get $__timer_count))`
+
   // __timer_loop() — blocking event loop. Polls clock, dispatches due timers.
   // Exits when no active timers remain (all timeouts fired, all intervals cleared).
-  // Busy-waits with short yield. On wasmtime/wasmer, this blocks the process — intended.
-  ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop
+  // Intended for CLI/wasmtime/wasmer where JS event loop is unavailable.
+  ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop (export "__timer_loop")
     (local $now i64)
     (local $any i32)
     (block $exit (loop $poll

@@ -466,29 +466,8 @@ export const instantiate = (compile, code, opts = {}) => {
   opts.extMap = extMap
   const mod = new WebAssembly.Module(wasm)
   const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
-  const needsTimers = WebAssembly.Module.imports(mod).some(i => i.module === 'jz')
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
-
-  // Timer imports: deferred instance ref for closure callback dispatch
-  let instRef = null
-  if (needsTimers) {
-    imports.jz = {}
-    const invokeClosure = (closPtr) => {
-      if (!instRef?.exports?.__jz_table) return
-      const t = type(closPtr), a = aux(closPtr)
-      if (t !== 10) return // not a closure
-      const func = instRef.exports.__jz_table.get(a)
-      if (!func) return
-      // Uniform closure ABI: (env f64, argc i32, a0..a7 f64) → f64
-      // Extra args beyond signature are ignored by WASM JS API
-      func(closPtr, 0, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN, UNDEF_NAN)
-    }
-    imports.jz.setTimeout = (closPtr, delay) => setTimeout(() => invokeClosure(closPtr), delay)
-    imports.jz.clearTimeout = (id) => { clearTimeout(id); return 0 }
-    imports.jz.setInterval = (closPtr, delay) => setInterval(() => invokeClosure(closPtr), delay)
-    imports.jz.clearInterval = (id) => { clearInterval(id); return 0 }
-  }
 
   // Host imports: provide actual functions at instantiation
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
@@ -516,8 +495,18 @@ export const instantiate = (compile, code, opts = {}) => {
   }
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
-  instRef = inst
   if (needsWasi) imports._setMemory(inst.exports.memory)
+
+  // Drive WASM timer queue via JS scheduling (non-blocking)
+  if (inst.exports.__timer_tick) {
+    const tick = inst.exports.__timer_tick
+    let hadTimers = false
+    const id = setInterval(() => {
+      const remaining = tick()
+      if (remaining > 0) hadTimers = true
+      if (hadTimers && remaining <= 0) clearInterval(id)
+    }, 1)
+  }
 
   // For shared memory, resolve memory from import; for own memory, from export
   const rawMemory = opts.memory || inst.exports.memory

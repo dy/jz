@@ -87,14 +87,8 @@ export default function prepare(node) {
     if (needs) includeModule('fn')
   }
 
-  // Auto-import timer functions from host "jz" module when referenced
+  // Native timers: inline WASM timer queue when referenced (no host imports needed)
   const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
-  const TIMER_SIGS = {
-    setTimeout: [['param', 'f64'], ['param', 'f64'], ['result', 'f64']],
-    clearTimeout: [['param', 'f64'], ['result', 'f64']],
-    setInterval: [['param', 'f64'], ['param', 'f64'], ['result', 'f64']],
-    clearInterval: [['param', 'f64'], ['result', 'f64']],
-  }
   const usedTimers = new Set()
   const scanTimers = (n) => {
     if (!Array.isArray(n)) {
@@ -105,15 +99,10 @@ export default function prepare(node) {
   }
   const allNodes = [ast, ...ctx.func.list.map(f => f.body), ...(ctx.module.moduleInits || [])]
   for (const node of allNodes) scanTimers(node)
-  for (const name of usedTimers) {
-    if (ctx.features.nativeTimers) {
-      // Native timers: inline WASM timer queue (wasmtime/wasmer), no JS host imports
-      includeModule('timer')
-      includeModule('fn')   // call_indirect dispatch for callbacks
-      break                 // timer module handles all timer types
-    } else if (!ctx.module.imports.some(i => i[1] === '"jz"' && i[2] === `"${name}"`)) {
-      ctx.module.imports.push(['import', '"jz"', `"${name}"`, ['func', `$${name}`, ...TIMER_SIGS[name]]])
-    }
+  if (usedTimers.size) {
+    ctx.features.timers = true  // Timer module included — compile.js needs to emit __timer_init
+    includeModule('timer')
+    includeModule('fn')   // call_indirect dispatch for callbacks
   }
 
   return ast

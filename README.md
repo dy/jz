@@ -283,10 +283,9 @@ deno run program.wasm
 
 ### What host features are supported?
 
-The compiled `.wasm` uses two import namespaces:
+The compiled `.wasm` uses one import namespace:
 
 - `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
-- `jz` — host imports for features WASI doesn't cover. Supplied only by the `jz()` runtime (browser/Node event loop). Pure wasmtime/wasmer can stub them or use modules that don't call them.
 
 | JS API | Maps to | Notes |
 |--------|---------|-------|
@@ -294,12 +293,12 @@ The compiled `.wasm` uses two import namespaces:
 | `console.warn()`, `console.error()` | WASI `fd_write` (fd=2) | Writes to stderr |
 | `Date.now()` | WASI `clock_time_get` (realtime) | Returns ms since epoch |
 | `performance.now()` | WASI `clock_time_get` (monotonic) | Returns ms, high-resolution |
-| `setTimeout`, `clearTimeout` | `jz` host import | Callback dispatched via exported `__jz_table`; requires JS event loop |
-| `setInterval`, `clearInterval` | `jz` host import | Same — only under `jz()` runtime |
+| `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
+| `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
 
 ### Is it fast?
 
-Competitive. See benchmark:
+Competitive, faster than v8. See [benchmark](./bench/):
 
 | | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
 |---|---|---|---|---|---|---|---|
@@ -317,15 +316,13 @@ _Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 ### Can I compile jz to C?
 
-Yes, via [wasm2c](https://github.com/nicbarker/wasm2c) or [w2c2](https://github.com/nicbarker/w2c2):
+Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
 ```sh
 jz program.js -o program.wasm
 wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
-
-jz → WASM → C → native binary.
 
 
 ## Used by

@@ -1941,14 +1941,14 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     for (const s of ctx.runtime.typeofStrs)
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length) {
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || ctx.features.timers) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
     startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit,
-      ...(ctx.features.nativeTimers ? [['call', '$__timer_init']] : []),
+      ...(ctx.features.timers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
-      ...(ctx.features.nativeTimers ? [['call', '$__timer_loop']] : []),
+      ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),
     )
     sec.start.push(startFn, ['start', '$__start'])
   }
@@ -2055,9 +2055,8 @@ function finalizeClosureTable(sec) {
   if (!indirectUsed) for (const s of Object.keys(ctx.core.stdlib)) {
     if (ctx.core.stdlib[s]?.includes?.('call_indirect')) { indirectUsed = true; break }
   }
-  // Keep table if host may call closures (timers, etc.)
-  const hostCallsClosures = ctx.module.imports.some(i => i[1] === '"jz"')
-  if (indirectUsed || hostCallsClosures) {
+  // Keep table if call_indirect is used (closures, timer dispatch, etc.)
+  if (indirectUsed) {
     sec.table = [['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref']]
     sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
     return

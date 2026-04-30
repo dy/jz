@@ -220,7 +220,8 @@ export function reset(proto, globals) {
     set: false,       // Set. Organic via inc(__set_*).
     map: false,       // Map. Organic via inc(__map_*).
     closure: false,   // First-class functions. Organic via ctx.closure.table population.
-    nativeTimers: false,  // WASM-internal timer queue (wasmtime/wasmer). Opt-in via opts.nativeTimers.
+    timers: false,          // Set by prepare.js when timer module is included
+    blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
   }
 }
 
