@@ -47,32 +47,64 @@ jz --help
 
 ## Language
 
-JZ supports complete JS syntax with Crockford's "the best parts" constraints.<br>
-Built-in `jzify` transform auto-fixes most legacy patterns.
+JZ is a **strict functional JS subset** with optional auto-transformation. The diagram shows what's supported directly vs what gets auto-fixed by `jzify`:
 
-|  | Note | jzify |
-|---|------|-------|
-| `var`, `function` decl | hoisting; use `let`/`const` and arrows | `var`→`let`, `function f(){}`→`const f=()=>{}` |
-| `class`, `this`, `super` | use plain objects + closures | — |
-| `async`/`await`, `Promise`, generators (`function*`, `yield`) | no async runtime — use callbacks (`setTimeout`) | — |
-| `eval`, `with`, `arguments` | dynamic scope; use `...rest` for arguments | — |
-| `do`...`while` | use `while` or `for` | — |
-| `==`/`!=` | no loose equality | `==`→`===`, `!=`→`!==` |
-| `switch` | use `if`/`else` chains | `switch`→`if`/`else` |
-| `new X()` | call as `X()` | `new X()`→`X()` |
-| `delete`, `instanceof` | not supported | — |
-| `Proxy`, `Reflect`, `WeakMap`, `WeakSet` | needs GC introspection | — |
-| `Intl`, `new Date()`, DOM, `fetch` | use `Date.now()` for time, host imports for I/O | — |
-| `require`, dynamic `import()` | static ES `import` only | — |
-| `null` / `undefined` | both nullish; `== null` / `??` / `===` treat equal; distinct sentinels preserved at host boundary | jzify: `undefined`→`null` |
-| `typeof` (string result) | compile-time check only (`typeof x === 'string'`) | — |
+```mermaid
+graph TD
+    A[Full JavaScript] --> B[JZ Strict Subset]
+    A --> C[Not Supported]
+    B --> D[JZ with jzify (auto-transform)]
+
+    B --> E[Supported Directly]
+    E --> F[let/const, arrows, destructuring]
+    E --> G[if/else, for/while, switch→if/else]
+    E --> H[==→===, !=→!==, new→call]
+    E --> I[numeric literals, strings, arrays, objects]
+    E --> J[ES imports/exports]
+    E --> K[typed arrays, math, bitwise ops]
+
+    D --> L[Auto-transformed by jzify]
+    L --> M[var→let, function→arrow]
+    L --> N[undefined→null]
+    L --> O[loose equality→strict]
+
+    C --> P[Async/await, Promise, generators]
+    C --> Q[classes, this, super]
+    C --> R[eval, with, arguments]
+    C --> S[Proxy, Reflect, WeakMap/WeakSet]
+    C --> T[Date, DOM, fetch, Intl]
+    C --> U[instanceof, delete]
+    C --> V[dynamic imports]
+```
+
+**Supported directly** (JZ strict subset):
+- Modern syntax: `let`/`const`, arrow functions, destructuring
+- Control flow: `if`/`else`, `for`/`while`, `switch` (compiles to `if`/`else`)
+- Equality: strict only (`===`, `!==`)
+- Data structures: arrays, objects, strings, numbers
+- Modules: `import`/`export`
+- Typed arrays and math operations
+
+**Auto-transformed by `jzify`**:
+- Legacy patterns: `var`→`let`, `function`→arrow
+- `undefined`→`null` (nullish semantics)
+- Loose equality→strict
+
+**Not supported**:
+- Async features, classes, `this`/`super`
+- Dynamic scope features (`eval`, `with`, `arguments`)
+- GC-dependent features (`Proxy`, `WeakMap`)
+- Host APIs (`Date`, `DOM`, `fetch`)
+- `instanceof`, `delete`, dynamic imports
+
+JZ compiles to WASM with **no runtime**, **no GC**, and **no dynamic features** — just pure functional code that runs fast and predictably.
 
 
 ## FAQ
 
-## Why?
+### Why?
 
-JS became complex and with regrets (coercions, hoisting, `this`, classes, precision loss). Ongoing proposals keep shaping language which is already good.
+JS became complex and with regrets (coercions, hoisting, `this`, classes, precision loss, `null`). Ongoing proposals keep shaping language which is already good.
 
 _JZ_ (javascript zero) is an attempt to secure best JS parts from platform, spec, and engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
 
@@ -121,7 +153,7 @@ memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2
 Template interpolation handles most of this automatically — strings, arrays, numbers, and numeric objects are marshaled for you:
 
 ```js
-jz\`export let f = () => \${'hello'}.length + \${[1,2,3]}[0] + \${{x: 5, y: 10}}.x\`
+jz\`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x\`
 ```
 
 <!--
@@ -157,12 +189,12 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
 ```js
-jz`export let f = () => \${'hello'}.length`              // 5 — string compiled as literal
-jz`export let f = () => \${[10, 20, 30]}[1]`             // 20 — array compiled as literal
-jz`export let f = () => \${{name: 'jz', count: 3}}.count` // 3 — object compiled as literal
+jz`export let f = () => ${'hello'}.length`              // 5 — string compiled as literal
+jz`export let f = () => ${[10, 20, 30]}[1]`             // 20 — array compiled as literal
+jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3 — object compiled as literal
 
 // Nested values work too
-jz`export let f = () => \${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
+jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 ```
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
