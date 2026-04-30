@@ -1,11 +1,6 @@
 <img src="logo.svg" alt="jz logo" width="120"/>
 
-```js
-import jz from 'jz'
 
-const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + fib(n-2)`
-fib(40)  // 102334155
-```
 
 ## ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
@@ -17,9 +12,12 @@ fib(40)  // 102334155
 * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL.
 * **Minimal WAT** — produced WAT/WASM is on par with hand-written.
 
-It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, fast, long-lasting.
+```js
+import jz from 'jz'
 
-Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
+const { exports: { fib } } = jz`export let fib = (n) => n < 2 ? n : fib(n-1) + fib(n-2)`
+fib(40)  // 102334155
+```
 
 
 ## Usage
@@ -346,6 +344,13 @@ cc program.c -o program
 ```
 
 jz → WASM → C → native binary.
+
+## Motivation
+
+It is an attempt to secure best JS parts from platform, spec, and engine drift.<br> Write normal JS and get WASM – portable, fast, long-lasting.
+
+Initially intended for bytebeats, inspired by [porffor](https://github.com/CanadaHonk/porffor).
+
 
 ## Used by
 
