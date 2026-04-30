@@ -100,10 +100,7 @@ flowchart TB
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-
-## FAQ
-
-### Why?
+## Why?
 
 _JZ_ is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps minimal functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. Write normal JS and get WASM – portable, fast, long-lasting.
 
@@ -120,6 +117,9 @@ Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/
 | DSP / audio / bytebeats     | Backend / APIs             |
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
+
+
+## FAQ
 
 ### How to pass data between JS and WASM?
 
