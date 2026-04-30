@@ -58,9 +58,12 @@ export const asF64 = n => {
 /** Coerce node to i32 (saturating — fast, correct for values < 2^31). */
 export const asI32 = n => {
   if (n.type === 'i32') return n
-  // Peephole: trunc_sat_f64_s(convert_i32_s(x)) === x. Common via emitLengthAccess
-  // (returns convert_i32_s(__len)) being stored to an i32-narrowed counter local.
-  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n[1]?.type === 'i32') return n[1]
+  // Peephole: trunc_sat_f64_s(convert_i32_*(x)) === x. The argument of f64.convert_i32_*
+  // is i32 by WASM validation, so peel unconditionally and re-tag.
+  if (Array.isArray(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u')) {
+    const inner = n[1]
+    return Array.isArray(inner) ? typed(inner, 'i32') : inner
+  }
   return typed(['i32.trunc_sat_f64_s', n], 'i32')
 }
 
