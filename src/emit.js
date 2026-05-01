@@ -183,6 +183,17 @@ export function isReassigned(body, name) {
   return false
 }
 
+/** Does `body` contain a `continue` that targets THIS loop?
+ *  A `continue` inside a nested `for`/`while`/`do` targets the inner loop, so we don't count it. */
+function hasOwnContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
+  return false
+}
+
 /** Does `body` always exit the enclosing scope (return / throw / break / continue)?
  *  Used for early-return refinement: after `if (!guard) return`, `guard` holds for the rest. */
 function isTerminator(body) {
@@ -1340,20 +1351,19 @@ export const emitter = {
     if (body === undefined) return err('for-in/for-of not supported')
     const id = ctx.func.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
-    const cont = step ? `$cont${id}` : loop
+    // The cont wrapper is only needed if the body has a `continue` AND there is a step
+    // expression — `continue` must jump to before the step. Without a step, `continue`
+    // can target the loop label directly, saving a redundant `block`.
+    const needsCont = step && hasOwnContinue(body)
+    const cont = needsCont ? `$cont${id}` : loop
     ctx.func.stack.push({ brk, loop: cont })
     const result = []
     if (init != null) result.push(...emitFlat(init))
-    // J: Single-test loop — condition evaluated once per iteration at the top.
-    // With a step expression, `continue` targets a body wrapper so step still runs.
     const loopBody = []
     if (cond) loopBody.push(['br_if', brk, ['i32.eqz', toBool(cond)]])
-    if (step) {
-      loopBody.push(['block', cont, ...emitFlat(body)])
-      loopBody.push(...emitFlat(step))
-    } else {
-      loopBody.push(...emitFlat(body))
-    }
+    if (needsCont) loopBody.push(['block', cont, ...emitFlat(body)])
+    else loopBody.push(...emitFlat(body))
+    if (step) loopBody.push(...emitFlat(step))
     loopBody.push(['br', loop])
     result.push(['block', brk, ['loop', loop, ...loopBody]])
     ctx.func.stack.pop()
