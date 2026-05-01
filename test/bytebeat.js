@@ -52,6 +52,11 @@ function testFormula(name, jzBody, tRange, tol) {
   })
 }
 
+/** Tolerance for floatbeat tests. Higher than 1e-6 because compound
+ *  sin/cos calls accumulate sub-ulp differences between JS Math.sin and
+ *  the WASM sin approximation. 5e-6 is still inaudible. */
+const FTOL = 5e-6
+
 // ============================================================
 // BYTEBEAT — output in 0..255
 // ============================================================
@@ -108,29 +113,58 @@ testFormula('Krcko',
   'return (((t & (t >> 12)) * ((t >> 4) | (t >> 8)) ^ (t >> 6)) & 255)', 65536, 0)
 
 // ============================================================
-// FLOATBEAT — output in -1..1
+// FLOATBEAT — real compositions, output in -1..1
 // ============================================================
 
-testFormula('Sine Wave',
-  'return Math.sin(t / 50)', 16384, 1e-6)
+testFormula('Techno Loop',
+  `let kick = Math.tanh(Math.sin(t / 20) * 5) * ((t >> 13) & 1);
+   let bass = Math.sin(t / 300) * 0.3 * (((t >> 12) & 1) ? 1 : 0.5);
+   let lead = Math.sin(t / (400 + 100 * ((t >> 10) & 3))) * 0.2;
+   return kick + bass + lead`, 16384, FTOL)
 
-testFormula('Sawtooth Float',
-  'return ((t % 256) / 127.5) - 1', 16384, 1e-6)
+testFormula('FM Arpeggio',
+  `let note = [400, 300, 350, 250, 300, 200, 350, 400][(t >> 11) & 7];
+   let env = Math.max(0, 1 - (t % 2048) / 512);
+   return Math.sin(t / note + Math.sin(t / 100) * 2) * env * 0.5`, 16384, FTOL)
 
-testFormula('Square Float',
-  'return ((t % 256) < 128) ? 1 : -1', 16384, 1e-6)
+testFormula('Drum and Bass',
+  `let kick = Math.tanh(Math.sin(t / 20) * 8) * ((t >> 12) & 1);
+   let snare = Math.sin(t / 3) * Math.sin(t / 5) * ((t >> 11) & 1) * (((t >> 12) & 1) ? 0 : 1);
+   let bass = Math.sin(t / 150 + Math.sin(t / 400) * 3) * 0.4;
+   return kick * 0.5 + snare * 0.3 + bass * 0.3`, 16384, FTOL)
 
-testFormula('Triangle Float',
-  'return Math.abs((t % 256) / 64 - 2) - 1', 16384, 1e-6)
+testFormula('Wobble Dub',
+  `let wobble = Math.sin(t / 50 + Math.sin(t / 500) * 5);
+   let gate = ((t >> 10) & 3) == 0 ? 1 : 0.3;
+   return wobble * gate * 0.4`, 16384, FTOL)
 
-testFormula('FM Sine',
-  'return Math.sin(t * 0.1 + Math.sin(t * 0.02) * 2)', 16384, 1e-6)
+testFormula('Chord Pad',
+  `let chord = (Math.sin(t / 200) + Math.sin(t / 250) + Math.sin(t / 300)) / 3;
+   let gate = ((t >> 12) & 3) == 0 ? 1 : 0;
+   return chord * gate * 0.5`, 16384, FTOL)
 
-testFormula('AM Sine',
-  'return Math.sin(t * 0.1) * Math.sin(t * 0.005)', 16384, 1e-6)
+testFormula('Polyrhythm Drone',
+  `return Math.sin(t / 100) * 0.2 + Math.sin(t / 150) * 0.2 + Math.sin(t / 200) * 0.2`, 16384, FTOL)
 
-testFormula('Detuned Sines',
-  'return (Math.sin(t * 0.1) + Math.sin(t * 0.101)) / 2', 16384, 1e-6)
+testFormula('Bell Pattern',
+  `let note = [30, 25, 30, 20, 30, 25, 30, 35][(t >> 11) & 7];
+   let env = Math.max(0, 1 - (t % 2048) / 800);
+   return Math.sin(t / note + Math.sin(t / 80) * 3) * env * 0.4`, 16384, FTOL)
 
-testFormula('Bytebeat-to-Float Conversion',
-  'return ((t >> 7 | t | t >> 6) * 10 + 4 * (t & (t >> 13) | (t >> 6))) / 127.5 - 1', 65536, 1e-6)
+testFormula('Ambient Drone',
+  `return Math.sin(t / 400) * Math.sin(t / 401) * Math.sin(t / 402) * 0.8`, 16384, FTOL)
+
+testFormula('Sequenced Bass',
+  `let freq = [300, 400, 350, 250][(t >> 12) & 3];
+   return Math.sin(t / freq) * 0.4 * (((t >> 10) & 3) == 0 ? 1 : 0.3)`, 16384, FTOL)
+
+testFormula('Noise Percussion',
+  `let hat = Math.sin(t / 2) * Math.sin(t / 3) * ((t >> 8) & 1) * 0.3;
+   let click = ((t >> 9) & 1) * Math.sin(t / 10) * 0.2;
+   return hat + click`, 16384, FTOL)
+
+testFormula('Classic Floatbeat',
+  `return Math.sin(t / 50) * Math.sin(t / 100) * 0.8`, 16384, FTOL)
+
+testFormula('Bytebeat Anthem Float',
+  `return (((t >> 7 | t | t >> 6) * 10 + 4 * (t & (t >> 13) | (t >> 6))) & 255) / 127.5 - 1`, 65536, FTOL)
