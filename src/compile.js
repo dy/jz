@@ -2182,15 +2182,19 @@ function pullStdlib(sec) {
  * heap base) — keeps user code at offset 0 from clobbering the data segment.
  */
 function optimizeModule(sec) {
-  specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-  specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
-  if (ctx.runtime.strPool) {
+  const cfg = ctx.transform.optimize  // null → all on (back-compat for direct compile() callers)
+  if (!cfg || cfg.specializeMkptr !== false)
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  if (!cfg || cfg.specializePtrBase !== false)
+    specializePtrBase([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat)
+  if (ctx.runtime.strPool && (!cfg || cfg.sortStrPoolByFreq !== false)) {
     const poolRef = { pool: ctx.runtime.strPool }
     sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
     ctx.runtime.strPool = poolRef.pool
   }
-  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s)
-  hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s, cfg)
+  if (!cfg || cfg.hoistConstantPool !== false)
+    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
 
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
@@ -2554,9 +2558,13 @@ export default function compile(ast) {
   // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
   // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
   // Also returns callCount Map (computed during the same walk — used below for funcidx sort).
+  // Reachability walk always runs (callCount feeds the sort even when shake is off);
+  // actual removal gated by ctx.transform.optimize.treeshake.
+  const optCfg = ctx.transform.optimize
   const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
-    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports]
+    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports],
+    { removeDead: !optCfg || optCfg.treeshake !== false }
   )
 
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.

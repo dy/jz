@@ -12,6 +12,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
+import { resolveOptimize, PASS_NAMES } from '../src/optimize.js'
 import { run } from './util.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
@@ -140,4 +141,61 @@ test('charCodeAt: runtime correctness — digit parse', () => {
   `)
   is(main('abc12345xyz'), 12345)
   is(main('  9  '), 9)
+})
+
+test('resolveOptimize: levels, booleans, object overrides', () => {
+  const allOn = resolveOptimize(true)
+  const allOff = resolveOptimize(false)
+  for (const n of PASS_NAMES) {
+    is(allOn[n], true, `level true: ${n} on`)
+    is(allOff[n], false, `level false: ${n} off`)
+  }
+  is(resolveOptimize(0).watr, false)
+  is(resolveOptimize(0).treeshake, false)
+  is(resolveOptimize(2).watr, true)
+  // level 1 = encoding-compactness only
+  const l1 = resolveOptimize(1)
+  is(l1.treeshake, true)
+  is(l1.sortLocalsByUse, true)
+  is(l1.fusedRewrite, true)
+  is(l1.watr, false)
+  is(l1.hoistAddrBase, false)
+  is(l1.hoistConstantPool, false)
+  // object: level 0 base + watr override
+  const o = resolveOptimize({ level: 0, watr: true })
+  is(o.watr, true)
+  is(o.treeshake, false)
+  // undefined: default = level 2
+  is(resolveOptimize(undefined).watr, true)
+})
+
+test('opts.optimize: false produces correct output (semantics preserved)', () => {
+  const { main: fast } = run(
+    `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + i*2; return s | 0 }`,
+    { optimize: false }
+  )
+  is(fast(10), 90)
+  const { main: full } = run(
+    `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + i*2; return s | 0 }`,
+    { optimize: 2 }
+  )
+  is(full(10), 90)
+})
+
+test('opts.optimize: false produces larger binary than default', () => {
+  const src = `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + i*2; return s | 0 }`
+  const off = jz.compile(src, { optimize: false })
+  const on = jz.compile(src, { optimize: true })
+  ok(off.length >= on.length, `expected optimize:false (${off.length}) >= optimize:true (${on.length})`)
+})
+
+test('opts.optimize: object override gates per-pass', () => {
+  // Disabling treeshake keeps unreachable funcs; binary should be ≥ default.
+  const src = `
+    const dead = () => 42
+    export const main = (n) => n + 1
+  `
+  const sized = jz.compile(src, { optimize: { treeshake: false } })
+  const shaken = jz.compile(src, { optimize: true })
+  ok(sized.length >= shaken.length, `treeshake:false (${sized.length}) ≥ treeshake:true (${shaken.length})`)
 })

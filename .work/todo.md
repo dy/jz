@@ -413,31 +413,102 @@ arrays gets you without unrolling).
 
 ### Conceptual shifts
 
-* [ ] **Unified Type record (S2 unification, expanded scope).** Today there are
-  4 parallel maps for cross-call type facts: `paramValTypes`, `paramWasmTypes`,
-  `paramSchemas`, `paramTypedCtors`, plus `valueUsed` and `valueResult`. Each
-  new dimension (nullability, integer-range, monomorphic-method) requires
-  another parallel map + another fixpoint. Unify into a single Type record
-  `{ wasmType, valKind, ptrAux, schemaId, isInteger, knownConstant, nullable,
-  monoMethods }` with bidirectional inference (cf. Hindley-Milner). Body
-  emission becomes parametric on the resolved record. Adding the next 5
-  optimizations becomes a one-line lattice rule each, instead of a new phase.
+* [ ] **Unified Type record + int-default + unboxed-default (S2).** Three
+  conceptually-related shifts that should land as one cohesive change because
+  they share the same dataflow infrastructure:
 
-* [ ] **NaN-box-only-at-boundaries ABI (default unboxed).** Invert the current
-  "default boxed, prove unboxed" model to "default unboxed, prove polymorphism
-  needs boxing." Internally every IR node carries a precise type; boxing
-  happens only at: exported function entry/return, heterogeneous container
-  storage, indirect calls through function-valued locals, explicit `any` sites
-  (`obj[dynKey]`). 90% of `module/*.js` runtime helpers (`__to_num`,
-  `__ptr_offset`, `__typed_idx`) become boundary-only, not per-use. The four
-  wins this round collapse to one rule: "propagate types through const-decl
-  RHS." Engineering cost is large (3-6 months of refactoring); buys codebase
-  clarity more than raw perf, *unless* paired with TS-style type hints or a
-  closed-world flag. Worth doing for cleanliness.
+  **(a) Unified Type record.** Replace the 4 parallel maps for cross-call
+  facts (`paramValTypes`, `paramWasmTypes`, `paramSchemas`,
+  `paramTypedCtors`) plus `valueUsed`/`valueResult` with a single record
+  per binding/expr:
+
+  ```
+  Type = {
+    wasm:        'i32' | 'f64' | 'i64' | ptr,
+    val:         NUMBER | STRING | BOOL | ARRAY | TYPED | OBJECT | CLOSURE | ANY,
+    ptrAux:      number | null,        // type+aux for NaN-box ptrs
+    schemaId:    number | null,        // OBJECT shape id
+    elemSchema:  number | null,        // ARRAY elem shape
+    elemValType: VAL    | null,        // ARRAY/TYPED elem val-kind
+    intCertain:  bool,                 // *new* — proven integer-valued
+    intLikely:   bool,                 // *new* — integer-shaped, unproven
+    boxed:       bool,                 // *new* — NaN-boxed (vs. raw scalar/i32 ptr)
+    nullable:    bool,
+    knownConst:  any | undefined,
+    monoMethods: Map<name, funcId> | null,
+  }
+  ```
+
+  Bidirectional Hindley-Milner-style inference: forward propagate from
+  literals/sources, backward propagate from sinks (`| 0`, indexing, length
+  comparison, store-into-typed-array). Adding the next 10 optimizations
+  becomes one lattice rule each, not one phase each.
+
+  **(b) Int-by-default (`intCertain`/`intLikely`).** Today every numeric
+  binding defaults to f64; integer-only uses pay f64↔i32 conversion at every
+  op. Inverted rule: a binding is `intCertain` if every definition is one of
+  {integer literal, `| 0`, `>>> 0`, `arr.length`, `.byteLength`, indexing,
+  arithmetic of `intCertain` operands with no `/` and no
+  `Math.{sqrt,sin,cos,…}`}. First non-int RHS poisons forward; binding falls
+  back to f64. Single forward pass over each function body once
+  Type-record is unified. Wins on:
+  - biquad inner counter `s` (`s*5`, `s*4` integer arithmetic)
+  - bytebeat formulas (`t & 0xff`, `(t >> 5) | (t * 7)`)
+  - any `for (let i = 0; i < n; i++)` where n is a const or `|0`'d
+  - bitwise crypto chains (no f64 round-trips)
+
+  *Risk*: V8 TF observed 60% regression on full-i32 nStages narrowing this
+  session. Mitigation: keep f64 for params at the WASM module boundary
+  (export ABI stays uniform), promote to i32 only inside loop bodies where
+  `intCertain` holds and the use site is i32-shaped. Couple with the
+  inlining pass so the i32 form lives only in the inlined copy — engine sees
+  uniform-f64 ABI at boundaries, uniform-i32 inside hot kernel.
+
+  **(c) Unboxed-by-default ABI.** Invert "default boxed, prove unboxed" to
+  "default unboxed, prove polymorphism needs boxing." Internally every IR
+  node carries `boxed: false` unless it must hold a value of unknown type.
+  Boxing only at: exported entry/return, heterogeneous container storage
+  (mixed-type arrays, hash values), indirect calls through function-valued
+  locals, explicit `any` sites (`obj[dynKey]`, `JSON.parse` results). 90% of
+  `module/*.js` runtime helpers (`__to_num`, `__ptr_offset`, `__typed_idx`,
+  `__is_str_key`) become boundary-only, not per-use. The 8+ specialized
+  optimization passes added this session collapse to one rule:
+  "propagate Type through const-decl RHS, function args, return value."
+
+  **Engineering**: 3-6 months. Largest refactor in jz's history. Strategy:
+  1. Land Type record with all-default-boxed semantics (no behavior change).
+  2. Migrate `analyze.js` collect functions to populate it.
+  3. Migrate `compile.js` narrowing fixpoints to read/write it.
+  4. Add forward-propagation pass for `intCertain` + `boxed=false`.
+  5. Migrate `module/*.js` emitters to short-circuit when Type proves
+     monomorphic (one emitter at a time, smallest first: `__to_num` → done,
+     etc.).
+  6. Delete the parallel maps. Delete the dead helpers.
+
+  **Test surface**: the existing 982 tests pin behavior; add lattice
+  unit tests in `test/types.js` for forward-prop / backward-prop / poisoning
+  / boundary-boxing rules so the migration is incremental and reversible.
 
 * [ ] **Tail call optimization.** No TCO today — recursive code pays full
   call-frame cost. Add for `return f(...)` patterns where caller and callee
   agree on signature. Wasm has `return_call`; gating is straightforward.
+
+### Implementation order (ratified 2026-05-01)
+
+1. **opts.optimize layer (P4)** — level/object API gating every per-fn and
+   whole-module pass. Contained, low-risk, unblocks safe per-pass
+   experimentation for everything below. Half day.
+2. **Unified Type record + int-default + unboxed-default (S2 above)** —
+   foundational. Without it, the remaining items below are bandaids on the
+   parallel-maps architecture.
+3. **Schema slot inference for shorthand props (P1, ~1093 B biquad win)** —
+   falls out almost free once the type lattice is unified, because slot
+   types use the same inference.
+4. **String-runtime tree-shake when console.log args are statically resolved
+   (P3, ~2372 B biquad win)** — orthogonal to S2; can run in parallel.
+5. **Induction-variable strength reduction (P2)** — mostly subsumed by
+   int-default; what remains is hoisting `nStages | 0` once, which the
+   optimizer handles generically when intCertain holds.
 
 ### Benchmarks that would surface remaining inefficiencies
 

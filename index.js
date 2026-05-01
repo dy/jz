@@ -43,7 +43,7 @@ import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } 
 import { ctx, reset } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
-import { optimizeFunc } from './src/optimize.js'
+import { optimizeFunc, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
@@ -71,6 +71,13 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.strict] - Reject dynamic features (obj[k], for-in, unknown
  *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
  *   into output; large size win for static programs.
+ * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
+ *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
+ *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
+ *   - `true` / `2` (default): all current passes (watr CSE/DCE/inline + every jz pass).
+ *   - `3`: reserved for future aggressive passes (currently == 2).
+ *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
+ *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
@@ -87,6 +94,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
+  ctx.transform.optimize = resolveOptimize(opts.optimize)
 
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -102,12 +110,14 @@ jz.compile = (code, opts = {}) => {
   const ast = prepare(parsed)
   const module = compile(ast)
 
-  const optimized = opts.optimize !== false ? watrOptimize(module) : module
+  const cfg = ctx.transform.optimize
+  const optimized = cfg.watr ? watrOptimize(module) : module
   // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
-  if (opts.optimize !== false) {
-    for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node)
+  // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
+  if (cfg.watr) {
+    for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, cfg)
   }
   return opts.wat ? watrPrint(optimized) : watrCompile(optimized)
 }

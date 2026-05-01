@@ -31,6 +31,66 @@ const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_PREFIX_BITS = 0x7FF8n
 
 /**
+ * Optimization passes, partitioned by phase. The `level` presets pick which
+ * passes are on by default; the user can override individual passes via an
+ * object form (`{ level: 1, hoistAddrBase: true }`).
+ *
+ * Levels:
+ *   0 — nothing. Fastest compile, largest output. Useful for live coding.
+ *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
+ *       Cheap, no IR rewrites that perturb V8's tier-up shape.
+ *   2 — default. All current passes (watr CSE/DCE/inline + every jz pass).
+ *   3 — reserved for future aggressive passes (constant-arg propagation,
+ *       inlining, unrolling). Currently == level 2.
+ */
+export const PASS_NAMES = [
+  'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
+  'hoistPtrType',
+  'hoistInvariantPtrOffset',
+  'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
+  'hoistAddrBase',
+  'hoistInvariantCellLoads',
+  'sortLocalsByUse',
+  'specializeMkptr',
+  'specializePtrBase',
+  'sortStrPoolByFreq',
+  'hoistConstantPool',
+  'treeshake',
+]
+
+const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
+const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
+const LEVEL_PRESETS = Object.freeze({
+  0: ALL_OFF,
+  1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
+  2: ALL_ON,
+  3: ALL_ON,
+})
+
+/**
+ * Normalize the user's `opts.optimize` value into a flat config object.
+ *
+ *   resolveOptimize(undefined | true)         → all on (level 2)
+ *   resolveOptimize(false | 0)                → all off
+ *   resolveOptimize(1 | 2 | 3)                → preset for that level
+ *   resolveOptimize({ level: 1, watr: true }) → level 1 base, with watr forced on
+ *   resolveOptimize({ hoistAddrBase: false }) → level 2 base, hoistAddrBase off
+ */
+export function resolveOptimize(opt) {
+  if (opt === false || opt === 0) return { ...ALL_OFF }
+  if (opt === true || opt == null) return { ...ALL_ON }
+  if (typeof opt === 'number') return { ...(LEVEL_PRESETS[opt] || ALL_ON) }
+  if (typeof opt === 'object') {
+    const baseLevel = typeof opt.level === 'number' ? opt.level : 2
+    const base = LEVEL_PRESETS[baseLevel] || ALL_ON
+    const out = { ...base }
+    for (const n of PASS_NAMES) if (n in opt) out[n] = !!opt[n]
+    return out
+  }
+  return { ...ALL_ON }
+}
+
+/**
  * CSE repeated `(call $__ptr_type X)` on same X across stable regions.
  *
  * A stable region for var X is a maximal CFG segment where X is not written.
@@ -985,15 +1045,24 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  * round-trips, inlines tiny ptr/is_* helpers, and folds (i32.add base const)
  * into memarg offset= form, all in a single bottom-up traversal — and
  * piggybacks local-ref counting so sortLocalsByUse skips its own walk.
+ *
+ * @param fn  func IR node
+ * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  */
-export function optimizeFunc(fn) {
-  hoistPtrType(fn)
-  hoistInvariantPtrOffset(fn)
+export function optimizeFunc(fn, cfg) {
+  if (cfg && cfg.hoistPtrType === false &&
+      cfg.hoistInvariantPtrOffset === false &&
+      cfg.fusedRewrite === false &&
+      cfg.hoistAddrBase === false &&
+      cfg.hoistInvariantCellLoads === false &&
+      cfg.sortLocalsByUse === false) return
+  if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
+  if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
   const counts = new Map()
-  fusedRewrite(fn, counts)
-  hoistAddrBase(fn)
-  hoistInvariantCellLoads(fn)
-  sortLocalsByUse(fn)
+  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
+  if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
+  if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
+  if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
 }
 
 // Fused bottom-up walk applying three orthogonal pattern sets at each node:
@@ -1182,8 +1251,12 @@ function walkRewrite(node, doInline, counts) {
  *                       (may be interleaved with other nodes like `(start $X)` for sec.start).
  * @param allModuleNodes — flat iterable of all module-level nodes for root discovery
  *                          (exports, elem, start directive are elsewhere than funcSections).
+ * @param opts — optional `{ removeDead: bool }`. When `removeDead` is false, the
+ *               reachability walk still runs (so `callCount` is populated for the
+ *               funcidx sort downstream) but unreachable funcs are kept. Default true.
  */
-export function treeshake(funcSections, allModuleNodes) {
+export function treeshake(funcSections, allModuleNodes, opts) {
+  const removeDead = !opts || opts.removeDead !== false
   const funcByName = new Map()
   const allFuncs = []
   for (const { arr } of funcSections)
@@ -1230,11 +1303,13 @@ export function treeshake(funcSections, allModuleNodes) {
   while (stack.length) visitCalls(funcByName.get(stack.pop()))
 
   let removed = 0
-  for (const { arr } of funcSections) {
-    for (let i = arr.length - 1; i >= 0; i--) {
-      const n = arr[i]
-      if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && !reachable.has(n[1])) {
-        arr.splice(i, 1); removed++
+  if (removeDead) {
+    for (const { arr } of funcSections) {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        const n = arr[i]
+        if (Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && !reachable.has(n[1])) {
+          arr.splice(i, 1); removed++
+        }
       }
     }
   }
