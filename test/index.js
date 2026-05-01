@@ -1,6 +1,7 @@
 import './core-v2.js'
 import './errors.js'
 import './math.js'
+import './bytebeat.js'
 import './imports.js'
 import './statements.js'
 import './multi-return.js'

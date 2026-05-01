@@ -76,7 +76,10 @@ export const asPtrOffset = (n, ptrKind) =>
 /** Coerce emitted IR to a target WASM param type ('i32' | 'f64'). */
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
 
-/** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative). */
+/** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
+ *  Handles NaN, -∞, and +∞ per ECMAScript ToInt32: all three map to 0.
+ *  i64.trunc_sat_f64_s gives NaN→0 and -∞→i64_min→wrap→0 correctly, but +∞→i64_max→wrap→-1.
+ *  Guard +∞ explicitly so bytebeat formulas with division-by-zero match JS baseline. */
 export const toI32 = n => {
   if (n.type === 'i32') return n
   // Peephole: i32.wrap_i64(i64.trunc_sat_f64_s(f64.convert_i32_*(x))) === x for all i32
@@ -86,7 +89,11 @@ export const toI32 = n => {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
+  const guarded = typed(['if', ['result', 'f64'],
+    ['f64.eq', n, ['f64.const', Infinity]],
+    ['then', ['f64.const', 0]],
+    ['else', n]], 'f64')
+  return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', guarded]], 'i32')
 }
 
 /** Extract i64 from BigInt-as-f64. */
