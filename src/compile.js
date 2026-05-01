@@ -28,11 +28,14 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, valTypeOf, lookupValType, analyzeValTypes, collectValTypes, collectTypedElems, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType, invalidateLocalsCache, invalidateValTypesCache,
+  T, VAL, valTypeOf, lookupValType, analyzeValTypes, analyzeIntCertain, collectValTypes, collectTypedElems, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType, invalidateLocalsCache, invalidateValTypesCache,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
-  collectArrElemSchemas, collectArrElemValTypes, exprSchemaId,
+  collectArrElemSchemas, collectArrElemValTypes,
   repOf, updateRep, repOfGlobal, updateGlobalRep,
+  staticObjectProps, mergeParamFact, ensureParamRep, callerParamFactMap, clearStickyNull,
+  inferArgType, inferArgSchema, inferArgArrElemSchema, inferArgArrElemValType, inferArgTypedCtor,
+  ctorFromElemAux, collectProgramFacts, narrowReturnArrayElems,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -77,250 +80,33 @@ export { emitTypeofCmp, toBool, materializeMulti, emitDecl, buildArrayWithSpread
 // runtime packing via mkPtrIR).
 const NAN_PREFIX_BITS = 0x7FF8n
 
-// Typed-array element-ctor decoding from `ptrAux` bits (low 3 bits = elem type
-// index, bit 3 = view-vs-bytes). Used by narrowSignatures F-phase and the
-// bimorphic-typed specialization pass to materialize a ctor name from a
-// narrowed callee result aux.
-const _TYPED_ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
-  'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
-const ctorFromAux = (aux) => {
-  if (aux == null) return null
-  const name = _TYPED_ELEM_NAMES[aux & 7]
-  if (!name) return null
-  return (aux & 8) ? `new.${name}.view` : `new.${name}`
-}
-// Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a
-// call site. Sources: caller's body-local typedElems, caller's typed params,
-// literal `new TypedArray(...)`, calls to typed-narrowed user funcs. Returns
-// null when the ctor can't be determined (i.e. truly unknown to the caller).
-const inferArgTypedCtor = (expr, callerTypedElems, callerTypedParams) => {
-  if (typeof expr === 'string') {
-    if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
-    if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
-    return null
-  }
-  const ctor = typedElemCtor(expr)
-  if (ctor) return ctor
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
-    if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromAux(f.sig.ptrAux)
-  }
-  return null
-}
-
 // Low-level IR helpers previously lived here. Pure ones moved to src/ir.js;
 // emit-calling ones (toBool, emitTypeofCmp, emitDecl, materializeMulti,
 // buildArrayWithSpreads) moved to src/emit.js.
 
+// AST-analysis primitives (staticObjectProps, paramReps lattice helpers,
+// inferArg* cross-call inference, collectProgramFacts) moved to src/analyze.js.
 
 // === Module compilation ===
-
-/** Decode a `['{}', ...]` AST's children into `{names, values}`, or null if any
- *  property is non-static-key (computed key, spread, shorthand). Matches the
- *  emitter's flatten rule for comma-grouped props. Used by narrowSignatures and
- *  collectProgramFacts to register/observe schemas without re-deriving the AST
- *  shape; the emitter (module/object.js) does its own decoding because it must
- *  handle the spread/computed-key fall-through paths. */
-function staticObjectProps(args) {
-  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
-  const names = [], values = []
-  for (const p of raw) {
-    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
-    names.push(p[1]); values.push(p[2])
-  }
-  return names.length ? { names, values } : null
-}
-
-/**
- * Narrow return arr-elem-schema: for each non-exported, non-value-used user func with
- * `valResult === VAL.ARRAY`, walk its return exprs (and trailing-fallthrough literal),
- * resolve each to a per-body local arr-elem-schema map, and if all match, set
- * `func.arrayElemSchema`. Lets callers' `const rows = initRows()` observations gain
- * the elem-schema, propagating through to the runKernel param via paramArrSchemas.
- *
- * Sources for return-expr arr-elem inference:
- *   - body-local arr-elem map (collectArrElemSchemas, observes `.push`+literal-init)
- *   - param-bound arr-elem (paramArrSchemas[func.name][k] when populated)
- *   - call to another arr-narrowed user fn (`f.arrayElemSchema`)
- */
-function narrowReturnArrayElemSchemas(paramArrSchemas, valueUsed) {
-  const collectReturnExprs = (node, out) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
-    for (const a of args) collectReturnExprs(a, out)
-  }
-  const alwaysReturns = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === '=>') return false
-    if (op === 'return' || op === 'throw') return true
-    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
-    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
-    return false
-  }
-  const targets = ctx.func.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) &&
-    f.valResult === VAL.ARRAY && f.arrayElemSchema == null
-  )
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const func of targets) {
-      if (func.arrayElemSchema != null) continue
-      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
-      if (isBlock && !alwaysReturns(func.body)) continue
-      const exprs = []
-      if (isBlock) collectReturnExprs(func.body, exprs)
-      else exprs.push(func.body)
-      if (!exprs.length) continue
-      // Body-local observations. Need ctx.func.locals seeded for collectArrElemSchemas's
-      // `observe()` filter (which checks the var is a known local).
-      const savedLocals = ctx.func.locals
-      ctx.func.locals = analyzeLocals(func.body)
-      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
-      const localArrElems = collectArrElemSchemas(func.body)
-      ctx.func.locals = savedLocals
-      // Param-bound arr-elem (transitive): paramArrSchemas[name][k] → name lookup map.
-      const paramArrMap = new Map()
-      const ps = paramArrSchemas.get(func.name)
-      if (ps) for (const [k, v] of ps) {
-        if (v != null && k < func.sig.params.length) paramArrMap.set(func.sig.params[k].name, v)
-      }
-      const resolveExpr = (expr) => {
-        if (typeof expr === 'string') {
-          if (localArrElems.has(expr)) {
-            const v = localArrElems.get(expr)
-            if (v != null) return v
-          }
-          if (paramArrMap.has(expr)) return paramArrMap.get(expr)
-          return null
-        }
-        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-          const f = ctx.func.map?.get(expr[1])
-          if (f?.arrayElemSchema != null) return f.arrayElemSchema
-        }
-        if (Array.isArray(expr) && expr[0] === '?:') {
-          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
-          return a != null && a === b ? a : null
-        }
-        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
-          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
-          return a != null && a === b ? a : null
-        }
-        return null
-      }
-      const sid0 = resolveExpr(exprs[0])
-      if (sid0 == null) continue
-      const allSame = exprs.every(e => resolveExpr(e) === sid0)
-      if (!allSame) continue
-      func.arrayElemSchema = sid0
-      changed = true
-    }
-  }
-}
-
-/**
- * Narrow return arr-elem-val: parallel to narrowReturnArrayElemSchemas but tracks
- * the element val-kind (NUMBER/STRING/…) instead of a schema id. Lets callers'
- * `const a = init()` observations gain the elem-val-type, propagating through
- * to the runKernel param via paramArrElemValTypes — unlocking `__to_num`
- * elision in `arr.map(x => x*k)` style hot loops where elements are numeric.
- */
-function narrowReturnArrayElemValTypes(paramArrElemValTypes, valueUsed) {
-  const collectReturnExprs = (node, out) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
-    for (const a of args) collectReturnExprs(a, out)
-  }
-  const alwaysReturns = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === '=>') return false
-    if (op === 'return' || op === 'throw') return true
-    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
-    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
-    return false
-  }
-  const targets = ctx.func.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) &&
-    f.valResult === VAL.ARRAY && f.arrayElemValType == null
-  )
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const func of targets) {
-      if (func.arrayElemValType != null) continue
-      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
-      if (isBlock && !alwaysReturns(func.body)) continue
-      const exprs = []
-      if (isBlock) collectReturnExprs(func.body, exprs)
-      else exprs.push(func.body)
-      if (!exprs.length) continue
-      const savedLocals = ctx.func.locals
-      ctx.func.locals = analyzeLocals(func.body)
-      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
-      const localArrElemVals = collectArrElemValTypes(func.body)
-      ctx.func.locals = savedLocals
-      const paramArrMap = new Map()
-      const ps = paramArrElemValTypes.get(func.name)
-      if (ps) for (const [k, v] of ps) {
-        if (v != null && k < func.sig.params.length) paramArrMap.set(func.sig.params[k].name, v)
-      }
-      const resolveExpr = (expr) => {
-        if (typeof expr === 'string') {
-          if (localArrElemVals.has(expr)) {
-            const v = localArrElemVals.get(expr)
-            if (v != null) return v
-          }
-          if (paramArrMap.has(expr)) return paramArrMap.get(expr)
-          return null
-        }
-        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-          const f = ctx.func.map?.get(expr[1])
-          if (f?.arrayElemValType != null) return f.arrayElemValType
-        }
-        if (Array.isArray(expr) && expr[0] === '?:') {
-          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
-          return a != null && a === b ? a : null
-        }
-        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
-          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
-          return a != null && a === b ? a : null
-        }
-        return null
-      }
-      const vt0 = resolveExpr(exprs[0])
-      if (vt0 == null) continue
-      const allSame = exprs.every(e => resolveExpr(e) === vt0)
-      if (!allSame) continue
-      func.arrayElemValType = vt0
-      changed = true
-    }
-  }
-}
 
 /**
  * Phase: signature narrowing.
  *
  * Reads programFacts.callSites + valueUsed; mutates each user func's `sig`:
  *   - param types  (f64 → i32 / pointer-ABI i32+ptrKind, when call sites agree)
- *   - param schemas (per-arg schemaId, recorded into programFacts.paramSchemas)
+ *   - param schemas (per-arg schemaId, recorded into programFacts.paramReps[k].schemaId)
  *   - result type  (f64 → i32, when body always returns i32)
  *   - result valType (`func.valResult`) and pointer narrowing (sig.ptrKind)
  *
- * Pure w.r.t. the AST — only the function `sig` records change. The maps in
- * programFacts (paramValTypes/paramWasmTypes/paramSchemas) are populated here
- * and consumed by the per-function emit phase below.
+ * Pure w.r.t. the AST — only the function `sig` records change. The unified
+ * paramReps record is populated here (per-field lattice) and consumed by the
+ * per-function emit phase below.
  *
  * Encoded structurally as a phase so future S3 work can move it into a
  * pipeline runner without re-deriving the in/out contract from comments.
  */
 function narrowSignatures(programFacts) {
-  const { callSites, valueUsed, paramValTypes, paramWasmTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors } = programFacts
+  const { callSites, valueUsed, paramReps } = programFacts
 
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
@@ -330,26 +116,8 @@ function narrowSignatures(programFacts) {
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
-    // Infer schemaId for an argument expression. Returns null if not inferrable.
-    // Safe sources: object literal with all string keys and no spreads, or a variable
-    // whose schema is already bound in ctx.schema.vars (module-level) or callerSchemas.
-    const inferArgSchema = (expr, callerSchemas) => {
-      if (typeof expr === 'string') {
-        if (callerSchemas && callerSchemas.has(expr)) return callerSchemas.get(expr)
-        const id = ctx.schema.vars.get(expr)
-        return id != null ? id : null
-      }
-      if (Array.isArray(expr) && expr[0] === '{}') {
-        const parsed = staticObjectProps(expr.slice(1))
-        return parsed ? ctx.schema.register(parsed.names) : null
-      }
-      return null
-    }
-    // Infer arg type using global valTypes + caller-local valTypes
-    const inferArgType = (expr, callerValTypes) => {
-      if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-      return valTypeOf(expr)
-    }
+    // Inference helpers (inferArgType/inferArgSchema/inferArgArr*/inferArgTypedCtor)
+    // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
     // Per-caller analysis is stable across fixpoint iterations — precompute once.
     // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
     const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
@@ -360,84 +128,28 @@ function narrowSignatures(programFacts) {
       for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
       callerCtx.set(func, { callerLocals, callerValTypes: collectValTypes(func.body) })
     }
-    // Per-caller arr-elem-schema observations. Recomputed each fixpoint iteration so
-    // newly-narrowed func.arrayElemSchema results propagate from `const rows = initRows()`
-    // observations (collectArrElemSchemas reads `f.arrayElemSchema` from `ctx.func.map`).
-    const buildCallerArrElems = () => {
-      const m = new Map()
-      m.set(null, ctx.scope.globalArrElems || new Map())
-      for (const func of ctx.func.list) {
-        if (!func.body || func.raw) continue
-        // Set ctx.func.locals so collectArrElemSchemas's `observe()` filter passes.
-        const savedLocals = ctx.func.locals
-        ctx.func.locals = callerCtx.get(func).callerLocals
-        m.set(func, collectArrElemSchemas(func.body))
-        ctx.func.locals = savedLocals
-      }
-      return m
-    }
-    // Infer arr-elem-schema of an arg expression. Returns sid or null.
-    // Sources: caller's body observations, caller's param arrSchema (transitive),
-    // user fn returning Array<sid>, alias to a known-array param.
-    const inferArgArrElemSchema = (expr, callerArrElems, callerArrParams) => {
-      if (typeof expr === 'string') {
-        if (callerArrElems?.has(expr)) {
-          const v = callerArrElems.get(expr)
-          if (v != null) return v
-        }
-        if (callerArrParams?.has(expr)) {
-          const v = callerArrParams.get(expr)
-          if (v != null) return v
-        }
-        return null
-      }
-      if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-        const f = ctx.func.map?.get(expr[1])
-        if (f?.arrayElemSchema != null) return f.arrayElemSchema
-      }
-      return null
-    }
-    // Two-pass fixpoint: first pass learns from literals + module vars; second pass
-    // lets callers forward propagated schemas (for chained helpers: f→addXY→{getX,getY}).
-    let callerArrElemsCtx = buildCallerArrElems()
-    const rebuildArrElems = () => { callerArrElemsCtx = buildCallerArrElems() }
-    // Parallel: per-caller arr-elem-VAL observations (NUMBER/STRING/etc.) for the
-    // paramArrElemValTypes fixpoint. Same structure as callerArrElemsCtx but tracks
-    // val-kinds. Recomputed after E2 so newly-narrowed func.arrayElemValType results
-    // propagate from `const a = init()` observations.
-    const buildCallerArrElemVals = () => {
+    // Per-caller arr-elem observations. Recomputed each fixpoint iteration so
+    // newly-narrowed func.arrayElemSchema/.arrayElemValType results propagate
+    // from `const rows = initRows()` observations. Two-pass fixpoint: first
+    // pass learns from literals + module vars; second pass forwards through
+    // chained helpers (f → addXY → {getX, getY}).
+    const buildCallerElems = (collectFn) => {
       const m = new Map()
       m.set(null, new Map())
       for (const func of ctx.func.list) {
         if (!func.body || func.raw) continue
+        // Set ctx.func.locals so collect*'s `observe()` filter passes.
         const savedLocals = ctx.func.locals
         ctx.func.locals = callerCtx.get(func).callerLocals
-        m.set(func, collectArrElemValTypes(func.body))
+        m.set(func, collectFn(func.body))
         ctx.func.locals = savedLocals
       }
       return m
     }
-    let callerArrElemValsCtx = buildCallerArrElemVals()
-    const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerArrElemVals() }
-    // Infer arr-elem-VAL of an arg expression. Sources mirror inferArgArrElemSchema.
-    const inferArgArrElemValType = (expr, callerArrElemVals, callerArrValParams) => {
-      if (typeof expr === 'string') {
-        if (callerArrElemVals?.has(expr)) {
-          const v = callerArrElemVals.get(expr)
-          if (v != null) return v
-        }
-        if (callerArrValParams?.has(expr)) {
-          const v = callerArrValParams.get(expr)
-          if (v != null) return v
-        }
-        return null
-      }
-      if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-        const f = ctx.func.map?.get(expr[1])
-        if (f?.arrayElemValType != null) return f.arrayElemValType
-      }
-      return null
-    }
+    let callerArrElemsCtx = buildCallerElems(collectArrElemSchemas)
+    const rebuildArrElems = () => { callerArrElemsCtx = buildCallerElems(collectArrElemSchemas) }
+    let callerArrElemValsCtx = buildCallerElems(collectArrElemValTypes)
+    const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerElems(collectArrElemValTypes) }
     const runFixpoint = () => {
       for (let s = 0; s < callSites.length; s++) {
         const { callee, argList, callerFunc } = callSites[s]
@@ -446,138 +158,58 @@ function narrowSignatures(programFacts) {
         const ctxEntry = callerCtx.get(callerFunc)
         if (!ctxEntry) continue
         const { callerLocals, callerValTypes } = ctxEntry
-        // Caller's schema bindings: params inferred so far (for transitive propagation).
-        let callerSchemas = null
-        if (callerFunc) {
-          const cs = paramSchemas.get(callerFunc.name)
-          if (cs) {
-            for (const [k, v] of cs) if (v != null) {
-              callerSchemas ||= new Map()
-              callerSchemas.set(callerFunc.sig.params[k].name, v)
-            }
-          }
-        }
-        // Caller's arr-elem-schema bindings on its own params (transitive propagation).
-        let callerArrParams = null
-        if (callerFunc) {
-          const ca = paramArrSchemas.get(callerFunc.name)
-          if (ca) {
-            for (const [k, v] of ca) if (v != null) {
-              callerArrParams ||= new Map()
-              callerArrParams.set(callerFunc.sig.params[k].name, v)
-            }
-          }
-        }
-        const callerArrElems = callerArrElemsCtx.get(callerFunc)
-        if (!paramValTypes.has(callee)) paramValTypes.set(callee, new Map())
-        if (!paramWasmTypes.has(callee)) paramWasmTypes.set(callee, new Map())
-        if (!paramSchemas.has(callee)) paramSchemas.set(callee, new Map())
-        const ptypes = paramValTypes.get(callee)
-        const wtypes = paramWasmTypes.get(callee)
-        const stypes = paramSchemas.get(callee)
+        const callerSchemas = callerParamFactMap(paramReps, callerFunc, 'schemaId')
         for (let k = 0; k < func.sig.params.length; k++) {
+          const r = ensureParamRep(paramReps, callee, k)
           if (k < argList.length) {
-            if (ptypes.get(k) !== null) {
-              const argType = inferArgType(argList[k], callerValTypes)
-              if (!argType) ptypes.set(k, null)
-              else {
-                const prev = ptypes.get(k)
-                if (prev === undefined) ptypes.set(k, argType)
-                else if (prev !== argType) ptypes.set(k, null)
-              }
-            }
-            if (wtypes.get(k) !== null) {
+            if (r.val !== null) mergeParamFact(r, 'val', inferArgType(argList[k], callerValTypes))
+            // Wasm-type lattice: exprType always returns 'i32'|'f64' — no null sentinel.
+            if (r.wasm !== null) {
               const wt = exprType(argList[k], callerLocals)
-              const prev = wtypes.get(k)
-              if (prev === undefined) wtypes.set(k, wt)
-              else if (prev !== wt) wtypes.set(k, null)
+              if (r.wasm === undefined) r.wasm = wt
+              else if (r.wasm !== wt) r.wasm = null
             }
-            if (stypes.get(k) !== null) {
-              const sId = inferArgSchema(argList[k], callerSchemas)
-              if (sId == null) stypes.set(k, null)
-              else {
-                const prev = stypes.get(k)
-                if (prev === undefined) stypes.set(k, sId)
-                else if (prev !== sId) stypes.set(k, null)
-              }
-            }
+            if (r.schemaId !== null) mergeParamFact(r, 'schemaId', inferArgSchema(argList[k], callerSchemas))
           } else {
-            // Missing arg — call pads with nullExpr (f64). Prevents i32 specialization.
-            ptypes.set(k, null)
-            wtypes.set(k, null)
-            stypes.set(k, null)
+            // Missing arg — call pads with nullExpr (f64). Prevents narrowing.
+            r.val = null; r.wasm = null; r.schemaId = null
           }
         }
       }
     }
-    // Dedicated paramArrSchemas fixpoint. Run after E2 (so f.valResult+arrayElemSchema
-    // are populated) so that aetypes[k] starts undefined and isn't sticky-null'd by
-    // the early passes when valResult was unset. Mirrors runFixpoint structure.
+    // Dedicated arrayElemSchema fixpoint. Run after E2 (so f.valResult+arrayElemSchema
+    // are populated) so the field starts undefined and isn't sticky-null'd by early
+    // passes when valResult was unset.
     const runArrFixpoint = () => {
       for (let s = 0; s < callSites.length; s++) {
         const { callee, argList, callerFunc } = callSites[s]
         const func = ctx.func.map.get(callee)
         if (!func || func.exported || valueUsed.has(callee)) continue
-        const ctxEntry = callerCtx.get(callerFunc)
-        if (!ctxEntry) continue
-        let callerArrParams = null
-        if (callerFunc) {
-          const ca = paramArrSchemas.get(callerFunc.name)
-          if (ca) {
-            for (const [k, v] of ca) if (v != null) {
-              callerArrParams ||= new Map()
-              callerArrParams.set(callerFunc.sig.params[k].name, v)
-            }
-          }
-        }
+        if (!callerCtx.get(callerFunc)) continue
+        const callerArrParams = callerParamFactMap(paramReps, callerFunc, 'arrayElemSchema')
         const callerArrElems = callerArrElemsCtx.get(callerFunc)
-        if (!paramArrSchemas.has(callee)) paramArrSchemas.set(callee, new Map())
-        const aetypes = paramArrSchemas.get(callee)
         for (let k = 0; k < func.sig.params.length; k++) {
-          if (k >= argList.length) { aetypes.set(k, null); continue }
-          if (aetypes.get(k) === null) continue
-          const aeId = inferArgArrElemSchema(argList[k], callerArrElems, callerArrParams)
-          if (aeId == null) aetypes.set(k, null)
-          else {
-            const prev = aetypes.get(k)
-            if (prev === undefined) aetypes.set(k, aeId)
-            else if (prev !== aeId) aetypes.set(k, null)
-          }
+          const r = ensureParamRep(paramReps, callee, k)
+          if (k >= argList.length) { r.arrayElemSchema = null; continue }
+          if (r.arrayElemSchema === null) continue
+          mergeParamFact(r, 'arrayElemSchema', inferArgArrElemSchema(argList[k], callerArrElems, callerArrParams))
         }
       }
     }
-    // Dedicated paramArrElemValTypes fixpoint. Same shape as runArrFixpoint but for
-    // VAL.* element kinds. Run after E2 so f.arrayElemValType is populated.
+    // Dedicated arrayElemValType fixpoint. Same shape but tracks VAL.* element kinds.
     const runArrValTypeFixpoint = () => {
       for (let s = 0; s < callSites.length; s++) {
         const { callee, argList, callerFunc } = callSites[s]
         const func = ctx.func.map.get(callee)
         if (!func || func.exported || valueUsed.has(callee)) continue
-        const ctxEntry = callerCtx.get(callerFunc)
-        if (!ctxEntry) continue
-        let callerArrValParams = null
-        if (callerFunc) {
-          const ca = paramArrElemValTypes.get(callerFunc.name)
-          if (ca) {
-            for (const [k, v] of ca) if (v != null) {
-              callerArrValParams ||= new Map()
-              callerArrValParams.set(callerFunc.sig.params[k].name, v)
-            }
-          }
-        }
+        if (!callerCtx.get(callerFunc)) continue
+        const callerArrValParams = callerParamFactMap(paramReps, callerFunc, 'arrayElemValType')
         const callerArrElemVals = callerArrElemValsCtx.get(callerFunc)
-        if (!paramArrElemValTypes.has(callee)) paramArrElemValTypes.set(callee, new Map())
-        const aevtypes = paramArrElemValTypes.get(callee)
         for (let k = 0; k < func.sig.params.length; k++) {
-          if (k >= argList.length) { aevtypes.set(k, null); continue }
-          if (aevtypes.get(k) === null) continue
-          const v = inferArgArrElemValType(argList[k], callerArrElemVals, callerArrValParams)
-          if (v == null) aevtypes.set(k, null)
-          else {
-            const prev = aevtypes.get(k)
-            if (prev === undefined) aevtypes.set(k, v)
-            else if (prev !== v) aevtypes.set(k, null)
-          }
+          const r = ensureParamRep(paramReps, callee, k)
+          if (k >= argList.length) { r.arrayElemValType = null; continue }
+          if (r.arrayElemValType === null) continue
+          mergeParamFact(r, 'arrayElemValType', inferArgArrElemValType(argList[k], callerArrElemVals, callerArrValParams))
         }
       }
     }
@@ -588,11 +220,11 @@ function narrowSignatures(programFacts) {
   // i32 call sites and no defaults/rest at that position, narrow sig.params[k].type.
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    const wtypes = paramWasmTypes.get(func.name)
-    if (!wtypes) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, wt] of wtypes) {
-      if (wt !== 'i32' || k === restIdx) continue
+    for (const [k, r] of reps) {
+      if (r.wasm !== 'i32' || k === restIdx) continue
       const pname = func.sig.params[k].name
       if (func.defaults?.[pname] != null) continue  // defaults need nullish-sentinel f64
       func.sig.params[k].type = 'i32'
@@ -611,18 +243,18 @@ function narrowSignatures(programFacts) {
   const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    const ptypes = paramValTypes.get(func.name)
-    if (!ptypes) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, vt] of ptypes) {
-      if (!PTR_ABI_KINDS.has(vt)) continue
+    for (const [k, r] of reps) {
+      if (!PTR_ABI_KINDS.has(r.val)) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
       const p = func.sig.params[k]
       if (p.type === 'i32') continue  // already narrowed by numeric pass
       if (func.defaults?.[p.name] != null) continue
       p.type = 'i32'
-      p.ptrKind = vt
+      p.ptrKind = r.val
     }
   }
 
@@ -750,7 +382,7 @@ function narrowSignatures(programFacts) {
       }
       if (!exprs.length) continue
       const localValTypes = isBlock ? collectValTypes(body) : new Map()
-      // Params of this function contribute no known VAL type yet (paramValTypes may help later).
+      // Params of this function contribute no known VAL type yet (paramReps may help later).
       const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
       if (!vt0) continue
       const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
@@ -760,14 +392,14 @@ function narrowSignatures(programFacts) {
 
   // Now that E2 set `valResult` on funcs, narrow per-func `arrayElemSchema` for
   // VAL.ARRAY-returning funcs (via push observations + call chains). Then re-run the
-  // D-pass paramArrSchemas / paramValTypes fixpoint so `const rows = initRows()` in
-  // main resolves to VAL.ARRAY (lets runKernel pick up paramValTypes[0]=ARRAY) and
-  // its arr-elem-schema (sets paramArrSchemas[runKernel][0]=sid).
+  // D-pass arrayElemSchema/val fixpoints so `const rows = initRows()` in main
+  // resolves to VAL.ARRAY (lets runKernel pick up r.val=ARRAY) and its arr-elem
+  // schema (sets paramReps[runKernel][0].arrayElemSchema=sid).
   // Cache invalidation: collectValTypes results are body-keyed, and entries cached
   // during the first D pass have stale (null) `valTypeOf(call)` results because
   // valResult was unset back then.
-  narrowReturnArrayElemSchemas(paramArrSchemas, valueUsed)
-  narrowReturnArrayElemValTypes(paramArrElemValTypes, valueUsed)
+  narrowReturnArrayElems('arrayElemSchema', collectArrElemSchemas, paramReps, valueUsed)
+  narrowReturnArrayElems('arrayElemValType', collectArrElemValTypes, paramReps, valueUsed)
   for (const func of ctx.func.list) {
     if (func.body && !func.raw) invalidateValTypesCache(func.body)
   }
@@ -778,13 +410,13 @@ function narrowSignatures(programFacts) {
   }
   rebuildArrElems()
   rebuildArrElemVals()
-  // Clear sticky null entries in paramValTypes/paramSchemas — the first 2 passes ran
-  // with valResult unset, so call args resolving via `f.valResult` returned null and
-  // got stuck. Re-running with refreshed callerValTypes lets these flow.
-  for (const m of paramValTypes.values()) for (const [k, v] of m) if (v == null) m.delete(k)
-  for (const m of paramSchemas.values()) for (const [k, v] of m) if (v == null) m.delete(k)
+  // Clear sticky-null on val/schemaId — first 2 passes ran with valResult unset, so
+  // call args resolving via `f.valResult` returned null and got stuck. Re-running
+  // with refreshed callerValTypes lets these flow.
+  clearStickyNull(paramReps, 'val')
+  clearStickyNull(paramReps, 'schemaId')
   runFixpoint()
-  // Now that paramValTypes is refreshed, dedicated arr-elem-schema fixpoint.
+  // Now that .val is refreshed, dedicated arr-elem-schema fixpoint.
   runArrFixpoint()
   runArrFixpoint()
   // Parallel arr-elem-val fixpoint (NUMBER/STRING/…). Twice for transitive closure
@@ -798,7 +430,7 @@ function narrowSignatures(programFacts) {
   // pointer (load .[], .length, .prop slot dispatch).
   //   - SET/MAP/BUFFER: aux always 0 — no per-callsite aux preservation needed.
   //   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
-  //     schema (literal `{a,b,c}`, paramSchemas-bound param, module-bound var, or call to
+  //     schema (literal `{a,b,c}`, schemaId-bound param, module-bound var, or call to
   //     another OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
   //     repByLocal.schemaId, restoring property-slot dispatch through the call boundary.
   // Safety: ARRAY forwards on realloc (no narrowing). STRING dual-encoded SSO/heap.
@@ -917,16 +549,7 @@ function narrowSignatures(programFacts) {
         if (isBlock) collectReturnExprs(func.body, exprs)
         else exprs.push(func.body)
         if (!exprs.length) continue
-        const ps = paramSchemas.get(func.name)
-        let paramSchemasMap = null
-        if (ps) {
-          for (const [k, sid] of ps) {
-            if (sid != null && k < func.sig.params.length) {
-              paramSchemasMap ||= new Map()
-              paramSchemasMap.set(func.sig.params[k].name, sid)
-            }
-          }
-        }
+        const paramSchemasMap = callerParamFactMap(paramReps, func, 'schemaId')
         const sid0 = schemaIdOfReturn(exprs[0], paramSchemasMap)
         if (sid0 == null) continue
         const allSame = exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)
@@ -961,7 +584,7 @@ function narrowSignatures(programFacts) {
   // for their own params and `arr[i]` reads emit a direct `f64.load` instead of
   // the runtime `__is_str_key + __typed_idx` dispatch — closes the largest
   // chunk of the JS→wasm gap on f64-heavy hot loops.
-  // (Helpers `inferArgTypedCtor`/`ctorFromAux` lifted to file scope so the
+  // (Helpers `inferArgTypedCtor`/`ctorFromElemAux` live in analyze.js so the
   //  bimorphic-typed specialization pass below can reuse them.)
   // Per-caller typed-elem map, recomputed now that E3 has tagged helper sigs.
   const callerTypedCtx = new Map()
@@ -979,35 +602,19 @@ function narrowSignatures(programFacts) {
       const func = ctx.func.map.get(callee)
       if (!func || func.exported || valueUsed.has(callee)) continue
       const callerTypedElems = callerTypedCtx.get(callerFunc)
-      let callerTypedParams = null
-      if (callerFunc) {
-        const tc = paramTypedCtors.get(callerFunc.name)
-        if (tc) {
-          for (const [k, c] of tc) if (c != null) {
-            callerTypedParams ||= new Map()
-            callerTypedParams.set(callerFunc.sig.params[k].name, c)
-          }
-        }
-      }
-      if (!paramTypedCtors.has(callee)) paramTypedCtors.set(callee, new Map())
-      const tctypes = paramTypedCtors.get(callee)
+      const callerTypedParams = callerParamFactMap(paramReps, callerFunc, 'typedCtor')
       for (let k = 0; k < func.sig.params.length; k++) {
-        if (k >= argList.length) { tctypes.set(k, null); continue }
-        if (tctypes.get(k) === null) continue
-        const c = inferArgTypedCtor(argList[k], callerTypedElems, callerTypedParams)
-        if (c == null) tctypes.set(k, null)
-        else {
-          const prev = tctypes.get(k)
-          if (prev === undefined) tctypes.set(k, c)
-          else if (prev !== c) tctypes.set(k, null)
-        }
+        const r = ensureParamRep(paramReps, callee, k)
+        if (k >= argList.length) { r.typedCtor = null; continue }
+        if (r.typedCtor === null) continue
+        mergeParamFact(r, 'typedCtor', inferArgTypedCtor(argList[k], callerTypedElems, callerTypedParams))
       }
     }
   }
   runTypedFixpoint()
   runTypedFixpoint()
 
-  // G: TYPED pointer-ABI narrowing — once paramTypedCtors agrees on a single
+  // G: TYPED pointer-ABI narrowing — once .typedCtor agrees on a single
   // ctor across all call sites, narrow the param from NaN-boxed f64 to raw
   // i32 offset (with ptrAux carrying the elem-type bits). Eliminates the
   // per-read `i32.wrap_i64 (i64.reinterpret_f64 (local.get $arr))` unbox dance
@@ -1017,10 +624,11 @@ function narrowSignatures(programFacts) {
   // exported, value-used, raw, defaults, rest position.
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    const tctors = paramTypedCtors.get(func.name)
-    if (!tctors) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, ctor] of tctors) {
+    for (const [k, r] of reps) {
+      const ctor = r.typedCtor
       if (ctor == null) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
@@ -1038,7 +646,7 @@ function narrowSignatures(programFacts) {
   // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
   // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
   // → both VAL.TYPED, different ctors). Without this, callerValTypes carries no entry
-  // for caller's params, so inferArgType returns null and paramValTypes[callee][k] is
+  // for caller's params, so inferArgType returns null and paramReps[callee][k].val is
   // sticky null. With ptrKind enriching callerValTypes, sum's arr gets val=TYPED in
   // its rep, letting array.js skip __is_str_key + __str_idx dispatch on `arr[i]`.
   for (const func of ctx.func.list) {
@@ -1051,7 +659,7 @@ function narrowSignatures(programFacts) {
       entry.callerValTypes.set(p.name, p.ptrKind)
     }
   }
-  for (const m of paramValTypes.values()) for (const [k, v] of m) if (v == null) m.delete(k)
+  clearStickyNull(paramReps, 'val')
   runFixpoint()
 }
 
@@ -1059,7 +667,7 @@ function narrowSignatures(programFacts) {
  * Phase: bimorphic typed-array param specialization.
  *
  * For each non-exported user function with a typed-array param that F/G-phase
- * left bimorphic (paramTypedCtors[k] === null because two or more call sites
+ * left bimorphic (paramReps[name][k].typedCtor === null because two or more call sites
  * disagreed on the elem-ctor — e.g. `sum(f64)` and `sum(i32)`), clone the
  * function once per concrete ctor seen at the call sites, narrow each clone's
  * sig.params[k] to a monomorphic typed pointer ABI (type='i32', ptrKind=TYPED,
@@ -1079,7 +687,7 @@ function narrowSignatures(programFacts) {
  * blow-up (≥5 distinct ctors at one site → no specialization).
  */
 function specializeBimorphicTyped(programFacts) {
-  const { callSites, valueUsed, paramTypedCtors, paramValTypes, paramSchemas, paramArrSchemas } = programFacts
+  const { callSites, valueUsed, paramReps } = programFacts
   const MAX_CLONES_PER_FN = 4
 
   // Per-callee static-call-site index. Built once; cheap.
@@ -1100,18 +708,15 @@ function specializeBimorphicTyped(programFacts) {
   // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
   const callerTypedParamsCtx = new Map()
   for (const func of ctx.func.list) {
-    let m = null
-    const tc = paramTypedCtors.get(func.name)
-    if (tc) for (const [k, c] of tc) {
-      if (c != null) { m ||= new Map(); m.set(func.sig.params[k].name, c) }
-    }
+    const m = callerParamFactMap(paramReps, func, 'typedCtor') || null
+    let acc = m
     if (func.sig?.params) for (const p of func.sig.params) {
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
-        m ||= new Map()
-        if (!m.has(p.name)) m.set(p.name, ctorFromAux(p.ptrAux))
+        acc ||= new Map()
+        if (!acc.has(p.name)) acc.set(p.name, ctorFromElemAux(p.ptrAux))
       }
     }
-    if (m) callerTypedParamsCtx.set(func, m)
+    if (acc) callerTypedParamsCtx.set(func, acc)
   }
 
   // Snapshot ctx.func.list — we'll be appending clones during the loop.
@@ -1120,15 +725,15 @@ function specializeBimorphicTyped(programFacts) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
     if (!func.body) continue
     if (func.rest) continue
-    const tctors = paramTypedCtors.get(func.name)
-    if (!tctors) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
     const sites = sitesByCallee.get(func.name)
     if (!sites || sites.length < 2) continue
 
     // Find sticky-bimorphic typed-param positions left by F-phase.
     const bimorphic = []
     for (let k = 0; k < func.sig.params.length; k++) {
-      if (tctors.get(k) !== null) continue
+      if (reps.get(k)?.typedCtor !== null) continue
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue
@@ -1191,20 +796,19 @@ function specializeBimorphicTyped(programFacts) {
       ctx.func.map.set(cloneName, clone)
       ctx.func.names.add(cloneName)
 
-      // Mirror programFacts under the clone's name with mono ctors at bimorphic
-      // positions. emitFunc's preseed reads paramTypedCtors → seeds typedElem
-      // map → `arr[i]` lowers to direct typed load.
-      const cloneTctors = new Map(tctors)
-      for (let i = 0; i < bimorphic.length; i++) cloneTctors.set(bimorphic[i], combo[i])
-      paramTypedCtors.set(cloneName, cloneTctors)
-
-      const origPvt = paramValTypes.get(func.name)
-      const clonePvt = origPvt ? new Map(origPvt) : new Map()
-      for (const k of bimorphic) clonePvt.set(k, VAL.TYPED)
-      paramValTypes.set(cloneName, clonePvt)
-
-      if (paramSchemas.has(func.name)) paramSchemas.set(cloneName, new Map(paramSchemas.get(func.name)))
-      if (paramArrSchemas.has(func.name)) paramArrSchemas.set(cloneName, new Map(paramArrSchemas.get(func.name)))
+      // Mirror per-param reps under the clone's name with mono ctors at bimorphic
+      // positions. emitFunc's preseed reads typedCtor → seeds typedElem map →
+      // `arr[i]` lowers to direct typed load.
+      const cloneReps = new Map()
+      for (const [k, r] of reps) cloneReps.set(k, { ...r })
+      for (let i = 0; i < bimorphic.length; i++) {
+        const k = bimorphic[i]
+        const r = cloneReps.get(k) || {}
+        r.typedCtor = combo[i]
+        r.val = VAL.TYPED
+        cloneReps.set(k, r)
+      }
+      paramReps.set(cloneName, cloneReps)
 
       cloneByKey.set(key, clone)
     }
@@ -1225,7 +829,7 @@ function specializeBimorphicTyped(programFacts) {
  * string `[]` is element access (sound for that base type), not a true
  * dyn-key lookup that needs the hash-table shadow on object literals.
  *
- * After narrowSignatures populates paramValTypes (call-site fixpoint), we can
+ * After narrowSignatures populates paramReps (call-site fixpoint), we can
  * type each `obj` in `obj[idx]` and skip the ones that are provably non-object.
  * If no genuine dyn-key access remains program-wide, drop anyDynKey to false
  * — object literals then skip the __dyn_set shadow loop (large code + perf win,
@@ -1240,18 +844,18 @@ const TYPED_ARRAY_CTOR = /^(Float|Int|Uint|BigInt|BigUint)(8|16|32|64)(Clamped)?
 
 function refineDynKeys(programFacts) {
   if (!ctx.types.anyDynKey) return
-  const { paramValTypes, valueUsed } = programFacts
+  const { paramReps, valueUsed } = programFacts
   const isLitStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
 
-  // Per-function type map: param vtypes from paramValTypes, plus locals
+  // Per-function type map: param vtypes from paramReps, plus locals
   // we can prove are typed arrays from `let v = new TypedArray(...)`. After
   // prepare, that node is `['()', 'new.Float64Array', ...args]`.
   const buildTypeMap = (funcName, body, params) => {
     const map = new Map()
     if (params) {
-      const pvt = paramValTypes.get(funcName)
-      if (pvt) for (let i = 0; i < params.length; i++) {
-        const t = pvt.get(i)
+      const reps = paramReps.get(funcName)
+      if (reps) for (let i = 0; i < params.length; i++) {
+        const t = reps.get(i)?.val
         if (t != null) map.set(params[i].name, t)
       }
     }
@@ -1296,7 +900,7 @@ function refineDynKeys(programFacts) {
   // Live: anything reachable from exports/first-class value uses. Skipping
   // dead helpers (unused benchlib imports) keeps their generic params from
   // pretending to be dyn-key access.
-  const isLive = f => f.exported || paramValTypes.has(f.name) || (valueUsed && valueUsed.has(f.name))
+  const isLive = f => f.exported || paramReps.has(f.name) || (valueUsed && valueUsed.has(f.name))
 
   const topMap = buildTypeMap(null, null, null)
   for (const f of ctx.func.list) {
@@ -1313,165 +917,16 @@ function refineDynKeys(programFacts) {
 }
 
 /**
- * Phase: program-fact collection.
- *
- * Single whole-program walk over the module AST + each user function body
- * + all moduleInits. Collects:
- *   dynVars/anyDyn   — vars accessed via runtime key (drives strict mode +
- *                      __dyn_get fallback gating)
- *   propMap          — property assignments per receiver (auto-box schemas)
- *   valueUsed        — ctx.func.names passed as first-class values (excluded
- *                      from internal narrowing — they need uniform $ftN ABI)
- *   maxDef/maxCall   — closure ABI width inputs
- *   hasRest/hasSpread
- *   callSites        — `{ callee, argList, callerFunc }` for static-name
- *                      calls (drives the type/schema fixpoint without
- *                      re-walking the AST)
- *   paramValTypes/paramWasmTypes/paramSchemas — empty Maps populated later
- *                      by narrowSignatures and read by emitFunc.
- *
- * Three visit modes:
- *   full=true  (ast + user funcs)  → all facts including call-site collection
- *   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/
- *                                     callSites: moduleInits don't own user
- *                                     props/funcs)
- *   inArrow=true                    → flips off call-site collection so
- *                                     closure-internal calls don't poison
- *                                     caller-context type inference.
- */
-function collectProgramFacts(ast) {
-  const paramValTypes = new Map() // funcName → Map<paramIdx, valType | null>
-  const paramWasmTypes = new Map() // funcName → Map<paramIdx, 'i32' | 'f64' | null>
-  const paramSchemas = new Map()   // funcName → Map<paramIdx, schemaId | null>
-  const paramArrSchemas = new Map()// funcName → Map<paramIdx, schemaId | null> (Array<schema>)
-  const paramArrElemValTypes = new Map() // funcName → Map<paramIdx, VAL.* | null> (Array<vt>)
-  const paramTypedCtors = new Map()// funcName → Map<paramIdx, ctor string | null>
-  const valueUsed = new Set()
-  const dynVars = new Set()
-  let anyDyn = false
-  const propMap = new Map()
-  const callSites = []  // { callee, argList, callerFunc /* func obj or null */, node /* the ('()' callee args) AST node, mutable for specialization */ }
-  const doSchema = ast && ctx.schema.register
-  const doArity = !!ctx.closure.make
-  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
-  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
-  // Slot-type collection: monomorphic property val types per schema, populated from
-  // every static `{a: e1, b: e2, …}` literal in the program. Read by ctx.schema.slotVT
-  // → valTypeOf on `.prop` AST nodes so downstream `+`, `===`, method dispatch can
-  // skip the "is it a string?" runtime check on numeric props of known shapes.
-  // Merge rule: first observation wins; second distinct kind → null (ambiguous).
-  const slotTypes = ctx.schema.slotTypes
-  const observeSlot = (sid, idx, vt) => {
-    if (!vt) return
-    let arr = slotTypes.get(sid)
-    if (!arr) { arr = []; slotTypes.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === null) return
-    if (arr[idx] === undefined) arr[idx] = vt
-    else if (arr[idx] !== vt) arr[idx] = null
-  }
-  const walkFacts = (node, full, inArrow, callerFunc) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
-    // Float64Array uses typed-array load, not __dyn_get — only the actual
-    // dynamic-dispatch fallback should error in strict mode).
-    if (op === '[]') {
-      const [obj, idx] = args
-      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
-    } else if (op === 'for-in') {
-      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
-      anyDyn = true
-      if (typeof args[1] === 'string') dynVars.add(args[1])
-    }
-    // Object literal: register schema + observe slot val types. Static-key only;
-    // dynamic-key/spread shapes route through __dyn_set and have no fixed slot mapping.
-    if (op === '{}' && doSchema) {
-      const parsed = staticObjectProps(args)
-      if (parsed) {
-        const sid = ctx.schema.register(parsed.names)
-        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, valTypeOf(parsed.values[i]))
-      }
-    }
-    // closure ABI arity
-    if (doArity) {
-      if (op === '=>') {
-        let fixedN = 0
-        for (const r of extractParams(args[0])) {
-          if (classifyParam(r).kind === 'rest') hasRest = true
-          else fixedN++
-        }
-        if (fixedN > maxDef) maxDef = fixedN
-      } else if (op === '()') {
-        const a = args[1]
-        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
-        if (callArgs.length > maxCall) maxCall = callArgs.length
-      }
-    }
-    // Crossing into a closure body: from now on, no call-site collection (matches the
-    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
-    if (op === '=>') {
-      for (const a of args) walkFacts(a, full, true, callerFunc)
-      return
-    }
-    if (full) {
-      // property-assignment scan for auto-box
-      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
-        const [, obj, prop] = args[0]
-        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
-          if (!propMap.has(obj)) propMap.set(obj, new Set())
-          propMap.get(obj).add(prop)
-        }
-      }
-      // first-class function-value + static-call-site scan
-      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
-        if (!inArrow) {
-          // Record call site for the type/schema fixpoint. Filtering by
-          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
-          // `node` is the call AST node itself; specializeBimorphicTyped mutates
-          // node[1] (the callee name) to point at a per-ctor clone.
-          const a = args[1]
-          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-          callSites.push({ callee: args[0], argList, callerFunc, node })
-        }
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i]
-          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-          else walkFacts(a, true, inArrow, callerFunc)
-        }
-        return
-      }
-      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
-      for (const a of args) {
-        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
-        else walkFacts(a, true, inArrow, callerFunc)
-      }
-    } else {
-      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
-    }
-  }
-  walkFacts(ast, true, false, null)
-  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
-  return {
-    dynVars, anyDyn, propMap, valueUsed, callSites,
-    maxDef, maxCall, hasRest, hasSpread,
-    paramValTypes, paramWasmTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors,
-  }
-}
-
-/**
  * Phase: emit one user function to WAT IR.
  *
- * Reads the (already-narrowed) `func.sig` and `programFacts.paramValTypes/paramSchemas`
+ * Reads the (already-narrowed) `func.sig` and `programFacts.paramReps[name]`
  * to seed per-param val reps / schema bindings; emits body via emit / emitBody.
  *
  * Mutates ctx.func.* per-function state (locals, boxed, repByLocal, …) and
  * ctx.schema.vars (restored on exit so bindings don't leak across functions).
  */
 function emitFunc(func, programFacts) {
-  const { paramValTypes, paramSchemas, paramArrSchemas, paramArrElemValTypes, paramTypedCtors } = programFacts
+  const { paramReps } = programFacts
 
   // Raw WAT functions (e.g., _alloc, _reset from memory module)
   if (func.raw) return parseWat(func.raw)
@@ -1499,50 +954,19 @@ function emitFunc(func, programFacts) {
   // to b0 (skips __to_num) and exprType's `.length` rule keep n as i32 (skips per-iter
   // f64.convert_i32_s + i32.trunc_sat_f64_s on the loop counter). Without this seed,
   // params don't gain VAL.TYPED until after analyzeLocals freezes counter widths.
-  // (See narrowSignatures F-phase for paramTypedCtors source.)
-  const _preTctors = paramTypedCtors.get(name)
-  if (_preTctors) {
-    for (const [k, ctor] of _preTctors) {
-      if (ctor && k < sig.params.length) {
-        const pname = sig.params[k].name
+  const _reps = paramReps.get(name)
+  if (_reps) {
+    for (const [k, r] of _reps) {
+      if (k >= sig.params.length) continue
+      const pname = sig.params[k].name
+      if (r.typedCtor) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
-        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, ctor)
+        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         updateRep(pname, { val: VAL.TYPED })
       }
-    }
-  }
-  const _prePtypes = paramValTypes.get(name)
-  if (_prePtypes) {
-    for (const [k, vt] of _prePtypes) {
-      if (vt && k < sig.params.length) {
-        const pname = sig.params[k].name
-        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: vt })
-      }
-    }
-  }
-  // Pre-seed paramArrSchemas so analyzeValTypes's `arrElemSchemaOf(name)` finds
-  // rep.arrayElemSchema for params bound to Array<sid> across all call sites.
-  // Unlocks `const p = rows[i]` → bind p's schemaId → `p.x .y .z` → slot reads.
-  const _preAetypes = paramArrSchemas.get(name)
-  if (_preAetypes) {
-    for (const [k, sid] of _preAetypes) {
-      if (sid != null && k < sig.params.length) {
-        const pname = sig.params[k].name
-        updateRep(pname, { arrayElemSchema: sid })
-      }
-    }
-  }
-  // Pre-seed paramArrElemValTypes so valTypeOf's `arr[i]` rule finds
-  // rep.arrayElemValType for params bound to Array<NUMBER/STRING/…>. Unlocks
-  // `const x = a[i]` → x.val=NUMBER → `x*k` skips __to_num. Also unblocks
-  // .map's argRep hint for inlined callback params.
-  const _preAevtypes = paramArrElemValTypes.get(name)
-  if (_preAevtypes) {
-    for (const [k, vt] of _preAevtypes) {
-      if (vt != null && k < sig.params.length) {
-        const pname = sig.params[k].name
-        updateRep(pname, { arrayElemValType: vt })
-      }
+      if (r.val && !ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
+      if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
     }
   }
   // Drop any earlier-cached analyzeLocals for this body — narrowSignatures called
@@ -1552,6 +976,7 @@ function emitFunc(func, programFacts) {
   ctx.func.locals = block ? analyzeLocals(body) : new Map()
   if (block) {
     analyzeValTypes(body)
+    analyzeIntCertain(body)
     analyzeBoxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     const unbox = analyzePtrUnboxable(body, ctx.func.locals, ctx.func.boxed)
@@ -1577,45 +1002,23 @@ function emitFunc(func, programFacts) {
     if (p.ptrAux != null) fields.ptrAux = p.ptrAux
     updateRep(p.name, fields)
   }
-  // D: Apply call-site param types (only if body analysis didn't already set them)
-  const ptypes = paramValTypes.get(name)
-  if (ptypes) {
-    for (const [k, vt] of ptypes) {
-      if (vt && k < sig.params.length) {
-        const pname = sig.params[k].name
-        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: vt })
-      }
-    }
-  }
-  // D: Apply call-site typed-array element ctors so `arr[i]` reads emit the
-  // direct f64.load fast path inside the body (resolveElem(arr) hits a known
-  // ctor instead of falling through to the runtime __typed_idx dispatch).
-  // Also seeds val=TYPED on the param's rep if call-site valType propagation
-  // didn't already pick it up — having the ctor implies TYPED (the array.js
-  // indexed-access fast path keys off `lookupValType(arr) === 'typed'`).
-  const tctors = paramTypedCtors.get(name)
-  if (tctors) {
-    for (const [k, ctor] of tctors) {
-      if (ctor && k < sig.params.length) {
-        const pname = sig.params[k].name
+  // D: Apply call-site param facts (only if body analysis didn't already set them).
+  // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
+  // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
+  const schemaVarsPrev = new Map(ctx.schema.vars)
+  if (_reps) {
+    for (const [k, r] of _reps) {
+      if (k >= sig.params.length) continue
+      const pname = sig.params[k].name
+      if (r.val && !ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.typedCtor) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
-        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, ctor)
+        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
       }
-    }
-  }
-  // D: Apply call-site schema bindings for non-exported params. Saved schema.vars
-  // are restored after this function's emit so bindings don't leak across functions
-  // that reuse param names (e.g. `o`). Requires all call sites to agree on schemaId.
-  const stypes = paramSchemas.get(name)
-  const schemaVarsPrev = new Map(ctx.schema.vars)
-  if (stypes && !exported) {
-    for (const [k, sid] of stypes) {
-      if (sid == null || k >= sig.params.length) continue
-      const pname = sig.params[k].name
-      if (!ctx.schema.vars.has(pname)) {
-        ctx.schema.vars.set(pname, sid)
-        updateRep(pname, { schemaId: sid })
+      if (r.schemaId != null && !exported && !ctx.schema.vars.has(pname)) {
+        ctx.schema.vars.set(pname, r.schemaId)
+        updateRep(pname, { schemaId: r.schemaId })
       }
     }
   }

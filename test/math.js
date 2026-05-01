@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { evaluate, run } from './util.js'
+import { compile } from '../index.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
 
@@ -70,6 +71,24 @@ test('Math.round', async () => {
   is(await evaluate('Math.round(3.4)'), 3)
   is(await evaluate('Math.round(-3.5)'), -4)
   is(await evaluate('Math.round(3)'), 3)
+})
+
+test('Math.floor/ceil/trunc/round elide on intCertain operand', async () => {
+  // Each function is a no-op on integer values. When the operand is provably
+  // integer (intCertain lattice), the wasm op should not be emitted.
+  const wat = await compile(
+    'export let f = (x) => { let i = x | 0; return Math.floor(i) + Math.ceil(i) + Math.trunc(i) + Math.round(i) }',
+    { wat: true }
+  )
+  is(/f64\.floor/.test(wat), false)
+  is(/f64\.ceil/.test(wat), false)
+  is(/f64\.trunc(?!_)/.test(wat), false)
+  is(/f64\.nearest/.test(wat), false)
+  // Sanity: rule does NOT fire on a non-intCertain (param-only) operand.
+  const wat2 = await compile('export let f = (x) => Math.floor(x)', { wat: true })
+  is(/f64\.floor/.test(wat2), true)
+  // Correctness: result equals the integer.
+  is(await evaluate('(() => { let i = 7; return Math.floor(i) })()'), 7)
 })
 
 test('Math.min', async () => {

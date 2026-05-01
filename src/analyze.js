@@ -40,25 +40,84 @@ export const VAL = {
 }
 
 /**
- * ValueRep — unified per-local representation record. (S2 unification target.)
+ * ValueRep — unified per-local + per-param representation record. (S2.)
  *
- * Currently populated fields:
- *   val:      VAL.* — value-type for method dispatch, schema resolution, length lookup.
- *   ptrKind:  VAL.* — when this local stores an unboxed i32 pointer offset.
- *   ptrAux:   i32   — kind-dependent aux (TYPED elem code, etc.).
- *   schemaId: i32   — schema binding for boxed/known-shape OBJECTs. Mirrors
- *                     `ctx.schema.vars[name]` for function-local names; readers
- *                     prefer rep.schemaId then fall back to ctx.schema.vars
- *                     (which still holds prepare-time + module-level entries).
+ * One shape, two storages:
+ *   - per-local (current func):  ctx.func.repByLocal: Map<name, ValueRep>
+ *   - per-param (cross-call):    programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>
  *
- * Future fields (per todo.md; absent today, will be lifted from existing
- * scattered maps as later stages collapse them):
- *   wasm:        'i32' | 'f64'  (today: ctx.func.locals)
- *   nullable, stableOffset                              (not yet tracked)
+ * Lattice per field: undefined = unobserved, null = sticky-poison
+ * (cross-site disagreement), value = consensus. Local reps don't use the null
+ * sentinel (locals are intra-function — single point of truth). Param reps do
+ * (cross-call fixpoint convergence).
  *
- * Stored at ctx.func.repByLocal: Map<name, ValueRep> — null when no locals
- * have a rep (small-prog optimization, no allocation when nothing to record).
+ * Fields:
+ *   val:              VAL.* — value-type for method dispatch / schema / length
+ *   wasm:             'i32'|'f64' — narrowed wasm type at param boundary (param-only today)
+ *   ptrKind:          VAL.* — local stores unboxed i32 pointer offset (local-only today)
+ *   ptrAux:           i32   — kind-dependent aux (TYPED elem code, schemaId, …)
+ *   schemaId:         i32   — schema binding for known-shape OBJECTs
+ *   arrayElemSchema:  i32   — Array<schemaId> element shape
+ *   arrayElemValType: VAL.* — Array<VAL.*> element val-kind
+ *   typedCtor:        str   — TypedArray ctor name (`Float64Array`, …)
+ *   intCertain:       bool  — proven integer-valued (every defining RHS is integer-shaped).
+ *                             Pure analysis fact; codegen extensions may use it to choose
+ *                             i32-shaped emission inside hot regions where range fits.
+ *                             Boundary ABI is NOT narrowed by this fact alone — narrowing
+ *                             at param/result level remains a separate, opt-in decision.
+ *
+ * Future (S2 stage 4 follow-ups): boxed, intLikely, nullable.
  */
+
+// === ParamReps lattice helpers (cross-call fixpoint) ===
+// programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>. Per-field lattice:
+// undefined unobserved, null sticky-poison (cross-site disagreement), value = consensus.
+
+/** Per-call-site fact merge into a param's ValueRep field, with sticky-null poison
+ *  on disagreement. undefined→observed (set); same value→stay; conflict→null (sticky).
+ *  null is "no consensus" — readers treat it as missing. */
+export const mergeParamFact = (rep, key, observed) => {
+  if (rep[key] === null) return                        // sticky poison
+  if (observed == null) { rep[key] = null; return }    // unknown → poison
+  if (rep[key] === undefined) rep[key] = observed
+  else if (rep[key] !== observed) rep[key] = null
+}
+
+/** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */
+export const ensureParamRep = (paramReps, funcName, k) => {
+  let m = paramReps.get(funcName)
+  if (!m) { m = new Map(); paramReps.set(funcName, m) }
+  let r = m.get(k)
+  if (!r) { r = {}; m.set(k, r) }
+  return r
+}
+
+/** Build `paramName → fact` lookup for a caller's already-narrowed param facts.
+ *  Used to flow caller's param info into its callees during the cross-call
+ *  fixpoint (transitive propagation). Returns null if caller has no facts. */
+export const callerParamFactMap = (paramReps, callerFunc, key) => {
+  if (!callerFunc) return null
+  const m = paramReps.get(callerFunc.name)
+  if (!m) return null
+  let out = null
+  for (const [k, r] of m) {
+    const v = r[key]
+    if (v != null && k < callerFunc.sig.params.length) {
+      out ||= new Map()
+      out.set(callerFunc.sig.params[k].name, v)
+    }
+  }
+  return out
+}
+
+/** Reset sticky-null on a single field across all params program-wide.
+ *  Used between fixpoint phases when newly-narrowed facts unblock previously-
+ *  poisoned observations (e.g. valResult set after first pass). */
+export const clearStickyNull = (paramReps, key) => {
+  for (const m of paramReps.values()) for (const r of m.values()) {
+    if (r[key] === null) r[key] = undefined
+  }
+}
 
 /** Get the rep for a local name, or undefined if not tracked. */
 export const repOf = name => ctx.func.repByLocal?.get(name)
@@ -208,25 +267,33 @@ export function valTypeOf(expr) {
   return null
 }
 
-/** Schema-id for an object literal expression. Returns null on dynamic keys, spread,
- *  shorthand. Mirrors `staticObjectProps` in compile.js (kept here to avoid the import). */
-export function objLiteralSchemaId(expr) {
-  if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
-  const args = expr.slice(1)
+/** Decode a `['{}', ...]` AST's children into `{names, values}`, or null if any
+ *  property is non-static-key (computed key, spread, shorthand). Matches the
+ *  emitter's flatten rule for comma-grouped props. Used by collectProgramFacts,
+ *  narrowSignatures, and objLiteralSchemaId; the emitter (module/object.js)
+ *  does its own decoding because it must handle the spread/computed-key paths. */
+export function staticObjectProps(args) {
   const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
-  const names = []
+  const names = [], values = []
   for (const p of raw) {
     if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
-    names.push(p[1])
+    names.push(p[1]); values.push(p[2])
   }
-  return names.length ? ctx.schema.register(names) : null
+  return names.length ? { names, values } : null
+}
+
+/** Schema-id for an object literal expression. Returns null on dynamic keys, spread, shorthand. */
+function objLiteralSchemaId(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
+  const parsed = staticObjectProps(expr.slice(1))
+  return parsed ? ctx.schema.register(parsed.names) : null
 }
 
 /** Resolve schemaId of an expression, given a per-function schemaId map for locals.
  *  Used for both intra-function arr elem-schema observation and func.arrayElemSchema
  *  return inference. Recognizes: object literals, var names with bound schemaId,
  *  user fn calls with narrowed result schema, ?: / && / || when both branches agree. */
-export function exprSchemaId(expr, localSchemaMap) {
+function exprSchemaId(expr, localSchemaMap) {
   if (typeof expr === 'string') {
     if (localSchemaMap?.has(expr)) return localSchemaMap.get(expr)
     return ctx.schema?.idOf?.(expr) ?? null
@@ -274,7 +341,7 @@ export function collectArrElemValTypes(body) {
     else if (out.get(arr) !== vt) out.set(arr, null)
   }
   // Resolve a name's array-elem-val, preferring rep.arrayElemValType (set from
-  // paramArrElemValTypes at emit start) over local body observations.
+  // paramReps[k].arrayElemValType at emit start) over local body observations.
   const elemValOf = (name) => {
     if (typeof name !== 'string') return null
     const repVt = ctx.func.repByLocal?.get(name)?.arrayElemValType
@@ -286,7 +353,7 @@ export function collectArrElemValTypes(body) {
     // Returns the val type of an element expression for `[lit,lit,…]` / `arr.push(arg)`.
     if (typeof expr === 'string') {
       // Ignore param names for now — they have no val rep at collect time. The
-      // walk here is body-local; param-bound elem-vals come via paramArrElemValTypes.
+      // walk here is body-local; param-bound elem-vals come via paramReps[k].arrayElemValType.
       const repVt = ctx.func.repByLocal?.get(expr)?.val
       if (repVt) return repVt
       return ctx.scope.globalValTypes?.get(expr) || null
@@ -527,6 +594,91 @@ export function ctorFromElemAux(aux) {
   return isView ? `new.${name}.view` : `new.${name}`
 }
 
+// === Cross-call argument inference helpers (used by narrowSignatures fixpoint) ===
+// Each `inferArg*(expr, ...callerCtx)` resolves an argument expression to a single
+// fact (val/schemaId/elem*/typedCtor) using caller-local observations and program
+// facts, returning null when the fact can't be determined at this call site.
+
+/** Infer arg val type using caller's body-local valTypes and module globals. */
+export function inferArgType(expr, callerValTypes) {
+  if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+  return valTypeOf(expr)
+}
+
+/** Infer arg schemaId. Sources: caller's per-param schemaId map, module-level
+ *  ctx.schema.vars binding, or a static-key object literal. */
+export function inferArgSchema(expr, callerSchemas) {
+  if (typeof expr === 'string') {
+    if (callerSchemas?.has(expr)) return callerSchemas.get(expr)
+    const id = ctx.schema.vars.get(expr)
+    return id != null ? id : null
+  }
+  if (Array.isArray(expr) && expr[0] === '{}') {
+    const parsed = staticObjectProps(expr.slice(1))
+    return parsed ? ctx.schema.register(parsed.names) : null
+  }
+  return null
+}
+
+/** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
+ *  per-param arr-elem (transitive), or a call to an arr-narrowed user fn. */
+export function inferArgArrElemSchema(expr, callerArrElems, callerArrParams) {
+  if (typeof expr === 'string') {
+    if (callerArrElems?.has(expr)) {
+      const v = callerArrElems.get(expr)
+      if (v != null) return v
+    }
+    if (callerArrParams?.has(expr)) {
+      const v = callerArrParams.get(expr)
+      if (v != null) return v
+    }
+    return null
+  }
+  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (f?.arrayElemSchema != null) return f.arrayElemSchema
+  }
+  return null
+}
+
+/** Infer arg arr-elem-VAL. Mirrors inferArgArrElemSchema but tracks VAL.* element kind. */
+export function inferArgArrElemValType(expr, callerArrElemVals, callerArrValParams) {
+  if (typeof expr === 'string') {
+    if (callerArrElemVals?.has(expr)) {
+      const v = callerArrElemVals.get(expr)
+      if (v != null) return v
+    }
+    if (callerArrValParams?.has(expr)) {
+      const v = callerArrValParams.get(expr)
+      if (v != null) return v
+    }
+    return null
+  }
+  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (f?.arrayElemValType != null) return f.arrayElemValType
+  }
+  return null
+}
+
+/** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
+ *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
+ *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
+export function inferArgTypedCtor(expr, callerTypedElems, callerTypedParams) {
+  if (typeof expr === 'string') {
+    if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
+    if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
+    return null
+  }
+  const ctor = typedElemCtor(expr)
+  if (ctor) return ctor
+  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+    const f = ctx.func.map?.get(expr[1])
+    if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
+  }
+  return null
+}
+
 // Per-body memoization: analyzeLocals and collectValTypes are pure functions of
 // `body`. compile.js calls each ~2-3× per function (scan-fixpoint, narrowing,
 // final lowering); cache the result keyed on body identity and clone-on-read so
@@ -546,7 +698,7 @@ export function invalidateLocalsCache(body) {
 
 /** Drop a cached collectValTypes entry. Used after E2-phase valResult narrowing so
  *  the next collectValTypes call re-walks with up-to-date `f.valResult` lookups —
- *  required for the D-pass paramValTypes/paramArrSchemas re-fixpoint to see
+ *  required for the D-pass paramReps val/arrayElemSchema re-fixpoint to see
  *  `const rows = initRows()` as VAL.ARRAY (initRows.valResult set by E2). */
 export function invalidateValTypesCache(body) {
   if (body && typeof body === 'object') _valTypesCache.delete(body)
@@ -645,7 +797,7 @@ export function analyzeValTypes(body) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
   }
   // Resolve a name's array-elem-schema, preferring rep.arrayElemSchema (set from
-  // paramArrSchemas at emit start) over local body observations.
+  // paramReps[k].arrayElemSchema at emit start) over local body observations.
   const arrElemSchemaOf = (name) => {
     if (typeof name !== 'string') return null
     const repSid = ctx.func.repByLocal?.get(name)?.arrayElemSchema
@@ -707,7 +859,7 @@ export function analyzeValTypes(body) {
           if (f?.sig?.ptrAux != null) updateRep(a[1], { schemaId: f.sig.ptrAux })
         }
         // `const p = arr[i]` — when arr's element schema is known (from .push observations
-        // or from paramArrSchemas binding), p inherits the schema. Unlocks slotVT-driven
+        // or from paramReps arrayElemSchema binding), p inherits the schema. Unlocks slotVT-driven
         // numeric typing on `.prop` reads + slot-direct loads.
         if (Array.isArray(a[2]) && a[2][0] === '[]' && typeof a[2][1] === 'string') {
           const elemSid = arrElemSchemaOf(a[2][1])
@@ -749,6 +901,135 @@ export function analyzeValTypes(body) {
       ctx.schema.vars.set(name, sid)
       updateRep(name, { schemaId: sid })
     }
+  }
+}
+
+const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
+const INT_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!=', '===', '!==', '!'])
+const INT_CLOSED_OPS = new Set(['+', '-', '*', '%'])
+const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
+
+/**
+ * Forward-propagate `intCertain` across local bindings (S2 Stage 4a — pure analysis).
+ *
+ * A binding is `intCertain` iff every defining RHS evaluates to an integer-valued
+ * expression. Reassignments widen — any non-int RHS poisons the binding, regardless
+ * of order in source. Multi-pass fixpoint converges when RHSs read other bindings
+ * transitively (`let j = i + 1` resolves only after `i` is known intCertain).
+ *
+ * Integer-shaped RHS (closed under composition):
+ *   - integer Number literal, boolean literal
+ *   - bitwise ops `& | ^ ~ << >> >>>` — i32 result by spec
+ *   - comparisons `< > <= >= == != === !== !` — 0/1 result
+ *   - `.length` / `.byteLength` on TYPED/ARRAY/STRING/BUFFER receiver
+ *   - `+ - * %` and unary `+ -` of intCertain operands (overflow OK — value is mathematically integer)
+ *   - `?: && ||` when both branches are intCertain
+ *   - `Math.{imul, clz32, floor, ceil, round, trunc}`
+ *   - self-mutation ops `++` `--` `+=` `-=` `*=` `%=` (preserve when operand is int);
+ *     `&= |= ^= <<= >>= >>>=` (always int by op result type);
+ *     `/=` `**=` poison.
+ *
+ * Writes `intCertain: true` on `ctx.func.repByLocal[name]`. No emit impact —
+ * codegen extensions consume this in follow-up passes.
+ */
+export function analyzeIntCertain(body) {
+  // Pass 1: collect every defining RHS per binding name. Compound assignments
+  // are desugared to their `=` equivalent (`x += y` → `x = x + y`) so the
+  // existing `isIntExpr` op rules apply uniformly.
+  const defs = new Map()
+  const pushDef = (name, rhs) => {
+    let list = defs.get(name)
+    if (!list) { list = []; defs.set(name, list) }
+    list.push(rhs)
+  }
+  const collect = (node) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (const a of args) {
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2])
+      }
+    } else if (op === '=' && typeof args[0] === 'string') {
+      pushDef(args[0], args[1])
+    } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
+               !INT_CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
+      // Compound assign: desugar `x <op>= rhs` → `x = x <op> rhs`. The base op
+      // result is fed back through isIntExpr — bitwise compounds become int by
+      // the bitwise rule; +=/-=/*=/%= preserve via int-closed rule.
+      pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
+    } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
+      // `x++` / `x--` desugars to `x = x ± 1`. 1 is int → preserves intCertain.
+      pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
+    }
+    for (const a of args) collect(a)
+  }
+  collect(body)
+  if (defs.size === 0) return
+
+  // Pass 2: monotone-down fixpoint. Start optimistic (every defined binding
+  // assumed intCertain), then for each iteration mark false any binding whose
+  // RHS list contains a non-int expression. Once false, stays false — defs is
+  // fixed and isIntExpr only reads back through bindings that themselves can
+  // only flip true→false. Converges when no further bindings flip.
+  //
+  // (Naive bottom-up `false→true` direction is unsound for recursive bindings
+  // like `let i = 0; i = i + 1` — first iteration sees i unobserved → false →
+  // i+1 false → i stays false, missing the fact that all RHSs are int.)
+  const intCertain = new Map()
+  for (const name of defs.keys()) intCertain.set(name, true)
+
+  const isIntExpr = (expr) => {
+    if (typeof expr === 'number') return Number.isInteger(expr)
+    if (typeof expr === 'boolean') return true
+    if (typeof expr === 'string') return intCertain.get(expr) === true
+    if (!Array.isArray(expr)) return false
+    const [op, ...args] = expr
+    if (op == null) {
+      // `[, value]` / `[null, value]` literal form
+      const v = args[0]
+      if (typeof v === 'number') return Number.isInteger(v)
+      if (typeof v === 'boolean') return true
+      return false
+    }
+    if (INT_BIT_OPS.has(op) || INT_CMP_OPS.has(op)) return true
+    if (op === '.') {
+      if ((args[1] === 'length' || args[1] === 'byteLength') && typeof args[0] === 'string') {
+        const vt = lookupValType(args[0])
+        return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
+      }
+      return false
+    }
+    if (INT_CLOSED_OPS.has(op)) {
+      const a = isIntExpr(args[0])
+      const b = args[1] != null ? isIntExpr(args[1]) : a
+      return a && b
+    }
+    if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
+    if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
+    if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
+    // Math.{imul,clz32,floor,ceil,round,trunc} — prepare normalizes the callee to
+    // the string `math.<fn>`. The pre-prepare `['.', 'Math', '<fn>']` shape is
+    // matched too so this analyzer is robust if invoked on a non-normalized AST.
+    if (op === '()') {
+      const c = args[0]
+      if (typeof c === 'string' && c.startsWith('math.') && INT_MATH_FNS.has(c.slice(5))) return true
+      if (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && INT_MATH_FNS.has(c[2])) return true
+    }
+    return false
+  }
+
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, rhsList] of defs) {
+      if (!intCertain.get(name)) continue
+      if (!rhsList.every(isIntExpr)) { intCertain.set(name, false); changed = true }
+    }
+  }
+
+  for (const [name, intC] of intCertain) {
+    if (intC) updateRep(name, { intCertain: true })
   }
 }
 
@@ -1206,4 +1487,233 @@ export function analyzeBoxedCaptures(body) {
       return walk(args[1], args[0])
     for (const a of args) walk(a)
   })(body)
+}
+
+/**
+ * Narrow return arr-elem-{schema|valType}: for each non-exported, non-value-used
+ * user func with `valResult === VAL.ARRAY` and `func[field] == null`, walk return
+ * exprs (and trailing-fallthrough literal), resolve each via body-local elem map
+ * + caller-param facts + transitive user-fn results, and if all agree set `func[field]`.
+ * Lets callers' `const rows = initRows()` gain the elem fact, propagating to
+ * runKernel params via paramReps. `field` selects which fact ('arrayElemSchema'
+ * | 'arrayElemValType'); `collectFn` is the matching body-local collector.
+ */
+export function narrowReturnArrayElems(field, collectFn, paramReps, valueUsed) {
+  const collectReturnExprs = (node, out) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '=>') return
+    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+    for (const a of args) collectReturnExprs(a, out)
+  }
+  const alwaysReturns = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '=>') return false
+    if (op === 'return' || op === 'throw') return true
+    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+    return false
+  }
+  const targets = ctx.func.list.filter(f =>
+    !f.raw && !f.exported && !valueUsed.has(f.name) &&
+    f.valResult === VAL.ARRAY && f[field] == null
+  )
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of targets) {
+      if (func[field] != null) continue
+      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      if (isBlock && !alwaysReturns(func.body)) continue
+      const exprs = []
+      if (isBlock) collectReturnExprs(func.body, exprs)
+      else exprs.push(func.body)
+      if (!exprs.length) continue
+      // Body-local observations. Need ctx.func.locals seeded for collect*'s
+      // `observe()` filter (which checks the var is a known local).
+      const savedLocals = ctx.func.locals
+      ctx.func.locals = analyzeLocals(func.body)
+      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
+      const localElems = collectFn(func.body)
+      ctx.func.locals = savedLocals
+      const paramElemMap = callerParamFactMap(paramReps, func, field) || new Map()
+      const resolveExpr = (expr) => {
+        if (typeof expr === 'string') {
+          if (localElems.has(expr)) {
+            const v = localElems.get(expr)
+            if (v != null) return v
+          }
+          if (paramElemMap.has(expr)) return paramElemMap.get(expr)
+          return null
+        }
+        if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
+          const f = ctx.func.map?.get(expr[1])
+          if (f?.[field] != null) return f[field]
+        }
+        if (Array.isArray(expr) && expr[0] === '?:') {
+          const a = resolveExpr(expr[2]), b = resolveExpr(expr[3])
+          return a != null && a === b ? a : null
+        }
+        if (Array.isArray(expr) && (expr[0] === '&&' || expr[0] === '||')) {
+          const a = resolveExpr(expr[1]), b = resolveExpr(expr[2])
+          return a != null && a === b ? a : null
+        }
+        return null
+      }
+      const v0 = resolveExpr(exprs[0])
+      if (v0 == null) continue
+      if (!exprs.every(e => resolveExpr(e) === v0)) continue
+      func[field] = v0
+      changed = true
+    }
+  }
+}
+
+/**
+ * Phase: program-fact collection.
+ *
+ * Single whole-program walk over the module AST + each user function body
+ * + all moduleInits. Collects:
+ *   dynVars/anyDyn   — vars accessed via runtime key (drives strict mode +
+ *   1                   __dyn_get fallback gating)
+ *   propMap          — property assignments per receiver (auto-box schemas)
+ *   valueUsed        — ctx.func.names passed as first-class values (excluded
+ *                      from internal narrowing — they need uniform $ftN ABI)
+ *   maxDef/maxCall   — closure ABI width inputs
+ *   hasRest/hasSpread
+ *   callSites        — `{ callee, argList, callerFunc, node }` for static-name
+ *                      calls (drives the type/schema fixpoint without
+ *                      re-walking the AST). `node` is the call AST itself,
+ *                      mutable for bimorphic-typed clone routing.
+ *   paramReps        — Map<funcName, Map<paramIdx, ValueRep>>, empty here;
+ *                      populated by narrowSignatures (per-field lattice) and
+ *                      read by emitFunc.
+ *
+ * Also writes ctx.schema.slotTypes (static-key object literal slot val types).
+ *
+ * Three visit modes:
+ *   full=true  (ast + user funcs)  → all facts including call-site collection
+ *   full=false (moduleInits)        → dyn + arity only (no propMap/valueUsed/
+ *                                     callSites: moduleInits don't own user
+ *                                     props/funcs)
+ *   inArrow=true                    → flips off call-site collection so
+ *                                     closure-internal calls don't poison
+ *                                     caller-context type inference.
+ */
+export function collectProgramFacts(ast) {
+  const paramReps = new Map()
+  const valueUsed = new Set()
+  const dynVars = new Set()
+  let anyDyn = false
+  const propMap = new Map()
+  const callSites = []
+  const doSchema = ast && ctx.schema.register
+  const doArity = !!ctx.closure.make
+  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  // Slot-type collection: monomorphic property val types per schema, populated from
+  // every static `{a: e1, b: e2, …}` literal in the program. Read by ctx.schema.slotVT
+  // → valTypeOf on `.prop` AST nodes so downstream `+`, `===`, method dispatch can
+  // skip the "is it a string?" runtime check on numeric props of known shapes.
+  // Merge rule: first observation wins; second distinct kind → null (ambiguous).
+  const slotTypes = ctx.schema.slotTypes
+  const observeSlot = (sid, idx, vt) => {
+    if (!vt) return
+    let arr = slotTypes.get(sid)
+    if (!arr) { arr = []; slotTypes.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = vt
+    else if (arr[idx] !== vt) arr[idx] = null
+  }
+  const walkFacts = (node, full, inArrow, callerFunc) => {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
+    // Float64Array uses typed-array load, not __dyn_get — only the actual
+    // dynamic-dispatch fallback should error in strict mode).
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
+    } else if (op === 'for-in') {
+      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
+      anyDyn = true
+      if (typeof args[1] === 'string') dynVars.add(args[1])
+    }
+    // Object literal: register schema + observe slot val types. Static-key only;
+    // dynamic-key/spread shapes route through __dyn_set and have no fixed slot mapping.
+    if (op === '{}' && doSchema) {
+      const parsed = staticObjectProps(args)
+      if (parsed) {
+        const sid = ctx.schema.register(parsed.names)
+        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, valTypeOf(parsed.values[i]))
+      }
+    }
+    // closure ABI arity
+    if (doArity) {
+      if (op === '=>') {
+        let fixedN = 0
+        for (const r of extractParams(args[0])) {
+          if (classifyParam(r).kind === 'rest') hasRest = true
+          else fixedN++
+        }
+        if (fixedN > maxDef) maxDef = fixedN
+      } else if (op === '()') {
+        const a = args[1]
+        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
+        if (callArgs.length > maxCall) maxCall = callArgs.length
+      }
+    }
+    // Crossing into a closure body: from now on, no call-site collection (matches the
+    // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
+    if (op === '=>') {
+      for (const a of args) walkFacts(a, full, true, callerFunc)
+      return
+    }
+    if (full) {
+      // property-assignment scan for auto-box
+      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
+        const [, obj, prop] = args[0]
+        if (typeof obj === 'string' && (ctx.scope.globals.has(obj) || ctx.func.names.has(obj))) {
+          if (!propMap.has(obj)) propMap.set(obj, new Set())
+          propMap.get(obj).add(prop)
+        }
+      }
+      // first-class function-value + static-call-site scan
+      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
+        if (!inArrow) {
+          // Record call site for the type/schema fixpoint. Filtering by
+          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
+          // `node` is the call AST node itself; specializeBimorphicTyped mutates
+          // node[1] (the callee name) to point at a per-ctor clone.
+          const a = args[1]
+          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          callSites.push({ callee: args[0], argList, callerFunc, node })
+        }
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i]
+          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+          else walkFacts(a, true, inArrow, callerFunc)
+        }
+        return
+      }
+      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
+      for (const a of args) {
+        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+        else walkFacts(a, true, inArrow, callerFunc)
+      }
+    } else {
+      for (const a of args) walkFacts(a, false, inArrow, callerFunc)
+    }
+  }
+  walkFacts(ast, true, false, null)
+  for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+  return {
+    dynVars, anyDyn, propMap, valueUsed, callSites,
+    maxDef, maxCall, hasRest, hasSpread,
+    paramReps,
+  }
 }

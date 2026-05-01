@@ -15,11 +15,18 @@
 
 import { emit, typed, asF64, asI32, temp, arrayLoop } from '../src/compile.js'
 import { inc } from '../src/ctx.js'
+import { repOf } from '../src/analyze.js'
 
 export default (ctx) => {
   // Helpers: all math ops take f64 and return f64
   const f = (op, a) => typed([op, asF64(emit(a))], 'f64')
   const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')
+  // floor/ceil/trunc/round are no-ops on integer-valued operands. When the
+  // arg is a local whose every def is integer-valued (intCertain lattice),
+  // skip the wasm op and just hand back the operand cast to f64.
+  const fInt = (op, a) => typeof a === 'string' && repOf(a)?.intCertain === true
+    ? asF64(emit(a))
+    : f(op, a)
   const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
   const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))
 
@@ -48,9 +55,9 @@ export default (ctx) => {
   // Built-in WASM ops
   ctx.core.emit['math.sqrt'] = a => f('f64.sqrt', a)
   ctx.core.emit['math.abs'] = a => f('f64.abs', a)
-  ctx.core.emit['math.floor'] = a => f('f64.floor', a)
-  ctx.core.emit['math.ceil'] = a => f('f64.ceil', a)
-  ctx.core.emit['math.trunc'] = a => f('f64.trunc', a)
+  ctx.core.emit['math.floor'] = a => fInt('f64.floor', a)
+  ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
+  ctx.core.emit['math.trunc'] = a => fInt('f64.trunc', a)
   ctx.core.emit['math.min'] = (a, b, ...rest) => {
     // Spread: Math.min(...arr) — iterate array to find min
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.min', a[1], Infinity)
@@ -60,7 +67,7 @@ export default (ctx) => {
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.max', a[1], -Infinity)
     return f2('f64.max', a, b)
   }
-  ctx.core.emit['math.round'] = a => f('f64.nearest', a)
+  ctx.core.emit['math.round'] = a => fInt('f64.nearest', a)
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
 
   // Sign
