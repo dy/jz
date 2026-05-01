@@ -17,11 +17,11 @@ dist(3, 4) // 5
 
 ## Why?
 
-It is an attempt to distill and save best JS parts from platform, spec, or engine drift. It keeps functional JS best practices ([Crockford good parts](https://www.youtube.com/watch?v=_DKkVvOt6dk)), drops the rest. **Write plain JS, get WASM** – portable, fast, long-lasting.
+**Write plain JS, compile to WASM**. JS has grown complex – legacy, evolving proposals and performance quirks. JZ isolates small, predictable, functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. WASM is fast, portable and long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
-* **Minimal** — produced WAT/WASM is on par with hand-written.
+* **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
 
 Initially intended for DSP, inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
