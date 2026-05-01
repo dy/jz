@@ -77,9 +77,10 @@ export const asPtrOffset = (n, ptrKind) =>
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
- *  Handles NaN, -∞, and +∞ per ECMAScript ToInt32: all three map to 0.
- *  i64.trunc_sat_f64_s gives NaN→0 and -∞→i64_min→wrap→0 correctly, but +∞→i64_max→wrap→-1.
- *  Guard +∞ explicitly so bytebeat formulas with division-by-zero match JS baseline. */
+ *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
+ *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
+ *  branchless `select`. For non-leaf inputs `n` is stashed in a temp f64 local so it's
+ *  evaluated exactly once (avoid side-effect re-execution and bytecode duplication). */
 export const toI32 = n => {
   if (n.type === 'i32') return n
   // Peephole: i32.wrap_i64(i64.trunc_sat_f64_s(f64.convert_i32_*(x))) === x for all i32
@@ -89,11 +90,23 @@ export const toI32 = n => {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  const guarded = typed(['if', ['result', 'f64'],
-    ['f64.eq', n, ['f64.const', Infinity]],
-    ['then', ['f64.const', 0]],
-    ['else', n]], 'f64')
-  return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', guarded]], 'i32')
+  // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
+  const isLeaf = Array.isArray(n) && n.length <= 2 &&
+    (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')
+  const wrap = x => typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], 'i32')
+  if (isLeaf) {
+    return typed(['select',
+      wrap(n),
+      ['i32.const', 0],
+      ['f64.ne', n, ['f64.const', Infinity]]
+    ], 'i32')
+  }
+  const t = temp('inf')
+  return typed(['select',
+    wrap(['local.tee', `$${t}`, n]),
+    ['i32.const', 0],
+    ['f64.ne', ['local.get', `$${t}`], ['f64.const', Infinity]]
+  ], 'i32')
 }
 
 /** Extract i64 from BigInt-as-f64. */

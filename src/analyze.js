@@ -173,6 +173,9 @@ export function valTypeOf(expr) {
       // Math.* always returns Number — let `+` skip string-concat dispatch and
       // let exprType propagate i32 for the integer-returning subset.
       if (typeof callee === 'string' && callee.startsWith('math.')) return VAL.NUMBER
+      // Clock helpers always return Number — lets `t0 = performance.now()` propagate
+      // VAL.NUMBER through subsequent reads, eliding `__to_num` wrappers in arithmetic.
+      if (callee === 'performance.now' || callee === 'Date.now') return VAL.NUMBER
       // User-defined func with monomorphic VAL return (populated in compile.js E2 pass).
       const f = ctx.func.map?.get(callee)
       if (f?.valResult) return f.valResult
