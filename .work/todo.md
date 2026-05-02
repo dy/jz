@@ -172,6 +172,48 @@ runtime). jz beats AS on 4 of 6 cases (mat4, bitwise, callback, aos). Remaining
 AS-perf gaps: biquad (1.22×), poly (1.04×, within 5% noise tie). Size pinned in
 test/bench-pin.js for regression guarding.
 
+### json gap analysis (1.26× behind V8)
+
+Hot path in `walk()` is dynamic property dispatch on JSON-parsed objects:
+each `o.items`, `o.meta.bias`, `it.id`, `it.kind`, `it.value`, `o.meta.scale`
+goes through `func 11` (the generic property-access dispatcher): unbox
+type tag → branch by tag → `__map_get` → `__str_hash` → `__str_eq` probe
+loop. Per outer iteration: ~15 prop accesses × (call $__map_get → call
+$__str_hash + call $__str_eq) = ~45 cross-function calls. Static analysis
+of bench wat shows the dispatcher (`func 11`) and `__map_get` (`func 29`)
+together account for the dominant cost.
+
+Specific opportunities, ordered by impact:
+
+1. **VAL.HASH valType + JSON.parse annotation.** Add `VAL.HASH` to the
+   value-type lattice; emit JSON.parse as `valResult: VAL.HASH`; propagate
+   through `o.items`-style chains. Then the prop-access emitter can skip
+   the type-tag dispatch (`func 11`) and emit `(call $__map_get o key)`
+   directly. ~30% savings just from cutting the dispatcher.
+
+2. **Constant-fold `__str_hash` for SSO NaN-box literals.** Pure function
+   on a known constant. Either (a) inline `__map_get` and let the existing
+   peephole fold the hash call, or (b) add a `__map_get_const` variant
+   that takes pre-hashed key as i32. ~15% savings on json + helps any
+   map-heavy code.
+
+3. **Hoist type-tag check across same-receiver prop reads.** `it.id`,
+   `it.kind`, `it.value` all dispatch on `it`'s type tag. The tag is
+   loop-invariant within the inner block; hoist once per inner-loop iter
+   (or once per outer if `it = items[j]` and items elem-type is known
+   HASH). Generalizes beyond json to any code with repeated prop reads
+   on same receiver.
+
+4. **Inline `__map_get` for ≤1 call site or after specialization.**
+   Today `__map_get` is a generic helper called from many sites. With
+   per-site specialization (constant key, known receiver type) it
+   becomes inlinable.
+
+Items 1+2 are the cleanest generic wins; item 3 helps json + any
+struct-field-heavy code; item 4 needs cost-aware inline heuristics.
+Estimated combined: jz json 0.34 → ~0.20 ms, beats V8 (0.27 ms).
+Deferred — requires VAL lattice extension + emit dispatcher rewrite.
+
 ### Completed perf / cleanup wins (this session)
 
 * [x] **TCO via `return_call` for expression-bodied arrows**
@@ -477,13 +519,24 @@ arrays gets you without unrolling).
 
 * [ ] **i32 narrowing for module-const integer args (revisit nStages).** The
   attempt this round narrowed nStages from f64 to i32 via `globalTypes` lookup
-  in `exprType`; the wat shape was correct (and clang loved it: jz-w2c stayed
-  at 11.4ms) but V8's wasm tier regressed to 18ms. Investigate why — likely
-  V8 register-allocates differently when the inner loop has mixed i32 indices
-  + f64 arithmetic. Possible fixes: (a) keep f64 ABI but auto-promote i32 const
-  to f64 at call site so V8 sees uniform ABI; (b) couple narrowing with
-  inlining so the param disappears entirely; (c) test on V8 with `--liftoff-only`
-  vs TurboFan to see which tier regresses.
+  in `exprType`; wat was objectively cleaner (-104 B wat / -328 B wasm), and
+  Liftoff confirmed the i32 form is faster (445 ms vs 555 ms baseline). But
+  TurboFan compiles processCascade as a separate function in the i32 form
+  while the f64 form gets inlined into main — losing interprocedural unrolling
+  of the 8-stage inner loop and regressing 60% (315 ms vs 205 ms raw runtime).
+  Root cause confirmed via disassembly: in `before` (f64), `func[19]` (main)
+  body grows to 6048 B with processCascade inlined and unrolled 4×; in `after`
+  (i32), `func[9]` (processCascade, 480 B) stays separate and runs as a call.
+  The fix is correct in principle and would help any case where module-const
+  integer args feed loop bounds — but V8's wasm inliner heuristic treats the
+  i32 form as not-worth-inlining. Possible mitigations: (a) couple narrowing
+  with explicit jz-side inlining (inline single-caller hot funcs whose body
+  contains a loop bounded by an i32 const arg), so V8 never gets to choose;
+  (b) keep f64 param ABI but produce two function specializations, one with
+  the constant baked in, switch at call site if N is statically known; (c)
+  drop the module-level globalTypes lookup but propagate const-int through
+  the call-site arg list directly to the callee's analyzeIntCertain pass.
+  Reverted for now to preserve the V8-perf win.
 
 * [ ] **Loop-invariant hoist of `arr.length`.** Verify the outer loop's
   `n = x.length` is hoisted (it appears to be, based on the wat). Generalize
