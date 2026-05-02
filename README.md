@@ -17,7 +17,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-JS has grown complex – legacy semantics, feature overhead, evolving proposals and performance quirks. JZ isolates small, predictable, functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. **Write plain JS, compile to WASM** – fast, portable and long-lasting.
+JZ isolates small, predictable, modern functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. **Write plain JS, compile to WASM** – fast, portable and long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
