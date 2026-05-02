@@ -12,13 +12,13 @@
  * @module wasi
  */
 
-import { emit, typed, asF64 } from '../src/compile.js'
+import { emit, typed, asF64, valTypeOf, VAL } from '../src/compile.js'
 import { inc, PTR } from '../src/ctx.js'
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str'],
-    __write_num: ['__ftoa'],
+    __write_num: ['__ftoa', '__write_str'],
     __write_str: ['__sso_char', '__str_len'],
   })
 
@@ -89,14 +89,53 @@ export default (ctx) => {
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
         (then (i32.const 7)) (else (i32.const 8))))))`
 
-  // console.log(...args) — variadic, each arg separated by space, followed by newline
+  // Template-literal concat chains (`a${x}b`) lower to ['()', ['.', X, 'concat'], Y]
+  // in prepare. Walking left from the chain root recovers the parts in order; if the
+  // base is a `['str', ...]` it's a template-shaped chain (vs an arbitrary user
+  // .concat call). Returning the parts lets console.log skip __str_concat/__to_str
+  // entirely — biquad's only string churn is the perf-summary line.
+  const flattenTemplateConcat = (node) => {
+    const parts = []
+    let n = node
+    while (Array.isArray(n) && n[0] === '()' && n.length === 3 &&
+           Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'concat') {
+      parts.unshift(n[2])
+      n = n[1][1]
+    }
+    if (!(Array.isArray(n) && n[0] === 'str')) return null
+    parts.unshift(n)
+    return parts
+  }
+
+  // console.log(...args) — variadic, each arg separated by space, followed by newline.
+  // Per-arg dispatch is monomorphized when valTypeOf proves the arg is a string or
+  // number — direct __write_str / __write_num skips the polymorphic __write_val
+  // helper (and its transitive __ptr_type / __static_str / number-or-string-test
+  // arms), which is the entire stdlib floor for size-conscious benches.
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
-      inc('__write_val', '__write_byte')
+      inc('__write_byte')
       const ir = []
+      const writePart = (part) => {
+        // Empty string segments (template boundaries) write nothing.
+        if (Array.isArray(part) && part[0] === 'str' && part[1] === '') return
+        const vt = valTypeOf(part)
+        if (vt === VAL.STRING) {
+          inc('__write_str')
+          ir.push(['call', '$__write_str', ['i32.const', fd], asF64(emit(part))])
+        } else if (vt === VAL.NUMBER) {
+          inc('__write_num')
+          ir.push(['call', '$__write_num', ['i32.const', fd], asF64(emit(part))])
+        } else {
+          inc('__write_val')
+          ir.push(['call', '$__write_val', ['i32.const', fd], asF64(emit(part))])
+        }
+      }
       for (let i = 0; i < args.length; i++) {
         if (i > 0) ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]])  // space
-        ir.push(['call', '$__write_val', ['i32.const', fd], asF64(emit(args[i]))])
+        const parts = flattenTemplateConcat(args[i])
+        if (parts) for (const p of parts) writePart(p)
+        else writePart(args[i])
       }
       ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 10]])  // newline
       ir.push(['f64.const', 0])  // return undefined
