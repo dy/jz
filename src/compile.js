@@ -28,14 +28,14 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
-  T, VAL, valTypeOf, lookupValType, analyzeValTypes, analyzeIntCertain, collectValTypes, collectTypedElems, analyzeLocals, analyzePtrUnboxable, typedElemAux, exprType, invalidateLocalsCache, invalidateValTypesCache,
+  T, VAL, valTypeOf, lookupValType, analyzeValTypes, analyzeIntCertain, analyzeLocals, analyzeBody, analyzePtrUnboxable, typedElemAux, exprType, invalidateLocalsCache, invalidateValTypesCache,
   extractParams, classifyParam, collectParamNames,
   findFreeVars, analyzeBoxedCaptures, analyzeDynKeys, typedElemCtor,
-  collectArrElemSchemas, collectArrElemValTypes,
   repOf, updateRep, repOfGlobal, updateGlobalRep,
   staticObjectProps, mergeParamFact, ensureParamRep, callerParamFactMap, clearStickyNull,
   inferArgType, inferArgSchema, inferArgArrElemSchema, inferArgArrElemValType, inferArgTypedCtor,
-  ctorFromElemAux, collectProgramFacts, narrowReturnArrayElems,
+  ctorFromElemAux, collectProgramFacts, observeProgramSlots, narrowReturnArrayElems,
+  isBlockBody, alwaysReturns, hasBareReturn, returnExprs, collectReturnExprs,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -50,6 +50,7 @@ import {
   isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish,
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
+  valKindToPtr,
 } from './ir.js'
 
 // Re-export for backward compatibility (modules import from compile.js)
@@ -87,6 +88,80 @@ const NAN_PREFIX_BITS = 0x7FF8n
 // AST-analysis primitives (staticObjectProps, paramReps lattice helpers,
 // inferArg* cross-call inference, collectProgramFacts) moved to src/analyze.js.
 
+/**
+ * Boundary-wrap predicate: exports whose body-driven result OR any param narrowed
+ * away from the JS-visible f64 ABI need a wrapper that re-/un-boxes at the JS↔WASM
+ * edge so the inner func can keep its raw type while exports preserve Number /
+ * pointer semantics for JS callers.
+ *
+ * Numeric param narrowing on exports IS enabled when all internal call sites pass
+ * i32 — the wrapper does `i32.trunc_sat_f64_s` at the boundary (matches JS i32
+ * coercion `n | 0` semantics for integer-shaped values; a JS caller passing a
+ * fractional Number gets the same truncation it would get from `arr[n]`).
+ */
+const isBoundaryWrapped = (func) => {
+  if (!func.exported || func.raw || func.sig.results.length !== 1) return false
+  if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
+  return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
+}
+
+/**
+ * Tail-call rewrite: walks tail positions of an emitted IR tree and replaces
+ * direct `(call $name args...)` ops with `(return_call $name args...)`.
+ *
+ * Tail positions, recursively from the IR root:
+ *   - the root itself (function's terminal value-producing expression)
+ *   - both arms of `(if (result T) cond (then ...) (else ...))`
+ *   - last instruction of `(block (result T) ...)`
+ *
+ * Only fires when caller and callee result types match — if they didn't match,
+ * `asParamType`/`asPtrOffset` would have wrapped the call in a conversion op,
+ * pushing the `call` away from the tail position. We don't recurse into
+ * arithmetic / select / loop ops: their results aren't standalone-tail control
+ * transfers.
+ *
+ * Mirrors the existing `'return'` op handler in emit.js (which already does
+ * TCO when the return statement is explicit). This pass closes the gap for
+ * expression-bodied arrows like `(n, acc) => n <= 0 ? acc : sum(n-1, acc+n)`
+ * — the AST has no `return` keyword so the emit-time handler never fires.
+ */
+const tcoTailRewrite = (ir, resultType) => {
+  if (ctx.transform.noTailCall || ctx.func.inTry) return ir
+  if (!Array.isArray(ir)) return ir
+  const op = ir[0]
+  if (op === 'call' && typeof ir[1] === 'string') {
+    // IR call name is `$name`; func.map keys are bare `name`.
+    const calleeName = ir[1].startsWith('$') ? ir[1].slice(1) : ir[1]
+    const callee = ctx.func.map.get(calleeName)
+    if (!callee || callee.raw) return ir
+    const calleeRT = callee.sig?.results?.[0] ?? 'f64'
+    if (calleeRT !== resultType) return ir
+    return typed(['return_call', ...ir.slice(1)], resultType)
+  }
+  if (op === 'if' && Array.isArray(ir[1]) && ir[1][0] === 'result') {
+    let changed = false
+    const newIr = ir.slice()
+    for (let i = 3; i < newIr.length; i++) {
+      const arm = newIr[i]
+      if (Array.isArray(arm) && (arm[0] === 'then' || arm[0] === 'else') && arm.length > 1) {
+        const last = arm[arm.length - 1]
+        const rewritten = tcoTailRewrite(last, resultType)
+        if (rewritten !== last) {
+          newIr[i] = [...arm.slice(0, -1), rewritten]
+          changed = true
+        }
+      }
+    }
+    return changed ? typed(newIr, ir.type) : ir
+  }
+  if (op === 'block' && ir.length > 1) {
+    const last = ir[ir.length - 1]
+    const rewritten = tcoTailRewrite(last, resultType)
+    if (rewritten !== last) return typed([...ir.slice(0, -1), rewritten], ir.type)
+  }
+  return ir
+}
+
 // === Module compilation ===
 
 /**
@@ -105,8 +180,37 @@ const NAN_PREFIX_BITS = 0x7FF8n
  * Encoded structurally as a phase so future S3 work can move it into a
  * pipeline runner without re-deriving the in/out contract from comments.
  */
-function narrowSignatures(programFacts) {
+function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps } = programFacts
+
+  // Reachability filter: dead callerFuncs (e.g. unused stdlib helpers from bundled
+  // modules) shouldn't poison narrowing of live functions. Without this, a never-
+  // executed call like `checksumF64 → mix(h, u[i])` would force mix's `x` rep to
+  // bimorphic (f64 ∪ i32) and block i32 narrowing of mix's hot caller (runKernel).
+  // Live = exported ∪ value-used ∪ transitively reached from those + top-level.
+  // Top-level call sites have callerFunc === null and are unconditionally live.
+  if (callSites.length) {
+    const live = new Set()
+    for (const f of ctx.func.list) {
+      if (f.exported || valueUsed.has(f.name)) live.add(f.name)
+    }
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const cs of callSites) {
+        if (cs.callerFunc === null || live.has(cs.callerFunc.name)) {
+          if (!live.has(cs.callee)) { live.add(cs.callee); changed = true }
+        }
+      }
+    }
+    // Mutate in place — every later phase reads the same array.
+    let w = 0
+    for (let r = 0; r < callSites.length; r++) {
+      const cs = callSites[r]
+      if (cs.callerFunc === null || live.has(cs.callerFunc.name)) callSites[w++] = cs
+    }
+    callSites.length = w
+  }
 
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
@@ -116,110 +220,93 @@ function narrowSignatures(programFacts) {
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
-    // Inference helpers (inferArgType/inferArgSchema/inferArgArr*/inferArgTypedCtor)
-    // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
-    // Per-caller analysis is stable across fixpoint iterations — precompute once.
-    // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
-    const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
-    callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+  // Inference helpers (inferArgType/inferArgSchema/inferArgArr*/inferArgTypedCtor)
+  // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
+  // Per-caller analysis is stable across fixpoint iterations — precompute once.
+  // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
+  const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
+  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    // Single unified walk — locals + valTypes from the same traversal.
+    const facts = analyzeBody(func.body)
+    for (const p of func.sig.params) if (!facts.locals.has(p.name)) facts.locals.set(p.name, p.type)
+    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes })
+  }
+  // Per-caller arr-elem observations. Recomputed each fixpoint iteration so
+  // newly-narrowed func.arrayElemSchema/.arrayElemValType results propagate
+  // from `const rows = initRows()` observations. Two-pass fixpoint: first
+  // pass learns from literals + module vars; second pass forwards through
+  // chained helpers (f → addXY → {getX, getY}).
+  const buildCallerElems = (sliceKey) => {
+    const m = new Map()
+    m.set(null, new Map())
     for (const func of ctx.func.list) {
       if (!func.body || func.raw) continue
-      const callerLocals = analyzeLocals(func.body)
-      for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
-      callerCtx.set(func, { callerLocals, callerValTypes: collectValTypes(func.body) })
+      m.set(func, analyzeBody(func.body)[sliceKey])
     }
-    // Per-caller arr-elem observations. Recomputed each fixpoint iteration so
-    // newly-narrowed func.arrayElemSchema/.arrayElemValType results propagate
-    // from `const rows = initRows()` observations. Two-pass fixpoint: first
-    // pass learns from literals + module vars; second pass forwards through
-    // chained helpers (f → addXY → {getX, getY}).
-    const buildCallerElems = (collectFn) => {
-      const m = new Map()
-      m.set(null, new Map())
-      for (const func of ctx.func.list) {
-        if (!func.body || func.raw) continue
-        // Set ctx.func.locals so collect*'s `observe()` filter passes.
-        const savedLocals = ctx.func.locals
-        ctx.func.locals = callerCtx.get(func).callerLocals
-        m.set(func, collectFn(func.body))
-        ctx.func.locals = savedLocals
-      }
-      return m
-    }
-    let callerArrElemsCtx = buildCallerElems(collectArrElemSchemas)
-    const rebuildArrElems = () => { callerArrElemsCtx = buildCallerElems(collectArrElemSchemas) }
-    let callerArrElemValsCtx = buildCallerElems(collectArrElemValTypes)
-    const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerElems(collectArrElemValTypes) }
-    const runFixpoint = () => {
-      for (let s = 0; s < callSites.length; s++) {
-        const { callee, argList, callerFunc } = callSites[s]
-        const func = ctx.func.map.get(callee)
-        if (!func || func.exported || valueUsed.has(callee)) continue
-        const ctxEntry = callerCtx.get(callerFunc)
-        if (!ctxEntry) continue
-        const { callerLocals, callerValTypes } = ctxEntry
-        const callerSchemas = callerParamFactMap(paramReps, callerFunc, 'schemaId')
-        for (let k = 0; k < func.sig.params.length; k++) {
-          const r = ensureParamRep(paramReps, callee, k)
-          if (k < argList.length) {
-            if (r.val !== null) mergeParamFact(r, 'val', inferArgType(argList[k], callerValTypes))
-            // Wasm-type lattice: exprType always returns 'i32'|'f64' — no null sentinel.
-            if (r.wasm !== null) {
-              const wt = exprType(argList[k], callerLocals)
-              if (r.wasm === undefined) r.wasm = wt
-              else if (r.wasm !== wt) r.wasm = null
-            }
-            if (r.schemaId !== null) mergeParamFact(r, 'schemaId', inferArgSchema(argList[k], callerSchemas))
-          } else {
-            // Missing arg — call pads with nullExpr (f64). Prevents narrowing.
-            r.val = null; r.wasm = null; r.schemaId = null
+    return m
+  }
+  let callerArrElemsCtx = buildCallerElems('arrElemSchemas')
+  const rebuildArrElems = () => { callerArrElemsCtx = buildCallerElems('arrElemSchemas') }
+  let callerArrElemValsCtx = buildCallerElems('arrElemValTypes')
+  const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerElems('arrElemValTypes') }
+  const runFixpoint = () => {
+    for (let s = 0; s < callSites.length; s++) {
+      const { callee, argList, callerFunc } = callSites[s]
+      const func = ctx.func.map.get(callee)
+      if (!func || func.exported || valueUsed.has(callee)) continue
+      const ctxEntry = callerCtx.get(callerFunc)
+      if (!ctxEntry) continue
+      const { callerLocals, callerValTypes } = ctxEntry
+      const callerSchemas = callerParamFactMap(paramReps, callerFunc, 'schemaId')
+      for (let k = 0; k < func.sig.params.length; k++) {
+        const r = ensureParamRep(paramReps, callee, k)
+        if (k < argList.length) {
+          if (r.val !== null) mergeParamFact(r, 'val', inferArgType(argList[k], callerValTypes))
+          // Wasm-type lattice: exprType always returns 'i32'|'f64' — no null sentinel.
+          if (r.wasm !== null) {
+            const wt = exprType(argList[k], callerLocals)
+            if (r.wasm === undefined) r.wasm = wt
+            else if (r.wasm !== wt) r.wasm = null
           }
+          if (r.schemaId !== null) mergeParamFact(r, 'schemaId', inferArgSchema(argList[k], callerSchemas))
+        } else {
+          // Missing arg — call pads with nullExpr (f64). Prevents narrowing.
+          r.val = null; r.wasm = null; r.schemaId = null
         }
       }
     }
-    // Dedicated arrayElemSchema fixpoint. Run after E2 (so f.valResult+arrayElemSchema
-    // are populated) so the field starts undefined and isn't sticky-null'd by early
-    // passes when valResult was unset.
-    const runArrFixpoint = () => {
-      for (let s = 0; s < callSites.length; s++) {
-        const { callee, argList, callerFunc } = callSites[s]
-        const func = ctx.func.map.get(callee)
-        if (!func || func.exported || valueUsed.has(callee)) continue
-        if (!callerCtx.get(callerFunc)) continue
-        const callerArrParams = callerParamFactMap(paramReps, callerFunc, 'arrayElemSchema')
-        const callerArrElems = callerArrElemsCtx.get(callerFunc)
-        for (let k = 0; k < func.sig.params.length; k++) {
-          const r = ensureParamRep(paramReps, callee, k)
-          if (k >= argList.length) { r.arrayElemSchema = null; continue }
-          if (r.arrayElemSchema === null) continue
-          mergeParamFact(r, 'arrayElemSchema', inferArgArrElemSchema(argList[k], callerArrElems, callerArrParams))
-        }
+  }
+  // Generic arr-elem fixpoint: same shape for arrayElemSchema (schema-id),
+  // arrayElemValType (VAL.*), and typedCtor. `field` selects which fact;
+  // `inferFn` and `elemsCtxMap` provide per-callee inference.
+  const runArrElemFixpoint = (field, inferFn, elemsCtxMap) => {
+    for (let s = 0; s < callSites.length; s++) {
+      const { callee, argList, callerFunc } = callSites[s]
+      const func = ctx.func.map.get(callee)
+      if (!func || func.exported || valueUsed.has(callee)) continue
+      if (!callerCtx.get(callerFunc)) continue
+      const callerParams = callerParamFactMap(paramReps, callerFunc, field)
+      const callerElems = elemsCtxMap.get(callerFunc)
+      for (let k = 0; k < func.sig.params.length; k++) {
+        const r = ensureParamRep(paramReps, callee, k)
+        if (k >= argList.length) { r[field] = null; continue }
+        if (r[field] === null) continue
+        mergeParamFact(r, field, inferFn(argList[k], callerElems, callerParams))
       }
     }
-    // Dedicated arrayElemValType fixpoint. Same shape but tracks VAL.* element kinds.
-    const runArrValTypeFixpoint = () => {
-      for (let s = 0; s < callSites.length; s++) {
-        const { callee, argList, callerFunc } = callSites[s]
-        const func = ctx.func.map.get(callee)
-        if (!func || func.exported || valueUsed.has(callee)) continue
-        if (!callerCtx.get(callerFunc)) continue
-        const callerArrValParams = callerParamFactMap(paramReps, callerFunc, 'arrayElemValType')
-        const callerArrElemVals = callerArrElemValsCtx.get(callerFunc)
-        for (let k = 0; k < func.sig.params.length; k++) {
-          const r = ensureParamRep(paramReps, callee, k)
-          if (k >= argList.length) { r.arrayElemValType = null; continue }
-          if (r.arrayElemValType === null) continue
-          mergeParamFact(r, 'arrayElemValType', inferArgArrElemValType(argList[k], callerArrElemVals, callerArrValParams))
-        }
-      }
-    }
-    runFixpoint()
-    runFixpoint()
+  }
+  const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArgArrElemSchema, callerArrElemsCtx)
+  const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArgArrElemValType, callerArrElemValsCtx)
+  runFixpoint()
+  runFixpoint()
 
-  // Apply i32 specialization: for non-exported/non-value-used funcs with consistent
-  // i32 call sites and no defaults/rest at that position, narrow sig.params[k].type.
+  // Apply i32 specialization: for non-value-used funcs with consistent i32 call
+  // sites and no defaults/rest at that position, narrow sig.params[k].type.
+  // Exports too — boundary wrapper handles the f64→i32 truncation at the JS edge.
   for (const func of ctx.func.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -263,41 +350,20 @@ function narrowSignatures(programFacts) {
   // iterate until stable so chains of i32-only helpers all narrow together.
   // Safety: skip exported (JS boundary preserves number semantics), value-used (closure
   // trampolines assume f64 result), raw WAT, multi-value. `undefined` return = skip.
-  const collectReturnExprs = (node, out) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
-    for (const a of args) collectReturnExprs(a, out)
-  }
-  const exprTypeWithCalls = (expr, locals) => {
-    // Shim: recognize calls to already-narrowed funcs as i32, everything else via exprType.
-    if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-      const f = ctx.func.map.get(expr[1])
-      if (f?.sig.results.length === 1 && f.sig.results[0] === 'i32') return 'i32'
-      return 'f64'
-    }
-    // Ternary / logical / arith: recurse with our shim so nested calls contribute.
-    if (Array.isArray(expr) && expr.length > 1) {
-      const [op, ...args] = expr
-      if (op === '?:') {
-        const a = exprTypeWithCalls(args[1], locals), b = exprTypeWithCalls(args[2], locals)
-        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
-      }
-      if (op === '&&' || op === '||') {
-        const a = exprTypeWithCalls(args[0], locals), b = exprTypeWithCalls(args[1], locals)
-        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
-      }
-      if (['+', '-', '*', '%'].includes(op)) {
-        const a = exprTypeWithCalls(args[0], locals), b = args[1] != null ? exprTypeWithCalls(args[1], locals) : a
-        return a === 'i32' && b === 'i32' ? 'i32' : 'f64'
-      }
-      if (op === 'u-' || op === 'u+') return exprTypeWithCalls(args[0], locals)
-    }
-    return exprType(expr, locals)
-  }
+  // exprType already consults ctx.func.map for narrowed user-function results
+  // (analyze.js exprType `()` branch), plus the Math.imul/Math.clz32/charCodeAt
+  // stdlib subset and primitive-op rules. Earlier we had a local shim here that
+  // shadowed exprType's stdlib rules with `return 'f64'` for any non-user call;
+  // unifying through exprType lets a single rule (math.imul → i32) flow through
+  // to mix-style helpers (`(h, x) => Math.imul(h ^ (x|0), C)`) and unblocks the
+  // E-phase result narrowing on every call site that consumes them.
+  const exprTypeWithCalls = exprType
+  // Body-driven: safe for exports — the result type is determined by what the body
+  // computes, not by what JS callers might pass. JS-visible f64 ABI is restored at
+  // the boundary via a synthesized wrapper (see synthesizeBoundaryWrappers below).
+  // Shared pool for E (numeric), E2 (valType) and E3 (ptr) narrowing — same predicate.
   const narrowableFuncs = ctx.func.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) && f.sig.results.length === 1
+    !f.raw && !valueUsed.has(f.name) && f.sig.results.length === 1
   )
   let changed = true
   while (changed) {
@@ -305,26 +371,18 @@ function narrowSignatures(programFacts) {
     for (const func of narrowableFuncs) {
       if (func.sig.results[0] === 'i32') continue
       const body = func.body
-      const exprs = []
-      if (Array.isArray(body) && body[0] === '{}') {
-        collectReturnExprs(body, exprs)
-        // Conservative: if body could fall through without return, trailing fallback is
-        // of result type — matches narrowed i32 fine. But bare-return (`return;`) → undef (f64).
-        // Detect bare returns by walking for `['return']` with no expr → exprs.push(null).
-        const hasBareReturn = (n) => {
-          if (!Array.isArray(n)) return false
-          if (n[0] === '=>') return false
-          if (n[0] === 'return' && n[1] == null) return true
-          return n.some(hasBareReturn)
-        }
-        if (hasBareReturn(body)) continue  // undef is f64 — can't narrow
-      } else {
-        exprs.push(body)
-      }
+      // Bare `return;` produces undef (f64) — narrowing to i32 would lose that.
+      if (isBlockBody(body) && hasBareReturn(body)) continue
+      const exprs = returnExprs(body)
       if (!exprs.length) continue
+      // Skip narrowing when any return-tail is `>>>` (unsigned uint32). Narrowing to i32
+      // loses the unsigned interpretation: the wrapper rebox via `f64.convert_i32_s` would
+      // sign-flip values with bit 31 set, breaking the canonical `(x >>> 0)` uint32 idiom.
+      // A future pass could track sig.unsignedResult and emit `f64.convert_i32_u` instead.
+      if (exprs.some(e => Array.isArray(e) && e[0] === '>>>')) continue
       const savedCurrent = ctx.func.current
       ctx.func.current = func.sig
-      const locals = (Array.isArray(body) && body[0] === '{}') ? analyzeLocals(body) : new Map()
+      const locals = isBlockBody(body) ? analyzeLocals(body) : new Map()
       for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
       const allI32 = exprs.every(e => exprTypeWithCalls(e, locals) === 'i32')
       ctx.func.current = savedCurrent
@@ -356,32 +414,19 @@ function narrowSignatures(programFacts) {
     }
     return valTypeOf(expr)
   }
-  const valTypeNarrowable = ctx.func.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) && f.sig.results.length === 1
-  )
+  // Body-driven valResult inference: same safety analysis as numeric narrowing
+  // above — exports OK because boundary wrapper restores f64 ABI for JS callers.
   changed = true
   while (changed) {
     changed = false
-    for (const func of valTypeNarrowable) {
+    for (const func of narrowableFuncs) {
       if (func.valResult) continue
       const body = func.body
-      const exprs = []
-      // Block: `'{}'` with non-`:` first child (else it's an expression-bodied object literal)
-      const isBlock = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
-      if (isBlock) {
-        collectReturnExprs(body, exprs)
-        const hasBareReturn = (n) => {
-          if (!Array.isArray(n)) return false
-          if (n[0] === '=>') return false
-          if (n[0] === 'return' && n[1] == null) return true
-          return n.some(hasBareReturn)
-        }
-        if (hasBareReturn(body)) continue
-      } else {
-        exprs.push(body)
-      }
+      const isBlock = isBlockBody(body)
+      if (isBlock && hasBareReturn(body)) continue
+      const exprs = returnExprs(body)
       if (!exprs.length) continue
-      const localValTypes = isBlock ? collectValTypes(body) : new Map()
+      const localValTypes = isBlock ? analyzeBody(body).valTypes : new Map()
       // Params of this function contribute no known VAL type yet (paramReps may help later).
       const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
       if (!vt0) continue
@@ -395,19 +440,26 @@ function narrowSignatures(programFacts) {
   // D-pass arrayElemSchema/val fixpoints so `const rows = initRows()` in main
   // resolves to VAL.ARRAY (lets runKernel pick up r.val=ARRAY) and its arr-elem
   // schema (sets paramReps[runKernel][0].arrayElemSchema=sid).
-  // Cache invalidation: collectValTypes results are body-keyed, and entries cached
+  // Cache invalidation: analyzeBody.valTypes is body-keyed, and entries cached
   // during the first D pass have stale (null) `valTypeOf(call)` results because
   // valResult was unset back then.
-  narrowReturnArrayElems('arrayElemSchema', collectArrElemSchemas, paramReps, valueUsed)
-  narrowReturnArrayElems('arrayElemValType', collectArrElemValTypes, paramReps, valueUsed)
+  narrowReturnArrayElems('arrayElemSchema', paramReps, valueUsed)
+  narrowReturnArrayElems('arrayElemValType', paramReps, valueUsed)
   for (const func of ctx.func.list) {
     if (func.body && !func.raw) invalidateValTypesCache(func.body)
   }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
     const entry = callerCtx.get(func)
-    if (entry) entry.callerValTypes = collectValTypes(func.body)
+    if (entry) entry.callerValTypes = analyzeBody(func.body).valTypes
   }
+  // Re-observe schema slot val-types now that E2 has set `valResult` on user
+  // funcs. First pass runs in collectProgramFacts before valResult is known, so
+  // a slot like `cs` in `{ ..., cs }` (where `cs = checksum(out)`) gets observed
+  // as null. observeSlot's first-wins-then-clash rule lets a later precise
+  // observation upgrade `undefined` → NUMBER without poisoning earlier
+  // monomorphic observations.
+  observeProgramSlots(ast)
   rebuildArrElems()
   rebuildArrElemVals()
   // Clear sticky-null on val/schemaId — first 2 passes ran with valResult unset, so
@@ -438,15 +490,6 @@ function narrowSignatures(programFacts) {
   // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
   // offset 0 of the narrowed kind, not undefined.
   const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
-  const alwaysReturns = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === '=>') return false
-    if (op === 'return' || op === 'throw') return true
-    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
-    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
-    return false
-  }
   // Schema-id inference for a return expression. Returns id (number), or null if unknown
   // / not constant. Mirrors inferArgSchema but extends with calls to already-narrowed
   // OBJECT-result funcs (fixpoint propagation through helper chains).
@@ -533,10 +576,10 @@ function narrowSignatures(programFacts) {
   let narrowChanged = true
   while (narrowChanged) {
     narrowChanged = false
-    for (const func of valTypeNarrowable) {
+    for (const func of narrowableFuncs) {
       if (!func.valResult) continue
       if (func.sig.results[0] !== 'f64') continue
-      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      const isBlock = isBlockBody(func.body)
       if (isBlock && !alwaysReturns(func.body)) continue
       if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
         func.sig.results = ['i32']
@@ -544,31 +587,22 @@ function narrowSignatures(programFacts) {
         narrowChanged = true
         continue
       }
+      const exprs = returnExprs(func.body)
+      if (!exprs.length) continue
       if (func.valResult === VAL.OBJECT) {
-        const exprs = []
-        if (isBlock) collectReturnExprs(func.body, exprs)
-        else exprs.push(func.body)
-        if (!exprs.length) continue
         const paramSchemasMap = callerParamFactMap(paramReps, func, 'schemaId')
         const sid0 = schemaIdOfReturn(exprs[0], paramSchemasMap)
         if (sid0 == null) continue
-        const allSame = exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)
-        if (!allSame) continue
+        if (!exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)) continue
         func.sig.results = ['i32']
         func.sig.ptrKind = VAL.OBJECT
         func.sig.ptrAux = sid0
         narrowChanged = true
-      }
-      if (func.valResult === VAL.TYPED) {
-        const exprs = []
-        if (isBlock) collectReturnExprs(func.body, exprs)
-        else exprs.push(func.body)
-        if (!exprs.length) continue
+      } else if (func.valResult === VAL.TYPED) {
         const localMap = isBlock ? localElemAuxMap(func.body) : null
         const aux0 = typedAuxOfReturn(exprs[0], localMap)
         if (aux0 == null) continue
-        const allSame = exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)
-        if (!allSame) continue
+        if (!exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)) continue
         func.sig.results = ['i32']
         func.sig.ptrKind = VAL.TYPED
         func.sig.ptrAux = aux0
@@ -587,30 +621,23 @@ function narrowSignatures(programFacts) {
   // (Helpers `inferArgTypedCtor`/`ctorFromElemAux` live in analyze.js so the
   //  bimorphic-typed specialization pass below can reuse them.)
   // Per-caller typed-elem map, recomputed now that E3 has tagged helper sigs.
+  // Cache invalidation: analyzeBody.typedElems reads `ctx.func.map.get(...).sig.ptrKind`
+  // for `let x = mkInput(...)` decls; entries cached during the initial walk
+  // (before E3 ran) are stale (mkInput's ptrKind was unset then).
+  for (const func of ctx.func.list) {
+    if (func.body && !func.raw) invalidateValTypesCache(func.body)
+  }
   const callerTypedCtx = new Map()
   callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, collectTypedElems(func.body))
+    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
   }
   // Two-pass fixpoint: lets a caller's params, once typed, propagate further to
   // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
-  // for outer, the second pass picks it up for inner).
-  const runTypedFixpoint = () => {
-    for (let s = 0; s < callSites.length; s++) {
-      const { callee, argList, callerFunc } = callSites[s]
-      const func = ctx.func.map.get(callee)
-      if (!func || func.exported || valueUsed.has(callee)) continue
-      const callerTypedElems = callerTypedCtx.get(callerFunc)
-      const callerTypedParams = callerParamFactMap(paramReps, callerFunc, 'typedCtor')
-      for (let k = 0; k < func.sig.params.length; k++) {
-        const r = ensureParamRep(paramReps, callee, k)
-        if (k >= argList.length) { r.typedCtor = null; continue }
-        if (r.typedCtor === null) continue
-        mergeParamFact(r, 'typedCtor', inferArgTypedCtor(argList[k], callerTypedElems, callerTypedParams))
-      }
-    }
-  }
+  // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
+  // (same shape — field/inferFn/elemsCtxMap parameterization).
+  const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferArgTypedCtor, callerTypedCtx)
   runTypedFixpoint()
   runTypedFixpoint()
 
@@ -661,6 +688,48 @@ function narrowSignatures(programFacts) {
   }
   clearStickyNull(paramReps, 'val')
   runFixpoint()
+
+  // I: Post-E re-narrow of numeric (i32) params. The first numeric narrowing pass
+  // ran before E narrowed any result types, so callerLocals saw `let h = mix(...)`
+  // as f64 (mix's result was f64 then). After E narrowed mix's result to i32,
+  // exprType (which now consults func.sig.results for user calls) sees `h` as i32.
+  // Refresh callerLocals + clear sticky-null wasm + re-run fixpoint + re-apply
+  // numeric narrowing to propagate i32 through chains of i32-only helpers
+  // (callback bench: mix is FNV — params and result all i32-shaped, but inferred
+  // only after E phase narrowed mix's result).
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    invalidateLocalsCache(func.body)
+    const fresh = analyzeLocals(func.body)
+    for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
+    callerCtx.get(func).callerLocals = fresh
+  }
+  // Reset wasm field unconditionally — first pass populated it from stale callerLocals
+  // (where `let h = mix(...)` widened h to f64 because mix's result wasn't narrowed
+  // yet). clearStickyNull only resets null; here we need to reset f64-observed too
+  // so the refreshed exprType view propagates.
+  for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
+  runFixpoint()
+  for (const func of ctx.func.list) {
+    if (func.raw || valueUsed.has(func.name)) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, r] of reps) {
+      if (r.wasm !== 'i32' || k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue                  // already narrowed (incl. ptr-ABI)
+      if (func.defaults?.[p.name] != null) continue
+      // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
+      // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
+      // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
+      // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
+      // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
+      if (r.val === VAL.TYPED) continue
+      p.type = 'i32'
+    }
+  }
 }
 
 /**
@@ -702,7 +771,7 @@ function specializeBimorphicTyped(programFacts) {
   callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, collectTypedElems(func.body))
+    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
   }
   // Per-caller typed-param map: caller's own params that F/G already narrowed
   // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
@@ -1024,7 +1093,9 @@ function emitFunc(func, programFacts) {
   }
 
   const fn = ['func', `$${name}`]
-  if (exported) fn.push(['export', `"${name}"`])
+  // Boundary-wrapped exports defer the export attribute to a synthesized
+  // wrapper ($${name}$exp) that reboxes the narrowed result back to f64.
+  if (exported && !isBoundaryWrapped(func)) fn.push(['export', `"${name}"`])
   fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
   fn.push(...sig.results.map(t => ['result', t]))
 
@@ -1069,13 +1140,70 @@ function emitFunc(func, programFacts) {
     const ir = emit(body)
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
-    fn.push(...defaultInits, ...boxedParamInits, finalIR)
+    fn.push(...defaultInits, ...boxedParamInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
   // Restore schema.vars so param bindings don't leak to next function.
   ctx.schema.vars = schemaVarsPrev
   return fn
 }
+
+/**
+ * Phase: synthesize JS-boundary wrappers for narrowed exports.
+ *
+ * For each `isBoundaryWrapped(func)`, emit a sibling `$${name}$exp` that:
+ *   - holds the (export "name") attribute (JS sees the wrapper)
+ *   - takes f64 params always (JS calling convention via host.js wrap)
+ *   - converts each narrowed param at the call: f64 → i32 (truncate-sat) for
+ *     numeric narrowed, f64 → i32-offset (`i32.wrap_i64 + i64.reinterpret_f64`)
+ *     for pointer narrowed
+ *   - forwards args to the inner $${name}
+ *   - reboxes the narrowed result back to f64 so JS sees Number / NaN-boxed ptr
+ *
+ * Param convert cases (each narrowed inner-param):
+ *   - p.type = 'i32', no ptrKind  → i32.trunc_sat_f64_s(local.get $p)
+ *   - p.type = 'i32', ptrKind set → i32.wrap_i64(i64.reinterpret_f64(local.get $p))
+ *
+ * Result rebox cases:
+ *   - sig.ptrKind != null  → mkPtrIR(ptrKind, ptrAux ?? 0, callIR)
+ *   - sig.results[0] = i32 → f64.convert_i32_s(callIR)
+ *   - sig.results[0] = f64 → callIR (some params narrowed but result stayed f64)
+ */
+function synthesizeBoundaryWrappers() {
+  const wrappers = []
+  for (const func of ctx.func.list) {
+    if (!isBoundaryWrapped(func)) continue
+    const { name, sig } = func
+    const wrapNode = ['func', `$${name}$exp`, ['export', `"${name}"`]]
+    // External ABI: every param is f64 (JS Number / NaN-boxed ptr).
+    for (const p of sig.params) wrapNode.push(['param', `$${p.name}`, 'f64'])
+    wrapNode.push(['result', 'f64'])
+    const args = sig.params.map(p => {
+      const get = ['local.get', `$${p.name}`]
+      if (p.type === 'f64') return get
+      if (p.ptrKind != null) {
+        // NaN-boxed f64 → raw i32 offset
+        return ['i32.wrap_i64', ['i64.reinterpret_f64', get]]
+      }
+      // Numeric i32 — JS Number → i32 truncation (matches `n | 0` for integers).
+      return ['i32.trunc_sat_f64_s', get]
+    })
+    const callIR = ['call', `$${name}`, ...args]
+    let body
+    if (sig.ptrKind != null) {
+      const ptrType = valKindToPtr(sig.ptrKind)
+      body = mkPtrIR(ptrType, sig.ptrAux ?? 0, callIR)
+    } else if (sig.results[0] === 'i32') {
+      body = ['f64.convert_i32_s', callIR]
+    } else {
+      body = callIR
+    }
+    wrapNode.push(body)
+    wrappers.push(wrapNode)
+  }
+  return wrappers
+}
+
 
 /**
  * Phase: emit one closure body to WAT IR.
@@ -1831,11 +1959,12 @@ export default function compile(ast) {
       : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
   }
 
-  narrowSignatures(programFacts)
+  narrowSignatures(programFacts, ast)
   specializeBimorphicTyped(programFacts)
   refineDynKeys(programFacts)
 
   const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
+  funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []
   let compiledBodyCount = 0
@@ -1954,7 +2083,9 @@ export default function compile(ast) {
     }
     if (typeof val !== 'string') continue
     const func = ctx.func.list.find(f => f.name === val)
-    if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${val}`]])
+    // Boundary-wrapped funcs export through the synthesized $${val}$exp wrapper
+    // so the JS-visible alias preserves f64 ABI.
+    if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
     else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
 

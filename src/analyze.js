@@ -10,9 +10,10 @@
  * # Passes (all walk AST; none mutate AST itself — only ctx)
  *   - valTypeOf:           expression-level value-type inference (pure)
  *   - lookupValType:       name→VAL.* resolver (func scope ∪ global scope)
- *   - collectValTypes:     pure pass — returns a types map (for caller-local analysis)
+ *   - analyzeBody:         single unified walk — body-keyed cache, returns
+ *                          { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
  *   - analyzeValTypes:     ctx-mutating pass — writes types + tracks regex/typed + localProps
- *   - analyzeLocals:       name→'i32'|'f64' dataflow, two-pass (assignments + widenPass)
+ *   - analyzeLocals:       thin clone-and-extend facade over analyzeBody().locals
  *   - analyzeDynKeys:      cross-function scan for `obj[runtimeKey]` → sets ctx.types.dynKeyVars
  *   - analyzeBoxedCaptures:detect mutably-captured vars → ctx.func.boxed cells
  *   - extractParams/classifyParam/collectParamNames: arrow param AST normalization helpers
@@ -30,6 +31,58 @@ export const T = '\uE000'
 export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'for-in', 'while', 'break', 'continue', 'switch',
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   'throw', 'try', 'catch', 'finally', '++', '--', '()'])
+
+/** Distinguish a function block body `{ ... }` from an expression-bodied object literal `({a:1})`.
+ *  Both share the `'{}'` op tag; blocks have a non-`':'` first child (object literals start with key:val pairs). */
+export const isBlockBody = (body) =>
+  Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+
+/** Collect all `return X` expressions (X != null) from a function body, skipping nested arrow funcs.
+ *  Pushes into `out`. Non-returning paths are silently skipped — pair with `alwaysReturns` if total
+ *  coverage matters, or with `hasBareReturn` to detect `return;` (undef result). */
+export const collectReturnExprs = (node, out) => {
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '=>') return
+  if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
+  for (const a of args) collectReturnExprs(a, out)
+}
+
+/** True if every control-flow path through `n` is guaranteed to terminate via return/throw.
+ *  Conservative: only recognizes block-trailing return, both arms of complete if/else. Loops/switches
+ *  count as non-terminating since fall-through is possible. Used by ptr-narrowing to ensure
+ *  fallthrough fallback won't produce a wrong-typed undef. */
+export const alwaysReturns = (n) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === '=>') return false
+  if (op === 'return' || op === 'throw') return true
+  if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
+  if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
+  return false
+}
+
+/** True if `n` contains a bare `return;` (no value → undefined).
+ *  Bare returns force the result type to f64 (undef sentinel) — narrowing must skip such bodies. */
+export const hasBareReturn = (n) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === '=>') return false
+  if (n[0] === 'return' && n[1] == null) return true
+  return n.some(hasBareReturn)
+}
+
+/** Unify body→return-expressions: block bodies collect via `collectReturnExprs`,
+ *  expression bodies wrap into `[body]`. Pure convenience over the
+ *  `if (isBlock) collect(...) else exprs.push(body)` pattern repeated across
+ *  narrowing passes. */
+export const returnExprs = (body) => {
+  if (isBlockBody(body)) {
+    const out = []
+    collectReturnExprs(body, out)
+    return out
+  }
+  return [body]
+}
 
 // Value types — what a variable holds (for method dispatch, schema resolution)
 export const VAL = {
@@ -144,12 +197,17 @@ export const updateGlobalRep = (name, fields) => {
 }
 
 /** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →
- *  function-local scope → module-global scope.
+ *  in-progress analyzeBody overlay (if any) → function-local scope → module-global scope.
  *  Refinements are pushed by the 'if' emitter when the condition is a type guard
- *  (typeof x === 't', Array.isArray(x), etc.) and popped after the then-branch. */
+ *  (typeof x === 't', Array.isArray(x), etc.) and popped after the then-branch.
+ *  The overlay (`ctx.func.localValTypesOverlay`) is set by analyzeBody/observeSlots passes
+ *  pre-emit, when `repByLocal` isn't populated yet but a local Map<name, VAL.*> is
+ *  available — lets `const x = new Float64Array(); const y = x[0]` resolve y as NUMBER. */
 export const lookupValType = name => {
   const r = ctx.func.refinements
   if (r && r.size) { const v = r.get(name); if (v) return v }
+  const ov = ctx.func.localValTypesOverlay
+  if (ov) { const v = ov.get(name); if (v) return v }
   return ctx.func.repByLocal?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
 }
 
@@ -319,241 +377,6 @@ function exprSchemaId(expr, localSchemaMap) {
   return null
 }
 
-/** Walk a function body to observe per-local "this is Array<VAL.*>" facts.
- *  Mirrors collectArrElemSchemas but tracks the element val-kind (NUMBER, STRING,
- *  OBJECT, …) instead of a schema id. Drives `arr[i]` → VAL.NUMBER inference for
- *  regular Arrays (typed-array case is handled directly by valTypeOf), unlocking
- *  `__to_num` elision on hot `arr.map(x => x*k)` style callbacks where the elem
- *  type was previously unknown.
- *
- *  Sources: `const arr = [n1, n2, …]` (uniform val), `arr.push(num)` /
- *  `arr.push(rhs1, rhs2, …)` where each `rhs` resolves to a stable VAL.*,
- *  alias chains, calls to user fns with bound `arrayElemValType`. */
-export function collectArrElemValTypes(body) {
-  const out = new Map()
-  if (!body) return out
-  const observe = (arr, vt) => {
-    if (typeof arr !== 'string') return
-    if (!ctx.func.locals?.has(arr) && !ctx.scope.globalTypes?.has(arr)) return
-    if (out.get(arr) === null) return
-    if (!vt) { out.set(arr, null); return }
-    if (!out.has(arr)) out.set(arr, vt)
-    else if (out.get(arr) !== vt) out.set(arr, null)
-  }
-  // Resolve a name's array-elem-val, preferring rep.arrayElemValType (set from
-  // paramReps[k].arrayElemValType at emit start) over local body observations.
-  const elemValOf = (name) => {
-    if (typeof name !== 'string') return null
-    const repVt = ctx.func.repByLocal?.get(name)?.arrayElemValType
-    if (repVt) return repVt
-    const localVt = out.get(name)
-    return localVt || null
-  }
-  const exprElemSourceVal = (expr) => {
-    // Returns the val type of an element expression for `[lit,lit,…]` / `arr.push(arg)`.
-    if (typeof expr === 'string') {
-      // Ignore param names for now — they have no val rep at collect time. The
-      // walk here is body-local; param-bound elem-vals come via paramReps[k].arrayElemValType.
-      const repVt = ctx.func.repByLocal?.get(expr)?.val
-      if (repVt) return repVt
-      return ctx.scope.globalValTypes?.get(expr) || null
-    }
-    return valTypeOf(expr)
-  }
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
-    const op = n[0]
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < n.length; i++) {
-        const a = n[i]
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') {
-          walk(a)
-          continue
-        }
-        const name = a[1], rhs = a[2]
-        // Array literal init: `let arr = [n1, n2]` — observe elem val
-        if (Array.isArray(rhs) && rhs[0] === '[]') {
-          const elems = rhs.slice(1).filter(e => e != null)
-          if (elems.length) {
-            let common = exprElemSourceVal(elems[0])
-            for (let k = 1; k < elems.length && common != null; k++) {
-              if (exprElemSourceVal(elems[k]) !== common) common = null
-            }
-            if (common != null) observe(name, common)
-          }
-        }
-        // Call to user fn whose return arr-elem-val is known
-        if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-          const f = ctx.func.map?.get(rhs[1])
-          if (f?.arrayElemValType) observe(name, f.arrayElemValType)
-        }
-        // Alias: `let b = a` where a is a known Array<vt>
-        if (typeof rhs === 'string') {
-          const v = elemValOf(rhs)
-          if (v) observe(name, v)
-        }
-        // `.map`/`.filter`/`.slice`/`.concat` on a known Array<vt> receiver: derive
-        // elem-val from arrow body (.map) or preserve recv elem (.filter/.slice/.concat).
-        // Unblocks the fast `b[j]` read path on `b = a.map(x => x*k)` shapes where
-        // the result element is provably numeric. Observe-only — body's valTypeOf
-        // returns null for genuinely heterogeneous bodies, leaving observation absent.
-        if (Array.isArray(rhs) && rhs[0] === '()' &&
-            Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
-            typeof rhs[1][1] === 'string') {
-          const recvName = rhs[1][1], method = rhs[1][2]
-          if (method === 'filter' || method === 'slice' || method === 'concat') {
-            const v = elemValOf(recvName)
-            if (v) observe(name, v)
-          } else if (method === 'map') {
-            const arrowFn = rhs[2]
-            const recvVt = elemValOf(recvName)
-            // Single-param arrow: `x => body` (param is bare string) or `(x) => body`
-            // (param is `['()', 'x']`). Skip multi-param/destructured forms — rare
-            // for chained pipelines and the body wouldn't be uniform anyway.
-            const param = Array.isArray(arrowFn) && arrowFn[0] === '=>' ? arrowFn[1] : null
-            const paramName = typeof param === 'string' ? param :
-              (Array.isArray(param) && param[0] === '()' && typeof param[1] === 'string' ? param[1] : null)
-            const arrowBody = paramName ? arrowFn[2] : null
-            // Block-bodied arrow `{ return expr }` → unwrap to the return expression.
-            const exprBody = (Array.isArray(arrowBody) && arrowBody[0] === '{}' &&
-              Array.isArray(arrowBody[1]) && arrowBody[1][0] === 'return') ? arrowBody[1][1] : arrowBody
-            if (paramName && exprBody != null) {
-              const refs = ctx.func.refinements
-              const hadParam = refs?.has(paramName)
-              const prev = hadParam ? refs.get(paramName) : undefined
-              if (refs && recvVt) refs.set(paramName, recvVt)
-              let bodyVt = null
-              try { bodyVt = valTypeOf(exprBody) }
-              finally {
-                if (refs && recvVt) {
-                  if (hadParam) refs.set(paramName, prev); else refs.delete(paramName)
-                }
-              }
-              if (bodyVt) observe(name, bodyVt)
-            }
-          }
-        }
-        walk(rhs)
-      }
-      return
-    }
-    // arr.push(...) call
-    if (op === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'push' && typeof n[1][1] === 'string') {
-      const arr = n[1][1]
-      const callArgs = n[2]
-      const list = callArgs == null ? [] :
-        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
-      for (const a of list) {
-        if (Array.isArray(a) && a[0] === '...') { observe(arr, null); continue }
-        observe(arr, exprElemSourceVal(a))
-      }
-    }
-    // Reassignment to non-array-producing rhs invalidates
-    if (op === '=' && typeof n[1] === 'string' && out.has(n[1])) {
-      const rhs = n[2]
-      if (!Array.isArray(rhs) || (rhs[0] !== '[]' && !(rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' && (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))) {
-        observe(n[1], null)
-      }
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body)
-  return out
-}
-
-/** Walk a function body to observe per-local "this is Array<schemaId>" facts.
- *  Sources: `const arr = [{lit}, {lit}, ...]` (uniform schema), `arr.push(rhs)` /
- *  `arr.push(rhs1, rhs2, ...)` where each `rhs` resolves to a stable schemaId.
- *  Returns Map<varName, schemaId | null>; null = ambiguous (observed conflict),
- *  absent = no observation. Conflict bias: unsafe to bind, callers skip. */
-export function collectArrElemSchemas(body) {
-  const out = new Map()
-  if (!body || !ctx.schema?.register) return out
-  // Per-walk local schema map for chained assignments: `const v = obj; arr.push(v)`.
-  // Filled greedily during the walk; only consulted for `arr.push(name)` lookups.
-  const localSchemaMap = new Map()
-  const observe = (arr, sid) => {
-    if (typeof arr !== 'string') return
-    if (!ctx.func.locals?.has(arr) && !ctx.scope.globalTypes?.has(arr)) return
-    if (out.get(arr) === null) return
-    if (sid == null) { out.set(arr, null); return }
-    if (!out.has(arr)) out.set(arr, sid)
-    else if (out.get(arr) !== sid) out.set(arr, null)
-  }
-  const walk = (n, parentIsInit) => {
-    if (!Array.isArray(n)) return
-    const op = n[0]
-    if (op === '=>') return  // don't cross closure boundary
-    // const/let RHS schema bindings (for chained name lookups + uniform-array literals)
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < n.length; i++) {
-        const a = n[i]
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') {
-          // not a name=expr decl (e.g. destructuring) — still walk for nested stmts
-          walk(a, true)
-          continue
-        }
-        const name = a[1], rhs = a[2]
-        const sid = exprSchemaId(rhs, localSchemaMap)
-        if (sid != null) localSchemaMap.set(name, sid)
-        // Array literal init: `const arr = [{lit}, {lit}]` — observe elem schema
-        if (Array.isArray(rhs) && rhs[0] === '[]') {
-          const elems = rhs.slice(1).filter(e => e != null)
-          if (elems.length) {
-            let common = exprSchemaId(elems[0], localSchemaMap)
-            for (let k = 1; k < elems.length && common != null; k++) {
-              if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
-            }
-            if (common != null) observe(name, common)
-          }
-        }
-        // Call to user fn whose return arr-elem-schema is known: `const rows = initRows()`
-        if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-          const f = ctx.func.map?.get(rhs[1])
-          if (f?.arrayElemSchema != null) observe(name, f.arrayElemSchema)
-        }
-        // Alias: `const b = a` where a is already observed as Array<sid>
-        if (typeof rhs === 'string' && out.has(rhs)) {
-          const sid2 = out.get(rhs)
-          if (sid2 != null) observe(name, sid2)
-        }
-        // Aliased from a param with known elem schema (set by emit-time pre-seed).
-        if (typeof rhs === 'string') {
-          const repSid = ctx.func.repByLocal?.get(rhs)?.arrayElemSchema
-          if (repSid != null) observe(name, repSid)
-        }
-        // Walk rhs only — never enter the `=` node so the reassignment-invalidation
-        // rule below won't misfire on init.
-        walk(rhs, false)
-      }
-      return
-    }
-    // arr.push(...) call
-    if (op === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'push' && typeof n[1][1] === 'string') {
-      const arr = n[1][1]
-      const callArgs = n[2]
-      const list = callArgs == null ? [] :
-        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
-      for (const a of list) {
-        if (Array.isArray(a) && a[0] === '...') { observe(arr, null); continue }
-        observe(arr, exprSchemaId(a, localSchemaMap))
-      }
-    }
-    // Reassignment of arr to non-array → invalidate. Only fires on `arr = …` (not on
-    // `let/const arr = …` initializers — let/const handler returns above).
-    if (op === '=' && typeof n[1] === 'string' && out.has(n[1])) {
-      const rhs = n[2]
-      if (!Array.isArray(rhs) || (rhs[0] !== '[]' && !(rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' && (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))) {
-        observe(n[1], null)
-      }
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i], false)
-  }
-  walk(body, false)
-  return out
-}
-
 /** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
  *  or null if RHS isn't a typed-array/ArrayBuffer/DataView constructor. */
 export function typedElemCtor(rhs) {
@@ -679,103 +502,334 @@ export function inferArgTypedCtor(expr, callerTypedElems, callerTypedParams) {
   return null
 }
 
-// Per-body memoization: analyzeLocals and collectValTypes are pure functions of
-// `body`. compile.js calls each ~2-3× per function (scan-fixpoint, narrowing,
-// final lowering); cache the result keyed on body identity and clone-on-read so
-// callers can still mutate the returned Map.
-// Note: analyzeLocals' exprType now consults ctx.func.repByLocal for `.length`
-// receiver type — emitFunc invalidates this entry after seeding cross-call
-// param VAL facts so the final emit-time walk picks up the refined types.
-const _localsCache = new WeakMap()
-const _valTypesCache = new WeakMap()
-const _typedElemsCache = new WeakMap()
-
-/** Drop a cached analyzeLocals entry so the next call re-walks with the current
- *  ctx.func.repByLocal. Used by emitFunc after seeding cross-call param VAL facts. */
-export function invalidateLocalsCache(body) {
-  if (body && typeof body === 'object') _localsCache.delete(body)
-}
-
-/** Drop a cached collectValTypes entry. Used after E2-phase valResult narrowing so
- *  the next collectValTypes call re-walks with up-to-date `f.valResult` lookups —
- *  required for the D-pass paramReps val/arrayElemSchema re-fixpoint to see
- *  `const rows = initRows()` as VAL.ARRAY (initRows.valResult set by E2). */
-export function invalidateValTypesCache(body) {
-  if (body && typeof body === 'object') _valTypesCache.delete(body)
-}
+// Per-body memoization: analyzeBody is a pure function of `body` plus a small
+// set of ctx fields (func.locals, func.repByLocal, func.map[*][field]). compile.js
+// calls slices of it many times per function (scan-fixpoint, narrowing, final
+// lowering); the unified cache absorbs that traffic. Caller-mutation safety is
+// preserved by cloning every Map on read (entry value stored once, copies handed out).
+// Invalidation: emitFunc calls `invalidateLocalsCache` after seeding cross-call
+// param facts; compile.js' E2 pass calls `invalidateValTypesCache` after valResult
+// narrowing; narrowReturnArrayElems clears entries between fixpoint iters.
 
 /**
- * Lightweight walk: collect var→valType from let/const/= assignments.
- * Shared between analyzeValTypes and compile.js pre-compile call-site scan.
+ * Unified per-body analysis. Single AST traversal producing every per-binding
+ * fact the emitter needs:
+ *
+ *   {
+ *     locals:           Map<name, 'i32'|'f64'>     // wasm type per local
+ *     valTypes:         Map<name, VAL.*>           // value-type for dispatch
+ *     arrElemSchemas:   Map<name, schemaId|null>   // Array<schema> facts
+ *     arrElemValTypes:  Map<name, VAL.*|null>      // Array<val-kind> facts
+ *     typedElems:       Map<name, ctorString>      // typed-array ctor binding
+ *   }
+ *
+ * Recursion shape: after a `let`/`const` decl, the rhs is walked but the `=`
+ * node itself is skipped — arrElemSchemas/ValTypes have a reassignment
+ * invalidation rule that would misfire on init. Other slices' `=`-visit is
+ * idempotent with the decl handler, so skipping it is safe for them too.
+ *
+ * Forward-only observation order: every rule reads only state already produced
+ * earlier in the same walk (alias chains, push observations, etc.), so a single
+ * traversal is sound.
+ *
+ * After the walk a `widenPass` runs to widen `i32` locals compared against `f64`
+ * operands.
+ *
+ * Caching: body-keyed via `_bodyFactsCache`. See
+ * `invalidateLocalsCache` / `invalidateValTypesCache` for the invalidation hooks.
  */
-export function collectValTypes(body, types) {
-  const cacheable = !types && body && typeof body === 'object'
-  if (cacheable) {
-    const hit = _valTypesCache.get(body)
-    if (hit) return new Map(hit)
+const _bodyFactsCache = new WeakMap()
+
+/**
+ * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
+ * Callers that need to extend (e.g. add params to locals) must clone explicitly.
+ * `analyzeLocals` is the canonical clone-then-extend facade; everywhere else
+ * reads slices via `analyzeBody(body).<slice>`.
+ */
+export function analyzeBody(body) {
+  // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
+  // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
+  if (body === null || typeof body !== 'object') return {
+    locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(),
+    arrElemValTypes: new Map(), typedElems: new Map(),
   }
-  if (!types) types = new Map()
-  function walk(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        const vt = valTypeOf(a[2])
-        if (vt) types.set(a[1], vt); else types.delete(a[1])
-      }
-    } else if (op === '=' && typeof args[0] === 'string') {
-      const vt = valTypeOf(args[1])
-      if (vt) types.set(args[0], vt); else types.delete(args[0])
+  const hit = _bodyFactsCache.get(body)
+  if (hit) return hit
+
+  const locals = new Map()
+  const valTypes = new Map()
+  const arrElemSchemas = new Map()
+  const arrElemValTypes = new Map()
+  const typedElems = new Map()
+
+  const doSchemas = !!ctx.schema?.register
+  // Per-walk local schema map for chained `arr.push(name)` resolution.
+  const localSchemaMap = new Map()
+
+  // === Observation helpers ===
+  //
+  // These trust the AST: any `arr.push(...)` syntactically present has `arr` as
+  // a body-relevant name (decl, param, or global) since closure boundaries are
+  // skipped at walk time. Pure typo names produce harmless dead Map entries
+  // that are never queried (consumers index by known local/param names).
+  // Removing the legacy `ctx.func.locals.has(arr)` filter makes analyzeBody's
+  // output context-pure — cache hits don't depend on transient ctx state.
+
+  const observeArrSchema = (arr, sid) => {
+    if (!doSchemas) return
+    if (typeof arr !== 'string') return
+    if (arrElemSchemas.get(arr) === null) return
+    if (sid == null) { arrElemSchemas.set(arr, null); return }
+    if (!arrElemSchemas.has(arr)) arrElemSchemas.set(arr, sid)
+    else if (arrElemSchemas.get(arr) !== sid) arrElemSchemas.set(arr, null)
+  }
+
+  const observeArrValType = (arr, vt) => {
+    if (typeof arr !== 'string') return
+    if (arrElemValTypes.get(arr) === null) return
+    if (!vt) { arrElemValTypes.set(arr, null); return }
+    if (!arrElemValTypes.has(arr)) arrElemValTypes.set(arr, vt)
+    else if (arrElemValTypes.get(arr) !== vt) arrElemValTypes.set(arr, null)
+  }
+
+  const elemValOf = (name) => {
+    if (typeof name !== 'string') return null
+    const repVt = ctx.func.repByLocal?.get(name)?.arrayElemValType
+    if (repVt) return repVt
+    return arrElemValTypes.get(name) || null
+  }
+
+  const exprElemSourceVal = (expr) => {
+    if (typeof expr === 'string') {
+      const repVt = ctx.func.repByLocal?.get(expr)?.val
+      if (repVt) return repVt
+      return ctx.scope.globalValTypes?.get(expr) || null
     }
-    for (const a of args) walk(a)
+    return valTypeOf(expr)
   }
-  walk(body)
-  if (cacheable) _valTypesCache.set(body, new Map(types))
-  return types
-}
 
-/**
- * Lightweight walk: collect var → typed-array ctor (e.g. 'new.Float64Array',
- * 'new.Int32Array.view') from let/const/= where the RHS is a typed-array
- * constructor or a TYPED-narrowed call. Used by call-site param propagation
- * so callees can pick up the caller's element type for inline f64.load.
- */
-export function collectTypedElems(body) {
-  if (body && typeof body === 'object') {
-    const hit = _typedElemsCache.get(body)
-    if (hit) return new Map(hit)
-  }
-  const result = new Map()
-  const track = (name, rhs) => {
+  const trackTyped = (name, rhs) => {
     const ctor = typedElemCtor(rhs)
-    if (ctor) { result.set(name, ctor); return }
+    if (ctor) { typedElems.set(name, ctor); return }
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
       const f = ctx.func.map?.get(rhs[1])
       if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
         const c = ctorFromElemAux(f.sig.ptrAux)
-        if (c) result.set(name, c)
+        if (c) typedElems.set(name, c)
       }
     }
   }
+
+  // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
+  const processDecl = (name, rhs) => {
+    // wasm type (locals slice)
+    const wt = exprType(rhs, locals)
+    if (!locals.has(name)) locals.set(name, wt)
+    else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
+
+    // val type (valTypes slice)
+    const vt = valTypeOf(rhs)
+    if (vt) valTypes.set(name, vt); else valTypes.delete(name)
+
+    // typed-array element ctor (typedElems slice)
+    trackTyped(name, rhs)
+
+    // arr-elem schema (arrElemSchemas slice) — schema bindings + array-literal init + alias + call return
+    if (doSchemas) {
+      const sid = exprSchemaId(rhs, localSchemaMap)
+      if (sid != null) localSchemaMap.set(name, sid)
+      if (Array.isArray(rhs) && rhs[0] === '[]') {
+        const elems = rhs.slice(1).filter(e => e != null)
+        if (elems.length) {
+          let common = exprSchemaId(elems[0], localSchemaMap)
+          for (let k = 1; k < elems.length && common != null; k++) {
+            if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
+          }
+          if (common != null) observeArrSchema(name, common)
+        }
+      }
+      if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+        const f = ctx.func.map?.get(rhs[1])
+        if (f?.arrayElemSchema != null) observeArrSchema(name, f.arrayElemSchema)
+      }
+      if (typeof rhs === 'string' && arrElemSchemas.has(rhs)) {
+        const sid2 = arrElemSchemas.get(rhs)
+        if (sid2 != null) observeArrSchema(name, sid2)
+      }
+      if (typeof rhs === 'string') {
+        const repSid = ctx.func.repByLocal?.get(rhs)?.arrayElemSchema
+        if (repSid != null) observeArrSchema(name, repSid)
+      }
+    }
+
+    // arr-elem val type (arrElemValTypes slice) — array-literal init + call return + alias + .map/.filter/.slice/.concat chain
+    if (Array.isArray(rhs) && rhs[0] === '[]') {
+      const elems = rhs.slice(1).filter(e => e != null)
+      if (elems.length) {
+        let common = exprElemSourceVal(elems[0])
+        for (let k = 1; k < elems.length && common != null; k++) {
+          if (exprElemSourceVal(elems[k]) !== common) common = null
+        }
+        if (common != null) observeArrValType(name, common)
+      }
+    }
+    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+      const f = ctx.func.map?.get(rhs[1])
+      if (f?.arrayElemValType) observeArrValType(name, f.arrayElemValType)
+    }
+    if (typeof rhs === 'string') {
+      const v = elemValOf(rhs)
+      if (v) observeArrValType(name, v)
+    }
+    if (Array.isArray(rhs) && rhs[0] === '()' &&
+        Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
+        typeof rhs[1][1] === 'string') {
+      const recvName = rhs[1][1], method = rhs[1][2]
+      if (method === 'filter' || method === 'slice' || method === 'concat') {
+        const v = elemValOf(recvName)
+        if (v) observeArrValType(name, v)
+      } else if (method === 'map') {
+        const arrowFn = rhs[2]
+        const recvVt = elemValOf(recvName)
+        const param = Array.isArray(arrowFn) && arrowFn[0] === '=>' ? arrowFn[1] : null
+        const paramName = typeof param === 'string' ? param :
+          (Array.isArray(param) && param[0] === '()' && typeof param[1] === 'string' ? param[1] : null)
+        const arrowBody = paramName ? arrowFn[2] : null
+        const exprBody = (Array.isArray(arrowBody) && arrowBody[0] === '{}' &&
+          Array.isArray(arrowBody[1]) && arrowBody[1][0] === 'return') ? arrowBody[1][1] : arrowBody
+        if (paramName && exprBody != null) {
+          const refs = ctx.func.refinements
+          const hadParam = refs?.has(paramName)
+          const prev = hadParam ? refs.get(paramName) : undefined
+          if (refs && recvVt) refs.set(paramName, recvVt)
+          let bodyVt = null
+          try { bodyVt = valTypeOf(exprBody) }
+          finally {
+            if (refs && recvVt) {
+              if (hadParam) refs.set(paramName, prev); else refs.delete(paramName)
+            }
+          }
+          if (bodyVt) observeArrValType(name, bodyVt)
+        }
+      }
+    }
+  }
+
+  // arrElem invalidation rule — fires on `=` reassign of tracked name to non-array
+  const isArrayProducingRhs = (rhs) =>
+    Array.isArray(rhs) && (rhs[0] === '[]' ||
+      (rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
+       (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))
+
+  // === Single walk ===
   function walk(node) {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
+    const op = node[0]
+    if (op === '=>') return  // don't cross closure boundary
+
     if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        track(a[1], a[2])
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        // analyzeLocals: bare-name decl
+        if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
+        if (!Array.isArray(a) || a[0] !== '=') continue
+        // analyzeLocals: destructuring decl — set destructured names to f64, walk rhs only
+        if (typeof a[1] !== 'string') {
+          for (const n of collectParamNames([a[1]])) if (!locals.has(n)) locals.set(n, 'f64')
+          walk(a[2])
+          continue
+        }
+        const name = a[1], rhs = a[2]
+        processDecl(name, rhs)
+        // Walk rhs only — never enter the `=` node so the reassignment-invalidation
+        // rule won't misfire on the binding's own initializer.
+        walk(rhs)
       }
-    } else if (op === '=' && typeof args[0] === 'string') {
-      track(args[0], args[1])
+      return
     }
-    for (const a of args) walk(a)
+
+    // arr.push(...) — observe both schemas and val types in one pass
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'push' && typeof node[1][1] === 'string') {
+      const arr = node[1][1]
+      const callArgs = node[2]
+      const list = callArgs == null ? [] :
+        (Array.isArray(callArgs) && callArgs[0] === ',') ? callArgs.slice(1) : [callArgs]
+      for (const a of list) {
+        if (Array.isArray(a) && a[0] === '...') {
+          observeArrSchema(arr, null); observeArrValType(arr, null); continue
+        }
+        observeArrSchema(arr, exprSchemaId(a, localSchemaMap))
+        observeArrValType(arr, exprElemSourceVal(a))
+      }
+    }
+
+    // `=` reassignment — locals widen, valTypes/typedElems track,
+    // arrElemSchemas/ValTypes invalidate when rhs isn't array-producing.
+    if (op === '=' && typeof node[1] === 'string') {
+      const name = node[1], rhs = node[2]
+      const wt = exprType(rhs, locals)
+      if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
+      const vt = valTypeOf(rhs)
+      if (vt) valTypes.set(name, vt); else valTypes.delete(name)
+      trackTyped(name, rhs)
+      if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
+      if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
+    }
+
+    // compound-assign widening (locals slice)
+    if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
+      const name = node[1], opChar = op[0]
+      const t = exprType([opChar, node[1], node[2]], locals)
+      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
+    }
+    if (op === '/=' && typeof node[1] === 'string') {
+      if (locals.has(node[1])) locals.set(node[1], 'f64')
+    }
+
+    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  walk(body)
-  if (body && typeof body === 'object') _typedElemsCache.set(body, new Map(result))
+
+  // Install the in-progress valTypes as a lookup overlay so successive decls
+  // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
+  // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
+  const prevOverlay = ctx.func.localValTypesOverlay
+  ctx.func.localValTypesOverlay = valTypes
+  try { walk(body) } finally { ctx.func.localValTypesOverlay = prevOverlay }
+
+  // Second pass: widen i32 locals compared against f64.
+  const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
+  function widenPass(node) {
+    if (!Array.isArray(node)) return
+    const [op, ...args] = node
+    if (CMP_OPS.has(op)) {
+      const [a, b] = args
+      const ta = exprType(a, locals), tb = exprType(b, locals)
+      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a)) locals.set(a, 'f64')
+      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b)) locals.set(b, 'f64')
+    }
+    if (op !== '=>') for (const a of args) widenPass(a)
+  }
+  widenPass(body)
+
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
+  _bodyFactsCache.set(body, result)
   return result
+}
+
+/** Drop the cached analyzeBody entry for this body. Used by emitFunc after
+ *  seeding cross-call param VAL facts so the next walk picks up fresh
+ *  `ctx.func.repByLocal` (drives exprType receiver-type lookups).
+ *  Same hook as `invalidateValTypesCache` — split names preserve caller intent. */
+export function invalidateLocalsCache(body) {
+  if (body && typeof body === 'object') _bodyFactsCache.delete(body)
+}
+
+/** Drop the cached analyzeBody entry. Used after E2-phase valResult narrowing
+ *  so the next walk re-evaluates `valTypeOf(call)` with up-to-date `f.valResult`
+ *  — required for the D-pass paramReps val/arrayElemSchema re-fixpoint to see
+ *  `const rows = initRows()` as VAL.ARRAY (initRows.valResult set by E2). */
+export function invalidateValTypesCache(body) {
+  if (body && typeof body === 'object') _bodyFactsCache.delete(body)
 }
 
 /**
@@ -788,12 +842,12 @@ export function analyzeValTypes(body) {
   const getVal = name => ctx.func.repByLocal?.get(name)?.val
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
-  const arrElems = collectArrElemSchemas(body)
-  // Parallel walk for Array<VAL.*> facts (numeric/string/etc. element kinds).
-  // Records into rep.arrayElemValType so valTypeOf's `arr[i]` rule can elide
-  // __to_num and route through the right method dispatch on `arr[i].method()`.
-  const arrElemVals = collectArrElemValTypes(body)
-  for (const [name, vt] of arrElemVals) {
+  // Parallel arrElemValTypes walk records VAL.* element kinds into
+  // rep.arrayElemValType so valTypeOf's `arr[i]` rule can elide __to_num and route
+  // method dispatch on `arr[i].method()`. Both come from a single unified walk.
+  const facts = analyzeBody(body)
+  const arrElems = facts.arrElemSchemas
+  for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
   }
   // Resolve a name's array-elem-schema, preferring rep.arrayElemSchema (set from
@@ -1044,7 +1098,9 @@ export function exprType(expr, locals) {
     return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 ? 'i32' : 'f64'
   if (typeof expr === 'string') {
     if (locals?.has?.(expr)) return locals.get(expr)
-    return ctx.func.current?.params?.find(p => p.name === expr)?.type || 'f64'
+    const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
+    if (paramType) return paramType
+    return 'f64'
   }
   if (!Array.isArray(expr)) return 'f64'
 
@@ -1092,6 +1148,15 @@ export function exprType(expr, locals) {
     // hot loops keep `c` as i32 across `c >= 48 && c <= 57`, `c - 48`, etc.,
     // skipping the f64.convert_i32_u widen at every char read.
     if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'charCodeAt') return 'i32'
+    // User-function call: consult the callee's narrowed result type. By the time
+    // analyzeLocals runs in emitFunc, narrowSignatures has set sig.results[0]='i32'
+    // on every body-i32-only func. Propagating this lets `let h = userFn(...)`
+    // (mix in callback bench: i32-FNV) keep h as an i32 local instead of widening
+    // to f64 and round-tripping i32↔f64 every iteration.
+    if (typeof args[0] === 'string') {
+      const f = ctx.func.map?.get(args[0])
+      if (f?.sig?.results?.length === 1 && f.sig.results[0] === 'i32' && f.sig.ptrKind == null) return 'i32'
+    }
   }
   return 'f64'
 }
@@ -1099,70 +1164,11 @@ export function exprType(expr, locals) {
 /**
  * Analyze all local declarations and assignments to determine types.
  * A local is i32 if ALL assignments produce i32. Any f64 widens to f64.
+ *
+ * Thin slice of `analyzeBody` (single unified walk).
  */
 export function analyzeLocals(body) {
-  if (body && typeof body === 'object') {
-    const hit = _localsCache.get(body)
-    if (hit) return new Map(hit)
-  }
-  const locals = new Map()
-
-  function walk(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
-        if (!Array.isArray(a) || a[0] !== '=') continue
-        if (typeof a[1] !== 'string') {
-          for (const n of collectParamNames([a[1]])) if (!locals.has(n)) locals.set(n, 'f64')
-          walk(a[2]); continue
-        }
-        const name = a[1], t = exprType(a[2], locals)
-        if (!locals.has(name)) locals.set(name, t)
-        else if (locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-      }
-    }
-
-    if (op === '=' && typeof args[0] === 'string') {
-      const name = args[0], t = exprType(args[1], locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-    }
-
-    if (['+=', '-=', '*=', '%='].includes(op) && typeof args[0] === 'string') {
-      const name = args[0], opChar = op[0]
-      const t = exprType([opChar, args[0], args[1]], locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
-    }
-    if (['/='].includes(op) && typeof args[0] === 'string') {
-      if (locals.has(args[0])) locals.set(args[0], 'f64')
-    }
-
-    if (op !== '=>') for (const a of args) walk(a)
-  }
-
-  walk(body)
-
-  // Second pass: widen i32 locals that are compared against f64 operands.
-  // `for (let i = 0; i < n; i++)` where n is f64 param — i should be f64
-  // to avoid per-iteration f64.convert_i32_s.
-  const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
-  function widenPass(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (CMP_OPS.has(op)) {
-      const [a, b] = args
-      const ta = exprType(a, locals), tb = exprType(b, locals)
-      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a)) locals.set(a, 'f64')
-      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b)) locals.set(b, 'f64')
-    }
-    if (op !== '=>') for (const a of args) widenPass(a)
-  }
-  widenPass(body)
-
-  if (body && typeof body === 'object') _localsCache.set(body, new Map(locals))
-  return locals
+  return analyzeBody(body).locals
 }
 
 /**
@@ -1496,25 +1502,14 @@ export function analyzeBoxedCaptures(body) {
  * + caller-param facts + transitive user-fn results, and if all agree set `func[field]`.
  * Lets callers' `const rows = initRows()` gain the elem fact, propagating to
  * runKernel params via paramReps. `field` selects which fact ('arrayElemSchema'
- * | 'arrayElemValType'); `collectFn` is the matching body-local collector.
+ * | 'arrayElemValType') — slice key is derived.
  */
-export function narrowReturnArrayElems(field, collectFn, paramReps, valueUsed) {
-  const collectReturnExprs = (node, out) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
-    for (const a of args) collectReturnExprs(a, out)
-  }
-  const alwaysReturns = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === '=>') return false
-    if (op === 'return' || op === 'throw') return true
-    if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
-    if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
-    return false
-  }
+const _FIELD_TO_SLICE = {
+  arrayElemSchema: 'arrElemSchemas',
+  arrayElemValType: 'arrElemValTypes',
+}
+export function narrowReturnArrayElems(field, paramReps, valueUsed) {
+  const sliceKey = _FIELD_TO_SLICE[field]
   const targets = ctx.func.list.filter(f =>
     !f.raw && !f.exported && !valueUsed.has(f.name) &&
     f.valResult === VAL.ARRAY && f[field] == null
@@ -1522,20 +1517,26 @@ export function narrowReturnArrayElems(field, collectFn, paramReps, valueUsed) {
   let changed = true
   while (changed) {
     changed = false
+    // Cache-staleness barrier: the fixpoint mutates target funcs' [field]
+    // between iterations. analyzeBody reads ctx.func.map[*][field] when
+    // resolving `const x = callee()` and similar chains, so any cached entry
+    // from a prior iter would freeze cross-func propagation. Clear all target
+    // bodies before each sweep.
+    for (const f of targets) _bodyFactsCache.delete(f.body)
     for (const func of targets) {
       if (func[field] != null) continue
-      const isBlock = Array.isArray(func.body) && func.body[0] === '{}' && func.body[1]?.[0] !== ':'
+      const isBlock = isBlockBody(func.body)
       if (isBlock && !alwaysReturns(func.body)) continue
-      const exprs = []
-      if (isBlock) collectReturnExprs(func.body, exprs)
-      else exprs.push(func.body)
+      const exprs = returnExprs(func.body)
       if (!exprs.length) continue
-      // Body-local observations. Need ctx.func.locals seeded for collect*'s
-      // `observe()` filter (which checks the var is a known local).
+      // analyzeBody is context-pure for the arrElem slices, so a single walk
+      // gives both `locals` (for ctx.func.locals seeding — observe filter for
+      // param-aware downstream consumers) and the requested slice.
       const savedLocals = ctx.func.locals
-      ctx.func.locals = analyzeLocals(func.body)
+      const facts = analyzeBody(func.body)
+      ctx.func.locals = new Map(facts.locals)
       for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
-      const localElems = collectFn(func.body)
+      const localElems = facts[sliceKey]
       ctx.func.locals = savedLocals
       const paramElemMap = callerParamFactMap(paramReps, func, field) || new Map()
       const resolveExpr = (expr) => {
@@ -1612,21 +1613,8 @@ export function collectProgramFacts(ast) {
   const doArity = !!ctx.closure.make
   let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
   const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
-  // Slot-type collection: monomorphic property val types per schema, populated from
-  // every static `{a: e1, b: e2, …}` literal in the program. Read by ctx.schema.slotVT
-  // → valTypeOf on `.prop` AST nodes so downstream `+`, `===`, method dispatch can
-  // skip the "is it a string?" runtime check on numeric props of known shapes.
-  // Merge rule: first observation wins; second distinct kind → null (ambiguous).
-  const slotTypes = ctx.schema.slotTypes
-  const observeSlot = (sid, idx, vt) => {
-    if (!vt) return
-    let arr = slotTypes.get(sid)
-    if (!arr) { arr = []; slotTypes.set(sid, arr) }
-    while (arr.length <= idx) arr.push(undefined)
-    if (arr[idx] === null) return
-    if (arr[idx] === undefined) arr[idx] = vt
-    else if (arr[idx] !== vt) arr[idx] = null
-  }
+  // Slot-type observation lives in the dedicated `observeProgramSlots` pass below;
+  // walkFacts only registers schemas (which is local to the AST node).
   const walkFacts = (node, full, inArrow, callerFunc) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -1641,14 +1629,12 @@ export function collectProgramFacts(ast) {
       anyDyn = true
       if (typeof args[1] === 'string') dynVars.add(args[1])
     }
-    // Object literal: register schema + observe slot val types. Static-key only;
-    // dynamic-key/spread shapes route through __dyn_set and have no fixed slot mapping.
+    // Object literal: register schema. Slot val-type observation is deferred to a
+    // second pass (observeSlotsIn below) so that shorthand `{x}` (expanded by prepare
+    // to `[':', x, x]`) resolves x's val type via per-function locals, not just globals.
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(args)
-      if (parsed) {
-        const sid = ctx.schema.register(parsed.names)
-        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, valTypeOf(parsed.values[i]))
-      }
+      if (parsed) ctx.schema.register(parsed.names)
     }
     // closure ABI arity
     if (doArity) {
@@ -1711,9 +1697,69 @@ export function collectProgramFacts(ast) {
   walkFacts(ast, true, false, null)
   for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+
+  // Slot-type observation pass: walk every `{}` literal with the right scope's
+  // valTypes installed as `ctx.func.localValTypesOverlay` so shorthand `{x}`
+  // (expanded by prepare to `[':', x, x]`) and chained typed-array reads resolve
+  // through valTypeOf → lookupValType. Skips into closures — they're observed via
+  // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
+  // map (already populated with the same overlay-aware walk).
+  if (doSchema) observeProgramSlots(ast)
+
   return {
     dynVars, anyDyn, propMap, valueUsed, callSites,
     maxDef, maxCall, hasRest, hasSpread,
     paramReps,
   }
+}
+
+/** Walk `ast` + every user function body + module inits, observing slot types
+ *  on each `{}` literal. Per-function bodies have their analyzeBody.valTypes
+ *  installed as overlay so shorthand `{x}` resolves through local consts.
+ *
+ *  Re-runnable: compile.js calls this once during collectProgramFacts (before
+ *  E2 valResult inference), then again after E2 — on the second pass, valTypeOf
+ *  on user-function calls resolves via `f.valResult`, lifting slots whose value
+ *  is `const x = userFn(...)` from `undefined` to `NUMBER`/etc.
+ *  observeSlot's first-wins-then-clash rule means later precise observations
+ *  upgrade undefined slots without re-poisoning already-monomorphic ones. */
+export function observeProgramSlots(ast) {
+  if (!ctx.schema?.register) return
+  const slotTypes = ctx.schema.slotTypes
+  const observeSlot = (sid, idx, vt) => {
+    if (!vt) return
+    let arr = slotTypes.get(sid)
+    if (!arr) { arr = []; slotTypes.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === null) return
+    if (arr[idx] === undefined) arr[idx] = vt
+    else if (arr[idx] !== vt) arr[idx] = null
+  }
+  const visit = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === '{}') {
+      const parsed = staticObjectProps(node.slice(1))
+      if (parsed) {
+        const sid = ctx.schema.register(parsed.names)
+        for (let i = 0; i < parsed.values.length; i++) {
+          observeSlot(sid, i, valTypeOf(parsed.values[i]))
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) visit(node[i])
+  }
+  const prevOverlay = ctx.func.localValTypesOverlay
+  if (ast) { ctx.func.localValTypesOverlay = null; visit(ast) }
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
+    visit(func.body)
+  }
+  if (ctx.module.moduleInits) {
+    ctx.func.localValTypesOverlay = null
+    for (const mi of ctx.module.moduleInits) visit(mi)
+  }
+  ctx.func.localValTypesOverlay = prevOverlay
 }
