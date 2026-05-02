@@ -17,7 +17,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-JZ isolates modern functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. No legacy, no regrets, no linter. **Write plain JS, compile to WASM** – fast, portable and long-lasting.
+JZ isolates modern functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. **Write plain JS, compile to WASM** – fast, portable and long-lasting.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
@@ -118,6 +118,24 @@ Not supported
   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
   dynamic import  DOM  fetch  Intl  Node APIs
 ```
+
+
+## Benchmark
+
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|
+| **biquad** | **8.22 ms**<br>**4.1 kB** | 9.01 ms<br>5.3 kB | 6.40 ms<br>1.9 kB | 4.82 ms<br>767 B | 3.77 ms<br>32.8 kB | 6.52 ms<br>2.39 MB | 3.80 ms<br>471.9 kB |
+| **tokenizer** | **0.07 ms**<br>**4.2 kB** | 0.12 ms<br>1.4 kB | 0.04 ms<br>1.5 kB | — | 0.12 ms<br>32.9 kB | 0.06 ms<br>2.39 MB | 0.11 ms<br>471.8 kB |
+| **mat4** | **6.17 ms**<br>**3.8 kB** | 8.66 ms<br>1.1 kB | 6.51 ms<br>1.5 kB | — | 2.07 ms<br>32.9 kB | 8.32 ms<br>2.39 MB | 0.58 ms<br>471.9 kB |
+| **aos** | **1.07 ms**<br>**5.3 kB** | 1.29 ms<br>1.1 kB | 1.33 ms<br>2.2 kB | — | 1.02 ms<br>32.9 kB | 0.63 ms<br>2.39 MB | 1.00 ms<br>471.8 kB |
+| **bitwise** | **3.63 ms**<br>**3.5 kB** | 3.79 ms<br>1005 B | 8.92 ms<br>1.5 kB | — | 0.97 ms<br>32.9 kB | 3.72 ms<br>2.39 MB | 1.13 ms<br>471.8 kB |
+| **poly** | **0.74 ms**<br>**3.5 kB** | 1.63 ms<br>1014 B | 0.75 ms<br>1.3 kB | — | 0.48 ms<br>32.9 kB | 0.57 ms<br>2.39 MB | 0.48 ms<br>471.8 kB |
+| **callback** | **0.01 ms**<br>**4.5 kB** | 0.63 ms<br>828 B | 1.04 ms<br>1.9 kB | — | 0.07 ms<br>32.9 kB | 0.15 ms<br>2.39 MB | 0.05 ms<br>471.8 kB |
+| **json** | **0.33 ms**<br>**10.4 kB** | 0.27 ms<br>923 B | — | — | 0.02 ms<br>32.9 kB | 0.76 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
+
+_Numbers from `node bench/bench.mjs` on Apple Silicon. See [benchmark](./bench/)._
+
+
 
 
 ## FAQ
@@ -306,24 +324,6 @@ jz program.js -o program.wasm
 wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
-
-
-## Benchmark
-
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
-|---|---|---|---|---|---|---|---|
-| **biquad** | **11.19 ms**<br>**8.0 kB** | 12.43 ms<br>5.3 kB | 8.94 ms<br>1.9 kB | 6.45 ms<br>767 B | 5.35 ms<br>32.8 kB | 8.92 ms<br>2.39 MB | 5.36 ms<br>471.9 kB |
-| **tokenizer** | **0.10 ms**<br>**7.5 kB** | 0.17 ms<br>1.4 kB | 0.06 ms<br>1.5 kB | — | 0.16 ms<br>32.9 kB | 0.07 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
-| **mat4** | **8.58 ms**<br>**7.5 kB** | 11.54 ms<br>1.1 kB | 9.12 ms<br>1.5 kB | — | 2.62 ms<br>32.9 kB | 11.54 ms<br>2.39 MB | 0.80 ms<br>471.9 kB |
-| **aos** | **3.53 ms**<br>**9.4 kB** | 1.79 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.20 ms<br>32.9 kB | 0.90 ms<br>2.39 MB | 1.21 ms<br>471.8 kB |
-| **bitwise** | **8.37 ms**<br>**7.4 kB** | 5.48 ms<br>1005 B | 11.99 ms<br>1.5 kB | — | 1.31 ms<br>32.9 kB | 5.24 ms<br>2.39 MB | 1.31 ms<br>471.8 kB |
-| **poly** | **1.13 ms**<br>**7.4 kB** | 2.29 ms<br>1014 B | 1.13 ms<br>1.3 kB | — | 0.53 ms<br>32.9 kB | 0.80 ms<br>2.39 MB | 0.52 ms<br>471.8 kB |
-| **callback** | **3.81 ms**<br>**8.6 kB** | 0.98 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.10 ms<br>32.9 kB | 0.20 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
-| **json** | **0.54 ms**<br>**11.2 kB** | 0.39 ms<br>923 B | — | — | 0.03 ms<br>32.9 kB | 1.07 ms<br>2.93 MB | 0.03 ms<br>471.9 kB |
-
-_Numbers from `node bench/bench.mjs` on Apple Silicon. See [benchmark](./bench/)._
-
-
 
 
 ## Alternatives
