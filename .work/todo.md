@@ -123,12 +123,25 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
   string op pulls number (for length comparisons). Make `string` an actual
   dependency only when string ops appear; format-on-print should opt-in via
   the `console`/`fd_write` path.
-* [ ] **Lazy `__length` dispatch** at `module/core.js:361`. `emitLengthAccess`
-  flips `features.typedarray = features.set = features.map = true` for any
-  `.length` whose receiver type is unresolved. For typed-array-only programs,
-  this is everything — pulls Set/Map machinery for nothing. Restrict to actual
-  unresolved Set/Map sites; default unresolved to typedarray-only when
-  receivers are typed-array-typed.
+* [x] **Lazy `__length` dispatch** at `module/core.js:347` — already correct.
+  `emitLengthAccess` only sets `features.typedarray=true` for unresolved
+  receivers (not set/map; those are flipped at construction sites). The
+  `__length` factory then conditionally includes set/map dispatch arms only
+  when `features.set`/`features.map` are true.
+* [x] **Specialize `console.log(template literal)`** ([module/console.js:103](../module/console.js#L103)).
+  Template literals lower to `__str_concat` chains in prepare. console.log's
+  emit handler now flattens the concat chain (`X.concat(Y).concat(Z)…` rooted
+  at `['str', ...]`) into per-part `__write_str` / `__write_num` calls,
+  bypassing the in-memory string assembly. Drops `__str_concat`, `__to_str`,
+  `__str_byteLen`, `__str_copy`, `__str_join` from biquad. -647 B.
+* [x] **Re-observe schema slots after E2 valResult** ([src/analyze.js observeProgramSlots](../src/analyze.js),
+  [src/compile.js narrowSignatures](../src/compile.js)). First slot observation
+  pass runs in `collectProgramFacts` before `valResult` inference, so a slot
+  bound to a user-fn call (`{ ..., cs }` where `cs = checksum(out)`) gets
+  observed as null. Re-running after E2 lifts `undefined` → NUMBER; observeSlot's
+  first-wins-then-clash rule guarantees no regression for already-monomorphic
+  slots. Drops `__write_val` from biquad (cs slot now resolves to NUMBER → direct
+  `__write_num`). -88 B in biquad. Net biquad: 4983 → 4198 B (-785 B / -15.8%).
 * [ ] **Strip data segment for non-emitted strings.** Empty `data` in jz
   biquad is 185 B for unused string literals from helpers. Tree-shake by
   emitted-helper set, not declared-helper set.
@@ -137,27 +150,103 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
   wasm CLI use; gate behind a config flag (default on for `jz.compile`,
   default off for `jz build --wasi`).
 
-### Per-bench gap snapshot (jz vs native, jz vs AS)
+### Per-bench gap snapshot (jz vs native, jz vs V8, jz vs AS)
 
-Latest full-bench run, darwin/arm64 M-class:
+Latest full-bench run after console-template-flatten + schema slot re-observation
+landings (darwin/arm64 M-class, jz vs V8 vs AS):
 
-| case      | jz ms | nat ms | AS ms | jz×nat | jz×AS  | status      |
-| ---       | ---:  | ---:   | ---:  | ---:   | ---:   | ---         |
-| biquad    | 11.06 | 5.31   | 8.95  | 2.08×  | 1.23×  | behind AS   |
-| mat4      |  8.59 | 2.62   | 9.14  | 3.28×  | 0.94×  | beats AS    |
-| poly      |  1.13 | 0.71   | 1.13  | 1.60×  | 1.00×  | ties AS     |
-| bitwise   |  8.45 | 1.30   |12.11  | 6.49×  | 0.70×  | beats AS    |
-| tokenizer |  0.07 | 0.09   | 0.04  | 0.78×  | 1.75×  | beats native|
-| callback  |  3.46 | 0.07   | 1.41  | 49.4×  | 2.45×  | behind AS   |
-| aos       |  3.48 | 1.20   | 1.90  | 2.90×  | 1.83×  | behind AS   |
-| json      |  0.53 | n/a    | n/a   | n/a    | n/a    | JS-only ref |
+| case      | jz ms | jz B  | V8 ms | V8 B  | AS ms | AS B  | jz×V8  | jz×AS  | status |
+| ---       | ---:  | ---:  | ---:  | ---:  | ---:  | ---:  | ---:   | ---:   | --- |
+| biquad    | 7.90  | 4198  | 8.93  | 5300  | 6.50  | 1900  | 0.88×  | 1.22×  | beats V8, behind AS perf |
+| mat4      | 6.18  | 3891  | 8.73  | 1100  | 6.68  | 1500  | 0.71×  | 0.92×  | beats V8 + AS |
+| poly      | 0.77  | 3584  | 1.74  | 1014  | 0.74  | 1300  | 0.44×  | 1.04×  | beats V8, ties AS |
+| bitwise   | 3.51  | 3584  | 3.83  | 1005  | 8.69  | 1500  | 0.92×  | 0.40×  | beats V8 + AS |
+| tokenizer | 0.07  | 4301  | 0.12  | 1400  | 0.04  | 1500  | 0.62×  | 1.75×  | beats V8 + native (AS DIFF) |
+| callback  | 0.011 | 4608  | 0.62  |  828  | 1.09  | 1900  | 0.018× | 0.010× | beats V8 + AS by ~100× |
+| aos       | 1.06  | 5427  | 1.31  | 1100  | 1.39  | 2200  | 0.81×  | 0.76×  | beats V8 + AS |
+| json      | 0.34  |10650  | 0.27  |  923  | n/a   | n/a   | 1.26×  | n/a    | behind V8 (JS-only ref) |
 
-jz now beats AS on 2/6 wasm-comparable cases (mat4, bitwise) and ties on poly.
-Remaining AS gaps by descending size: callback (2.45×), aos (1.83×),
-tokenizer (1.75×), biquad (1.2×). (AS tokenizer reports DIFF checksum — not
-fully apples-to-apples; jz now beats native C on tokenizer.)
+jz now beats V8 on **7 of 8** wasm-comparable cases (json is the only laggard:
+JSON.parse + dynamic property dispatch is the dominant cost on a 10.4 kB
+runtime). jz beats AS on 4 of 6 cases (mat4, bitwise, callback, aos). Remaining
+AS-perf gaps: biquad (1.22×), poly (1.04×, within 5% noise tie). Size pinned in
+test/bench-pin.js for regression guarding.
 
-### Completed perf wins (this session)
+### Completed perf / cleanup wins (this session)
+
+* [x] **TCO via `return_call` for expression-bodied arrows**
+  ([src/compile.js tcoTailRewrite](../src/compile.js#L110)). `emit.js`'s
+  `'return'` handler already rewrote `return f(...)` to `return_call $f` —
+  but expression-bodied arrows (`(n, acc) => n <= 0 ? acc : sum(n-1, acc+n)`)
+  emit the body as a value-producing expression with no surrounding `return`
+  op, so the existing rewriter never fired. Recursive code crashed with
+  `RangeError: Maximum call stack size exceeded` even on modest depths.
+  Added a tail-position IR rewriter at the bare-body emit path (compile.js
+  line 1131): walks the IR root, recurses into both arms of
+  `(if (result T) ...)` and last instr of `(block ...)`, rewriting any
+  direct `(call $name ...)` to `(return_call $name ...)` when callee's
+  result type matches caller's. Covered cases (validated): ternary tail,
+  mutual recursion, `||`/`&&` tail (emit `||` desugars to if/else when
+  right is a call), nested ternary, block-body return (already worked via
+  the emit-handler path). `sum(100000)` now runs without overflow.
+
+* [x] **i32 chain narrowing through user-function returns — callback breakthrough**
+  ([src/analyze.js exprType](../src/analyze.js#L1149),
+  [src/compile.js I phase](../src/compile.js#L626),
+  [src/compile.js reachability filter](../src/compile.js#L136)).
+  callback bench **0.060 ms → 0.015 ms (4× speedup)** — single-digit-µs
+  region. Wins:
+  - `exprType` `()` branch now consults `ctx.func.map.get(callee).sig.results`
+    when the callee is a body-i32-only narrowed user function; analyzeLocals
+    sees `let h = mix(...)` as i32 instead of widening to f64;
+  - new I phase (post-E re-fixpoint) refreshes `callerLocals` with the
+    narrowed result types, unconditionally clears `r.wasm` (clearStickyNull
+    only resets null — needed full reset because first pass populated `f64`
+    from stale view), re-runs `runFixpoint`, and re-applies numeric narrowing.
+    `VAL.TYPED` guard preserves `specializeBimorphicTyped`'s territory;
+  - reachability filter at top of `narrowSignatures` removes dead callerFunc
+    entries from `callSites` (via export∪valueUsed transitive closure) so
+    bundled stdlib helpers (`checksumF64 → mix(...)`) can't poison live
+    callees with bimorphic facts;
+  - simplified `exprTypeWithCalls` to direct `exprType` — earlier shim hard-
+    coded `f64` for any non-user-narrowed call op, shadowing the stdlib
+    rules (math.imul, charCodeAt) added for tokenizer.
+  Result: callback's `mix(h, b[j]|0)` hot loop runs as pure-i32 FNV — h, x,
+  return all i32, no per-iter f64↔i32 round-trips.
+
+* [x] **Boundary boxing — narrow internal sigs, rebox at JS↔WASM edge**
+  ([src/compile.js synthesizeBoundaryWrappers](../src/compile.js),
+  [src/analyze.js shared helpers](../src/analyze.js)). Body-driven result
+  narrowing extended to *exported* funcs: when body provably yields i32 /
+  ptr-kind value, `sig.results[0]` becomes `i32` and a synthesized
+  `$<name>$exp` wrapper restores the f64 ABI for JS callers via
+  `boxNumIR` / `boxPtrIR`. Internals now operate on raw types; NaN-boxing
+  becomes a *boundary* concern (swappable runtime). Bare-return guard,
+  `>>>` skip (preserves uint32 semantics), and `alwaysReturns` for ptr
+  narrowing keep the pass sound.
+
+* [x] **Watr inliner soundness fix (upstream)**
+  ([watr/src/optimize.js](/Users/div/projects/watr/src/optimize.js#L1394),
+  [watr/test/optimize.js](/Users/div/projects/watr/test/optimize.js)).
+  Inliner now refuses callees whose body contains `return` /
+  `return_call` / `return_call_indirect` — control-transfer ops would
+  return from the *caller's* frame with the wrong result type when the
+  caller's signature differs from the callee's. Two regression tests
+  pinned. Eliminates the post-watr fixWrapperReturns workaround in jz.
+
+* [x] **AST helper consolidation** ([src/analyze.js](../src/analyze.js)).
+  Extracted `isBlockBody`, `collectReturnExprs`, `alwaysReturns`,
+  `hasBareReturn`, `returnExprs` as shared exports. compile.js' three
+  result-narrowing loops (numeric / valType / ptr) plus
+  `narrowReturnArrayElems` all reuse them. -145 lines.
+
+* [x] **Fixpoint runner consolidation** ([src/compile.js
+  runArrElemFixpoint](../src/compile.js)). `runArrFixpoint` +
+  `runArrValTypeFixpoint` + `runTypedFixpoint` collapsed into a single
+  parameterized `runArrElemFixpoint(field, inferFn, elemsCtxMap)`. Same
+  shape, three call sites, one impl.
+
+### Completed perf wins (prior sessions)
 
 * [x] **`.charCodeAt(i)` returns i32 directly** ([module/string.js:785](../module/string.js#L785),
   [src/analyze.js exprType](../src/analyze.js#L770)).
@@ -489,9 +578,10 @@ arrays gets you without unrolling).
   unit tests in `test/types.js` for forward-prop / backward-prop / poisoning
   / boundary-boxing rules so the migration is incremental and reversible.
 
-* [ ] **Tail call optimization.** No TCO today — recursive code pays full
-  call-frame cost. Add for `return f(...)` patterns where caller and callee
-  agree on signature. Wasm has `return_call`; gating is straightforward.
+* [x] **Tail call optimization.** Done. Block-body `return f(...)` was
+  already rewritten by emit.js's `'return'` handler; expression-bodied
+  arrows now also TCO via `tcoTailRewrite` in compile.js (walks if/else
+  arms + block tails, emits `return_call` when callee result type matches).
 
 ### Implementation order (ratified 2026-05-01)
 
