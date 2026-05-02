@@ -356,14 +356,13 @@ export default (ctx) => {
       inc('__str_byteLen')
       return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
     }
-    // Unknown → runtime dispatch via stdlib. Receiver could be any ptr-bearing type;
-    // enable the type-specific __length branches so the dispatch handles them.
-    // Host-passed values (via jz.memory or direct export calls) may carry types
-    // producers didn't flag, so this flip is unconditional for correctness.
+    // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
+    // only when user code actually constructs Set/Map (collection.js sets the
+    // feature flags at the construction site); otherwise dispatch falls through
+    // to ARRAY/STRING/TYPED. typedarray stays on because typed arrays are
+    // commonly passed from JS via jz.memory.* without an in-program constructor.
     inc('__length')
     ctx.features.typedarray = true
-    ctx.features.set = true
-    ctx.features.map = true
     return typed(['call', '$__length', va], 'f64')
   }
 
