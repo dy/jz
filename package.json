@@ -36,7 +36,7 @@
   "license": "MIT",
   "dependencies": {
     "subscript": "^10.3.3",
-    "watr": "^4.5.0"
+    "watr": "^4.5.1"
   },
   "keywords": [
     "javascript",
