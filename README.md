@@ -24,7 +24,7 @@ JZ isolates modern functional core – the good parts ([Crockford](https://www.y
 * **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
 
-Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo). **Used by** [web-audio-api](https://github.com/audiojs/web-audio-api), [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/colorjs/audiojs)
+**Used by**: [web-audio-api](https://github.com/audiojs/web-audio-api), [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/colorjs/audiojs). Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
 <!-- * [audio-filter](https://github.com/audiojs/audio-filter)
 * [digital-filter](https://github.com/audiojs/digital-filter)
 * [time-stretch](https://github.com/audiojs/time-stretch) -->
