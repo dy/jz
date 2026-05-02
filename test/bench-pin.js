@@ -112,16 +112,17 @@ for (const [id, claims] of Object.entries(PINS)) {
 
 // jz wasm size budgets — regression guard against accidental codegen bloat.
 // Tolerances absorb harmless codegen jitter; tighten/loosen by editing the
-// budget. Sizes encode the snapshot from the perf-fusion landing.
+// budget. Sizes encode the snapshot after the console-template-flatten +
+// schema-slot re-observation landing (see commit log for the size-cuts series).
 const SIZE_BUDGET = {
-  callback:  6500,
-  mat4:      5800,
-  poly:      5400,
-  biquad:    6300,
-  bitwise:   5400,
-  tokenizer: 5500,
-  aos:       7100,
-  json:     10900,
+  callback:  4900,
+  mat4:      4200,
+  poly:      3900,
+  biquad:    4500,
+  bitwise:   3900,
+  tokenizer: 4600,
+  aos:       5700,
+  json:     11000,
 }
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
   test(`bench-pin: ${id} jz wasm size ≤ ${budget} B`, () => {

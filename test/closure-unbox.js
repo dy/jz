@@ -22,7 +22,8 @@ import { run } from './util.js'
 
 const wat = (src) => jz.compile(src, { wat: true })
 const fnBody = (w, name) => {
-  const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
+  // Match `(func $name` or `(func $name$exp` (boundary wrapper for narrowed exports).
+  const re = new RegExp(`\\(func \\$${name}(?:\\$exp)?(?:\\s|$)`)
   const m = w.match(re)
   return m ? w.slice(m.index, m.index + 4000) : null
 }
