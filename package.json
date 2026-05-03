@@ -6,12 +6,14 @@
   "type": "module",
   "exports": {
     ".": "./index.js",
-    "./wasi": "./wasi.js"
+    "./wasi": "./wasi.js",
+    "./edge": "./edge.js"
   },
   "files": [
     "index.js",
     "cli.js",
     "wasi.js",
+    "edge.js",
     "src",
     "module",
     "README.md"

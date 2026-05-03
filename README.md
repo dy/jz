@@ -441,7 +441,46 @@ cc program.c -o program
 _Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 
-## Alternatives
+## Edge.js Integration
+
+[Edge.js](https://github.com/wasmerio/edgejs) (by Wasmer) is a secure JavaScript runtime for edge computing that uses WebAssembly for sandboxing. jz can be used inside edge.js workers to compile and run JS → WASM at the edge.
+
+```js
+import jz, { compile, instantiateAsync } from 'jz/edge'
+
+// Compile + instantiate synchronously
+const { exports: { add } } = jz('export let add = (a, b) => a + b')
+add(2, 3)  // 5
+
+// Non-blocking async startup (recommended for cold-start)
+const { exports: { add } } = await instantiateAsync('export let add = (a, b) => a + b')
+add(2, 3)  // 5
+
+// Compile at worker init, reuse binary across requests
+const wasm = compile('export let square = (x) => x * x')
+export default {
+  fetch(req) {
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
+    const x = parseFloat(new URL(req.url).searchParams.get('x') || '5')
+    return new Response(String(inst.exports.square(x)))
+  }
+}
+```
+
+The `jz/edge` adapter exports:
+- `default` / `jz` — same as the base `jz()` function
+- `compile` — same as `jz.compile`
+- `compileAsync(code, opts?)` — deferred async compile (yields to event loop first)
+- `instantiateAsync(code, opts?)` — deferred async compile + instantiate
+- `wasi(opts?)` — WASI polyfill routed through `console.log`/`console.warn`
+- `edgeWrite(fd, text)` — WASI write handler (no `process.stdout` dependency)
+- `isEdgeRuntime` — `true` when running inside edge.js
+
+**WASI output**: jz modules that use `console.log` emit WASI `fd_write` calls. In edge.js, the native Wasmer WASI runtime handles these; in plain Node.js the `jz/edge` adapter routes output through `console.log`/`console.warn` so it works without `process.stdout`.
+
+**Known limitation**: `try/catch` in jz uses the WASM exception-handling proposal (opcode `0x1f`). This requires the `--experimental-wasm-exnref` flag in Node.js ≤ 22 and may need explicit opt-in in edge.js. A repro test is included in `test/edge.js`.
+
+
 
 * [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
 * [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
