@@ -122,19 +122,19 @@ Not supported
 
 ## Benchmark
 
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) |
-|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms<br>32.7 kB | 9.03 ms<br>1.60 MB<br>fma | 5.09 ms<br>387.1 kB | 5.33 ms<br>380.7 kB |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms<br>32.9 kB | 0.07 ms<br>1.60 MB | 0.12 ms<br>387.1 kB | 0.12 ms<br>380.7 kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms<br>32.8 kB | 11.93 ms<br>1.60 MB | 2.60 ms<br>387.1 kB | 0.80 ms<br>380.7 kB |
-| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms<br>32.9 kB | 0.90 ms<br>1.60 MB | 0.99 ms<br>387.0 kB | 1.20 ms<br>380.7 kB |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms<br>32.9 kB | 5.24 ms<br>1.60 MB | 4.26 ms<br>387.1 kB | 1.30 ms<br>380.7 kB |
-| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.80 ms<br>1.60 MB | — | 0.52 ms<br>380.7 kB |
-| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms<br>32.9 kB | 0.20 ms<br>1.60 MB | 0.01 ms<br>387.1 kB | 0.08 ms<br>380.7 kB |
-| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms<br>32.8 kB | 1.06 ms<br>1.97 MB | — | 0.03 ms<br>380.7 kB |
-| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>85.3 kB | — | — | — | — | — | — |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
+|---|---|---|---|---|---|---|---|---|---|
+| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms | 9.03 ms<br>fma | 5.09 ms | 5.33 ms | — |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms | 0.07 ms | 0.12 ms | 0.12 ms | 0.46 ms<br>2.6 kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms | 11.93 ms | 2.60 ms | 0.80 ms | 87.65 ms<br>2.3 kB |
+| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms | 0.90 ms | 0.99 ms | 1.20 ms | — |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms | 5.24 ms | 4.26 ms | 1.30 ms | — |
+| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms | 0.80 ms | — | 0.52 ms | — |
+| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms | 0.20 ms | 0.01 ms | 0.08 ms | — |
+| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms | 1.06 ms | — | 0.03 ms | — |
+| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>85.3 kB | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon.
+_Numbers from `node bench/bench.mjs` on Apple Silicon. `fma` is the documented Go arm64 fused-multiply-add checksum class. Porffor (`porf run`) results shown where the benchmark runs successfully; `—` where it does not._
 
 
 
@@ -224,25 +224,46 @@ jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
-### Does it support imports?
+### Does it support ES module imports?
 
-Yes — standard ES `import` syntax, bundled at compile-time into one WASM.
+Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
 
 ```js
-// modules: jz source bundled at compile time
 const { exports } = jz(
   'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
   { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
 )
+```
 
-// imports: JS functions wired at instantiation
+Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
+
+**CLI** resolves filesystem imports automatically.
+
+```sh
+jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
+```
+
+**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
+
+```js
+// Transitive bundling — all merged into one WASM
+const { exports } = jz(mainSrc, { modules: {
+  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
+  // Fetch sources yourself, pass them in
+  './utils.jz': await fetch('./util.jz').then(r => r.text())
+} })
+```
+
+### Can I call JS/host functions from jz?
+
+Yes — JS functions are wired at instantiation via the `imports` option:
+
+```js
 const { exports } = jz(
   'import { log } from "host"; export let f = (x) => { log(x); return x }',
   { imports: { host: { log: console.log } } }
 )
 ```
-
-Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
 
 You can also pass whole host environment objects — `Math`, `Date`, `window`, `console`, or any custom namespace object. jz extracts the functions it needs via `Object.getOwnPropertyNames`, so non-enumerable built-ins (like `Math.sin`) work automatically:
 
@@ -264,23 +285,6 @@ const { exports } = jz(
   'import { parseInt } from "window"; export let f = () => parseInt("42")',
   { imports: { window: globalThis } }
 )
-```
-
-**CLI** resolves filesystem imports automatically.
-
-```sh
-jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
-```
-
-**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
-
-```js
-// Transitive bundling — all merged into one WASM
-const { exports } = jz(mainSrc, { modules: {
-  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
-  // Fetch sources yourself, pass them in
-  './utils.jz': await fetch('./util.jz').then(r => r.text())
-} })
 ```
 
 ### Can two modules share data?

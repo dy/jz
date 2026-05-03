@@ -95,13 +95,12 @@ correctly-rounded; cascade is the same algorithm.
 | `porf` | Porffor (`porf run`) when installed |
 | `jawsm` | jawsm when installed |
 
-The `size` column reports the artifact size each target measures: the
-compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
-`.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
-executable), or the source file for raw-JS interpreters where there is no
-compile step. The `watr` raw-JS size is the package's bundled minified singleton
-(`node_modules/watr/dist/watr.min.js`), because the tiny benchmark entry imports
-the compiler bundle.
+The `size` column reports the artifact size each target measures:
+the produced `.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
+executable), the source file for raw-JS interpreters, and `—` for native
+compilers where runtime dominates. The `watr` raw-JS size is the package's
+bundled minified singleton (`node_modules/watr/dist/watr.min.js`), because the
+tiny benchmark entry imports the compiler bundle.
 
 Runtime command overrides:
 
