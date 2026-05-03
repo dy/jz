@@ -10,7 +10,9 @@
  * @module string
  */
 
-import { emit, typed, asF64, asI32, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, valTypeOf, VAL } from '../src/compile.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 

@@ -116,6 +116,24 @@ Not supported
   dynamic import  DOM  fetch  Intl  Node APIs
 ```
 
+## Compiler layout
+
+jz keeps the compiler as a small set of one-purpose passes:
+
+| File | Role |
+|------|------|
+| `src/prepare.js` | Normalizes parsed JS, resolves scopes/imports, and loads runtime modules. |
+| `src/autoload.js` | Built-in module autoload rules used by `prepare`. |
+| `src/analyze.js` | Type, value, local, capture, and program-fact analysis helpers. |
+| `src/plan.js` | Pre-emit compile plan: collect facts, resolve ABIs, run narrowing. |
+| `src/narrow.js` | Whole-program signature/result specialization. |
+| `src/emit.js` | AST to WASM-IR emission. |
+| `src/ir.js` | WASM-IR constructors, NaN-boxing, memory and ABI helpers. |
+| `src/compile.js` | Final module assembly: plan, emit functions, wrap exports, optimize. |
+| `src/key.js` | Static computed-property key evaluation. |
+
+Runtime modules live in `module/`. They import only the seams they use: IR helpers from `src/ir.js`, emitters from `src/emit.js`, and analysis helpers from `src/analyze.js`. `src/compile.js` is the final assembler, not a re-export hub.
+
 
 
 ## FAQ
@@ -370,15 +388,24 @@ The compiled `.wasm` uses one import namespace:
 jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
 
 ```js
-import { emitter } from 'jz/src/compile.js'
+import { emitter } from './src/emit.js'
+import { typed } from './src/ir.js'
 
 // Register a custom operator: my.double(x) → x * 2
 emitter['my.double'] = (x) => {
-  return ['f64.mul', ['f64.const', 2], x]
+  return ['f64.mul', ['f64.const', 2], typed(x, 'f64')]
 }
 ```
 
-The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that registers emitters and stdlib on `ctx`.
+The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that receives `ctx` and registers emitters, stdlib, globals, or helpers.
+
+Inside a runtime module, import directly from the layer you need:
+
+```js
+import { emit } from '../src/emit.js'
+import { asF64, temp } from '../src/ir.js'
+import { valTypeOf, VAL } from '../src/analyze.js'
+```
 
 </details>
 

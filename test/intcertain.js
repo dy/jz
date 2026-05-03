@@ -6,7 +6,7 @@ import { is } from 'tst/assert.js'
 import { parse } from 'subscript/jessie'
 import prepare, { GLOBALS } from '../src/prepare.js'
 import { ctx, reset } from '../src/ctx.js'
-import { emitter } from '../src/compile.js'
+import { emitter } from '../src/emit.js'
 import { analyzeValTypes, analyzeIntCertain, analyzeLocals, repOf, updateRep, VAL } from '../src/analyze.js'
 
 // Run the analyzer against a single user-defined arrow body. Returns a Proxy

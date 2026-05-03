@@ -7,7 +7,8 @@
  * @module regex
  */
 
-import { emit, typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
+import { typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]

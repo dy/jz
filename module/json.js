@@ -8,7 +8,9 @@
  * @module json
  */
 
-import { emit, typed, asF64, T, temp, nullExpr, allocPtr, slotAddr } from '../src/compile.js'
+import { typed, asF64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { T } from '../src/analyze.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 

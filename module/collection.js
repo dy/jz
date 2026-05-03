@@ -8,7 +8,9 @@
  * @module collection
  */
 
-import { emit, emitFlat, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/compile.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/ir.js'
+import { emit, emitFlat } from '../src/emit.js'
+import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key

@@ -17,7 +17,8 @@
  * @module symbol
  */
 
-import { emit, typed, asF64, mkPtrIR } from '../src/compile.js'
+import { typed, asF64, mkPtrIR } from '../src/ir.js'
+import { emit } from '../src/emit.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
 const RESERVED = 16  // first user atom ID

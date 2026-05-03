@@ -12,7 +12,9 @@
  * @module wasi
  */
 
-import { emit, typed, asF64, valTypeOf, VAL } from '../src/compile.js'
+import { typed, asF64 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, VAL } from '../src/analyze.js'
 import { exprType } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 

@@ -17,9 +17,9 @@
  * @module timer
  */
 
-import { emit, typed, asF64, UNDEF_NAN, MAX_CLOSURE_ARITY } from '../src/compile.js'
+import { typed, asF64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp } from '../src/ir.js'
+import { emit } from '../src/emit.js'
 import { inc, PTR } from '../src/ctx.js'
-import { temp } from '../src/ir.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40

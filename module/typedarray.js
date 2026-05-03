@@ -7,7 +7,9 @@
  * @module typed
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32 } from '../src/compile.js'
+import { typed, asF64, asI32, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 

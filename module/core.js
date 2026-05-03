@@ -9,7 +9,9 @@
  * @module core
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, repOf, updateRep } from '../src/compile.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, lookupValType, VAL, T, repOf, updateRep } from '../src/analyze.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'

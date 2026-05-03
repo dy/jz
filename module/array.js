@@ -8,9 +8,11 @@
  * @module array
  */
 
-import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, updateRep } from '../src/compile.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/ir.js'
+import { emit, materializeMulti } from '../src/emit.js'
+import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
-import { staticPropertyKey } from '../src/propkey.js'
+import { staticPropertyKey } from '../src/key.js'
 import { strHashLiteral } from './collection.js'
 
 

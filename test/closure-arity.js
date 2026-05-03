@@ -3,7 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
 import { compile } from '../index.js'
-import { MAX_CLOSURE_ARITY } from '../src/compile.js'
+import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 
 const throws = (code, match, msg) => {
   let error

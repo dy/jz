@@ -13,7 +13,8 @@
  * @module math
  */
 
-import { emit, typed, asF64, asI32, temp, arrayLoop } from '../src/compile.js'
+import { typed, asF64, asI32, temp, arrayLoop } from '../src/ir.js'
+import { emit } from '../src/emit.js'
 import { inc } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
 

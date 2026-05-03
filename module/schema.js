@@ -7,7 +7,9 @@
  * @module schema
  */
 
-import { emit, typed, asF64, VAL, lookupValType, repOf } from '../src/compile.js'
+import { typed, asF64 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { VAL, lookupValType, repOf } from '../src/analyze.js'
 import { err, inc } from '../src/ctx.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */

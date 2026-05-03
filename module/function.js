@@ -10,8 +10,9 @@
  * @module fn
  */
 
-import { emit, typed, asF64, asI32, T, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, lookupValType, repOf } from '../src/compile.js'
-import { isReassigned } from '../src/emit.js'
+import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
+import { emit, isReassigned } from '../src/emit.js'
+import { T, lookupValType, repOf } from '../src/analyze.js'
 import { PTR, inc, err } from '../src/ctx.js'
 
 

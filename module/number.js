@@ -9,7 +9,9 @@
  * @module number
  */
 
-import { emit, typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, valTypeOf, VAL, temp, tempI32, tempI64 } from '../src/compile.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 export default (ctx) => {

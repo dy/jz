@@ -7,7 +7,9 @@
  * @module object
  */
 
-import { emit, typed, asF64, valTypeOf, lookupValType, VAL, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, repOf, updateRep } from '../src/compile.js'
+import { typed, asF64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/ir.js'
+import { emit } from '../src/emit.js'
+import { valTypeOf, lookupValType, VAL, repOf, updateRep } from '../src/analyze.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
 
 

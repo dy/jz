@@ -1,3 +1,5 @@
+/** Static property-key evaluation for computed member names. */
+
 const NO_VALUE = Symbol('no-static-property-key')
 
 export function staticPropertyKey(node) {

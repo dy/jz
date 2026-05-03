@@ -25,9 +25,12 @@
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam } from './analyze.js'
-import { staticPropertyKey } from './propkey.js'
+import { staticPropertyKey } from './key.js'
 import { normalizeSource } from './source.js'
-import * as mods from '../module/index.js'
+import {
+  CALL_MODULES, CTORS, GENERIC_METHOD_MODULES, OP_MODULES, PROP_MODULES,
+  hasModule, includeModule, includeMods,
+} from './autoload.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]
@@ -165,120 +168,12 @@ function resolveTypeof(node) {
   return node
 }
 
-// Property-based narrowing: unambiguous prop names limit module load.
-// Map value is the exact module set for that property (always includes 'core').
-// Properties not in this table fall back to the generic '.' receiver-type heuristic.
-// Uses null-prototype dict so inherited names (constructor, toString) don't match.
-const PROP_MODULES = Object.assign(Object.create(null), {
-  // array-only methods
-  push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
-  splice: ['core', 'array'], reverse: ['core', 'array'], sort: ['core', 'array'], fill: ['core', 'array'],
-  map: ['core', 'array'], filter: ['core', 'array'], reduce: ['core', 'array'], reduceRight: ['core', 'array'],
-  forEach: ['core', 'array'], find: ['core', 'array'], findIndex: ['core', 'array'],
-  findLast: ['core', 'array'], findLastIndex: ['core', 'array'],
-  every: ['core', 'array'], some: ['core', 'array'], flat: ['core', 'array'], flatMap: ['core', 'array'],
-  join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'array'],
-  // string-only methods
-  charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
-  toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], trim: ['core', 'string'],
-  trimStart: ['core', 'string'], trimEnd: ['core', 'string'],
-  split: ['core', 'string'], replace: ['core', 'string'], replaceAll: ['core', 'string'],
-  repeat: ['core', 'string'], startsWith: ['core', 'string'], endsWith: ['core', 'string'],
-  padStart: ['core', 'string'], padEnd: ['core', 'string'], normalize: ['core', 'string'],
-  matchAll: ['core', 'string'], match: ['core', 'string'],
-  substring: ['core', 'string'], substr: ['core', 'string'],
-  // collection-only methods
-  add: ['core', 'collection'], clear: ['core', 'collection'],
-  // string + array (cross-type but not object/collection)
-  slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
-  indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
-  includes: ['core', 'string', 'array'],
-  // string + array + typedarray (length shared across all sequence types)
-  length: ['core', 'string', 'array', 'typedarray'],
-  // Note: toString/toFixed/toPrecision/toExponential not narrowed — they only have
-  // number-schema emitters; unknown receivers fall through to __ext_call (collection module).
-})
-
-const OP_MODULES = {
-  // '.' handled inline (see '.' handler) for property-based narrowing
-  '?.': ['core', 'string', 'collection'],
-  '?.[]': ['core', 'array', 'collection'],
-  '?.()': ['core', 'fn'],
-  'u+': ['number', 'string'],
-  'in': ['core', 'collection', 'string'],
-  '==': ['core', 'string'],
-  '!=': ['core', 'string'],
-  'typeof': ['core', 'string'],
-  '[': ['core', 'array'],
-  '{': ['core', 'object', 'string', 'collection'],
-  '//': ['core', 'string', 'regex'],
-}
-const dict = obj => Object.assign(Object.create(null), obj)
-
 const cloneNode = (node) => {
   if (!Array.isArray(node)) return node
   const copy = node.map(cloneNode)
   if (node.loc != null) copy.loc = node.loc
   return copy
 }
-
-// Call-site module inclusion. Keyed by either a bare callee name (e.g. 'parseFloat')
-// or a dotted path ('console.log'). Value is the module set to load.
-// The lookup fires from the '()' handler before scope resolution.
-// Architectural note: fully eliminating this (auto-imports via jzify) was considered but
-// rejected — Object.fromEntries needs collection+string while o.x does not, so MOD_DEPS
-// transitive inclusion alone over-loads simple paths. This table pinpoints load per callee.
-const CALL_MODULES = dict({
-  // Bare-identifier calls
-  'ArrayBuffer': ['core', 'typedarray'],
-  'DataView': ['core', 'typedarray'],
-  'BigInt64Array': ['core', 'typedarray'],
-  'BigUint64Array': ['core', 'typedarray'],
-  'parseFloat': ['number', 'string'],
-  'parseInt': ['number', 'string'],
-  'String': ['core', 'string', 'number'],
-  'Number': ['number', 'string'],
-  'Boolean': ['number'],
-  'TextEncoder': ['core', 'string'],
-  'TextDecoder': ['core', 'string'],
-  'Error': ['core', 'string'],
-  'BigInt': ['number'],
-  // Namespace.method calls
-  'console.log': ['core', 'string', 'number', 'console'],
-  'console.warn': ['core', 'string', 'number', 'console'],
-  'console.error': ['core', 'string', 'number', 'console'],
-  'Object.fromEntries': ['collection', 'string'],
-  'Object.keys': ['string'],
-  'Object.entries': ['string'],
-  'Date.now': ['core', 'console'],
-  'performance.now': ['core', 'console'],
-  'String.fromCharCode': ['core', 'string'],
-  'String.fromCodePoint': ['core', 'string'],
-  'BigInt.asIntN': ['number'],
-  'BigInt.asUintN': ['number'],
-  'Float64Array.from': ['core', 'typedarray', 'array'],
-  'Float32Array.from': ['core', 'typedarray', 'array'],
-  'Int32Array.from': ['core', 'typedarray', 'array'],
-  'Uint32Array.from': ['core', 'typedarray', 'array'],
-  'Int16Array.from': ['core', 'typedarray', 'array'],
-  'Uint16Array.from': ['core', 'typedarray', 'array'],
-  'Int8Array.from': ['core', 'typedarray', 'array'],
-  'Uint8Array.from': ['core', 'typedarray', 'array'],
-  'ArrayBuffer.isView': ['core', 'typedarray'],
-})
-
-// Method-call inclusion for unknown-receiver cases (e.g. `(x) => x.toFixed(2)`).
-// Keyed by bare method name — fires only when receiver can't be resolved to a namespace.
-const GENERIC_METHOD_MODULES = dict({
-  'toString': ['core', 'string', 'number'],
-  'toFixed': ['core', 'string', 'number'],
-  'toPrecision': ['core', 'string', 'number'],
-  'toExponential': ['core', 'string', 'number'],
-})
-
-// Constructor names that users may call without `new` — `Float64Array(5)` → `new Float64Array(5)`.
-// Keeps user source ergonomic; these cannot be plain function calls in JS semantics anyway.
-const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
 
 /** Sparse-read .map fusion: rewrite `const b = a.map(arrow); for(...; j<b.length; ...) USE(b[j])`
  *  into a fused for-loop that inlines `arrow(a[j])` at the read site, eliminating the materialized
@@ -798,7 +693,7 @@ const handlers = {
           }
         }
         if (builtinItems.length === 0) return null
-        if (!mods[MOD_ALIAS[mod] || mod]) {
+        if (!hasModule(mod)) {
           const name = typeof builtinItems[0] === 'string' ? builtinItems[0] : builtinItems[0][1]
           err(`'${name}' not declared in host module '${mod}'`)
         }
@@ -809,7 +704,7 @@ const handlers = {
     }
 
     // Tier 1: Built-in module
-    if (mods[MOD_ALIAS[mod] || mod]) {
+    if (hasModule(mod)) {
       includeModule(mod)
       const bind = (name, alias) => {
         const key = mod + '.' + name
@@ -1111,7 +1006,7 @@ const handlers = {
         callee = prep(callee)
       } else {
         const mod = ctx.scope.chain[obj]
-        if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod]) {
+        if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod)) {
           callee = (includeModule(mod), mod + '.' + prop)
         } else {
           callee = prep(callee)
@@ -1274,7 +1169,7 @@ const handlers = {
     if (prop === 'caller' || prop === 'callee') err('`.caller` and `.callee` are prohibited: deprecated stack introspection')
     const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
-    if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
+    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod))
       return includeModule(mod), mod + '.' + prop
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
@@ -1324,37 +1219,6 @@ const handlers = {
     if (typeof name === 'string') return ['()', name, ...ctorArgs.map(prep)]
     return ['new', prep(ctor), ...args.map(prep)]
   }
-}
-
-// Namespace → module mapping (namespaces that share a module)
-const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
-/** Auto-inclusion graph: loading a module also loads its listed prerequisites.
- *  Not a strict ordering: module init() functions only register emitters/stdlib entries,
- *  so relative init order does not affect correctness — emitters are looked up lazily
- *  at compile time. Cycles (e.g. number ↔ string) are broken via the in-progress guard. */
-const MOD_DEPS = {
-  number: ['core', 'string'],
-  string: ['core', 'number'],
-  array: ['core'],
-  object: ['core'],
-  collection: ['core', 'number'],
-  symbol: ['core'],
-  json: ['core', 'string', 'number', 'collection'],
-  console: ['core', 'string', 'number'],
-  regex: ['core', 'string', 'array'],
-}
-
-const includeMods = (...names) => names.forEach(includeModule)
-
-/** Register a module and its transitive deps. Idempotent; cycle-safe via early-mark. */
-function includeModule(name) {
-  const modName = MOD_ALIAS[name] || name
-  const init = mods[modName]
-  if (!init) return err(`Module not found: ${name}`)
-  if (ctx.module.modules[modName]) return
-  ctx.module.modules[modName] = true  // mark before deps so cycles terminate
-  for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
-  init(ctx)  // modules receive ctx explicitly instead of importing it
 }
 
 /** Merge source schemas into target via Object.assign for compile-time schema inference. */
