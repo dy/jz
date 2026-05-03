@@ -122,7 +122,9 @@ Not supported
 ## FAQ
 
 <details>
-<summary>How to pass data between JS and WASM?</summary>
+<summary><strong>How to pass data between JS and WASM?</strong></summary>
+
+<br>
 
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
@@ -194,7 +196,9 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 </details>
 
 <details>
-<summary>How does template interpolation work?</summary>
+<summary><strong>How does template interpolation work?</strong></summary>
+
+<br>
 
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
@@ -212,7 +216,9 @@ Functions are imported as host calls. Non-serializable values (host objects, cla
 </details>
 
 <details>
-<summary>Does it support ES module imports?</summary>
+<summary><strong>Does it support ES module imports?</strong></summary>
+
+<br>
 
 Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
 
@@ -245,7 +251,9 @@ const { exports } = jz(mainSrc, { modules: {
 </details>
 
 <details>
-<summary>Can I call JS/host functions from jz?</summary>
+<summary><strong>Can I call JS/host functions from jz?</strong></summary>
+
+<br>
 
 Yes — JS functions are wired at instantiation via the `imports` option:
 
@@ -281,7 +289,9 @@ const { exports } = jz(
 </details>
 
 <details>
-<summary>Can two modules share data?</summary>
+<summary><strong>Can two modules share data?</strong></summary>
+
+<br>
 
 Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
 
@@ -310,7 +320,9 @@ All modules sharing a memory use a single bump allocator (heap pointer at byte 1
 </details>
 
 <details>
-<summary>How do I run compiled WASM outside the browser?</summary>
+<summary><strong>How do I run compiled WASM outside the browser?</strong></summary>
+
+<br>
 
 ```sh
 jz program.js -o program.wasm
@@ -327,7 +339,9 @@ deno run program.wasm
 </details>
 
 <details>
-<summary>What host features are supported?</summary>
+<summary><strong>What host features are supported?</strong></summary>
+
+<br>
 
 The compiled `.wasm` uses one import namespace:
 
@@ -345,7 +359,9 @@ The compiled `.wasm` uses one import namespace:
 </details>
 
 <details>
-<summary>How do I add custom operators / extend the stdlib?</summary>
+<summary><strong>How do I add custom operators / extend the stdlib?</strong></summary>
+
+<br>
 
 jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
 
@@ -363,7 +379,9 @@ The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push
 </details>
 
 <details>
-<summary>Can I compile jz to C?</summary>
+<summary><strong>Can I compile jz to C?</strong></summary>
+
+<br>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
