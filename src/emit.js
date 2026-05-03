@@ -1877,20 +1877,30 @@ export const emitter = {
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
         const arrayIR = buildArrayWithSpreads(combined)
         const propRead = typed(['call', '$__dyn_get_expr', ['local.get', `$${objTmp}`], asF64(emit(['str', method]))], 'f64')
+        const propTmp = `${T}mprop${ctx.func.uniq++}`
+        ctx.func.locals.set(propTmp, 'f64')
         if (usesDynProps(vt)) {
-          inc('__dyn_get_expr')
+          inc('__dyn_get_expr', '__ptr_type')
           return typed(['block', ['result', 'f64'],
             ['local.set', `$${objTmp}`, asF64(emit(obj))],
-            ctx.closure.call(propRead, [arrayIR], true)], 'f64')
+            ['local.set', `$${propTmp}`, propRead],
+            ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${propTmp}`]], ['i32.const', PTR.CLOSURE]],
+              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+              ['else', undefExpr()]]], 'f64')
         }
-        inc('__dyn_get_expr', '__ext_call')
+        inc('__dyn_get_expr', '__ext_call', '__ptr_type')
         ctx.features.external = true
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${objTmp}`, asF64(emit(obj))],
+          ['local.set', `$${propTmp}`, propRead],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.EXTERNAL]],
-            ['then', ['call', '$__ext_call', ['local.get', `$${objTmp}`], asF64(emit(['str', method])), arrayIR]],
-            ['else', ctx.closure.call(propRead, [arrayIR], true)]]], 'f64')
+            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${propTmp}`]], ['i32.const', PTR.CLOSURE]],
+            ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+            ['else', ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.EXTERNAL]],
+              ['then', ['call', '$__ext_call', ['local.get', `$${objTmp}`], asF64(emit(['str', method])), arrayIR]],
+              ['else', undefExpr()]]]]], 'f64')
       }
 
       // Unknown callee - assume external method

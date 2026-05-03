@@ -94,7 +94,7 @@ flowchart TB
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ JZify                                                    test262: 69%  │
+│ JZify                                                   test262: 70%  │
 │   var  function  arguments  switch  new Foo()                          │
 │   ==  !=  instanceof  undefined                                        │
 │                                                                        │

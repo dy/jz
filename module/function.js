@@ -16,7 +16,7 @@ import { PTR, inc, err } from '../src/ctx.js'
 
 
 export default (ctx) => {
-  inc('__mkptr', '__alloc', '__len', '__ptr_offset')
+  inc('__mkptr', '__alloc', '__len', '__ptr_offset', '__ptr_type')
 
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64
   if (!ctx.closure.types) ctx.closure.types = new Set()

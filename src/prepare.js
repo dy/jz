@@ -1263,6 +1263,7 @@ const handlers = {
 
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
+    if (prop === 'caller' || prop === 'callee') err('`.caller` and `.callee` are prohibited: deprecated stack introspection')
     const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
     if (typeof obj === 'string' && mod && !mod.includes('.') && mods[MOD_ALIAS[mod] || mod])
