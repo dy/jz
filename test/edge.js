@@ -153,9 +153,6 @@ test('edge WASI: console.log in jz module captured via custom write', () => {
 })
 
 test('edge WASI: console.log number captured via custom write', () => {
-  const { output } = runCapture(`
-    export let f = () => { console.log(42); return 1 }
-  `)
   const { exports: { f } } = runCapture(`
     export let f = () => { console.log(42); return 1 }
   `)
