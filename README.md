@@ -2,7 +2,7 @@
 
 
 
-## ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
+## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz)](http://npmjs.org/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
 
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
@@ -94,7 +94,7 @@ flowchart TB
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ JZify                                                    test262: 68%  │
+│ JZify                                                    test262: 69%  │
 │   var  function  arguments  switch  new Foo()                          │
 │   ==  !=  instanceof  undefined                                        │
 │                                                                        │

@@ -17,6 +17,8 @@
 * [ ] test262: debugger (ignore)
 * [ ] `delete` operator
 * [ ] `import.meta`
+* [ ] speed up compiler itself (faster than eval)
+* [ ] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
 
 ### Build & tooling
 

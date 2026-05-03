@@ -1,7 +1,7 @@
 {
   "name": "jz",
   "version": "0.1.0",
-  "description": "Minimal modern functional JS subset that compiles to WebAssembly",
+  "description": "Modern functional JS compiling to WASM",
   "main": "index.js",
   "type": "module",
   "exports": {
