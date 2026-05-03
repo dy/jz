@@ -124,18 +124,17 @@ Not supported
 
 | | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
 |---|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms | 9.03 ms<br>fma | 5.09 ms | 5.33 ms | — |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms | 0.07 ms | 0.12 ms | 0.12 ms | 0.46 ms<br>2.6 kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms | 11.93 ms | 2.60 ms | 0.80 ms | 87.65 ms<br>2.3 kB |
-| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms | 0.90 ms | 0.99 ms | 1.20 ms | — |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms | 5.24 ms | 4.26 ms | 1.30 ms | — |
-| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms | 0.80 ms | — | 0.52 ms | — |
-| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms | 0.20 ms | 0.01 ms | 0.08 ms | — |
-| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms | 1.06 ms | — | 0.03 ms | — |
-| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>85.3 kB | — | — | — | — | — | — | — |
+| [**biquad**](bench/biquad/biquad.js) | **6.44ms**<br>**3.4kB** | 12.30ms<br>3.2kB | 9.04ms<br>1.9kB | 6.48ms<br>767 B | 5.43ms | 9.03ms<br>fma | 5.09ms | 5.33ms | — |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.6kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.13ms | 0.07ms | 0.12ms | 0.12ms | 0.46ms<br>2.6kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.00ms**<br>**1.7kB** | 11.64ms<br>1.1kB | 9.18ms<br>1.5kB | 7.99ms<br>353 B | 2.62ms | 11.93ms | 2.60ms | 0.80ms | 87.65ms<br>2.3kB |
+| [**aos**](bench/aos/aos.js) | **1.50ms**<br>**2.3kB** | 1.81ms<br>1.1kB | 1.91ms<br>2.2kB | — | 1.22ms | 0.90ms | 0.99ms | 1.20ms | — |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93ms**<br>**1.2kB** | 5.31ms<br>1005 B | 12.36ms<br>1.5kB | 4.96ms<br>355 B | 1.31ms | 5.24ms | 4.26ms | 1.30ms | — |
+| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.31ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | — |
+| [**callback**](bench/callback/callback.js) | **0.01ms**<br>**1.5kB** | 1.03ms<br>828 B | 1.48ms<br>1.9kB | — | 0.09ms | 0.20ms | 0.01ms | 0.08ms | — |
+| [**json**](bench/json/json.js) | **0.20ms**<br>**2.8kB** | 0.38ms<br>923 B | — | — | 0.02ms | 1.06ms | — | 0.03ms | — |
+| [**watr**](bench/watr/watr.js) | **1.82ms**<br>**137.1kB** | 1.50ms<br>85.3kB | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon. `fma` is the documented Go arm64 fused-multiply-add checksum class. Porffor (`porf run`) results shown where the benchmark runs successfully; `—` where it does not._
-
+_Numbers from `node bench/bench.mjs` on Apple Silicon.
 
 
 
