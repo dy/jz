@@ -17,6 +17,7 @@ import { inc, PTR } from '../src/ctx.js'
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
     __str_indexof: ['__str_byteLen'],
@@ -533,6 +534,20 @@ export default (ctx) => {
     ;; Coerce operands to strings if needed
     (local.set $a (call $__to_str (local.get $a)))
     (local.set $b (call $__to_str (local.get $b)))
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $total (i32.add (local.get $alen) (local.get $blen)))
+    (if (i32.eqz (local.get $total))
+      (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
+    (i32.store (local.get $off) (local.get $total))
+    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
+    (call $__str_copy (local.get $b) (i32.add (local.get $off) (local.get $alen)) (local.get $blen))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+
+  ctx.core.stdlib['__str_concat_raw'] = `(func $__str_concat_raw (param $a f64) (param $b f64) (result f64)
+    (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local.set $alen (call $__str_byteLen (local.get $a)))
     (local.set $blen (call $__str_byteLen (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))

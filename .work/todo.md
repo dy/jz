@@ -142,6 +142,34 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
   first-wins-then-clash rule guarantees no regression for already-monomorphic
   slots. Drops `__write_val` from biquad (cs slot now resolves to NUMBER → direct
   `__write_num`). -88 B in biquad. Net biquad: 4983 → 4198 B (-785 B / -15.8%).
+* [x] **Skip `__ftoa` for integer-valued `console.log` args** ([module/console.js:135](../module/console.js#L135)).
+  New `__write_int` (uses `__itoa` directly) sits beside `__write_num`; the
+  template-literal-flatten emit handler dispatches to it when `exprType(part,
+  ctx.func.locals) === 'i32'` (literals, bitwise ops, `.length`, `Math.imul`,
+  intCertain locals). `console.log(42)`: 1737 → 849 B (-888 B / -51%).
+  biquad (f64 timing args) +22 B from `__write_int` joining `__write_val`'s
+  dep chain — neutral on benches with no integer console.log; massive win
+  on integer-print code (bytebeat-style, counter loops). All 1105 tests pass.
+
+* [x] **Host-import return metadata for `jz-host`** ([src/prepare.js](../src/prepare.js),
+  [src/analyze.js](../src/analyze.js), [bench/bench.mjs](../bench/bench.mjs)).
+  Host import specs can now declare `returns: 'number' | 'string' | 'bigint'`.
+  The benchmark marks `performance.now()` as numeric, so timestamp arithmetic
+  no longer pulls generic `__to_num` into every host benchmark. Biquad host:
+  3.8 kB → 2.8 kB after the temporary result object was removed.
+
+* [x] **Sort benchmark samples in place** ([bench/_lib/benchlib.js](../bench/_lib/benchlib.js)).
+  Matches the native helpers: samples are not used after median calculation, so
+  the extra typed-array allocation/copy was dead work. Removes `__len` from the
+  small numeric `jz-host` cases. Biquad host: 2.8 kB → 2.3 kB; bitwise host:
+  1.9 kB → 1.2 kB.
+
+* [x] **Known-string concat skips generic `ToString`** ([module/string.js](../module/string.js),
+  [src/emit.js](../src/emit.js)). Pure string operands now call
+  `__str_concat_raw`, avoiding `__to_str`, `__static_str`, and the numeric
+  string table. This lets the existing static-data-prefix strip pass actually
+  fire for tokenizer. Tokenizer host: 3.3 kB → 1.6 kB.
+
 * [ ] **Strip data segment for non-emitted strings.** Empty `data` in jz
   biquad is 185 B for unused string literals from helpers. Tree-shake by
   emitted-helper set, not declared-helper set.
@@ -152,44 +180,64 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
 
 ### Per-bench gap snapshot (jz vs native, jz vs V8, jz vs AS)
 
-Latest full-bench run after console-template-flatten + schema slot re-observation
-landings (darwin/arm64 M-class, jz vs V8 vs AS):
+Latest full run after JSON nested-HASH shape propagation (darwin/arm64 M-class):
 
-| case      | jz ms | jz B  | V8 ms | V8 B  | AS ms | AS B  | jz×V8  | jz×AS  | status |
-| ---       | ---:  | ---:  | ---:  | ---:  | ---:  | ---:  | ---:   | ---:   | --- |
-| biquad    | 7.90  | 4198  | 8.93  | 5300  | 6.50  | 1900  | 0.88×  | 1.22×  | beats V8, behind AS perf |
-| mat4      | 6.18  | 3891  | 8.73  | 1100  | 6.68  | 1500  | 0.71×  | 0.92×  | beats V8 + AS |
-| poly      | 0.77  | 3584  | 1.74  | 1014  | 0.74  | 1300  | 0.44×  | 1.04×  | beats V8, ties AS |
-| bitwise   | 3.51  | 3584  | 3.83  | 1005  | 8.69  | 1500  | 0.92×  | 0.40×  | beats V8 + AS |
-| tokenizer | 0.07  | 4301  | 0.12  | 1400  | 0.04  | 1500  | 0.62×  | 1.75×  | beats V8 + native (AS DIFF) |
-| callback  | 0.011 | 4608  | 0.62  |  828  | 1.09  | 1900  | 0.018× | 0.010× | beats V8 + AS by ~100× |
-| aos       | 1.06  | 5427  | 1.31  | 1100  | 1.39  | 2200  | 0.81×  | 0.76×  | beats V8 + AS |
-| json      | 0.34  |10650  | 0.27  |  923  | n/a   | n/a   | 1.26×  | n/a    | behind V8 (JS-only ref) |
+| case      | jz ms | jz size | host ms | host size | V8 ms | AS ms | AS size | status |
+| ---       | ---:  | ---:    | ---:    | ---:      | ---:  | ---:  | ---:    | --- |
+| biquad    | 7.97  | 3.9 kB  | 7.93    | 2.3 kB    | 8.70  | 6.39  | 1.9 kB  | beats V8, behind AS perf |
+| mat4      | 6.01  | 3.4 kB  | 6.05    | 1.8 kB    | 8.34  | 6.55  | 1.5 kB  | beats V8 + AS |
+| poly      | 0.76  | 3.1 kB  | 0.76    | 1.3 kB    | 1.64  | 0.73  | 1.3 kB  | beats V8, near AS |
+| bitwise   | 3.50  | 3.0 kB  | 3.49    | 1.2 kB    | 3.81  | 8.66  | 1.5 kB  | beats V8 + AS |
+| tokenizer | 0.08  | 3.5 kB  | 0.07    | 1.6 kB    | 0.12  | 0.04  | 1.5 kB  | beats V8, AS DIFF |
+| callback  | 0.01  | 4.0 kB  | 0.01    | 2.3 kB    | 1.08  | 1.05  | 1.9 kB  | beats V8 + AS by ~100× |
+| aos       | 1.05  | 4.9 kB  | 1.06    | 3.2 kB    | 1.28  | 1.35  | 2.2 kB  | beats V8 + AS |
+| json      | 0.30  | 6.1 kB  | 0.30    | 4.6 kB    | 0.26  | n/a   | n/a     | close to V8; parser/hash cost remains |
 
-jz now beats V8 on **7 of 8** wasm-comparable cases (json is the only laggard:
-JSON.parse + dynamic property dispatch is the dominant cost on a 10.4 kB
-runtime). jz beats AS on 4 of 6 cases (mat4, bitwise, callback, aos). Remaining
-AS-perf gaps: biquad (1.22×), poly (1.04×, within 5% noise tie). Size pinned in
-test/bench-pin.js for regression guarding.
+jz beats V8/node on **7 of 8** wasm-comparable cases in the latest full run;
+json is the only remaining V8-node laggard. The nested-HASH pass removed the
+old dynamic property dispatch bottleneck and cut json host size from 8.4 kB to
+4.6 kB; the remaining gap is in JSON parse/allocation/hash-table work. jz-host
+size is now within ~0.1-1.0 kB of AS on five of seven AS-backed cases; aos
+remains object/schema-heavy and json has no AS target.
 
-### json gap analysis (1.26× behind V8)
+### json gap analysis
 
-Hot path in `walk()` is dynamic property dispatch on JSON-parsed objects:
-each `o.items`, `o.meta.bias`, `it.id`, `it.kind`, `it.value`, `o.meta.scale`
-goes through `func 11` (the generic property-access dispatcher): unbox
-type tag → branch by tag → `__map_get` → `__str_hash` → `__str_eq` probe
-loop. Per outer iteration: ~15 prop accesses × (call $__map_get → call
-$__str_hash + call $__str_eq) = ~45 cross-function calls. Static analysis
-of bench wat shows the dispatcher (`func 11`) and `__map_get` (`func 29`)
-together account for the dominant cost.
+Latest full run after nested HASH/array shape propagation reports json at
+**0.30 ms / 6.1 kB** for `jz` and **0.30 ms / 4.6 kB** for `jz-host` (AS
+skipped). V8/node is still faster in that full run at **0.26 ms**, while
+focused `json,biquad` runs fluctuate around parity (`jz` 0.30-0.31 ms vs V8
+0.27-0.33 ms). Do not claim a stable json win yet.
+
+The former hot path in `walk()` was dynamic property dispatch on JSON-parsed
+objects: `o.items`, `o.meta.bias`, `it.id`, `it.kind`, `it.value`,
+`o.meta.scale` went through the generic property-access dispatcher and then
+`__map_get`/`__str_hash`/`__str_eq`. That is now gone for static JSON sources:
+the emitted WAT for nested chains uses `__hash_get_local`, and the dynamic
+dispatcher chain tree-shakes out of the host artifact. Remaining cost is JSON
+parse/allocation/hash-table work plus repeated map probes for constant keys.
 
 Specific opportunities, ordered by impact:
 
-1. **VAL.HASH valType + JSON.parse annotation.** Add `VAL.HASH` to the
-   value-type lattice; emit JSON.parse as `valResult: VAL.HASH`; propagate
-   through `o.items`-style chains. Then the prop-access emitter can skip
-   the type-tag dispatch (`func 11`) and emit `(call $__map_get o key)`
-   directly. ~30% savings just from cutting the dispatcher.
+1. [x] **VAL.HASH valType + JSON.parse annotation.** Added `VAL.HASH` to the
+  value-type lattice and conservatively infer `JSON.parse` result kind only
+  when the input is a compile-time string literal/module const (`{` → HASH,
+  `[` → ARRAY, `"` → STRING, numbers/bools → NUMBER). Known-HASH `.prop`,
+  `?.prop`, and literal `obj['key']` now call `__hash_get_local` directly,
+  skipping `__dyn_get_any`/`__dyn_get_expr`. JSON object construction now uses
+  `__hash_set_local` because `__jp_obj` always inserts into a fresh HASH.
+  Pinned by `test/json.js` codegen assertion.
+
+1a. [x] **Nested HASH/array shape propagation.** `JSON.parse(stringConst)` now
+  parses the source at compile time into a `{vt, props?, elem?}` shape tree,
+  attached to the binding via `repByLocal[name].jsonShape`. `analyzeValTypes`
+  walks the shape through `const items = o.items` and `const it = items[j]`,
+  so deep chains keep their VAL kinds. `valTypeOf('.', expr, prop)` resolves
+  via shape lookup; `emitPropAccess` (and `?.prop`, `arr[litKey]`) now route
+  non-string receivers to `__hash_get_local` whenever `valTypeOf` recovers
+  HASH. Pinned by `test/json.js` "nested chains stay on HASH fast path".
+  Result: json `0.30 ms / 6.1 kB` jz, `0.30 ms / 4.6 kB` jz-host in the latest
+  full run. Host size halved from 8.4→4.6 kB by tree-shaking the now-dead
+  dyn-dispatcher chain; runtime is around V8 parity but not a stable win yet.
 
 2. **Constant-fold `__str_hash` for SSO NaN-box literals.** Pure function
    on a known constant. Either (a) inline `__map_get` and let the existing
@@ -209,10 +257,10 @@ Specific opportunities, ordered by impact:
    per-site specialization (constant key, known receiver type) it
    becomes inlinable.
 
-Items 1+2 are the cleanest generic wins; item 3 helps json + any
-struct-field-heavy code; item 4 needs cost-aware inline heuristics.
-Estimated combined: jz json 0.34 → ~0.20 ms, beats V8 (0.27 ms).
-Deferred — requires VAL lattice extension + emit dispatcher rewrite.
+Item 2 is now the cleanest remaining generic json win; item 3 is mostly
+superseded for static JSON by shape propagation but still applies to dynamic
+objects; item 4 needs cost-aware inline heuristics. Conservative target:
+jz json 0.30 ms → ~0.24 ms, enough to beat V8/node in full-suite runs.
 
 ### Completed perf / cleanup wins (this session)
 
@@ -511,11 +559,37 @@ arrays gets you without unrolling).
   include constants the callee's loop bounds depend on. Lets V8 specialize on
   the actual `nStages` value rather than treating it as a runtime parameter.
 
-* [ ] **Constant-arg propagation + small-trip-count unroll.** When a callee
-  param is always called with the same compile-time integer constant, propagate
-  the constant into the callee. If a loop's trip count becomes a small constant,
-  unroll. On biquad: `nStages = 8` is literal at every call site; unrolling the
-  inner loop by 8 produces straight-line code that V8/clang vectorize trivially.
+* [x] **Constant-arg propagation (without unroll).** When a callee param is always
+  called with the same compile-time integer constant, propagate the constant into
+  the callee body. ([src/analyze.js](../src/analyze.js#L95) — added `intConst` to
+  ValueRep; [src/compile.js](../src/compile.js#L283) — observed in the
+  cross-call fixpoint, with `ctx.scope.constInts` capturing module-scope
+  `const N = <int>` decls; [src/ir.js readVar](../src/ir.js#L429) — substitutes
+  every `local.get $param` with the literal). Param ABI is left untouched
+  (still f64 if it was f64) — narrowing to i32 caused the V8 inliner to stop
+  inlining `processCascade` (see the "i32 narrowing for nStages" entry below);
+  with the conservative substitution V8 still inlines and constant-folds at the
+  call site. Net effect on biquad: bench-pin neutral (8.0 ms ≈ 8.0 ms baseline)
+  but `mkCoeffs` size shrinks (`n * 5` folds to `40` at compile time) and
+  bytes drop -100B on biquad. Loop-unrolling the now-known-bound inner loop is
+  a separate, larger task (next bullet) since it requires AST cloning and a
+  size budget guard.
+
+* [x] **Rejected: intConst-driven i32 loop narrowing for biquad.** Tried letting
+  `rep.intConst` participate in `exprType` so `for (let s = 0; s < nStages; s++)`
+  kept `s`, `c`, and `sb` as i32 when `nStages` is proven `8`. WAT got cleaner
+  (`trunc_sat` and float offset multiplies disappeared), but V8 regressed badly:
+  focused biquad went from ~8.0 ms to ~11.8-12.0 ms. Reverted the type inference
+  change. Keep the ABI-preserving constant substitution in `readVar`; do not
+  reintroduce i32 loop narrowing without an inliner/tier-up budget study.
+
+* [ ] **Small-trip-count loop unroll on top of intConst.** Now that `nStages`
+  reads as `i32.const 8` everywhere it appears, the inner loop has a known
+  trip count. Unrolling it 8× produces straight-line code V8/clang vectorize
+  trivially. Open question: does this push us past V8's inliner budget so
+  `processCascade` stops inlining? Mitigations include only unrolling when the
+  callee is going to stay separate from `main` anyway, or capping unroll at a
+  factor that keeps the body inside V8's inline threshold.
 
 * [ ] **i32 narrowing for module-const integer args (revisit nStages).** The
   attempt this round narrowed nStages from f64 to i32 via `globalTypes` lookup
@@ -555,9 +629,9 @@ arrays gets you without unrolling).
 
 ### Conceptual shifts
 
-* [ ] **Unified Type record + int-default + unboxed-default (S2).** Three
-  conceptually-related shifts that should land as one cohesive change because
-  they share the same dataflow infrastructure:
+* [x] **Unified Type record + int-default + unboxed-default (S2).** Landed
+  across S2a-d + f589994. Three conceptually-related shifts sharing the same
+  dataflow infrastructure:
 
   **(a) Unified Type record.** Replace the 4 parallel maps for cross-call
   facts (`paramValTypes`, `paramWasmTypes`, `paramSchemas`,
@@ -617,19 +691,26 @@ arrays gets you without unrolling).
   optimization passes added this session collapse to one rule:
   "propagate Type through const-decl RHS, function args, return value."
 
-  **Engineering**: 3-6 months. Largest refactor in jz's history. Strategy:
-  1. Land Type record with all-default-boxed semantics (no behavior change).
-  2. Migrate `analyze.js` collect functions to populate it.
-  3. Migrate `compile.js` narrowing fixpoints to read/write it.
-  4. Add forward-propagation pass for `intCertain` + `boxed=false`.
-  5. Migrate `module/*.js` emitters to short-circuit when Type proves
-     monomorphic (one emitter at a time, smallest first: `__to_num` → done,
-     etc.).
-  6. Delete the parallel maps. Delete the dead helpers.
+  **Status (2026-05-02)**:
+  - [x] Step 1: Type record (`ValueRep`) — S2a-d (ptrKind/ptrAux, globals,
+    val, schemaId all collapsed into `repByLocal`/`repByGlobal`).
+  - [x] Step 2: `analyze.js` collect functions populate it.
+  - [x] Step 3: `compile.js` narrowing fixpoints read/write it.
+  - [x] Step 4a/4b: `intCertain` forward-prop lattice + 2 codegen rules
+    (`toNumF64` skip, `Math.{floor,ceil,trunc,round}` elide). 19 unit tests
+    in `test/intcertain.js`. `intLikely` not implemented (only `intCertain`).
+  - [ ] Step 5: per-emitter short-circuit migration — partial. `__to_num`
+    and `Math.*` consume `intCertain`; remaining emitters
+    (`__ptr_offset`, `__typed_idx`, `__is_str_key`, `__map_get` etc.)
+    still take the generic path even when ValueRep proves monomorphic.
+  - [x] Step 6: parallel-map dedup, dead helpers removed (-697 lines
+    compile.js, +568 analyze.js in f589994).
+  - [ ] Sub-shift (c) Unboxed-by-default ABI inversion — not landed.
+    Current model is still "default boxed, prove unboxed"; inverting to
+    "default unboxed, prove polymorphism needs boxing" is the remaining
+    architectural shift.
 
-  **Test surface**: the existing 982 tests pin behavior; add lattice
-  unit tests in `test/types.js` for forward-prop / backward-prop / poisoning
-  / boundary-boxing rules so the migration is incremental and reversible.
+  biquad WAT byte-identical post-landing (72,417 B); 1105 tests pass.
 
 * [x] **Tail call optimization.** Done. Block-body `return f(...)` was
   already rewritten by emit.js's `'return'` handler; expression-bodied

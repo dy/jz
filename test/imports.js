@@ -231,3 +231,91 @@ test('import: multiple host functions', () => {
   )
   is(exports.f(3), 34)  // 4 + 30
 })
+
+// ============================================
+// Host import overrides of built-in globals
+// ============================================
+
+test('host override: Math.sin', () => {
+  const { exports } = jz(
+    'export let f = (x) => Math.sin(x)',
+    { imports: { Math: { sin: (x) => x * 2 } } }
+  )
+  is(exports.f(3), 6)  // 3 * 2
+})
+
+test('host override: Date.now', () => {
+  const { exports } = jz(
+    'export let f = () => Date.now()',
+    { imports: { Date: { now: () => 12345 } } }
+  )
+  is(exports.f(), 12345)
+})
+
+test('host override: console.log with string', () => {
+  const captured = []
+  const { exports } = jz(
+    'export let f = () => { console.log("hello"); return 0 }',
+    { imports: { console: { log: (msg) => { captured.push(msg); return 0 } } } }
+  )
+  exports.f()
+  is(captured[0], 'hello')
+})
+
+test('host override: console.log with numbers', () => {
+  const captured = []
+  const { exports } = jz(
+    'export let f = () => { console.log(1, 2.5); return 0 }',
+    { imports: { console: { log: (a, b) => { captured.push(a, b); return 0 } } } }
+  )
+  exports.f()
+  is(captured[0], 1)
+  is(captured[1], 2.5)
+})
+
+test('host override: window.alert', () => {
+  const captured = []
+  const { exports } = jz(
+    'export let f = () => { window.alert(42); return 0 }',
+    { imports: { window: { alert: (x) => { captured.push(x); return 0 } } } }
+  )
+  exports.f()
+  is(captured[0], 42)
+})
+
+test('host override: globalThis.fetch', () => {
+  const captured = []
+  const { exports } = jz(
+    'export let f = () => globalThis.fetch("/api")',
+    { imports: { globalThis: { fetch: (url) => { captured.push(url); return 200 } } } }
+  )
+  is(exports.f(), 200)
+  is(captured[0], '/api')
+})
+
+test('host override: string return value', () => {
+  const { exports } = jz(
+    'export let f = () => globalThis.label() + "!"',
+    { imports: { globalThis: { label: () => 'ok' } } }
+  )
+  is(exports.f(), 'ok!')
+})
+
+test('host import return type elides numeric coercion helper', () => {
+  const wat = compile('export let f = () => performance.now() + 1', {
+    wat: true,
+    imports: { performance: { now: { params: 0, returns: 'number' } } },
+  })
+  ok(!wat.includes('$__to_num'))
+})
+
+test('host override: mixed with built-in fallback', () => {
+  const captured = []
+  const { exports } = jz(
+    'import { log, warn } from "console"; export let f = () => { log(1); warn(2); return 0 }',
+    { imports: { console: { log: (x) => { captured.push(x); return 0 } } } }
+  )
+  exports.f()
+  is(captured[0], 1)
+  // warn uses built-in WASI console (no crash = success)
+})

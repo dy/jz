@@ -91,7 +91,7 @@ test('features.hash OFF: scalar-only — no hash substrate', () => {
 
 test('features.hash ON: JSON.parse pulls hash substrate', () => {
   const w = wat(`export let f = (s) => JSON.parse(s)`)
-  ok(hasDef(w, '__hash_new') || hasDef(w, '__hash_set'))
+  ok(hasDef(w, '__hash_set_local'))
 })
 
 test('features.hash ON: untyped .prop pulls __dyn_get_any', () => {

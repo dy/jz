@@ -23,7 +23,7 @@ export default (ctx) => {
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
-    __jp_obj: ['__jp_val', '__hash_new', '__hash_set'],
+    __jp_obj: ['__jp_val', '__hash_new', '__hash_set_local'],
   })
 
 
@@ -384,7 +384,7 @@ export default (ctx) => {
       (if (i32.eq (call $__jp_peek) (i32.const 58))
         (then (call $__jp_adv (i32.const 1))))
       (call $__jp_ws)
-      (local.set $obj (call $__hash_set (local.get $obj) (local.get $key) (call $__jp_val)))
+      (local.set $obj (call $__hash_set_local (local.get $obj) (local.get $key) (call $__jp_val)))
       (call $__jp_ws)
       (local.set $ch (call $__jp_peek))
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))

@@ -15,6 +15,8 @@
 // Reports: median ms across N_RUNS, throughput in Msamp/s, output checksum
 // (FNV-1a over a sparse stride of the result so the optimizer can't elide it).
 
+import { checksumF64, medianUs, printResult } from '../_lib/benchlib.js'
+
 const N_SAMPLES = 480000  // 10 s @ 48 kHz mono
 const N_STAGES = 8
 const N_RUNS = 21
@@ -75,28 +77,12 @@ const processCascade = (x, coeffs, state, nStages, out) => {
   }
 }
 
-// FNV-1a over a strided u32 view of the f64 output. Sparse so the hash itself
-// isn't a meaningful share of runtime; bit-exact across LE platforms.
-const checksum = (out) => {
-  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
-  let h = 0x811c9dc5 | 0
-  const stride = 4096
-  for (let i = 0; i < u.length; i += stride) {
-    h = Math.imul(h ^ u[i], 0x01000193)
-  }
-  return (h >>> 0)
-}
-
 const run = () => {
   const x = mkInput(N_SAMPLES)
   const coeffs = mkCoeffs(N_STAGES)
   const state = new Float64Array(N_STAGES * 4)
   const out = new Float64Array(N_SAMPLES)
 
-  // Inline state reset (no closure). `state.fill(0)` would pull
-  // __dyn_get_expr + call_indirect into the bench's hot setup path on jz, and
-  // a closure over `state`/`stateLen` trips porffor. The state buffer is
-  // tiny (N_STAGES * 4 = 32 doubles), so the explicit loop is free.
   const stateLen = N_STAGES * 4
 
   for (let i = 0; i < N_WARMUP; i++) {
@@ -112,36 +98,9 @@ const run = () => {
     samples[i] = performance.now() - t0
   }
 
-  const cs = checksum(out)
-  // Hand-rolled insertion sort over the small samples buffer — keeps the bench
-  // free of `.sort(cmp)` closure dispatch (each target's cmp-call quirks would
-  // distort the per-run timings we already captured).
-  const sorted = new Float64Array(N_RUNS)
-  for (let i = 0; i < N_RUNS; i++) sorted[i] = samples[i]
-  for (let i = 1; i < N_RUNS; i++) {
-    const v = sorted[i]
-    let j = i - 1
-    while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j-- }
-    sorted[j + 1] = v
-  }
-  const medianMs = sorted[(N_RUNS - 1) >> 1]
-  const msamp = N_SAMPLES / (medianMs * 1000)
-  return { medianMs, msamp, cs, samples: N_SAMPLES, stages: N_STAGES, runs: N_RUNS }
+  printResult(medianUs(samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS)
 }
 
-// `main` is invoked explicitly by the host harness — both for V8/QuickJS
-// (driver imports + calls) and for jz-compiled WASM (host calls
-// `instance.exports.main()` after `_setMemory`). Avoiding top-level execution
-// keeps us out of the start-section quagmire (jz's WASI memory isn't bound
-// until after instantiation, so console.log from start would crash).
-//
-// Output prints integer microseconds + raw checksum to dodge `.toFixed()` —
-// jz routes Number.toFixed through `__dyn_get_expr` + call_indirect when the
-// receiver type isn't statically resolved off an OBJECT slot, which trips at
-// the only-1-table-slot edge in this program. Integer μs is enough precision
-// (1 μs ≪ 1 ms median), and the orchestrator parses + reformats.
 export let main = () => {
-  const r = run()
-  const medianUs = (r.medianMs * 1000) | 0
-  console.log(`median_us=${medianUs} checksum=${r.cs} samples=${r.samples} stages=${r.stages} runs=${r.runs}`)
+  run()
 }

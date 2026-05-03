@@ -105,6 +105,7 @@ export function reset(proto, globals) {
     modules: {},
     importSources: null,
     hostImports: null,
+    hostImportValTypes: new Map(),
     resolvedModules: new Map(),
     moduleStack: [],
     moduleInits: [],

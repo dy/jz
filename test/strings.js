@@ -30,6 +30,12 @@ test('string +=: append', () => {
   is(run('export let f = () => { let s = "a"; s = s + "bc"; return s.length }').f(), 3)
 })
 
+test('string +: known string operands skip generic toString helper', () => {
+  const wat = compile('export let f = () => { let s = ""; s = s + "abc"; return s.length }', { wat: true })
+  ok(!wat.includes('$__to_str'))
+  ok(!wat.includes('$__static_str'))
+})
+
 test('string ==: compares by value', () => {
   is(run('export let f = () => "module" == "module"').f(), 1)
 })

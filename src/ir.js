@@ -439,8 +439,18 @@ export function readVar(name) {
     return node
   }
   const t = ctx.func.locals?.get(name) || ctx.func.current?.params?.find(p => p.name === name)?.type || 'f64'
-  const node = typed(['local.get', `$${name}`], t)
   const rep = repOf(name)
+  // Const-arg propagation: param proven to be the same integer literal at every static
+  // call site (cross-call fixpoint sets rep.intConst). Substitute the read with the
+  // literal — lets watr fold guards and treeshake unused params without touching the
+  // param ABI (which the V8 inliner is sensitive to: narrowing nStages from f64→i32
+  // tanked biquad ~60%). Type follows the local's declared type to preserve any
+  // coercions the surrounding code expects.
+  if (rep?.intConst != null) {
+    return t === 'i32' ? typed(['i32.const', rep.intConst], 'i32')
+                       : typed(['f64.const', rep.intConst], 'f64')
+  }
+  const node = typed(['local.get', `$${name}`], t)
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
     const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)

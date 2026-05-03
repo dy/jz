@@ -1,6 +1,7 @@
 // JSON.stringify and JSON.parse tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import { compile } from '../index.js'
 import { run } from './util.js'
 
 // === JSON.stringify ===
@@ -71,6 +72,33 @@ test('JSON.parse: roundtrip', () => {
 
 test('JSON.parse: object dot access', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"x":42}'); return o.x }`).f(), 42)
+})
+
+test('JSON.parse: static object dot access uses local HASH lookup', () => {
+  const wat = compile(`const SRC = '{"x":42}'; export let f = () => { const o = JSON.parse(SRC); return o.x }`, { wat: true })
+  ok(wat.includes('$__hash_get_local'))
+  ok(!wat.includes('$__dyn_get_any'))
+  ok(!wat.includes('$__dyn_get_expr'))
+})
+
+test('JSON.parse: nested chains stay on HASH fast path', () => {
+  // o.meta.bias and items[j].id should both route through __hash_get_local —
+  // shape propagation lifts intermediate `o.meta` and `items[j]` to known
+  // HASH so the dispatcher is never pulled in.
+  const src = `
+    const SRC = '{"items":[{"id":1}],"meta":{"bias":11}}'
+    export let f = () => {
+      const o = JSON.parse(SRC)
+      const items = o.items
+      const it = items[0]
+      return o.meta.bias + it.id
+    }
+  `
+  const wat = compile(src, { wat: true })
+  ok(wat.includes('$__hash_get_local'))
+  ok(!wat.includes('$__dyn_get_any'))
+  ok(!wat.includes('$__dyn_get_expr'))
+  is(run(src).f(), 12)
 })
 
 test('JSON.parse: object multiple keys', () => {

@@ -3,8 +3,8 @@
 // Compile with:
 //   asc biquad.as.ts -O3 --runtime stub --noAssert -o biquad.wasm
 //
-// Bit-exact with V8/jz/wasm reference (checksum 1646038335) — AS lowers
-// `a*b + c` to f64.mul + f64.add (no FMA) like every wasm target.
+// Bit-exact with V8/jz/wasm reference — AS lowers `a*b + c` to f64.mul +
+// f64.add (no FMA) like every wasm target.
 //
 // Two host imports (env.perfNow, env.logLine) keep the runner trivial.
 
@@ -69,7 +69,7 @@ function processCascade(x: Float64Array, coeffs: Float64Array, state: Float64Arr
 function checksum(out: Float64Array): u32 {
   // FNV-1a over a strided u32 view of the f64 output's bit pattern.
   let h: u32 = 0x811c9dc5
-  const stride: i32 = 4096
+  const stride: i32 = 256
   const total: i32 = out.length * 2
   const base: usize = changetype<usize>(out.buffer)
   for (let i = 0; i < total; i += stride) {

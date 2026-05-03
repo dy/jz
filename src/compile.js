@@ -36,6 +36,7 @@ import {
   inferArgType, inferArgSchema, inferArgArrElemSchema, inferArgArrElemValType, inferArgTypedCtor,
   ctorFromElemAux, collectProgramFacts, observeProgramSlots, narrowReturnArrayElems,
   isBlockBody, alwaysReturns, hasBareReturn, returnExprs, collectReturnExprs,
+  findMutations,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -260,6 +261,7 @@ function narrowSignatures(programFacts, ast) {
       if (!ctxEntry) continue
       const { callerLocals, callerValTypes } = ctxEntry
       const callerSchemas = callerParamFactMap(paramReps, callerFunc, 'schemaId')
+      const restIdx = func.rest ? func.sig.params.length - 1 : -1
       for (let k = 0; k < func.sig.params.length; k++) {
         const r = ensureParamRep(paramReps, callee, k)
         if (k < argList.length) {
@@ -271,9 +273,27 @@ function narrowSignatures(programFacts, ast) {
             else if (r.wasm !== wt) r.wasm = null
           }
           if (r.schemaId !== null) mergeParamFact(r, 'schemaId', inferArgSchema(argList[k], callerSchemas))
+          // intConst lattice: bare-integer literal at every site → param has fixed value.
+          // Skip rest position — argList[restIdx] is just the first packed arg, not the
+          // whole array. Drop intConst for the rest param so it's never substituted.
+          if (k === restIdx) r.intConst = null
+          else if (r.intConst !== null) {
+            // Literal forms after prepare: bare number, `[null, n]` (literal wrap),
+            // or `['u-', n]` (negative literal). A bare string referencing a known
+            // module-scope `const NAME = <int-literal>` resolves through ctx.scope.constInts.
+            // Anything else → no-consensus.
+            const a = argList[k]
+            let raw = null
+            if (typeof a === 'number') raw = a
+            else if (Array.isArray(a) && a[0] == null && typeof a[1] === 'number') raw = a[1]
+            else if (Array.isArray(a) && a[0] === 'u-' && typeof a[1] === 'number') raw = -a[1]
+            else if (typeof a === 'string' && ctx.scope.constInts?.has(a)) raw = ctx.scope.constInts.get(a)
+            const v = (raw != null && Number.isInteger(raw) && raw >= -2147483648 && raw <= 2147483647) ? raw : null
+            mergeParamFact(r, 'intConst', v)
+          }
         } else {
           // Missing arg — call pads with nullExpr (f64). Prevents narrowing.
-          r.val = null; r.wasm = null; r.schemaId = null
+          r.val = null; r.wasm = null; r.schemaId = null; r.intConst = null
         }
       }
     }
@@ -316,6 +336,31 @@ function narrowSignatures(programFacts, ast) {
       if (func.defaults?.[pname] != null) continue  // defaults need nullish-sentinel f64
       func.sig.params[k].type = 'i32'
     }
+  }
+
+  // intConst validation: a param marked with a unanimous integer literal at every call
+  // site is only safe to substitute if the body never reassigns it. Clear intConst on any
+  // param whose name appears on the LHS of an assignment / `++` / `--`. Skip exported
+  // (callable from JS with arbitrary value), value-used (closure callees), raw, defaulted,
+  // and rest params — same exclusions as the wasm-narrowing pass above.
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (!func.body) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    let candidates = null
+    for (const [k, r] of reps) {
+      if (r.intConst == null || k === restIdx) continue
+      if (k >= func.sig.params.length) { r.intConst = null; continue }
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) { r.intConst = null; continue }
+      ;(candidates ||= new Map()).set(pname, r)
+    }
+    if (!candidates) continue
+    const mutated = new Set()
+    findMutations(func.body, new Set(candidates.keys()), mutated)
+    for (const name of mutated) candidates.get(name).intConst = null
   }
 
   // Pointer-ABI specialization: for non-forwarding pointer params consistent across
@@ -1036,6 +1081,7 @@ function emitFunc(func, programFacts) {
       if (r.val && !ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
+      if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
     }
   }
   // Drop any earlier-cached analyzeLocals for this body — narrowSignatures called
@@ -1861,6 +1907,9 @@ export default function compile(ast) {
           ? `(global $${name} i32 (i32.const ${v}))`
           : `(global $${name} f64 (f64.const ${v}))`)
         ctx.scope.globalTypes.set(name, isInt ? 'i32' : 'f64')
+        // Cache integer values for cross-call const-arg propagation: `f(N)` where
+        // `const N = 8` should observe the param as intConst=8.
+        if (isInt) (ctx.scope.constInts ||= new Map()).set(name, v)
       }
     }
   }

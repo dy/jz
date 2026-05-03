@@ -24,11 +24,30 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, extractParams, collectParamNames, classifyParam } from './analyze.js'
+import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]
+
+const hostReturnValType = spec => {
+  if (!spec || typeof spec === 'function') return null
+  const ret = spec.returns ?? spec.return ?? spec.result
+  if (ret === 'number' || ret === 'f64' || ret === Number) return VAL.NUMBER
+  if (ret === 'string' || ret === String) return VAL.STRING
+  if (ret === 'bigint' || ret === BigInt) return VAL.BIGINT
+  return null
+}
+
+const addHostImport = (mod, name, alias, spec) => {
+  const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
+  const params = Array(nParams).fill(['param', 'f64'])
+  if (!ctx.module.imports.some(i => i[3]?.[1] === `$${alias}`)) {
+    ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
+  }
+  const vt = hostReturnValType(spec)
+  if (vt) ctx.module.hostImportValTypes.set(alias, vt)
+}
 
 /**
  * @typedef {null|number|string|ASTNode[]} ASTNode
@@ -607,8 +626,11 @@ function prepDecl(op, ...inits) {
         if (op === 'const') {
           if (!ctx.scope.consts) ctx.scope.consts = new Set()
           ctx.scope.consts.add(declName)
+          if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
+            (ctx.scope.constStrs ||= new Map()).set(declName, normed[1])
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
+          ctx.scope.constStrs?.delete(declName)
         }
       }
       // Track object schemas (after prefix so schema is keyed to final name)
@@ -752,6 +774,35 @@ const handlers = {
     const mod = source?.[1]
     if (!mod || typeof mod !== 'string') return err('Invalid import source')
 
+    // Host imports override built-ins for named imports
+    const hostMod = ctx.module.hostImports?.[mod]
+    let remaining = specifiers
+    if (hostMod && Array.isArray(specifiers) && specifiers[0] === '{}') {
+      const inner = specifiers[1]
+      if (inner != null) {
+        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        const builtinItems = []
+        for (const item of items) {
+          const name = typeof item === 'string' ? item : item[1]
+          const alias = typeof item === 'string' ? item : item[2]
+          const spec = hostMod[name]
+          if (spec) {
+            addHostImport(mod, name, alias, spec)
+          } else {
+            builtinItems.push(item)
+          }
+        }
+        if (builtinItems.length === 0) return null
+        if (!mods[MOD_ALIAS[mod] || mod]) {
+          const name = typeof builtinItems[0] === 'string' ? builtinItems[0] : builtinItems[0][1]
+          err(`'${name}' not declared in host module '${mod}'`)
+        }
+        remaining = ['{}', builtinItems.length === 1 ? builtinItems[0] : [',', ...builtinItems]]
+      } else {
+        return null
+      }
+    }
+
     // Tier 1: Built-in module
     if (mods[MOD_ALIAS[mod] || mod]) {
       includeModule(mod)
@@ -761,11 +812,11 @@ const handlers = {
         ctx.scope.chain[alias || name] = key
       }
 
-      if (typeof specifiers === 'string') { ctx.scope.chain[specifiers] = mod; return null }
-      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') { ctx.scope.chain[specifiers[2]] = mod; return null }
+      if (typeof remaining === 'string') { ctx.scope.chain[remaining] = mod; return null }
+      if (Array.isArray(remaining) && remaining[0] === 'as' && remaining[1] === '*') { ctx.scope.chain[remaining[2]] = mod; return null }
 
-      if (Array.isArray(specifiers) && specifiers[0] === '{}') {
-        const inner = specifiers[1]
+      if (Array.isArray(remaining) && remaining[0] === '{}') {
+        const inner = remaining[1]
         if (inner == null) return null
         const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
         for (const item of items)
@@ -810,9 +861,8 @@ const handlers = {
       return null
     }
 
-    // Tier 3: Host imports
-    if (ctx.module.hostImports?.[mod]) {
-      const hostMod = ctx.module.hostImports[mod]
+    // Tier 3: Host imports (non-built-in modules)
+    if (hostMod) {
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
@@ -822,9 +872,7 @@ const handlers = {
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
           if (!spec) err(`'${name}' not declared in host module '${mod}'`)
-          const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
-          const params = Array(nParams).fill(['param', 'f64'])
-          ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
+          addHostImport(mod, name, alias, spec)
         }
       }
       return null
@@ -1036,14 +1084,21 @@ const handlers = {
       const resolved = ctx.scope.chain[callee]
       if (resolved?.includes('.')) callee = resolved
       else if (resolved && ctx.func.list.some(f => f.name === resolved)) callee = resolved
-      else if (resolved && !resolved.includes('.')) includeModule(resolved)
+      else if (resolved && !resolved.includes('.')) {
+        if (!ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
+      }
       else if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`)) {
         includeMods('core', 'fn')
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
       const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
-      if (key && CALL_MODULES[key]) {
+      if (key && ctx.module.hostImports?.[obj]?.[prop]) {
+        const spec = ctx.module.hostImports[obj][prop]
+        const alias = `${obj}$${prop}`
+        addHostImport(obj, prop, alias, spec)
+        callee = alias
+      } else if (key && CALL_MODULES[key]) {
         includeMods(...CALL_MODULES[key])
         callee = key
       } else if (GENERIC_METHOD_MODULES[prop]) {
@@ -1141,10 +1196,14 @@ const handlers = {
     let r
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
-      // Hoist .length from for-condition: `i < arr.length` → `let __len = arr.length; ... i < __len`
+      // Hoist .length / .size / .byteLength from for-condition:
+      //   `i < arr.length` → `let __len = arr.length; ... i < __len`
+      // All three return i32 (TYPED/ARRAY/STRING/BUFFER/SET/MAP), so the hoisted
+      // local stays i32 once exprType narrows it.
       if (cond && Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || cond[0] === '>' || cond[0] === '>=')) {
         const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
-        if (Array.isArray(lenExpr) && lenExpr[0] === '.' && lenExpr[2] === 'length') {
+        if (Array.isArray(lenExpr) && lenExpr[0] === '.' &&
+            (lenExpr[2] === 'length' || lenExpr[2] === 'size' || lenExpr[2] === 'byteLength')) {
           const lenVar = `${T}len${ctx.func.uniq++}`
           const lenDecl = ['let', ['=', lenVar, lenExpr]]
           init = init ? [';', init, lenDecl] : lenDecl

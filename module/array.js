@@ -440,6 +440,14 @@ export default (ctx) => {
           ['i32.add', ['call', '$__ptr_offset', asF64(emit(arr))], ['i32.const', slot * 8]]], 'f64')
       }
     }
+    if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
+      inc('__hash_get_local')
+      return typed(['call', '$__hash_get_local', asF64(emit(arr)), asF64(emit(['str', litKey]))], 'f64')
+    }
+    if (litKey != null && typeof arr !== 'string' && valTypeOf(arr) === VAL.HASH) {
+      inc('__hash_get_local')
+      return typed(['call', '$__hash_get_local', asF64(emit(arr)), asF64(emit(['str', litKey]))], 'f64')
+    }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)

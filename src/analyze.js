@@ -87,7 +87,7 @@ export const returnExprs = (body) => {
 // Value types — what a variable holds (for method dispatch, schema resolution)
 export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',
-  OBJECT: 'object', SET: 'set', MAP: 'map',
+  OBJECT: 'object', HASH: 'hash', SET: 'set', MAP: 'map',
   CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
   BIGINT: 'bigint', BUFFER: 'buffer',
 }
@@ -112,12 +112,21 @@ export const VAL = {
  *   schemaId:         i32   — schema binding for known-shape OBJECTs
  *   arrayElemSchema:  i32   — Array<schemaId> element shape
  *   arrayElemValType: VAL.* — Array<VAL.*> element val-kind
+ *   jsonShape:        obj   — { vt, props?, elem? } for HASH/ARRAY trees parsed
+ *                             from a compile-time JSON.parse source. Propagates
+ *                             through `.prop` and `[i]` so nested chains stay typed.
  *   typedCtor:        str   — TypedArray ctor name (`Float64Array`, …)
  *   intCertain:       bool  — proven integer-valued (every defining RHS is integer-shaped).
  *                             Pure analysis fact; codegen extensions may use it to choose
  *                             i32-shaped emission inside hot regions where range fits.
  *                             Boundary ABI is NOT narrowed by this fact alone — narrowing
  *                             at param/result level remains a separate, opt-in decision.
+ *   intConst:         number — proven same integer literal at every static call site.
+ *                             Param-only (cross-call fixpoint). Drives constant substitution
+ *                             at readVar: every `local.get $param` lowers to `i32.const N`
+ *                             (or `f64.const N`), letting the WAT optimizer fold guards,
+ *                             unroll fixed-bound loops, and treeshake the read entirely.
+ *                             Cleared if the param is written inside the body.
  *
  * Future (S2 stage 4 follow-ups): boxed, intLikely, nullable.
  */
@@ -258,6 +267,16 @@ export function valTypeOf(expr) {
     const slotVT = ctx.schema.slotVT(args[0], args[1])
     if (slotVT) return slotVT
   }
+  // VAL.HASH `.prop` propagation: when the receiver chain roots at a binding
+  // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
+  // child's val-type. Generic for any compile-time-known JSON literal.
+  if (op === '.' && typeof args[1] === 'string') {
+    const sh = shapeOf(args[0])
+    if (sh?.vt === VAL.HASH) {
+      const child = sh.props[args[1]]
+      if (child) return child.vt
+    }
+  }
   // Arithmetic expressions: BigInt if either operand is BigInt, else number
   if (['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>'].includes(op)) {
     if (valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT) return VAL.BIGINT
@@ -287,12 +306,24 @@ export function valTypeOf(expr) {
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
+      if (callee === 'JSON.parse') {
+        const src = jsonConstString(args[1])
+        if (src != null) {
+          const c = src.trimStart()[0]
+          if (c === '{') return VAL.HASH
+          if (c === '[') return VAL.ARRAY
+          if (c === '"') return VAL.STRING
+          if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
+        }
+      }
       // Math.* always returns Number — let `+` skip string-concat dispatch and
       // let exprType propagate i32 for the integer-returning subset.
       if (typeof callee === 'string' && callee.startsWith('math.')) return VAL.NUMBER
       // Clock helpers always return Number — lets `t0 = performance.now()` propagate
       // VAL.NUMBER through subsequent reads, eliding `__to_num` wrappers in arithmetic.
       if (callee === 'performance.now' || callee === 'Date.now') return VAL.NUMBER
+      const hostVT = ctx.module.hostImportValTypes?.get(callee)
+      if (hostVT) return hostVT
       // User-defined func with monomorphic VAL return (populated in compile.js E2 pass).
       const f = ctx.func.map?.get(callee)
       if (f?.valResult) return f.valResult
@@ -324,6 +355,92 @@ export function valTypeOf(expr) {
   }
   return null
 }
+
+function jsonConstString(expr) {
+  if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
+  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
+  if (typeof expr === 'string') return ctx.scope.constStrs?.get(expr) ?? null
+  return null
+}
+
+/** Build a structural shape tree from a parsed JSON value. Each node is
+ *  `{ vt, props?, elem? }`. Lets `valTypeOf` propagate VAL kinds through
+ *  `.prop` chains and `[i]` reads on bindings sourced from `JSON.parse`
+ *  of a compile-time-known string. Polymorphic arrays drop their `elem`. */
+function shapeOfJsonValue(v) {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'number') return { vt: VAL.NUMBER }
+  if (typeof v === 'string') return { vt: VAL.STRING }
+  if (typeof v === 'boolean') return { vt: VAL.NUMBER }
+  if (Array.isArray(v)) {
+    let elem = null
+    for (const x of v) {
+      const s = shapeOfJsonValue(x)
+      if (!s) { elem = null; break }
+      if (!elem) elem = s
+      else if (!shapeUnifies(elem, s)) { elem = null; break }
+    }
+    return { vt: VAL.ARRAY, elem }
+  }
+  if (typeof v === 'object') {
+    const props = Object.create(null)
+    for (const k of Object.keys(v)) {
+      const s = shapeOfJsonValue(v[k])
+      if (s) props[k] = s
+    }
+    return { vt: VAL.HASH, props }
+  }
+  return null
+}
+
+function shapeUnifies(a, b) {
+  if (!a || !b || a.vt !== b.vt) return false
+  if (a.vt === VAL.HASH) {
+    const ak = Object.keys(a.props), bk = Object.keys(b.props)
+    if (ak.length !== bk.length) return false
+    for (const k of ak) {
+      if (!b.props[k] || !shapeUnifies(a.props[k], b.props[k])) return false
+    }
+  }
+  if (a.vt === VAL.ARRAY) {
+    if ((a.elem == null) !== (b.elem == null)) return false
+    if (a.elem && !shapeUnifies(a.elem, b.elem)) return false
+  }
+  return true
+}
+
+const _jsonShapeCache = new WeakMap()
+function parseJsonShape(src) {
+  if (typeof src !== 'string') return null
+  if (_jsonShapeCache.has(src)) return _jsonShapeCache.get(src)
+  let parsed
+  try { parsed = JSON.parse(src) } catch { _jsonShapeCache.set(Object(src), null); return null }
+  const sh = shapeOfJsonValue(parsed)
+  // WeakMap requires object keys; cache via a wrapper. Skip caching for cold path.
+  return sh
+}
+
+/** Resolve the json shape for an expression by walking name → rep.jsonShape and
+ *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
+export function shapeOf(expr) {
+  if (typeof expr === 'string') return ctx.func.repByLocal?.get(expr)?.jsonShape || null
+  if (!Array.isArray(expr)) return null
+  const [op, ...args] = expr
+  if (op === '()' && args[0] === 'JSON.parse') {
+    const src = jsonConstString(args[1])
+    if (src != null) return parseJsonShape(src)
+  }
+  if (op === '.' && typeof args[1] === 'string') {
+    const parent = shapeOf(args[0])
+    if (parent?.vt === VAL.HASH) return parent.props[args[1]] || null
+  }
+  if (op === '[]' && args.length === 2) {
+    const parent = shapeOf(args[0])
+    if (parent?.vt === VAL.ARRAY) return parent.elem || null
+  }
+  return null
+}
+
 
 /** Decode a `['{}', ...]` AST's children into `{names, values}`, or null if any
  *  property is non-static-key (computed key, spread, shorthand). Matches the
@@ -903,6 +1020,18 @@ export function analyzeValTypes(body) {
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
         propagateTyped(a[1], a[2])
+        // JSON-shape propagation. When the RHS resolves to a known JSON shape
+        // (root: `JSON.parse(literal)`; nested: `o.meta`, `items[j]` from a known
+        // root), record it on the binding so subsequent `.prop`/`[i]` accesses
+        // skip dynamic dispatch and propagate VAL kinds. Generic for any
+        // compile-time JSON literal.
+        const sh = shapeOf(a[2])
+        if (sh) {
+          updateRep(a[1], { jsonShape: sh })
+          if (sh.vt === VAL.ARRAY && sh.elem?.vt) {
+            updateRep(a[1], { arrayElemValType: sh.elem.vt })
+          }
+        }
         // Propagate schemaId from a narrowed call result so subsequent valTypeOf
         // calls in this function body see the precise schema. emitDecl rebinds
         // this at emission time too — analyze-time binding is what unlocks the
@@ -1052,6 +1181,10 @@ export function analyzeIntCertain(body) {
         const vt = lookupValType(args[0])
         return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
       }
+      if (args[1] === 'size' && typeof args[0] === 'string') {
+        const vt = lookupValType(args[0])
+        return vt === VAL.SET || vt === VAL.MAP
+      }
       return false
     }
     if (INT_CLOSED_OPS.has(op)) {
@@ -1118,6 +1251,14 @@ export function exprType(expr, locals) {
     if (args[1] === 'length' && typeof args[0] === 'string') {
       const vt = lookupValType(args[0])
       if (vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER) return 'i32'
+    }
+    if (args[1] === 'size' && typeof args[0] === 'string') {
+      const vt = lookupValType(args[0])
+      if (vt === VAL.SET || vt === VAL.MAP) return 'i32'
+    }
+    if (args[1] === 'byteLength' && typeof args[0] === 'string') {
+      const vt = lookupValType(args[0])
+      if (vt === VAL.BUFFER || vt === VAL.TYPED) return 'i32'
     }
     return 'f64'
   }
@@ -1394,7 +1535,7 @@ export function findFreeVars(node, bound, free, scope) {
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 /** Check if any of the given variable names are assigned anywhere in the AST. */
-function findMutations(node, names, mutated) {
+export function findMutations(node, names, mutated) {
   if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
   const [op, ...args] = node
   if (op === 'let' || op === 'const') {

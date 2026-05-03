@@ -627,8 +627,21 @@ export function emitBody(node) {
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const va = emit(a), vb = emit(b)
   if (isLit(va) && isLit(vb)) return emitNum(fn(litVal(va), litVal(vb)) ? 1 : 0)
+  const ai = intConstValue(a), bi = intConstValue(b)
+  if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
+  if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
   return va.type === 'i32' && vb.type === 'i32'
     ? typed([`i32.${i32op}`, va, vb], 'i32') : typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
+}
+
+function intConstValue(expr) {
+  if (typeof expr === 'number' && Number.isInteger(expr)) return expr
+  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number' && Number.isInteger(expr[1])) return expr[1]
+  if (typeof expr === 'string') {
+    const v = repOf(expr)?.intConst
+    if (v != null) return v
+  }
+  return null
 }
 
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
@@ -1009,9 +1022,13 @@ export const emitter = {
   // Postfix in void: (++i)-1 / (--i)+1 → just ++i / --i
   '+': (a, b) => {
     if (_expect === 'void' && isPostfix(a, '--', b)) return emit(a, 'void')
-    // String concatenation: if either operand is known string, use __str_concat
+    // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = keyValType(a)
     const vtB = keyValType(b)
+    if (vtA === VAL.STRING && vtB === VAL.STRING) {
+      inc('__str_concat_raw')
+      return typed(['call', '$__str_concat_raw', asF64(emit(a)), asF64(emit(b))], 'f64')
+    }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       inc('__str_concat')
       return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')

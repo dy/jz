@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { compile } from '../index.js'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -110,6 +111,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
 }
 
 const wasmPath = c => join(caseBuild(c), `${c.id}.wasm`)
+const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
@@ -118,6 +120,29 @@ const asWasmPath = c => join(caseBuild(c), `${c.id}.as.wasm`)
 
 const compileJz = c => {
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+}
+
+const benchlibHostSource = () => {
+  const src = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
+  const out = src.replace(`export let printResult = (medianUs, checksum, samples, stages, runs) => {
+  console.log(\`median_us=\${medianUs} checksum=\${checksum} samples=\${samples} stages=\${stages} runs=\${runs}\`)
+}`, `export let printResult = (medianUs, checksum, samples, stages, runs) => {
+  env.logResult(medianUs, checksum, samples, stages, runs)
+}`)
+  if (out === src) throw Error('failed to patch benchlib printResult for jz-host')
+  return out
+}
+
+const compileJzHost = c => {
+  const code = readFileSync(c.js, 'utf8')
+  const wasm = compile(code, {
+    modules: { '../_lib/benchlib.js': benchlibHostSource() },
+    imports: {
+      env: { logResult: { params: 5 } },
+      performance: { now: { params: 0, returns: 'number' } },
+    },
+  })
+  writeFileSync(jzHostWasmPath(c), wasm)
 }
 
 const writeFlat = c => {
@@ -306,6 +331,12 @@ const targets = {
     bin: wasmPath,
     run: c => tryRun('jz', c, () => compileJz(c), ['node', join(LIB, 'run-wasm.mjs'), wasmPath(c)]),
   },
+  'jz-host': {
+    name: 'jz → V8 wasm (host imports)',
+    available: () => has('node'),
+    bin: jzHostWasmPath,
+    run: c => tryRun('jz-host', c, () => compileJzHost(c), ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
+  },
   as: {
     name: 'AssemblyScript (asc -O3)',
     available: c => !!c.as && has('asc'),
@@ -399,7 +430,7 @@ for (const cid of selectedCases) {
 
   for (const r of results) r.bytes = sizeOf(r.id)
   // Known parity classes per case — currently just FMA-fused biquad on arm64 NEON.
-  const fmaChecksums = { biquad: 1814592024 }
+  const fmaChecksums = { biquad: 3650557234 }
   const fmaCs = fmaChecksums[c.id]
 
   const csCounts = {}

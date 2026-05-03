@@ -4,15 +4,16 @@
 // biquad.go — native Go reference of bench/biquad/biquad.js.
 //
 // Same algorithm, same constants. Build with:
-//   go build -o biquad biquad.go
 //
-// Checksum parity: on amd64 Go matches the scalar f64 reference (1646038335).
+//	go build -o biquad biquad.go
+//
+// Checksum parity: on amd64 Go matches the scalar f64 reference.
 // On arm64, Go's SSA backend auto-fuses `a*b + c` to FMADDD (mandatory in
 // ARMv8); there is no flag to disable this short of `-N` which would kill
 // optimization. The cascade then yields a different (but still IEEE-754
-// correctly-rounded) checksum: 1814592024. The bench harness reports this
-// as `fma` parity rather than `DIFF`. Same situation as Rust on arm64
-// without `-C target-feature=-fma`.
+// correctly-rounded) checksum. The bench harness reports this as `fma` parity
+// rather than `DIFF`. Same situation as Rust on arm64 without
+// `-C target-feature=-fma`.
 package main
 
 import (
@@ -79,7 +80,7 @@ func processCascade(x, coeffs, state, out []float64) {
 // FNV-1a over a 32-bit-word stride of out's bit pattern.
 func checksum(out []float64) uint32 {
 	h := uint32(0x811c9dc5)
-	const stride = 4096
+	const stride = 256
 	total := len(out) * 2
 	buf := make([]byte, 8)
 	for i := 0; i < total; i += stride {

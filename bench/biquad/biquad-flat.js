@@ -1,8 +1,5 @@
-// biquad-flat.js — biquad.js with `export` stripped and main() called at
-// top level. For runtimes that don't support ESM imports (porffor, qjs).
-// Keep this file in sync with biquad.js — it's a sed-style copy, not a
-// fork: only the `export let main = ...` declaration loses `export`, and
-// a `main()` call is appended.
+// biquad-flat.js — biquad.js inlined for runtimes without ESM imports (porffor, qjs).
+// Benchlib helpers are inlined here since ESM imports aren't available.
 
 const N_SAMPLES = 480000
 const N_STAGES = 8
@@ -60,14 +57,29 @@ const processCascade = (x, coeffs, state, nStages, out) => {
   }
 }
 
-const checksum = (out) => {
+// Inlined from benchlib (stride 256 to match benchlib standard)
+const checksumF64 = (out) => {
   const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
   let h = 0x811c9dc5 | 0
-  const stride = 4096
+  const stride = 256
   for (let i = 0; i < u.length; i += stride) {
-    h = Math.imul(h ^ u[i], 0x01000193)
+    h = Math.imul(h ^ (u[i] | 0), 0x01000193)
   }
-  return (h >>> 0)
+  return h >>> 0
+}
+
+const medianUs = (samples) => {
+  for (let i = 1; i < samples.length; i++) {
+    const v = samples[i]
+    let j = i - 1
+    while (j >= 0 && samples[j] > v) { samples[j + 1] = samples[j]; j-- }
+    samples[j + 1] = v
+  }
+  return (samples[(samples.length - 1) >> 1] * 1000) | 0
+}
+
+const printResult = (medianUs, checksum, samples, stages, runs) => {
+  console.log(`median_us=${medianUs} checksum=${checksum} samples=${samples} stages=${stages} runs=${runs}`)
 }
 
 const run = () => {
@@ -76,10 +88,6 @@ const run = () => {
   const state = new Float64Array(N_STAGES * 4)
   const out = new Float64Array(N_SAMPLES)
 
-  // Inline state reset (no closure) — porffor's closure support drops the
-  // capture of `state` + `stateLen` here; jz already handles it but gets
-  // pulled into __dyn_get_expr if .fill is used. Inlining keeps every target
-  // on the same hot-path shape.
   const stateLen = N_STAGES * 4
 
   for (let i = 0; i < N_WARMUP; i++) {
@@ -95,24 +103,11 @@ const run = () => {
     samples[i] = performance.now() - t0
   }
 
-  const cs = checksum(out)
-  const sorted = new Float64Array(N_RUNS)
-  for (let i = 0; i < N_RUNS; i++) sorted[i] = samples[i]
-  for (let i = 1; i < N_RUNS; i++) {
-    const v = sorted[i]
-    let j = i - 1
-    while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j-- }
-    sorted[j + 1] = v
-  }
-  const medianMs = sorted[(N_RUNS - 1) >> 1]
-  const msamp = N_SAMPLES / (medianMs * 1000)
-  return { medianMs, msamp, cs, samples: N_SAMPLES, stages: N_STAGES, runs: N_RUNS }
+  printResult(medianUs(samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS)
 }
 
 const main = () => {
-  const r = run()
-  const medianUs = (r.medianMs * 1000) | 0
-  console.log(`median_us=${medianUs} checksum=${r.cs} samples=${r.samples} stages=${r.stages} runs=${r.runs}`)
+  run()
 }
 
 main()

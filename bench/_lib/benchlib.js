@@ -1,13 +1,11 @@
 export let medianUs = (samples) => {
-  const sorted = new Float64Array(samples.length)
-  for (let i = 0; i < samples.length; i++) sorted[i] = samples[i]
-  for (let i = 1; i < sorted.length; i++) {
-    const v = sorted[i]
+  for (let i = 1; i < samples.length; i++) {
+    const v = samples[i]
     let j = i - 1
-    while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j-- }
-    sorted[j + 1] = v
+    while (j >= 0 && samples[j] > v) { samples[j + 1] = samples[j]; j-- }
+    samples[j + 1] = v
   }
-  return (sorted[(sorted.length - 1) >> 1] * 1000) | 0
+  return (samples[(samples.length - 1) >> 1] * 1000) | 0
 }
 
 export let mix = (h, x) => Math.imul(h ^ (x | 0), 0x01000193)

@@ -29,6 +29,7 @@ drift as `DIFF`.
 ```sh
 npm run bench
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
+node bench/bench.mjs --targets=jz,jz-host --cases=biquad,mat4,poly,bitwise
 node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
 node bench/bench.mjs --cases=biquad,mat4,tokenizer,json
 node bench/bench.mjs biquad
@@ -84,6 +85,7 @@ correctly-rounded; cascade is the same algorithm.
 | `hermes` | raw JavaScript on Hermes |
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output on Node's WebAssembly runtime |
+| `jz-host` | jz output with benchmark timing/logging supplied as host imports |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
@@ -93,8 +95,9 @@ correctly-rounded; cascade is the same algorithm.
 
 The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
-`.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated executable),
-or the source file for raw-JS interpreters where there is no compile step.
+`.wasm` for `jz`/`jz-host`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
+executable), or the source file for raw-JS interpreters where there is no
+compile step.
 
 Runtime command overrides:
 
@@ -113,17 +116,17 @@ Snapshot from one full run (`node bench/bench.mjs biquad`):
 
 | target | median | ×nat | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| Rust (rustc -O `target-cpu=native`) | 5.27 ms | 0.99× | 471.9 kB | ok |
-| native C (clang -O3 -ffp-contract=off) | 5.32 ms | 1.00× | 32.8 kB | ok |
-| hand-WAT → V8 wasm | 6.46 ms | 1.21× | 767 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 8.87 ms | 1.66× | 1.9 kB | ok |
-| Go (gc, FMA-fused on arm64) | 8.95 ms | 1.68× | 2.39 MB | fma |
-| jz → V8 wasm | 11.30 ms | 2.12× | 8.1 kB | ok |
-| jz → wasm2c → clang -O3 | 11.44 ms | 2.15× | 68.4 kB | ok |
-| V8 (deno) raw JS | 11.89 ms | 2.24× | 5.3 kB | ok |
-| V8 (node) raw JS | 12.29 ms | 2.31× | 5.3 kB | ok |
-| jz → wasmtime | 16.68 ms | 3.14× | 8.1 kB | ok |
-| QuickJS (qjs, bytecode interp) | 1102 ms | 207× | 5.7 kB | ok |
+| native C (clang -O3 -ffp-contract=off) | 5.38 ms | 1.00× | 32.8 kB | ok |
+| Rust (rustc -O `target-cpu=native`) | 5.66 ms | 1.05× | 471.9 kB | ok |
+| hand-WAT → V8 wasm | 6.54 ms | 1.22× | 767 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.01 ms | 1.68× | 1.9 kB | ok |
+| Go (gc, FMA-fused on arm64) | 10.46 ms | 1.94× | 2.39 MB | fma |
+| jz → V8 wasm (host imports) | 11.29 ms | 2.10× | 2.3 kB | ok |
+| jz → V8 wasm | 11.31 ms | 2.10× | 3.9 kB | ok |
+| jz → wasm2c → clang -O3 | 12.12 ms | 2.25× | 68.4 kB | ok |
+| V8 (node) raw JS | 12.27 ms | 2.28× | 3.2 kB | ok |
+| V8 (deno) raw JS | 12.61 ms | 2.34× | 3.2 kB | ok |
+| jz → wasmtime | 14.75 ms | 2.74× | 7.9 kB | ok |
 
 Where the time goes:
 
@@ -133,27 +136,26 @@ Where the time goes:
 * **hand-WAT (6.5 ms) is the wasm floor on V8.** Direct-form-1 cascade
   written by hand uses one base pointer per array + `f64.load offset=`
   immediates and avoids every helper call. This is the target jz aims at.
-* **AssemblyScript (8.9 ms) is the high-quality wasm-from-source floor.**
+* **AssemblyScript (9.0 ms) is the high-quality wasm-from-source floor.**
   AS pre-narrows everything (`Float64Array` is monomorphic, `unchecked()`
   elides bounds checks, no NaN-boxed values), so its inner loop is roughly
-  the hand-WAT shape minus a few peephole tricks. ~37 % slower than
-  hand-WAT, ~24 % faster than jz.
+  the hand-WAT shape minus a few peephole tricks. ~39 % slower than
+  hand-WAT, ~20 % faster than jz.
 * **jz (11.3 ms) currently sits between AS and raw V8 JS.** It now beats
-  V8's raw-JS execution of the same source, but is 1.27× slower than AS
-  and 1.75× slower than hand-WAT. The jz-w2c row (jz wasm → clang) ties
-  jz on V8, which says the bottleneck is the *shape* of the wasm jz emits,
-  not V8's wasm tier — the same shape stays slow even after clang sees it.
+  V8's raw-JS execution of the same source, but is 1.25× slower than AS
+  and 1.74× slower than hand-WAT. The jz-w2c row (jz wasm → clang) is in
+  the same range, which says the bottleneck is the *shape* of the wasm jz
+  emits, not V8's wasm tier — the same shape stays slow even after clang
+  sees it.
 * **V8 raw JS (12.3 ms) is the JIT ceiling on the JS source.** TurboFan
   reaches roughly hand-WAT × 1.9 here. jz crosses below that line.
-* **wasmtime (16.7 ms) is single-tier.** No TurboFan-equivalent; this
+* **wasmtime (14.8 ms) is single-tier.** No TurboFan-equivalent; this
   measures Cranelift one-pass codegen on jz's wasm.
-* **QuickJS (1.1 s) is interpreter cost.** Useful as the no-JIT floor —
-  shows how expensive every JS feature gets without specialization.
 
 ### Optimization order — what closes the gap to hand-WAT
 
-The 1.75× gap between jz (11.3 ms) and hand-WAT (6.5 ms) is the same shape
-on V8 *and* on clang (jz-w2c also 11.4 ms), so the wins below target the
+The 1.73× gap between jz (11.3 ms) and hand-WAT (6.5 ms) is the same shape
+on V8 *and* on clang (jz-w2c is 12.1 ms), so the wins below target the
 wasm jz emits, not the consumer. Listed by expected impact:
 
 1. **Per-stage base hoisting + `offset=` immediate fusion** (≈11.3→9 ms,

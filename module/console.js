@@ -13,12 +13,14 @@
  */
 
 import { emit, typed, asF64, valTypeOf, VAL } from '../src/compile.js'
+import { exprType } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
-    __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_byte', '__static_str'],
+    __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
+    __write_int: ['__itoa', '__mkstr', '__write_str'],
     __write_str: ['__sso_char', '__str_len'],
   })
 
@@ -69,7 +71,13 @@ export default (ctx) => {
   // __write_num(fd: i32, val: f64) — convert number to string, write to fd
   ctx.core.stdlib['__write_num'] = `(func $__write_num (param $fd i32) (param $val f64)
     (call $__write_str (local.get $fd) (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
-
+  // __write_int(fd: i32, val: f64) — convert integer to string, write to fd
+  // Skips __ftoa (~600 B) for values proven integer by exprType.
+  ctx.core.stdlib['__write_int'] = `(func $__write_int (param $fd i32) (param $val f64)
+    (local $buf i32)
+    (local.set $buf (call $__alloc (i32.const 12)))
+    (call $__write_str (local.get $fd)
+      (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf)))))`
   // __write_val(fd: i32, val: f64) — write any value, auto-detecting type
   ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
     (local $type i32)
@@ -124,8 +132,15 @@ export default (ctx) => {
           inc('__write_str')
           ir.push(['call', '$__write_str', ['i32.const', fd], asF64(emit(part))])
         } else if (vt === VAL.NUMBER) {
-          inc('__write_num')
-          ir.push(['call', '$__write_num', ['i32.const', fd], asF64(emit(part))])
+          // Integer-valued numbers use __write_int (__itoa) instead of __write_num (__ftoa).
+          // exprType sees i32 for literals, bitwise ops, .length on arrays, Math.imul, etc.
+          if (exprType(part, ctx.func.locals) === 'i32') {
+            inc('__write_int')
+            ir.push(['call', '$__write_int', ['i32.const', fd], asF64(emit(part))])
+          } else {
+            inc('__write_num')
+            ir.push(['call', '$__write_num', ['i32.const', fd], asF64(emit(part))])
+          }
         } else {
           inc('__write_val')
           ir.push(['call', '$__write_val', ['i32.const', fd], asF64(emit(part))])
@@ -168,4 +183,8 @@ export default (ctx) => {
     inc('__time_ms')
     return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')  // clock 1 = monotonic
   }
+
+  // Aliases for explicit import: import { now, perfNow } from 'console'
+  ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
+  ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
 }

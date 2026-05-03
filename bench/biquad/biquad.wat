@@ -158,11 +158,11 @@
         (br $iloop))))
 
   ;; FNV-1a over a sparse stride of the f64 output's i32 view.
-  ;; out[] is f64; we read 32-bit u32 lanes at every (4096*4)-byte stride.
+  ;; out[] is f64; we read 32-bit u32 lanes at every (256*4)-byte stride.
   (func (export "checksum") (param $ptr i32) (param $n i32) (result i32)
     (local $h i32) (local $i i32) (local $end i32)
     (local.set $h (i32.const 0x811c9dc5))
-    ;; u.length = n * 2 (u32 view of f64 buffer), iterate i = 0, 4096, 8192, ...
+    ;; u.length = n * 2 (u32 view of f64 buffer), iterate i = 0, 256, 512, ...
     ;; byte offset = i * 4 (since u32 stride). end = (n*2) in u32 units.
     (local.set $end (i32.shl (local.get $n) (i32.const 1)))
     (local.set $i (i32.const 0))
@@ -176,7 +176,7 @@
               (i32.load
                 (i32.add (local.get $ptr) (i32.shl (local.get $i) (i32.const 2)))))
             (i32.const 0x01000193)))
-        (local.set $i (i32.add (local.get $i) (i32.const 4096)))
+        (local.set $i (i32.add (local.get $i) (i32.const 256)))
         (br $top)))
     (local.get $h))
 )

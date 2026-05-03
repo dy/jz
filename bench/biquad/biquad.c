@@ -84,7 +84,7 @@ static void process_cascade(const double *x, const double *coeffs, double *state
  * via memcpy into a local — `(uint32_t *)out` would be UB. */
 static uint32_t fnv1a_strided(const double *out, int n_samples) {
   uint32_t h = 0x811c9dc5u;
-  const int stride_words = 4096;       /* match JS u32-stride */
+  const int stride_words = 256;        /* match benchlib checksumF64 u32-stride */
   const int total_words = n_samples * 2;
   for (int i = 0; i < total_words; i += stride_words) {
     int byte_off = i * (int)sizeof(uint32_t);

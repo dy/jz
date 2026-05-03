@@ -386,6 +386,10 @@ export default (ctx) => {
         inc('__dyn_get_expr')
         return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
       }
+      if (vt === VAL.HASH) {
+        inc('__hash_get_local')
+        return typed(['call', '$__hash_get_local', asF64(va), key], 'f64')
+      }
       if (vt == null) {
         inc('__dyn_get_any')
         ctx.features.external = true
@@ -393,6 +397,14 @@ export default (ctx) => {
       }
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['call', '$__hash_get', asF64(va), key], 'f64')
+    }
+    // Non-string receiver: route through HASH fast path when valTypeOf can
+    // resolve the chain to a known HASH (e.g. `o.meta.bias` where `o.meta` is
+    // a HASH per the parsed JSON shape). Falls back to dynamic dispatch
+    // otherwise.
+    if (valTypeOf(obj) === VAL.HASH) {
+      inc('__hash_get_local')
+      return typed(['call', '$__hash_get_local', asF64(va), key], 'f64')
     }
     inc('__dyn_get_expr')
     return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
@@ -501,6 +513,9 @@ export default (ctx) => {
           if (usesDynProps(objType)) {
             inc('__dyn_get_expr')
             access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          } else if (objType === VAL.HASH) {
+            inc('__hash_get_local')
+            access = ['call', '$__hash_get_local', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
           } else if (objType == null) {
             inc('__dyn_get_any')
             ctx.features.external = true
@@ -510,8 +525,13 @@ export default (ctx) => {
             access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
           }
         } else {
-          inc('__dyn_get_expr')
-          access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          if (valTypeOf(obj) === VAL.HASH) {
+            inc('__hash_get_local')
+            access = ['call', '$__hash_get_local', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          } else {
+            inc('__dyn_get_expr')
+            access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+          }
         }
       }
     }

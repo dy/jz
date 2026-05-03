@@ -11,7 +11,7 @@ fn mix(h: u32, x: u32) -> u32 {
 
 fn checksum(out: &[f64]) -> u32 {
     let mut h = 0x811c_9dc5u32;
-    for i in (0..out.len() * 2).step_by(4096) {
+    for i in (0..out.len() * 2).step_by(256) {
         let bytes = out[i / 2].to_le_bytes();
         let off = (i & 1) * 4;
         let w = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);

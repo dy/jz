@@ -469,11 +469,15 @@ export const instantiate = (compile, code, opts = {}) => {
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
 
-  // Host imports: provide actual functions at instantiation
+  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz values.
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
     if (!imports[modName]) imports[modName] = {}
     for (const [name, spec] of Object.entries(fns))
-      if (typeof spec === 'function') imports[modName][name] = spec
+      if (typeof spec === 'function')
+        imports[modName][name] = (...args) => {
+          const ret = spec(...args.map(a => mem ? mem.read(a) : a))
+          return mem ? mem.wrapVal(ret) : coerce(ret)
+        }
   }
   // Shared memory: normalize (auto-wrap raw Memory), pass as import
   if (opts.memory) {
