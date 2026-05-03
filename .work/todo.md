@@ -8,6 +8,7 @@
 * [x] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
+* [ ] Integrate into edge.js
 
 ## Backlog
 
@@ -30,9 +31,40 @@
   * [x] Add/enable simple `for-in` coverage for enumerable fixed-shape/HASH object keys — jzify var→let restructure for for-in, codegen handles both AST formats
   * [x] Revisit broader `arguments-object` coverage only if JS compatibility becomes a goal; current curated jzify subset is enough for core jz
   * [x] Keep broad unsupported buckets out of scope for this metric (`async`, `class`, `this`, generators, iterators, `with`, `super`, dynamic import)
+
+##  [ ] add a separate test262 built-ins runner focused on jz functionality, not full runtime/prototype semantics
+* [ ] Verify `Math.random` against `test/test262/test/built-ins/Math/random/S15.8.2.14_A1.js` first; it is the only `Math.random` functionality test, while `prop-desc`, `name`, `length`, and `not-a-constructor` are metadata/runtime-shape tests to skip for now
+* [ ] Create `test/test262-builtins.js` with the same clone-if-missing, walk, strip-frontmatter, wrap-as-`_run`, compile, instantiate, and pass/fail/skip reporting shape as `test/test262.js`
+* [ ] Add a minimal built-ins assert harness: `Test262Error`, `assert`, `assert.sameValue`, `assert.notSameValue`, `assert.compareArray`, and `assert.throws`
+* [ ] Curate the first tracked built-ins bucket as `Math/random/S15.8.2.14_A1.js`; explicitly skip descriptor/property metadata, constructor checks, `Reflect`, `Function`, `propertyHelper`, `verifyProperty`, async, class, iterator, Symbol species/toPrimitive/iterator, Proxy, Weak*, and fixture-dependent tests
+* [ ] Add `npm run test262:builtins` script pointing to `node test/test262-builtins.js`
+* [ ] Report built-ins coverage separately from language coverage: pass/fail/skip for tracked built-ins and pass count over all `test/built-ins/**/*.js`
+* [ ] Run `node test/test262-builtins.js`, `node test/test262-builtins.js --filter=Math/random`, and `npm test`; fix any real functionality failures before reporting done
+* [ ] After `Math.random` passes, add follow-up TODOs for curated functionality subsets of `Math`, then `JSON`, `Number`, `String`, `Array`, `Object`, typed arrays, `Map`, `Set`, `RegExp`, and `Symbol`, keeping metadata/prototype semantics out unless deliberately chosen
+
 * [ ] `import.meta`
-* [ ] speed up compiler itself (faster than eval)
+
+## [ ] speed up compiler itself (faster than eval)
+  * [ ] Add compile-time benchmark that reports parse / prepare / plan / emit / watr separately
+  * [ ] Benchmark cold vs repeated template compilation; decide whether any cache is worth its complexity
+  * [ ] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, pointer values, schemas, or module init blocks
+  * [ ] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
+  * [ ] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
+  * [ ] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
+  * [ ] Delay expensive typed-array bimorphic clone analysis unless a param is proven `VAL.TYPED` and has conflicting ctor observations
+  * [ ] Avoid scanning all module init bodies after autoload when the loaded modules do not introduce value facts used by the current program
 * [ ] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
+
+### Compiler refactor notes
+
+* [x] Remove `compile.js` as a re-export hub; modules import directly from `ir`, `emit`, and `analyze`
+* [x] Split pre-emit planning into `plan.js`, signature specialization into `narrow.js`, autoload policy into `autoload.js`, and static key folding into `key.js`
+* [ ] Keep `plan.js` separate from `analyze.js`; merging them would make orchestration depend on narrowing while narrowing depends on analysis helpers
+* [ ] Make `narrow.js` read as named phases inside one file before creating more files: reachability, param facts, result facts, pointer ABI, typed clones, dyn-key refinement
+* [ ] Move per-function pre-analysis out of `emitFunc` only after a measured design exists: target `emitFunc(func, funcFacts, programFacts)` with no surprise cache invalidation inside emission
+* [ ] Replace hidden global cache invalidation with explicit phase inputs/outputs where it reduces walks; keep global `ctx` for compile state as intended
+* [ ] Keep `autoload.js` honest: it owns implicit runtime-module policy; if explicit stdlib imports become the direction, delete policy instead of spreading it back into `prepare.js`
+* [ ] Do not recreate a convenience facade in `compile.js`; noisy direct imports are preferable to hidden cross-layer coupling
 
 ### Build & tooling
 
