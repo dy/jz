@@ -194,6 +194,80 @@ function hasOwnContinue(body) {
   return false
 }
 
+function hasOwnBreakOrContinue(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
+  return false
+}
+
+function containsNestedClosure(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return true
+  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
+  return false
+}
+
+function containsDeclOf(body, name) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === '=>') return false
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (d === name) return true
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+    }
+  }
+  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
+  return false
+}
+
+function intLiteralValue(expr) {
+  let v = null
+  if (typeof expr === 'number') v = expr
+  else if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number') v = expr[1]
+  else if (Array.isArray(expr) && expr[0] === 'u-' && typeof expr[1] === 'number') v = -expr[1]
+  else if (typeof expr === 'string') v = repOf(expr)?.intConst ?? ctx.scope.constInts?.get(expr) ?? null
+  return v != null && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? v : null
+}
+
+function cloneWithSubst(node, name, value) {
+  if (node === name) return [null, value]
+  if (!Array.isArray(node)) return node
+  if (node[0] === '=>') return node
+  return node.map(x => cloneWithSubst(x, name, value))
+}
+
+const MAX_SMALL_FOR_UNROLL = 8
+
+function unrollSmallConstFor(init, cond, step, body) {
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const decl = init[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const name = decl[1]
+  const start = intLiteralValue(decl[2])
+  if (start !== 0) return null
+
+  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
+  const end = intLiteralValue(cond[2])
+  if (end == null || end < 0 || end > MAX_SMALL_FOR_UNROLL) return null
+
+  const stepOk = Array.isArray(step) && (
+    (step[0] === '++' && step[1] === name) ||
+    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
+  )
+  if (!stepOk) return null
+  if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
+  if (isReassigned(body, name)) return null
+
+  const out = []
+  for (let i = 0; i < end; i++) out.push(...emitFlat(cloneWithSubst(body, name, i)))
+  return out
+}
+
 /** Does `body` always exit the enclosing scope (return / throw / break / continue)?
  *  Used for early-return refinement: after `if (!guard) return`, `guard` holds for the rest. */
 function isTerminator(body) {
@@ -1366,6 +1440,10 @@ export const emitter = {
 
   'for': (init, cond, step, body) => {
     if (body === undefined) return err('for-in/for-of not supported')
+    if (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false) {
+      const unrolled = unrollSmallConstFor(init, cond, step, body)
+      if (unrolled) return unrolled
+    }
     const id = ctx.func.uniq++
     const brk = `$brk${id}`, loop = `$loop${id}`
     // The cont wrapper is only needed if the body has a `continue` AND there is a step

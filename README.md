@@ -17,7 +17,7 @@ dist(3, 4) // 5
 
 ## Why?
 
-JZ isolates modern functional core – the good parts ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)), and drops the rest. **Write plain JS, compile to WASM** – fast, portable and long-lasting.
+**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, specs evolution and perf quirks.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
@@ -122,18 +122,18 @@ Not supported
 
 ## Benchmark
 
-| | **jz** | **jz-host** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
-|---|---|---|---|---|---|---|---|---|
-| **biquad** | **8.17 ms**<br>**3.9 kB** | **8.15 ms**<br>**2.3 kB** | 9.11 ms<br>3.2 kB | 6.61 ms<br>1.9 kB | 4.70 ms<br>767 B | 3.85 ms<br>32.8 kB | 6.60 ms<br>2.39 MB<br>fma | 3.78 ms<br>471.9 kB |
-| **tokenizer** | **0.09 ms**<br>**3.5 kB** | **0.08 ms**<br>**1.6 kB** | 0.13 ms<br>1.4 kB | 0.04 ms<br>1.5 kB<br>DIFF | — | 0.09 ms<br>32.9 kB | 0.05 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
-| **mat4** | **6.15 ms**<br>**3.4 kB** | **6.26 ms**<br>**1.8 kB** | 8.67 ms<br>1.1 kB | 6.59 ms<br>1.5 kB | — | 1.90 ms<br>32.9 kB | 8.73 ms<br>2.39 MB | 0.60 ms<br>471.9 kB |
-| **aos** | **1.09 ms**<br>**4.9 kB** | **1.08 ms**<br>**3.2 kB** | 1.31 ms<br>1.1 kB | 1.36 ms<br>2.2 kB | — | 0.88 ms<br>32.9 kB | 0.66 ms<br>2.39 MB | 0.86 ms<br>471.8 kB |
-| **bitwise** | **3.53 ms**<br>**3.0 kB** | **3.55 ms**<br>**1.2 kB** | 3.89 ms<br>1005 B | 8.77 ms<br>1.5 kB | — | 0.93 ms<br>32.9 kB | 3.78 ms<br>2.39 MB | 0.95 ms<br>471.8 kB |
-| **poly** | **0.81 ms**<br>**3.1 kB** | **0.81 ms**<br>**1.3 kB** | 1.64 ms<br>1014 B | 0.83 ms<br>1.3 kB | — | 0.35 ms<br>32.9 kB | 0.57 ms<br>2.39 MB | 0.37 ms<br>471.8 kB |
-| **callback** | **0.01 ms**<br>**4.0 kB** | **0.01 ms**<br>**2.3 kB** | 0.69 ms<br>828 B | 1.06 ms<br>1.9 kB | — | 0.06 ms<br>32.9 kB | 0.14 ms<br>2.39 MB | 0.06 ms<br>471.8 kB |
-| **json** | **0.14 ms**<br>**4.4 kB** | **0.15 ms**<br>**2.8 kB** | 0.27 ms<br>923 B | — | — | 0.02 ms<br>32.9 kB | 0.75 ms<br>2.93 MB | 0.02 ms<br>471.9 kB |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|
+| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.8 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms<br>32.7 kB | 9.03 ms<br>1.60 MB<br>fma | 5.33 ms<br>380.7 kB |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.11 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms<br>32.9 kB | 0.07 ms<br>1.60 MB | 0.12 ms<br>380.7 kB |
+| [**mat4**](bench/mat4/mat4.js) | **8.48 ms**<br>**1.8 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms<br>32.8 kB | 11.93 ms<br>1.60 MB | 0.80 ms<br>380.7 kB |
+| [**aos**](bench/aos/aos.js) | **1.51 ms**<br>**3.2 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms<br>32.9 kB | 0.90 ms<br>1.60 MB | 1.20 ms<br>380.7 kB |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms<br>32.9 kB | 5.24 ms<br>1.60 MB | 1.30 ms<br>380.7 kB |
+| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.80 ms<br>1.60 MB | 0.52 ms<br>380.7 kB |
+| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**2.3 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms<br>32.9 kB | 0.20 ms<br>1.60 MB | 0.08 ms<br>380.7 kB |
+| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms<br>32.8 kB | 1.06 ms<br>1.97 MB | 0.03 ms<br>380.7 kB |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon, May 2026. `jz-host` uses host imports for benchmark timing/logging. `fma` is the documented Go arm64 fused-multiply-add checksum class; `DIFF` indicates checksum mismatch. See [benchmark](./bench/)._
+_Numbers from `node bench/bench.mjs` on Apple Silicon, May 2026. `jz` uses host imports for benchmark timing/logging (measures wasm without WASI console/perf bloat). `fma` is the documented Go arm64 fused-multiply-add checksum class. See [benchmark](./bench/)._
 
 
 

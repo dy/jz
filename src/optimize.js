@@ -55,6 +55,7 @@ export const PASS_NAMES = [
   'specializePtrBase',
   'sortStrPoolByFreq',
   'hoistConstantPool',
+  'smallConstForUnroll',
   'treeshake',
 ]
 

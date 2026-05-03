@@ -3,7 +3,7 @@
 ## Product / Validation
 
 * [ ] Pick one undeniable use case and optimize around it.
-* [ ] Add benchmark coverage beyond internal examples: DSP kernel, typed-array processing,
+* [x] Add benchmark coverage beyond internal examples: DSP kernel, typed-array processing,
   math loop, parser/string workload, and a JS-engine comparison set.
 * [ ] Add warning/error behavior for memory growth failure or configured memory limits.
 * [ ] Add wasm2c/w2c2 integration tests.
@@ -251,7 +251,7 @@ Specific opportunities, ordered by impact:
   Result: json `0.14 ms / 4.4 kB` jz, `0.15 ms / 2.8 kB` jz-host in the latest
   full run; jz now beats V8/node on json in the full suite.
 
-2. **Constant-fold `__str_hash` for SSO NaN-box literals.** Pure function
+2. [x] **Constant-fold `__str_hash` for SSO NaN-box literals.** Pure function
    on a known constant. Either (a) inline `__map_get` and let the existing
    peephole fold the hash call, or (b) add a `__map_get_const` variant
    that takes pre-hashed key as i32. ~15% savings on json + helps any
@@ -600,14 +600,18 @@ arrays gets you without unrolling).
   focused biquad went from ~8.0 ms to ~11.8-12.0 ms. Reverted the type inference
   change. Keep the ABI-preserving constant substitution in `readVar`; do not
   reintroduce i32 loop narrowing without an inliner/tier-up budget study.
+  Rechecked 2026-05-02 with the narrower local-only form: `processCascade` lost
+  `f64.lt`/`i32.trunc_sat_f64_s` and `$s` became i32, but focused biquad regressed
+  in the current harness from ~11.4 ms to ~18.0 ms. Reverted again.
 
-* [ ] **Small-trip-count loop unroll on top of intConst.** Now that `nStages`
-  reads as `i32.const 8` everywhere it appears, the inner loop has a known
-  trip count. Unrolling it 8× produces straight-line code V8/clang vectorize
-  trivially. Open question: does this push us past V8's inliner budget so
-  `processCascade` stops inlining? Mitigations include only unrolling when the
-  callee is going to stay separate from `main` anyway, or capping unroll at a
-  factor that keeps the body inside V8's inline threshold.
+* [x] **Small-trip-count loop unroll on top of intConst.** Implemented as a
+  guarded emitter transform for canonical `for (let i = 0; i < CONST; i++)`
+  loops with `CONST <= 8`, no own `break`/`continue`, no nested closure, and no
+  mutation/shadowing of the loop variable in the body. This keeps the f64 param
+  ABI intact while baking the known trip count into straight-line code. Focused
+  current-harness biquad: jz `11.32 ms / 2.3 kB` before → `6.45 ms / 3.8 kB`
+  after; hand-WAT `6.47 ms / 767 B`. Pinned by `test/optimizer.js` codegen +
+  control-flow guard tests.
 
 * [ ] **i32 narrowing for module-const integer args (revisit nStages).** The
   attempt this round narrowed nStages from f64 to i32 via `globalTypes` lookup
@@ -630,7 +634,12 @@ arrays gets you without unrolling).
   the call-site arg list directly to the callee's analyzeIntCertain pass.
   Reverted for now to preserve the V8-perf win.
 
-* [ ] **Loop-invariant hoist of `arr.length`.** Verify the outer loop's
+* [x] **Loop-invariant hoist of `arr.length`.** Verified by
+  [test/perf.js](../test/perf.js) codegen coverage (`.length hoisted out of
+  for-loop`) and current biquad WAT: `const n = x.length` is outside the hot
+  loop; there are no `__len` calls inside `processCascade`.
+
+* [ ] **Loop-invariant hoist of other pure loads/calls.** Verify the outer loop's
   `n = x.length` is hoisted (it appears to be, based on the wat). Generalize
   to any loop-invariant call/load with no intervening side effects.
 
@@ -754,10 +763,10 @@ arrays gets you without unrolling).
 
 ### Benchmarks that would surface remaining inefficiencies
 
-* [ ] **Tokenizer / lexer** (string-heavy) — exposes string ABI cost: SSO/heap
+* [x] **Tokenizer / lexer** (string-heavy) — exposes string ABI cost: SSO/heap
   dual encoding, char-by-char access, `__str_idx` per char.
 
-* [ ] **JSON parse + tree walk** — schema dispatch on heterogeneous objects,
+* [x] **JSON parse + tree walk** — schema dispatch on heterogeneous objects,
   recursive call overhead, dynamic property access fallback.
 
 * [ ] **Polymorphic reduce** — `function sum(arr) { let s = 0; for (let x of arr) s+=x }`
@@ -765,17 +774,17 @@ arrays gets you without unrolling).
   `__typed_idx` because narrowing requires monomorphic call sites; would
   surface bimorphic dispatch cost.
 
-* [ ] **mat4 multiply** — small fixed-size loops; exposes loop-unrolling +
+* [x] **mat4 multiply** — small fixed-size loops; exposes loop-unrolling +
   offset-fusion gaps directly.
 
-* [ ] **Closure-heavy callback** — `.map(x => x*2)` non-SIMD path; surfaces
+* [x] **Closure-heavy callback** — `.map(x => x*2)` non-SIMD path; surfaces
   `VAL.CLOSURE` ABI cost. SIMD-recognized `.typed:map` already handled.
 
 * [ ] **fib / ackermann** — call-frame and TCO overhead; today there's no TCO.
 
-* [ ] **Bitwise crypto** (sha256, xorshift mixed with shifts) — long integer
+* [x] **Bitwise crypto** (sha256, xorshift mixed with shifts) — long integer
   narrowing chains; would test the V8-wasm-tier preferences that regressed
   the nStages narrowing this round.
 
-* [ ] **AoS → SoA struct pipeline** — array of object literals iterated
+* [x] **AoS → SoA struct pipeline** — array of object literals iterated
   field-by-field; surfaces schema-slot read cost vs unboxed struct fields.

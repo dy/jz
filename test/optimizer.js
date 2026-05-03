@@ -119,6 +119,48 @@ test('dynamic prop reads reuse receiver type tag', () => {
   ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
 })
 
+test('small const-count for-loop unrolls', () => {
+  const src = `
+    export const main = () => {
+      let acc = 0
+      for (let s = 0; s < 4; s++) {
+        const c = s * 5
+        acc += c
+      }
+      return acc | 0
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(loop\b/.test(wat), 'expected small constant loop to unroll')
+  const { main } = run(src)
+  is(main(), 30)
+})
+
+test('small const-count for-loop respects optimize:false', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      let acc = 0
+      for (let s = 0; s < 4; s++) acc += s
+      return acc | 0
+    }
+  `, { wat: true, optimize: false })
+  ok(/\(loop\b/.test(wat), 'optimize:false should not unroll')
+})
+
+test('small const-count for-loop does not unroll with break', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      let acc = 0
+      for (let s = 0; s < 4; s++) {
+        if (s === 2) break
+        acc += s
+      }
+      return acc | 0
+    }
+  `, { wat: true })
+  ok(/\(loop\b/.test(wat), 'break requires preserving loop control flow')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
