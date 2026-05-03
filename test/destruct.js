@@ -118,6 +118,15 @@ test('destruct assign: ({x: a} = obj)', () => {
   is(f(), 7)
 })
 
+test('destruct assign: newline after declaration keeps assignment statement', () => {
+  const { f } = run(`export let f = () => {
+    let a
+    ({x: a} = {x: 8})
+    return a
+  }`)
+  is(f(), 8)
+})
+
 test('destruct assign: ({x = v} = obj) default', () => {
   const { f } = run(`export let f = () => {
     let x;

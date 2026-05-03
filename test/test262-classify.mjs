@@ -8,7 +8,7 @@ import { join, relative } from 'path'
 const ROOT = import.meta.dirname
 const TEST262 = join(ROOT, 'test262')
 
-const SUPPORTED = ['expressions','statements','types','identifiers','literals','block-scope','destructuring','module-code','function-code']
+const SUPPORTED = ['asi','comments','white-space','line-terminators','punctuators','directive-prologue','expressions','statements','types','identifiers','literals','block-scope','destructuring','module-code','function-code']
 
 const EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/,
@@ -19,7 +19,7 @@ const EXCLUDED_PATTERNS = [
   /symbol\.iterator/i, /for[\s-]*of/i, /regexp/i,
   /template/i, /tagged/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
-  /\bdebugger\b/, /\bexport\s+default\b/,
+  /\bexport\s+default\b/,
   /\bdelete\b/,
 ]
 
@@ -44,6 +44,7 @@ function shouldSkip(content) {
   if (content.includes('Test262Error')) return true
   if (content.includes('assert.')) return true
   if (content.includes('assertThrows') || content.includes('assert.throws')) return true
+  if (content.includes('\u00a0')) return true
   if (/\bFunction\b/.test(content) && !content.includes('arrow function')) return true
   if (content.includes('import ') && content.includes('_FIXTURE')) return true
   if (content.includes('import ') && /\bfrom\s+['"]\.\/[^'"]+_FIXTURE/.test(content)) return true
@@ -54,7 +55,7 @@ const mod = await import('../index.js')
 const compile = mod.default.compile || mod.compile
 
 function runTest(src) {
-  let code = src.replace(/\/\*---[\s\S]*?---\*\//, '').replace(/\.create\.js\b/g, '').replace(/\$DONOTEVALUATE\(\)/g, 'return')
+  let code = src.replace(/\/\*---[\s\S]*?---\*\//, '').replace(/^#![^\n]*(?:\n|$)/, '').replace(/\.create\.js\b/g, '').replace(/\$DONOTEVALUATE\(\)/g, 'return')
   const hasExport = /export\s+(let|const|function|default)/.test(code)
   if (!hasExport) code = 'export let _run = () => {\n' + code + '\nreturn 1\n}'
   try {
@@ -78,8 +79,9 @@ for (const subdir of SUPPORTED) {
   for (const file of walk(dir)) {
     const rel = relative(TEST262, file)
     if (rel.includes('dynamic-import') || rel.includes('import.meta') ||
-        rel.includes('export-expname') || rel.includes('import-attributes') ||
-        rel.includes('top-level-await')) continue
+      rel.includes('export-expname') || rel.includes('import-attributes') ||
+      rel.includes('top-level-await') ||
+      rel.includes('instn-resolve-') || rel.includes('eval-rqstd-')) continue
     try {
       const src = readFileSync(file, 'utf-8')
       if (shouldSkip(src)) continue

@@ -10,6 +10,7 @@
 
 import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, updateRep } from '../src/compile.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
+import { staticPropertyKey } from '../src/propkey.js'
 import { strHashLiteral } from './collection.js'
 
 
@@ -466,7 +467,9 @@ export default (ctx) => {
       if (r) return r
     }
     // Literal string key on schema-known object → direct payload slot read (skip __dyn_get)
-    const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1] : null
+    const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1]
+      : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
+      : null
     if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
       const slot = ctx.schema.find(arr, litKey)
       if (slot >= 0) {

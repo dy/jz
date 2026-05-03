@@ -25,6 +25,8 @@
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam } from './analyze.js'
+import { staticPropertyKey } from './propkey.js'
+import { normalizeSource } from './source.js'
 import * as mods from '../module/index.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -592,6 +594,11 @@ function expandDestruct(pattern, source, out, decls = null) {
 function prepDecl(op, ...inits) {
   const rest = []
   for (const i of inits) {
+    if (Array.isArray(i) && i[0] === '()' && typeof i[1] === 'string' && Array.isArray(i[2]) && i[2][0] === '=' && isDestructPattern(i[2][1])) {
+      if (rest.length === 0 && inits.length === 1) return [';', [op, i[1]], prep(i[2])]
+      err('destructuring assignment after declaration must be a separate statement')
+    }
+
     if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
     const [, name, init] = i, normed = prep(init)
 
@@ -673,6 +680,7 @@ const handlers = {
   'await': () => err('async/await not supported: WASM is synchronous'),
   'class': () => err('class not supported: use object literals'),
   'yield': () => err('generators not supported: use loops'),
+  'debugger': () => null,
   'delete': () => err('delete not supported: object shape is fixed'),
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
   'instanceof': () => err('instanceof not supported: use typeof'),
@@ -1179,7 +1187,11 @@ const handlers = {
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
       if (typeof p === 'string') return [':', p, prep(p)]
-      if (Array.isArray(p) && p[0] === ':') return [':', p[1], prep(p[2])]
+      if (Array.isArray(p) && p[0] === ':') {
+        const key = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
+        if (key == null) err('computed property name not supported for fixed-shape object: use a compile-time string/number key')
+        return [':', key, prep(p[2])]
+      }
       return prep(p)
     }
     const result = Array.isArray(inner) && inner[0] === ','
@@ -1486,7 +1498,7 @@ function prepareModule(specifier, source) {
   ctx.module.currentPrefix = prefix
 
   // Parse + prepare imported source (may trigger recursive imports)
-  let ast = parse(source)
+  let ast = parse(normalizeSource(source))
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
   const moduleInit = prep(ast)

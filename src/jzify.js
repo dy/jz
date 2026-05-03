@@ -122,13 +122,25 @@ function paramList(params) {
 }
 
 function lowerArguments(params, body) {
-  if (!usesArguments(body)) return [params, body]
+  if (!usesArguments(params) && !usesArguments(body)) return [params, body]
   const name = `\uE001arg${argsIdx++}`
-  const items = paramList(params)
-  items.push(['...', name])
-  const inner = items.length === 1 ? items[0] : [',', ...items]
-  return [['()', inner], renameArguments(body, name)]
+  const decls = []
+  for (const [idx, param] of paramList(params).entries()) {
+    if (Array.isArray(param) && param[0] === '...') {
+      decls.push(['=', param[1], ['()', ['.', name, 'slice'], [null, idx]]])
+      continue
+    }
+    if (Array.isArray(param) && param[0] === '=') {
+      decls.push(['=', param[1], ['??', ['[]', name, [null, idx]], renameArguments(param[2], name)]])
+      continue
+    }
+    decls.push(['=', param, ['[]', name, [null, idx]]])
+  }
+  const renamed = renameArguments(body, name)
+  return [['()', ['...', name]], decls.length ? [';', ['let', ...decls], renamed] : renamed]
 }
+
+const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
 
 const handlers = {
   // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
@@ -136,7 +148,7 @@ const handlers = {
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
       const [p2, b2] = lowerArguments(params, body)
-      return [';', ['let', ['=', name, ['=>', p2, wrapArrowBody(b2)]]], ['()', name, ...rest.map(transform)]]
+      return [';', ['let', ['=', name, ['=>', arrowParams(p2), wrapArrowBody(b2)]]], ['()', name, ...rest.map(transform)]]
     }
   },
 
@@ -205,16 +217,14 @@ const handlers = {
     return ['===', ['typeof', t], [null, 'object']]
   },
 
-  // do { body } while (cond) → for (let _once = true; _once || cond; _once = false) body
-  // Avoids body duplication; matches JS continue semantics (continue runs cond, not body).
+  // do { body } while (cond) → let _once = true; while (_once || cond) { _once = false; body }
+  // Avoids body duplication and preserves continue: `continue` jumps back to the
+  // while condition after the one-shot flag has been cleared.
   'do'(body, cond) {
     const flag = `do${doIdx++}`
-    return ['for',
-      [';',
-        ['let', ['=', flag, [null, true]]],
-        ['||', flag, transform(cond)],
-        ['=', flag, [null, false]]],
-      transform(body)]
+    return [';',
+      ['let', ['=', flag, [null, true]]],
+      ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transform(body)]]]]
   },
 
   // Block body: recurse as scope for hoisting

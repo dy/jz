@@ -10,7 +10,7 @@
  * @module string
  */
 
-import { emit, typed, asF64, asI32, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/compile.js'
+import { emit, typed, asF64, asI32, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, valTypeOf, VAL } from '../src/compile.js'
 import { inc, PTR } from '../src/ctx.js'
 
 
@@ -486,12 +486,19 @@ export default (ctx) => {
       (br $loop)))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
-  // Coerce value to string: numbers → __ftoa, plain NaN → "NaN", arrays → join(","), other pointers pass through
+  // Coerce value to string: numbers → __ftoa, nullish → static strings,
+  // plain NaN → "NaN", arrays → join(","), other string-like pointers pass through.
   ctx.core.stdlib['__to_str'] = `(func $__to_str (param $val f64) (result f64)
     (local $type i32)
+    (local $bits i64)
     ;; Not NaN → number, convert
     (if (f64.eq (local.get $val) (local.get $val))
       (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
+    (local.set $bits (i64.reinterpret_f64 (local.get $val)))
+    (if (i64.eq (local.get $bits) (i64.const ${NULL_NAN}))
+      (then (return (call $__static_str (i32.const 5)))))
+    (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
+      (then (return (call $__static_str (i32.const 6)))))
     (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → "NaN" string
     (if (i32.eqz (local.get $type))
@@ -806,6 +813,17 @@ export default (ctx) => {
   }
 
   // String.fromCharCode(code) → 1-char SSO string
+  ctx.core.emit['String'] = (value) => {
+    if (value === undefined) return emit(['str', ''])
+    if (valTypeOf(value) === VAL.STRING) return emit(value)
+    if (valTypeOf(value) === VAL.NUMBER) {
+      inc('__ftoa')
+      return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
+    }
+    inc('__to_str')
+    return typed(['call', '$__to_str', asF64(emit(value))], 'f64')
+  }
+
   ctx.core.emit['String.fromCharCode'] = (code) => mkPtrIR(PTR.SSO, 1, asI32(emit(code)))
 
   // String.fromCodePoint(cp) → UTF-8 encoded string

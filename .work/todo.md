@@ -12,10 +12,18 @@
 ## Backlog
 
 * [x] Update benchmark
-* [ ] Find the most proper way for template tags
+* [ ] Ensure the proper way for template tags
 * [x] Compile floatbeats
-* [ ] test262: debugger (ignore)
-* [ ] `delete` operator
+* [ ] test262 coverage expansion: grow full-denominator coverage with meaningful jz features, not selected-subset pass rate
+  * [x] Report overall test262 percentage against all `test262/test/**/*.js` files
+  * [x] Fix object destructuring assignment regressions blocking full test suite
+  * [x] Add/enable `rest-parameters` tests that map to existing jz semantics
+  * [x] Add/enable `computed-property-names` object tests that map to fixed-shape objects
+  * [x] Add/enable `arguments-object` tests only where jzify/function lowering truly supports them
+  * [x] Add lexical/grammar coverage: `asi`, `comments`, `white-space`, `line-terminators`, `punctuators`, `directive-prologue`
+  * [x] Lower braced `do-while` through jzify without body duplication; `do ; while` remains a subscript parser gap
+  * [x] Keep `delete` prohibited for jz fixed-shape objects; only parser conformance belongs upstream in subscript
+  * [x] Treat `debugger` as parse/no-op or explicit ignore, not a runtime feature
 * [ ] `import.meta`
 * [ ] speed up compiler itself (faster than eval)
 * [ ] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)

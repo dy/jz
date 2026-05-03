@@ -45,6 +45,7 @@ import prepare, { GLOBALS } from './src/prepare.js'
 import compile, { emitter } from './src/compile.js'
 import { optimizeFunc, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
+import { normalizeSource } from './src/source.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './src/host.js'
@@ -125,7 +126,7 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  let parsed = parse(code)
+  let parsed = parse(normalizeSource(code))
   if (opts.jzify) parsed = jzify(parsed)
   const ast = prepare(parsed)
   const module = compile(ast)

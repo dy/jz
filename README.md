@@ -94,7 +94,7 @@ flowchart TB
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ JZify                                                                  │
+│ JZify                                                   test262: 0.5%  │
 │   var  function  arguments  switch  new Foo()                          │
 │   ==  !=  instanceof  undefined                                        │
 │                                                                        │
@@ -109,6 +109,8 @@ flowchart TB
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────┘
+
+`test262` is measured against all JS files under `test262/test`, not a selected subset.
 
 Not supported
   async/await  Promise  function*  yield

@@ -112,6 +112,14 @@ test('Number: String(42)', () => {
   is(run(`export let f = () => String(42).length`).f(), 2)
 })
 
+test('String: no argument returns empty string', () => {
+  is(run(`export let f = () => String() === ''`).f(), 1)
+})
+
+test('String: nullish, string, and number coercion', () => {
+  is(run(`export let f = () => (String(null) === 'null') + (String(undefined) === 'undefined') + (String('x') === 'x') + (String(3) === '3')`).f(), 4)
+})
+
 test('Number: unary plus string coerces', () => {
   is(run(`export let f = () => +"0"`).f(), 0)
 })

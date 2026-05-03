@@ -557,12 +557,6 @@ export default (ctx) => {
           ['i32.const', 1]]]]], 'f64')
   }
 
-  ctx.core.emit['String'] = (x) => {
-    inc('__ftoa')
-    if (Array.isArray(x) && x[0] === 'str') return emit(x)
-    return typed(['call', '$__ftoa', asF64(emit(x)), ['i32.const', 0], ['i32.const', 0]], 'f64')
-  }
-
   // Number(x) — identity for numbers, i64→f64 conversion for BigInt
   ctx.core.emit['Number'] = (x) => {
     if (valTypeOf(x) === VAL.BIGINT)
