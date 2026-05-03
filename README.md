@@ -94,17 +94,17 @@ flowchart TB
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ JZify                                                                  │
+│ JZify                                                    test262: 68%  │
 │   var  function  arguments  switch  new Foo()                          │
 │   ==  !=  instanceof  undefined                                        │
 │                                                                        │
 │ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │ JZ                                                                 │ │
-│ │   let/const  =>  ...xs  destructuring  import/export  `${}`        │ │
+│ │ JZ                                                   test262: 54%  │ │
+│ │   let/const  =>  ...xs  destructuring  import/export               │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
-│ │   try/catch  throw                                                │ │
-│ │   operators  strings  booleans  numbers  arrays  objects  null     │ │
-│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
+│ │   try/catch/finally  throw                                         │ │
+│ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
+│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │

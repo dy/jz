@@ -14,6 +14,9 @@
 * [x] Update benchmark
 * [ ] Find the most proper way for template tags
 * [x] Compile floatbeats
+* [ ] test262: debugger (ignore)
+* [ ] `delete` operator
+* [ ] `import.meta`
 
 ### Build & tooling
 
