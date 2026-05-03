@@ -10,7 +10,7 @@ const N_REPEAT: i32 = 512
 const N_RUNS: i32 = 21
 const N_WARMUP: i32 = 5
 
-const BASE_LEN: i32 = 62  // length of one BASE line
+const BASE_LEN: i32 = 79  // length of one BASE line
 
 function mix(h: u32, x: i32): u32 {
   return (h ^ <u32>(x | 0)) * <u32>0x01000193

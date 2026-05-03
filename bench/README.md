@@ -29,7 +29,7 @@ drift as `DIFF`.
 ```sh
 npm run bench
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
-node bench/bench.mjs --targets=jz,jz-host --cases=biquad,mat4,poly,bitwise
+node bench/bench.mjs --targets=jz --cases=biquad,mat4,poly,bitwise
 node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
 node bench/bench.mjs --cases=biquad,mat4,tokenizer,json
 node bench/bench.mjs biquad
@@ -40,14 +40,14 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 
 | id | purpose |
 | --- | --- |
-| `biquad` | DSP filter cascade; dense f64 typed-array loop and offset-fusion baseline |
-| `mat4` | fixed-size typed-array loops; exposes loop unrolling and offset fusion gaps |
-| `poly` | same `sum` called with `Float64Array` and `Int32Array`; exposes bimorphic typed-array dispatch |
-| `bitwise` | long `i32` narrowing chains with `Math.imul`, shifts, and unsigned conversion |
-| `tokenizer` | string-heavy scan with `charCodeAt`, branches, and integer token accumulation |
-| `callback` | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
-| `aos` | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
-| `json` | `JSON.parse` plus heterogeneous object/array walk; JS-only by design |
+| [`biquad`](biquad/biquad.js) | DSP filter cascade; dense f64 typed-array loop and offset-fusion baseline |
+| [`mat4`](mat4/mat4.js) | fixed-size typed-array loops; exposes loop unrolling and offset fusion gaps |
+| [`poly`](poly/poly.js) | same `sum` called with `Float64Array` and `Int32Array`; exposes bimorphic typed-array dispatch |
+| [`bitwise`](bitwise/bitwise.js) | long `i32` narrowing chains with `Math.imul`, shifts, and unsigned conversion |
+| [`tokenizer`](tokenizer/tokenizer.js) | string-heavy scan with `charCodeAt`, branches, and integer token accumulation |
+| [`callback`](callback/callback.js) | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
+| [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
+| [`json`](json/json.js) | `JSON.parse` plus heterogeneous object/array walk; JS-only by design |
 
 `json` has no C row because a hand-written C parser would not be the same
 implementation contract as JavaScript `JSON.parse`.
@@ -84,18 +84,18 @@ correctly-rounded; cascade is the same algorithm.
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
 | `hermes` | raw JavaScript on Hermes |
 | `graaljs` | raw JavaScript on GraalJS |
-| `jz` | jz output on Node's WebAssembly runtime |
-| `jz-host` | jz output with benchmark timing/logging supplied as host imports |
+| `jz` | jz output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `qjs` | QuickJS when installed |
+| `porf` | Porffor (`porf run`) when installed |
 | `jawsm` | jawsm when installed |
 
 The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
-`.wasm` for `jz`/`jz-host`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
+`.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
 executable), or the source file for raw-JS interpreters where there is no
 compile step.
 
@@ -107,7 +107,8 @@ DENO_BIN=/path/to/deno \
 SPIDERMONKEY_BIN=/path/to/js \
 HERMES_BIN=/path/to/hermes \
 GRAALJS_BIN=/path/to/graaljs \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,graaljs
+PORF_BIN=/path/to/porf \
+node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,graaljs,porf
 ```
 
 ## Reading the numbers (biquad on darwin/arm64, M-class)
@@ -121,8 +122,7 @@ Snapshot from one full run (`node bench/bench.mjs biquad`):
 | hand-WAT → V8 wasm | 6.54 ms | 1.22× | 767 B | ok |
 | AssemblyScript (asc -O3 --runtime stub) | 9.01 ms | 1.68× | 1.9 kB | ok |
 | Go (gc, FMA-fused on arm64) | 10.46 ms | 1.94× | 2.39 MB | fma |
-| jz → V8 wasm (host imports) | 11.29 ms | 2.10× | 2.3 kB | ok |
-| jz → V8 wasm | 11.31 ms | 2.10× | 3.9 kB | ok |
+| jz → V8 wasm | 11.29 ms | 2.10× | 2.3 kB | ok |
 | jz → wasm2c → clang -O3 | 12.12 ms | 2.25× | 68.4 kB | ok |
 | V8 (node) raw JS | 12.27 ms | 2.28× | 3.2 kB | ok |
 | V8 (deno) raw JS | 12.61 ms | 2.34× | 3.2 kB | ok |

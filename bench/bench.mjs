@@ -16,6 +16,7 @@ const DENO_BIN = process.env.DENO_BIN || 'deno'
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
+const PORF_BIN = process.env.PORF_BIN || 'porf'
 
 mkdirSync(BUILD, { recursive: true })
 
@@ -129,7 +130,7 @@ const benchlibHostSource = () => {
 }`, `export let printResult = (medianUs, checksum, samples, stages, runs) => {
   env.logResult(medianUs, checksum, samples, stages, runs)
 }`)
-  if (out === src) throw Error('failed to patch benchlib printResult for jz-host')
+  if (out === src) throw Error('failed to patch benchlib printResult for jz')
   return out
 }
 
@@ -153,7 +154,7 @@ if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance 
   let src = readFileSync(c.js, 'utf8')
   if (src.includes('../_lib/benchlib.js')) {
     out += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
-    src = src.replace(/^import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n/, '')
+    src = src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
   }
   out += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   writeFileSync(flatPath(c), out)
@@ -225,6 +226,7 @@ const targets = {
     bin: natBinPath,
     run: c => tryRun('nat', c, () => {
       execFileSync('clang', ['-O3', '-ffp-contract=off', '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      try { execFileSync('strip', [natBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natBinPath(c)]),
   },
   natgcc: {
@@ -233,6 +235,7 @@ const targets = {
     bin: natgccBinPath,
     run: c => tryRun('natgcc', c, () => {
       execFileSync('gcc', ['-O3', '-ffp-contract=off', '-o', natgccBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      try { execFileSync('strip', [natgccBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natgccBinPath(c)]),
   },
   rust: {
@@ -240,7 +243,7 @@ const targets = {
     available: c => !!c.rs && has('rustc'),
     bin: rustPath,
     run: c => tryRun('rust', c, () => {
-      execFileSync('rustc', ['-C', 'opt-level=3', '-C', 'target-cpu=native', '-o', rustPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('rustc', ['-C', 'opt-level=3', '-C', 'target-cpu=native', '-C', 'link-arg=-s', '-o', rustPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [rustPath(c)]),
   },
   go: {
@@ -250,7 +253,7 @@ const targets = {
     run: c => tryRun('go', c, () => {
       const goCache = build('go-cache')
       mkdirSync(goCache, { recursive: true })
-      execFileSync('go', ['build', '-o', goPath(c), c.go], {
+      execFileSync('go', ['build', '-ldflags=-s -w', '-o', goPath(c), c.go], {
         cwd: BENCH_DIR,
         stdio: 'pipe',
         env: { ...process.env, GOCACHE: goCache },
@@ -325,17 +328,17 @@ const targets = {
     bin: flatPath,
     run: c => tryRun('qjs', c, () => writeFlat(c), ['qjs', '--std', flatPath(c)]),
   },
+  porf: {
+    name: 'Porffor',
+    available: () => has(PORF_BIN),
+    bin: flatPath,
+    run: c => tryRun('porf', c, () => writeFlat(c), [PORF_BIN, 'run', flatPath(c)]),
+  },
   jz: {
     name: 'jz → V8 wasm',
     available: () => has('node'),
-    bin: wasmPath,
-    run: c => tryRun('jz', c, () => compileJz(c), ['node', join(LIB, 'run-wasm.mjs'), wasmPath(c)]),
-  },
-  'jz-host': {
-    name: 'jz → V8 wasm (host imports)',
-    available: () => has('node'),
     bin: jzHostWasmPath,
-    run: c => tryRun('jz-host', c, () => compileJzHost(c), ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
+    run: c => tryRun('jz', c, () => compileJzHost(c), ['node', join(LIB, 'run-jz-host.mjs'), jzHostWasmPath(c)]),
   },
   as: {
     name: 'AssemblyScript (asc -O3)',
