@@ -121,7 +121,8 @@ Not supported
 
 ## FAQ
 
-### How to pass data between JS and WASM?
+<details>
+<summary>How to pass data between JS and WASM?</summary>
 
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
@@ -190,7 +191,10 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 **NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
 -->
 
-### How does template interpolation work?
+</details>
+
+<details>
+<summary>How does template interpolation work?</summary>
 
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
@@ -205,7 +209,10 @@ jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
-### Does it support ES module imports?
+</details>
+
+<details>
+<summary>Does it support ES module imports?</summary>
 
 Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
 
@@ -235,7 +242,10 @@ const { exports } = jz(mainSrc, { modules: {
 } })
 ```
 
-### Can I call JS/host functions from jz?
+</details>
+
+<details>
+<summary>Can I call JS/host functions from jz?</summary>
 
 Yes — JS functions are wired at instantiation via the `imports` option:
 
@@ -268,7 +278,10 @@ const { exports } = jz(
 )
 ```
 
-### Can two modules share data?
+</details>
+
+<details>
+<summary>Can two modules share data?</summary>
 
 Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
 
@@ -294,7 +307,10 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
 
-### How do I run compiled WASM outside the browser?
+</details>
+
+<details>
+<summary>How do I run compiled WASM outside the browser?</summary>
 
 ```sh
 jz program.js -o program.wasm
@@ -308,7 +324,10 @@ deno run program.wasm
 `console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
 
 
-### What host features are supported?
+</details>
+
+<details>
+<summary>What host features are supported?</summary>
 
 The compiled `.wasm` uses one import namespace:
 
@@ -323,7 +342,10 @@ The compiled `.wasm` uses one import namespace:
 | `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
 | `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
 
-### How do I add custom operators / extend the stdlib?
+</details>
+
+<details>
+<summary>How do I add custom operators / extend the stdlib?</summary>
 
 jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
 
@@ -338,7 +360,10 @@ emitter['my.double'] = (x) => {
 
 The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that registers emitters and stdlib on `ctx`.
 
-### Can I compile jz to C?
+</details>
+
+<details>
+<summary>Can I compile jz to C?</summary>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
@@ -347,6 +372,7 @@ jz program.js -o program.wasm
 wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
+</details>
 
 
 ## Benchmark
