@@ -10,6 +10,7 @@
 
 import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, extractParams, multiCount, materializeMulti, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, updateRep } from '../src/compile.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
+import { strHashLiteral } from './collection.js'
 
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
@@ -441,12 +442,12 @@ export default (ctx) => {
       }
     }
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
-      inc('__hash_get_local')
-      return typed(['call', '$__hash_get_local', asF64(emit(arr)), asF64(emit(['str', litKey]))], 'f64')
+      inc('__hash_get_local_h')
+      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
     }
     if (litKey != null && typeof arr !== 'string' && valTypeOf(arr) === VAL.HASH) {
-      inc('__hash_get_local')
-      return typed(['call', '$__hash_get_local', asF64(emit(arr)), asF64(emit(['str', litKey]))], 'f64')
+      inc('__hash_get_local_h')
+      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.

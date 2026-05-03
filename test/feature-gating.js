@@ -71,10 +71,10 @@ test('features.external OFF: __dyn_get_any factory collapses (no __ext_prop call
   }
 })
 
-test('features.external ON: __dyn_get_any factory has EXTERNAL arm', () => {
+test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
   const w = wat(`export let f = (o) => o.x`)
-  ok(hasDef(w, '__dyn_get_any'))
-  const body = w.match(/\(func \$__dyn_get_any[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
+  ok(hasDef(w, '__dyn_get_any_t'))
+  const body = w.match(/\(func \$__dyn_get_any_t[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
   is(/__ext_prop/.test(body), true)
 })
 
@@ -94,9 +94,9 @@ test('features.hash ON: JSON.parse pulls hash substrate', () => {
   ok(hasDef(w, '__hash_set_local'))
 })
 
-test('features.hash ON: untyped .prop pulls __dyn_get_any', () => {
+test('features.hash ON: untyped .prop pulls __dyn_get_any_t', () => {
   const w = wat(`export let f = (o) => o.x`)
-  ok(hasDef(w, '__dyn_get_any'))
+  ok(hasDef(w, '__dyn_get_any_t'))
 })
 
 test('features.regex OFF: scalar-only — no regex stdlibs', () => {

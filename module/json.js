@@ -8,8 +8,23 @@
  * @module json
  */
 
-import { emit, typed, asF64, T } from '../src/compile.js'
+import { emit, typed, asF64, T, temp, nullExpr, allocPtr, slotAddr } from '../src/compile.js'
 import { err, inc, PTR } from '../src/ctx.js'
+import { strHashLiteral } from './collection.js'
+
+function jsonConstString(ctx, expr) {
+  if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
+  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
+  if (typeof expr === 'string') return ctx.scope.constStrs?.get(expr) ?? null
+  return null
+}
+
+function hashCapFor(n) {
+  let cap = 8
+  const need = Math.max(1, Math.ceil(n * 4 / 3))
+  while (cap < need) cap <<= 1
+  return cap
+}
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
@@ -25,6 +40,34 @@ export default (ctx) => {
     __jp_arr: ['__jp_val'],
     __jp_obj: ['__jp_val', '__hash_new', '__hash_set_local'],
   })
+
+  function emitJsonConstValue(v) {
+    if (v == null) return asF64(emit(nullExpr))
+    if (typeof v === 'number') return asF64(emit(v))
+    if (typeof v === 'string') return asF64(emit(['str', v]))
+    if (typeof v === 'boolean') return asF64(emit(v ? 1 : 0))
+    if (Array.isArray(v)) {
+      const a = allocPtr({ type: PTR.ARRAY, len: v.length, cap: Math.max(v.length, 4), tag: 'jarr' })
+      const body = [a.init]
+      for (let i = 0; i < v.length; i++) body.push(['f64.store', slotAddr(a.local, i), emitJsonConstValue(v[i])])
+      body.push(a.ptr)
+      return typed(['block', ['result', 'f64'], ...body], 'f64')
+    }
+    if (typeof v === 'object') {
+      const keys = Object.keys(v)
+      const obj = allocPtr({ type: PTR.HASH, len: 0, cap: hashCapFor(keys.length), stride: 24, tag: 'jhash' })
+      const h = temp('jhash')
+      const body = [obj.init, ['local.set', `$${h}`, obj.ptr]]
+      for (const k of keys) {
+        body.push(['local.set', `$${h}`,
+          ['call', '$__hash_set_local_h', ['local.get', `$${h}`], asF64(emit(['str', k])), ['i32.const', strHashLiteral(k)], emitJsonConstValue(v[k])]])
+      }
+      body.push(['local.get', `$${h}`])
+      if (keys.length) inc('__hash_set_local_h')
+      return typed(['block', ['result', 'f64'], ...body], 'f64')
+    }
+    return asF64(emit(nullExpr))
+  }
 
 
   // === JSON.stringify ===
@@ -450,6 +493,11 @@ export default (ctx) => {
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
+    const src = jsonConstString(ctx, x)
+    if (src != null) {
+      try { return emitJsonConstValue(JSON.parse(src)) }
+      catch { /* fall through to runtime parser for invalid JSON so runtime behavior stays unchanged */ }
+    }
     inc('__jp')
     return typed(['call', '$__jp', asF64(emit(x))], 'f64')
   }

@@ -1475,8 +1475,11 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const needsSchemaTbl = ctx.schema.list.length && (
     ctx.core.includes.has('__stringify') ||
     ctx.core.includes.has('__dyn_get') ||
+    ctx.core.includes.has('__dyn_get_t') ||
     ctx.core.includes.has('__dyn_get_any') ||
+    ctx.core.includes.has('__dyn_get_any_t') ||
     ctx.core.includes.has('__dyn_get_expr') ||
+    ctx.core.includes.has('__dyn_get_expr_t') ||
     ctx.core.includes.has('__dyn_get_or'))
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length

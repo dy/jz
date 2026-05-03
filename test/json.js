@@ -76,9 +76,20 @@ test('JSON.parse: object dot access', () => {
 
 test('JSON.parse: static object dot access uses local HASH lookup', () => {
   const wat = compile(`const SRC = '{"x":42}'; export let f = () => { const o = JSON.parse(SRC); return o.x }`, { wat: true })
+  ok(!wat.includes('$__jp'))
+  ok(wat.includes('$__hash_get_local_h'))
   ok(wat.includes('$__hash_get_local'))
   ok(!wat.includes('$__dyn_get_any'))
   ok(!wat.includes('$__dyn_get_expr'))
+})
+
+test('JSON.parse: static parse returns fresh HASH each call', () => {
+  is(run(`const SRC = '{"x":42}'; export let f = () => {
+    const a = JSON.parse(SRC)
+    const b = JSON.parse(SRC)
+    a.x = 7
+    return b.x
+  }`).f(), 42)
 })
 
 test('JSON.parse: nested chains stay on HASH fast path', () => {
@@ -95,6 +106,8 @@ test('JSON.parse: nested chains stay on HASH fast path', () => {
     }
   `
   const wat = compile(src, { wat: true })
+  ok(!wat.includes('$__jp'))
+  ok(wat.includes('$__hash_get_local_h'))
   ok(wat.includes('$__hash_get_local'))
   ok(!wat.includes('$__dyn_get_any'))
   ok(!wat.includes('$__dyn_get_expr'))

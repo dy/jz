@@ -124,14 +124,14 @@ Not supported
 
 | | **jz** | **jz-host** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
 |---|---|---|---|---|---|---|---|---|
-| **biquad** | **7.97 ms**<br>**3.9 kB** | **7.93 ms**<br>**2.3 kB** | 8.70 ms<br>3.2 kB | 6.39 ms<br>1.9 kB | 4.70 ms<br>767 B | 3.72 ms<br>32.8 kB | 6.26 ms<br>2.39 MB<br>fma | 3.75 ms<br>471.9 kB |
-| **tokenizer** | **0.08 ms**<br>**3.5 kB** | **0.07 ms**<br>**1.6 kB** | 0.12 ms<br>1.4 kB | 0.04 ms<br>1.5 kB<br>DIFF | — | 0.12 ms<br>32.9 kB | 0.05 ms<br>2.39 MB | 0.12 ms<br>471.8 kB |
-| **mat4** | **6.01 ms**<br>**3.4 kB** | **6.05 ms**<br>**1.8 kB** | 8.34 ms<br>1.1 kB | 6.55 ms<br>1.5 kB | — | 2.06 ms<br>32.9 kB | 8.16 ms<br>2.39 MB | 0.74 ms<br>471.9 kB |
-| **aos** | **1.05 ms**<br>**4.9 kB** | **1.06 ms**<br>**3.2 kB** | 1.28 ms<br>1.1 kB | 1.35 ms<br>2.2 kB | — | 0.98 ms<br>32.9 kB | 0.65 ms<br>2.39 MB | 0.83 ms<br>471.8 kB |
-| **bitwise** | **3.50 ms**<br>**3.0 kB** | **3.49 ms**<br>**1.2 kB** | 3.81 ms<br>1005 B | 8.66 ms<br>1.5 kB | — | 1.09 ms<br>32.9 kB | 3.70 ms<br>2.39 MB | 1.11 ms<br>471.8 kB |
-| **poly** | **0.76 ms**<br>**3.1 kB** | **0.76 ms**<br>**1.3 kB** | 1.64 ms<br>1014 B | 0.73 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.58 ms<br>2.39 MB | 0.38 ms<br>471.8 kB |
-| **callback** | **0.01 ms**<br>**4.0 kB** | **0.01 ms**<br>**2.3 kB** | 1.08 ms<br>828 B | 1.05 ms<br>1.9 kB | — | 0.05 ms<br>32.9 kB | 0.14 ms<br>2.39 MB | 0.06 ms<br>471.8 kB |
-| **json** | **0.30 ms**<br>**6.1 kB** | **0.30 ms**<br>**4.6 kB** | 0.26 ms<br>923 B | — | — | 0.02 ms<br>32.9 kB | 0.77 ms<br>2.93 MB | 0.02 ms<br>471.9 kB |
+| **biquad** | **8.17 ms**<br>**3.9 kB** | **8.15 ms**<br>**2.3 kB** | 9.11 ms<br>3.2 kB | 6.61 ms<br>1.9 kB | 4.70 ms<br>767 B | 3.85 ms<br>32.8 kB | 6.60 ms<br>2.39 MB<br>fma | 3.78 ms<br>471.9 kB |
+| **tokenizer** | **0.09 ms**<br>**3.5 kB** | **0.08 ms**<br>**1.6 kB** | 0.13 ms<br>1.4 kB | 0.04 ms<br>1.5 kB<br>DIFF | — | 0.09 ms<br>32.9 kB | 0.05 ms<br>2.39 MB | 0.08 ms<br>471.8 kB |
+| **mat4** | **6.15 ms**<br>**3.4 kB** | **6.26 ms**<br>**1.8 kB** | 8.67 ms<br>1.1 kB | 6.59 ms<br>1.5 kB | — | 1.90 ms<br>32.9 kB | 8.73 ms<br>2.39 MB | 0.60 ms<br>471.9 kB |
+| **aos** | **1.09 ms**<br>**4.9 kB** | **1.08 ms**<br>**3.2 kB** | 1.31 ms<br>1.1 kB | 1.36 ms<br>2.2 kB | — | 0.88 ms<br>32.9 kB | 0.66 ms<br>2.39 MB | 0.86 ms<br>471.8 kB |
+| **bitwise** | **3.53 ms**<br>**3.0 kB** | **3.55 ms**<br>**1.2 kB** | 3.89 ms<br>1005 B | 8.77 ms<br>1.5 kB | — | 0.93 ms<br>32.9 kB | 3.78 ms<br>2.39 MB | 0.95 ms<br>471.8 kB |
+| **poly** | **0.81 ms**<br>**3.1 kB** | **0.81 ms**<br>**1.3 kB** | 1.64 ms<br>1014 B | 0.83 ms<br>1.3 kB | — | 0.35 ms<br>32.9 kB | 0.57 ms<br>2.39 MB | 0.37 ms<br>471.8 kB |
+| **callback** | **0.01 ms**<br>**4.0 kB** | **0.01 ms**<br>**2.3 kB** | 0.69 ms<br>828 B | 1.06 ms<br>1.9 kB | — | 0.06 ms<br>32.9 kB | 0.14 ms<br>2.39 MB | 0.06 ms<br>471.8 kB |
+| **json** | **0.14 ms**<br>**4.4 kB** | **0.15 ms**<br>**2.8 kB** | 0.27 ms<br>923 B | — | — | 0.02 ms<br>32.9 kB | 0.75 ms<br>2.93 MB | 0.02 ms<br>471.9 kB |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon, May 2026. `jz-host` uses host imports for benchmark timing/logging. `fma` is the documented Go arm64 fused-multiply-add checksum class; `DIFF` indicates checksum mismatch. See [benchmark](./bench/)._
 

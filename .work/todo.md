@@ -180,33 +180,31 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
 
 ### Per-bench gap snapshot (jz vs native, jz vs V8, jz vs AS)
 
-Latest full run after JSON nested-HASH shape propagation (darwin/arm64 M-class):
+Latest full run after static JSON.parse lowering (darwin/arm64 M-class):
 
 | case      | jz ms | jz size | host ms | host size | V8 ms | AS ms | AS size | status |
 | ---       | ---:  | ---:    | ---:    | ---:      | ---:  | ---:  | ---:    | --- |
-| biquad    | 7.97  | 3.9 kB  | 7.93    | 2.3 kB    | 8.70  | 6.39  | 1.9 kB  | beats V8, behind AS perf |
-| mat4      | 6.01  | 3.4 kB  | 6.05    | 1.8 kB    | 8.34  | 6.55  | 1.5 kB  | beats V8 + AS |
-| poly      | 0.76  | 3.1 kB  | 0.76    | 1.3 kB    | 1.64  | 0.73  | 1.3 kB  | beats V8, near AS |
-| bitwise   | 3.50  | 3.0 kB  | 3.49    | 1.2 kB    | 3.81  | 8.66  | 1.5 kB  | beats V8 + AS |
-| tokenizer | 0.08  | 3.5 kB  | 0.07    | 1.6 kB    | 0.12  | 0.04  | 1.5 kB  | beats V8, AS DIFF |
-| callback  | 0.01  | 4.0 kB  | 0.01    | 2.3 kB    | 1.08  | 1.05  | 1.9 kB  | beats V8 + AS by ~100× |
-| aos       | 1.05  | 4.9 kB  | 1.06    | 3.2 kB    | 1.28  | 1.35  | 2.2 kB  | beats V8 + AS |
-| json      | 0.30  | 6.1 kB  | 0.30    | 4.6 kB    | 0.26  | n/a   | n/a     | close to V8; parser/hash cost remains |
+| biquad    | 8.17  | 3.9 kB  | 8.15    | 2.3 kB    | 9.11  | 6.61  | 1.9 kB  | beats V8, behind AS perf |
+| mat4      | 6.15  | 3.4 kB  | 6.26    | 1.8 kB    | 8.67  | 6.59  | 1.5 kB  | beats V8 + AS |
+| poly      | 0.81  | 3.1 kB  | 0.81    | 1.3 kB    | 1.64  | 0.83  | 1.3 kB  | beats V8 + AS |
+| bitwise   | 3.53  | 3.0 kB  | 3.55    | 1.2 kB    | 3.89  | 8.77  | 1.5 kB  | beats V8 + AS |
+| tokenizer | 0.09  | 3.5 kB  | 0.08    | 1.6 kB    | 0.13  | 0.04  | 1.5 kB  | beats V8, AS DIFF |
+| callback  | 0.01  | 4.0 kB  | 0.01    | 2.3 kB    | 0.69  | 1.06  | 1.9 kB  | beats V8 + AS by ~100× |
+| aos       | 1.09  | 4.9 kB  | 1.08    | 3.2 kB    | 1.31  | 1.36  | 2.2 kB  | beats V8 + AS |
+| json      | 0.14  | 4.4 kB  | 0.15    | 2.8 kB    | 0.27  | n/a   | n/a     | beats V8; static parse lowered |
 
-jz beats V8/node on **7 of 8** wasm-comparable cases in the latest full run;
-json is the only remaining V8-node laggard. The nested-HASH pass removed the
-old dynamic property dispatch bottleneck and cut json host size from 8.4 kB to
-4.6 kB; the remaining gap is in JSON parse/allocation/hash-table work. jz-host
-size is now within ~0.1-1.0 kB of AS on five of seven AS-backed cases; aos
-remains object/schema-heavy and json has no AS target.
+jz beats V8/node on **8 of 8** wasm-comparable cases in the latest full run.
+The nested-HASH pass removed the old dynamic property dispatch bottleneck; the
+static JSON.parse lowering then removed the runtime scanner for compile-time
+JSON sources and cut json host size from 4.6 kB to 2.8 kB. jz-host size is now
+within ~0.1-1.0 kB of AS on five of seven AS-backed cases; aos remains
+object/schema-heavy and json has no AS target.
 
 ### json gap analysis
 
-Latest full run after nested HASH/array shape propagation reports json at
-**0.30 ms / 6.1 kB** for `jz` and **0.30 ms / 4.6 kB** for `jz-host` (AS
-skipped). V8/node is still faster in that full run at **0.26 ms**, while
-focused `json,biquad` runs fluctuate around parity (`jz` 0.30-0.31 ms vs V8
-0.27-0.33 ms). Do not claim a stable json win yet.
+Latest full run after static JSON.parse lowering reports json at
+**0.14 ms / 4.4 kB** for `jz` and **0.15 ms / 2.8 kB** for `jz-host` (AS
+skipped), ahead of V8/node at **0.27 ms**.
 
 The former hot path in `walk()` was dynamic property dispatch on JSON-parsed
 objects: `o.items`, `o.meta.bias`, `it.id`, `it.kind`, `it.value`,
@@ -215,6 +213,8 @@ objects: `o.items`, `o.meta.bias`, `it.id`, `it.kind`, `it.value`,
 the emitted WAT for nested chains uses `__hash_get_local`, and the dynamic
 dispatcher chain tree-shakes out of the host artifact. Remaining cost is JSON
 parse/allocation/hash-table work plus repeated map probes for constant keys.
+For compile-time JSON strings, that scanner is now bypassed entirely: the
+emitter parses once at compile time and emits fresh HASH/ARRAY construction.
 
 Specific opportunities, ordered by impact:
 
@@ -239,28 +239,46 @@ Specific opportunities, ordered by impact:
   full run. Host size halved from 8.4→4.6 kB by tree-shaking the now-dead
   dyn-dispatcher chain; runtime is around V8 parity but not a stable win yet.
 
+1b. [x] **Static `JSON.parse(stringConst)` lowering.** When the parse input is
+  a string literal/module const and parses successfully at compile time, emit a
+  fresh HASH/ARRAY tree directly instead of calling the runtime `__jp` scanner.
+  Object nodes allocate `__hash_new` + `__hash_set_local`, array nodes allocate
+  ARRAY storage directly, and primitive nodes reuse normal literal emission.
+  Invalid or non-constant inputs still fall back to `__jp`. Pinned by tests for
+  no `__jp` in static codegen and fresh HASH identity across repeated parses.
+  Static HASH construction uses right-sized allocation plus `__hash_set_local_h`,
+  so both reads and writes use compile-time key hashes and avoid `__str_hash`.
+  Result: json `0.14 ms / 4.4 kB` jz, `0.15 ms / 2.8 kB` jz-host in the latest
+  full run; jz now beats V8/node on json in the full suite.
+
 2. **Constant-fold `__str_hash` for SSO NaN-box literals.** Pure function
    on a known constant. Either (a) inline `__map_get` and let the existing
    peephole fold the hash call, or (b) add a `__map_get_const` variant
    that takes pre-hashed key as i32. ~15% savings on json + helps any
    map-heavy code.
 
-3. **Hoist type-tag check across same-receiver prop reads.** `it.id`,
+3. [x] **Hoist type-tag check across same-receiver prop reads.** `it.id`,
    `it.kind`, `it.value` all dispatch on `it`'s type tag. The tag is
    loop-invariant within the inner block; hoist once per inner-loop iter
    (or once per outer if `it = items[j]` and items elem-type is known
    HASH). Generalizes beyond json to any code with repeated prop reads
-   on same receiver.
+    on same receiver. Implemented by splitting `__dyn_get*` into wrappers plus
+    `_t` variants that take the already-computed pointer tag; call sites pass a
+    stable receiver expression so the existing `hoistPtrType` pass CSEs repeated
+    unknown-receiver `.prop` reads.
 
-4. **Inline `__map_get` for ≤1 call site or after specialization.**
+4. [x] **Specialize constant-key Map lookups.**
    Today `__map_get` is a generic helper called from many sites. With
    per-site specialization (constant key, known receiver type) it
-   becomes inlinable.
+    becomes inlinable. Implemented the lower-risk prehashed numeric-literal path
+    first: `Map#get` on a constant number key calls `__map_get_h` and skips
+    recomputing the generic f64 hash. The helper preserves EXTERNAL fallback for
+    unknown receivers.
 
-Item 2 is now the cleanest remaining generic json win; item 3 is mostly
-superseded for static JSON by shape propagation but still applies to dynamic
-objects; item 4 needs cost-aware inline heuristics. Conservative target:
-jz json 0.30 ms → ~0.24 ms, enough to beat V8/node in full-suite runs.
+Item 2 is landed for static JSON reads/writes via `__hash_get_local_h` and
+`__hash_set_local_h`. Items 3 and 4 are landed in conservative, generic forms;
+full body inlining can still be revisited with a cost model if call-site counts
+show it is worth the code size.
 
 ### Completed perf / cleanup wins (this session)
 

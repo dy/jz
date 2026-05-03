@@ -222,6 +222,16 @@ test('Map: set + get', () => {
   is(f(), 300)
 })
 
+test('Map: literal numeric get uses prehashed lookup', () => {
+  const wat = compile(`export let f = () => {
+    let m = new Map()
+    m = m.set(1, 100)
+    return m.get(1)
+  }`, { wat: true })
+  ok(/\((return_call|call) \$__map_get_h\b/.test(wat))
+  ok(!/\(call \$__map_get\s/.test(wat))
+})
+
 test('Map: get missing returns nullish', () => {
   const { f } = run(`export let f = () => {
     let m = new Map()

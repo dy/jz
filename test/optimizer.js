@@ -109,6 +109,16 @@ test('arrayElemValType: typed-array .map runtime correctness', () => {
   is(main(), 24)
 })
 
+test('dynamic prop reads reuse receiver type tag', () => {
+  const wat = jz.compile(`
+    export const main = (o) => {
+      return o.a + o.b + o.c
+    }
+  `, { wat: true })
+  ok(/\(call \$__dyn_get_any_t\b/.test(wat))
+  ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

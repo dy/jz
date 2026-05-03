@@ -15,6 +15,27 @@ const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
 const INIT_CAP = 8    // initial capacity (must be power of 2)
 
+export function strHashLiteral(str) {
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ (str.charCodeAt(i) & 0xFF), 0x01000193) | 0
+  return h <= 1 ? (h + 2) | 0 : h
+}
+
+const HASH_BUF = new ArrayBuffer(8)
+const HASH_F64 = new Float64Array(HASH_BUF)
+const HASH_U32 = new Uint32Array(HASH_BUF)
+
+export function numHashLiteral(n) {
+  HASH_F64[0] = n
+  return (HASH_U32[0] ^ HASH_U32[1]) | 0
+}
+
+function numConstLiteral(expr) {
+  if (typeof expr === 'number' && Number.isFinite(expr)) return expr
+  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number' && Number.isFinite(expr[1])) return expr[1]
+  return null
+}
+
 // Equality expressions for probe templates
 const f64Eq = '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 const strEq = '(call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
@@ -225,6 +246,66 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
     (f64.const nan:${missing}))`
 }
 
+function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing = UNDEF_NAN, hasExt = false) {
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))`
+  const typeGuard = hasExt
+    ? `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
+      (then
+        (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
+          (then (return (call $__ext_prop (local.get $coll) (local.get $key))))
+          (else (return (f64.const nan:${missing}))))))`
+    : `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
+      (then (return (f64.const nan:${missing}))))`
+  return `(func $${name} (param $coll f64) (param $key f64) (param $h i32) (result f64)
+    (local $bits i64) (local $off i32) (local $cap i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $coll)))
+    ${typeGuard}
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (block $done (loop $probe
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+      (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
+        (then (return (f64.const nan:${missing}))))
+      (if ${eqExpr}
+        (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
+      (br_if $done (i32.ge_s (local.get $tries) (local.get $cap)))
+      (br $probe)))
+    (f64.const nan:${missing}))`
+}
+
+function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
+  return `(func $${name} (param $obj f64) (param $key f64) (param $h i32) (param $val f64) (result f64)
+    (local $bits i64) (local $off i32) (local $cap i32) (local $idx i32) (local $slot i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
+    (if (i32.ne
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${expectedType}))
+      (then (return (local.get $obj))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+    (block $done (loop $probe
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
+      (if (f64.eq (f64.load (local.get $slot)) (f64.const 0))
+        (then
+          (f64.store (local.get $slot) (f64.reinterpret_i64 (i64.extend_i32_u (local.get $h))))
+          (f64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))
+          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
+          (i32.store (i32.sub (local.get $off) (i32.const 8))
+            (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+          (br $done)))
+      (if ${eqExpr}
+        (then
+          (f64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
+          (br $done)))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+      (br $probe)))
+    (local.get $obj))`
+}
+
 
 export default (ctx) => {
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when features.external.
@@ -235,6 +316,7 @@ export default (ctx) => {
     __set_delete: [],
     __map_set: ifExt('__ext_set'),
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set'] : ['__map_set'],
+    __map_get_h: () => ctx.features.external ? ['__ext_prop'] : [],
     __map_delete: [],
     __hash_set: () => ctx.features.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set']
@@ -247,14 +329,19 @@ export default (ctx) => {
       : ['__str_hash', '__str_eq', '__ptr_type'],
     __hash_new: ['__alloc_hdr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
+    __hash_get_local_h: ['__str_eq'],
+    __hash_set_local_h: ['__str_eq'],
     __hash_set_local: ['__str_hash', '__str_eq'],
     __ihash_get_local: ['__hash'],
     __ihash_set_local: ['__hash', '__alloc_hdr', '__mkptr'],
-    __dyn_get: ['__ihash_get_local', '__str_hash', '__str_eq', '__is_nullish'],
-    __dyn_get_expr: ['__dyn_get', '__hash_get_local', '__ptr_type'],
-    __dyn_get_any: () => ctx.features.external
-      ? ['__dyn_get', '__hash_get_local', '__ptr_type', '__ext_prop']
-      : ['__dyn_get', '__hash_get_local', '__ptr_type'],
+    __dyn_get_t: ['__ihash_get_local', '__str_hash', '__str_eq', '__is_nullish'],
+    __dyn_get: ['__dyn_get_t', '__ptr_type'],
+    __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local'],
+    __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
+    __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
+    __dyn_get_any_t: () => ctx.features.external
+      ? ['__dyn_get_t', '__hash_get_local', '__ext_prop']
+      : ['__dyn_get_t', '__hash_get_local'],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
@@ -331,15 +418,25 @@ export default (ctx) => {
     inc('__map_set')
     return typed(['call', '$__map_set', asF64(emit(mapExpr)), asF64(emit(key)), asF64(emit(val))], 'f64')
   }
+  ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
-  ctx.core.emit['.get'] = (mapExpr, key) => {
+  const emitMapGet = (mapExpr, key) => {
+    const constKey = numConstLiteral(key)
+    if (constKey != null) {
+      inc('__map_get_h')
+      return typed(['call', '$__map_get_h', asF64(emit(mapExpr)), asF64(emit(key)), ['i32.const', numHashLiteral(constKey)]], 'f64')
+    }
     inc('__map_get')
     return typed(['call', '$__map_get', asF64(emit(mapExpr)), asF64(emit(key))], 'f64')
   }
 
+  ctx.core.emit['.get'] = emitMapGet
+  ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
+
   // Generated Map probe functions
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
   ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, f64Eq, PTR.MAP, NULL_NAN, ctx.features.external)
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
@@ -395,6 +492,8 @@ export default (ctx) => {
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
+  ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)
+  ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEq, PTR.HASH)
   ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64), value is per-object props hash.
   // Uses bit-hash + f64.eq — no string allocation for the unique integer key.
@@ -434,16 +533,18 @@ export default (ctx) => {
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
   const objectSchemaLocals = hasSchemas
-    ? '(local $type i32) (local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
-    : '(local $type i32)'
+    ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
+    : ''
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
+    (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+
+  ctx.core.stdlib['__dyn_get_t'] = `(func $__dyn_get_t (param $obj f64) (param $key f64) (param $type i32) (result f64)
     (local $props f64) (local $bits i64) (local $off i32)
     (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${objectSchemaLocals}
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
@@ -483,13 +584,16 @@ export default (ctx) => {
       (else (local.get $val))))`
 
   ctx.core.stdlib['__dyn_get_expr'] = `(func $__dyn_get_expr (param $obj f64) (param $key f64) (result f64)
+    (call $__dyn_get_expr_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+
+  ctx.core.stdlib['__dyn_get_expr_t'] = `(func $__dyn_get_expr_t (param $obj f64) (param $key f64) (param $t i32) (result f64)
     (local $val f64)
-    (local.set $val (call $__dyn_get (local.get $obj) (local.get $key)))
+    (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
     (if (result f64)
       (i64.ne (i64.reinterpret_f64 (local.get $val)) (i64.const ${UNDEF_NAN}))
       (then (local.get $val))
       (else
-        (if (result f64) (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.HASH}))
+        (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
           (then (call $__hash_get_local (local.get $obj) (local.get $key)))
           (else (f64.const nan:${NULL_NAN}))))))`
 
@@ -501,18 +605,22 @@ export default (ctx) => {
     // dyn_props (those are for OBJECT/ARRAY attached props), so the original __dyn_get
     // call was always wasted work on hashes — and JSON.parse / Map-style code is the
     // dominant HASH consumer.
+    return `(func $__dyn_get_any (param $obj f64) (param $key f64) (result f64)
+    (call $__dyn_get_any_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+  }
+
+  ctx.core.stdlib['__dyn_get_any_t'] = () => {
     const extArm = ctx.features.external
       ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
             (then (call $__ext_prop (local.get $obj) (local.get $key)))
             (else (f64.const nan:${NULL_NAN})))`
       : `(f64.const nan:${NULL_NAN})`
-    return `(func $__dyn_get_any (param $obj f64) (param $key f64) (result f64)
-    (local $val f64) (local $t i32)
-    (local.set $t (call $__ptr_type (local.get $obj)))
+    return `(func $__dyn_get_any_t (param $obj f64) (param $key f64) (param $t i32) (result f64)
+    (local $val f64)
     (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
       (then (call $__hash_get_local (local.get $obj) (local.get $key)))
       (else
-        (local.set $val (call $__dyn_get (local.get $obj) (local.get $key)))
+        (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
         (if (result f64)
           (i64.ne (i64.reinterpret_f64 (local.get $val)) (i64.const ${UNDEF_NAN}))
           (then (local.get $val))

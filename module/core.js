@@ -12,8 +12,18 @@
 import { emit, typed, asF64, asI32, valTypeOf, lookupValType, VAL, T, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, repOf, updateRep } from '../src/compile.js'
 import { err, inc, PTR } from '../src/ctx.js'
 import { initSchema } from './schema.js'
+import { strHashLiteral } from './collection.js'
 
 const NAN_PREFIX = 0x7FF8
+
+const PTR_BY_VAL = {
+  [VAL.ARRAY]: PTR.ARRAY,
+  [VAL.OBJECT]: PTR.OBJECT,
+  [VAL.TYPED]: PTR.TYPED,
+  [VAL.SET]: PTR.SET,
+  [VAL.MAP]: PTR.MAP,
+  [VAL.CLOSURE]: PTR.CLOSURE,
+}
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
@@ -375,6 +385,31 @@ export default (ctx) => {
     return typed(['f64.load', ['i32.add', ptrOffsetIR(base, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
   }
 
+  function emitHashGetLocalConst(base, key, prop) {
+    inc('__hash_get_local_h')
+    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
+    return typed(['call', '$__hash_get_local_h', receiver, key, ['i32.const', strHashLiteral(prop)]], 'f64')
+  }
+
+  function emitTypeTag(receiver, vt) {
+    const p = PTR_BY_VAL[vt]
+    if (p != null) return ['i32.const', p]
+    inc('__ptr_type')
+    return ['call', '$__ptr_type', receiver]
+  }
+
+  function emitDynGetExprTyped(base, key, vt) {
+    inc('__dyn_get_expr_t')
+    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
+    return typed(['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)], 'f64')
+  }
+
+  function emitDynGetAnyTyped(base, key, vt) {
+    inc('__dyn_get_any_t')
+    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
+    return typed(['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)], 'f64')
+  }
+
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop) {
     const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
@@ -383,17 +418,14 @@ export default (ctx) => {
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
-        inc('__dyn_get_expr')
-        return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
+        return emitDynGetExprTyped(va, key, vt)
       }
       if (vt === VAL.HASH) {
-        inc('__hash_get_local')
-        return typed(['call', '$__hash_get_local', asF64(va), key], 'f64')
+        return emitHashGetLocalConst(va, key, prop)
       }
       if (vt == null) {
-        inc('__dyn_get_any')
         ctx.features.external = true
-        return typed(['call', '$__dyn_get_any', asF64(va), key], 'f64')
+        return emitDynGetAnyTyped(va, key, vt)
       }
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['call', '$__hash_get', asF64(va), key], 'f64')
@@ -403,8 +435,7 @@ export default (ctx) => {
     // a HASH per the parsed JSON shape). Falls back to dynamic dispatch
     // otherwise.
     if (valTypeOf(obj) === VAL.HASH) {
-      inc('__hash_get_local')
-      return typed(['call', '$__hash_get_local', asF64(va), key], 'f64')
+      return emitHashGetLocalConst(va, key, prop)
     }
     inc('__dyn_get_expr')
     return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
@@ -511,26 +542,21 @@ export default (ctx) => {
         if (typeof obj === 'string') {
           const objType = lookupValType(obj)
           if (usesDynProps(objType)) {
-            inc('__dyn_get_expr')
-            access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), objType)
           } else if (objType === VAL.HASH) {
-            inc('__hash_get_local')
-            access = ['call', '$__hash_get_local', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = emitHashGetLocalConst(['local.get', `$${t}`], asF64(emit(['str', prop])), prop)
           } else if (objType == null) {
-            inc('__dyn_get_any')
             ctx.features.external = true
-            access = ['call', '$__dyn_get_any', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = emitDynGetAnyTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), objType)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
             access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
           }
         } else {
           if (valTypeOf(obj) === VAL.HASH) {
-            inc('__hash_get_local')
-            access = ['call', '$__hash_get_local', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = emitHashGetLocalConst(['local.get', `$${t}`], asF64(emit(['str', prop])), prop)
           } else {
-            inc('__dyn_get_expr')
-            access = ['call', '$__dyn_get_expr', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), valTypeOf(obj))
           }
         }
       }
