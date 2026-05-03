@@ -94,12 +94,12 @@ flowchart TB
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ JZify                                                   test262: 70%  │
+│ JZify                                                                  │
 │   var  function  arguments  switch  new Foo()                          │
 │   ==  !=  instanceof  undefined                                        │
 │                                                                        │
 │ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │ JZ                                                   test262: 54%  │ │
+│ │ JZ                                                                 │ │
 │ │   let/const  =>  ...xs  destructuring  import/export               │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
 │ │   try/catch/finally  throw                                         │ │
@@ -129,12 +129,12 @@ Not supported
 Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
 ```js
-const { exports, memory } = jz(\`
+const { exports, memory } = jz`
   export let greet = (s) => s.length
   export let sum = (a) => a.reduce((s, x) => s + x, 0)
   export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
   export let process = (buf) => buf.map(x => x * 2)
-\`)
+`
 
 // JS → WASM (write)
 memory.String('hello')               // → string pointer
