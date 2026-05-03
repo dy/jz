@@ -122,19 +122,19 @@ Not supported
 
 ## Benchmark
 
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
-|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms<br>32.7 kB | 9.03 ms<br>1.60 MB<br>fma | 5.33 ms<br>380.7 kB |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms<br>32.9 kB | 0.07 ms<br>1.60 MB | 0.12 ms<br>380.7 kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms<br>32.8 kB | 11.93 ms<br>1.60 MB | 0.80 ms<br>380.7 kB |
-| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms<br>32.9 kB | 0.90 ms<br>1.60 MB | 1.20 ms<br>380.7 kB |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms<br>32.9 kB | 5.24 ms<br>1.60 MB | 1.30 ms<br>380.7 kB |
-| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.80 ms<br>1.60 MB | 0.52 ms<br>380.7 kB |
-| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms<br>32.9 kB | 0.20 ms<br>1.60 MB | 0.08 ms<br>380.7 kB |
-| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms<br>32.8 kB | 1.06 ms<br>1.97 MB | 0.03 ms<br>380.7 kB |
-| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>2.6 kB | — | — | — | — | — |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|---|
+| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms<br>32.7 kB | 9.03 ms<br>1.60 MB<br>fma | 5.09 ms<br>387.1 kB | 5.33 ms<br>380.7 kB |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms<br>32.9 kB | 0.07 ms<br>1.60 MB | 0.12 ms<br>387.1 kB | 0.12 ms<br>380.7 kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms<br>32.8 kB | 11.93 ms<br>1.60 MB | 2.60 ms<br>387.1 kB | 0.80 ms<br>380.7 kB |
+| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms<br>32.9 kB | 0.90 ms<br>1.60 MB | 0.99 ms<br>387.0 kB | 1.20 ms<br>380.7 kB |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms<br>32.9 kB | 5.24 ms<br>1.60 MB | 4.26 ms<br>387.1 kB | 1.30 ms<br>380.7 kB |
+| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.80 ms<br>1.60 MB | — | 0.52 ms<br>380.7 kB |
+| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms<br>32.9 kB | 0.20 ms<br>1.60 MB | 0.01 ms<br>387.1 kB | 0.08 ms<br>380.7 kB |
+| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms<br>32.8 kB | 1.06 ms<br>1.97 MB | — | 0.03 ms<br>380.7 kB |
+| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>85.3 kB | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon, May 2026. `jz` uses host imports for benchmark timing/logging (measures wasm without WASI console/perf bloat). Raw-JS size is the entry file; jz size is the bundled wasm artifact. `fma` is the documented Go arm64 fused-multiply-add checksum class. See [benchmark](./bench/)._
+_Numbers from `node bench/bench.mjs` on Apple Silicon.
 
 
 

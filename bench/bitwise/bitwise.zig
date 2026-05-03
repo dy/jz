@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const N = 65536;
 const N_ROUNDS = 128;
@@ -56,7 +57,12 @@ fn runKernel(state: []u32) void {
     }
 }
 
-pub fn main() !void {
+pub fn main(proc: std.process.Init) !void {
+    const io = proc.io;
+    var stdout_buffer: [256]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     const allocator = std.heap.page_allocator;
     const state = try allocator.alloc(u32, N);
     defer allocator.free(state);
@@ -74,6 +80,6 @@ pub fn main() !void {
         runKernel(state);
         samples[i] = nowMs() - t0;
     }
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), checksumU32(state), N * N_ROUNDS, 3, N_RUNS });
+    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumU32(state), N * N_ROUNDS, 3, N_RUNS });
+    try stdout.flush();
 }

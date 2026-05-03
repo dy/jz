@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const N = 16384;
 const N_ITERS = 64;
@@ -65,7 +66,12 @@ fn runKernel(rows: []const Row, xs: []f64, ys: []f64, zs: []f64) void {
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [256]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     const allocator = std.heap.page_allocator;
     const rows = try allocator.alloc(Row, N);
     const xs = try allocator.alloc(f64, N);
@@ -87,6 +93,6 @@ pub fn main() !void {
         samples[i] = nowMs() - t0;
     }
     const cs = checksumF64(xs) ^ checksumF64(ys) ^ checksumF64(zs);
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), cs, N * N_ITERS, 3, N_RUNS });
+    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, N * N_ITERS, 3, N_RUNS });
+    try stdout.flush();
 }

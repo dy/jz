@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const N_ITERS = 200000;
 const N_RUNS = 21;
@@ -63,7 +64,12 @@ fn multiplyMany(a: *[16]f64, b: *const [16]f64, out: *[16]f64, iters: usize) voi
     }
 }
 
-pub fn main() !void {
+pub fn main(proc: std.process.Init) !void {
+    const io = proc.io;
+    var stdout_buffer: [256]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     var a = [_]f64{0} ** 16;
     var b = [_]f64{0} ** 16;
     var out = [_]f64{0} ** 16;
@@ -78,6 +84,6 @@ pub fn main() !void {
         multiplyMany(&a, &b, &out, N_ITERS);
         samples[i] = nowMs() - t0;
     }
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), checksumF64(&out), N_ITERS * 16, 4, N_RUNS });
+    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(&out), N_ITERS * 16, 4, N_RUNS });
+    try stdout.flush();
 }

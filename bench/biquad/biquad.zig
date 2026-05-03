@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const N_SAMPLES = 480000;
 const N_STAGES = 8;
@@ -88,7 +89,12 @@ fn processCascade(x: []const f64, coeffs: []const f64, state: []f64, nStages: us
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [256]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     const allocator = std.heap.page_allocator;
     const x = try allocator.alloc(f64, N_SAMPLES);
     const coeffs = try allocator.alloc(f64, N_STAGES * 5);
@@ -115,6 +121,6 @@ pub fn main() !void {
         processCascade(x, coeffs, state, N_STAGES, out);
         samples[i] = nowMs() - t0;
     }
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS });
+    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), checksumF64(out), N_SAMPLES, N_STAGES, N_RUNS });
+    try stdout.flush();
 }

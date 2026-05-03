@@ -115,6 +115,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
 const wasmPath = c => join(caseBuild(c), `${c.id}.wasm`)
 const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
+const rawJsSizePath = c => c.id === 'watr' ? join(ROOT, 'node_modules/watr/dist/watr.min.js') : c.js
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -308,19 +309,19 @@ const targets = {
   v8: {
     name: 'V8 (node)',
     available: () => has('node'),
-    bin: c => c.js,
+    bin: rawJsSizePath,
     run: c => tryRun('v8', c, null, ['node', join(LIB, 'run-v8.mjs'), c.js]),
   },
   deno: {
     name: 'V8 (deno)',
     available: () => has(DENO_BIN),
-    bin: c => c.js,
+    bin: rawJsSizePath,
     run: c => tryRun('deno', c, null, [DENO_BIN, 'run', '--allow-read', join(LIB, 'run-v8.mjs'), c.js]),
   },
   bun: {
     name: 'JavaScriptCore (bun)',
     available: () => has(BUN_BIN),
-    bin: c => c.js,
+    bin: rawJsSizePath,
     run: c => tryRun('bun', c, null, [BUN_BIN, join(LIB, 'run-v8.mjs'), c.js]),
   },
   spidermonkey: {

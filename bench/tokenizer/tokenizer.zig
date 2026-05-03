@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const BASE = "let alpha_12 = beta + 12345; if (alpha_12 >= 99) { total = total + alpha_12; }\n";
 const N_REPEAT = 512;
@@ -69,7 +70,12 @@ fn scan(src: []const u8) u32 {
     return mix(h, tokens);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    var stdout_buffer: [256]u8 = undefined;
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     const allocator = std.heap.page_allocator;
     const len = BASE.len * N_REPEAT;
     const src = try allocator.alloc(u8, len);
@@ -87,6 +93,6 @@ pub fn main() !void {
         cs = scan(src);
         samples[i] = nowMs() - t0;
     }
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), cs, len, 5, N_RUNS });
+    try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, len, 5, N_RUNS });
+    try stdout.flush();
 }
