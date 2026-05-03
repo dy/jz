@@ -160,7 +160,14 @@ const handlers = {
     return arrow
   },
 
-  'var'(...args) { return ['let', ...args.map(transform)] },
+  'var'(...args) {
+    // for-in/for-of: ['var', ['in', 'k', obj]] → ['in', ['let', 'k'], obj]
+    if (args.length === 1 && Array.isArray(args[0]) && (args[0][0] === 'in' || args[0][0] === 'of')) {
+      const [, name, src] = args[0]
+      return [args[0][0], ['let', typeof name === 'string' ? name : transform(name)], transform(src)]
+    }
+    return ['let', ...args.map(transform)]
+  },
 
   '='(lhs, rhs) {
     // var assignment: ['=', ['var', name], init] → let
@@ -326,6 +333,9 @@ export function codegen(node, depth = 0) {
       const [head, body] = a
       if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in'))
         return 'for (' + codegen(head[1]) + ' ' + head[0] + ' ' + codegen(head[2]) + ') ' + codegen(body, depth)
+      // ['let'/'const', ['in'/'of', name, obj]] — subscript wraps var→let around in/of
+      if (Array.isArray(head) && (head[0] === 'let' || head[0] === 'const') && Array.isArray(head[1]) && (head[1][0] === 'in' || head[1][0] === 'of'))
+        return 'for (' + head[0] + ' ' + codegen(head[1][1]) + ' ' + head[1][0] + ' ' + codegen(head[1][2]) + ') ' + codegen(body, depth)
       return 'for (' + codegen(head) + ') ' + codegen(body, depth)
     }
     return 'for (' + (codegen(a[0]) || '') + '; ' + (codegen(a[1]) || '') + '; ' + (codegen(a[2]) || '') + ') ' + codegen(a[3], depth)
@@ -334,7 +344,11 @@ export function codegen(node, depth = 0) {
   if (op === 'throw') return 'throw ' + codegen(a[0])
   if (op === 'break') return 'break'
   if (op === 'continue') return 'continue'
-  if (op === 'catch') return 'try ' + codegen(a[0], depth) + ' catch (' + a[1] + ') ' + codegen(a[2], depth)
+  // catch with optional binding: ['catch', tryBlock, catchBody] or ['catch', tryBlock, paramName, catchBody]
+  if (op === 'catch') {
+    if (a.length === 3) return 'try ' + codegen(a[0], depth) + ' catch (' + a[1] + ') ' + codegen(a[2], depth)
+    return 'try ' + codegen(a[0], depth) + ' catch ' + codegen(a[1], depth)
+  }
 
   // Arrow
   if (op === '=>') {
@@ -368,8 +382,11 @@ export function codegen(node, depth = 0) {
 
   // Comma
   if (op === ',') return a.map(x => codegen(x)).join(', ')
-  // Template literal
-  if (op === '`') return '`' + a.map((p, i) => i % 2 ? '${' + codegen(p) + '}' : (p?.[1] ?? '')).join('') + '`'
+  // Template literal: alternating string/expr parts. String parts are [null, "str"], expr parts are AST nodes.
+  if (op === '`') return '`' + a.map(p => {
+    if (Array.isArray(p) && p[0] == null && typeof p[1] === 'string') return p[1].replace(/[`\\$]/g, c => '\\' + c)
+    return '${' + codegen(p) + '}'
+  }).join('') + '`'
 
   // Spread
   if (op === '...') return '...' + codegen(a[0])

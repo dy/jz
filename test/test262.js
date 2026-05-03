@@ -91,14 +91,40 @@ function isArgumentsObjectTest(rel) {
 }
 
 const ASSERT_HARNESS = `
+function Test262Error(message) { return message || 'Test262Error' }
+function Error(message) { return message || 'Error' }
+function EvalError(message) { return message || 'EvalError' }
+function RangeError(message) { return message || 'RangeError' }
+function ReferenceError(message) { return message || 'ReferenceError' }
+function SyntaxError(message) { return message || 'SyntaxError' }
+function TypeError(message) { return message || 'TypeError' }
+function URIError(message) { return message || 'URIError' }
+let __sameValue = (a, b) => {
+  if (a === b) return a !== 0 || 1 / a === 1 / b
+  return a !== a && b !== b
+}
 let assert = (cond, msg) => { if (!cond) throw msg }
-assert.sameValue = (a, b, msg) => { if (a != b && !(a != a && b != b)) throw msg }
-assert.notSameValue = (a, b, msg) => { if (a == b || (a != a && b != b)) throw msg }
+assert.sameValue = (a, b, msg) => { if (!__sameValue(a, b)) throw msg }
+assert.notSameValue = (a, b, msg) => { if (__sameValue(a, b)) throw msg }
 assert.compareArray = (a, b, msg) => {
   if (a.length != b.length) throw msg
-  for (let i = 0; i < a.length; i++) if (a[i] != b[i]) throw msg
+  for (let i = 0; i < a.length; i++) if (!__sameValue(a[i], b[i])) throw msg
+}
+assert.throws = (expected, fn, msg) => {
+  let threw = 0
+  try { fn() } catch (e) { threw = 1 }
+  if (!threw) throw msg
 }
 `
+
+function needsAssertHarness(content, rel = '') {
+  return rel.includes('language/rest-parameters/') ||
+    isComputedPropertyNameObjectTest(rel) ||
+    isArgumentsObjectTest(rel) ||
+    content.includes('assert') ||
+    content.includes('Test262Error') ||
+    content.includes('compareArray')
+}
 
 // Features to exclude entirely
 const EXCLUDED_PATTERNS = [
@@ -137,7 +163,6 @@ function countJs(dir) {
 }
 
 function shouldSkip(content, rel = '') {
-  const allowAssertHarness = rel.includes('language/rest-parameters/') || isComputedPropertyNameObjectTest(rel) || isArgumentsObjectTest(rel)
   const codeContent = content
     .replace(/\/\*---[\s\S]*?---\*\//, '')
     .replace(/^\/\/[^\n]*(?:\n|$)/gm, '')
@@ -146,23 +171,20 @@ function shouldSkip(content, rel = '') {
   if (rel.includes('language/arguments-object/') && !isArgumentsObjectTest(rel))
     return 'arguments object outside jzify-supported subset'
   if (/\bdo\s*;\s*while\b/.test(codeContent)) return 'do-while empty-statement parser gap'
-  if (rel.includes('/optional-catch-binding')) return 'optional catch binding parser gap'
+  // optional catch binding now supported via source rewrite in normalizeSource
+  if (rel.includes('/block-scope/shadowing/') && rel.includes('catch-parameter')) return 'catch parameter shadowing codegen gap'
   if (rel.includes('/regexp/')) return 'regexp outside current jz scope'
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
   if (/negative:\s*\n\s+phase:\s+parse/.test(content)) return 'negative parse test'
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
+  if (content.includes('Test262Error') && !content.includes('assert.throws')) return 'Test262Error legacy harness'
   // Skip tests with harness-specific directives
   if (content.includes('$DONE') && !content.includes('runTest')) return 'harness dependency'
   if (content.includes('Test262:Async')) return 'async test'
   if (content.includes('propertyHelper')) return 'propertyHelper'
   if (content.includes('verifyProperty')) return 'verifyProperty'
-  if (!allowAssertHarness && content.includes('compareArray')) return 'compareArray harness'
-  // test262 harness globals
-  if (content.includes('Test262Error')) return 'Test262Error harness'
-  if (!allowAssertHarness && content.includes('assert.')) return 'assert harness'
-  if (content.includes('assertThrows') || content.includes('assert.throws')) return 'assert harness'
   // Parser gaps tracked upstream in subscript; do not count as jz runtime failures.
   if (content.includes('\u00a0')) return 'NBSP parser gap'
   // Skip tests using undeclared globals
@@ -260,7 +282,7 @@ for (const subdir of TRACKED_LANGUAGE_DIRS) {
       const skip = shouldSkip(src, rel)
       if (skip) { results.skip++; count++; continue }
 
-      const assertHarness = rel.includes('language/rest-parameters/') || isComputedPropertyNameObjectTest(rel) || isArgumentsObjectTest(rel)
+      const assertHarness = needsAssertHarness(src, rel)
       const { status, error } = runTest(src, { assertHarness })
       results[status]++
       count++

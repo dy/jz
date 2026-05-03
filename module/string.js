@@ -52,7 +52,8 @@ export default (ctx) => {
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
       return mkPtrIR(PTR.SSO, str.length, packed)
     }
-    const len = str.length
+    const bytes = new TextEncoder().encode(str)
+    const len = bytes.length
     if (!ctx.memory.shared) {
       // Own memory: place in static data segment (no runtime allocation)
       if (!ctx.runtime.data) ctx.runtime.data = ''
@@ -61,7 +62,7 @@ export default (ctx) => {
       while (ctx.runtime.data.length % 4 !== 0) ctx.runtime.data += '\0'
       const offset = ctx.runtime.data.length
       ctx.runtime.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
-      for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(str.charCodeAt(i))
+      for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(bytes[i])
       ctx.runtime.dataDedup.set(str, offset)
       return mkPtrIR(PTR.STRING, 0, offset + 4)
     }
@@ -75,10 +76,10 @@ export default (ctx) => {
     }
     let off = ctx.runtime.strPoolDedup.get(str)
     if (off === undefined) {
-      // Pack length header then bytes; offset points PAST the length (at the data).
+      // Pack length header then UTF-8 bytes; offset points PAST the length (at the data).
       ctx.runtime.strPool += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
       off = ctx.runtime.strPool.length
-      ctx.runtime.strPool += str
+      for (let i = 0; i < len; i++) ctx.runtime.strPool += String.fromCharCode(bytes[i])
       ctx.runtime.strPoolDedup.set(str, off)
     }
     return mkPtrIR(PTR.STRING, 0, ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]])
@@ -779,6 +780,42 @@ export default (ctx) => {
     let result = asF64(emit(str))
     for (const other of others) result = typed(['call', '$__str_concat', result, asF64(emit(other))], 'f64')
     return result
+  }
+
+  ctx.core.emit['strcat'] = (...parts) => {
+    inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
+    if (!parts.length) return mkPtrIR(PTR.SSO, 0, 0)
+    if (parts.length === 1) return typed(['call', '$__to_str', asF64(emit(parts[0]))], 'f64')
+
+    const vals = parts.map(() => temp('s'))
+    const lens = parts.map(() => tempI32('sl'))
+    const total = tempI32('st')
+    const off = tempI32('so')
+    const dst = tempI32('sd')
+    const ir = []
+
+    for (let i = 0; i < parts.length; i++) {
+      ir.push(['local.set', `$${vals[i]}`, ['call', '$__to_str', asF64(emit(parts[i]))]])
+      ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['local.get', `$${vals[i]}`]]])
+    }
+    ir.push(['local.set', `$${total}`, ['i32.const', 0]])
+    for (const len of lens)
+      ir.push(['local.set', `$${total}`, ['i32.add', ['local.get', `$${total}`], ['local.get', `$${len}`]]])
+    const alloc = [
+      ['local.set', `$${off}`, ['call', '$__alloc', ['i32.add', ['i32.const', 4], ['local.get', `$${total}`]]]],
+      ['i32.store', ['local.get', `$${off}`], ['local.get', `$${total}`]],
+      ['local.set', `$${off}`, ['i32.add', ['local.get', `$${off}`], ['i32.const', 4]]],
+      ['local.set', `$${dst}`, ['local.get', `$${off}`]],
+    ]
+    for (let i = 0; i < parts.length; i++) {
+      alloc.push(['call', '$__str_copy', ['local.get', `$${vals[i]}`], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
+      alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]]])
+    }
+    alloc.push(['call', '$__mkptr', ['i32.const', PTR.STRING], ['i32.const', 0], ['local.get', `$${off}`]])
+    ir.push(['if', ['result', 'f64'], ['i32.eqz', ['local.get', `$${total}`]],
+      ['then', mkPtrIR(PTR.SSO, 0, 0)],
+      ['else', ['block', ['result', 'f64'], ...alloc]]])
+    return typed(['block', ['result', 'f64'], ...ir], 'f64')
   }
 
   ctx.core.emit['.padStart'] = (str, len, pad) => {

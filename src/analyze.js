@@ -237,7 +237,7 @@ export function valTypeOf(expr) {
   }
 
   if (op === '[') return VAL.ARRAY
-  if (op === 'str') return VAL.STRING
+  if (op === 'str' || op === 'strcat') return VAL.STRING
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT

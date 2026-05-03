@@ -1,5 +1,7 @@
 export function normalizeSource(code) {
-  const source = code.startsWith('#!') ? `//${code.slice(2)}` : code
+  let source = code.startsWith('#!') ? `//${code.slice(2)}` : code
+  // Optional catch binding: `catch {` → `catch(_e) {` (parser gap workaround)
+  source = source.replace(/\bcatch\s*\{/g, 'catch(_e){')
   let out = ''
   let parenDepth = 0
   let bracketDepth = 0

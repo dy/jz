@@ -744,16 +744,12 @@ const handlers = {
   },
   'throw'(expr) { return ['throw', prep(expr)] },
 
-  // Template literal: [``, part, ...] → chain of str_concat calls
-  // First node is always a string (empty if template starts with ${...}) so concat dispatches correctly.
+  // Template literal: [``, part, ...] → fused single-allocation string concat.
   '`'(...parts) {
     includeMods('core', 'string', 'number')
     const nodes = parts.map(p =>
       Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
-    // Ensure first element is a string so concat chain starts with string dispatch
-    if (nodes.length && !(Array.isArray(nodes[0]) && nodes[0][0] === 'str'))
-      nodes.unshift(['str', ''])
-    return nodes.reduce((acc, n) => ['()', ['.', acc, 'concat'], n])
+    return ['strcat', ...nodes]
   },
 
   // Tagged template: tag`a${x}b` → tag(['a','b'], x)

@@ -80,6 +80,16 @@ test('string: .concat two', () => {
   is(run(`export let f = () => "a".concat("b").length`).f(), 2)
 })
 
+test('template literal: fused concat returns string and skips concat helper', () => {
+  const src = 'export let f = (a, b, c) => `a${a}b${b}c${c}d`'
+  const result = compile_mem(src)
+  is(result.memory.read(result.exports.f(1, 2, 3)), 'a1b2c3d')
+  const wat = compile(src, { wat: true })
+  const start = wat.indexOf('(func $f')
+  const end = wat.indexOf('\n  (func ', start + 1)
+  ok(!wat.slice(start, end).includes('call $__str_concat'))
+})
+
 // === .slice ===
 
 test('string: .slice basic', () => {

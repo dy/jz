@@ -125,13 +125,15 @@ Not supported
 
 <br>
 
-Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
+
+Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
 ```js
 const { exports, memory } = jz`
   export let greet = (s) => s.length
   export let sum = (a) => a.reduce((s, x) => s + x, 0)
   export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
+  export let rgb = (c) => [c, c * 0.5, c * 0.2]
   export let process = (buf) => buf.map(x => x * 2)
 `
 
@@ -154,14 +156,17 @@ exports.greet(memory.String('hello'))          // 5
 exports.sum(memory.Array([1, 2, 3]))           // 6
 exports.dist(memory.Object({ x: 3, y: 4 }))   // 5
 
-// WASM → JS (read)
+// direct JS array return
+exports.rgb(100)      // [100, 50, 20]
+
+// read pointer value
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
 Template interpolation handles most of this automatically — strings, arrays, numbers, and numeric objects are marshaled for you:
 
 ```js
-jz\`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x\`
+jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
 ```
 
 <!--

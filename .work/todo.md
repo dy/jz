@@ -24,6 +24,12 @@
   * [x] Lower braced `do-while` through jzify without body duplication; `do ; while` remains a subscript parser gap
   * [x] Keep `delete` prohibited for jz fixed-shape objects; only parser conformance belongs upstream in subscript
   * [x] Treat `debugger` as parse/no-op or explicit ignore, not a runtime feature
+  * [x] Broaden the local test262 harness (`assert.*`, `Test262Error`, `compareArray`) before counting more failures
+  * [x] Add/enable ordinary `template-literal` coverage; keep `tagged-template` separate unless template-object caching semantics are implemented — already works, template literal tests pass in expressions/
+  * [x] Fix optional catch binding parser support (`catch { ... }`) now that `try`/`catch`/`finally` runtime support exists — source rewrite in normalizeSource + jzify codegen
+  * [x] Add/enable simple `for-in` coverage for enumerable fixed-shape/HASH object keys — jzify var→let restructure for for-in, codegen handles both AST formats
+  * [x] Revisit broader `arguments-object` coverage only if JS compatibility becomes a goal; current curated jzify subset is enough for core jz
+  * [x] Keep broad unsupported buckets out of scope for this metric (`async`, `class`, `this`, generators, iterators, `with`, `super`, dynamic import)
 * [ ] `import.meta`
 * [ ] speed up compiler itself (faster than eval)
 * [ ] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
