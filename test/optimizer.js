@@ -161,6 +161,24 @@ test('small const-count for-loop does not unroll with break', () => {
   ok(/\(loop\b/.test(wat), 'break requires preserving loop control flow')
 })
 
+test('small const-count for-loop keeps outer nested loops compact', () => {
+  const src = `
+    export const main = () => {
+      let acc = 0
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          for (let k = 0; k < 4; k++) acc += r + c + k
+        }
+      }
+      return acc | 0
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(/\(loop\b/.test(wat), 'outer nested loops should not fully unroll')
+  const { main } = run(src)
+  is(main(), 288)
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no

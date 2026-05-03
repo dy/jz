@@ -29,6 +29,7 @@ const CASE_NAMES = {
   callback: 'callback map',
   aos: 'AoS to SoA',
   json: 'JSON parse walk',
+  watr: 'watr WAT compiler',
 }
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
@@ -134,14 +135,32 @@ const benchlibHostSource = () => {
   return out
 }
 
+const watrModuleSources = () => ({
+  './watr-compile.js': `import compileWatr from '../../node_modules/watr/src/compile.js'\nexport const compile = (src) => compileWatr(src)\n`,
+  '../../node_modules/watr/src/compile.js': readFileSync(join(ROOT, 'node_modules/watr/src/compile.js'), 'utf8'),
+  './encode.js': readFileSync(join(ROOT, 'node_modules/watr/src/encode.js'), 'utf8'),
+  './const.js': readFileSync(join(ROOT, 'node_modules/watr/src/const.js'), 'utf8'),
+  './parse.js': readFileSync(join(ROOT, 'node_modules/watr/src/parse.js'), 'utf8'),
+  './util.js': readFileSync(join(ROOT, 'node_modules/watr/src/util.js'), 'utf8'),
+})
+
 const compileJzHost = c => {
   const code = readFileSync(c.js, 'utf8')
   const wasm = compile(code, {
-    modules: { '../_lib/benchlib.js': benchlibHostSource() },
+    modules: {
+      '../_lib/benchlib.js': benchlibHostSource(),
+      ...(c.id === 'watr' ? watrModuleSources() : {}),
+    },
     imports: {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
+    ...(c.id === 'watr' ? {
+      jzify: true,
+      memoryPages: 4096,
+      optimize: { watr: false, smallConstForUnroll: false },
+    } : {}),
+    runtimeExports: false,
   })
   writeFileSync(jzHostWasmPath(c), wasm)
 }

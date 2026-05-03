@@ -114,6 +114,18 @@ test('string: .indexOf not found', () => {
   is(run(`export let f = () => "hello".indexOf("x")`).f(), -1)
 })
 
+test('string: literal startsWith/endsWith', () => {
+  const { f } = run(`export let f = () => {
+    let a = "memory.store"
+    let b = "xstore"
+    let c = "memory.x"
+    return (a.startsWith("memory.") ? 10 : 0) + (a.endsWith("store") ? 1 : 0)
+      + (b.startsWith("memory.") ? 100 : 0) + (b.endsWith("store") ? 1 : 0)
+      + (c.startsWith("memory.") ? 10 : 0) + (c.endsWith("store") ? 100 : 0)
+  }`)
+  is(f(), 22)
+})
+
 test('string index: out-of-range returns undefined', () => {
   ok(Number.isNaN(run(`export let f = () => "hello"[99]`).f()))
 })

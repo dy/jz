@@ -206,7 +206,7 @@ export default (ctx) => {
   // .map/.filter invoke callbacks with arity 1 internally.
   ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 1)
 
-  inc('__mkptr', '__alloc', '__ptr_offset', '__ptr_type', '__len')
+  inc('__mkptr', '__alloc', '__len')
 
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
@@ -268,7 +268,7 @@ export default (ctx) => {
         const dst = tempI32('tvd')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
-          ['local.set', `$${parentOff}`, ['call', '$__ptr_offset', ['local.get', `$${src}`]]],
+          ['local.set', `$${parentOff}`, ptrOffsetIR(['local.get', `$${src}`], srcType)],
           ['local.set', `$${byteLen}`, ['i32.mul', asI32(emit(lenExpr2)), ['i32.const', stride]]],
           ['local.set', `$${dst}`, ['call', '$__alloc', ['i32.const', 16]]],
           ['i32.store', ['local.get', `$${dst}`], ['local.get', `$${byteLen}`]],
@@ -406,6 +406,7 @@ export default (ctx) => {
               ['i32.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', 4]]],
               ['i32.load', ['i32.add', ['local.get', `$${t}`], ['i32.const', 8]]]]]], 'f64')
       }
+      if (ctor?.startsWith('new.') && ELEM[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
     inc('__byte_offset')
     return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asF64(emit(obj))]], 'f64')

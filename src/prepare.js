@@ -45,6 +45,7 @@ const addHostImport = (mod, name, alias, spec) => {
   if (!ctx.module.imports.some(i => i[3]?.[1] === `$${alias}`)) {
     ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
   }
+  ctx.scope.chain[alias] = alias
   const vt = hostReturnValType(spec)
   if (vt) ctx.module.hostImportValTypes.set(alias, vt)
 }

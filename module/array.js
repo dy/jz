@@ -169,10 +169,26 @@ const arrMethod = (name, nArgs = 0) => (...args) => {
   return typed(call, 'f64')
 }
 
+const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
+const arrayGrowDeps = (knownArray = false) => () => [
+  ...(knownArray ? [] : ['__ptr_type']),
+  '__ptr_offset', '__alloc_hdr', '__mkptr',
+  ...(needsArrayDynMove() ? ['__dyn_move'] : []),
+]
+
+const maybeDynMoveIR = () => needsArrayDynMove()
+  ? '(call $__dyn_move (local.get $off) (local.get $newOff))'
+  : ''
+
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __arr_idx: [],
-    __arr_grow: ['__dyn_move'],
+    __arr_grow: arrayGrowDeps(false),
+    __arr_grow_known: arrayGrowDeps(true),
+    __arr_shift: () => [
+      '__ptr_offset',
+      ...(needsArrayDynMove() ? ['__dyn_move'] : []),
+    ],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', '__set_len'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
       ? ['__len']
@@ -295,7 +311,7 @@ export default (ctx) => {
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
   // Old storage is left behind as a forwarding header so existing aliases keep
   // seeing the current backing store after growth.
-  ctx.core.stdlib['__arr_grow'] = `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
     (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -318,7 +334,25 @@ export default (ctx) => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
-    (call $__dyn_move (local.get $off) (local.get $newOff))
+    ${maybeDynMoveIR()}
+    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
+    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+
+  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr f64) (param $minCap i32) (result f64)
+    (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
+      (then (return (local.get $ptr))))
+    (local.set $newCap (select
+      (local.get $minCap)
+      (i32.shl (local.get $oldCap) (i32.const 1))
+      (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
+    (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
+    (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    ${maybeDynMoveIR()}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
@@ -577,7 +611,6 @@ export default (ctx) => {
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
   ctx.core.emit['.push'] = (arr, ...vals) => {
-    inc('__arr_grow')
     const va = asF64(emit(arr))
     const t = temp('pp'), len = tempI32('pl')
 
@@ -586,6 +619,8 @@ export default (ctx) => {
     // unreachable here: .push on a nullish var is a JS error before we get here.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const inlineLen = vt === VAL.ARRAY
+    const grow = inlineLen ? '__arr_grow_known' : '__arr_grow'
+    inc(grow)
 
     const body = [
       ['local.set', `$${t}`, va],
@@ -605,7 +640,7 @@ export default (ctx) => {
             ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],
             ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]],
           ['then',
-            ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
+            ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
               ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
             ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]],
       )
@@ -613,7 +648,7 @@ export default (ctx) => {
       body.push(
         ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
         // Grow if needed: ensure cap >= len + vals.length
-        ['local.set', `$${t}`, ['call', '$__arr_grow', ['local.get', `$${t}`],
+        ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
           ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
         ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
       )
@@ -667,20 +702,32 @@ export default (ctx) => {
   // .shift() → remove first element, shift remaining left, return removed
   ctx.core.emit['.shift'] = arrMethod('__arr_shift')
 
-  ctx.core.stdlib['__arr_shift'] = `(func $__arr_shift (param $arr f64) (result f64)
-    (local $off i32) (local $len i32) (local $val f64)
+  ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr f64) (result f64)
+    (local $bits i64) (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
+    (local.set $bits (i64.reinterpret_f64 (local.get $arr)))
+    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
-    (local.set $len (call $__len (local.get $arr)))
-    (if (result f64) (i32.le_s (local.get $len) (i32.const 0))
+    (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
       (then (f64.const 0))
       (else
-        (local.set $val (f64.load (local.get $off)))
-        (memory.copy
-          (local.get $off)
-          (i32.add (local.get $off) (i32.const 8))
-          (i32.shl (i32.sub (local.get $len) (i32.const 1)) (i32.const 3)))
-        (call $__set_len (local.get $arr) (i32.sub (local.get $len) (i32.const 1)))
-        (local.get $val))))`
+        (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
+        (if (result f64) (i32.le_s (local.get $len) (i32.const 0))
+          (then (f64.const 0))
+          (else
+            (local.set $val (f64.load (local.get $off)))
+            (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+            (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
+            (i32.store (local.get $off) (i32.sub (local.get $len) (i32.const 1)))
+            (i32.store (i32.add (local.get $off) (i32.const 4))
+              (select (i32.sub (local.get $cap) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $cap) (i32.const 0))))
+            ${maybeDynMoveIR()}
+            (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
+            (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+            (if (i32.and (i32.ne (local.get $rawOff) (local.get $off)) (i32.ge_u (local.get $rawOff) (i32.const 8)))
+              (then
+                (i32.store (i32.sub (local.get $rawOff) (i32.const 8)) (local.get $newOff))
+                (i32.store (i32.sub (local.get $rawOff) (i32.const 4)) (i32.const -1))))
+            (local.get $val))))))`
 
   // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
@@ -1113,24 +1160,31 @@ export default (ctx) => {
       if (vt === 'buffer' && ctx.core.emit['.buf:slice']) return ctx.core.emit['.buf:slice'](arr, start, end)
     }
     const recv = hoistArrayValue(arr)
-    const vs = asI32(emit(start))
-    const ve = end ? asI32(emit(end)) : ['call', '$__len', recv.value]
-    const len = tempI32('sl'), j = tempI32('sj'), ptr = tempI32('sp')
-    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'so' })
-    const id = ctx.func.uniq++
+    const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
+    const rawStart = start == null ? ['i32.const', 0] : asI32(emit(start))
+    const rawEnd = end == null ? ['local.get', `$${len}`] : asI32(emit(end))
+    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })
     return typed(['block', ['result', 'f64'],
       recv.setup,
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', recv.value]],
-      ['local.set', `$${len}`, ['i32.sub', ve, vs]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
+      ['local.set', `$${s}`, rawStart],
+      ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${s}`, ['i32.add', ['local.get', `$${s}`], ['local.get', `$${len}`]]]]],
+      ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]], ['then', ['local.set', `$${s}`, ['i32.const', 0]]]],
+      ['if', ['i32.gt_s', ['local.get', `$${s}`], ['local.get', `$${len}`]], ['then', ['local.set', `$${s}`, ['local.get', `$${len}`]]]],
+      ['local.set', `$${e}`, rawEnd],
+      ['if', ['i32.lt_s', ['local.get', `$${e}`], ['i32.const', 0]],
+        ['then', ['local.set', `$${e}`, ['i32.add', ['local.get', `$${e}`], ['local.get', `$${len}`]]]]],
+      ['if', ['i32.lt_s', ['local.get', `$${e}`], ['i32.const', 0]], ['then', ['local.set', `$${e}`, ['i32.const', 0]]]],
+      ['if', ['i32.gt_s', ['local.get', `$${e}`], ['local.get', `$${len}`]], ['then', ['local.set', `$${e}`, ['local.get', `$${len}`]]]],
+      ['local.set', `$${outLen}`, ['i32.sub', ['local.get', `$${e}`], ['local.get', `$${s}`]]],
+      ['if', ['i32.lt_s', ['local.get', `$${outLen}`], ['i32.const', 0]], ['then', ['local.set', `$${outLen}`, ['i32.const', 0]]]],
       out.init,
-      ['local.set', `$${j}`, ['i32.const', 0]],
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${j}`], ['local.get', `$${len}`]]],
-        ['f64.store',
-          ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${j}`], ['i32.const', 3]]],
-          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['i32.add', vs, ['local.get', `$${j}`]], ['i32.const', 3]]]]],
-        ['local.set', `$${j}`, ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]],
+      ['memory.copy',
+        ['local.get', `$${out.local}`],
+        ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
+        ['i32.shl', ['local.get', `$${outLen}`], ['i32.const', 3]]],
       out.ptr], 'f64')
   }
 
@@ -1253,7 +1307,6 @@ export default (ctx) => {
 
   // .flatMap(fn) → map then flatten
   ctx.core.emit['.flatMap'] = (arr, fn) => {
-    // Desugar: arr.map(fn).flat()
     const mapped = ctx.core.emit['.map'](arr, fn)
     inc('__arr_flat')
     return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')

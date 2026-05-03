@@ -472,12 +472,15 @@ export const instantiate = (compile, code, opts = {}) => {
   // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz values.
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
     if (!imports[modName]) imports[modName] = {}
-    for (const [name, spec] of Object.entries(fns))
-      if (typeof spec === 'function')
+    for (const name of Object.getOwnPropertyNames(fns)) {
+      const spec = fns[name]
+      const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
+      if (typeof fn === 'function')
         imports[modName][name] = (...args) => {
-          const ret = spec(...args.map(a => mem ? mem.read(a) : a))
+          const ret = fn.call(fns, ...args.map(a => mem ? mem.read(a) : a))
           return mem ? mem.wrapVal(ret) : coerce(ret)
         }
+    }
   }
   // Shared memory: normalize (auto-wrap raw Memory), pass as import
   if (opts.memory) {

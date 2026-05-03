@@ -49,6 +49,19 @@ import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './src/host.js'
 
+const importSpecMayReturnExternal = (spec) => {
+  if (typeof spec === 'function') return true
+  return false
+}
+
+const importsMayReturnExternal = (imports) => {
+  if (!imports) return false
+  for (const mod of Object.values(imports))
+    for (const spec of Object.values(mod || {}))
+      if (importSpecMayReturnExternal(spec)) return true
+  return false
+}
+
 /**
  * jz — JS subset → WASM compiler.
  *
@@ -71,6 +84,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.strict] - Reject dynamic features (obj[k], for-in, unknown
  *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
  *   into output; large size win for static programs.
+ * @param {boolean} [opts.runtimeExports=true] - Export runtime allocator helpers
+ *   (`_alloc`, `_reset`) for JS memory wrapping. Set false for standalone host-run
+ *   modules that only call exported wasm functions.
  * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
  *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
  *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
@@ -87,12 +103,16 @@ jz.compile = (code, opts = {}) => {
   if (opts.memory) ctx.memory.shared = true
   if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
   if (opts.modules) ctx.module.importSources = opts.modules
-  if (opts.imports) { ctx.module.hostImports = opts.imports; ctx.features.external = true }
+  if (opts.imports) {
+    ctx.module.hostImports = opts.imports
+    if (importsMayReturnExternal(opts.imports)) ctx.features.external = true
+  }
   // jzify: true → accept full JS subset (function/var/switch lowered to arrows/let/if).
   // Default: strict jz (prepare rejects disallowed JS features). subscript handles ASI natively.
   if (opts.jzify) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
+  if (opts.runtimeExports === false) ctx.transform.runtimeExports = false
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
 

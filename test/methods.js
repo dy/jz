@@ -110,6 +110,44 @@ test('.includes: not found', () => {
   is(run(`export let f = () => [10, 20, 30].includes(99)`).f(), 0)
 })
 
+// === .shift ===
+
+test('.shift: repeated shifts update visible array', () => {
+  is(run(`export let f = () => {
+    let a = [10, 20, 30, 40]
+    let x = a.shift()
+    let y = a.shift()
+    return x + y * 10 + a.length * 100 + a[0] * 1000
+  }`).f(), 30410)
+})
+
+test('.shift: aliases follow shifted storage', () => {
+  is(run(`export let f = () => {
+    let a = [5, 6, 7]
+    let b = a
+    a.shift()
+    return b.length * 100 + b[0] * 10 + b[1]
+  }`).f(), 267)
+})
+
+test('.shift: push after shift appends after live tail', () => {
+  is(run(`export let f = () => {
+    let a = [1, 2, 3]
+    a.shift()
+    a.push(9)
+    return a.length * 100 + a[0] * 10 + a[2]
+  }`).f(), 329)
+})
+
+test('.shift: dynamic properties move with array', () => {
+  is(run(`export let f = () => {
+    let a = [1, 2, 3]
+    a.name = 7
+    a.shift()
+    return a.name + a.length * 100 + a[0] * 10
+  }`).f(), 227)
+})
+
 // === .slice ===
 
 test('.slice: middle', () => {
@@ -126,6 +164,14 @@ test('.slice: values', () => {
     return b[0] + b[1] + b[2]
   }`)
   is(f(), 90)  // 20+30+40
+})
+
+test('.slice: negative and omitted bounds', () => {
+  const { f } = run(`export let f = () => {
+    let b = [10, 20, 30, 40, 50].slice(-3)
+    return b.length * 1000 + b[0] * 100 + b[1] * 10 + b[2]
+  }`)
+  is(f(), 6450)
 })
 
 // === .join ===
@@ -160,6 +206,10 @@ test('.flatMap: values', () => {
   is(run(`export let f = () => { let a = [1, 2].flatMap((x) => [x, x * 10]); return a[0] + a[1] + a[2] + a[3] }`).f(), 33)
 })
 
+test('.flatMap: preserves prior output across growth', () => {
+  is(run(`export let f = () => { let a = [1, 2, 3, 4, 5].flatMap((x) => [x, x + 10]); return a.length * 100 + a[0] + a[9] }`).f(), 1016)
+})
+
 // === Chained ===
 
 test('chain: map + reduce', () => {
@@ -172,6 +222,10 @@ test('chain: map + filter', () => {
     return r[0] * 10000 + r[1] * 100 + r[2] + r.length * 1000000
   }`)
   is(f(), 3060810)  // 3*1M + 6*10K + 8*100 + 10
+})
+
+test('chain: map + filter Boolean', () => {
+  is(run(`export let f = () => [0, 1, 2, 3].map((x) => x - 1).filter(Boolean).length`).f(), 3)
 })
 
 test('chain: filter + map', () => {

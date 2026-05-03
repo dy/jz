@@ -1722,7 +1722,8 @@ function pullStdlib(sec) {
     const pages = ctx.memory.pages || 1
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sec.memory.push(['memory', ['export', '"memory"'], pages])
-    if (ctx.core._allocRawFuncs) sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
+    if (ctx.transform.runtimeExports !== false && ctx.core._allocRawFuncs)
+      sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
   }
 
   const stdlibStr = (name) => {

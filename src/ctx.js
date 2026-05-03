@@ -194,6 +194,7 @@ export function reset(proto, globals) {
     noTailCall: false,  // when true, emit `return call` instead of `return_call` (wasm2c compat)
     strict: false,      // when true, dynamic features (obj[k], for-in) error at compile time
                         // instead of pulling in dynamic-dispatch stdlib. See ProgramFacts walk.
+    runtimeExports: true, // when false, omit helper exports like _alloc/_reset from raw wasm output.
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.

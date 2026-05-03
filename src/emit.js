@@ -210,6 +210,15 @@ function containsNestedClosure(body) {
   return false
 }
 
+function containsNestedLoop(body) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'for' || op === 'while' || op === 'do') return true
+  if (op === '=>') return false
+  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
+  return false
+}
+
 function containsDeclOf(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -260,7 +269,7 @@ function unrollSmallConstFor(init, cond, step, body) {
     (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
   )
   if (!stepOk) return null
-  if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
+  if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsNestedLoop(body) || containsDeclOf(body, name)) return null
   if (isReassigned(body, name)) return null
 
   const out = []

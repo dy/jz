@@ -108,6 +108,17 @@ test('typed-narrow: codegen — receiver uses static elem load (no __is_str_key 
   ok(!/__is_str_key/.test(body), '$f has no __is_str_key dispatch')
 })
 
+test('typed-narrow: owned typed-array byteOffset is constant zero', () => {
+  const w = wat(`
+    export let f = () => {
+      let a = new Float64Array(8)
+      return a.byteOffset
+    }
+  `)
+  ok(!/__byte_offset/.test(w), 'owned typed-array byteOffset should not pull runtime helper')
+  is(run(`export let f = () => { let a = new Float64Array(8); return a.byteOffset }`).f(), 0)
+})
+
 test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
   // The motivating program: tiny helper + index. After narrowing + post-watr
   // fusedRewrite, the rebox/unbox roundtrip across the call boundary is gone.

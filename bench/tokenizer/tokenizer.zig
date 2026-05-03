@@ -5,6 +5,12 @@ const N_REPEAT = 512;
 const N_RUNS = 21;
 const N_WARMUP = 5;
 
+fn nowMs() f64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
+}
+
 fn mix(h: u32, x: u32) u32 {
     return (h ^ x) *% 0x01000193;
 }
@@ -66,7 +72,7 @@ fn scan(src: []const u8) u32 {
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const len = BASE.len * N_REPEAT;
-    var src = try allocator.alloc(u8, len);
+    const src = try allocator.alloc(u8, len);
     defer allocator.free(src);
     var i: usize = 0;
     while (i < N_REPEAT) : (i += 1) @memcpy(src[i * BASE.len .. (i + 1) * BASE.len], BASE);
@@ -77,9 +83,9 @@ pub fn main() !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = std.time.nanoTimestamp();
+        const t0 = nowMs();
         cs = scan(src);
-        samples[i] = @as(f64, @floatFromInt(std.time.nanoTimestamp() - t0)) / 1e6;
+        samples[i] = nowMs() - t0;
     }
     const stdout = std.io.getStdOut().writer();
     try stdout.print("median_us={} checksum={} samples={} stages={} runs={}\n", .{ medianUs(&samples), cs, len, 5, N_RUNS });

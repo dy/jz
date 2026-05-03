@@ -99,6 +99,28 @@ test('features.hash ON: untyped .prop pulls __dyn_get_any_t', () => {
   ok(hasDef(w, '__dyn_get_any_t'))
 })
 
+test('array grow: plain push does not pull dynamic prop mover', () => {
+  const w = wat(`export let f = () => {
+    let a = []
+    for (let i = 0; i < 8; i++) a.push(i)
+    return a.length
+  }`)
+  ok(hasDef(w, '__arr_grow_known'))
+  is(hasDef(w, '__dyn_move'), false)
+  is(hasDef(w, '__ihash_set_local'), false)
+})
+
+test('array grow: dynamic props keep mover when arrays can grow', () => {
+  const w = wat(`export let f = () => {
+    let a = []
+    a.name = 7
+    for (let i = 0; i < 8; i++) a.push(i)
+    return a.name
+  }`)
+  ok(hasDef(w, '__arr_grow_known'))
+  ok(hasDef(w, '__dyn_move'))
+})
+
 test('features.regex OFF: scalar-only — no regex stdlibs', () => {
   const w = wat(`export let f = (x) => x + 1`)
   is(hasDef(w, '__regex_new'), false)
@@ -147,6 +169,16 @@ test('features.map ON: new Map pulls map stdlibs', () => {
   const w = wat(`export let f = () => { let m = new Map(); m.set('k', 1); return m.get('k') }`)
   ok(hasDef(w, '__map_set'))
   ok(hasDef(w, '__map_get'))
+})
+
+test('runtimeExports:false omits allocator helper exports', () => {
+  const w = wat(`export let f = () => {
+    let a = [1, 2, 3]
+    return a.length
+  }`, { runtimeExports: false })
+  is(/\(export "_alloc"/.test(w), false)
+  is(/\(export "_reset"/.test(w), false)
+  ok(/\(memory/.test(w))
 })
 
 test('features.closure OFF: no arrows — no closure table', () => {

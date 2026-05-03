@@ -319,3 +319,46 @@ test('host override: mixed with built-in fallback', () => {
   is(captured[0], 1)
   // warn uses built-in WASI console (no crash = success)
 })
+
+// ============================================
+// Whole-object host imports
+// ============================================
+
+test('import: whole Math object', () => {
+  const { exports } = jz(
+    'import { sin, cos, sqrt } from "math"; export let f = () => sin(0) + cos(0) + sqrt(4)',
+    { imports: { math: Math } }
+  )
+  almost(exports.f(), 3, 1e-6)
+})
+
+test('import: whole Date object', () => {
+  const { exports } = jz(
+    'import { now } from "date"; export let f = () => now()',
+    { imports: { date: Date } }
+  )
+  const result = exports.f()
+  ok(typeof result === 'number' && result > 0)
+})
+
+test('import: whole globalThis object', () => {
+  const captured = []
+  const { exports } = jz(
+    'import { parseInt } from "window"; export let f = () => parseInt("42")',
+    { imports: { window: globalThis } }
+  )
+  is(exports.f(), 42)
+})
+
+test('import: whole object with method this-binding', () => {
+  const captured = []
+  const host = {
+    obj: { value: 10 },
+    getValue() { return this.obj.value }
+  }
+  const { exports } = jz(
+    'import { getValue } from "host"; export let f = () => getValue()',
+    { imports: { host: host } }
+  )
+  is(exports.f(), 10)
+})

@@ -2,20 +2,18 @@
 
 ## Product / Validation
 
-* [ ] Pick one undeniable use case and optimize around it.
+* [x] Pick one undeniable use case and optimize around it.
 * [x] Add benchmark coverage beyond internal examples: DSP kernel, typed-array processing,
   math loop, parser/string workload, and a JS-engine comparison set.
-* [ ] Add warning/error behavior for memory growth failure or configured memory limits.
-* [ ] Add wasm2c/w2c2 integration tests.
+* [x] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
 ## Backlog
 
-* [ ] Update benchmark
+* [x] Update benchmark
 * [ ] Find the most proper way for template tags
-* [ ] Compile floatbeats
-* [ ]
+* [x] Compile floatbeats
 
 ### Build & tooling
 
@@ -41,6 +39,7 @@
 * [ ] align with Crockford practices
 * [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
 
+
 ## Phase 14: Internal Parser (Future)
 * [ ] Extract minimal jz parser from subscript features
 * [ ] jzify uses jessie, pure jz uses internal parser
@@ -51,8 +50,8 @@
 
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
-* [ ] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
-* [ ] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
+* [x] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
+* [x] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
 * [ ] test262 basics
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
@@ -90,7 +89,40 @@
 * [ ] Show produced WAT
 * [ ] Document interop
 
+
+
 ## Size — closing the AS gap (biquad: 8.1 kB → ≤1.9 kB target)
+
+2026-05-02 current host-import harness after size pass:
+
+| case | jz host | AS | delta |
+| --- | ---: | ---: | ---: |
+| biquad | 3482 B | 1962 B | +1520 B |
+| aos | 2364 B | 2202 B | +162 B |
+| mat4 | 1744 B | 1536 B | +208 B |
+| tokenizer | 1618 B | 1585 B | +33 B |
+| callback | 1495 B | 1906 B | -411 B |
+
+This pass removed the biggest accidental size losses without changing benchmark
+semantics: plain array growth no longer pulls `__dyn_move` / integer-hash
+side-table machinery, host benchmark builds can omit raw `_alloc`/`_reset`
+runtime exports, nested constant-loop unroll no longer multiplies whole loop
+nests, and owned typed-array `.byteOffset` folds to `0` instead of pulling
+`__byte_offset`. Remaining gap is mostly real code-shape/runtime-helper overhead;
+`wasm-opt --all-features -Oz` proves more generic DCE/inlining would beat AS size
+for aos/mat4/tokenizer/callback, but not biquad while preserving the current
+speed-oriented code shape.
+
+The `watr` compiler benchmark is the real bundle-size canary: the relevant JS
+source bundle is ~79.5 kB, while jz's best current standalone wasm is 140,230 B
+with `watr:false` and `smallConstForUnroll:false` for this case. Runtime remains
+behind V8 (~1.8 ms vs ~1.5 ms in the latest focused run). External
+`wasm-opt --all-features -Os` shrinks that artifact to 124,103 B and keeps
+checksum, so post-link DCE/inlining is worth
+integrating or matching internally. Main remaining source-level hotspot is
+watr's `normalize()` / parser code built around repeated `Array.shift()` and
+large callback-heavy array combinators; jz lowers these faithfully but not as
+compactly as V8 optimizes them at runtime.
 
 Hard data on biquad (the simplest typed-array-only case, no strings/objects):
 
@@ -142,6 +174,19 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
   first-wins-then-clash rule guarantees no regression for already-monomorphic
   slots. Drops `__write_val` from biquad (cs slot now resolves to NUMBER → direct
   `__write_num`). -88 B in biquad. Net biquad: 4983 → 4198 B (-785 B / -15.8%).
+* [x] **Plain array growth does not move dynamic prop side-tables.** Known-ARRAY
+  `.push` now uses `__arr_grow_known`, and both grow helpers include
+  `__dyn_move` only when `__dyn_set` is live. Current host sizes: aos 3.2 kB →
+  2.4 kB, callback 2.3 kB → 1.5 kB.
+* [x] **Suppress runtime allocator exports for host-run standalone benches.**
+  `runtimeExports:false` omits raw `_alloc` / `_reset` exports while preserving
+  default JS memory wrapping behavior for normal `jz()` users.
+* [x] **Do not unroll outer nested constant loops.** The small-loop unroller now
+  rejects bodies containing nested loops, avoiding mat4-style multiplicative code
+  growth while still preserving the inner-loop speed win where it applies.
+* [x] **Owned typed-array `.byteOffset` constant-folds to zero.** This removes
+  `__byte_offset` from checksum-heavy numeric benches; biquad/aos/mat4 each drop
+  another 68 B in the current host harness.
 * [x] **Skip `__ftoa` for integer-valued `console.log` args** ([module/console.js:135](../module/console.js#L135)).
   New `__write_int` (uses `__itoa` directly) sits beside `__write_num`; the
   template-literal-flatten emit handler dispatches to it when `exprType(part,
@@ -177,28 +222,6 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
   `env.now`** when the host is jz's own runtime. Keep WASI for standalone
   wasm CLI use; gate behind a config flag (default on for `jz.compile`,
   default off for `jz build --wasi`).
-
-### Per-bench gap snapshot (jz vs native, jz vs V8, jz vs AS)
-
-Latest full run after static JSON.parse lowering (darwin/arm64 M-class):
-
-| case      | jz ms | jz size | host ms | host size | V8 ms | AS ms | AS size | status |
-| ---       | ---:  | ---:    | ---:    | ---:      | ---:  | ---:  | ---:    | --- |
-| biquad    | 8.17  | 3.9 kB  | 8.15    | 2.3 kB    | 9.11  | 6.61  | 1.9 kB  | beats V8, behind AS perf |
-| mat4      | 6.15  | 3.4 kB  | 6.26    | 1.8 kB    | 8.67  | 6.59  | 1.5 kB  | beats V8 + AS |
-| poly      | 0.81  | 3.1 kB  | 0.81    | 1.3 kB    | 1.64  | 0.83  | 1.3 kB  | beats V8 + AS |
-| bitwise   | 3.53  | 3.0 kB  | 3.55    | 1.2 kB    | 3.89  | 8.77  | 1.5 kB  | beats V8 + AS |
-| tokenizer | 0.09  | 3.5 kB  | 0.08    | 1.6 kB    | 0.13  | 0.04  | 1.5 kB  | beats V8, AS DIFF |
-| callback  | 0.01  | 4.0 kB  | 0.01    | 2.3 kB    | 0.69  | 1.06  | 1.9 kB  | beats V8 + AS by ~100× |
-| aos       | 1.09  | 4.9 kB  | 1.08    | 3.2 kB    | 1.31  | 1.36  | 2.2 kB  | beats V8 + AS |
-| json      | 0.14  | 4.4 kB  | 0.15    | 2.8 kB    | 0.27  | n/a   | n/a     | beats V8; static parse lowered |
-
-jz beats V8/node on **8 of 8** wasm-comparable cases in the latest full run.
-The nested-HASH pass removed the old dynamic property dispatch bottleneck; the
-static JSON.parse lowering then removed the runtime scanner for compile-time
-JSON sources and cut json host size from 4.6 kB to 2.8 kB. jz-host size is now
-within ~0.1-1.0 kB of AS on five of seven AS-backed cases; aos remains
-object/schema-heavy and json has no AS target.
 
 ### json gap analysis
 

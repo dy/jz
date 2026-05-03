@@ -48,6 +48,7 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`callback`](callback/callback.js) | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
 | [`json`](json/json.js) | `JSON.parse` plus heterogeneous object/array walk; JS-only by design |
+| [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 
 `json` has no C row because a hand-written C parser would not be the same
 implementation contract as JavaScript `JSON.parse`.
@@ -97,9 +98,15 @@ The `size` column reports the artifact size each target measures: the
 compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
 `.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
 executable), or the source file for raw-JS interpreters where there is no
-compile step.
+compile step. For source files with imports, raw-JS size is only the entry file;
+jz size is the bundled wasm artifact.
 
 Runtime command overrides:
+
+`watr` is intentionally compiled by jz with a size-oriented pass config
+(`watr:false`, `smallConstForUnroll:false`): on a large compiler bundle, the
+default WAT-level optimizer and small-loop unroll grow code more than they help.
+This keeps the target measuring the best current jz artifact for that workload.
 
 ```sh
 BUN_BIN=/path/to/bun \

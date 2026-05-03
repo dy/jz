@@ -5,6 +5,12 @@ const N_ITERS = 64;
 const N_RUNS = 21;
 const N_WARMUP = 5;
 
+fn nowMs() f64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(f64, @floatFromInt(ts.sec)) * 1000.0 + @as(f64, @floatFromInt(ts.nsec)) / 1_000_000.0;
+}
+
 const Row = struct {
     x: f64,
     y: f64,
@@ -61,10 +67,10 @@ fn runKernel(rows: []const Row, xs: []f64, ys: []f64, zs: []f64) void {
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
-    var rows = try allocator.alloc(Row, N);
-    var xs = try allocator.alloc(f64, N);
-    var ys = try allocator.alloc(f64, N);
-    var zs = try allocator.alloc(f64, N);
+    const rows = try allocator.alloc(Row, N);
+    const xs = try allocator.alloc(f64, N);
+    const ys = try allocator.alloc(f64, N);
+    const zs = try allocator.alloc(f64, N);
     defer allocator.free(rows);
     defer allocator.free(xs);
     defer allocator.free(ys);
@@ -76,9 +82,9 @@ pub fn main() !void {
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
-        const t0 = std.time.nanoTimestamp();
+        const t0 = nowMs();
         runKernel(rows, xs, ys, zs);
-        samples[i] = @as(f64, @floatFromInt(std.time.nanoTimestamp() - t0)) / 1e6;
+        samples[i] = nowMs() - t0;
     }
     const cs = checksumF64(xs) ^ checksumF64(ys) ^ checksumF64(zs);
     const stdout = std.io.getStdOut().writer();
