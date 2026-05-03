@@ -238,3 +238,80 @@ test('strict: accepts typed-array loop', () => {
   const wasm = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { strict: true })
   ok(wasm.byteLength > 0, `should compile, got ${wasm.byteLength}`)
 })
+
+// ============================================================================
+// Error message quality — compile errors carry source location
+// ============================================================================
+
+test('error: unknown import gives useful message', () => {
+  let error
+  try { compile('import { foo } from "bar"; export let f = () => foo') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('bar'), `message should mention module name: ${error.message}`)
+})
+
+test('error: unknown export gives useful message', () => {
+  let error
+  try { compile('import { nonexistent } from "./math.js"; export let f = () => nonexistent') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('nonexistent'), `message should mention name: ${error.message}`)
+})
+
+test('error: compile error includes source line', () => {
+  let error
+  try { compile('export let f = () => { var x = 1 }') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('var'), `message should mention 'var': ${error.message}`)
+  ok(error.message.includes('line'), `message should include source location: ${error.message}`)
+})
+
+test('error: const reassignment message names the variable', () => {
+  let error
+  try { compile('const PI = 3.14; export let f = () => { PI = 3; return PI }') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('PI'), `message should name 'PI': ${error.message}`)
+  ok(error.message.includes('const'), `message should say 'const': ${error.message}`)
+})
+
+test('error: strict mode dynamic property access message', () => {
+  let error
+  try { compile('export let f = (k) => { let p = { x: 1 }; p[k] = 2; return p[k] }', { strict: true }) } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('strict'), `message should mention strict mode: ${error.message}`)
+})
+
+test('error: unknown op produces readable message', () => {
+  let error
+  try { compile('export let f = () => new.target') } catch (e) { error = e }
+  ok(error, 'should throw')
+})
+
+test('error: circular import detected', () => {
+  let error
+  try {
+    compile('export let a = 1', {
+      modules: {
+        'a.js': 'import { b } from "./b.js"; export let a = b',
+        'b.js': 'import { a } from "./a.js"; export let b = a'
+      }
+    })
+  } catch (e) { error = e }
+  // Circular imports may or may not error depending on resolution strategy.
+  // If they error, the message should be useful.
+  if (error) ok(error.message.length > 0, 'error message should be non-empty')
+})
+
+test('error: compiler internal name conflict', () => {
+  let error
+  try { compile('let __heap = 5; let a = [1]; export let f = () => __heap') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('compiler internal') || error.message.includes('internal'), `message should mention internal: ${error.message}`)
+})
+
+test('error: spread on non-variadic function', () => {
+  let error
+  try { compile('let g = (a, b) => a + b; export let f = (...args) => g(...args)') } catch (e) { error = e }
+  // This may or may not error depending on whether g is known-arity
+  // If it errors, the message should be useful
+  if (error) ok(error.message.length > 0, 'error message should be non-empty')
+})

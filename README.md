@@ -17,17 +17,15 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, specs evolution and perf quirks.
+**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, features overhead and perf quirks.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
 * **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
 
-**Used by**: [web-audio-api](https://github.com/audiojs/web-audio-api), [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/colorjs/audiojs). Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
-<!-- * [audio-filter](https://github.com/audiojs/audio-filter)
-* [digital-filter](https://github.com/audiojs/digital-filter)
-* [time-stretch](https://github.com/audiojs/time-stretch) -->
+Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+<!-- Used internally by: web-audio-api, color-space, audiojs -->
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
@@ -80,7 +78,7 @@ flowchart TB
     subgraph JS[JS — not supported]
         subgraph JZify[JZ + jzify]
             subgraph JZ[JZ strict]
-                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch/finally, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
+                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
             end
             z1["var, function, arguments, switch, new Foo(), ==, !=, instanceof"]:::plain
         end
@@ -104,7 +102,7 @@ flowchart TB
 │ │ JZ                                                                 │ │
 │ │   let/const  =>  ...xs  destructuring  import/export  `${}`        │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
-│ │   try/catch/finally  throw                                         │ │
+│ │   try/catch  throw                                                │ │
 │ │   operators  strings  booleans  numbers  arrays  objects  null     │ │
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
@@ -118,23 +116,6 @@ Not supported
   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
   dynamic import  DOM  fetch  Intl  Node APIs
 ```
-
-
-## Benchmark
-
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
-|---|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44ms**<br>**3.4kB** | 12.30ms<br>3.2kB | 9.04ms<br>1.9kB | 6.48ms<br>767 B | 5.43ms | 9.03ms<br>fma | 5.09ms | 5.33ms | — |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.6kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.13ms | 0.07ms | 0.12ms | 0.12ms | 0.46ms<br>2.6kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00ms**<br>**1.7kB** | 11.64ms<br>1.1kB | 9.18ms<br>1.5kB | 7.99ms<br>353 B | 2.62ms | 11.93ms | 2.60ms | 0.80ms | 87.65ms<br>2.3kB |
-| [**aos**](bench/aos/aos.js) | **1.50ms**<br>**2.3kB** | 1.81ms<br>1.1kB | 1.91ms<br>2.2kB | — | 1.22ms | 0.90ms | 0.99ms | 1.20ms | — |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93ms**<br>**1.2kB** | 5.31ms<br>1005 B | 12.36ms<br>1.5kB | 4.96ms<br>355 B | 1.31ms | 5.24ms | 4.26ms | 1.30ms | — |
-| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.31ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | — |
-| [**callback**](bench/callback/callback.js) | **0.01ms**<br>**1.5kB** | 1.03ms<br>828 B | 1.48ms<br>1.9kB | — | 0.09ms | 0.20ms | 0.01ms | 0.08ms | — |
-| [**json**](bench/json/json.js) | **0.20ms**<br>**2.8kB** | 0.38ms<br>923 B | — | — | 0.02ms | 1.06ms | — | 0.03ms | — |
-| [**watr**](bench/watr/watr.js) | **1.82ms**<br>**137.1kB** | 1.50ms<br>85.3kB | — | — | — | — | — | — | — |
-
-_Numbers from `node bench/bench.mjs` on Apple Silicon.
 
 
 
@@ -158,8 +139,9 @@ memory.Array([1, 2, 3])              // → array pointer
 memory.Float64Array([1.0, 2.0])      // → typed array pointer
 memory.Int32Array([10, 20, 30])      // all typed array constructors available
 
-// Objects: keys and order must match the jz source declaration.
+// ⚠ Objects: keys and order must match the jz source declaration.
 // jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
+// If the jz source declares `{ x, y }`, you must pass `{ x, y }` in that order.
 memory.Object({ x: 3, y: 4 })       // → object pointer
 
 // Strings/arrays inside objects are auto-wrapped to pointers:
@@ -341,6 +323,21 @@ The compiled `.wasm` uses one import namespace:
 | `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
 | `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
 
+### How do I add custom operators / extend the stdlib?
+
+jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
+
+```js
+import { emitter } from 'jz/src/compile.js'
+
+// Register a custom operator: my.double(x) → x * 2
+emitter['my.double'] = (x) => {
+  return ['f64.mul', ['f64.const', 2], x]
+}
+```
+
+The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that registers emitters and stdlib on `ctx`.
+
 ### Can I compile jz to C?
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
@@ -350,6 +347,23 @@ jz program.js -o program.wasm
 wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
+
+
+## Benchmark
+
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| [**biquad**](bench/biquad/biquad.js) | **6.44ms**<br>**3.4kB** | 12.30ms<br>3.2kB | 9.04ms<br>1.9kB | 6.48ms<br>767 B | 5.43ms | 9.03ms<br>fma | 5.09ms | 5.33ms | 3.15s | — |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.6kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.13ms | 0.07ms | 0.12ms | 0.12ms | 5.21ms | 0.46ms<br>2.6kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.00ms**<br>**1.7kB** | 11.64ms<br>1.1kB | 9.18ms<br>1.5kB | 7.99ms<br>353 B | 2.62ms | 11.93ms | 2.60ms | 0.80ms | 323.69ms | 87.65ms<br>2.3kB |
+| [**aos**](bench/aos/aos.js) | **1.50ms**<br>**2.3kB** | 1.81ms<br>1.1kB | 1.91ms<br>2.2kB | — | 1.22ms | 0.90ms | 0.99ms | 1.20ms | 2.23ms | — |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93ms**<br>**1.2kB** | 5.31ms<br>1005 B | 12.36ms<br>1.5kB | 4.96ms<br>355 B | 1.31ms | 5.24ms | 4.26ms | 1.30ms | 14.89ms | — |
+| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.31ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | 0.60ms | — |
+| [**callback**](bench/callback/callback.js) | **0.01ms**<br>**1.5kB** | 1.03ms<br>828 B | 1.48ms<br>1.9kB | — | 0.09ms | 0.20ms | 0.01ms | 0.08ms | 1.84ms | — |
+| [**json**](bench/json/json.js) | **0.20ms**<br>**2.8kB** | 0.38ms<br>923 B | — | — | 0.02ms | 1.06ms | — | 0.03ms | 1.19ms | — |
+| [**watr**](bench/watr/watr.js) | **1.82ms**<br>**137.1kB** | 1.50ms<br>85.3kB | — | — | — | — | — | — | — | — |
+
+_Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 
 ## Alternatives

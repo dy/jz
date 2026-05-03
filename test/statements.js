@@ -210,6 +210,44 @@ test('try/catch/finally: cleanup runs after handled throw', () => {
   is(run('export let f = () => { let x = 0; try { throw 2 } catch (e) { x = e } finally { x += 10 }; return x }').f(), 12)
 })
 
+test('try/catch/finally: cleanup runs on normal completion', () => {
+  is(run('export let f = () => { let x = 0; try { x = 5 } catch (e) { x = -1 } finally { x += 10 }; return x }').f(), 15)
+})
+
+test('try/finally: nested finally runs inner to outer', () => {
+  is(run('export let f = () => { let x = 0; try { try { x += 1 } finally { x += 10 } } finally { x += 100 }; return x }').f(), 111)
+})
+
+test('try/finally: nested finally on throw runs all cleanups', () => {
+  is(run('export let f = () => { let x = 0; try { try { throw 1 } finally { x += 10 } } catch (e) { x += e } finally { x += 100 }; return x }').f(), 111)
+})
+
+test('try/finally: break in finally', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { s += i } finally { if (i === 2) break } }; return s }').f(), 3)
+})
+
+test('try/finally: continue in finally', () => {
+  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i === 2) continue; s += i } finally { s += 10 } }; return s }').f(), 58)
+})
+
+test('try/finally: finally with side effects on local', () => {
+  is(run('export let f = (x) => { let r = 0; try { r = x * 2 } finally { r += 1 }; return r }').f(5), 11)
+})
+
+test('try/catch/finally: catch rethrow triggers finally', () => {
+  is(run('export let f = () => { let x = 0; try { try { throw 1 } catch (e) { throw e + 10 } finally { x += 100 } } catch (e2) { return x + e2 } }').f(), 111)
+})
+
+test('try/finally: multiple returns — last finally wins', () => {
+  is(run('export let f = () => { try { try { return 1 } finally { return 2 } } finally { return 3 } }').f(), 3)
+})
+
+test('try/catch/finally: error in catch still triggers finally', () => {
+  let err
+  try { run('export let f = () => { try { throw 1 } catch (e) { throw e + 10 } finally {} }').f() } catch (e) { err = e }
+  ok(err != null, 'catch re-throw should propagate through finally')
+})
+
 // === Timers ===
 
 test('setTimeout: callback fires', async () => {

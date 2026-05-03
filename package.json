@@ -1,6 +1,6 @@
 {
   "name": "jz",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Minimal modern functional JS subset that compiles to WebAssembly",
   "main": "index.js",
   "type": "module",
@@ -32,7 +32,15 @@
     "bench:biquad": "node bench/bench.mjs biquad",
     "test:bench-pin": "node test/bench-pin.js"
   },
-  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dy/jz.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dy/jz/issues"
+  },
+  "homepage": "https://github.com/dy/jz#readme",
+  "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
     "subscript": "^10.3.3",
