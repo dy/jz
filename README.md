@@ -1,4 +1,4 @@
-<img src="logo.svg" alt="jz logo" width="120"/>
+<img src="jz.svg" alt="jz logo" width="120"/>
 
 
 
