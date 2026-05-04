@@ -55,9 +55,10 @@ example/benchmark PR.
   `features:` line with `napi_v10` / `napi_extension_wasmer_v0`, so EdgeJS safe
   mode exits before user code.
 * [x] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
-* [ ] Verify JZ modules with console/timer imports run through either EdgeJS
-  WASI support or the new host-import mode; record which path is smaller and
-  more reliable.
+* [x] Verify explicit console host imports under EdgeJS without adding implicit
+  host-import mode: `jz(source, { imports: { console: hostConsole } })` works
+  natively in EdgeJS and is smaller than introducing a new public mode for the
+  first PR. Timer imports remain future work if an EdgeJS example needs them.
 * [x] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
   exception handling is not enabled, document it as an integration limitation
   rather than adding a misleading adapter workaround. Native EdgeJS rejects the
@@ -69,16 +70,70 @@ example/benchmark PR.
 
 * [ ] Open a small PR to `wasmerio/edgejs` as an example/benchmark, not a core
   runtime engine change.
-* [ ] Add an example such as `examples/jz-kernel` or `examples/jz-dsp`:
-  import `jz`, compile a numeric kernel once, call it from an EdgeJS handler,
-  and keep source short enough to read without explanation.
+* [x] Add an example such as `examples/jz-kernel` or `examples/jz-dsp`:
+  import `jz`, compile a numeric kernel once, call it from an EdgeJS script,
+  and keep source short enough to read without explanation. Created local
+  EdgeJS draft at `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` with a no-import
+  scalar kernel plus explicit `console` host-import smoke.
 * [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
   pulling large optional dependencies or network setup.
-* [ ] Include a short README note in the example: JZ is useful for hot numeric,
+* [x] Include a short README note in the example: JZ is useful for hot numeric,
   DSP, parser, and typed-array kernels; it is not a general JS runtime or Node
   compatibility layer.
-* [ ] Include before/after numbers only from commands reproducible in the PR:
-  EdgeJS raw JS vs EdgeJS + JZ-compiled WASM for the same kernel.
+* [x] Include before/after numbers only from commands reproducible in the PR:
+  EdgeJS raw JS vs EdgeJS + JZ-compiled WASM for the same kernel. The draft
+  benchmark batches the hot loop inside one compiled export to avoid measuring
+  JS/WASM call overhead; current typed-array mat4-style kernel result under
+  local EdgeJS native: same checksum, zero imports, 919-byte WASM, raw JS
+  median ~8.9 ms, JZ WASM median ~5.9 ms for 200k iterations over 9 runs.
+
+### Performance follow-up for EdgeJS pitch
+
+Truth: WASM only looks like the point when the compiled export owns enough hot
+work. Per-iteration JS -> WASM calls mostly measure boundary overhead, not JZ
+codegen quality.
+
+* [x] Fix the EdgeJS draft benchmark shape: compile once, call one export, keep
+  the hot loop inside the generated WASM module.
+* [x] Replace or supplement the toy scalar benchmark with a stronger kernel from
+  the existing suite (`mat4`, `biquad`, `tokenizer`, or a tiny typed-array DSP
+  loop) so the PR demonstrates a real WASM win without overfitting a microcase.
+  Replaced the draft benchmark with a small `Float64Array` 4x4 matrix kernel
+  adapted from `bench/mat4`, using warmup plus median sampling.
+* [ ] Add aggressive monomorphic single-caller inlining for hot internal
+  functions: if a non-exported callee is called from one or two sites and owns a
+  loop, inline or specialize it before handing the module to the engine.
+* [ ] Couple constant-argument propagation with inlining/unrolling: bake known
+  loop bounds into the inlined copy, then unroll small trip counts where code
+  growth stays bounded.
+* [ ] Audit typed-array address/base fusion on the chosen EdgeJS benchmark:
+  repeated `arr[idx + k]` should become one base computation plus `offset=`
+  immediates, not repeated index arithmetic.
+* [ ] Investigate bounds-check elision hints for monotone typed-array loops:
+  when `i < arr.length` dominates all `arr[i + k]` accesses, emitted WASM
+  should help V8/Wasmtime remove redundant checks.
+* [ ] Revisit i32 narrowing for integer-heavy kernels only with tier-up data:
+  previous `nStages` narrowing made WAT cleaner but regressed V8 by blocking
+  inlining, so do not ship it without disassembly/benchmark proof.
+
+### EdgeJS-side remaining work
+
+* [ ] Move `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` into a clean EdgeJS
+  branch and decide whether the PR should include only source files or also a
+  lockfile for the nested example package.
+* [ ] Reinstall the example dependency from a clean checkout and rerun:
+  `edge index.mjs`, `edge bench.mjs`, plus Node baseline commands if the PR
+  README reports Node/EdgeJS comparison output.
+* [x] Decide CI shape: keep this PR as a documented example only unless EdgeJS
+  maintainers ask for CI. A CI smoke would need installing `jz@^0.1.1` inside a
+  nested example package, adding network/package-manager assumptions to a repo
+  whose core examples are plain scripts.
+* [ ] Keep safe-mode out of the PR claim unless Wasmer N-API feature support is
+  available in CI; current local safe-mode validation is blocked before user
+  code by missing `napi_v10` / `napi_extension_wasmer_v0` features.
+* [x] Draft the PR description around the narrow contract: JZ compiles hot
+  JS-subset kernels to WASM inside EdgeJS; it is not an EdgeJS engine provider
+  and not a Node compatibility layer. Drafted in `.work/edgejs-pr-description.md`.
 
 ### Acceptance
 
