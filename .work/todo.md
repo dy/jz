@@ -478,6 +478,26 @@ dispatch: `__ptr_offset` 311, `__len` 288, `__eq` 279, `__typed_idx`/`__str_idx`
   a representation/source transform for local queue views, or broader receiver
   fact propagation that removes many `__len`/`__ptr_offset`/index dispatches at
   once. Single-helper inlining is too small and too large.
+* [x] Implemented the safe receiver-fact pieces from that follow-up:
+  known-ARRAY `.map`/`.filter` now resolve `__ptr_offset` once and size from
+  the array header for both allocation and iteration; known-ARRAY numeric
+  indexing uses a monomorphic `__arr_idx_known` helper; and known-ARRAY spread
+  (`[...arr]`) skips the string/typed runtime item dispatch. Focused watr
+  helper counts after the spread specialization: `__typed_idx` 514 → 492,
+  `__str_idx` 521 → 499, generated wasm ~140.2 kB → ~139.6 kB for the
+  `watr:false + smallConstForUnroll:false` probe, checksum parity preserved.
+  Official bench still sits around **jz 1.85-1.88 ms** vs **V8 1.48-1.50 ms**
+  on local runs, so this is a real cleanup/size win but not the gap closer.
+* [x] Rechecked the local queue-view/source-transform proposal for `normalize()`.
+  A naive `head++` rewrite is not semantics-preserving because `normalize()`
+  passes the queue to `typeuse()`, `paramres()`, `blocktype()`, and `fieldseq()`,
+  which all consume the same visible front with `.shift()`. Preserving semantics
+  means rewriting that small consumer family together around an explicit cursor
+  or adding a first-class queue-view abstraction; do not add a generic compiler
+  transform for this pattern until that alias/mutation boundary is represented
+  explicitly. The worthwhile future shape is a watr-source refactor or compiler
+  escape analysis that proves the queue and all consuming callees are in the
+  same closed local region.
 
 Hard data on biquad (the simplest typed-array-only case, no strings/objects):
 

@@ -259,6 +259,63 @@ test('array shift stays O(1)', () => {
   ok(!/memory\.copy/.test(helper), 'array shift should slide the data pointer instead of copying elements')
 })
 
+test('array map/filter reuse receiver pointer for sizing and iteration', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      const a = [1, 2, 3, 4]
+      const b = a.map(x => x + 1)
+      const c = b.filter(x => x > 2)
+      return c.length + c[0]
+    }
+  `, { wat: true, optimize: { watr: false } })
+  const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(!/\(call \$__len\b/.test(mainBody), 'known ARRAY map/filter should size from the resolved header length')
+  const { main } = run(`
+    export const main = () => {
+      const a = [1, 2, 3, 4]
+      const b = a.map(x => x + 1)
+      const c = b.filter(x => x > 2)
+      return c.length * 10 + c[0]
+    }
+  `)
+  is(main(), 33)
+})
+
+test('known array numeric index skips generic array tag dispatch', () => {
+  const wat = jz.compile(`
+    export const main = (a) => {
+      if (Array.isArray(a)) return a[0]
+      return 0
+    }
+  `, { wat: true, optimize: { watr: false } })
+  const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(/\(call \$__arr_idx_known\b/.test(mainBody), 'known ARRAY numeric index should use monomorphic helper')
+  ok(!/\(call \$__arr_idx\b/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
+  const { main } = run(`
+    export const main = (a) => {
+      if (Array.isArray(a)) return a[0]
+      return 0
+    }
+  `)
+  is(main([7, 8, 9]), 7)
+})
+
+test('known array spread skips string/typed item dispatch', () => {
+  const wat = jz.compile(`
+    const copy = (a) => [...a]
+    export const main = () => copy([1, 2, 3])[1]
+  `, { wat: true, optimize: { watr: false } })
+  const copyBody = wat.match(/\(func \$copy[\s\S]*?\n  \)/)?.[0] || ''
+  ok(/\(call \$__arr_idx_known\b/.test(copyBody), 'known ARRAY spread should read via monomorphic array helper')
+  ok(!/\(call \$__str_idx\b/.test(copyBody), 'known ARRAY spread should skip string indexing')
+  ok(!/\(call \$__typed_idx\b/.test(copyBody), 'known ARRAY spread should skip typed/runtime indexing')
+  const { main } = run(`
+    const copy = (a) => [...a]
+    export const main = () => copy([1, 2, 3])[1]
+  `)
+  is(main(), 2)
+})
+
 test('sourceInline: inlines returnless hot internal helper calls', () => {
   const src = `
     const hot = (a, n) => {

@@ -560,16 +560,21 @@ export function elemStore(ptr, i, val) {
  *
  *  Optional `lenLocal`: caller already has the array length in an i32 local
  *  (e.g. from sizing the output before the loop). Reuses it instead of
- *  re-loading from ptr-8. */
-export function arrayLoop(arrExpr, bodyFn, lenLocal) {
-  inc('__ptr_offset')
-  const arr = temp('aa'), ptr = tempI32('ap'), i = tempI32('ai'), item = temp('av')
+ *  re-loading from ptr-8.
+ *  Optional `ptrLocal`: caller already has the resolved ARRAY data pointer in
+ *  an i32 local. Reuses it instead of calling __ptr_offset again. */
+export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
+  const arr = ptrLocal ? null : temp('aa'), ptr = ptrLocal ?? tempI32('ap'), i = tempI32('ai'), item = temp('av')
   const len = lenLocal ?? tempI32('al')
   const id = ctx.func.uniq++
-  const setup = [
-    ['local.set', `$${arr}`, asF64(arrExpr)],
-    ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
-  ]
+  const setup = []
+  if (!ptrLocal) {
+    inc('__ptr_offset')
+    setup.push(
+      ['local.set', `$${arr}`, asF64(arrExpr)],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
+    )
+  }
   if (!lenLocal) setup.push(
     ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
   setup.push(
