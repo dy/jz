@@ -34,12 +34,24 @@ export default (ctx) => {
       if (Array.isArray(p) && p[0] === ':') { names.push(p[1]); values.push(p[2]) }
     }
 
-    // Use variable's merged schema if available (from Object.assign inference), else register literal schema
+    // Use variable's merged schema if available (from Object.assign inference), else register literal schema.
+    // Only adopt the target's schema when this literal's keys are a prefix of the merged schema —
+    // i.e., this literal IS the binding's value (possibly with fields added later by Object.assign),
+    // not a deeper nested literal that happens to be emitted while the outer binding is on the
+    // targetStack. Without this guard, `{ops: [{inner: {id: x}}]}` causes the inner `{inner:...}`
+    // and `{id:x}` literals to inherit the outer binding's `[ops]` schema, mangling their key
+    // names in __json_obj output.
     let schemaId = ctx.schema.register(names)
     const target = ctx.schema.targetStack.at(-1)
     if (target) {
       const merged = ctx.schema.resolve(target)
-      if (merged) schemaId = ctx.schema.idOf(target)
+      if (merged && names.length <= merged.length) {
+        let isPrefix = true
+        for (let i = 0; i < names.length; i++) {
+          if (names[i] !== merged[i]) { isPrefix = false; break }
+        }
+        if (isPrefix) schemaId = ctx.schema.idOf(target)
+      }
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
