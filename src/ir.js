@@ -272,6 +272,16 @@ const PURE_OPS = new Set(['i32.const', 'f64.const', 'local.get', 'global.get',
   'i32.eq', 'i32.ne', 'i32.lt_s', 'i32.gt_s', 'i32.le_s', 'i32.ge_s', 'i32.eqz'])
 export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1).every(c => !Array.isArray(c) || isPureIR(c))
 
+/** Check if AST node is a literal string: ['str', 'value']. */
+export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+
+/** Resolve compile-time value type from AST node (literal → type, name → lookup). */
+export const resolveValType = (node, valTypeOf, lookupValType) =>
+  valTypeOf(node) ?? (typeof node === 'string' ? lookupValType(node) : null)
+
+/** Check if AST node is a string reference to a known function name. */
+export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNames.has(node)
+
 /** Check if (a, op, b) is a postfix pattern: [op, name] and [, 1] literal. */
 export const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.isArray(b) && b[0] == null && b[1] === 1
 

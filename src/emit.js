@@ -34,6 +34,7 @@ import {
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
   boxedAddr, readVar, writeVar, isNullish,
+  isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads,
 } from './ir.js'
@@ -41,6 +42,19 @@ import {
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.
 let _expect = null
+
+/** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
+const emitNeg = (a) => {
+  if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
+  const v = emit(a)
+  return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32'
+    ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
+    : typed(['f64.neg', toNumF64(a, v)], 'f64')
+}
+
+/** Try constant-folding binary arith: returns emitNum(result) or null. */
+const foldConst = (va, vb, fn, guard) =>
+  isLit(va) && isLit(vb) && (!guard || guard(litVal(vb))) ? emitNum(fn(litVal(va), litVal(vb))) : null
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
@@ -998,7 +1012,7 @@ export const emitter = {
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
       // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
-      const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1] : null
+      const litKey = isLiteralStr(idx) ? idx[1] : null
       if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
         const slot = ctx.schema.find(arr, litKey)
         if (slot >= 0) {
@@ -1217,8 +1231,8 @@ export const emitter = {
         ['if', ['result', 'f64'], checkA ?? checkB, ['then', concat], ['else', add]]
       ], 'f64')
     }
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb)) return emitNum(litVal(va) + litVal(vb))
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a + b)
+    if (_f) return _f
     if (isLit(vb) && litVal(vb) === 0) return va
     if (isLit(va) && litVal(va) === 0) return vb
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.add', va, vb], 'i32')
@@ -1230,9 +1244,9 @@ export const emitter = {
       return b === undefined
         ? fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
         : fromI64(['i64.sub', asI64(emit(a)), asI64(emit(b))])
-    if (b === undefined) { const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', toNumF64(a, v)], 'f64') }
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb)) return emitNum(litVal(va) - litVal(vb))
+    if (b === undefined) return emitNeg(a)
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
+    if (_f) return _f
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.sub', va, vb], 'i32')
     return typed(['f64.sub', toNumF64(a, va), toNumF64(b, vb)], 'f64')
@@ -1242,15 +1256,12 @@ export const emitter = {
       return typed(['f64.convert_i64_s', asI64(emit(a))], 'f64')
     return toNumF64(a, emit(a))
   },
-  'u-': a => {
-    if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
-    const v = emit(a); return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32' ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32') : typed(['f64.neg', toNumF64(a, v)], 'f64')
-  },
+  'u-': a => emitNeg(a),
   '*': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64(['i64.mul', asI64(emit(a)), asI64(emit(b))])
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb)) return emitNum(litVal(va) * litVal(vb))
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a * b)
+    if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
@@ -1261,16 +1272,16 @@ export const emitter = {
   '/': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64(['i64.div_s', asI64(emit(a)), asI64(emit(b))])
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) / litVal(vb))
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a / b, b => b !== 0)
+    if (_f) return _f
     if (isLit(vb) && litVal(vb) === 1) return toNumF64(a, va)
     return typed(['f64.div', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '%': (a, b) => {
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
       return fromI64(['i64.rem_s', asI64(emit(a)), asI64(emit(b))])
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb) && litVal(vb) !== 0) return emitNum(litVal(va) % litVal(vb))
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
+    if (_f) return _f
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
@@ -1296,8 +1307,8 @@ export const emitter = {
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
     // Both sides known-pure NUMBER → f64.eq (skip __eq's pointer-identity/string path).
     // valTypeOf handles literals/arithmetic exprs; lookupValType covers typed locals/params.
-    const vta = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
-    const vtb = valTypeOf(b) ?? (typeof b === 'string' ? lookupValType(b) : null)
+    const vta = resolveValType(a, valTypeOf, lookupValType)
+    const vtb = resolveValType(b, valTypeOf, lookupValType)
     if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
     // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
     // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
@@ -1323,8 +1334,8 @@ export const emitter = {
     const tc = emitTypeofCmp(a, b, 'ne'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
-    const vta = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
-    const vtb = valTypeOf(b) ?? (typeof b === 'string' ? lookupValType(b) : null)
+    const vta = resolveValType(a, valTypeOf, lookupValType)
+    const vtb = resolveValType(b, valTypeOf, lookupValType)
     if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
     if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
       return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
@@ -1346,7 +1357,7 @@ export const emitter = {
     if (v.ptrKind != null) return typed(['i32.eqz', v], 'i32')
     // Known pointer-kinded operand: `!x` is just `x is nullish` (null/undefined).
     // Pointers are never 0 / NaN / false / empty-string in the boxed form.
-    const vt = valTypeOf(a) ?? (typeof a === 'string' ? lookupValType(a) : null)
+    const vt = resolveValType(a, valTypeOf, lookupValType)
     if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT) {
       return isNullish(asF64(v))
     }
@@ -1494,8 +1505,8 @@ export const emitter = {
     return typed([`i32.${fn}`, toI32(va), toI32(vb)], 'i32')
   }])),
   '>>>': (a, b) => {
-    const va = emit(a), vb = emit(b)
-    if (isLit(va) && isLit(vb)) return emitNum(litVal(va) >>> litVal(vb))
+    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a >>> b)
+    if (_f) return _f
     // F: Mark unsigned so `asF64` lifts via `f64.convert_i32_u` (preserving the
     // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
     // signed for negative-high-bit s values, flipping sign and breaking the

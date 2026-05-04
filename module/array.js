@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr } from '../src/ir.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
@@ -495,7 +495,7 @@ export default (ctx) => {
       if (r) return r
     }
     // Literal string key on schema-known object → direct payload slot read (skip __dyn_get)
-    const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1]
+    const litKey = isLiteralStr(idx) ? idx[1]
       : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
       : null
     if (litKey != null && typeof arr === 'string' && ctx.schema.find) {

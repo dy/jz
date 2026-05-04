@@ -8,6 +8,7 @@
  */
 
 import { ctx } from './ctx.js'
+import { isLiteralStr } from './ir.js'
 import {
   VAL,
   analyzeBody, analyzeLocals,
@@ -856,7 +857,6 @@ const TYPED_ARRAY_CTOR = /^(Float|Int|Uint|BigInt|BigUint)(8|16|32|64)(Clamped)?
 export function refineDynKeys(programFacts) {
   if (!ctx.types.anyDynKey) return
   const { paramReps, valueUsed } = programFacts
-  const isLitStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
 
   // Per-function type map: param vtypes from paramReps, plus locals
   // we can prove are typed arrays from `let v = new TypedArray(...)`. After
@@ -898,7 +898,7 @@ export function refineDynKeys(programFacts) {
     const op = node[0]
     if (op === '[]') {
       const idx = node[2]
-      if (!isLitStr(idx)) {
+      if (!isLiteralStr(idx)) {
         const obj = node[1]
         const vt = typeof obj === 'string' ? typeMap.get(obj) : null
         if (!NON_DYN_VTS.has(vt)) real = true

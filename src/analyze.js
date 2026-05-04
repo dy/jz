@@ -24,6 +24,7 @@
  */
 
 import { ctx, err } from './ctx.js'
+import { isLiteralStr, isFuncRef } from './ir.js'
 
 export const T = '\uE000'
 
@@ -1567,7 +1568,6 @@ export function findMutations(node, names, mutated) {
 export function analyzeDynKeys(...roots) {
   const dynVars = new Set()
   let anyDyn = false
-  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
 
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -1758,7 +1758,6 @@ export function collectProgramFacts(ast) {
   const doArity = !!ctx.closure.make
   let hasSchemaLiterals = false
   let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
-  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
   // Slot-type observation lives in the dedicated `observeProgramSlots` pass below;
   // walkFacts only registers schemas (which is local to the AST node).
   const walkFacts = (node, full, inArrow, callerFunc) => {
@@ -1817,7 +1816,7 @@ export function collectProgramFacts(ast) {
         }
       }
       // first-class function-value + static-call-site scan
-      if (op === '()' && typeof args[0] === 'string' && ctx.func.names.has(args[0])) {
+      if (op === '()' && isFuncRef(args[0], ctx.func.names)) {
         if (!inArrow) {
           // Record call site for the type/schema fixpoint. Filtering by
           // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
@@ -1829,14 +1828,14 @@ export function collectProgramFacts(ast) {
         }
         for (let i = 1; i < args.length; i++) {
           const a = args[i]
-          if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+          if (isFuncRef(a, ctx.func.names)) valueUsed.add(a)
           else walkFacts(a, true, inArrow, callerFunc)
         }
         return
       }
-      if ((op === '.' || op === '?.') && typeof args[0] === 'string' && ctx.func.names.has(args[0])) return
+      if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.func.names)) return
       for (const a of args) {
-        if (typeof a === 'string' && ctx.func.names.has(a)) valueUsed.add(a)
+        if (isFuncRef(a, ctx.func.names)) valueUsed.add(a)
         else walkFacts(a, true, inArrow, callerFunc)
       }
     } else {

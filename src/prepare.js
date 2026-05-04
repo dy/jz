@@ -26,6 +26,7 @@ import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import { staticPropertyKey } from './key.js'
+import { isLiteralStr, isFuncRef } from './ir.js'
 import { normalizeSource } from './source.js'
 import {
   CTORS, TIMER_NAMES,
@@ -76,26 +77,25 @@ function recordModuleInitFacts(root) {
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
   }
-  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
   const visitFuncValue = (node) => {
     if (facts.hasFuncValue || !Array.isArray(node)) return
     const [op, ...args] = node
     if (op === '()') {
       for (let i = 1; i < args.length; i++) {
         const a = args[i]
-        if (typeof a === 'string' && ctx.func.names.has(a)) { facts.hasFuncValue = true; return }
+        if (isFuncRef(a, ctx.func.names)) { facts.hasFuncValue = true; return }
         visitFuncValue(a)
       }
       return
     }
     if (op === '.' || op === '?.') {
-      if (typeof args[0] === 'string' && ctx.func.names.has(args[0])) { facts.hasFuncValue = true; return }
+      if (isFuncRef(args[0], ctx.func.names)) { facts.hasFuncValue = true; return }
       visitFuncValue(args[0])
       return
     }
     if (op === '=>') { visitFuncValue(args[1]); return }
     for (const a of args) {
-      if (typeof a === 'string' && ctx.func.names.has(a)) { facts.hasFuncValue = true; return }
+      if (isFuncRef(a, ctx.func.names)) { facts.hasFuncValue = true; return }
       visitFuncValue(a)
     }
   }
