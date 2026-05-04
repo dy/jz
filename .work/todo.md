@@ -488,6 +488,22 @@ dispatch: `__ptr_offset` 311, `__len` 288, `__eq` 279, `__typed_idx`/`__str_idx`
   `watr:false + smallConstForUnroll:false` probe, checksum parity preserved.
   Official bench still sits around **jz 1.85-1.88 ms** vs **V8 1.48-1.50 ms**
   on local runs, so this is a real cleanup/size win but not the gap closer.
+* [x] Landed a watr token-test fast path: comparisons like `x[0] === '$'`
+  and `x[1] !== ';'` now compare string bytes directly (`__str_byteLen` +
+  `__char_at`) instead of materializing a one-character SSO via `__str_idx`
+  and then calling generic `__eq`. The fallback path for non-string receivers
+  preserves array semantics. Focused helper counts: `__str_idx` 499 → 485 and
+  `__eq` 279 → 272, with the expected `__char_at`/`__str_byteLen` increase.
+  Current noisy official watr runs improved from the refreshed local baseline
+  **jz 1.95 ms / V8 1.38 ms** to roughly **jz 1.78-1.81 ms / V8 1.41-1.43 ms**,
+  checksum parity preserved. Still behind V8, but the gap is smaller.
+* [x] Rejected two adjacent follow-ups after benchmarking: (1) changing the
+  non-string fallback in the token-test fast path from generic `__typed_idx`
+  to an ARRAY-only `__arr_idx_known` branch grew code and regressed watr
+  (~1.82 ms vs ~1.78 ms in the preceding run); (2) adding a general
+  string-literal equality helper (`x === 'type'`) also grew code and did not
+  improve watr (~1.80 ms). Do not re-open these exact forms without a
+  per-callsite size/benefit gate or inlining evidence.
 * [x] Rechecked the local queue-view/source-transform proposal for `normalize()`.
   A naive `head++` rewrite is not semantics-preserving because `normalize()`
   passes the queue to `typeuse()`, `paramres()`, `blocktype()`, and `fieldseq()`,

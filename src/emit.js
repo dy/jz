@@ -115,6 +115,62 @@ const REF_EQ_KINDS = new Set([
   VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.REGEX,
 ])
 
+function stringLiteral(node) {
+  if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
+  if (Array.isArray(node) && node[0] == null && typeof node[1] === 'string') return node[1]
+  return null
+}
+
+function nonNegIntLiteral(node) {
+  const n = intLiteralValue(node)
+  return n != null && n >= 0 ? n : null
+}
+
+function emitSingleCharIndexCmp(a, b, negate = false) {
+  const leftLit = stringLiteral(a)
+  const rightLit = stringLiteral(b)
+  const indexed = leftLit?.length === 1 ? b : rightLit?.length === 1 ? a : null
+  const lit = leftLit?.length === 1 ? leftLit : rightLit?.length === 1 ? rightLit : null
+  if (!lit || lit.charCodeAt(0) > 0x7F || !Array.isArray(indexed) || indexed[0] !== '[]') return null
+
+  const [, obj, key] = indexed
+  const idx = nonNegIntLiteral(key)
+  if (idx == null) return null
+
+  const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+  if (vt && vt !== VAL.STRING) return null
+  if (!ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
+
+  const ptr = temp('sc'), idxIR = ['i32.const', idx]
+  inc('__str_byteLen', '__char_at')
+  const charEq = ['if', ['result', 'i32'],
+    ['i32.gt_u', ['call', '$__str_byteLen', ['local.get', `$${ptr}`]], idxIR],
+    ['then', ['i32.eq', ['call', '$__char_at', ['local.get', `$${ptr}`], idxIR], ['i32.const', lit.charCodeAt(0)]]],
+    ['else', ['i32.const', 0]]]
+  const finish = expr => negate ? ['i32.eqz', expr] : expr
+
+  if (vt === VAL.STRING) {
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${ptr}`, asF64(emit(obj))],
+      finish(charEq)], 'i32')
+  }
+
+  const tag = tempI32('st')
+  inc('__ptr_type', '__typed_idx', '__eq')
+  const genericEq = ['call', '$__eq',
+    ['call', '$__typed_idx', ['local.get', `$${ptr}`], idxIR],
+    asF64(emit(['str', lit]))]
+  const cmp = ['if', ['result', 'i32'],
+    ['i32.or',
+      ['i32.eq', ['local.tee', `$${tag}`, ['call', '$__ptr_type', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
+      ['i32.eq', ['local.get', `$${tag}`], ['i32.const', PTR.SSO]]],
+    ['then', charEq],
+    ['else', genericEq]]
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${ptr}`, asF64(emit(obj))],
+    finish(cmp)], 'i32')
+}
+
 // === Flow-sensitive type refinement ===
 // Map typeof code (from resolveTypeof in prepare.js) → VAL kind. Undef/boolean/object have no
 // single VAL refinement, so they're excluded. String/number/function do.
@@ -1224,6 +1280,8 @@ export const emitter = {
   // === Comparisons (always i32 result) ===
 
   '==': (a, b) => {
+    const charCmp = emitSingleCharIndexCmp(a, b)
+    if (charCmp) return charCmp
     // JS loose nullish equality: x == null / x == undefined.
     // If the non-literal side has a known non-null VAL type, fold to 0.
     if (isNullishLit(a)) {
@@ -1254,6 +1312,8 @@ export const emitter = {
     return typed(['call', '$__eq', asF64(va), asF64(vb)], 'i32')
   },
   '!=': (a, b) => {
+    const charCmp = emitSingleCharIndexCmp(a, b, true)
+    if (charCmp) return charCmp
     if (isNullishLit(a)) {
       if (valTypeOf(b)) return emitNum(1)
       return typed(['i32.eqz', isNullish(asF64(emit(b)))], 'i32')

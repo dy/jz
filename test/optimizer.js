@@ -396,6 +396,29 @@ test('charCodeAt: runtime correctness — digit parse', () => {
   is(main('  9  '), 9)
 })
 
+test('single-char string index equality skips materialized char string', () => {
+  const wat = jz.compile(`
+    export const main = (x) => x[0] === '$'
+  `, { wat: true, optimize: { watr: false } })
+  const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(!/\(call \$__str_idx\b/.test(mainBody), 'char equality should compare string bytes directly')
+  ok(/\(call \$__char_at\b/.test(mainBody), 'expected direct char byte comparison')
+})
+
+test('single-char string index equality keeps array fallback semantics', () => {
+  const { main } = run(`
+    const hit = x => x[0] === '$'
+    export const main = () => {
+      return hit('$abc')
+        + hit('abc') * 2
+        + hit('') * 4
+        + hit(['$', 1]) * 8
+        + hit([1, 2]) * 16
+    }
+  `)
+  is(main(), 9)
+})
+
 test('resolveOptimize: levels, booleans, object overrides', () => {
   const level2 = resolveOptimize(true)
   const allOff = resolveOptimize(false)
