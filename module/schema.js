@@ -62,7 +62,7 @@ export function initSchema(ctx) {
   /** Find property index by variable schema or structural subtyping.
    *  Returns -1 to signal "use dynamic lookup" in four cases:
    *    1. Variable has precise schema but schema lacks the property
-   *    2. Variable's valType is known and is not an object
+   *    2. Receiver is a string variable, but its valType is unknown or not an object
    *    3. Receiver is not a string variable (varName == null) — no type evidence
    *    4. Structural search finds the property at inconsistent offsets across schemas
    *  Case 4 is a real ambiguity — the caller must route to runtime dispatch.
