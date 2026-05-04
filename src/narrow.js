@@ -19,6 +19,189 @@ import {
   typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
 } from './analyze.js'
 
+const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
+
+function filterLiveCallSites(callSites, valueUsed) {
+  if (!callSites.length) return
+
+  const live = new Set()
+  for (const f of ctx.func.list) {
+    if (f.exported || valueUsed.has(f.name)) live.add(f.name)
+  }
+
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const cs of callSites) {
+      if (cs.callerFunc === null || live.has(cs.callerFunc.name)) {
+        if (!live.has(cs.callee)) { live.add(cs.callee); changed = true }
+      }
+    }
+  }
+
+  let w = 0
+  for (let r = 0; r < callSites.length; r++) {
+    const cs = callSites[r]
+    if (cs.callerFunc === null || live.has(cs.callerFunc.name)) callSites[w++] = cs
+  }
+  callSites.length = w
+}
+
+function buildCallerCtx() {
+  const callerCtx = new Map()
+  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const facts = analyzeBody(func.body)
+    for (const p of func.sig.params) if (!facts.locals.has(p.name)) facts.locals.set(p.name, p.type)
+    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes })
+  }
+  return callerCtx
+}
+
+function buildCallerElems(sliceKey) {
+  const m = new Map()
+  m.set(null, new Map())
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    m.set(func, analyzeBody(func.body)[sliceKey])
+  }
+  return m
+}
+
+function applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped = false } = {}) {
+  for (const func of ctx.func.list) {
+    if (func.raw || valueUsed.has(func.name)) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, r] of reps) {
+      if (r.wasm !== 'i32' || k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue
+      if (func.defaults?.[p.name] != null) continue
+      if (skipTyped && r.val === VAL.TYPED) continue
+      p.type = 'i32'
+    }
+  }
+}
+
+function validateIntConstParams(paramReps, valueUsed) {
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (!func.body) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    let candidates = null
+    for (const [k, r] of reps) {
+      if (r.intConst == null || k === restIdx) continue
+      if (k >= func.sig.params.length) { r.intConst = null; continue }
+      const pname = func.sig.params[k].name
+      if (func.defaults?.[pname] != null) { r.intConst = null; continue }
+      ;(candidates ||= new Map()).set(pname, r)
+    }
+    if (!candidates) continue
+    const mutated = new Set()
+    findMutations(func.body, new Set(candidates.keys()), mutated)
+    for (const name of mutated) candidates.get(name).intConst = null
+  }
+}
+
+function applyPointerParamAbi(paramReps, valueUsed) {
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, r] of reps) {
+      if (!PTR_ABI_KINDS.has(r.val)) continue
+      if (k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue
+      if (func.defaults?.[p.name] != null) continue
+      p.type = 'i32'
+      p.ptrKind = r.val
+    }
+  }
+}
+
+function narrowableFuncs(valueUsed) {
+  return ctx.func.list.filter(f =>
+    !f.raw && !valueUsed.has(f.name) && f.sig.results.length === 1
+  )
+}
+
+function refreshCallerValTypes(callerCtx) {
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const entry = callerCtx.get(func)
+    if (entry) entry.callerValTypes = analyzeBody(func.body).valTypes
+  }
+}
+
+function buildCallerTypedCtx() {
+  const callerTypedCtx = new Map()
+  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
+  }
+  return callerTypedCtx
+}
+
+function applyTypedPointerParamAbi(paramReps, valueUsed) {
+  for (const func of ctx.func.list) {
+    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, r] of reps) {
+      const ctor = r.typedCtor
+      if (ctor == null) continue
+      if (k === restIdx) continue
+      if (k >= func.sig.params.length) continue
+      const p = func.sig.params[k]
+      if (p.type === 'i32') continue
+      if (func.defaults?.[p.name] != null) continue
+      const aux = typedElemAux(ctor)
+      if (aux == null) continue
+      p.type = 'i32'
+      p.ptrKind = VAL.TYPED
+      p.ptrAux = aux
+    }
+  }
+}
+
+function enrichCallerValTypesFromPointerParams(callerCtx) {
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const entry = callerCtx.get(func)
+    if (!entry) continue
+    for (const p of func.sig.params) {
+      if (p.ptrKind == null) continue
+      if (entry.callerValTypes.has(p.name)) continue
+      entry.callerValTypes.set(p.name, p.ptrKind)
+    }
+  }
+}
+
+function refreshCallerLocals(callerCtx) {
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    invalidateLocalsCache(func.body)
+    const fresh = analyzeLocals(func.body)
+    for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
+    callerCtx.get(func).callerLocals = fresh
+  }
+}
+
+function resetParamWasmFacts(paramReps) {
+  for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
+}
+
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps } = programFacts
 
@@ -28,28 +211,7 @@ export default function narrowSignatures(programFacts, ast) {
   // bimorphic (f64 ∪ i32) and block i32 narrowing of mix's hot caller (runKernel).
   // Live = exported ∪ value-used ∪ transitively reached from those + top-level.
   // Top-level call sites have callerFunc === null and are unconditionally live.
-  if (callSites.length) {
-    const live = new Set()
-    for (const f of ctx.func.list) {
-      if (f.exported || valueUsed.has(f.name)) live.add(f.name)
-    }
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const cs of callSites) {
-        if (cs.callerFunc === null || live.has(cs.callerFunc.name)) {
-          if (!live.has(cs.callee)) { live.add(cs.callee); changed = true }
-        }
-      }
-    }
-    // Mutate in place — every later phase reads the same array.
-    let w = 0
-    for (let r = 0; r < callSites.length; r++) {
-      const cs = callSites[r]
-      if (cs.callerFunc === null || live.has(cs.callerFunc.name)) callSites[w++] = cs
-    }
-    callSites.length = w
-  }
+  filterLiveCallSites(callSites, valueUsed)
 
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
@@ -63,29 +225,12 @@ export default function narrowSignatures(programFacts, ast) {
   // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
-  const callerCtx = new Map()  // funcObj | null → { callerLocals, callerValTypes }
-  callerCtx.set(null, { callerLocals: ctx.scope.globalTypes, callerValTypes: ctx.scope.globalValTypes })
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    // Single unified walk — locals + valTypes from the same traversal.
-    const facts = analyzeBody(func.body)
-    for (const p of func.sig.params) if (!facts.locals.has(p.name)) facts.locals.set(p.name, p.type)
-    callerCtx.set(func, { callerLocals: facts.locals, callerValTypes: facts.valTypes })
-  }
+  const callerCtx = buildCallerCtx()
   // Per-caller arr-elem observations. Recomputed each fixpoint iteration so
   // newly-narrowed func.arrayElemSchema/.arrayElemValType results propagate
   // from `const rows = initRows()` observations. Two-pass fixpoint: first
   // pass learns from literals + module vars; second pass forwards through
   // chained helpers (f → addXY → {getX, getY}).
-  const buildCallerElems = (sliceKey) => {
-    const m = new Map()
-    m.set(null, new Map())
-    for (const func of ctx.func.list) {
-      if (!func.body || func.raw) continue
-      m.set(func, analyzeBody(func.body)[sliceKey])
-    }
-    return m
-  }
   let callerArrElemsCtx = buildCallerElems('arrElemSchemas')
   const rebuildArrElems = () => { callerArrElemsCtx = buildCallerElems('arrElemSchemas') }
   let callerArrElemValsCtx = buildCallerElems('arrElemValTypes')
@@ -163,43 +308,14 @@ export default function narrowSignatures(programFacts, ast) {
   // Apply i32 specialization: for non-value-used funcs with consistent i32 call
   // sites and no defaults/rest at that position, narrow sig.params[k].type.
   // Exports too — boundary wrapper handles the f64→i32 truncation at the JS edge.
-  for (const func of ctx.func.list) {
-    if (func.raw || valueUsed.has(func.name)) continue
-    const reps = paramReps.get(func.name)
-    if (!reps) continue
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, r] of reps) {
-      if (r.wasm !== 'i32' || k === restIdx) continue
-      const pname = func.sig.params[k].name
-      if (func.defaults?.[pname] != null) continue  // defaults need nullish-sentinel f64
-      func.sig.params[k].type = 'i32'
-    }
-  }
+  applyI32ParamSpecialization(paramReps, valueUsed)
 
   // intConst validation: a param marked with a unanimous integer literal at every call
   // site is only safe to substitute if the body never reassigns it. Clear intConst on any
   // param whose name appears on the LHS of an assignment / `++` / `--`. Skip exported
   // (callable from JS with arbitrary value), value-used (closure callees), raw, defaulted,
   // and rest params — same exclusions as the wasm-narrowing pass above.
-  for (const func of ctx.func.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    if (!func.body) continue
-    const reps = paramReps.get(func.name)
-    if (!reps) continue
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    let candidates = null
-    for (const [k, r] of reps) {
-      if (r.intConst == null || k === restIdx) continue
-      if (k >= func.sig.params.length) { r.intConst = null; continue }
-      const pname = func.sig.params[k].name
-      if (func.defaults?.[pname] != null) { r.intConst = null; continue }
-      ;(candidates ||= new Map()).set(pname, r)
-    }
-    if (!candidates) continue
-    const mutated = new Set()
-    findMutations(func.body, new Set(candidates.keys()), mutated)
-    for (const name of mutated) candidates.get(name).intConst = null
-  }
+  validateIntConstParams(paramReps, valueUsed)
 
   // Pointer-ABI specialization: for non-forwarding pointer params consistent across
   // call sites, narrow from NaN-boxed f64 to i32 offset. Eliminates per-call __ptr_offset
@@ -210,23 +326,7 @@ export default function narrowSignatures(programFacts, ast) {
   //   - exclude CLOSURE/TYPED (aux bits carry schema/element-type, lost with offset).
   //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
   //   - exclude rest position (array pack/unpack stays f64).
-  const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
-  for (const func of ctx.func.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    const reps = paramReps.get(func.name)
-    if (!reps) continue
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, r] of reps) {
-      if (!PTR_ABI_KINDS.has(r.val)) continue
-      if (k === restIdx) continue
-      if (k >= func.sig.params.length) continue
-      const p = func.sig.params[k]
-      if (p.type === 'i32') continue  // already narrowed by numeric pass
-      if (func.defaults?.[p.name] != null) continue
-      p.type = 'i32'
-      p.ptrKind = r.val
-    }
-  }
+  applyPointerParamAbi(paramReps, valueUsed)
 
   // E: Result-type monomorphization — narrow sig.results[0] to 'i32' when body only
   // produces i32 values. Fixpoint: a call to another narrowed func now contributes i32;
@@ -245,13 +345,11 @@ export default function narrowSignatures(programFacts, ast) {
   // computes, not by what JS callers might pass. JS-visible f64 ABI is restored at
   // the boundary via a synthesized wrapper (see synthesizeBoundaryWrappers below).
   // Shared pool for E (numeric), E2 (valType) and E3 (ptr) narrowing — same predicate.
-  const narrowableFuncs = ctx.func.list.filter(f =>
-    !f.raw && !valueUsed.has(f.name) && f.sig.results.length === 1
-  )
+  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
   let changed = true
   while (changed) {
     changed = false
-    for (const func of narrowableFuncs) {
+    for (const func of funcsWithNarrowableResult) {
       if (func.sig.results[0] === 'i32') continue
       const body = func.body
       // Bare `return;` produces undef (f64) — narrowing to i32 would lose that.
@@ -302,7 +400,7 @@ export default function narrowSignatures(programFacts, ast) {
   changed = true
   while (changed) {
     changed = false
-    for (const func of narrowableFuncs) {
+    for (const func of funcsWithNarrowableResult) {
       if (func.valResult) continue
       const body = func.body
       const isBlock = isBlockBody(body)
@@ -331,11 +429,7 @@ export default function narrowSignatures(programFacts, ast) {
   for (const func of ctx.func.list) {
     if (func.body && !func.raw) invalidateValTypesCache(func.body)
   }
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    const entry = callerCtx.get(func)
-    if (entry) entry.callerValTypes = analyzeBody(func.body).valTypes
-  }
+  refreshCallerValTypes(callerCtx)
   // Re-observe schema slot val-types now that E2 has set `valResult` on user
   // funcs. First pass runs in collectProgramFacts before valResult is known, so
   // a slot like `cs` in `{ ..., cs }` (where `cs = checksum(out)`) gets observed
@@ -459,7 +553,7 @@ export default function narrowSignatures(programFacts, ast) {
   let narrowChanged = true
   while (narrowChanged) {
     narrowChanged = false
-    for (const func of narrowableFuncs) {
+    for (const func of funcsWithNarrowableResult) {
       if (!func.valResult) continue
       if (func.sig.results[0] !== 'f64') continue
       const isBlock = isBlockBody(func.body)
@@ -510,12 +604,7 @@ export default function narrowSignatures(programFacts, ast) {
   for (const func of ctx.func.list) {
     if (func.body && !func.raw) invalidateValTypesCache(func.body)
   }
-  const callerTypedCtx = new Map()
-  callerTypedCtx.set(null, ctx.scope.globalTypedElem || new Map())
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    callerTypedCtx.set(func, analyzeBody(func.body).typedElems)
-  }
+  const callerTypedCtx = buildCallerTypedCtx()
   // Two-pass fixpoint: lets a caller's params, once typed, propagate further to
   // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
   // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
@@ -532,26 +621,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Call sites coerce via emitArgForParam → ptrOffsetIR(arg, VAL.TYPED).
   // Safety: same exclusions as the OBJECT/SET/MAP/BUFFER narrowing above —
   // exported, value-used, raw, defaults, rest position.
-  for (const func of ctx.func.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
-    const reps = paramReps.get(func.name)
-    if (!reps) continue
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, r] of reps) {
-      const ctor = r.typedCtor
-      if (ctor == null) continue
-      if (k === restIdx) continue
-      if (k >= func.sig.params.length) continue
-      const p = func.sig.params[k]
-      if (p.type === 'i32') continue
-      if (func.defaults?.[p.name] != null) continue
-      const aux = typedElemAux(ctor)
-      if (aux == null) continue
-      p.type = 'i32'
-      p.ptrKind = VAL.TYPED
-      p.ptrAux = aux
-    }
-  }
+  applyTypedPointerParamAbi(paramReps, valueUsed)
 
   // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
   // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
@@ -559,16 +629,7 @@ export default function narrowSignatures(programFacts, ast) {
   // for caller's params, so inferArgType returns null and paramReps[callee][k].val is
   // sticky null. With ptrKind enriching callerValTypes, sum's arr gets val=TYPED in
   // its rep, letting array.js skip __is_str_key + __str_idx dispatch on `arr[i]`.
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    const entry = callerCtx.get(func)
-    if (!entry) continue
-    for (const p of func.sig.params) {
-      if (p.ptrKind == null) continue
-      if (entry.callerValTypes.has(p.name)) continue
-      entry.callerValTypes.set(p.name, p.ptrKind)
-    }
-  }
+  enrichCallerValTypesFromPointerParams(callerCtx)
   clearStickyNull(paramReps, 'val')
   runFixpoint()
 
@@ -580,39 +641,19 @@ export default function narrowSignatures(programFacts, ast) {
   // numeric narrowing to propagate i32 through chains of i32-only helpers
   // (callback bench: mix is FNV — params and result all i32-shaped, but inferred
   // only after E phase narrowed mix's result).
-  for (const func of ctx.func.list) {
-    if (!func.body || func.raw) continue
-    invalidateLocalsCache(func.body)
-    const fresh = analyzeLocals(func.body)
-    for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
-    callerCtx.get(func).callerLocals = fresh
-  }
+  refreshCallerLocals(callerCtx)
   // Reset wasm field unconditionally — first pass populated it from stale callerLocals
   // (where `let h = mix(...)` widened h to f64 because mix's result wasn't narrowed
   // yet). clearStickyNull only resets null; here we need to reset f64-observed too
   // so the refreshed exprType view propagates.
-  for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
+  resetParamWasmFacts(paramReps)
   runFixpoint()
-  for (const func of ctx.func.list) {
-    if (func.raw || valueUsed.has(func.name)) continue
-    const reps = paramReps.get(func.name)
-    if (!reps) continue
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    for (const [k, r] of reps) {
-      if (r.wasm !== 'i32' || k === restIdx) continue
-      if (k >= func.sig.params.length) continue
-      const p = func.sig.params[k]
-      if (p.type === 'i32') continue                  // already narrowed (incl. ptr-ABI)
-      if (func.defaults?.[p.name] != null) continue
-      // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
-      // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
-      // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
-      // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
-      // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
-      if (r.val === VAL.TYPED) continue
-      p.type = 'i32'
-    }
-  }
+  // Don't steal typed-array params from specializeBimorphicTyped: F phase parks
+  // bimorphic typed params at type='f64' with sticky-null typedCtor (two distinct
+  // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
+  // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
+  // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
+  applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped: true })
 }
 
 /**
@@ -685,7 +726,8 @@ export function specializeBimorphicTyped(programFacts) {
     // Find sticky-bimorphic typed-param positions left by F-phase.
     const bimorphic = []
     for (let k = 0; k < func.sig.params.length; k++) {
-      if (reps.get(k)?.typedCtor !== null) continue
+      const r = reps.get(k)
+      if (!r || r.val !== VAL.TYPED || r.typedCtor !== null) continue
       const p = func.sig.params[k]
       if (p.type === 'i32') continue
       if (func.defaults?.[p.name] != null) continue

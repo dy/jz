@@ -49,6 +49,8 @@ import {
 } from './ir.js'
 import plan from './plan.js'
 
+const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : fn()
+
 // Per-compile func name set + map live on ctx.func.names / ctx.func.map,
 // populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
 
@@ -972,7 +974,7 @@ function stripStaticDataPrefix(sec) {
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
  * @returns {Array} Complete WASM module as S-expression
  */
-export default function compile(ast) {
+export default function compile(ast, profiler) {
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.func.names.clear()
   ctx.func.map.clear()
@@ -1028,7 +1030,7 @@ export default function compile(ast) {
     }
   }
 
-  const programFacts = plan(ast)
+  const programFacts = timePhase(profiler, 'plan', () => plan(ast))
 
   const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
   funcs.push(...synthesizeBoundaryWrappers())

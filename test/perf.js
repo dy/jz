@@ -115,6 +115,15 @@ test('codegen: pure scalar function — minimal binary', () => {
   ok(wasm.byteLength < 150, `pure scalar add should be < 150 bytes, got ${wasm.byteLength}`)
 })
 
+test('compile profile reports phase timings', () => {
+  const profile = {}
+  const wasm = compile('export let add = (a, b) => a + b', { profile })
+  ok(wasm.byteLength > 0, 'compile still returns wasm bytes')
+  for (const name of ['parse', 'prepare', 'compile', 'plan', 'watrCompile'])
+    ok(typeof profile.totals?.[name] === 'number', `expected ${name} timing`)
+  ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')
+})
+
 test('codegen: .length hoisted out of for-loop', () => {
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
   // Scope to user function $f, then find its outer for-loop body

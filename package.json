@@ -25,10 +25,12 @@
     "test:segments": "nice -n 15 node scripts/test-segments.mjs 3000 files",
     "test:prefixes": "nice -n 15 node scripts/test-segments.mjs 3000 prefix",
     "test262": "node test/test262.js",
+    "test262:builtins": "node test/test262-builtins.js",
     "test262:runner": "node test/runner.js",
     "dev": "node cli.js",
     "build": "node cli.js compile examples/*.js",
     "bench": "node bench/bench.mjs",
+    "bench:compile": "node scripts/bench-compile.mjs",
     "bench:biquad": "node bench/bench.mjs biquad",
     "test:bench-pin": "node test/bench-pin.js"
   },

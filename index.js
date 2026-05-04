@@ -64,6 +64,25 @@ const importsMayReturnExternal = (imports) => {
   return false
 }
 
+const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
+
+const compileProfiler = (profile) => {
+  if (!profile) return null
+  profile.entries ||= []
+  profile.totals ||= {}
+  return {
+    time(name, fn) {
+      const start = nowMs()
+      try { return fn() }
+      finally {
+        const ms = nowMs() - start
+        profile.entries.push({ name, ms })
+        profile.totals[name] = (profile.totals[name] || 0) + ms
+      }
+    },
+  }
+}
+
 /**
  * jz — JS subset → WASM compiler.
  *
@@ -96,9 +115,14 @@ jz.memory = enhanceMemory
  *   - `3`: reserved for future aggressive passes (currently == 2).
  *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
+ * @param {object} [opts.profile] - Optional mutable profile sink populated with
+ *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
+  const profiler = compileProfiler(opts.profile)
+  const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
+
   reset(emitter, GLOBALS)
   ctx.error.src = code
 
@@ -127,21 +151,25 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  let parsed = parse(normalizeSource(code))
-  if (opts.jzify) parsed = jzify(parsed)
-  const ast = prepare(parsed)
-  const module = compile(ast)
+  let parsed = time('parse', () => parse(normalizeSource(code)))
+  if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
+  const ast = time('prepare', () => prepare(parsed))
+  const module = time('compile', () => compile(ast, profiler))
 
   const cfg = ctx.transform.optimize
-  const optimized = cfg.watr ? watrOptimize(module) : module
+  const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module)) : module
   // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
   // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
   if (cfg.watr) {
-    for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, cfg)
+    time('watrReopt', () => {
+      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, cfg)
+    })
   }
-  return opts.wat ? watrPrint(optimized) : watrCompile(optimized)
+  return opts.wat
+    ? time('watrPrint', () => watrPrint(optimized))
+    : time('watrCompile', () => watrCompile(optimized))
 }
 
 /**
