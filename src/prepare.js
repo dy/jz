@@ -869,6 +869,34 @@ const handlers = {
       for (const i of decl.slice(1))
         if (Array.isArray(i) && i[0] === '=' && typeof i[1] === 'string')
           ctx.func.exports[i[1]] = true
+    // export { name, name as alias } from './mod' or export * from './mod'
+    if (Array.isArray(decl) && decl[0] === 'from') {
+      const mod = decl[2]?.[1]
+      if (!mod || typeof mod !== 'string') return null
+      // Source module re-export
+      if (ctx.module.importSources?.[mod]) {
+        const resolved = prepareModule(mod, ctx.module.importSources[mod])
+        if (decl[1] === '*') {
+          // export * from './mod' → register all exports
+          for (const [name, mangled] of resolved.exports) {
+            if (name !== 'default') ctx.func.exports[name] = mangled
+          }
+        } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
+          // export { a, b as c } from './mod'
+          const inner = decl[1][1]
+          if (inner == null) return null
+          const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+          for (const item of items) {
+            const name = typeof item === 'string' ? item : item[1]
+            const alias = typeof item === 'string' ? item : item[2]
+            const mangled = resolved.exports.get(name)
+            if (!mangled) err(`'${name}' is not exported from '${mod}'`)
+            ctx.func.exports[alias] = mangled
+          }
+        }
+      }
+      return null
+    }
     // export { name1, name2 as alias } → register named exports
     if (Array.isArray(decl) && decl[0] === '{}') {
       const inner = decl[1]
@@ -1412,6 +1440,11 @@ function prepareModule(specifier, source) {
     // Default export alias: export default existingName → map 'default' to that name's mangled form
     if (name === 'default' && typeof val === 'string') {
       // Will resolve after all named exports are mangled
+      continue
+    }
+    // Re-export alias: export { x } from './mod' → pass through inner module's mangled name
+    if (typeof val === 'string') {
+      moduleExports.set(name, val)
       continue
     }
     const mangled = `${prefix}$${name}`

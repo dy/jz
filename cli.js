@@ -126,15 +126,22 @@ async function handleCompile(args) {
     } catch {}
   }
 
+  // Recursively resolve relative imports from entry file and all discovered modules
   const importRe = /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g
-  let m; while ((m = importRe.exec(code)) !== null) {
-    const spec = m[1]
-    if (!modules[spec] && (spec.startsWith('./') || spec.startsWith('../'))) {
-      const full = resolve(dir, spec)
-      try { modules[spec] = readFileSync(full, 'utf8') }
-      catch { try { modules[spec] = readFileSync(full + '.js', 'utf8') } catch {} }
-    }
+  const resolveModule = (specifier, fromDir) => {
+    if (modules[specifier]) return
+    if (!specifier.startsWith('./') && !specifier.startsWith('../')) return
+    const full = resolve(fromDir, specifier)
+    let src
+    try { src = readFileSync(full, 'utf8') }
+    catch { try { src = readFileSync(full + '.js', 'utf8') } catch { return } }
+    modules[specifier] = src
+    // Resolve this module's imports relative to its own directory
+    let m; importRe.lastIndex = 0
+    while ((m = importRe.exec(src)) !== null) resolveModule(m[1], dirname(full))
   }
+  let m; importRe.lastIndex = 0
+  while ((m = importRe.exec(code)) !== null) resolveModule(m[1], dir)
 
   // .jz = strict (no auto-transform), .js = auto-jzify
   // --strict forces strict for any extension

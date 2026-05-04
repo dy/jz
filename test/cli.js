@@ -120,6 +120,33 @@ test('cli: missing file exits 1', () => {
   is(status, 1)
 })
 
+// Regression: CLI should resolve transitive filesystem imports automatically.
+// README says "Transitive imports work" and "CLI resolves filesystem imports automatically",
+// but the CLI only scans top-level imports with a regex, missing nested imports.
+test('cli: transitive filesystem imports', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-transitive-'))
+  const mainFile = join(dir, 'main.js')
+  const mathFile = join(dir, 'math.js')
+  const utilsFile = join(dir, 'utils.js')
+  const outFile = join(dir, 'main.wasm')
+
+  writeFileSync(mainFile, 'import { add } from "./math.js"; export let f = (a, b) => add(a, b)')
+  writeFileSync(mathFile, 'import { sq } from "./utils.js"; export let add = (a, b) => a + b')
+  writeFileSync(utilsFile, 'export let sq = (x) => x * x')
+
+  // This should work per README, but currently fails with:
+  // Error: Unknown module './utils.js'
+  cli(mainFile, '-o', outFile)
+
+  const wasm = readFileSync(outFile)
+  ok(wasm.byteLength > 0, 'transitive import wasm produced')
+
+  unlinkSync(outFile)
+  unlinkSync(mainFile)
+  unlinkSync(mathFile)
+  unlinkSync(utilsFile)
+})
+
 // Cleanup temp files
 test('cli: cleanup', () => {
   try { unlinkSync(join(tmp, 'wasi-eval.js')) } catch {}

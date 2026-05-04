@@ -156,6 +156,45 @@ test('import: transitive imports', () => {
   is(exports.f(5), 11)  // 5*2 + 1
 })
 
+// === re-exports ===
+
+test('re-export: named from module', () => {
+  const inner = 'export let val = (x) => x + 1'
+  const { exports } = jz(
+    'import { val } from "./mid.jz"; export let f = (x) => val(x)',
+    { modules: { './mid.jz': 'export { val } from "./inner.jz"', './inner.jz': inner } }
+  )
+  is(exports.f(41), 42)
+})
+
+test('re-export: aliased from module', () => {
+  const inner = 'export let val = (x) => x + 1'
+  const { exports } = jz(
+    'import { fn } from "./mid.jz"; export let f = (x) => fn(x)',
+    { modules: { './mid.jz': 'export { val as fn } from "./inner.jz"', './inner.jz': inner } }
+  )
+  is(exports.f(41), 42)
+})
+
+test('re-export: star from module', () => {
+  const inner = 'export let add = (a, b) => a + b; export let mul = (a, b) => a * b'
+  const { exports } = jz(
+    'import { add, mul } from "./mid.jz"; export let f = (x) => add(x, mul(x, 2))',
+    { modules: { './mid.jz': 'export * from "./inner.jz"', './inner.jz': inner } }
+  )
+  is(exports.f(10), 30)  // 10 + 10*2 = 30
+})
+
+test('re-export: multi-level chain', () => {
+  const base = 'export let val = (x) => x * 3'
+  const mid = 'export { val } from "./base.jz"'
+  const { exports } = jz(
+    'import { val } from "./mid.jz"; export let f = (x) => val(x)',
+    { modules: { './mid.jz': mid, './base.jz': base } }
+  )
+  is(exports.f(14), 42)
+})
+
 test('import: bundled module newline ! after comment', () => {
   const mod = `
     export let f = () => {
