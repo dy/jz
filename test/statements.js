@@ -78,8 +78,16 @@ test('assignment: ||= on truthy', () => {
   is(run('export let f = () => { let a = 5; a ||= 42; return a }').f(), 5)
 })
 
+test('assignment: ||= keeps truthy strings', () => {
+  is(run(`export let f = () => { let a = '\n'; a ||= ''; return (a + '(').length }`).f(), 2)
+})
+
 test('assignment: &&= on truthy', () => {
   is(run('export let f = () => { let a = 5; a &&= 42; return a }').f(), 42)
+})
+
+test('assignment: &&= updates truthy strings', () => {
+  is(run(`export let f = () => { let a = 'x'; a &&= 'ok'; return a.length }`).f(), 2)
 })
 
 test('assignment: &&= on falsy', () => {

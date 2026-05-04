@@ -49,6 +49,7 @@ function boxPtrIR(i32node, ptrType, aux = 0) {
  *  The `unsigned` flag (set by `>>>` codegen) opts into `convert_i32_u` so the canonical
  *  `(x >>> 0)` uint32 idiom converts to a positive f64 in [0, 2^32) instead of sign-flipping. */
 export const asF64 = n => {
+  if (n == null) err(`compiler internal: expected emitted IR value in ${ctx.func.current?.name || '<module>'}, got empty value`)
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
   if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n[1]], 'f64')

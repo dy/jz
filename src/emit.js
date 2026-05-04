@@ -43,6 +43,31 @@ import {
 // to decide whether to emit a value-returning or side-effect-only form.
 let _expect = null
 
+const FIRST_CLASS_UNARY_MATH = {
+  'math.abs': 'f64.abs',
+  'math.sqrt': 'f64.sqrt',
+  'math.ceil': 'f64.ceil',
+  'math.floor': 'f64.floor',
+  'math.trunc': 'f64.trunc',
+}
+
+function builtinFunctionValue(name) {
+  const op = FIRST_CLASS_UNARY_MATH[name]
+  if (!op) err(`Builtin function '${name}' cannot be used as a first-class value`)
+  if (!ctx.closure.table) err(`Builtin function '${name}' used as value requires closure support`)
+  const fn = `${T}builtin_${name.replace(/\W/g, '_')}`
+  if (!ctx.core.stdlib[fn]) {
+    const width = ctx.closure.width ?? MAX_CLOSURE_ARITY
+    const params = ['(param $__env f64)', '(param $__argc i32)']
+    for (let i = 0; i < width; i++) params.push(`(param $__a${i} f64)`)
+    ctx.core.stdlib[fn] = `(func $${fn} ${params.join(' ')} (result f64) (${op} (local.get $__a0)))`
+    inc(fn)
+  }
+  let idx = ctx.closure.table.indexOf(fn)
+  if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(fn) }
+  return mkPtrIR(PTR.CLOSURE, idx, 0)
+}
+
 /** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
 const emitNeg = (a) => {
   if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
@@ -489,9 +514,9 @@ export function emitDecl(...inits) {
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')
-        result.push(
-          ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-          ['f64.store', ['local.get', `$${cell}`], undef])
+        if (!ctx.func.preboxed?.has(i))
+          result.push(['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]])
+        result.push(['f64.store', ['local.get', `$${cell}`], undef])
         continue
       }
       if (isGlobal(i)) {
@@ -555,9 +580,9 @@ export function emitDecl(...inits) {
     if (ctx.func.boxed.has(name)) {
       const cell = ctx.func.boxed.get(name)
       ctx.func.locals.set(cell, 'i32')
-      result.push(
-        ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-        ['f64.store', ['local.get', `$${cell}`], asF64(val)])
+      if (!ctx.func.preboxed?.has(name))
+        result.push(['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]])
+      result.push(['f64.store', ['local.get', `$${cell}`], asF64(val)])
       continue
     }
     if (isGlobal(name)) {
@@ -1160,11 +1185,8 @@ export const emitter = {
     const t = temp()
     const va = readVar(name)
     // Condition: ||= → truthy check, &&= → truthy check, ??= → nullish check
-    const cond = op === '??='
-      ? isNullish(['local.tee', `$${t}`, asF64(va)])
-      : ['i32.and',
-          ['f64.eq', ['local.tee', `$${t}`, asF64(va)], ['local.get', `$${t}`]],
-          ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]]]
+    const lhs = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
+    const cond = op === '??=' ? isNullish(lhs) : truthyIR(lhs)
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
     const [thenExpr, elseExpr] = op === '||='
       ? [['local.get', `$${t}`], asF64(emit(val))]
@@ -2167,7 +2189,10 @@ export function emit(node, expect) {
       return mkPtrIR(PTR.CLOSURE, idx, 0)
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision
-    if (node.includes('.') && ctx.core.emit[node]) return ctx.core.emit[node]()
+    if (node.includes('.') && ctx.core.emit[node]) {
+      const handler = ctx.core.emit[node]
+      return handler.length > 0 ? builtinFunctionValue(node) : handler()
+    }
     // Auto-import known host globals (WebAssembly, globalThis, etc.)
     const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
     if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {

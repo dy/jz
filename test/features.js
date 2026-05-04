@@ -251,6 +251,26 @@ test('Map: overwrite', () => {
   is(f(), 999)
 })
 
+test('Map: SameValueZero keys', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set('x', 7)
+    m = m.set(NaN, 3)
+    m = m.set(-0, 2)
+    return m.has('x') && m.get('x') === 7 && m.has(NaN) && m.get(NaN) === 3 && m.has(0) && m.get(0) === 2
+  }`)
+  is(f(), 1)
+})
+
+test('Map: delete uses Map lookup semantics', () => {
+  const { f } = run(`export let f = () => {
+    let m = new Map()
+    m = m.set('x', 7)
+    return m.delete('x') + m.has('x')
+  }`)
+  is(f(), 1)
+})
+
 test('Map: size', () => {
   const { f } = run(`export let f = () => {
     let m = new Map()

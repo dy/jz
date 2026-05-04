@@ -289,16 +289,28 @@ function emitFunc(func, funcFacts, programFacts) {
 
   // Box params that are mutably captured: allocate cell, copy param value
   const boxedParamInits = []
+  const preboxedLocalInits = []
+  ctx.func.preboxed = new Set()
+  const paramNames = new Set(sig.params.map(p => p.name))
   for (const p of sig.params) {
     if (ctx.func.boxed.has(p.name)) {
       const cell = ctx.func.boxed.get(p.name)
       ctx.func.locals.set(cell, 'i32')
+      ctx.func.preboxed.add(p.name)
       const lget = typed(['local.get', `$${p.name}`], p.type)
       if (p.ptrKind != null) lget.ptrKind = p.ptrKind
       boxedParamInits.push(
         ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
     }
+  }
+  for (const [name, cell] of ctx.func.boxed) {
+    if (paramNames.has(name)) continue
+    ctx.func.locals.set(cell, 'i32')
+    ctx.func.preboxed.add(name)
+    preboxedLocalInits.push(
+      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
   }
 
   if (block) {
@@ -307,16 +319,16 @@ function emitFunc(func, funcFacts, programFacts) {
     // I: Skip trailing fallback when last statement is return (unreachable code)
     const lastStmt = stmts.at(-1)
     const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
-    fn.push(...defaultInits, ...boxedParamInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
+    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
   } else if (multi && body[0] === '[') {
     const values = body.slice(1).map(e => asF64(emit(e)))
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-    fn.push(...boxedParamInits, ...values)
+    fn.push(...boxedParamInits, ...preboxedLocalInits, ...values)
   } else {
     const ir = emit(body)
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
-    fn.push(...defaultInits, ...boxedParamInits, tcoTailRewrite(finalIR, sig.results[0]))
+    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
   // Restore schema.vars so param bindings don't leak to next function.
@@ -413,6 +425,8 @@ function emitClosureBody(cb) {
   }
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+  const parentBoxedCaptures = new Set(cb.boxed || [])
+  ctx.func.preboxed = new Set()
   ctx.func.stack = []
   ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
   ctx.func.body = cb.body
@@ -449,7 +463,7 @@ function emitClosureBody(cb) {
     // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
     analyzeBoxedCaptures(cb.body)
     for (const name of ctx.func.boxed.keys()) {
-      if (ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
+      if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
     }
     bodyIR = emitBody(cb.body)
   } else {
@@ -469,6 +483,28 @@ function emitClosureBody(cb) {
     inc('__alloc_hdr', '__mkptr')
   }
 
+  const boxedCaptureNames = new Set(cb.captures.filter(name => parentBoxedCaptures.has(name)))
+  for (const name of boxedCaptureNames) ctx.func.preboxed.add(name)
+  const boxedValueCaptureNames = new Set(cb.captures.filter(name => ctx.func.boxed.has(name) && !parentBoxedCaptures.has(name)))
+  for (const name of boxedValueCaptureNames) {
+    ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
+    ctx.func.preboxed.add(name)
+  }
+  const boxedParamNames = new Set(cb.params.filter(name => ctx.func.boxed.has(name)))
+  for (const name of boxedParamNames) {
+    ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
+    ctx.func.preboxed.add(name)
+  }
+  const preboxedLocalInits = []
+  for (const [name, cell] of ctx.func.boxed) {
+    if (boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name)) continue
+    ctx.func.locals.set(cell, 'i32')
+    ctx.func.preboxed.add(name)
+    preboxedLocalInits.push(
+      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
+  }
+
   // Insert locals (captures + params + declared)
   for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
@@ -481,8 +517,15 @@ function emitClosureBody(cb) {
     for (let i = 0; i < cb.captures.length; i++) {
       const name = cb.captures[i]
       const addr = ['i32.add', ['local.get', `$${envBase}`], ['i32.const', i * 8]]
-      fn.push(['local.set', `$${name}`,
-        ctx.func.boxed.has(name) ? ['i32.load', addr] : ['f64.load', addr]])
+      if (parentBoxedCaptures.has(name)) {
+        fn.push(['local.set', `$${name}`, ['i32.load', addr]])
+      } else if (boxedValueCaptureNames.has(name)) {
+        fn.push(
+          ['local.set', `$${ctx.func.boxed.get(name)}`, ['call', '$__alloc', ['i32.const', 8]]],
+          ['f64.store', boxedAddr(name), ['f64.load', addr]])
+      } else {
+        fn.push(['local.set', `$${name}`, ['f64.load', addr]])
+      }
     }
   }
 
@@ -490,7 +533,14 @@ function emitClosureBody(cb) {
   // Rest name (if present) is last in cb.params — handled separately below.
   const fixedParamN = cb.params.length - (cb.rest ? 1 : 0)
   for (let i = 0; i < fixedParamN && i < W; i++) {
-    fn.push(['local.set', `$${cb.params[i]}`, ['local.get', `$__a${i}`]])
+    const pname = cb.params[i]
+    if (boxedParamNames.has(pname)) {
+      fn.push(
+        ['local.set', `$${ctx.func.boxed.get(pname)}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', boxedAddr(pname), ['local.get', `$__a${i}`]])
+    } else {
+      fn.push(['local.set', `$${pname}`, ['local.get', `$__a${i}`]])
+    }
   }
 
   // Rest param: pack slots a[fixedParams..argc-1] into fresh array.
@@ -516,17 +566,29 @@ function emitClosureBody(cb) {
           ['i32.add', ['local.get', `$${restOff}`], ['i32.const', i * 8]],
           ['local.get', `$__a${fixedN + i}`]]]])
     }
-    fn.push(['local.set', `$${cb.rest}`,
-      ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]])
+    const restValue = ['call', '$__mkptr', ['i32.const', PTR.ARRAY], ['i32.const', 0], ['local.get', `$${restOff}`]]
+    if (boxedParamNames.has(cb.rest)) {
+      fn.push(
+        ['local.set', `$${ctx.func.boxed.get(cb.rest)}`, ['call', '$__alloc', ['i32.const', 8]]],
+        ['f64.store', boxedAddr(cb.rest), restValue])
+    } else {
+      fn.push(['local.set', `$${cb.rest}`, restValue])
+    }
   }
 
   // Default params for closures (check sentinel after unpack)
   if (cb.defaults) {
     for (const [pname, defVal] of Object.entries(cb.defaults)) {
-      fn.push(['if', isNullish(['local.get', `$${pname}`]),
-        ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+      if (boxedParamNames.has(pname)) {
+        fn.push(['if', isNullish(['f64.load', boxedAddr(pname)]),
+          ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
+      } else {
+        fn.push(['if', isNullish(['local.get', `$${pname}`]),
+          ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+      }
     }
   }
+  fn.push(...preboxedLocalInits)
   fn.push(...bodyIR)
   // I: Skip trailing fallback when last statement is return
   if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
@@ -721,6 +783,13 @@ function dedupClosureBodies(closureFuncs, sec) {
     else { hashToName.set(key, name); keepSet.add(name) }
   }
   if (!redirect.size) return
+  const redirectRefs = node => {
+    if (typeof node === 'string') return node[0] === '$' && redirect.has(node.slice(1)) ? `$${redirect.get(node.slice(1))}` : node
+    if (!Array.isArray(node)) return node
+    for (let i = 0; i < node.length; i++) node[i] = redirectRefs(node[i])
+    return node
+  }
+  for (const fn of sec.funcs) redirectRefs(fn)
   ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
   const kept = sec.funcs.filter(fn => {
     if (!Array.isArray(fn) || fn[0] !== 'func') return true

@@ -1638,34 +1638,55 @@ export function analyzeBoxedCaptures(body) {
     const [op, ...args] = node
     if (op === '=>') return
     if (op === 'let' || op === 'const')
-      for (const a of args)
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') outerScope.add(a[1])
+      collectParamNames(args, outerScope)
     for (const a of args) collectDecls(a)
   })(body)
   if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
   if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
 
-  ;(function walk(node, assignTarget) {
+  const markArrowCaptures = (node, assignTarget, seen) => {
+    const pnode = node[1]
+    let p = pnode
+    if (Array.isArray(p) && p[0] === '()') p = p[1]
+    const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
+    const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
+    const captures = []
+    findFreeVars(node[2], paramSet, captures, outerScope)
+    if (captures.length === 0) return
+    const captureSet = new Set(captures)
+    const boxed = new Set()
+    findMutations(body, captureSet, boxed)
+    for (const v of captures) if (!seen.has(v)) boxed.add(v)
+    if (assignTarget && captureSet.has(assignTarget)) boxed.add(assignTarget)
+    for (const v of boxed) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
+  }
+
+  ;(function walk(node, assignTarget, seen = new Set(ctx.func.current?.params?.map(p => p.name) || [])) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     if (op === '=>') {
-      let p = args[0]
-      if (Array.isArray(p) && p[0] === '()') p = p[1]
-      const raw = p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
-      const paramSet = new Set(raw.map(r => Array.isArray(r) && r[0] === '...' ? r[1] : r))
-      const captures = []
-      findFreeVars(args[1], paramSet, captures, outerScope)
-      if (captures.length === 0) return
-      const captureSet = new Set(captures)
-      const mutated = new Set()
-      findMutations(body, captureSet, mutated)
-      if (assignTarget && captureSet.has(assignTarget)) mutated.add(assignTarget)
-      for (const v of mutated) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
+      markArrowCaptures(node, assignTarget, seen)
       return
     }
+
+    if (op === ';' || op === '{}') {
+      const blockSeen = new Set(seen)
+      for (const a of args) walk(a, null, blockSeen)
+      return
+    }
+
+    if (op === 'let' || op === 'const') {
+      for (const decl of args) {
+        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, seen)
+        else walk(decl, null, seen)
+        collectParamNames([decl], seen)
+      }
+      return
+    }
+
     if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')
-      return walk(args[1], args[0])
-    for (const a of args) walk(a)
+      return walk(args[1], args[0], seen)
+    for (const a of args) walk(a, null, seen)
   })(body)
 }
 

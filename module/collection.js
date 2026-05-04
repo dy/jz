@@ -8,7 +8,7 @@
  * @module collection
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr } from '../src/ir.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, undefExpr } from '../src/ir.js'
 import { emit, emitFlat } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -28,8 +28,10 @@ const HASH_F64 = new Float64Array(HASH_BUF)
 const HASH_U32 = new Uint32Array(HASH_BUF)
 
 export function numHashLiteral(n) {
+  if (Object.is(n, 0) || Object.is(n, -0)) return 2
   HASH_F64[0] = n
-  return (HASH_U32[0] ^ HASH_U32[1]) | 0
+  const h = (HASH_U32[0] ^ HASH_U32[1]) | 0
+  return h <= 1 ? (h + 2) | 0 : h
 }
 
 function numConstLiteral(expr) {
@@ -39,7 +41,7 @@ function numConstLiteral(expr) {
 }
 
 // Equality expressions for probe templates
-const f64Eq = '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
+const sameValueZeroEq = '(call $__same_value_zero (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 const strEq = '(call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
 /** Generate upsert (add/set) probe function. hasVal: store value at slot+16.
@@ -314,12 +316,16 @@ export default (ctx) => {
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.features.
   const ifExt = (name) => () => ctx.features.external ? [name] : []
   Object.assign(ctx.core.stdlibDeps, {
-    __set_has: ifExt('__ext_has'),
-    __set_delete: [],
-    __map_set: ifExt('__ext_set'),
+    __same_value_zero: ['__str_eq'],
+    __map_hash: ['__hash', '__str_hash'],
+    __set_add: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_set'] : ['__map_hash', '__same_value_zero'],
+    __set_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_has'] : ['__map_hash', '__same_value_zero'],
+    __set_delete: ['__map_hash', '__same_value_zero'],
+    __map_set: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_set'] : ['__map_hash', '__same_value_zero'],
     __map_get: () => ctx.features.external ? ['__ext_prop', '__map_set'] : ['__map_set'],
-    __map_get_h: () => ctx.features.external ? ['__ext_prop'] : [],
-    __map_delete: [],
+    __map_get_h: () => ctx.features.external ? ['__ext_prop', '__same_value_zero'] : ['__same_value_zero'],
+    __map_has: () => ctx.features.external ? ['__map_hash', '__same_value_zero', '__ext_has'] : ['__map_hash', '__same_value_zero'],
+    __map_delete: ['__map_hash', '__same_value_zero'],
     __hash_set: () => ctx.features.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set']
       : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set'],
@@ -371,6 +377,46 @@ export default (ctx) => {
       (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))))`
   inc('__hash')
 
+  ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a f64) (param $b f64) (result i32)
+    (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
+    (local.set $ra (i64.reinterpret_f64 (local.get $a)))
+    (local.set $rb (i64.reinterpret_f64 (local.get $b)))
+    (if (result i32) (i64.eq (local.get $ra) (local.get $rb))
+      (then (i32.const 1))
+      (else
+        (if (result i32)
+          (i32.and
+            (f64.eq (local.get $a) (local.get $a))
+            (f64.eq (local.get $b) (local.get $b)))
+          (then (f64.eq (local.get $a) (local.get $b)))
+          (else
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
+            (if (result i32)
+              (i32.and
+                (i32.or
+                  (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                  (i32.eq (local.get $ta) (i32.const ${PTR.SSO})))
+                (i32.or
+                  (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
+                  (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
+              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (else (i32.const 0))))))))`
+
+  ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v f64) (result i32)
+    (local $bits i64) (local $t i32) (local $h i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $v)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO})))
+      (then (return (call $__str_hash (local.get $v)))))
+    (if (f64.eq (local.get $v) (f64.const 0)) (then (return (i32.const 2))))
+    (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $v) (local.get $v)))
+      (then (return (i32.const 3))))
+    (local.set $h (call $__hash (local.get $v)))
+    (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+      (then (i32.add (local.get $h) (i32.const 2)))
+      (else (local.get $h))))`
+
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
@@ -404,9 +450,9 @@ export default (ctx) => {
   }
 
   // Generated Set probe functions
-  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__hash', f64Eq, PTR.SET, false, ctx.features.external)
-  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__hash', f64Eq, PTR.SET)
+  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)
+  ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET)
 
   // === Map ===
 
@@ -418,7 +464,8 @@ export default (ctx) => {
 
   ctx.core.emit['.set'] = (mapExpr, key, val) => {
     inc('__map_set')
-    return typed(['call', '$__map_set', asF64(emit(mapExpr)), asF64(emit(key)), asF64(emit(val))], 'f64')
+    const value = val === undefined ? undefExpr() : asF64(emit(val))
+    return typed(['call', '$__map_set', asF64(emit(mapExpr)), asF64(emit(key)), value], 'f64')
   }
   ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
@@ -435,10 +482,22 @@ export default (ctx) => {
   ctx.core.emit['.get'] = emitMapGet
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
+  ctx.core.emit[`.${VAL.MAP}:has`] = (mapExpr, key) => {
+    inc('__map_has')
+    return typed(['f64.convert_i32_s', ['call', '$__map_has', asF64(emit(mapExpr)), asF64(emit(key))]], 'f64')
+  }
+
+  ctx.core.emit[`.${VAL.MAP}:delete`] = (mapExpr, key) => {
+    inc('__map_delete')
+    return typed(['f64.convert_i32_s', ['call', '$__map_delete', asF64(emit(mapExpr)), asF64(emit(key))]], 'f64')
+  }
+
   // Generated Map probe functions
-  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__hash', f64Eq, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, f64Eq, PTR.MAP, NULL_NAN, ctx.features.external)
+  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
+  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEq, PTR.MAP, NULL_NAN, ctx.features.external)
+  ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, false, ctx.features.external)
+  ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP)
 
   // === HASH — dynamic string-keyed object (type=7) ===
 
@@ -499,8 +558,8 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64), value is per-object props hash.
   // Uses bit-hash + f64.eq — no string allocation for the unique integer key.
-  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH)
-  ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', f64Eq, PTR.HASH, true)
+  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
+  ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH, true)
 
   // Inline __ptr_offset (forwarding-aware) and __hash_get_local body — dyn_get is the
   // single hottest stdlib symbol in watr self-host (~95M calls). props returned by

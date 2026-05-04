@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI32, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -642,6 +642,40 @@ export default (ctx) => {
     const isConv = Array.isArray(vv) && (vv[0] === 'f64.convert_i32_s' || vv[0] === 'f64.convert_i32_u')
     const i32val = isConv ? vv[1] : [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', vv]
     return [STORE[et], off, i32val]
+  }
+
+  // TypedArray.prototype.set(source, offset = 0). Copies array-like numeric
+  // values into the receiver; enough for watr's Uint8Array merge path and normal
+  // JZ typed-array sources. Overlapping self-copy is not special-cased yet.
+  ctx.core.emit['.typed:set'] = (arr, src, offset) => {
+    const r = resolveElem(arr)
+    if (r == null) return null
+    const { et, isView } = r
+    inc('__len', '__typed_idx')
+
+    const srcVal = src === undefined ? undefExpr() : asF64(emit(src))
+    const offVal = offset === undefined ? typed(['i32.const', 0], 'i32') : asI32(emit(offset))
+    const dstPtr = tempI32('tsd'), srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
+    const idx = ['i32.add', ['local.get', `$${off}`], ['local.get', `$${i}`]]
+    const addr = ['i32.add', ['local.get', `$${dstPtr}`], ['i32.shl', idx, ['i32.const', SHIFT[et]]]]
+    const val = typed(['call', '$__typed_idx', ['local.get', `$${srcTmp}`], ['local.get', `$${i}`]], 'f64')
+    const store = et === 7 ? ['f64.store', addr, val]
+      : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
+      : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
+    const id = ctx.func.uniq++
+
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${dstPtr}`, typedDataAddr(emit(arr), isView)],
+      ['local.set', `$${srcTmp}`, srcVal],
+      ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcTmp}`]]],
+      ['local.set', `$${off}`, offVal],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_u', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        store,
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      undefExpr()], 'f64')
   }
 
   // .map() on TypedArrays — SIMD auto-vectorization when pattern detected

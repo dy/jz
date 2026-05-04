@@ -241,7 +241,7 @@ export function err(msg) {
     const src = ctx.error.src.split('\n')[line - 1]
     const detail = `${msg}\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`
     const e = new Error(detail)
-    e.stack = `${e.name}: ${detail}`
+    e.stack = `${e.name}: ${detail}\n${e.stack.split('\n').slice(1).join('\n')}`
     throw e
   }
   throw new Error(msg)

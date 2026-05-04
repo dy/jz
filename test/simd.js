@@ -187,6 +187,24 @@ test('spread: .push(...typedArray)', () => {
   is(main()[2], 3)
 })
 
+test('Uint8Array.set: omitted offset defaults to 0', () => {
+  is(run(`export let main = () => {
+    let src = new Uint8Array([5, 6, 7])
+    let dst = new Uint8Array(5)
+    dst.set(src)
+    return dst[0] * 100 + dst[1] * 10 + dst[2]
+  }`).main(), 567)
+})
+
+test('Uint8Array.set: explicit offset', () => {
+  is(run(`export let main = () => {
+    let src = new Uint8Array([8, 9])
+    let dst = new Uint8Array(5)
+    dst.set(src, 2)
+    return dst[1] * 100 + dst[2] * 10 + dst[3]
+  }`).main(), 89)
+})
+
 test('Int32Array.from: basic', () => {
   is(run(`export let main = () => {
     let a = Int32Array.from([10, 20, 30])

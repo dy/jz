@@ -306,6 +306,7 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/Object/assign/invoked-as-ctor.js',
   'built-ins/Object/fromEntries/string-entry-string-object-succeeds.js',
   'built-ins/Map/prototype/get/returns-undefined.js',
+  'built-ins/Map/prototype/get/returns-value-different-key-types.js',
   'built-ins/Map/prototype/get/returns-value-normalized-zero-key.js',
   'built-ins/Map/prototype/set/append-new-values-normalizes-zero-key.js',
   'built-ins/Map/prototype/set/replaces-a-value-normalizes-zero-key.js',
@@ -579,7 +580,7 @@ function shouldSkip(content, rel) {
   return 'not in curated functionality subset'
 }
 
-const { compile } = await import(join(ROOT, 'index.js'))
+const { default: jz } = await import(join(ROOT, 'index.js'))
 
 function runTest(src) {
   let code = src
@@ -594,10 +595,7 @@ function runTest(src) {
   }
 
   try {
-    const wasm = compile(code, { jzify: true })
-    if (!wasm || !wasm.byteLength) return { status: 'fail', error: 'no output' }
-    const mod = new WebAssembly.Module(wasm)
-    const inst = new WebAssembly.Instance(mod)
+    const inst = jz(code, { jzify: true })
     if (inst.exports._run) inst.exports._run()
     return { status: 'pass' }
   } catch (e) {

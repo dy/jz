@@ -491,7 +491,7 @@ const buildImports = (mod, opts, state) => {
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
         let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: true }, ptr(11, 0, id))
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: false }, ptr(11, 0, id))
       }
     }
   }

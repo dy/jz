@@ -7,6 +7,55 @@ import { readFileSync, readdirSync } from 'fs'
 const watrSrc = file => readFileSync(new URL(`../node_modules/watr/src/${file}`, import.meta.url), 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
+const watrEntryModules = () => ({
+  './src/compile.js': watrSrc('compile.js'),
+  './src/parse.js': watrSrc('parse.js'),
+  './src/print.js': watrSrc('print.js'),
+  './src/polyfill.js': watrSrc('polyfill.js'),
+  './src/optimize.js': watrSrc('optimize.js'),
+  './encode.js': watrSrc('encode.js'),
+  './const.js': watrSrc('const.js'),
+  './parse.js': watrSrc('parse.js'),
+  './util.js': watrSrc('util.js'),
+})
+
+test('watr: top-level package entry compiles', () => {
+  const src = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
+  const compiled = jz.compile(src, { jzify: true, modules: watrEntryModules() })
+  ok(compiled instanceof Uint8Array, 'top-level watr entry compiles to wasm bytes')
+  ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'top-level watr output is valid wasm')
+})
+
+test('watr: top-level package entry instantiates', () => {
+  const src = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
+  const inst = jz(src, { jzify: true, modules: watrEntryModules(), memoryPages: 4096 })
+  const compiled = inst.exports.compile('(module (func))')
+  ok(compiled instanceof Uint8Array, 'top-level watr compile export returns wasm bytes')
+  ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'compiled bytes are valid wasm')
+})
+
+test('watr: compiled print.js prints module text', () => {
+  const inst = jz(watrSrc('print.js'), {
+    jzify: true,
+    modules: {
+      './parse.js': watrSrc('parse.js'),
+      './util.js': watrSrc('util.js'),
+    },
+  })
+  is(inst.exports.default('(module)'), '(module)')
+})
+
+test('Map.set: omitted value stores undefined and keeps key present', () => {
+  const { exports } = jz(`
+    export let f = () => {
+      const m = new Map()
+      m.set('x')
+      return m.has('x') && m.get('x') === undefined
+    }
+  `, { jzify: true })
+  is(exports.f(), 1)
+})
+
 test('watr: compiled compile.js handles empty func module', async () => {
   const inst = await jz(watrSrc('compile.js'), {
     jzify: true,

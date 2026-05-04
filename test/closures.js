@@ -3,8 +3,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 
-function run(code) {
-  const wasm = compile(code)
+function run(code, opts) {
+  const wasm = compile(code, opts)
   const mod = new WebAssembly.Module(wasm)
   return new WebAssembly.Instance(mod).exports
 }
@@ -101,6 +101,19 @@ test('closure: mutable capture (by reference)', () => {
       return fn(5)
     }
   `).test(), 1004)  // n=999 visible to closure (JS semantics)
+})
+
+test('closure: hoisted function captures later binding by reference', () => {
+  is(run(`
+    export let test = () => {
+      function inner() { return x * 10 + y }
+      let x = 2
+      let y = 1
+      x ||= 0
+      y ||= 0
+      return inner()
+    }
+  `, { jzify: true }).test(), 21)
 })
 
 test('closure: mutation from inside closure', () => {

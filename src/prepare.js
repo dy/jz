@@ -1283,8 +1283,12 @@ const handlers = {
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
-    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod))
-      return includeModule(mod), mod + '.' + prop
+    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod)) {
+      includeModule(mod)
+      const key = mod + '.' + prop
+      if (ctx.core.emit[key]?.length > 0) includeForCallableValue()
+      return key
+    }
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
       const mangled = ctx.module.namespaces[obj].get(prop)
@@ -1474,6 +1478,19 @@ function prepareModule(specifier, source) {
 
   // Collect exports: rename exported funcs with prefix
   const moduleExports = new Map()
+  const exportLocal = (exportName, localName) => {
+    const mangled = `${prefix}$${localName}`
+    moduleExports.set(exportName, mangled)
+    const func = ctx.func.list.find(f => f.name === localName)
+    if (func) renameFunc(func, mangled)
+    if (ctx.scope.globals.has(localName)) {
+      const wat = ctx.scope.globals.get(localName).replace(`$${localName}`, `$${mangled}`)
+      ctx.scope.globals.delete(localName)
+      ctx.scope.globals.set(mangled, wat)
+      if (ctx.scope.userGlobals.has(localName)) { ctx.scope.userGlobals.delete(localName); ctx.scope.userGlobals.add(mangled) }
+      if (ctx.scope.globalTypes.has(localName)) { ctx.scope.globalTypes.set(mangled, ctx.scope.globalTypes.get(localName)); ctx.scope.globalTypes.delete(localName) }
+    }
+  }
   for (const name of Object.keys(ctx.func.exports)) {
     const val = ctx.func.exports[name]
     // Default export alias: export default existingName → map 'default' to that name's mangled form
@@ -1483,22 +1500,18 @@ function prepareModule(specifier, source) {
     }
     // Re-export alias: export { x } from './mod' → pass through inner module's mangled name
     if (typeof val === 'string') {
+      if (val.startsWith(prefix + '$')) {
+        moduleExports.set(name, val)
+        continue
+      }
+      if (ctx.func.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
+        exportLocal(name, val)
+        continue
+      }
       moduleExports.set(name, val)
       continue
     }
-    const mangled = `${prefix}$${name}`
-    moduleExports.set(name, mangled)
-    // Rename the function in ctx.func.list
-    const func = ctx.func.list.find(f => f.name === name)
-    if (func) renameFunc(func, mangled)
-    // Rename globals
-    if (ctx.scope.globals.has(name)) {
-      const wat = ctx.scope.globals.get(name).replace(`$${name}`, `$${mangled}`)
-      ctx.scope.globals.delete(name)
-      ctx.scope.globals.set(mangled, wat)
-      if (ctx.scope.userGlobals.has(name)) { ctx.scope.userGlobals.delete(name); ctx.scope.userGlobals.add(mangled) }
-      if (ctx.scope.globalTypes.has(name)) { ctx.scope.globalTypes.set(mangled, ctx.scope.globalTypes.get(name)); ctx.scope.globalTypes.delete(name) }
-    }
+    exportLocal(name, name)
   }
   // Resolve default export alias after named exports are mangled
   if (typeof ctx.func.exports['default'] === 'string') {
