@@ -30,15 +30,14 @@ test('Regression: Object.assign extends target with new fields', () => {
 test('Regression: mem.write partial object update preserves omitted fields', async () => {
   const r = await WebAssembly.instantiate(compile(`
     export let make = () => ({x: 1, y: 2, z: 3})
-    export let read = (o) => [o.x, o.y, o.z]
   `))
   const m = jz.memory(r)
   const ptr = r.instance.exports.make()
   m.write(ptr, { y: 99 })
-  const out = r.instance.exports.read(ptr)
-  is(out[0], 1)
-  is(out[1], 99)
-  is(out[2], 3)
+  const out = m.read(ptr)
+  is(out.x, 1)
+  is(out.y, 99)
+  is(out.z, 3)
 })
 
 test('Regression: compile survives focused object mutation cases', () => {
@@ -182,4 +181,41 @@ test('Regression: ?: polymorphic — TYPED arrays with different element types',
   is(pick(0, 1), 2.5)
   is(pick(1, 0), 10)
   is(pick(1, 1), 20)
+})
+
+// Object literals are laid out by schemaId; JSON.stringify resolves keys
+// through the schema table, not the heap. A nested literal whose keys are
+// unrelated to the enclosing binding's schema must keep its own schemaId —
+// otherwise its keys collapse to the binding's at serialization.
+test('Regression: nested literals retain own schemaId, not enclosing binding\'s', () => {
+  const { f } = run(`export let f = () => {
+    let x = "hi"
+    let out = {ops: [{inner: {id: x}}]}
+    return JSON.stringify(out)
+  }`)
+  is(f(), '{"ops":[{"inner":{"id":"hi"}}]}')
+})
+
+test('Regression: nested prefix literal does not inherit enclosing merged schemaId', () => {
+  const { f } = run(`export let f = () => {
+    let out = {a: {a: 1}}
+    Object.assign(out, {b: 2})
+    return JSON.stringify(out)
+  }`)
+  is(f(), '{"a":{"a":1},"b":2}')
+})
+
+// The slot fast-path for `o.prop` reads at a fixed offset with no runtime
+// type check; it is only sound when the receiver is statically known to be
+// OBJECT. A receiver whose type is unknown (e.g. a `?:` over JSON.parse
+// erases its HASH type) must fall through to dynamic dispatch — slot 0 of
+// a HASH is bucket metadata, not a property value.
+test('Regression: unknown-typed receiver does not take OBJECT slot fast-path', () => {
+  const { f } = run(`export let f = (w) => {
+    let h = w == 0 ? JSON.parse('{"id":"hi"}') : JSON.parse('{"id":"bye"}')
+    let out = { id: h.id }
+    return out.id
+  }`)
+  is(f(0), 'hi')
+  is(f(1), 'bye')
 })
