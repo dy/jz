@@ -1752,6 +1752,7 @@ export function collectProgramFacts(ast) {
   const callSites = []
   const doSchema = ast && ctx.schema.register
   const doArity = !!ctx.closure.make
+  let hasSchemaLiterals = false
   let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
   const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
   // Slot-type observation lives in the dedicated `observeProgramSlots` pass below;
@@ -1775,7 +1776,10 @@ export function collectProgramFacts(ast) {
     // to `[':', x, x]`) resolves x's val type via per-function locals, not just globals.
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(args)
-      if (parsed) ctx.schema.register(parsed.names)
+      if (parsed) {
+        ctx.schema.register(parsed.names)
+        hasSchemaLiterals = true
+      }
     }
     // closure ABI arity
     if (doArity) {
@@ -1845,12 +1849,12 @@ export function collectProgramFacts(ast) {
   // through valTypeOf → lookupValType. Skips into closures — they're observed via
   // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
   // map (already populated with the same overlay-aware walk).
-  if (doSchema) observeProgramSlots(ast)
+  if (doSchema && hasSchemaLiterals) observeProgramSlots(ast)
 
   return {
     dynVars, anyDyn, propMap, valueUsed, callSites,
     maxDef, maxCall, hasRest, hasSpread,
-    paramReps,
+    paramReps, hasSchemaLiterals,
   }
 }
 

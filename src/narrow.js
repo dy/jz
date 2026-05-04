@@ -203,7 +203,7 @@ function resetParamWasmFacts(paramReps) {
 }
 
 export default function narrowSignatures(programFacts, ast) {
-  const { callSites, valueUsed, paramReps } = programFacts
+  const { callSites, valueUsed, paramReps, hasSchemaLiterals } = programFacts
 
   // Reachability filter: dead callerFuncs (e.g. unused stdlib helpers from bundled
   // modules) shouldn't poison narrowing of live functions. Without this, a never-
@@ -436,7 +436,7 @@ export default function narrowSignatures(programFacts, ast) {
   // as null. observeSlot's first-wins-then-clash rule lets a later precise
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
-  observeProgramSlots(ast)
+  if (hasSchemaLiterals) observeProgramSlots(ast)
   rebuildArrElems()
   rebuildArrElemVals()
   // Clear sticky-null on val/schemaId — first 2 passes ran with valResult unset, so

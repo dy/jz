@@ -77,6 +77,15 @@ const resolveClosureWidth = (programFacts) => {
     : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
 }
 
+const canSkipWholeProgramNarrowing = (programFacts) =>
+  programFacts.callSites.length === 0 &&
+  programFacts.valueUsed.size === 0 &&
+  !programFacts.anyDyn &&
+  programFacts.propMap.size === 0 &&
+  !programFacts.hasSchemaLiterals &&
+  !ctx.closure.make &&
+  !(ctx.module.moduleInits?.length)
+
 export default function plan(ast) {
   scanGlobalValueFacts(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanGlobalValueFacts(init)
@@ -88,6 +97,8 @@ export default function plan(ast) {
 
   materializeAutoBoxSchemas(programFacts)
   resolveClosureWidth(programFacts)
+  if (canSkipWholeProgramNarrowing(programFacts)) return programFacts
+
   narrowSignatures(programFacts, ast)
   specializeBimorphicTyped(programFacts)
   refineDynKeys(programFacts)

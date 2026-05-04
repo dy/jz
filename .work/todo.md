@@ -51,7 +51,8 @@
 ## [ ] speed up compiler itself (faster than eval)
   * [x] Add compile-time benchmark that reports parse / prepare / plan / emit / watr separately
   * [x] Benchmark cold vs repeated template compilation; decide whether any cache is worth its complexity
-  * [ ] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, pointer values, schemas, or module init blocks
+  * [x] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, dynamic keys, schemas, first-class function values, or module init blocks
+  * [x] Skip schema slot observation passes when no static object-literal schemas were collected
   * [ ] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
   * [ ] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
   * [ ] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
