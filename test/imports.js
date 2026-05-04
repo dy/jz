@@ -401,3 +401,30 @@ test('import: whole object with method this-binding', () => {
   )
   is(exports.f(), 10)
 })
+
+// The parser yields a trailing null in the comma list for `{a, b,}`. ES2017
+// allows the trailing comma in import specifiers, so jz must accept it across
+// every import tier (built-in, source-bundled, host).
+test('import: trailing comma in built-in module specifier', () => {
+  const { f } = run(`
+    import { sin, cos, } from 'math'
+    export let f = x => sin(x) + cos(x)
+  `)
+  almost(f(0), 1, 1e-6)
+})
+
+test('import: trailing comma in source-module specifier', () => {
+  const { exports } = jz(
+    `import { a, b, } from './x'\nexport let f = () => a + b`,
+    { modules: { './x': 'export let a = 1\nexport let b = 2' } }
+  )
+  is(exports.f(), 3)
+})
+
+test('import: trailing comma in host-module specifier', () => {
+  const { exports } = jz(
+    `import { add, mul, } from 'host'\nexport let f = () => add(2, 3) + mul(2, 3)`,
+    { imports: { host: { add: (a, b) => a + b, mul: (a, b) => a * b } } }
+  )
+  is(exports.f(), 11)
+})

@@ -100,6 +100,17 @@ test('.indexOf: not found', () => {
   is(run(`export let f = () => [10, 20, 30].indexOf(99)`).f(), -1)
 })
 
+// String equality must compare values, not NaN-boxed pointer bits — distinct
+// allocations of the same string literal land at different heap addresses, so
+// f64.eq treats them as unequal. indexOf/includes must route through __eq.
+test('.indexOf: string found', () => {
+  is(run(`export let f = () => ["A","B","C"].indexOf("B")`).f(), 1)
+})
+
+test('.indexOf: string via variable still matches', () => {
+  is(run(`export let f = () => { let x = "B"; return ["A","B","C"].indexOf(x) }`).f(), 1)
+})
+
 // === .includes ===
 
 test('.includes: found', () => {
@@ -108,6 +119,14 @@ test('.includes: found', () => {
 
 test('.includes: not found', () => {
   is(run(`export let f = () => [10, 20, 30].includes(99)`).f(), 0)
+})
+
+test('.includes: string found', () => {
+  is(run(`export let f = () => ["A","B","C"].includes("B")`).f(), 1)
+})
+
+test('.includes: string via variable still matches', () => {
+  is(run(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), 1)
 })
 
 // === .shift ===
