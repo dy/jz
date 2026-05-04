@@ -741,7 +741,7 @@ const handlers = {
     if (hostMod && Array.isArray(specifiers) && specifiers[0] === '{}') {
       const inner = specifiers[1]
       if (inner != null) {
-        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         const builtinItems = []
         for (const item of items) {
           const name = typeof item === 'string' ? item : item[1]
@@ -779,7 +779,7 @@ const handlers = {
       if (Array.isArray(remaining) && remaining[0] === '{}') {
         const inner = remaining[1]
         if (inner == null) return null
-        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items)
           if (typeof item === 'string') bind(item)
           else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
@@ -810,7 +810,7 @@ const handlers = {
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
-        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items) {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
@@ -827,7 +827,7 @@ const handlers = {
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
-        const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
         for (const item of items) {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
@@ -885,7 +885,7 @@ const handlers = {
           // export { a, b as c } from './mod'
           const inner = decl[1][1]
           if (inner == null) return null
-          const items = Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]
+          const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
           for (const item of items) {
             const name = typeof item === 'string' ? item : item[1]
             const alias = typeof item === 'string' ? item : item[2]
