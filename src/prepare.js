@@ -24,9 +24,9 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam } from './analyze.js'
+import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam, observeNodeFacts } from './analyze.js'
 import { staticPropertyKey } from './key.js'
-import { isLiteralStr, isFuncRef } from './ir.js'
+import { isFuncRef } from './ir.js'
 import { normalizeSource } from './source.js'
 import {
   CTORS, TIMER_NAMES,
@@ -104,29 +104,8 @@ function recordModuleInitFacts(root) {
       if (typeof node === 'string' && TIMER_NAMES.has(node)) facts.timerNames.add(node)
       return
     }
-    const [op, ...args] = node
-    if (op === '[]') {
-      const [obj, idx] = args
-      if (!isLiteralStr(idx)) { facts.anyDyn = true; if (typeof obj === 'string') facts.dynVars.add(obj) }
-    } else if (op === 'for-in') {
-      facts.anyDyn = true
-      if (typeof args[1] === 'string') facts.dynVars.add(args[1])
-    } else if (op === '{}') {
-      facts.hasSchemaLiterals = true
-    } else if (op === '=>') {
-      let fixedN = 0
-      for (const r of extractParams(args[0])) {
-        if (classifyParam(r).kind === 'rest') facts.hasRest = true
-        else fixedN++
-      }
-      if (fixedN > facts.maxDef) facts.maxDef = fixedN
-    } else if (op === '()') {
-      const a = args[1]
-      const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-      if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) facts.hasSpread = true
-      if (callArgs.length > facts.maxCall) facts.maxCall = callArgs.length
-    }
-    for (const a of args) walk(a)
+    observeNodeFacts(node, facts)
+    for (const a of node.slice(1)) walk(a)
   }
   visitFuncValue(root)
   walk(root)

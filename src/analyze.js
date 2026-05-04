@@ -1504,6 +1504,35 @@ export function collectParamNames(raw, out = new Set()) {
   return out
 }
 
+/** Observe shared AST facts on a single node (dyn, schema, arity).
+ *  Mutates `f`: { anyDyn, dynVars:Set, hasSchemaLiterals, maxDef, maxCall, hasRest, hasSpread }.
+ *  Used by both prepare.js walk and analyze.js walkFacts. */
+export function observeNodeFacts(node, f) {
+  if (!Array.isArray(node)) return
+  const [op, ...args] = node
+  if (op === '[]') {
+    const [obj, idx] = args
+    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
+  } else if (op === 'for-in') {
+    f.anyDyn = true
+    if (typeof args[1] === 'string') f.dynVars.add(args[1])
+  } else if (op === '{}') {
+    f.hasSchemaLiterals = true
+  } else if (op === '=>') {
+    let fixedN = 0
+    for (const r of extractParams(args[0])) {
+      if (classifyParam(r).kind === 'rest') f.hasRest = true
+      else fixedN++
+    }
+    if (fixedN > f.maxDef) f.maxDef = fixedN
+  } else if (op === '()') {
+    const a = args[1]
+    const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+    if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
+    if (callArgs.length > f.maxCall) f.maxCall = callArgs.length
+  }
+}
+
 /** Find free variables in AST: referenced in node, not in `bound`, present in `scope`. */
 export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
@@ -1750,55 +1779,24 @@ export function narrowReturnArrayElems(field, paramReps, valueUsed) {
 export function collectProgramFacts(ast) {
   const paramReps = new Map()
   const valueUsed = new Set()
-  const dynVars = new Set()
-  let anyDyn = false
   const propMap = new Map()
   const callSites = []
   const doSchema = ast && ctx.schema.register
   const doArity = !!ctx.closure.make
-  let hasSchemaLiterals = false
-  let maxDef = 0, maxCall = 0, hasRest = false, hasSpread = false
+  const f = { dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false, maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false }
   // Slot-type observation lives in the dedicated `observeProgramSlots` pass below;
   // walkFacts only registers schemas (which is local to the AST node).
   const walkFacts = (node, full, inArrow, callerFunc) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
-    // dyn-key detection. Strict check deferred to emit time (e.g. `buf[i]` on a
-    // Float64Array uses typed-array load, not __dyn_get — only the actual
-    // dynamic-dispatch fallback should error in strict mode).
-    if (op === '[]') {
-      const [obj, idx] = args
-      if (!isLiteralStr(idx)) { anyDyn = true; if (typeof obj === 'string') dynVars.add(obj) }
-    } else if (op === 'for-in') {
-      if (ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
-      anyDyn = true
-      if (typeof args[1] === 'string') dynVars.add(args[1])
-    }
-    // Object literal: register schema. Slot val-type observation is deferred to a
-    // second pass (observeSlotsIn below) so that shorthand `{x}` (expanded by prepare
-    // to `[':', x, x]`) resolves x's val type via per-function locals, not just globals.
+    // shared dyn/schema/arity facts (duplicated pattern synced with prepare.js)
+    observeNodeFacts(node, f)
+    // strict for-in check
+    if (op === 'for-in' && ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
+    // schema registration (analyze-specific)
     if (op === '{}' && doSchema) {
       const parsed = staticObjectProps(args)
-      if (parsed) {
-        ctx.schema.register(parsed.names)
-        hasSchemaLiterals = true
-      }
-    }
-    // closure ABI arity
-    if (doArity) {
-      if (op === '=>') {
-        let fixedN = 0
-        for (const r of extractParams(args[0])) {
-          if (classifyParam(r).kind === 'rest') hasRest = true
-          else fixedN++
-        }
-        if (fixedN > maxDef) maxDef = fixedN
-      } else if (op === '()') {
-        const a = args[1]
-        const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-        if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) hasSpread = true
-        if (callArgs.length > maxCall) maxCall = callArgs.length
-      }
+      if (parsed) ctx.schema.register(parsed.names)
     }
     // Crossing into a closure body: from now on, no call-site collection (matches the
     // pre-fusion scanCalls bailing at '=>'). Still walks children for arity/dyn.
@@ -1818,10 +1816,6 @@ export function collectProgramFacts(ast) {
       // first-class function-value + static-call-site scan
       if (op === '()' && isFuncRef(args[0], ctx.func.names)) {
         if (!inArrow) {
-          // Record call site for the type/schema fixpoint. Filtering by
-          // exported/raw/valueUsed happens later (valueUsed isn't fully populated yet).
-          // `node` is the call AST node itself; specializeBimorphicTyped mutates
-          // node[1] (the callee name) to point at a per-ctor clone.
           const a = args[1]
           const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
           callSites.push({ callee: args[0], argList, callerFunc, node })
@@ -1847,16 +1841,16 @@ export function collectProgramFacts(ast) {
   const initFacts = ctx.module.initFacts
   if (initFacts) {
     if (initFacts.anyDyn) {
-      anyDyn = true
-      for (const v of initFacts.dynVars) dynVars.add(v)
+      f.anyDyn = true
+      for (const v of initFacts.dynVars) f.dynVars.add(v)
     }
     if (doArity) {
-      if (initFacts.maxDef > maxDef) maxDef = initFacts.maxDef
-      if (initFacts.maxCall > maxCall) maxCall = initFacts.maxCall
-      if (initFacts.hasRest) hasRest = true
-      if (initFacts.hasSpread) hasSpread = true
+      if (initFacts.maxDef > f.maxDef) f.maxDef = initFacts.maxDef
+      if (initFacts.maxCall > f.maxCall) f.maxCall = initFacts.maxCall
+      if (initFacts.hasRest) f.hasRest = true
+      if (initFacts.hasSpread) f.hasSpread = true
     }
-    if (doSchema && initFacts.hasSchemaLiterals) hasSchemaLiterals = true
+    if (doSchema && initFacts.hasSchemaLiterals) f.hasSchemaLiterals = true
   }
 
   // Slot-type observation pass: walk every `{}` literal with the right scope's
@@ -1865,12 +1859,12 @@ export function collectProgramFacts(ast) {
   // through valTypeOf → lookupValType. Skips into closures — they're observed via
   // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
   // map (already populated with the same overlay-aware walk).
-  if (doSchema && hasSchemaLiterals) observeProgramSlots(ast)
+  if (doSchema && f.hasSchemaLiterals) observeProgramSlots(ast)
 
   return {
-    dynVars, anyDyn, propMap, valueUsed, callSites,
-    maxDef, maxCall, hasRest, hasSpread,
-    paramReps, hasSchemaLiterals,
+    dynVars: f.dynVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
+    maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
+    paramReps, hasSchemaLiterals: f.hasSchemaLiterals,
   }
 }
 
