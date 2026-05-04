@@ -182,3 +182,31 @@ test('Regression: ?: polymorphic — TYPED arrays with different element types',
   is(pick(1, 0), 10)
   is(pick(1, 1), 20)
 })
+
+// Object literals are laid out by schemaId; JSON.stringify resolves keys
+// through the schema table, not the heap. A nested literal whose keys are
+// unrelated to the enclosing binding's schema must keep its own schemaId —
+// otherwise its keys collapse to the binding's at serialization.
+test('Regression: nested literals retain own schemaId, not enclosing binding\'s', () => {
+  const { f } = run(`export let f = () => {
+    let x = "hi"
+    let out = {ops: [{inner: {id: x}}]}
+    return JSON.stringify(out)
+  }`)
+  is(f(), '{"ops":[{"inner":{"id":"hi"}}]}')
+})
+
+// The slot fast-path for `o.prop` reads at a fixed offset with no runtime
+// type check; it is only sound when the receiver is statically known to be
+// OBJECT. A receiver whose type is unknown (e.g. a `?:` over JSON.parse
+// erases its HASH type) must fall through to dynamic dispatch — slot 0 of
+// a HASH is bucket metadata, not a property value.
+test('Regression: unknown-typed receiver does not take OBJECT slot fast-path', () => {
+  const { f } = run(`export let f = (w) => {
+    let h = w == 0 ? JSON.parse('{"id":"hi"}') : JSON.parse('{"id":"bye"}')
+    let out = { id: h.id }
+    return out.id
+  }`)
+  is(f(0), 'hi')
+  is(f(1), 'bye')
+})
