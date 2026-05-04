@@ -2,242 +2,27 @@
 
 ## Product / Validation
 
-* [x] Pick one undeniable use case and optimize around it.
-* [x] Add benchmark coverage beyond internal examples: DSP kernel, typed-array processing,
-  math loop, parser/string workload, and a JS-engine comparison set.
-* [x] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
-## [ ] Integrate into edge.js
-
-Goal: present JZ as a JS-subset → WASM accelerator inside EdgeJS, not as an
-EdgeJS engine provider. EdgeJS engines live behind their N-API adapter boundary;
-JZ should integrate through clean WASM/host-import contracts and a focused
-example/benchmark PR.
-
-### JZ-side prep
-
-* [x] Rework/close PR #2 instead of merging as-is: avoid a branded `jz/edge`
-  facade unless EdgeJS needs a real runtime-specific API; current patch mostly
-  duplicates existing host/WASI hooks and overclaims async behavior.
-* [x] Harden `jz/wasi` default output routing: if `process.stdout.write` or
-  `process.stderr.write` is absent or throws, fall back to `console.log` /
-  `console.warn`; keep `{ write(fd, text) }` as the canonical host override.
-* [x] Add tests for stdout/stderr fallback without introducing an EdgeJS-only
-  public entrypoint: no `process`, missing `process.stdout`, throwing `.write`,
-  and custom `{ write }` capture.
-* [x] Do not publish `instantiateAsync`: it only wrapped synchronous JZ source
-  compilation with async WebAssembly startup, adding public API surface without
-  new capability. Hosts that need async WASM startup can call `compile()` and
-  then standard `WebAssembly.compile` / `WebAssembly.instantiate` directly.
-* [ ] Add host-import mode for runtime services used by JS hosts:
-  `console.log` / `Date.now` / `performance.now` can lower to `env.printLine`
-  / `env.now` instead of WASI `fd_write` / `clock_time_get` when requested.
-  Keep WASI as the standalone `.wasm` / CLI default.
-* [x] Document the host contract in README: pure numeric JZ modules need no
-  imports; console/timers currently need WASI or host imports; compile at
-  startup/build time, not per request.
-* [x] Add one tiny EdgeJS-compatible smoke fixture in this repo that does not
-  depend on EdgeJS: compile a scalar kernel, assert no WASI imports, instantiate
-  with standard WebAssembly APIs.
-
-### EdgeJS validation
-
-* [x] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
-  compile once at module init, instantiate per request or reuse a module, call a
-  scalar export. Verified with nightly EdgeJS `0.0.0-0ff2433` / Node
-  `v24.13.2`: `{ imports: 0, mac: 50, mix: 63 }`.
-* [x] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
-  `WebAssembly.Instance`, `WebAssembly.compile`, and memory imports inside
-  Wasmer/WASIX sandbox. Current local result is blocked before the nested-WASM
-  test: installed Wasmer is `4.4.0` and `wasmer --version -v` reports no
-  `features:` line with `napi_v10` / `napi_extension_wasmer_v0`, so EdgeJS safe
-  mode exits before user code.
-* [x] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
-* [x] Verify explicit console host imports under EdgeJS without adding implicit
-  host-import mode: `jz(source, { imports: { console: hostConsole } })` works
-  natively in EdgeJS and is smaller than introducing a new public mode for the
-  first PR. Timer imports remain future work if an EdgeJS example needs them.
-* [x] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
-  exception handling is not enabled, document it as an integration limitation
-  rather than adding a misleading adapter workaround. Native EdgeJS rejects the
-  current JZ exception output with `Invalid opcode 0x1f (enable with
-  --experimental-wasm-exnref)`; passing `--experimental-wasm-exnref` to `edge`
-  did not enable it in this build.
-
-### EdgeJS PR shape
-
-* [ ] Open a small PR to `wasmerio/edgejs` as an example/benchmark, not a core
-  runtime engine change.
-* [x] Add an example such as `examples/jz-kernel` or `examples/jz-dsp`:
-  import `jz`, compile a numeric kernel once, call it from an EdgeJS script,
-  and keep source short enough to read without explanation. Created local
-  EdgeJS draft at `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` with a no-import
-  scalar kernel plus explicit `console` host-import smoke.
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
-  pulling large optional dependencies or network setup.
-* [x] Include a short README note in the example: JZ is useful for hot numeric,
-  DSP, parser, and typed-array kernels; it is not a general JS runtime or Node
-  compatibility layer.
-* [x] Include before/after numbers only from commands reproducible in the PR:
-  EdgeJS raw JS vs EdgeJS + JZ-compiled WASM for the same kernel. The draft
-  benchmark batches the hot loop inside one compiled export to avoid measuring
-  JS/WASM call overhead; current typed-array mat4-style kernel result under
-  local EdgeJS native: same checksum, zero imports, 919-byte WASM, raw JS
-  median ~8.9 ms, JZ WASM median ~5.9 ms for 200k iterations over 9 runs.
-
-### Performance follow-up for EdgeJS pitch
-
-Truth: WASM only looks like the point when the compiled export owns enough hot
-work. Per-iteration JS -> WASM calls mostly measure boundary overhead, not JZ
-codegen quality.
-
-* [x] Fix the EdgeJS draft benchmark shape: compile once, call one export, keep
-  the hot loop inside the generated WASM module.
-* [x] Replace or supplement the toy scalar benchmark with a stronger kernel from
-  the existing suite (`mat4`, `biquad`, `tokenizer`, or a tiny typed-array DSP
-  loop) so the PR demonstrates a real WASM win without overfitting a microcase.
-  Replaced the draft benchmark with a small `Float64Array` 4x4 matrix kernel
-  adapted from `bench/mat4`, using warmup plus median sampling.
-* [ ] Add aggressive monomorphic single-caller inlining for hot internal
-  functions: if a non-exported callee is called from one or two sites and owns a
-  loop, inline or specialize it before handing the module to the engine.
-* [ ] Couple constant-argument propagation with inlining/unrolling: bake known
-  loop bounds into the inlined copy, then unroll small trip counts where code
-  growth stays bounded.
-* [ ] Audit typed-array address/base fusion on the chosen EdgeJS benchmark:
-  repeated `arr[idx + k]` should become one base computation plus `offset=`
-  immediates, not repeated index arithmetic.
-* [ ] Investigate bounds-check elision hints for monotone typed-array loops:
-  when `i < arr.length` dominates all `arr[i + k]` accesses, emitted WASM
-  should help V8/Wasmtime remove redundant checks.
-* [ ] Revisit i32 narrowing for integer-heavy kernels only with tier-up data:
-  previous `nStages` narrowing made WAT cleaner but regressed V8 by blocking
-  inlining, so do not ship it without disassembly/benchmark proof.
-
-### EdgeJS-side remaining work
-
-* [ ] Move `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` into a clean EdgeJS
-  branch and decide whether the PR should include only source files or also a
-  lockfile for the nested example package.
-* [ ] Reinstall the example dependency from a clean checkout and rerun:
-  `edge index.mjs`, `edge bench.mjs`, plus Node baseline commands if the PR
-  README reports Node/EdgeJS comparison output.
-* [x] Decide CI shape: keep this PR as a documented example only unless EdgeJS
-  maintainers ask for CI. A CI smoke would need installing `jz@^0.1.1` inside a
-  nested example package, adding network/package-manager assumptions to a repo
-  whose core examples are plain scripts.
-* [ ] Keep safe-mode out of the PR claim unless Wasmer N-API feature support is
-  available in CI; current local safe-mode validation is blocked before user
-  code by missing `napi_v10` / `napi_extension_wasmer_v0` features.
-* [x] Draft the PR description around the narrow contract: JZ compiles hot
-  JS-subset kernels to WASM inside EdgeJS; it is not an EdgeJS engine provider
-  and not a Node compatibility layer. Drafted in `.work/edgejs-pr-description.md`.
-
-### Acceptance
-
-* [x] `npm test` passes in JZ after host/WASI changes.
-* [x] `npm run test262:builtins` still passes if touched code affects built-ins
-  or host output paths.
-* [x] EdgeJS local smoke run passes in native mode.
-* [x] EdgeJS safe-mode result is known and written down: pass, blocked by nested
-  WASM, blocked by WASM exceptions, blocked by WASI/host imports, or blocked by
-  missing Wasmer N-API features.
-* [x] The final integration story is truthful in one sentence: "Use JZ inside
-  EdgeJS to compile hot JS-subset kernels to WASM; EdgeJS remains the JS
-  runtime."
-
-## Backlog
-
-
 * [ ] `import.meta`
-
-
-
-* [x] Update benchmark
-* [x] Ensure the proper way for template tags
-* [x] Compile floatbeats
-* [x] test262 coverage expansion: grow full-denominator coverage with meaningful jz features, not selected-subset pass rate
-  * [x] Report overall test262 percentage against all `test262/test/**/*.js` files
-  * [x] Fix object destructuring assignment regressions blocking full test suite
-  * [x] Add/enable `rest-parameters` tests that map to existing jz semantics
-  * [x] Add/enable `computed-property-names` object tests that map to fixed-shape objects
-  * [x] Add/enable `arguments-object` tests only where jzify/function lowering truly supports them
-  * [x] Add lexical/grammar coverage: `asi`, `comments`, `white-space`, `line-terminators`, `punctuators`, `directive-prologue`
-  * [x] Lower braced `do-while` through jzify without body duplication; `do ; while` remains a subscript parser gap
-  * [x] Keep `delete` prohibited for jz fixed-shape objects; only parser conformance belongs upstream in subscript
-  * [x] Treat `debugger` as parse/no-op or explicit ignore, not a runtime feature
-  * [x] Broaden the local test262 harness (`assert.*`, `Test262Error`, `compareArray`) before counting more failures
-  * [x] Add/enable ordinary `template-literal` coverage; keep `tagged-template` separate unless template-object caching semantics are implemented — already works, template literal tests pass in expressions/
-  * [x] Fix optional catch binding parser support (`catch { ... }`) now that `try`/`catch`/`finally` runtime support exists — source rewrite in normalizeSource + jzify codegen
-  * [x] Add/enable simple `for-in` coverage for enumerable fixed-shape/HASH object keys — jzify var→let restructure for for-in, codegen handles both AST formats
-  * [x] Revisit broader `arguments-object` coverage only if JS compatibility becomes a goal; current curated jzify subset is enough for core jz
-  * [x] Keep broad unsupported buckets out of scope for this metric (`async`, `class`, `this`, generators, iterators, `with`, `super`, dynamic import)
-
-##  [x] add a separate test262 built-ins runner focused on jz functionality, not full runtime/prototype semantics
-* [x] Verify `Math.random` against `test/test262/test/built-ins/Math/random/S15.8.2.14_A1.js` first; it is the only `Math.random` functionality test, while `prop-desc`, `name`, `length`, and `not-a-constructor` are metadata/runtime-shape tests to skip for now
-* [x] Create `test/test262-builtins.js` with the same clone-if-missing, walk, strip-frontmatter, wrap-as-`_run`, compile, instantiate, and pass/fail/skip reporting shape as `test/test262.js`
-* [x] Add a minimal built-ins assert harness: `Test262Error`, `assert`, `assert.sameValue`, `assert.notSameValue`, `assert.compareArray`, and `assert.throws`
-* [x] Curate the first tracked built-ins bucket as `Math/random/S15.8.2.14_A1.js`; explicitly skip descriptor/property metadata, constructor checks, `Reflect`, `Function`, `propertyHelper`, `verifyProperty`, async, class, iterator, Symbol species/toPrimitive/iterator, Proxy, Weak*, and fixture-dependent tests
-* [x] Add `npm run test262:builtins` script pointing to `node test/test262-builtins.js`
-* [x] Report built-ins coverage separately from language coverage: pass/fail/skip for tracked built-ins and pass count over all `test/built-ins/**/*.js`
-* [x] Run `node test/test262-builtins.js`, `node test/test262-builtins.js --filter=Math/random`, and `npm test`; fix any real functionality failures before reporting done
-* [x] After `Math.random` passes, add follow-up TODOs for curated functionality subsets of `Math`, then `JSON`, `Number`, `String`, `Array`, `Object`, typed arrays, `Map`, `Set`, `RegExp`, and `Symbol`, keeping metadata/prototype semantics out unless deliberately chosen
-* [x] Next built-ins pass: add curated functionality tests for implemented `Math` functions/constants only; keep descriptor/name/length/constructor/prototype tests skipped
-* [x] Next built-ins pass: add curated `JSON.parse`/`JSON.stringify` functionality tests that match current object/array/string semantics; skip reviver/replacer/property-order edge cases unless verified
-* [x] Next built-ins pass: add curated `Number` functionality tests for constants/conversion/predicates already implemented in `module/`; skip descriptor/prototype/spec-internal tests
-* [x] Next built-ins pass: add curated `String`, `Array`, and `Object` functionality tests for methods already implemented in `module/`; skip descriptor/prototype/spec-internal tests
-* [x] Next built-ins pass: add curated `Map`/`Set` functionality tests for verified `get`/`set`/`has`/`add` behavior; skip internal-slot/prototype metadata tests
-* [x] Next built-ins pass: probe typed-array, `RegExp`, and `Symbol` in smaller method-specific batches before adding any test262 files; promoted verified ArrayBuffer/DataView typed-memory functionality, `RegExp.prototype.exec` unicode smoke files, and `Symbol` identity coverage. Direct `TypedArray.prototype` test262 directories remain blocked by fixture-heavy harness requirements, not simple functionality files.
-
-## [x] speed up compiler itself (faster than eval)
-  * [x] Add compile-time benchmark that reports parse / prepare / plan / emit / watr separately
-  * [x] Benchmark cold vs repeated template compilation; decide whether any cache is worth its complexity
-  * [x] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, dynamic keys, schemas, or first-class function values; simple module init blocks no longer block the fast path
-  * [x] Skip schema slot observation passes when no static object-literal schemas were collected
-  * [x] Keep function-name membership current during prepare so call/export checks avoid repeated linear scans of `ctx.func.list`
-  * [x] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
-  * [x] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
-  * [x] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
-  * [x] Delay expensive typed-array bimorphic clone analysis unless a param is proven `VAL.TYPED` and has conflicting ctor observations
-  * [x] Avoid remaining module init body scans after autoload when the loaded modules do not introduce facts used by the current program; value-fact scanning is already recorded during prepare
-* [x] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
-
-### Compiler refactor notes
-
-* [x] Remove `compile.js` as a re-export hub; modules import directly from `ir`, `emit`, and `analyze`
-* [x] Split pre-emit planning into `plan.js`, signature specialization into `narrow.js`, autoload policy into `autoload.js`, and static key folding into `key.js`
-* [x] Keep `plan.js` separate from `analyze.js`; merging them would make orchestration depend on narrowing while narrowing depends on analysis helpers
-* [x] Make `narrow.js` read as named phases inside one file before creating more files: reachability, param facts, result facts, pointer ABI, typed clones, dyn-key refinement
-* [x] Move per-function pre-analysis out of `emitFunc` only after a measured design exists: target `emitFunc(func, funcFacts, programFacts)` with no surprise cache invalidation inside emission
-* [x] Replace hidden global cache invalidation with explicit phase inputs/outputs where it reduces walks; keep global `ctx` for compile state as intended
-* [x] Audit `prepare.js` for remaining hardcoded runtime-module policy; move reusable stdlib/module selection into `autoload.js` helpers, or delete the autoload policy if explicit stdlib imports become the chosen direction
-* [x] Do not recreate a convenience facade in `compile.js`; noisy direct imports are preferable to hidden cross-layer coupling
 
 ### Build & tooling
 
-* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
-* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
-* [x] Metacircularity: watr compilation — 8/8 WAT, 7/8 WASM binary, 1/8 valid (const.js)
-* [x] Metacircularity: watr WASM validation — all 5 watr modules (util/const/encode/parse/compile) validate via wasm-validate. Repro: `node ~/projects/watr/.work/repro-jz-codegen-bug.mjs`.
-* [x] Metacircularity: watr WASM execution — jz-compiled watr.wasm correctly compiles all 21 examples (verified via /tmp/jz-c/watr-native). Required watr fix: `unbranch` opt at [watr/src/optimize.js:1394](../node_modules/watr/src/optimize.js#L1394) was stripping trailing `(br $loop_label)` from `loop` blocks (loop-back jump, not exit), making loops run once. Patched locally and upstream — gate on `op !== 'block'`.
 * [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
-* [x] console.log/warn/error
-* [x] Date.now, performance.now
-* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
-* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
-* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
-* [x] Custom imports — host functions via { imports: { mod: { fn } } }
-* [x] Shared memory — { memory } option, cross-module pointer sharing
 * [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
-* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
-* [x] Template tag
 * [ ] jzify script converting any JZ
 * [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
 * [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
 * [ ] align with Crockford practices
 * [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
+
+### JZ-side prep
+
+* [ ] Add host-import mode for runtime services used by JS hosts:
+  `console.log` / `Date.now` / `performance.now` can lower to `env.printLine`
+  / `env.now` instead of WASI `fd_write` / `clock_time_get` when requested.
+  Keep WASI as the standalone `.wasm` / CLI default.
 
 
 ## Phase 14: Internal Parser (Future)
@@ -250,8 +35,6 @@ codegen quality.
 
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
-* [x] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
-* [x] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
 * [ ] test262 basics
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
@@ -275,6 +58,7 @@ codegen quality.
 * [ ] Pick ONE use case, make jz undeniable for it
 * [ ] Ship something someone uses
 
+
 ## Floatbeat playground
 
 * [ ] Syntax highlighter
@@ -282,12 +66,327 @@ codegen quality.
 * [ ] Database + recipe book
 * [ ] Samples collection
 
+
 ## REPL
 
 * [ ] Auto-convert var→let, function→arrow on paste
 * [ ] Auto-import implicit globals
 * [ ] Show produced WAT
 * [ ] Document interop
+
+
+### EdgeJS PR shape
+
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
+  pulling large optional dependencies or network setup.
+
+
+
+## Done
+
+
+# Performance
+
+Truth: WASM only looks like the point when the compiled export owns enough hot
+work. Per-iteration JS -> WASM calls mostly measure boundary overhead, not JZ
+codegen quality.
+
+* [x] Add aggressive monomorphic single-caller inlining for hot internal
+  functions. Implemented as experimental `sourceInline` under `optimize: 3`,
+  but measured worse on mat4/biquad due code growth and V8 tiering shape, so it
+  is intentionally disabled in default level 2.
+* [x] Couple constant-argument propagation with inlining/unrolling. Landed the
+  safe part: ABI-preserving `intConst` substitution plus bounded small-loop
+  unroll. The inlining/nested-unroll form remains experimental under level 3
+  because the measured default path got slower/larger.
+* [x] Audit typed-array address/base fusion on the chosen EdgeJS benchmark.
+  Pinned by optimizer coverage: repeated `arr[idx + k]` becomes one shared
+  address base plus `offset=` immediates where the WAT shape allows it.
+* [x] Investigate bounds-check elision hints for monotone typed-array loops.
+  Closed as no-actionable-code for now: without V8/Wasmtime disassembly proof,
+  adding extra guard/hint shapes risks bigger WAT with no engine win. Reopen
+  only with a concrete bounds-check assembly diff.
+* [x] Revisit i32 narrowing for integer-heavy kernels only with tier-up data.
+  Rejected for default codegen: the cleaner i32 `nStages` form repeatedly
+  regressed V8 by blocking `processCascade` inlining. Keep only local/proven
+  integer narrowing rules that do not perturb hot function ABI.
+
+
+### Concrete size cuts
+
+* [x] **Drop unconditional `inc('__sso_char', '__str_char', '__char_at',
+  '__str_byteLen')`**. Current `module/string.js` no longer has the
+  unconditional include; helpers are pulled transitively from real WAT deps.
+* [x] **Break `MOD_DEPS` cycle `number ↔ string`** at `prepare.js:1054`. Today
+  any number op pulls string module (for `__num_to_str`/format), and any
+  string op pulls number (for length comparisons). Make `string` an actual
+  dependency only when string ops appear; format-on-print should opt-in via
+  the `console`/`fd_write` path. Rechecked 2026-05-04: still architecturally
+  real, but smaller after emitter short-circuits. Known numeric `Number()` /
+  unary `+` / `isNaN` / `isFinite` now avoid `__to_num`; unknown inputs still
+  correctly keep the generic string parser. Do not break the module cycle as a
+  standalone perf patch; handle it with explicit stdlib imports or host-print
+  lowering so dependency semantics stay honest.
+
+
+
+
+* [x] **Strip data segment for non-emitted strings.** Empty `data` in jz
+  biquad was 185 B for unused string literals from helpers. Current
+  `stripStaticDataPrefix` removes the built-in static string table when
+  `__static_str` is not live; pure numeric and known-typed coercion probes now
+  emit no data segment. Closed unless a fresh bench artifact shows leftover
+  dead string data.
+* [x] **Replace `wasi.fd_write`/`clock_time_get` with `env.printLine` /
+  `env.now`** when the host is jz's own runtime. Keep WASI for standalone
+  wasm CLI use; gate behind a config flag. Deferred out of perf cleanup: this
+  is a host-contract/API mode, not a compiler optimization. Keep it under the
+  JZ-side host-import-mode task, not as an unchecked perf item.
+
+### Concrete optimizations
+
+* [x] **Scalar-replacement of repeated typed-array reads.** When the same
+  `arr[const]` is read 2+ times in a basic block with no intervening write,
+  hoist to a local. Investigated: current optimizer/base fusion already handles
+  the important address work, while load CSE needs alias/write-barrier proof.
+  Do not add a speculative load-hoist pass without benchmark evidence.
+
+* [x] **Aggressive inlining for monomorphic single-caller hot funcs.** Today
+  `processCascade` isn't inlined because it's "large." Lift the size threshold
+  when the callee is non-exported, called from ≤2 sites, and call-site values
+  include constants the callee's loop bounds depend on. Implemented as
+  experimental `sourceInline`; disabled by default because focused benchmarks
+  showed it grew code and slowed V8. Keep for `optimize: 3` experiments only.
+
+* [x] **i32 narrowing for module-const integer args (revisit nStages).** The
+  attempt this round narrowed nStages from f64 to i32 via `globalTypes` lookup
+  in `exprType`; wat was objectively cleaner (-104 B wat / -328 B wasm), and
+  Liftoff confirmed the i32 form is faster (445 ms vs 555 ms baseline). But
+  TurboFan compiles processCascade as a separate function in the i32 form
+  while the f64 form gets inlined into main — losing interprocedural unrolling
+  of the 8-stage inner loop and regressing 60% (315 ms vs 205 ms raw runtime).
+  Root cause confirmed via disassembly: in `before` (f64), `func[19]` (main)
+  body grows to 6048 B with processCascade inlined and unrolled 4×; in `after`
+  (i32), `func[9]` (processCascade, 480 B) stays separate and runs as a call.
+  The fix is correct in principle and would help any case where module-const
+  integer args feed loop bounds — but V8's wasm inliner heuristic treats the
+  i32 form as not-worth-inlining. Possible mitigations: (a) couple narrowing
+  with explicit jz-side inlining (inline single-caller hot funcs whose body
+  contains a loop bounded by an i32 const arg), so V8 never gets to choose;
+  (b) keep f64 param ABI but produce two function specializations, one with
+  the constant baked in, switch at call site if N is statically known; (c)
+  drop the module-level globalTypes lookup but propagate const-int through
+  the call-site arg list directly to the callee's analyzeIntCertain pass.
+  Reverted and closed for now to preserve the V8-perf win.
+
+
+* [x] **Loop-invariant hoist of other pure loads/calls.** Verify the outer loop's
+  `n = x.length` is hoisted (it appears to be, based on the wat). Generalize
+  to any loop-invariant call/load with no intervening side effects. Closed as
+  unsafe as a generic pass without alias/effect analysis; existing sound LICM
+  remains scoped to captured-cell loads and proven pointer/tag snapshots.
+
+* [x] **Bounds-check elision for monotone counters.** When `i` is i32, monotonic,
+  bounded above by `arr.length` checked at loop head, V8 *should* elide per-load
+  bounds checks but sometimes doesn't. Investigate what hint shape (loop
+  invariant code motion, range analysis annotation) gets V8 to elide. Closed as
+  research-only until an engine-specific disassembly diff identifies a useful
+  WAT shape.
+
+* [x] **Symmetric widen-pass for length comparisons.** Mirror the existing
+  `i32 counter → f64 when compared to f64 length` pass in the other direction:
+  `i32 length → keep i32 when compared with i32 counter`. Already partially
+  done via `.length` returning i32 for known receivers and codegen coverage for
+  length/counter loops. Closed; do not add another widening pass unless a fresh
+  case shows conversions inside a hot loop.
+
+### Benchmarks that would surface remaining inefficiencies
+
+* [x] **Polymorphic reduce** — `function sum(arr) { let s = 0; for (let x of arr) s+=x }`
+  called with both Array and Float64Array. Today this falls back to
+  `__typed_idx` because narrowing requires monomorphic call sites; would
+  surface bimorphic dispatch cost. Covered by existing bimorphic typed-array
+  specialization and callback/typed-narrow benches; no separate unchecked perf
+  benchmark task remains.
+
+* [x] **fib / ackermann** — call-frame and TCO overhead; today there's no TCO.
+  TCO is now implemented for block-body and expression-bodied direct tail calls;
+  keep deeper call-frame work out of the active perf TODO until a new failing
+  benchmark appears.
+
+
+### EdgeJS-side remaining work
+
+* [x] Keep safe-mode out of the PR claim unless Wasmer N-API feature support is
+  available in CI; current local safe-mode validation is blocked before user
+  code by missing `napi_v10` / `napi_extension_wasmer_v0` features. Closed: the
+  EdgeJS PR claim excludes safe mode.
+
+### Rest
+
+* [x] Pick one undeniable use case and optimize around it.
+* [x] Add benchmark coverage beyond internal examples: DSP kernel, typed-array processing,
+  math loop, parser/string workload, and a JS-engine comparison set.
+* [x] Add wasm2c/w2c2 integration tests.
+
+* [x] Rework/close PR #2 instead of merging as-is: avoid a branded `jz/edge`
+  facade unless EdgeJS needs a real runtime-specific API; current patch mostly
+  duplicates existing host/WASI hooks and overclaims async behavior.
+* [x] Harden `jz/wasi` default output routing: if `process.stdout.write` or
+  `process.stderr.write` is absent or throws, fall back to `console.log` /
+  `console.warn`; keep `{ write(fd, text) }` as the canonical host override.
+* [x] Add tests for stdout/stderr fallback without introducing an EdgeJS-only
+  public entrypoint: no `process`, missing `process.stdout`, throwing `.write`,
+  and custom `{ write }` capture.
+* [x] Do not publish `instantiateAsync`: it only wrapped synchronous JZ source
+  compilation with async WebAssembly startup, adding public API surface without
+  new capability. Hosts that need async WASM startup can call `compile()` and
+  then standard `WebAssembly.compile` / `WebAssembly.instantiate` directly.
+* [x] Document the host contract in README: pure numeric JZ modules need no
+  imports; console/timers currently need WASI or host imports; compile at
+  startup/build time, not per request.
+* [x] Add one tiny EdgeJS-compatible smoke fixture in this repo that does not
+  depend on EdgeJS: compile a scalar kernel, assert no WASI imports, instantiate
+  with standard WebAssembly APIs.
+* [x] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
+  compile once at module init, instantiate per request or reuse a module, call a
+  scalar export. Verified with nightly EdgeJS `0.0.0-0ff2433` / Node
+  `v24.13.2`: `{ imports: 0, mac: 50, mix: 63 }`.
+* [x] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
+  `WebAssembly.Instance`, `WebAssembly.compile`, and memory imports inside
+  Wasmer/WASIX sandbox. Current local result is blocked before the nested-WASM
+  test: installed Wasmer is `4.4.0` and `wasmer --version -v` reports no
+  `features:` line with `napi_v10` / `napi_extension_wasmer_v0`, so EdgeJS safe
+  mode exits before user code.
+* [x] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
+* [x] Verify explicit console host imports under EdgeJS without adding implicit
+  host-import mode: `jz(source, { imports: { console: hostConsole } })` works
+  natively in EdgeJS and is smaller than introducing a new public mode for the
+  first PR. Timer imports remain future work if an EdgeJS example needs them.
+* [x] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
+  exception handling is not enabled, document it as an integration limitation
+  rather than adding a misleading adapter workaround. Native EdgeJS rejects the
+  current JZ exception output with `Invalid opcode 0x1f (enable with
+  --experimental-wasm-exnref)`; passing `--experimental-wasm-exnref` to `edge`
+  did not enable it in this build.
+* [x] Open a small PR to `wasmerio/edgejs` as an example/benchmark, not a core
+  runtime engine change: https://github.com/wasmerio/edgejs/pull/76.
+* [x] Add an example such as `examples/jz-kernel` or `examples/jz-dsp`:
+  import `jz`, compile a numeric kernel once, call it from an EdgeJS script,
+  and keep source short enough to read without explanation. Created local
+  EdgeJS draft at `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` with a no-import
+  scalar kernel plus explicit `console` host-import smoke.
+* [x] Include a short README note in the example: JZ is useful for hot numeric,
+  DSP, parser, and typed-array kernels; it is not a general JS runtime or Node
+  compatibility layer.
+* [x] Include before/after numbers only from commands reproducible in the PR:
+  EdgeJS raw JS vs EdgeJS + JZ-compiled WASM for the same kernel. The draft
+  benchmark batches the hot loop inside one compiled export to avoid measuring
+  JS/WASM call overhead; current typed-array mat4-style kernel result under
+  local EdgeJS native: same checksum, zero imports, 919-byte WASM, raw JS
+  median ~12.6 ms, JZ WASM median ~8.3 ms for 200k iterations over 9 runs.
+* [x] Fix the EdgeJS draft benchmark shape: compile once, call one export, keep
+  the hot loop inside the generated WASM module.
+* [x] Replace or supplement the toy scalar benchmark with a stronger kernel from
+  the existing suite (`mat4`, `biquad`, `tokenizer`, or a tiny typed-array DSP
+  loop) so the PR demonstrates a real WASM win without overfitting a microcase.
+  Replaced the draft benchmark with a small `Float64Array` 4x4 matrix kernel
+  adapted from `bench/mat4`, using warmup plus median sampling.
+* [x] Move `/tmp/jz-edgejs.NZ5Yow/examples/jz-kernel` into a clean EdgeJS
+  branch and decide whether the PR should include only source files or also a
+  lockfile for the nested example package. Branch: `dy/edgejs:jz-kernel-example`;
+  final PR commit `70fbfb72`; included nested `package-lock.json` for
+  reproducible `jz@0.1.1` install.
+* [x] Reinstall the example dependency from a clean checkout and rerun:
+  `edge index.mjs`, `edge bench.mjs`, plus Node baseline commands if the PR
+  README reports Node/EdgeJS comparison output. Validated with `npm ci`,
+  `node index.mjs`, `node bench.mjs`, `../../.edgejs/bin/edge index.mjs`, and
+  `../../.edgejs/bin/edge bench.mjs`.
+* [x] Decide CI shape: keep this PR as a documented example only unless EdgeJS
+  maintainers ask for CI. A CI smoke would need installing `jz@^0.1.1` inside a
+  nested example package, adding network/package-manager assumptions to a repo
+  whose core examples are plain scripts.
+* [x] Draft the PR description around the narrow contract: JZ compiles hot
+  JS-subset kernels to WASM inside EdgeJS; it is not an EdgeJS engine provider
+  and not a Node compatibility layer. Drafted in `.work/edgejs-pr-description.md`.
+* [x] `npm test` passes in JZ after host/WASI changes.
+* [x] `npm run test262:builtins` still passes if touched code affects built-ins
+  or host output paths.
+* [x] EdgeJS local smoke run passes in native mode.
+* [x] EdgeJS safe-mode result is known and written down: pass, blocked by nested
+  WASM, blocked by WASM exceptions, blocked by WASI/host imports, or blocked by
+  missing Wasmer N-API features.
+* [x] The final integration story is truthful in one sentence: "Use JZ inside
+  EdgeJS to compile hot JS-subset kernels to WASM; EdgeJS remains the JS
+  runtime."
+
+* [x] Update benchmark
+* [x] Ensure the proper way for template tags
+* [x] Compile floatbeats
+* [x] test262 coverage expansion: grow full-denominator coverage with meaningful jz features, not selected-subset pass rate
+  * [x] Report overall test262 percentage against all `test262/test/**/*.js` files
+  * [x] Fix object destructuring assignment regressions blocking full test suite
+  * [x] Add/enable `rest-parameters` tests that map to existing jz semantics
+  * [x] Add/enable `computed-property-names` object tests that map to fixed-shape objects
+  * [x] Add/enable `arguments-object` tests only where jzify/function lowering truly supports them
+  * [x] Add lexical/grammar coverage: `asi`, `comments`, `white-space`, `line-terminators`, `punctuators`, `directive-prologue`
+  * [x] Lower braced `do-while` through jzify without body duplication; `do ; while` remains a subscript parser gap
+  * [x] Keep `delete` prohibited for jz fixed-shape objects; only parser conformance belongs upstream in subscript
+  * [x] Treat `debugger` as parse/no-op or explicit ignore, not a runtime feature
+  * [x] Broaden the local test262 harness (`assert.*`, `Test262Error`, `compareArray`) before counting more failures
+  * [x] Add/enable ordinary `template-literal` coverage; keep `tagged-template` separate unless template-object caching semantics are implemented — already works, template literal tests pass in expressions/
+  * [x] Fix optional catch binding parser support (`catch { ... }`) now that `try`/`catch`/`finally` runtime support exists — source rewrite in normalizeSource + jzify codegen
+  * [x] Add/enable simple `for-in` coverage for enumerable fixed-shape/HASH object keys — jzify var→let restructure for for-in, codegen handles both AST formats
+  * [x] Revisit broader `arguments-object` coverage only if JS compatibility becomes a goal; current curated jzify subset is enough for core jz
+  * [x] Keep broad unsupported buckets out of scope for this metric (`async`, `class`, `this`, generators, iterators, `with`, `super`, dynamic import)
+## [x] speed up compiler itself (faster than eval)
+
+### Compiler refactor notes
+
+
+
+### Done
+
+  * [x] Add compile-time benchmark that reports parse / prepare / plan / emit / watr separately
+  * [x] Benchmark cold vs repeated template compilation; decide whether any cache is worth its complexity
+  * [x] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, dynamic keys, schemas, or first-class function values; simple module init blocks no longer block the fast path
+  * [x] Skip schema slot observation passes when no static object-literal schemas were collected
+  * [x] Keep function-name membership current during prepare so call/export checks avoid repeated linear scans of `ctx.func.list`
+  * [x] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
+  * [x] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
+  * [x] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
+  * [x] Delay expensive typed-array bimorphic clone analysis unless a param is proven `VAL.TYPED` and has conflicting ctor observations
+  * [x] Avoid remaining module init body scans after autoload when the loaded modules do not introduce facts used by the current program; value-fact scanning is already recorded during prepare
+* [x] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
+* [x] Remove `compile.js` as a re-export hub; modules import directly from `ir`, `emit`, and `analyze`
+* [x] Split pre-emit planning into `plan.js`, signature specialization into `narrow.js`, autoload policy into `autoload.js`, and static key folding into `key.js`
+* [x] Keep `plan.js` separate from `analyze.js`; merging them would make orchestration depend on narrowing while narrowing depends on analysis helpers
+* [x] Make `narrow.js` read as named phases inside one file before creating more files: reachability, param facts, result facts, pointer ABI, typed clones, dyn-key refinement
+* [x] Move per-function pre-analysis out of `emitFunc` only after a measured design exists: target `emitFunc(func, funcFacts, programFacts)` with no surprise cache invalidation inside emission
+* [x] Replace hidden global cache invalidation with explicit phase inputs/outputs where it reduces walks; keep global `ctx` for compile state as intended
+* [x] Audit `prepare.js` for remaining hardcoded runtime-module policy; move reusable stdlib/module selection into `autoload.js` helpers, or delete the autoload policy if explicit stdlib imports become the chosen direction
+* [x] Do not recreate a convenience facade in `compile.js`; noisy direct imports are preferable to hidden cross-layer coupling
+* [x] Static string literals → data segment (own memory); heap-allocate for shared memory
+* [x] Metacircularity prep: Object.create isolated to derive() in ctx.js (1 function to replace)
+* [x] Metacircularity: watr compilation — 8/8 WAT, 7/8 WASM binary, 1/8 valid (const.js)
+* [x] Metacircularity: watr WASM validation — all 5 watr modules (util/const/encode/parse/compile) validate via wasm-validate. Repro: `node ~/projects/watr/.work/repro-jz-codegen-bug.mjs`.
+* [x] Metacircularity: watr WASM execution — jz-compiled watr.wasm correctly compiles all 21 examples (verified via /tmp/jz-c/watr-native). Required watr fix: `unbranch` opt at [watr/src/optimize.js:1394](../node_modules/watr/src/optimize.js#L1394) was stripping trailing `(br $loop_label)` from `loop` blocks (loop-back jump, not exit), making loops run once. Patched locally and upstream — gate on `op !== 'block'`.
+* [x] console.log/warn/error
+* [x] Date.now, performance.now
+* [x] Import model — 3-tier: built-in, source bundling (modules option), host imports (imports option)
+* [x] CLI import resolution — package.json "imports" + relative path auto-resolve
+* [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
+* [x] Custom imports — host functions via { imports: { mod: { fn } } }
+* [x] Shared memory — { memory } option, cross-module pointer sharing
+* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
+* [x] Template tag
+### Done
+
+* [x] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
+* [x] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)
+
+
+
 
 
 
@@ -324,6 +423,62 @@ watr's `normalize()` / parser code built around repeated `Array.shift()` and
 large callback-heavy array combinators; jz lowers these faithfully but not as
 compactly as V8 optimizes them at runtime.
 
+2026-05-04 watr perf discovery: current focused baseline is V8/node **1.42 ms**
+vs jz wasm **1.87 ms** (1.31× slower, checksum parity, 139.9 kB). Existing pass
+toggles do not close the gap: `watr:false + smallConstForUnroll:false` remains
+best/smallest; `optimize:false` is 2.14 ms, level 1 is 1.90 ms, default level 2
+is 1.84 ms at 167 kB, and aggressive level 3 is 1.94 ms. Generated WAT ranks
+`normalize` as the largest function (~242 kB WAT), followed by `compile` and
+many callback closures. The call profile is dominated by generic runtime
+dispatch: `__ptr_offset` 311, `__len` 288, `__eq` 279, `__typed_idx`/`__str_idx`
+245 each, `__arr_set_idx_ptr` 219, `__dyn_set` 206, `__is_str_key` 147, and
+`__arr_shift` 121. Meaningful next work is therefore:
+
+* [x] Identify watr-specific perf blockers with benchmark evidence; do not chase
+  existing optimize toggles for this gap.
+* [x] Candidate: source/runtime array-view optimization for local queue-style
+  arrays (`nodes = [...nodes]`, `parts = node.slice(1)`, then `shift`/`pop`/
+  `at(-1)`/`unshift`). This targets `normalize()` directly and must preserve JS
+  mutation/alias semantics.
+* [x] Candidate: monomorphic fast paths for proven array/string length and index
+  operations to reduce `__len`, `__ptr_offset`, `__typed_idx`, and `__str_idx`
+  dispatch in compiler-like code.
+* [x] Candidate: callback/combinator lowering for `.map/.filter/.reduce/.flatMap`
+  when the callback is local and non-escaping; watr uses these heavily during
+  cleanup, import expansion, section building, and byte-vector emission.
+* [x] Candidate: internal post-link DCE/inlining or wasm-opt integration for
+  large generated modules; external `wasm-opt -Os` already proves about 11% size
+  reduction without checksum changes.
+* [x] Candidate: dynamic object/property-shape specialization for watr context
+  tables and arrays with named aliases, aimed at `__dyn_get`, `__dyn_set`, and
+  `__is_str_key` volume.
+
+2026-05-04 implementation pass on queue-adjacent array fast paths:
+
+* [x] Tried inlining known-ARRAY `.shift()` forwarding logic at call sites. It
+  reduced generated watr `__arr_shift` call sites from 121 to 101, but grew the
+  watr wasm from ~143.3 kB to ~147.4 kB and did not improve the official watr
+  run (`jz` stayed around 1.9 ms). Rejected/reverted; do not re-open this form
+  unless it is gated by a size budget or replaced by a smaller representation
+  change.
+* [x] Landed the safe monomorphic piece: known-ARRAY `.at(i)` now reads the
+  array header length directly for negative indexes instead of dispatching
+  through `__len`. Watr impact is intentionally small: `__len` call sites
+  288 → 286, wasm size effectively unchanged (~143.3 kB), checksum parity held.
+* [x] Checked the proposed extra-head-offset array representation. Current
+  arrays already make `.shift()` O(1): `__arr_shift` slides the data pointer by
+  one slot, writes a forwarding header, and contains no `memory.copy`. A
+  synthetic 4096-item consume loop measured ~34 us with `.shift()` vs ~27 us
+  with an explicit local `head++` index and ~33 us with `.pop()`. Adding a
+  default head field would add header bytes and/or an extra add/header load to
+  ordinary array indexing for a small shift-only win; not worth making the
+  default representation heavier. Reopen only for a measured ring/deque case
+  with interleaved `shift()` + `push()` where reusing front capacity matters.
+* [x] Next meaningful queue work is not call-site inlining of `.shift()`; it is
+  a representation/source transform for local queue views, or broader receiver
+  fact propagation that removes many `__len`/`__ptr_offset`/index dispatches at
+  once. Single-helper inlining is too small and too large.
+
 Hard data on biquad (the simplest typed-array-only case, no strings/objects):
 
 | target | wasm | functions | types | imports |
@@ -344,84 +499,6 @@ The 4.2× size delta vs AS is dead weight, not arithmetic. Sources:
 * **fd_write helpers.** `__num_to_str`, `__str_byteLen`, `__sso_char`, etc.
   are loaded because `console.log(num)` formats via the string ABI. Even
   without strings in user code, the formatter pulls them in.
-
-### Concrete size cuts
-
-* [ ] **Drop unconditional `inc('__sso_char', '__str_char', '__char_at',
-  '__str_byteLen')`** at `module/string.js:688`. These are loaded when string
-  features are enabled; the unconditional include is leftover safety.
-* [ ] **Break `MOD_DEPS` cycle `number ↔ string`** at `prepare.js:1054`. Today
-  any number op pulls string module (for `__num_to_str`/format), and any
-  string op pulls number (for length comparisons). Make `string` an actual
-  dependency only when string ops appear; format-on-print should opt-in via
-  the `console`/`fd_write` path.
-* [x] **Lazy `__length` dispatch** at `module/core.js:347` — already correct.
-  `emitLengthAccess` only sets `features.typedarray=true` for unresolved
-  receivers (not set/map; those are flipped at construction sites). The
-  `__length` factory then conditionally includes set/map dispatch arms only
-  when `features.set`/`features.map` are true.
-* [x] **Specialize `console.log(template literal)`** ([module/console.js:103](../module/console.js#L103)).
-  Template literals lower to `__str_concat` chains in prepare. console.log's
-  emit handler now flattens the concat chain (`X.concat(Y).concat(Z)…` rooted
-  at `['str', ...]`) into per-part `__write_str` / `__write_num` calls,
-  bypassing the in-memory string assembly. Drops `__str_concat`, `__to_str`,
-  `__str_byteLen`, `__str_copy`, `__str_join` from biquad. -647 B.
-* [x] **Re-observe schema slots after E2 valResult** ([src/analyze.js observeProgramSlots](../src/analyze.js),
-  [src/compile.js narrowSignatures](../src/compile.js)). First slot observation
-  pass runs in `collectProgramFacts` before `valResult` inference, so a slot
-  bound to a user-fn call (`{ ..., cs }` where `cs = checksum(out)`) gets
-  observed as null. Re-running after E2 lifts `undefined` → NUMBER; observeSlot's
-  first-wins-then-clash rule guarantees no regression for already-monomorphic
-  slots. Drops `__write_val` from biquad (cs slot now resolves to NUMBER → direct
-  `__write_num`). -88 B in biquad. Net biquad: 4983 → 4198 B (-785 B / -15.8%).
-* [x] **Plain array growth does not move dynamic prop side-tables.** Known-ARRAY
-  `.push` now uses `__arr_grow_known`, and both grow helpers include
-  `__dyn_move` only when `__dyn_set` is live. Current host sizes: aos 3.2 kB →
-  2.4 kB, callback 2.3 kB → 1.5 kB.
-* [x] **Suppress runtime allocator exports for host-run standalone benches.**
-  `runtimeExports:false` omits raw `_alloc` / `_reset` exports while preserving
-  default JS memory wrapping behavior for normal `jz()` users.
-* [x] **Do not unroll outer nested constant loops.** The small-loop unroller now
-  rejects bodies containing nested loops, avoiding mat4-style multiplicative code
-  growth while still preserving the inner-loop speed win where it applies.
-* [x] **Owned typed-array `.byteOffset` constant-folds to zero.** This removes
-  `__byte_offset` from checksum-heavy numeric benches; biquad/aos/mat4 each drop
-  another 68 B in the current host harness.
-* [x] **Skip `__ftoa` for integer-valued `console.log` args** ([module/console.js:135](../module/console.js#L135)).
-  New `__write_int` (uses `__itoa` directly) sits beside `__write_num`; the
-  template-literal-flatten emit handler dispatches to it when `exprType(part,
-  ctx.func.locals) === 'i32'` (literals, bitwise ops, `.length`, `Math.imul`,
-  intCertain locals). `console.log(42)`: 1737 → 849 B (-888 B / -51%).
-  biquad (f64 timing args) +22 B from `__write_int` joining `__write_val`'s
-  dep chain — neutral on benches with no integer console.log; massive win
-  on integer-print code (bytebeat-style, counter loops). All 1105 tests pass.
-
-* [x] **Host-import return metadata for `jz-host`** ([src/prepare.js](../src/prepare.js),
-  [src/analyze.js](../src/analyze.js), [bench/bench.mjs](../bench/bench.mjs)).
-  Host import specs can now declare `returns: 'number' | 'string' | 'bigint'`.
-  The benchmark marks `performance.now()` as numeric, so timestamp arithmetic
-  no longer pulls generic `__to_num` into every host benchmark. Biquad host:
-  3.8 kB → 2.8 kB after the temporary result object was removed.
-
-* [x] **Sort benchmark samples in place** ([bench/_lib/benchlib.js](../bench/_lib/benchlib.js)).
-  Matches the native helpers: samples are not used after median calculation, so
-  the extra typed-array allocation/copy was dead work. Removes `__len` from the
-  small numeric `jz-host` cases. Biquad host: 2.8 kB → 2.3 kB; bitwise host:
-  1.9 kB → 1.2 kB.
-
-* [x] **Known-string concat skips generic `ToString`** ([module/string.js](../module/string.js),
-  [src/emit.js](../src/emit.js)). Pure string operands now call
-  `__str_concat_raw`, avoiding `__to_str`, `__static_str`, and the numeric
-  string table. This lets the existing static-data-prefix strip pass actually
-  fire for tokenizer. Tokenizer host: 3.3 kB → 1.6 kB.
-
-* [ ] **Strip data segment for non-emitted strings.** Empty `data` in jz
-  biquad is 185 B for unused string literals from helpers. Tree-shake by
-  emitted-helper set, not declared-helper set.
-* [ ] **Replace `wasi.fd_write`/`clock_time_get` with `env.printLine` /
-  `env.now`** when the host is jz's own runtime. Keep WASI for standalone
-  wasm CLI use; gate behind a config flag (default on for `jz.compile`,
-  default off for `jz build --wasi`).
 
 ### json gap analysis
 
@@ -505,6 +582,62 @@ show it is worth the code size.
 
 ### Completed perf / cleanup wins (this session)
 
+* [x] **Lazy `__length` dispatch** at `module/core.js:347` — already correct.
+  `emitLengthAccess` only sets `features.typedarray=true` for unresolved
+  receivers (not set/map; those are flipped at construction sites). The
+  `__length` factory then conditionally includes set/map dispatch arms only
+  when `features.set`/`features.map` are true.
+* [x] **Specialize `console.log(template literal)`** ([module/console.js:103](../module/console.js#L103)).
+  Template literals lower to `__str_concat` chains in prepare. console.log's
+  emit handler now flattens the concat chain (`X.concat(Y).concat(Z)…` rooted
+  at `['str', ...]`) into per-part `__write_str` / `__write_num` calls,
+  bypassing the in-memory string assembly. Drops `__str_concat`, `__to_str`,
+  `__str_byteLen`, `__str_copy`, `__str_join` from biquad. -647 B.
+* [x] **Re-observe schema slots after E2 valResult** ([src/analyze.js observeProgramSlots](../src/analyze.js),
+  [src/compile.js narrowSignatures](../src/compile.js)). First slot observation
+  pass runs in `collectProgramFacts` before `valResult` inference, so a slot
+  bound to a user-fn call (`{ ..., cs }` where `cs = checksum(out)`) gets
+  observed as null. Re-running after E2 lifts `undefined` → NUMBER; observeSlot's
+  first-wins-then-clash rule guarantees no regression for already-monomorphic
+  slots. Drops `__write_val` from biquad (cs slot now resolves to NUMBER → direct
+  `__write_num`). -88 B in biquad. Net biquad: 4983 → 4198 B (-785 B / -15.8%).
+* [x] **Plain array growth does not move dynamic prop side-tables.** Known-ARRAY
+  `.push` now uses `__arr_grow_known`, and both grow helpers include
+  `__dyn_move` only when `__dyn_set` is live. Current host sizes: aos 3.2 kB →
+  2.4 kB, callback 2.3 kB → 1.5 kB.
+* [x] **Suppress runtime allocator exports for host-run standalone benches.**
+  `runtimeExports:false` omits raw `_alloc` / `_reset` exports while preserving
+  default JS memory wrapping behavior for normal `jz()` users.
+* [x] **Do not unroll outer nested constant loops.** The small-loop unroller now
+  rejects bodies containing nested loops, avoiding mat4-style multiplicative code
+  growth while still preserving the inner-loop speed win where it applies.
+* [x] **Owned typed-array `.byteOffset` constant-folds to zero.** This removes
+  `__byte_offset` from checksum-heavy numeric benches; biquad/aos/mat4 each drop
+  another 68 B in the current host harness.
+* [x] **Skip `__ftoa` for integer-valued `console.log` args** ([module/console.js:135](../module/console.js#L135)).
+  New `__write_int` (uses `__itoa` directly) sits beside `__write_num`; the
+  template-literal-flatten emit handler dispatches to it when `exprType(part,
+  ctx.func.locals) === 'i32'` (literals, bitwise ops, `.length`, `Math.imul`,
+  intCertain locals). `console.log(42)`: 1737 → 849 B (-888 B / -51%).
+  biquad (f64 timing args) +22 B from `__write_int` joining `__write_val`'s
+  dep chain — neutral on benches with no integer console.log; massive win
+  on integer-print code (bytebeat-style, counter loops). All 1105 tests pass.
+* [x] **Host-import return metadata for `jz-host`** ([src/prepare.js](../src/prepare.js),
+  [src/analyze.js](../src/analyze.js), [bench/bench.mjs](../bench/bench.mjs)).
+  Host import specs can now declare `returns: 'number' | 'string' | 'bigint'`.
+  The benchmark marks `performance.now()` as numeric, so timestamp arithmetic
+  no longer pulls generic `__to_num` into every host benchmark. Biquad host:
+  3.8 kB → 2.8 kB after the temporary result object was removed.
+* [x] **Sort benchmark samples in place** ([bench/_lib/benchlib.js](../bench/_lib/benchlib.js)).
+  Matches the native helpers: samples are not used after median calculation, so
+  the extra typed-array allocation/copy was dead work. Removes `__len` from the
+  small numeric `jz-host` cases. Biquad host: 2.8 kB → 2.3 kB; bitwise host:
+  1.9 kB → 1.2 kB.
+* [x] **Known-string concat skips generic `ToString`** ([module/string.js](../module/string.js),
+  [src/emit.js](../src/emit.js)). Pure string operands now call
+  `__str_concat_raw`, avoiding `__to_str`, `__static_str`, and the numeric
+  string table. This lets the existing static-data-prefix strip pass actually
+  fire for tokenizer. Tokenizer host: 3.3 kB → 1.6 kB.
 * [x] **TCO via `return_call` for expression-bodied arrows**
   ([src/compile.js tcoTailRewrite](../src/compile.js#L110)). `emit.js`'s
   `'return'` handler already rewrote `return f(...)` to `return_call $f` —
@@ -520,7 +653,6 @@ show it is worth the code size.
   mutual recursion, `||`/`&&` tail (emit `||` desugars to if/else when
   right is a call), nested ternary, block-body return (already worked via
   the emit-handler path). `sum(100000)` now runs without overflow.
-
 * [x] **i32 chain narrowing through user-function returns — callback breakthrough**
   ([src/analyze.js exprType](../src/analyze.js#L1149),
   [src/compile.js I phase](../src/compile.js#L626),
@@ -544,7 +676,6 @@ show it is worth the code size.
     rules (math.imul, charCodeAt) added for tokenizer.
   Result: callback's `mix(h, b[j]|0)` hot loop runs as pure-i32 FNV — h, x,
   return all i32, no per-iter f64↔i32 round-trips.
-
 * [x] **Boundary boxing — narrow internal sigs, rebox at JS↔WASM edge**
   ([src/compile.js synthesizeBoundaryWrappers](../src/compile.js),
   [src/analyze.js shared helpers](../src/analyze.js)). Body-driven result
@@ -555,7 +686,6 @@ show it is worth the code size.
   becomes a *boundary* concern (swappable runtime). Bare-return guard,
   `>>>` skip (preserves uint32 semantics), and `alwaysReturns` for ptr
   narrowing keep the pass sound.
-
 * [x] **Watr inliner soundness fix (upstream)**
   ([watr/src/optimize.js](/Users/div/projects/watr/src/optimize.js#L1394),
   [watr/test/optimize.js](/Users/div/projects/watr/test/optimize.js)).
@@ -564,21 +694,16 @@ show it is worth the code size.
   return from the *caller's* frame with the wrong result type when the
   caller's signature differs from the callee's. Two regression tests
   pinned. Eliminates the post-watr fixWrapperReturns workaround in jz.
-
 * [x] **AST helper consolidation** ([src/analyze.js](../src/analyze.js)).
   Extracted `isBlockBody`, `collectReturnExprs`, `alwaysReturns`,
   `hasBareReturn`, `returnExprs` as shared exports. compile.js' three
   result-narrowing loops (numeric / valType / ptr) plus
   `narrowReturnArrayElems` all reuse them. -145 lines.
-
 * [x] **Fixpoint runner consolidation** ([src/compile.js
   runArrElemFixpoint](../src/compile.js)). `runArrFixpoint` +
   `runArrValTypeFixpoint` + `runTypedFixpoint` collapsed into a single
   parameterized `runArrElemFixpoint(field, inferFn, elemsCtxMap)`. Same
   shape, three call sites, one impl.
-
-### Completed perf wins (prior sessions)
-
 * [x] **`.charCodeAt(i)` returns i32 directly** ([module/string.js:785](../module/string.js#L785),
   [src/analyze.js exprType](../src/analyze.js#L770)).
   Tokenizer bench 0.14 → 0.07 ms (2× faster), jz now beats native C / Rust /
@@ -591,7 +716,6 @@ show it is worth the code size.
   Bonus: closure-heavy parser golden size 3933 → 3034 bytes (-23%) since
   `c.charCodeAt(0) - 48` no longer needs f64 conversion + back-truncation.
   All 982 tests pass after expected-size update.
-
 * [x] **Inline `arr[i]` fast path with known elem schema**
   ([module/array.js:478-499](../module/array.js#L478)). When `arr` has a
   known `arrayElemSchema` and key is known-NUMBER, skip `__arr_idx`
@@ -604,7 +728,6 @@ show it is worth the code size.
   pure-i32-pointer + direct f64.load. aos bench 3.94 → 3.48 ms; jz×AS
   2.10× → 1.83×. Bug fixed during impl: __ptr_offset returns i32 so the
   base local must be `tempI32`, not the default f64 `temp()`.
-
 * [x] **LICM soundness — bail on calls + skip shared subtrees**
   ([src/optimize.js hoistInvariantCellLoads](../src/optimize.js#L348)).
   Two soundness fixes to `hoistInvariantCellLoads`:
@@ -620,12 +743,10 @@ show it is worth the code size.
   relaxed from `<2` to `<1` (single-read hoist is OK once soundness holds).
   Tests `test/optimizer.js` pin the LICM call-soundness, shared-IR, fires-
   when-valid, and doesn't-fire-with-call cases.
-
 * [x] **`arrayElemValType` propagation through `.map`** ([src/analyze.js
   arrayElemValType](../src/analyze.js)). Typed-array `.map(x => x*2)`
   inlined-callback `x` param now carries `valType=VAL.NUMBER`, so `__to_num`
   coercion in the callback body is elided. Callback bench 5.09 → 3.46 ms.
-
 * [x] **Math.imul / Math.clz32 return i32 directly** ([module/math.js:105-106](../module/math.js#L105),
   [src/analyze.js exprType](../src/analyze.js#L470), [valTypeOf](../src/analyze.js#L162)).
   Bitwise bench 30.96 → 6.09 ms (5× faster, jz now beats AS 8.83 ms).
@@ -635,7 +756,6 @@ show it is worth the code size.
   must not trigger str-key dispatch — fix bound `valTypeOf` for `math.*`
   calls to VAL.NUMBER.
   All 976 tests pass.
-
 * [x] **Cross-function arrayElemSchema propagation (aos)** ([src/compile.js narrowReturnArrayElemSchemas](../src/compile.js#L115),
   [src/analyze.js collectArrElemSchemas](../src/analyze.js#L251)).
   aos bench 9.79 → 4.02 ms (2.4× faster); jz vs AS gap closed from
@@ -652,7 +772,6 @@ show it is worth the code size.
     `f64.load offset=0/8/16` instead of `__dyn_get` runtime helpers.
   Counts inside aos `runKernel` after fix: __is_str_key 5→1, __to_num 4→0,
   __str_concat 2→0, __typed_idx 1→0. All 976 tests pass.
-
 * [x] **Per-iter base CSE — hoistAddrBase pass**
   ([src/optimize.js hoistAddrBase](../src/optimize.js#L194)).
   Generic `(i32.add (local.get $A) (i32.shl (local.get $B) (i32.const K)))`
@@ -664,7 +783,6 @@ show it is worth the code size.
   base 9 times. biquad 11.36 → 11.10 ms (~2%); applies to any kernel
   with repeated indexed access on the same `(arr, idx)` pair —
   poly/aos/bitwise also benefit modestly.
-
 * [x] **Skip `__is_str_key` on VAL.ARRAY when key is known-NUMBER**
   ([module/array.js:442](../module/array.js#L442)). Mirrors the existing
   VAL.TYPED branch at L467: when `keyType === VAL.NUMBER` (literal or
@@ -675,7 +793,6 @@ show it is worth the code size.
   the per-iteration `__is_str_key + __dyn_get` arm. Modest gain since
   the inner loop only runs 64 iterations per outer; bigger benefit for
   callers with hot ARRAY[number-name] access.
-
 * [x] **Bimorphic typed-array param VAL.TYPED propagation (poly)**
   ([src/compile.js H phase](../src/compile.js#L867),
   [module/array.js TYPED branch](../module/array.js#L459)).
@@ -690,7 +807,6 @@ show it is worth the code size.
   - cascade effect: `arr.length` → TYPED branch → i32-convertible → `i`
     + `len0` narrow to i32, inner loop becomes `i32.lt_s + __typed_idx
     + i32.add`. All 976 tests pass.
-
 * [x] **arrayElemValType propagation through .map → callback param (callback)**
   ([src/analyze.js](../src/analyze.js), [src/compile.js](../src/compile.js),
   [module/array.js](../module/array.js)).
@@ -703,7 +819,6 @@ show it is worth the code size.
   - `runKernel`'s inlined `x => x*scale+i` no longer wraps `x` in
     `__to_num` — straight f64 arithmetic on `local.get $inl9`.
   All 982 tests pass.
-
 * [x] **LICM pass for boxed-cell loads — sound version**
   ([src/optimize.js hoistInvariantCellLoads](../src/optimize.js#L364)).
   When a loop body reads a captured (boxed) variable's cell N times with
@@ -725,7 +840,6 @@ show it is worth the code size.
   Modest direct gain on callback (closures' `cell_i` reads are inside
   `call_ref` paths so bailout dominates), but unlocks the pattern for
   any future captured-loop case without sharing/calls.
-
 * [x] **Bimorphic typed-array param specialization — function cloning (poly)**
   ([src/compile.js specializeBimorphicTyped](../src/compile.js#L898)).
   poly bench **5.06 → 1.13 ms (4.4× speedup); now ties AS** (1.13 ms),
@@ -755,7 +869,6 @@ show it is worth the code size.
     blow-up; aborts if any site's bimorphic-position ctor is unknown
     (can't route safely). Original always survives — supports calls from
     inside arrow bodies (excluded from callSites) without behavior change.
-
 ## Codegen — closing the hand-WAT floor (biquad: 1.75× → 1.21× target)
 
 Current baseline (darwin/arm64, full bench): jz biquad runs at 11.30 ms
@@ -772,7 +885,26 @@ Items below ordered by expected impact, calibrated against the AS data
 point (8.9 ms is what offset-fusion + bounds-elision + monomorphic typed
 arrays gets you without unrolling).
 
-### Concrete optimizations
+
+### Conceptual shifts
+
+### Implementation order (ratified 2026-05-01)
+
+1. **opts.optimize layer (P4)** — level/object API gating every per-fn and
+   whole-module pass. Contained, low-risk, unblocks safe per-pass
+   experimentation for everything below. Half day.
+2. **Unified Type record + int-default + unboxed-default (S2 above)** —
+   foundational. Without it, the remaining items below are bandaids on the
+   parallel-maps architecture.
+3. **Schema slot inference for shorthand props (P1, ~1093 B biquad win)** —
+   falls out almost free once the type lattice is unified, because slot
+   types use the same inference.
+4. **String-runtime tree-shake when console.log args are statically resolved
+   (P3, ~2372 B biquad win)** — orthogonal to S2; can run in parallel.
+5. **Induction-variable strength reduction (P2)** — mostly subsumed by
+   int-default; what remains is hoisting `nStages | 0` once, which the
+   optimizer handles generically when intCertain holds.
+
 
 * [x] **Per-stage base hoisting + `offset=` fusion.** Done via the combination
   of (a) shl-distribute peephole `(i32.shl (i32.add x K) S) → (i32.add (i32.shl
@@ -782,24 +914,11 @@ arrays gets you without unrolling).
   lifts the shared `(i32.add arr (i32.shl idx 3))` base to a per-iteration
   local. biquad 5 coeffs reads + 4 state reads + 4 state stores all share two
   base locals now. Did NOT close most of the 1.75× — V8 was already CSE-ing.
-
 * [x] **General `offset=` immediate fusion.** Already in
   [src/optimize.js foldMemargOffsets](../src/optimize.js#L669): rewrites
   `(load (i32.add base (i32.const k)))` → `(load offset=k base)`. Doesn't
   yet handle the biquad shape `(i32.add base (i32.shl (i32.add idx K) 3))`
   — see follow-up below.
-
-* [ ] **Scalar-replacement of repeated typed-array reads.** When the same
-  `arr[const]` is read 2+ times in a basic block with no intervening write,
-  hoist to a local. Today CSE may handle this but only if the index expression
-  is identical at the IR level — verify on biquad.
-
-* [ ] **Aggressive inlining for monomorphic single-caller hot funcs.** Today
-  `processCascade` isn't inlined because it's "large." Lift the size threshold
-  when the callee is non-exported, called from ≤2 sites, and call-site values
-  include constants the callee's loop bounds depend on. Lets V8 specialize on
-  the actual `nStages` value rather than treating it as a runtime parameter.
-
 * [x] **Constant-arg propagation (without unroll).** When a callee param is always
   called with the same compile-time integer constant, propagate the constant into
   the callee body. ([src/analyze.js](../src/analyze.js#L95) — added `intConst` to
@@ -815,7 +934,6 @@ arrays gets you without unrolling).
   bytes drop -100B on biquad. Loop-unrolling the now-known-bound inner loop is
   a separate, larger task (next bullet) since it requires AST cloning and a
   size budget guard.
-
 * [x] **Rejected: intConst-driven i32 loop narrowing for biquad.** Tried letting
   `rep.intConst` participate in `exprType` so `for (let s = 0; s < nStages; s++)`
   kept `s`, `c`, and `sb` as i32 when `nStages` is proven `8`. WAT got cleaner
@@ -826,7 +944,6 @@ arrays gets you without unrolling).
   Rechecked 2026-05-02 with the narrower local-only form: `processCascade` lost
   `f64.lt`/`i32.trunc_sat_f64_s` and `$s` became i32, but focused biquad regressed
   in the current harness from ~11.4 ms to ~18.0 ms. Reverted again.
-
 * [x] **Small-trip-count loop unroll on top of intConst.** Implemented as a
   guarded emitter transform for canonical `for (let i = 0; i < CONST; i++)`
   loops with `CONST <= 8`, no own `break`/`continue`, no nested closure, and no
@@ -835,50 +952,10 @@ arrays gets you without unrolling).
   current-harness biquad: jz `11.32 ms / 2.3 kB` before → `6.45 ms / 3.8 kB`
   after; hand-WAT `6.47 ms / 767 B`. Pinned by `test/optimizer.js` codegen +
   control-flow guard tests.
-
-* [ ] **i32 narrowing for module-const integer args (revisit nStages).** The
-  attempt this round narrowed nStages from f64 to i32 via `globalTypes` lookup
-  in `exprType`; wat was objectively cleaner (-104 B wat / -328 B wasm), and
-  Liftoff confirmed the i32 form is faster (445 ms vs 555 ms baseline). But
-  TurboFan compiles processCascade as a separate function in the i32 form
-  while the f64 form gets inlined into main — losing interprocedural unrolling
-  of the 8-stage inner loop and regressing 60% (315 ms vs 205 ms raw runtime).
-  Root cause confirmed via disassembly: in `before` (f64), `func[19]` (main)
-  body grows to 6048 B with processCascade inlined and unrolled 4×; in `after`
-  (i32), `func[9]` (processCascade, 480 B) stays separate and runs as a call.
-  The fix is correct in principle and would help any case where module-const
-  integer args feed loop bounds — but V8's wasm inliner heuristic treats the
-  i32 form as not-worth-inlining. Possible mitigations: (a) couple narrowing
-  with explicit jz-side inlining (inline single-caller hot funcs whose body
-  contains a loop bounded by an i32 const arg), so V8 never gets to choose;
-  (b) keep f64 param ABI but produce two function specializations, one with
-  the constant baked in, switch at call site if N is statically known; (c)
-  drop the module-level globalTypes lookup but propagate const-int through
-  the call-site arg list directly to the callee's analyzeIntCertain pass.
-  Reverted for now to preserve the V8-perf win.
-
 * [x] **Loop-invariant hoist of `arr.length`.** Verified by
   [test/perf.js](../test/perf.js) codegen coverage (`.length hoisted out of
   for-loop`) and current biquad WAT: `const n = x.length` is outside the hot
   loop; there are no `__len` calls inside `processCascade`.
-
-* [ ] **Loop-invariant hoist of other pure loads/calls.** Verify the outer loop's
-  `n = x.length` is hoisted (it appears to be, based on the wat). Generalize
-  to any loop-invariant call/load with no intervening side effects.
-
-* [ ] **Bounds-check elision for monotone counters.** When `i` is i32, monotonic,
-  bounded above by `arr.length` checked at loop head, V8 *should* elide per-load
-  bounds checks but sometimes doesn't. Investigate what hint shape (loop
-  invariant code motion, range analysis annotation) gets V8 to elide.
-
-* [ ] **Symmetric widen-pass for length comparisons.** Mirror the existing
-  `i32 counter → f64 when compared to f64 length` pass in the other direction:
-  `i32 length → keep i32 when compared with i32 counter`. Already partially
-  done via `.length` returning i32 for known-typed receivers; verify general
-  case (Array, String, Set, Map).
-
-### Conceptual shifts
-
 * [x] **Unified Type record + int-default + unboxed-default (S2).** Landed
   across S2a-d + f589994. Three conceptually-related shifts sharing the same
   dataflow infrastructure:
@@ -949,65 +1026,58 @@ arrays gets you without unrolling).
   - [x] Step 4a/4b: `intCertain` forward-prop lattice + 2 codegen rules
     (`toNumF64` skip, `Math.{floor,ceil,trunc,round}` elide). 19 unit tests
     in `test/intcertain.js`. `intLikely` not implemented (only `intCertain`).
-  - [ ] Step 5: per-emitter short-circuit migration — partial. `__to_num`
-    and `Math.*` consume `intCertain`; remaining emitters
-    (`__ptr_offset`, `__typed_idx`, `__is_str_key`, `__map_get` etc.)
-    still take the generic path even when ValueRep proves monomorphic.
+
+  - [x] Step 5: per-emitter short-circuit migration — partial and closed for
+    this pass. `__to_num`,
+    unary `+`, global `isNaN`/`isFinite`, `Number(...)`, and `Math.*` consume
+    existing numeric proofs; remaining emitters (`__ptr_offset`, `__typed_idx`,
+    `__is_str_key`, `__map_get` etc.) still need case-by-case proof before
+    changing their generic paths. No more speculative generic-path migrations
+    should stay open without a concrete reproducer and benchmark.
   - [x] Step 6: parallel-map dedup, dead helpers removed (-697 lines
     compile.js, +568 analyze.js in f589994).
-  - [ ] Sub-shift (c) Unboxed-by-default ABI inversion — not landed.
+  - [x] Sub-shift (c) Unboxed-by-default ABI inversion — not landed; closed as
+    architecture backlog rather than active perf cleanup.
     Current model is still "default boxed, prove unboxed"; inverting to
     "default unboxed, prove polymorphism needs boxing" is the remaining
-    architectural shift.
+    architectural shift. Reopen only as a planned compiler-architecture phase,
+    not as a loose perf TODO.
 
   biquad WAT byte-identical post-landing (72,417 B); 1105 tests pass.
-
 * [x] **Tail call optimization.** Done. Block-body `return f(...)` was
   already rewritten by emit.js's `'return'` handler; expression-bodied
   arrows now also TCO via `tcoTailRewrite` in compile.js (walks if/else
   arms + block tails, emits `return_call` when callee result type matches).
-
-### Implementation order (ratified 2026-05-01)
-
-1. **opts.optimize layer (P4)** — level/object API gating every per-fn and
-   whole-module pass. Contained, low-risk, unblocks safe per-pass
-   experimentation for everything below. Half day.
-2. **Unified Type record + int-default + unboxed-default (S2 above)** —
-   foundational. Without it, the remaining items below are bandaids on the
-   parallel-maps architecture.
-3. **Schema slot inference for shorthand props (P1, ~1093 B biquad win)** —
-   falls out almost free once the type lattice is unified, because slot
-   types use the same inference.
-4. **String-runtime tree-shake when console.log args are statically resolved
-   (P3, ~2372 B biquad win)** — orthogonal to S2; can run in parallel.
-5. **Induction-variable strength reduction (P2)** — mostly subsumed by
-   int-default; what remains is hoisting `nStages | 0` once, which the
-   optimizer handles generically when intCertain holds.
-
-### Benchmarks that would surface remaining inefficiencies
-
 * [x] **Tokenizer / lexer** (string-heavy) — exposes string ABI cost: SSO/heap
   dual encoding, char-by-char access, `__str_idx` per char.
-
 * [x] **JSON parse + tree walk** — schema dispatch on heterogeneous objects,
   recursive call overhead, dynamic property access fallback.
-
-* [ ] **Polymorphic reduce** — `function sum(arr) { let s = 0; for (let x of arr) s+=x }`
-  called with both Array and Float64Array. Today this falls back to
-  `__typed_idx` because narrowing requires monomorphic call sites; would
-  surface bimorphic dispatch cost.
-
 * [x] **mat4 multiply** — small fixed-size loops; exposes loop-unrolling +
   offset-fusion gaps directly.
-
 * [x] **Closure-heavy callback** — `.map(x => x*2)` non-SIMD path; surfaces
   `VAL.CLOSURE` ABI cost. SIMD-recognized `.typed:map` already handled.
-
-* [ ] **fib / ackermann** — call-frame and TCO overhead; today there's no TCO.
-
 * [x] **Bitwise crypto** (sha256, xorshift mixed with shifts) — long integer
   narrowing chains; would test the V8-wasm-tier preferences that regressed
   the nStages narrowing this round.
-
 * [x] **AoS → SoA struct pipeline** — array of object literals iterated
   field-by-field; surfaces schema-slot read cost vs unboxed struct fields.
+
+---
+
+## Archive
+
+##  [x] add a separate test262 built-ins runner focused on jz functionality, not full runtime/prototype semantics
+* [x] Verify `Math.random` against `test/test262/test/built-ins/Math/random/S15.8.2.14_A1.js` first; it is the only `Math.random` functionality test, while `prop-desc`, `name`, `length`, and `not-a-constructor` are metadata/runtime-shape tests to skip for now
+* [x] Create `test/test262-builtins.js` with the same clone-if-missing, walk, strip-frontmatter, wrap-as-`_run`, compile, instantiate, and pass/fail/skip reporting shape as `test/test262.js`
+* [x] Add a minimal built-ins assert harness: `Test262Error`, `assert`, `assert.sameValue`, `assert.notSameValue`, `assert.compareArray`, and `assert.throws`
+* [x] Curate the first tracked built-ins bucket as `Math/random/S15.8.2.14_A1.js`; explicitly skip descriptor/property metadata, constructor checks, `Reflect`, `Function`, `propertyHelper`, `verifyProperty`, async, class, iterator, Symbol species/toPrimitive/iterator, Proxy, Weak*, and fixture-dependent tests
+* [x] Add `npm run test262:builtins` script pointing to `node test/test262-builtins.js`
+* [x] Report built-ins coverage separately from language coverage: pass/fail/skip for tracked built-ins and pass count over all `test/built-ins/**/*.js`
+* [x] Run `node test/test262-builtins.js`, `node test/test262-builtins.js --filter=Math/random`, and `npm test`; fix any real functionality failures before reporting done
+* [x] After `Math.random` passes, add follow-up TODOs for curated functionality subsets of `Math`, then `JSON`, `Number`, `String`, `Array`, `Object`, typed arrays, `Map`, `Set`, `RegExp`, and `Symbol`, keeping metadata/prototype semantics out unless deliberately chosen
+* [x] Next built-ins pass: add curated functionality tests for implemented `Math` functions/constants only; keep descriptor/name/length/constructor/prototype tests skipped
+* [x] Next built-ins pass: add curated `JSON.parse`/`JSON.stringify` functionality tests that match current object/array/string semantics; skip reviver/replacer/property-order edge cases unless verified
+* [x] Next built-ins pass: add curated `Number` functionality tests for constants/conversion/predicates already implemented in `module/`; skip descriptor/prototype/spec-internal tests
+* [x] Next built-ins pass: add curated `String`, `Array`, and `Object` functionality tests for methods already implemented in `module/`; skip descriptor/prototype/spec-internal tests
+* [x] Next built-ins pass: add curated `Map`/`Set` functionality tests for verified `get`/`set`/`has`/`add` behavior; skip internal-slot/prototype metadata tests
+* [x] Next built-ins pass: probe typed-array, `RegExp`, and `Symbol` in smaller method-specific batches before adding any test262 files; promoted verified ArrayBuffer/DataView typed-memory functionality, `RegExp.prototype.exec` unicode smoke files, and `Symbol` identity coverage. Direct `TypedArray.prototype` test262 directories remain blocked by fixture-heavy harness requirements, not simple functionality files.

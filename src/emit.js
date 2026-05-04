@@ -219,6 +219,19 @@ function containsNestedLoop(body) {
   return false
 }
 
+function nestedSmallLoopBudget(body) {
+  if (!Array.isArray(body)) return 1
+  if (body[0] === '=>') return 1
+  if (body[0] === 'for') {
+    const [, init, cond, step, loopBody] = body
+    const n = smallConstForTripCount(init, cond, step)
+    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
+  }
+  let max = 1
+  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
+  return max
+}
+
 function containsDeclOf(body, name) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -251,8 +264,9 @@ function cloneWithSubst(node, name, value) {
 }
 
 const MAX_SMALL_FOR_UNROLL = 8
+const MAX_NESTED_FOR_UNROLL = 64
 
-function unrollSmallConstFor(init, cond, step, body) {
+function smallConstForTripCount(init, cond, step) {
   if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
   const decl = init[1]
   if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
@@ -268,8 +282,18 @@ function unrollSmallConstFor(init, cond, step, body) {
     (step[0] === '++' && step[1] === name) ||
     (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
   )
-  if (!stepOk) return null
-  if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsNestedLoop(body) || containsDeclOf(body, name)) return null
+  return stepOk ? end : null
+}
+
+function unrollSmallConstFor(init, cond, step, body) {
+  const end = smallConstForTripCount(init, cond, step)
+  if (end == null) return null
+  const name = init[1][1]
+  if (containsNestedLoop(body)) {
+    if (!ctx.transform.optimize || ctx.transform.optimize.nestedSmallConstForUnroll !== true) return null
+    if (end * nestedSmallLoopBudget(body) > MAX_NESTED_FOR_UNROLL) return null
+  }
+  if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null
   if (isReassigned(body, name)) return null
 
   const out = []
@@ -1162,8 +1186,7 @@ export const emitter = {
   'u+': a => {
     if (valTypeOf(a) === VAL.BIGINT)
       return typed(['f64.convert_i64_s', asI64(emit(a))], 'f64')
-    inc('__to_num')
-    return typed(['call', '$__to_num', asF64(emit(a))], 'f64')
+    return toNumF64(a, emit(a))
   },
   'u-': a => {
     if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])

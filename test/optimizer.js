@@ -109,6 +109,24 @@ test('arrayElemValType: typed-array .map runtime correctness', () => {
   is(main(), 24)
 })
 
+test('known numeric coercions elide __to_num', () => {
+  const wat = jz.compile(`
+    export const main = (buf) => {
+      const a = new Float64Array(buf)
+      return Number(a[0]) + +(a[1] + 1) + isNaN(a[2]) + isFinite(a[3])
+    }
+  `, { wat: true })
+  const calls = (wat.match(/\(call \$__to_num/g) || []).length
+  is(calls, 0)
+})
+
+test('unknown coercions still use __to_num', () => {
+  const wat = jz.compile(`
+    export const main = (x) => Number(x) + +x + isNaN(x) + isFinite(x)
+  `, { wat: true })
+  ok(/\(call \$__to_num\b/.test(wat))
+})
+
 test('dynamic prop reads reuse receiver type tag', () => {
   const wat = jz.compile(`
     export const main = (o) => {
@@ -179,6 +197,114 @@ test('small const-count for-loop keeps outer nested loops compact', () => {
   is(main(), 288)
 })
 
+test('nested small const-count for-loop unroll is opt-in', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      let acc = 0
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          for (let k = 0; k < 4; k++) acc += r + c + k
+        }
+      }
+      return acc | 0
+    }
+  `, { wat: true, optimize: { watr: false, nestedSmallConstForUnroll: true } })
+  ok(!/\(loop\b/.test(wat), 'bounded nested loops should unroll only when explicitly enabled')
+})
+
+test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => {
+  const wat = jz.compile(`
+    export const main = (arr, idx) => {
+      const a = new Float64Array(arr)
+      const i = idx | 0
+      return a[i + 0] + a[i + 1] + a[i + 2] + a[i + 3]
+    }
+  `, { wat: true, optimize: { watr: false } })
+  ok(/\$__ab\d+/.test(wat), 'expected shared address-base local')
+  ok(/f64\.load offset=8[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+1 as offset=8 from shared base')
+  ok(/f64\.load offset=16[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+2 as offset=16 from shared base')
+  ok(/f64\.load offset=24[\s\S]*local\.get \$__ab\d+/.test(wat), 'expected i+3 as offset=24 from shared base')
+})
+
+test('known array at reads header length directly', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      const a = [10, 20, 30]
+      return a.at(-1)
+    }
+  `, { wat: true, optimize: { watr: false } })
+  ok(!/\(call \$__len\b/.test(wat), 'known ARRAY .at should not dispatch through __len')
+  ok(/i32\.load/.test(wat), 'negative .at should read the known ARRAY header length')
+  const { main } = run(`
+    export const main = () => {
+      const a = [10, 20, 30]
+      return a.at(-1) + a.at(0)
+    }
+  `)
+  is(main(), 40)
+})
+
+test('array shift stays O(1)', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      const a = []
+      for (let i = 0; i < 16; i++) a.push(i)
+      let s = 0
+      for (let i = 0; i < 16; i++) s += a.shift()
+      return s
+    }
+  `, { wat: true, optimize: { watr: false } })
+  const helper = wat.match(/\(func \$__arr_shift[\s\S]*?\n  \)/)?.[0] || ''
+  ok(helper, 'expected __arr_shift helper to be emitted')
+  ok(!/memory\.copy/.test(helper), 'array shift should slide the data pointer instead of copying elements')
+})
+
+test('sourceInline: inlines returnless hot internal helper calls', () => {
+  const src = `
+    const hot = (a, n) => {
+      for (let i = 0; i < n; i++) a[i] = i + 1
+    }
+    export const main = () => {
+      const a = new Float64Array(4)
+      hot(a, 4)
+      return a[3] | 0
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: 3 })
+  ok(!/\(call \$hot\b/.test(wat), 'expected hot helper call to be inlined')
+  ok(!/\(func \$hot\b/.test(wat), 'expected inlined helper to treeshake away')
+  const { main } = run(src, { optimize: 3 })
+  is(main(), 4)
+})
+
+test('sourceInline: disabled by default level 2', () => {
+  const wat = jz.compile(`
+    const hot = (a, n) => {
+      for (let i = 0; i < n; i++) a[i] = i + 1
+    }
+    export const main = () => {
+      const a = new Float64Array(4)
+      hot(a, 4)
+      return a[3] | 0
+    }
+  `, { wat: true, optimize: { watr: false } })
+  ok(/\(call \$hot\b/.test(wat), 'level 2 source optimizer should keep the helper call before watr')
+})
+
+test('sourceInline: disabled by optimize:false', () => {
+  const wat = jz.compile(`
+    const hot = (a, n) => {
+      for (let i = 0; i < n; i++) a[i] = i + 1
+    }
+    export const main = () => {
+      const a = new Float64Array(4)
+      hot(a, 4)
+      return a[3] | 0
+    }
+  `, { wat: true, optimize: false })
+  ok(/\(call \$hot\b/.test(wat), 'optimize:false should keep the helper call')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
@@ -214,15 +340,19 @@ test('charCodeAt: runtime correctness — digit parse', () => {
 })
 
 test('resolveOptimize: levels, booleans, object overrides', () => {
-  const allOn = resolveOptimize(true)
+  const level2 = resolveOptimize(true)
   const allOff = resolveOptimize(false)
   for (const n of PASS_NAMES) {
-    is(allOn[n], true, `level true: ${n} on`)
+    is(level2[n], resolveOptimize(2)[n], `level true: ${n} matches level 2`)
     is(allOff[n], false, `level false: ${n} off`)
   }
   is(resolveOptimize(0).watr, false)
   is(resolveOptimize(0).treeshake, false)
   is(resolveOptimize(2).watr, true)
+  is(resolveOptimize(2).sourceInline, false)
+  is(resolveOptimize(2).nestedSmallConstForUnroll, false)
+  is(resolveOptimize(3).sourceInline, true)
+  is(resolveOptimize(3).nestedSmallConstForUnroll, true)
   // level 1 = encoding-compactness only
   const l1 = resolveOptimize(1)
   is(l1.treeshake, true)
@@ -237,6 +367,8 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(o.treeshake, false)
   // undefined: default = level 2
   is(resolveOptimize(undefined).watr, true)
+  is(resolveOptimize(undefined).sourceInline, false)
+  is(resolveOptimize(undefined).nestedSmallConstForUnroll, false)
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {

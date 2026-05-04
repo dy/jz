@@ -39,9 +39,9 @@ const NAN_PREFIX_BITS = 0x7FF8n
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
  *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
- *   2 — default. All current passes (watr CSE/DCE/inline + every jz pass).
- *   3 — reserved for future aggressive passes (constant-arg propagation,
- *       inlining, unrolling). Currently == level 2.
+ *   2 — default. Stable passes (watr CSE/DCE/inline + every jz pass that has
+ *       benchmark proof).
+ *   3 — aggressive experimental passes in addition to level 2.
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -55,7 +55,9 @@ export const PASS_NAMES = [
   'specializePtrBase',
   'sortStrPoolByFreq',
   'hoistConstantPool',
+  'sourceInline',
   'smallConstForUnroll',
+  'nestedSmallConstForUnroll',
   'treeshake',
 ]
 
@@ -64,14 +66,14 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: ALL_ON,
+  2: Object.freeze({ ...ALL_ON, sourceInline: false, nestedSmallConstForUnroll: false }),
   3: ALL_ON,
 })
 
 /**
  * Normalize the user's `opts.optimize` value into a flat config object.
  *
- *   resolveOptimize(undefined | true)         → all on (level 2)
+ *   resolveOptimize(undefined | true)         → level 2 stable defaults
  *   resolveOptimize(false | 0)                → all off
  *   resolveOptimize(1 | 2 | 3)                → preset for that level
  *   resolveOptimize({ level: 1, watr: true }) → level 1 base, with watr forced on
@@ -79,7 +81,7 @@ const LEVEL_PRESETS = Object.freeze({
  */
 export function resolveOptimize(opt) {
   if (opt === false || opt === 0) return { ...ALL_OFF }
-  if (opt === true || opt == null) return { ...ALL_ON }
+  if (opt === true || opt == null) return { ...LEVEL_PRESETS[2] }
   if (typeof opt === 'number') return { ...(LEVEL_PRESETS[opt] || ALL_ON) }
   if (typeof opt === 'object') {
     const baseLevel = typeof opt.level === 'number' ? opt.level : 2

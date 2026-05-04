@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -293,19 +293,17 @@ export default (ctx) => {
 
   // Global isNaN/isFinite — coerce string→number first (unlike Number.isNaN/isFinite)
   ctx.core.emit['isNaN'] = (x) => {
-    inc('__to_num')
-    const v = asF64(emit(x))
+    const v = toNumF64(x, emit(x))
     const t = temp('t')
     return typed(['f64.ne',
-      ['local.tee', `$${t}`, ['call', '$__to_num', v]],
+      ['local.tee', `$${t}`, v],
       ['local.get', `$${t}`]], 'i32')
   }
   ctx.core.emit['isFinite'] = (x) => {
-    inc('__to_num')
-    const v = asF64(emit(x))
+    const v = toNumF64(x, emit(x))
     const t = temp('t')
     return typed(['i32.and',
-      ['f64.eq', ['local.tee', `$${t}`, ['call', '$__to_num', v]], ['local.get', `$${t}`]],
+      ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
       ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', Infinity]]], 'i32')
   }
 
@@ -563,8 +561,7 @@ export default (ctx) => {
   ctx.core.emit['Number'] = (x) => {
     if (valTypeOf(x) === VAL.BIGINT)
       return typed(['f64.convert_i64_s', asI64(emit(x))], 'f64')
-    inc('__to_num')
-    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+    return toNumF64(x, emit(x))
   }
 
   // BigInt(x) — f64→i64 conversion (reinterpret as BigInt-as-f64).

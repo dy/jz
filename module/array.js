@@ -1146,6 +1146,19 @@ export default (ctx) => {
 
   // .at(i) → array element with negative index support
   ctx.core.emit['.array:at'] = (arr, idx) => {
+    const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
+    if (vt === VAL.ARRAY) {
+      inc('__ptr_offset')
+      const t = tempI32('ai'), off = tempI32('ao')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', asF64(emit(arr))]],
+        ['local.set', `$${t}`, asI32(emit(idx))],
+        ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
+          ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
+            ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]]]],
+        ['f64.load', ['i32.add', ['local.get', `$${off}`],
+          ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
+    }
     const t = tempI32('ai'), a = temp('aa')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${a}`, asF64(emit(arr))],
