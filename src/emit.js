@@ -446,7 +446,7 @@ export function emitDecl(...inits) {
       }
     }
     const isObjLit = Array.isArray(init) && init[0] === '{}'
-    if (isObjLit) ctx.schema.targetStack.push(name)
+    if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
     const val = emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
@@ -920,7 +920,7 @@ export const emitter = {
       // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
       const litKey = Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string' ? idx[1] : null
       if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
-        const slot = ctx.schema.find(arr, litKey, true)
+        const slot = ctx.schema.find(arr, litKey)
         if (slot >= 0) {
           const t = temp()
           return typed(['block', ['result', 'f64'],
@@ -982,10 +982,8 @@ export const emitter = {
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
       // Schema-based object → f64.store at fixed offset.
-      // safe=true: skip structural subtyping when variable's type is unknown,
-      // otherwise a slot write could clobber an array/string's payload.
       if (typeof obj === 'string' && ctx.schema.find) {
-        const idx = ctx.schema.find(obj, prop, true)
+        const idx = ctx.schema.find(obj, prop)
         if (idx >= 0) {
           const va = emit(obj), vv = asF64(emit(val)), t = temp()
           const shadow = needsDynShadow(obj)

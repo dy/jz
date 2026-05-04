@@ -25,9 +25,11 @@ export default (ctx) => {
     const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
       ? rawProps[0].slice(1) : rawProps
 
+    const target = takeLiteralTarget()
+
     // Object spread: {...a, x: 1, ...b} — merge schemas, copy props from sources
     const hasSpreads = props.some(p => Array.isArray(p) && p[0] === '...')
-    if (hasSpreads) return emitObjectSpread(props)
+    if (hasSpreads) return emitObjectSpread(props, target)
 
     const names = [], values = []
     for (const p of props) {
@@ -35,23 +37,10 @@ export default (ctx) => {
     }
 
     // Use variable's merged schema if available (from Object.assign inference), else register literal schema.
-    // Only adopt the target's schema when this literal's keys are a prefix of the merged schema —
-    // i.e., this literal IS the binding's value (possibly with fields added later by Object.assign),
-    // not a deeper nested literal that happens to be emitted while the outer binding is on the
-    // targetStack. Without this guard, `{ops: [{inner: {id: x}}]}` causes the inner `{inner:...}`
-    // and `{id:x}` literals to inherit the outer binding's `[ops]` schema, mangling their key
-    // names in __json_obj output.
     let schemaId = ctx.schema.register(names)
-    const target = ctx.schema.targetStack.at(-1)
     if (target) {
       const merged = ctx.schema.resolve(target)
-      if (merged && names.length <= merged.length) {
-        let isPrefix = true
-        for (let i = 0; i < names.length; i++) {
-          if (names[i] !== merged[i]) { isPrefix = false; break }
-        }
-        if (isPrefix) schemaId = ctx.schema.idOf(target)
-      }
+      if (merged) schemaId = ctx.schema.idOf(target)
     }
     const schema = ctx.schema.list[schemaId]
     const t = tempI32('obj')
@@ -289,7 +278,16 @@ function resolveSchema(obj) {
  * Emit object literal with spread: {...a, x: 1, ...b, y: 2}
  * Merges schemas from all sources, allocates result, copies in order.
  */
-function emitObjectSpread(props) {
+function takeLiteralTarget() {
+  const frame = ctx.schema.targetStack.at(-1)
+  if (!frame) return null
+  if (typeof frame === 'string') return frame
+  if (!frame.active) return null
+  frame.active = false
+  return frame.name
+}
+
+function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   // Collect merged schema: union of all spread source schemas + explicit props
   const allNames = []
   const addName = n => { if (!allNames.includes(n)) allNames.push(n) }
@@ -349,7 +347,6 @@ function emitObjectSpread(props) {
   }
 
   body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-  const spreadTarget = ctx.schema.targetStack.at(-1)
   if (needsDynShadow(spreadTarget)) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)

@@ -62,15 +62,11 @@ export function initSchema(ctx) {
   /** Find property index by variable schema or structural subtyping.
    *  Returns -1 to signal "use dynamic lookup" in four cases:
    *    1. Variable has precise schema but schema lacks the property
-   *    2. Receiver is a string variable, but its valType is unknown or not an object
+   *    2. Receiver is a string variable, but its valType is unknown or not OBJECT
    *    3. Receiver is not a string variable (varName == null) — no type evidence
    *    4. Structural search finds the property at inconsistent offsets across schemas
-   *  Case 4 is a real ambiguity — the caller must route to runtime dispatch.
-   *  `safe=true` disables structural subtyping when the variable's type is not
-   *  known to be VAL.OBJECT. Use for writes: a wrong slot clobbers unrelated
-   *  memory (e.g. arr.loc = ... corrupting arr[slot]). Reads only return wrong
-   *  values, which callers can tolerate. */
-  ctx.schema.find = (varName, prop, safe = false) => {
+   *  Case 4 is a real ambiguity — the caller must route to runtime dispatch. */
+  ctx.schema.find = (varName, prop) => {
     // Precise: variable has known schema
     const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1

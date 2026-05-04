@@ -196,6 +196,15 @@ test('Regression: nested literals retain own schemaId, not enclosing binding\'s'
   is(f(), '{"ops":[{"inner":{"id":"hi"}}]}')
 })
 
+test('Regression: nested prefix literal does not inherit enclosing merged schemaId', () => {
+  const { f } = run(`export let f = () => {
+    let out = {a: {a: 1}}
+    Object.assign(out, {b: 2})
+    return JSON.stringify(out)
+  }`)
+  is(f(), '{"a":{"a":1},"b":2}')
+})
+
 // The slot fast-path for `o.prop` reads at a fixed offset with no runtime
 // type check; it is only sound when the receiver is statically known to be
 // OBJECT. A receiver whose type is unknown (e.g. a `?:` over JSON.parse
