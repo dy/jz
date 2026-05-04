@@ -40,7 +40,7 @@ dist(3, 4) // 5
 ## Usage
 
 ```js
-import jz, { compile, instantiateAsync } from 'jz'
+import jz, { compile } from 'jz'
 
 // Compile, instantiate
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
@@ -50,10 +50,6 @@ add(2, 3)  // 5
 const wasm = compile('export let f = (x) => x * 2')
 const mod = new WebAssembly.Module(wasm)
 const inst = new WebAssembly.Instance(mod)
-
-// Async WASM startup — jz source compilation is still synchronous
-const asyncInst = await instantiateAsync('export let f = (x) => x * 2')
-asyncInst.exports.f(21) // 42
 ```
 
 ## CLI

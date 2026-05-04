@@ -12,7 +12,6 @@
  *   memory(src)                           — enhance a WebAssembly.Memory
  *   wrap(memSrc, inst?)                   — adapt WASM exports to JS calling convention
  *   instantiate(compile, code, opts?)     — compile + instantiate + wrap
- *   instantiateAsync(compile, code, opts?) — sync jz compile + async WASM instantiate
  *
  * @module runtime
  */
@@ -533,21 +532,5 @@ export const instantiate = (compile, code, opts = {}) => {
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
-  return finishInstantiation(mod, inst, imports, needsWasi, opts, state)
-}
-
-/**
- * Compile jz source synchronously, then compile and instantiate WASM asynchronously.
- * This keeps the compiler semantics identical to instantiate(); only the WebAssembly
- * module compilation/instantiation work is handed to the host async APIs.
- */
-export const instantiateAsync = async (compile, code, opts = {}) => {
-  const state = prepareInterop(opts)
-  const wasm = compile(code, opts)
-  opts.extMap = state.extMap
-  const mod = await WebAssembly.compile(wasm)
-  const { imports, needsWasi } = buildImports(mod, opts, state)
-  const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
-  const inst = await WebAssembly.instantiate(mod, hasImports ? imports : undefined)
   return finishInstantiation(mod, inst, imports, needsWasi, opts, state)
 }

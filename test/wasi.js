@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import { compile, instantiateAsync } from '../index.js'
+import { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -91,40 +91,12 @@ test('WASI polyfill: falls back when stream write throws', () => {
   is(warned.join(''), 'blocked-err')
 })
 
-test('instantiateAsync: scalar module', async () => {
-  const { exports: { f }, module, instance } = await instantiateAsync('export let f = (x) => x * 2')
-  ok(module instanceof WebAssembly.Module, 'returns module')
-  ok(instance instanceof WebAssembly.Instance, 'returns instance')
-  is(f(21), 42)
-})
-
 test('EdgeJS smoke: scalar module has no imports', () => {
   const wasm = compile('export let f = (x) => x * x')
   const mod = new WebAssembly.Module(wasm)
   is(WebAssembly.Module.imports(mod).length, 0)
   const inst = new WebAssembly.Instance(mod)
   is(inst.exports.f(9), 81)
-})
-
-test('instantiateAsync: WASI write option', async () => {
-  const captured = []
-  const { exports: { f } } = await instantiateAsync(
-    'export let f = () => { console.log("async-wasi"); return 1 }',
-    { write: (fd, text) => captured.push([fd, text]) }
-  )
-  is(f(), 1)
-  is(captured.map(x => x[1]).join(''), 'async-wasi\n')
-  is(captured.filter(x => x[1] === 'async-wasi')[0][0], 1)
-})
-
-test('instantiateAsync: host imports', async () => {
-  const calls = []
-  const { exports: { f } } = await instantiateAsync(
-    'import { double } from "host"; export let f = (x) => double(x) + 1',
-    { imports: { host: { double: x => { calls.push(x); return x * 2 } } } }
-  )
-  is(f(20), 41)
-  is(calls[0], 20)
 })
 
 // === WASI native runtime tests ===

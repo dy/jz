@@ -27,12 +27,10 @@ example/benchmark PR.
 * [x] Add tests for stdout/stderr fallback without introducing an EdgeJS-only
   public entrypoint: no `process`, missing `process.stdout`, throwing `.write`,
   and custom `{ write }` capture.
-* [x] Decide whether an honest async API belongs in JZ:
-  * [x] If yes, implement `instantiateAsync` using `WebAssembly.compile` /
-    `WebAssembly.instantiate` after synchronous JZ compile, and document that
-    source compilation is still synchronous.
-  * [x] Avoid `compileAsync` / `instantiateAsync` wrappers that only
-    `await Promise.resolve()` and still block during compilation.
+* [x] Do not publish `instantiateAsync`: it only wrapped synchronous JZ source
+  compilation with async WebAssembly startup, adding public API surface without
+  new capability. Hosts that need async WASM startup can call `compile()` and
+  then standard `WebAssembly.compile` / `WebAssembly.instantiate` directly.
 * [ ] Add host-import mode for runtime services used by JS hosts:
   `console.log` / `Date.now` / `performance.now` can lower to `env.printLine`
   / `env.now` instead of WASI `fd_write` / `clock_time_get` when requested.
@@ -49,7 +47,7 @@ example/benchmark PR.
 * [x] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
   compile once at module init, instantiate per request or reuse a module, call a
   scalar export. Verified with nightly EdgeJS `0.0.0-0ff2433` / Node
-  `v24.13.2`: `{ imports: 0, mac: 50, mix: 63, asyncMac: 22 }`.
+  `v24.13.2`: `{ imports: 0, mac: 50, mix: 63 }`.
 * [x] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
   `WebAssembly.Instance`, `WebAssembly.compile`, and memory imports inside
   Wasmer/WASIX sandbox. Current local result is blocked before the nested-WASM

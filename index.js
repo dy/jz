@@ -49,7 +49,6 @@ import jzify from './src/jzify.js'
 import { normalizeSource } from './src/source.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
-  instantiateAsync as instantiateRuntimeAsync,
 } from './src/host.js'
 
 const importSpecMayReturnExternal = (spec) => {
@@ -90,7 +89,6 @@ const compileProfiler = (profile) => {
  * jz('code') or jz`code` → { exports, memory, instance, module }
  * jz.compile('code') → Uint8Array (raw WASM binary)
  * jz.compile('code', { wat: true }) → string (WAT text)
- * jz.instantiateAsync('code') → Promise<{ exports, memory, instance, module }>
  * jz.memory([src]) → enhanced WebAssembly.Memory (read/write JS↔WASM values)
  *
  * @example
@@ -175,14 +173,6 @@ jz.compile = (code, opts = {}) => {
 }
 
 /**
- * Compile jz source synchronously, then use async WebAssembly compilation and
- * instantiation. Useful in hosts that prefer yielding WASM startup work to the
- * platform; this does not make jz source compilation itself asynchronous.
- */
-const jzInstantiateAsync = (code, opts = {}) => instantiateRuntimeAsync(jz.compile, code, opts)
-jz.instantiateAsync = jzInstantiateAsync
-
-/**
  * Compile, instantiate, and wrap. Works as both jz('code') and jz`code ${val}`.
  * @param {string|TemplateStringsArray} code
  * @param {...any} args - Interpolation values (template tag) or options (string call)
@@ -255,4 +245,3 @@ export default function jz(code, ...args) {
 export { jz }
 const jzCompile = jz.compile
 export { jzCompile as compile }
-export { jzInstantiateAsync as instantiateAsync }
