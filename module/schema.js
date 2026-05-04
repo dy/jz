@@ -60,11 +60,12 @@ export function initSchema(ctx) {
   }
 
   /** Find property index by variable schema or structural subtyping.
-   *  Returns -1 to signal "use dynamic lookup" in three cases:
+   *  Returns -1 to signal "use dynamic lookup" in four cases:
    *    1. Variable has precise schema but schema lacks the property
    *    2. Variable's valType is known and is not an object
-   *    3. Structural search finds the property at inconsistent offsets across schemas
-   *  Case 3 is a real ambiguity — the caller must route to runtime dispatch.
+   *    3. Receiver is not a string variable (varName == null) — no type evidence
+   *    4. Structural search finds the property at inconsistent offsets across schemas
+   *  Case 4 is a real ambiguity — the caller must route to runtime dispatch.
    *  `safe=true` disables structural subtyping when the variable's type is not
    *  known to be VAL.OBJECT. Use for writes: a wrong slot clobbers unrelated
    *  memory (e.g. arr.loc = ... corrupting arr[slot]). Reads only return wrong
@@ -73,13 +74,13 @@ export function initSchema(ctx) {
     // Precise: variable has known schema
     const id = ctx.schema.idOf(varName)
     if (id != null) return ctx.schema.list[id]?.indexOf(prop) ?? -1
-    // Known non-object pointer-backed values must use dynamic property lookup,
-    // not structural object schemas registered elsewhere in the function.
-    if (typeof varName === 'string') {
-      const vt = lookupValType(varName)
-      if (vt != null && vt !== VAL.OBJECT) return -1
-      if (safe && vt !== VAL.OBJECT) return -1
-    }
+    // Structural subtyping requires positive evidence the receiver is OBJECT.
+    // Without it (varName is null, or its valType is unknown / not OBJECT) we
+    // can match HASH/ARRAY/etc. values as if they had OBJECT layout, producing
+    // slot reads on unrelated memory. Funnel those through dynamic dispatch.
+    if (typeof varName !== 'string') return -1
+    const vt = lookupValType(varName)
+    if (vt !== VAL.OBJECT) return -1
     // Structural subtyping: walk only schemas that contain this prop.
     // Consistent slot across all → return slot; any mismatch → -1 (dynamic lookup).
     const bucket = byProp.get(prop)
