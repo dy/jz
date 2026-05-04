@@ -151,6 +151,14 @@ function isDeclared(name) {
   return scopes.some(s => s.has(name))
 }
 
+const hasFunc = name => ctx.func.names.has(name)
+
+const renameFunc = (func, nextName) => {
+  ctx.func.names.delete(func.name)
+  func.name = nextName
+  ctx.func.names.add(nextName)
+}
+
 /** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
 const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6 }
 function resolveTypeof(node) {
@@ -611,7 +619,7 @@ const handlers = {
     }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
-      && ctx.func.list.some(f => f.name === lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
+      && hasFunc(lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
       const name = `${lhs[1]}$${lhs[2]}`
       if (defFunc(name, prep(rhs))) return null  // extracted as function, no assignment needed
     }
@@ -829,7 +837,7 @@ const handlers = {
     if (Array.isArray(decl) && decl[0] === 'default') {
       const val = decl[1]
       // export default name → export existing name as 'default'
-      if (typeof val === 'string' && (ctx.func.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
+      if (typeof val === 'string' && (hasFunc(val) || ctx.scope.globals.has(val))) {
         ctx.func.exports['default'] = val  // alias
         return null
       }
@@ -983,7 +991,7 @@ const handlers = {
 
       const resolved = ctx.scope.chain[callee]
       if (resolved?.includes('.')) callee = resolved
-      else if (resolved && ctx.func.list.some(f => f.name === resolved)) callee = resolved
+      else if (resolved && hasFunc(resolved)) callee = resolved
       else if (resolved && !resolved.includes('.')) {
         if (!ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       }
@@ -1019,7 +1027,7 @@ const handlers = {
 
     const preppedArgs = args.filter(a => a != null).map(prep)
     for (const a of preppedArgs) {
-      if (typeof a === 'string' && ctx.func.list.some(f => f.name === a)) {
+      if (typeof a === 'string' && hasFunc(a)) {
         includeMods('core', 'fn'); break
       }
     }
@@ -1294,6 +1302,7 @@ function defFunc(name, node) {
   const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
   if (hasRest.length) funcInfo.rest = hasRest[0]  // track rest param name
   ctx.func.list.push(funcInfo)
+  ctx.func.names.add(name)
   return true
 }
 
@@ -1377,7 +1386,7 @@ function prepareModule(specifier, source) {
     moduleExports.set(name, mangled)
     // Rename the function in ctx.func.list
     const func = ctx.func.list.find(f => f.name === name)
-    if (func) func.name = mangled
+    if (func) renameFunc(func, mangled)
     // Rename globals
     if (ctx.scope.globals.has(name)) {
       const wat = ctx.scope.globals.get(name).replace(`$${name}`, `$${mangled}`)
@@ -1398,7 +1407,7 @@ function prepareModule(specifier, source) {
       const mangled = `${prefix}$${alias}`
       moduleExports.set('default', mangled)
       const func = ctx.func.list.find(f => f.name === alias)
-      if (func) func.name = mangled
+      if (func) renameFunc(func, mangled)
       if (ctx.scope.globals.has(alias)) {
         const wat = ctx.scope.globals.get(alias).replace(`$${alias}`, `$${mangled}`)
         ctx.scope.globals.delete(alias)
@@ -1417,7 +1426,7 @@ function prepareModule(specifier, source) {
     if (func.name.includes('__') && func.name.includes('$')) continue
     const mangled = `${prefix}$${func.name}`
     moduleExports.set(func.name, mangled)
-    func.name = mangled
+    renameFunc(func, mangled)
   }
 
   // Add mangled non-exported globals to moduleExports for walk renaming
