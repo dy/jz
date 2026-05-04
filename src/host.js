@@ -12,6 +12,7 @@
  *   memory(src)                           — enhance a WebAssembly.Memory
  *   wrap(memSrc, inst?)                   — adapt WASM exports to JS calling convention
  *   instantiate(compile, code, opts?)     — compile + instantiate + wrap
+ *   instantiateAsync(compile, code, opts?) — sync jz compile + async WASM instantiate
  *
  * @module runtime
  */
@@ -435,36 +436,31 @@ export const wrap = (memSrc, inst) => {
   return exports
 }
 
-/**
- * Compile, instantiate, and wrap exports (with WASI + rest-param support).
- * `compile` is the jz.compile function (injected to avoid importing the compiler core).
- */
-export const instantiate = (compile, code, opts = {}) => {
-  const extMap = [null]
-  let mem = null
+const prepareInterop = (opts) => {
+  const state = { extMap: [null], mem: null }
   opts._interp = opts._interp || {}
   opts._interp.__ext_prop = (objPtr, propPtr) => {
-    const obj = extMap[offset(objPtr)]
-    const prop = mem.read(propPtr)
-    return mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop])
+    const obj = state.extMap[offset(objPtr)]
+    const prop = state.mem.read(propPtr)
+    return state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop])
   }
   opts._interp.__ext_has = (objPtr, propPtr) => {
-    return (mem.read(propPtr) in extMap[offset(objPtr)]) ? 1 : 0
+    return (state.mem.read(propPtr) in state.extMap[offset(objPtr)]) ? 1 : 0
   }
   opts._interp.__ext_set = (objPtr, propPtr, valPtr) => {
-    extMap[offset(objPtr)][mem.read(propPtr)] = mem.read(valPtr)
+    state.extMap[offset(objPtr)][state.mem.read(propPtr)] = state.mem.read(valPtr)
     return 1
   }
   opts._interp.__ext_call = (objPtr, propPtr, argsPtr) => {
-    const obj = extMap[offset(objPtr)]
-    const prop = mem.read(propPtr)
-    const args = mem.read(argsPtr)
-    return mem.wrapVal(obj[prop].apply(obj, args))
+    const obj = state.extMap[offset(objPtr)]
+    const prop = state.mem.read(propPtr)
+    const args = state.mem.read(argsPtr)
+    return state.mem.wrapVal(obj[prop].apply(obj, args))
   }
+  return state
+}
 
-  const wasm = compile(code, opts)
-  opts.extMap = extMap
-  const mod = new WebAssembly.Module(wasm)
+const buildImports = (mod, opts, state) => {
   const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
@@ -477,8 +473,8 @@ export const instantiate = (compile, code, opts = {}) => {
       const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
       if (typeof fn === 'function')
         imports[modName][name] = (...args) => {
-          const ret = fn.call(fns, ...args.map(a => mem ? mem.read(a) : a))
-          return mem ? mem.wrapVal(ret) : coerce(ret)
+          const ret = fn.call(fns, ...args.map(a => state.mem ? state.mem.read(a) : a))
+          return state.mem ? state.mem.wrapVal(ret) : coerce(ret)
         }
     }
   }
@@ -495,13 +491,15 @@ export const instantiate = (compile, code, opts = {}) => {
       const host = globalThis[imp.name]
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
-        let id = extMap.indexOf(host); if (id === -1) { id = extMap.length; extMap.push(host) }
+        let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
         imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: true }, ptr(11, 0, id))
       }
     }
   }
-  const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
-  const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
+  return { imports, needsWasi }
+}
+
+const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   if (needsWasi) imports._setMemory(inst.exports.memory)
 
   // Drive WASM timer queue via JS scheduling (non-blocking)
@@ -517,8 +515,39 @@ export const instantiate = (compile, code, opts = {}) => {
 
   // For shared memory, resolve memory from import; for own memory, from export
   const rawMemory = opts.memory || inst.exports.memory
-  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap }
+  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
   const enhanced = memory(memSrc)
-  mem = enhanced
+  state.mem = enhanced
   return { exports: wrap(memSrc), memory: enhanced, instance: inst, module: mod }
+}
+
+/**
+ * Compile, instantiate, and wrap exports (with WASI + rest-param support).
+ * `compile` is the jz.compile function (injected to avoid importing the compiler core).
+ */
+export const instantiate = (compile, code, opts = {}) => {
+  const state = prepareInterop(opts)
+  const wasm = compile(code, opts)
+  opts.extMap = state.extMap
+  const mod = new WebAssembly.Module(wasm)
+  const { imports, needsWasi } = buildImports(mod, opts, state)
+  const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
+  const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
+  return finishInstantiation(mod, inst, imports, needsWasi, opts, state)
+}
+
+/**
+ * Compile jz source synchronously, then compile and instantiate WASM asynchronously.
+ * This keeps the compiler semantics identical to instantiate(); only the WebAssembly
+ * module compilation/instantiation work is handed to the host async APIs.
+ */
+export const instantiateAsync = async (compile, code, opts = {}) => {
+  const state = prepareInterop(opts)
+  const wasm = compile(code, opts)
+  opts.extMap = state.extMap
+  const mod = await WebAssembly.compile(wasm)
+  const { imports, needsWasi } = buildImports(mod, opts, state)
+  const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
+  const inst = await WebAssembly.instantiate(mod, hasImports ? imports : undefined)
+  return finishInstantiation(mod, inst, imports, needsWasi, opts, state)
 }

@@ -20,10 +20,16 @@
  */
 export function wasi(opts = {}) {
   let mem = null
-  const write = opts.write || ((fd, text) => {
-    if (fd === 1) typeof process !== 'undefined' && process.stdout ? process.stdout.write(text) : console.log(text.replace(/\n$/, ''))
-    else typeof process !== 'undefined' && process.stderr ? process.stderr.write(text) : console.warn(text.replace(/\n$/, ''))
-  })
+  const fallbackWrite = (fd, text) => {
+    const stream = fd === 1 ? globalThis.process?.stdout : globalThis.process?.stderr
+    if (stream && typeof stream.write === 'function') {
+      try { stream.write(text); return }
+      catch {}
+    }
+    const msg = text.replace(/\n$/, '')
+    ;(fd === 1 ? console.log : console.warn)(msg)
+  }
+  const write = opts.write || fallbackWrite
 
   return {
     wasi_snapshot_preview1: {

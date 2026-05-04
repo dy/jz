@@ -2,7 +2,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import { compile } from '../index.js'
+import { compile, instantiateAsync } from '../index.js'
+import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 
@@ -18,6 +19,112 @@ test('console.log: number', () => {
 
 test('console.log: multiple args', () => {
   is(run(`export let f = () => { console.log("x", 1, "y"); return 1 }`).f(), 1)
+})
+
+test('WASI polyfill: custom write receives output', () => {
+  const captured = []
+  const imports = wasi({ write: (fd, text) => captured.push([fd, text]) })
+  const wasm = compile(`export let f = () => { console.log("custom"); console.warn("err"); return 1 }`)
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+  is(inst.exports.f(), 1)
+  is(captured.map(x => x[1]).join(''), 'custom\nerr\n')
+  is(captured.filter(x => x[1] === 'custom')[0][0], 1)
+  is(captured.filter(x => x[1] === 'err')[0][0], 2)
+})
+
+function runWithCapturedFallback(processValue, source) {
+  const originalProcess = globalThis.process
+  const originalLog = console.log
+  const originalWarn = console.warn
+  const logged = []
+  const warned = []
+  let result
+  try {
+    Object.defineProperty(globalThis, 'process', { value: processValue, configurable: true })
+    console.log = msg => logged.push(msg)
+    console.warn = msg => warned.push(msg)
+    const imports = wasi()
+    const wasm = compile(source)
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+    imports._setMemory(inst.exports.memory)
+    result = inst.exports.f()
+  } finally {
+    Object.defineProperty(globalThis, 'process', { value: originalProcess, configurable: true })
+    console.log = originalLog
+    console.warn = originalWarn
+  }
+  return { result, logged, warned }
+}
+
+test('WASI polyfill: falls back when process is missing', () => {
+  const { result, logged, warned } = runWithCapturedFallback(
+    undefined,
+    `export let f = () => { console.log("no-process"); console.warn("no-stderr"); return 1 }`
+  )
+  is(result, 1)
+  is(logged.join(''), 'no-process')
+  is(warned.join(''), 'no-stderr')
+})
+
+test('WASI polyfill: falls back when streams are missing', () => {
+  const { result, logged, warned } = runWithCapturedFallback(
+    {},
+    `export let f = () => { console.log("no-stdout"); console.error("no-stderr"); return 1 }`
+  )
+  is(result, 1)
+  is(logged.join(''), 'no-stdout')
+  is(warned.join(''), 'no-stderr')
+})
+
+test('WASI polyfill: falls back when stream write throws', () => {
+  const processValue = {
+    stdout: { write() { throw Error('stdout blocked') } },
+    stderr: { write() { throw Error('stderr blocked') } },
+  }
+  const { result, logged, warned } = runWithCapturedFallback(
+    processValue,
+    `export let f = () => { console.log("blocked-out"); console.error("blocked-err"); return 1 }`
+  )
+  is(result, 1)
+  is(logged.join(''), 'blocked-out')
+  is(warned.join(''), 'blocked-err')
+})
+
+test('instantiateAsync: scalar module', async () => {
+  const { exports: { f }, module, instance } = await instantiateAsync('export let f = (x) => x * 2')
+  ok(module instanceof WebAssembly.Module, 'returns module')
+  ok(instance instanceof WebAssembly.Instance, 'returns instance')
+  is(f(21), 42)
+})
+
+test('EdgeJS smoke: scalar module has no imports', () => {
+  const wasm = compile('export let f = (x) => x * x')
+  const mod = new WebAssembly.Module(wasm)
+  is(WebAssembly.Module.imports(mod).length, 0)
+  const inst = new WebAssembly.Instance(mod)
+  is(inst.exports.f(9), 81)
+})
+
+test('instantiateAsync: WASI write option', async () => {
+  const captured = []
+  const { exports: { f } } = await instantiateAsync(
+    'export let f = () => { console.log("async-wasi"); return 1 }',
+    { write: (fd, text) => captured.push([fd, text]) }
+  )
+  is(f(), 1)
+  is(captured.map(x => x[1]).join(''), 'async-wasi\n')
+  is(captured.filter(x => x[1] === 'async-wasi')[0][0], 1)
+})
+
+test('instantiateAsync: host imports', async () => {
+  const calls = []
+  const { exports: { f } } = await instantiateAsync(
+    'import { double } from "host"; export let f = (x) => double(x) + 1',
+    { imports: { host: { double: x => { calls.push(x); return x * 2 } } } }
+  )
+  is(f(20), 41)
+  is(calls[0], 20)
 })
 
 // === WASI native runtime tests ===

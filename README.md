@@ -38,7 +38,7 @@ Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https:/
 ## Usage
 
 ```js
-import jz, { compile } from 'jz'
+import jz, { compile, instantiateAsync } from 'jz'
 
 // Compile, instantiate
 const { exports: { add } } = jz('export let add = (a, b) => a + b')
@@ -48,6 +48,10 @@ add(2, 3)  // 5
 const wasm = compile('export let f = (x) => x * 2')
 const mod = new WebAssembly.Module(wasm)
 const inst = new WebAssembly.Instance(mod)
+
+// Async WASM startup — jz source compilation is still synchronous
+const asyncInst = await instantiateAsync('export let f = (x) => x * 2')
+asyncInst.exports.f(21) // 42
 ```
 
 ## CLI
@@ -355,7 +359,15 @@ wasmer run program.wasm
 deno run program.wasm
 ```
 
-`console.log` compiles to WASI `fd_write` — works natively on wasmtime/wasmer/deno without polyfills.
+Pure numeric modules have no imports and instantiate with standard
+`WebAssembly.Module` / `WebAssembly.Instance`, which is the right shape for JS
+hosts such as EdgeJS. Compile once at startup or build time, then reuse the
+module; do not compile JZ source per request.
+
+`console.log` compiles to WASI `fd_write` by default — works natively on
+wasmtime/wasmer/deno without polyfills. In JS hosts, `jz()` auto-applies the
+small `jz/wasi` polyfill; pass `{ write(fd, text) { ... } }` to capture or route
+stdout/stderr without depending on `process.stdout`.
 
 
 </details>
@@ -367,7 +379,8 @@ deno run program.wasm
 
 The compiled `.wasm` uses one import namespace:
 
-- `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
+- none — pure scalar/compute modules. Instantiate directly with standard WebAssembly APIs.
+- `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node/EdgeJS-like hosts, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
 
 | JS API | Maps to | Notes |
 |--------|---------|-------|

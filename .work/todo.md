@@ -8,7 +8,83 @@
 * [x] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
-* [ ] Integrate into edge.js
+## [ ] Integrate into edge.js
+
+Goal: present JZ as a JS-subset → WASM accelerator inside EdgeJS, not as an
+EdgeJS engine provider. EdgeJS engines live behind their N-API adapter boundary;
+JZ should integrate through clean WASM/host-import contracts and a focused
+example/benchmark PR.
+
+### JZ-side prep
+
+* [x] Rework/close PR #2 instead of merging as-is: avoid a branded `jz/edge`
+  facade unless EdgeJS needs a real runtime-specific API; current patch mostly
+  duplicates existing host/WASI hooks and overclaims async behavior.
+* [x] Harden `jz/wasi` default output routing: if `process.stdout.write` or
+  `process.stderr.write` is absent or throws, fall back to `console.log` /
+  `console.warn`; keep `{ write(fd, text) }` as the canonical host override.
+* [x] Add tests for stdout/stderr fallback without introducing an EdgeJS-only
+  public entrypoint: no `process`, missing `process.stdout`, throwing `.write`,
+  and custom `{ write }` capture.
+* [x] Decide whether an honest async API belongs in JZ:
+  * [x] If yes, implement `instantiateAsync` using `WebAssembly.compile` /
+    `WebAssembly.instantiate` after synchronous JZ compile, and document that
+    source compilation is still synchronous.
+  * [x] Avoid `compileAsync` / `instantiateAsync` wrappers that only
+    `await Promise.resolve()` and still block during compilation.
+* [ ] Add host-import mode for runtime services used by JS hosts:
+  `console.log` / `Date.now` / `performance.now` can lower to `env.printLine`
+  / `env.now` instead of WASI `fd_write` / `clock_time_get` when requested.
+  Keep WASI as the standalone `.wasm` / CLI default.
+* [x] Document the host contract in README: pure numeric JZ modules need no
+  imports; console/timers currently need WASI or host imports; compile at
+  startup/build time, not per request.
+* [x] Add one tiny EdgeJS-compatible smoke fixture in this repo that does not
+  depend on EdgeJS: compile a scalar kernel, assert no WASI imports, instantiate
+  with standard WebAssembly APIs.
+
+### EdgeJS validation
+
+* [ ] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
+  compile once at module init, instantiate per request or reuse a module, call a
+  scalar export.
+* [ ] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
+  `WebAssembly.Instance`, `WebAssembly.compile`, and memory imports inside
+  Wasmer/WASIX sandbox.
+* [ ] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
+* [ ] Verify JZ modules with console/timer imports run through either EdgeJS
+  WASI support or the new host-import mode; record which path is smaller and
+  more reliable.
+* [ ] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
+  exception handling is not enabled, document it as an integration limitation
+  rather than adding a misleading adapter workaround.
+
+### EdgeJS PR shape
+
+* [ ] Open a small PR to `wasmerio/edgejs` as an example/benchmark, not a core
+  runtime engine change.
+* [ ] Add an example such as `examples/jz-kernel` or `examples/jz-dsp`:
+  import `jz`, compile a numeric kernel once, call it from an EdgeJS handler,
+  and keep source short enough to read without explanation.
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
+  pulling large optional dependencies or network setup.
+* [ ] Include a short README note in the example: JZ is useful for hot numeric,
+  DSP, parser, and typed-array kernels; it is not a general JS runtime or Node
+  compatibility layer.
+* [ ] Include before/after numbers only from commands reproducible in the PR:
+  EdgeJS raw JS vs EdgeJS + JZ-compiled WASM for the same kernel.
+
+### Acceptance
+
+* [x] `npm test` passes in JZ after host/WASI changes.
+* [x] `npm run test262:builtins` still passes if touched code affects built-ins
+  or host output paths.
+* [ ] EdgeJS local smoke run passes in native mode.
+* [ ] EdgeJS safe-mode result is known and written down: pass, blocked by nested
+  WASM, blocked by WASM exceptions, or blocked by WASI/host imports.
+* [ ] The final integration story is truthful in one sentence: "Use JZ inside
+  EdgeJS to compile hot JS-subset kernels to WASM; EdgeJS remains the JS
+  runtime."
 
 ## Backlog
 
