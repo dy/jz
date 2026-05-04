@@ -24,12 +24,16 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam } from './analyze.js'
+import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam } from './analyze.js'
 import { staticPropertyKey } from './key.js'
 import { normalizeSource } from './source.js'
 import {
-  CALL_MODULES, CTORS, GENERIC_METHOD_MODULES, OP_MODULES, PROP_MODULES,
-  hasModule, includeModule, includeMods,
+  CTORS, TIMER_NAMES,
+  hasModule, includeModule,
+  includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue,
+  includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion,
+  includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
+  includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
 } from './autoload.js'
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
@@ -53,6 +57,79 @@ const addHostImport = (mod, name, alias, spec) => {
   ctx.scope.chain[alias] = alias
   const vt = hostReturnValType(spec)
   if (vt) ctx.module.hostImportValTypes.set(alias, vt)
+}
+
+function recordGlobalValueFact(name, expr) {
+  if (typeof name !== 'string') return
+  const vt = valTypeOf(expr)
+  if (vt) {
+    ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
+    if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
+  }
+  const ctor = typedElemCtor(expr)
+  if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+}
+
+function recordModuleInitFacts(root) {
+  const facts = ctx.module.initFacts ||= {
+    dynVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
+    hasFuncValue: false, timerNames: new Set(),
+    maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
+  }
+  const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
+  const visitFuncValue = (node) => {
+    if (facts.hasFuncValue || !Array.isArray(node)) return
+    const [op, ...args] = node
+    if (op === '()') {
+      for (let i = 1; i < args.length; i++) {
+        const a = args[i]
+        if (typeof a === 'string' && ctx.func.names.has(a)) { facts.hasFuncValue = true; return }
+        visitFuncValue(a)
+      }
+      return
+    }
+    if (op === '.' || op === '?.') {
+      if (typeof args[0] === 'string' && ctx.func.names.has(args[0])) { facts.hasFuncValue = true; return }
+      visitFuncValue(args[0])
+      return
+    }
+    if (op === '=>') { visitFuncValue(args[1]); return }
+    for (const a of args) {
+      if (typeof a === 'string' && ctx.func.names.has(a)) { facts.hasFuncValue = true; return }
+      visitFuncValue(a)
+    }
+  }
+  const walk = (node) => {
+    if (!Array.isArray(node)) {
+      if (typeof node === 'string' && TIMER_NAMES.has(node)) facts.timerNames.add(node)
+      return
+    }
+    const [op, ...args] = node
+    if (op === '[]') {
+      const [obj, idx] = args
+      if (!isLiteralStr(idx)) { facts.anyDyn = true; if (typeof obj === 'string') facts.dynVars.add(obj) }
+    } else if (op === 'for-in') {
+      facts.anyDyn = true
+      if (typeof args[1] === 'string') facts.dynVars.add(args[1])
+    } else if (op === '{}') {
+      facts.hasSchemaLiterals = true
+    } else if (op === '=>') {
+      let fixedN = 0
+      for (const r of extractParams(args[0])) {
+        if (classifyParam(r).kind === 'rest') facts.hasRest = true
+        else fixedN++
+      }
+      if (fixedN > facts.maxDef) facts.maxDef = fixedN
+    } else if (op === '()') {
+      const a = args[1]
+      const callArgs = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+      if (callArgs.some(x => Array.isArray(x) && x[0] === '...')) facts.hasSpread = true
+      if (callArgs.length > facts.maxCall) facts.maxCall = callArgs.length
+    }
+    for (const a of args) walk(a)
+  }
+  visitFuncValue(root)
+  walk(root)
 }
 
 /**
@@ -108,13 +185,12 @@ export default function prepare(node) {
     }
     let needs = visit(ast)
     if (!needs) for (const f of ctx.func.list) if (f.body && visit(f.body)) { needs = true; break }
-    if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
-    if (needs) includeModule('fn')
+    if (!needs && ctx.module.initFacts?.hasFuncValue) needs = true
+    if (needs) includeForCallableValue()
   }
 
   // Native timers: inline WASM timer queue when referenced (no host imports needed)
-  const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
-  const usedTimers = new Set()
+  const usedTimers = new Set(ctx.module.initFacts?.timerNames || [])
   const scanTimers = (n) => {
     if (!Array.isArray(n)) {
       if (typeof n === 'string' && TIMER_NAMES.has(n)) usedTimers.add(n)
@@ -122,12 +198,10 @@ export default function prepare(node) {
     }
     for (let i = 0; i < n.length; i++) scanTimers(n[i])
   }
-  const allNodes = [ast, ...ctx.func.list.map(f => f.body), ...(ctx.module.moduleInits || [])]
+  const allNodes = [ast, ...ctx.func.list.map(f => f.body)]
   for (const node of allNodes) scanTimers(node)
   if (usedTimers.size) {
-    ctx.features.timers = true  // Timer module included — compile.js needs to emit __timer_init
-    includeModule('timer')
-    includeModule('fn')   // call_indirect dispatch for callbacks
+    includeForTimerRuntime()
   }
 
   return ast
@@ -332,7 +406,7 @@ function cloneAndBind(node, PARAM, replacement) {
 }
 
 function prep(node) {
-  if (Array.isArray(node) && OP_MODULES[node[0]]) includeMods(...OP_MODULES[node[0]])
+  if (Array.isArray(node)) includeForOp(node[0])
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   if (node === true) return [, 1]
@@ -343,7 +417,7 @@ function prep(node) {
       if (node in F64_CONSTANTS) return [, F64_CONSTANTS[node]]
       if (PROHIBITED[node]) err(PROHIBITED[node])
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
-      if (node === 'Boolean' || node === 'Number') { includeMods('core', 'fn'); return ['=>', 'x', 'x'] }
+      if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -358,7 +432,7 @@ function prep(node) {
   if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited. It diverges from JS by evaluating to 0.')
   if (op == null) {
     if (typeof args[0] === 'string') {
-      includeMods('core', 'string', 'number')
+      includeForStringValue()
       return ['str', args[0]]  // string literal
     }
     return [, args[0]]  // number literal
@@ -422,7 +496,7 @@ function expandDestruct(pattern, source, out, decls = null) {
   if (!isDestructPattern(pattern)) return
 
   if (pattern[0] === '[]') {
-    includeMods('core', 'array', 'collection')
+    includeForArrayPattern()
     const items = patternItems(pattern[1])
     for (let j = 0; j < items.length; j++) {
       const item = items[j]
@@ -438,7 +512,7 @@ function expandDestruct(pattern, source, out, decls = null) {
     return
   }
 
-  includeMods('core', 'object', 'string', 'collection')
+  includeForObjectPattern()
   const items = patternItems(pattern[1])
 
   // Collect explicit keys and detect rest pattern
@@ -543,6 +617,7 @@ function prepDecl(op, ...inits) {
           ctx.scope.consts.delete(declName)
           ctx.scope.constStrs?.delete(declName)
         }
+        recordGlobalValueFact(declName, normed)
       }
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
@@ -572,8 +647,7 @@ function prepDecl(op, ...inits) {
 const handlers = {
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
   '...'(expr) {
-    // Spread is valid in arrays, calls, and objects - just prep the inner expression
-    includeModule('array')
+    includeForArrayLiteral()
     return ['...', prep(expr)]
   },
 
@@ -649,7 +723,7 @@ const handlers = {
 
   // Template literal: [``, part, ...] → fused single-allocation string concat.
   '`'(...parts) {
-    includeMods('core', 'string', 'number')
+    includeForStringValue()
     const nodes = parts.map(p =>
       Array.isArray(p) && p[0] == null && typeof p[1] === 'string' ? ['str', p[1]] : prep(p))
     return ['strcat', ...nodes]
@@ -856,7 +930,7 @@ const handlers = {
 
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
-    if (depth > 0) { includeMods('core', 'fn') }
+    if (depth > 0) { includeForCallableValue() }
     const raw = extractParams(params)
     const fnScope = new Map()
     for (const n of collectParamNames(raw)) fnScope.set(n, n)
@@ -926,7 +1000,7 @@ const handlers = {
   },
   // Boolean literals NaN-box as f64 — typeof at runtime returns 'number'. Fold here so the JS-spec value survives.
   'typeof'(a) {
-    if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeMods('core', 'string'); return ['str', 'boolean'] }
+    if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeForStringOnly(); return ['str', 'boolean'] }
     return ['typeof', prep(a)]
   },
 
@@ -935,7 +1009,7 @@ const handlers = {
     if (b === undefined) {
       const na = prep(a)
       if (isLit(na) && typeof na[1] === 'number') return na
-      includeMods('number', 'string')
+      includeForNumericCoercion()
       return ['u+', na]
     }
     return ['+', prep(a), prep(b)]
@@ -967,8 +1041,7 @@ const handlers = {
     return ['//', pattern, flags]
   },
 
-  // auto-include math for ** operator
-  '**'(a, b) { includeModule('math'); return ['**', prep(a), prep(b)] },
+  '**'(a, b) { return ['**', prep(a), prep(b)] },
 
   // Function call or grouping parens
 '()'(callee, ...args) {
@@ -981,9 +1054,7 @@ const handlers = {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
       if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
 
-      const mods = CALL_MODULES[callee]
-      if (mods) {
-        includeMods(...mods)
+      if (includeForNamedCall(callee)) {
         if (callee === 'BigInt64Array' || callee === 'BigUint64Array') {
           return ['()', callee, ...args.filter(a => a != null).map(prep)]
         }
@@ -996,7 +1067,7 @@ const handlers = {
         if (!ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       }
       else if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`)) {
-        includeMods('core', 'fn')
+        includeForCallableValue()
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
@@ -1006,11 +1077,9 @@ const handlers = {
         const alias = `${obj}$${prop}`
         addHostImport(obj, prop, alias, spec)
         callee = alias
-      } else if (key && CALL_MODULES[key]) {
-        includeMods(...CALL_MODULES[key])
+      } else if (key && includeForNamedCall(key)) {
         callee = key
-      } else if (GENERIC_METHOD_MODULES[prop]) {
-        includeMods(...GENERIC_METHOD_MODULES[prop])
+      } else if (includeForGenericMethod(prop)) {
         callee = prep(callee)
       } else {
         const mod = ctx.scope.chain[obj]
@@ -1021,14 +1090,14 @@ const handlers = {
         }
       }
     } else {
-      includeMods('core', 'fn')
+      includeForCallableValue()
       callee = prep(callee)
     }
 
     const preppedArgs = args.filter(a => a != null).map(prep)
     for (const a of preppedArgs) {
       if (typeof a === 'string' && hasFunc(a)) {
-        includeMods('core', 'fn'); break
+        includeForCallableValue(); break
       }
     }
     const result = ['()', callee, ...preppedArgs]
@@ -1042,13 +1111,13 @@ const handlers = {
   '[]'(...args) {
     if (args.length === 1) {
       const inner = args[0]
-      includeMods('core', 'array')
+      includeForArrayLiteral()
       if (inner == null) return ['[']
       if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); if (items.length && items[items.length - 1] === null) items.pop(); return ['[', ...items.map(item => item == null ? [, JZ_NULL] : prep(item))] }
       return ['[', prep(inner)]
     }
     if (typeof args[0] === 'string' && ctx.module.namespaces?.[args[0]]) {
-      includeMods('core', 'string')
+      includeForStringOnly()
       const key = prep(args[1])
       const exports = [...ctx.module.namespaces[args[0]].entries()]
       let fallback = [, undefined]
@@ -1058,7 +1127,7 @@ const handlers = {
       }
       return fallback
     }
-    includeMods('core', 'array', 'collection')
+    includeForArrayAccess()
     return ['[]', prep(args[0]), prep(args[1])]
   },
 
@@ -1081,7 +1150,7 @@ const handlers = {
       return result
     }
 
-    includeMods('core', 'object')
+    includeForObjectLiteral()
     if (inner == null) return ['{}']
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
@@ -1151,7 +1220,7 @@ const handlers = {
         // Known schema → compile-time unrolling with string keys
         const keys = ctx.schema.list[sid]
         if (!keys || !keys.length) { scopes.pop(); return null }
-        includeMods('core', 'string')
+        includeForKnownKeyIteration()
         const stmts = []
         for (let i = 0; i < keys.length; i++) {
           stmts.push(i === 0
@@ -1162,7 +1231,7 @@ const handlers = {
         r = prep([';', ...stmts])
       } else {
         // Dynamic object → HASH runtime iteration
-        includeMods('core', 'string', 'collection')
+        includeForRuntimeKeyIteration()
         r = ['for-in', varName, prep(src), prep(body)]
       }
     } else {
@@ -1184,15 +1253,7 @@ const handlers = {
       const mangled = ctx.module.namespaces[obj].get(prop)
       if (mangled) return mangled
     }
-    // Typed-array/buffer properties auto-include typedarray module
-    if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') {
-      includeMods('core', 'typedarray')
-    }
-    // Narrowing: unambiguous property name limits module load; otherwise pessimistic.
-    // Receiver-literal narrowing would still need collection for __dyn_get_expr fallback
-    // on unknown props, so it saves nothing — stick with property-name narrowing only.
-    if (typeof prop === 'string' && PROP_MODULES[prop]) includeMods(...PROP_MODULES[prop])
-    else includeMods('core', 'object', 'array', 'string', 'collection')
+    includeForProperty(prop)
     return ['.', prep(obj), prop]
   },
 
@@ -1209,15 +1270,7 @@ const handlers = {
     const wrapArgs = (args) => args.length === 0 ? [null]
       : args.length === 1 ? [prep(args[0])]
       : [[',', ...args.map(prep)]]
-    // TypedArray / buffer constructors
-    const typedArrays = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
-    if (typedArrays.includes(name)) {
-      includeMods('core', 'typedarray')
-      return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
-    }
-    // Set/Map constructors
-    if (name === 'Set' || name === 'Map') {
-      includeMods('core', 'collection')
+    if (includeForRuntimeCtor(name)) {
       return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
     }
 
@@ -1466,6 +1519,7 @@ function prepareModule(specifier, source) {
   if (moduleInit) {
     if (!ctx.module.moduleInits) ctx.module.moduleInits = []
     ctx.module.moduleInits.push(moduleInit)
+    recordModuleInitFacts(moduleInit)
   }
 
   // Restore caller state

@@ -142,44 +142,29 @@ const tcoTailRewrite = (ir, resultType) => {
 
 // === Module compilation ===
 
-/**
- * Phase: emit one user function to WAT IR.
- *
- * Reads the (already-narrowed) `func.sig` and `programFacts.paramReps[name]`
- * to seed per-param val reps / schema bindings; emits body via emit / emitBody.
- *
- * Mutates ctx.func.* per-function state (locals, boxed, repByLocal, …) and
- * ctx.schema.vars (restored on exit so bindings don't leak across functions).
- */
-function emitFunc(func, programFacts) {
-  const { paramReps } = programFacts
+const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
 
-  // Raw WAT functions (e.g., _alloc, _reset from memory module)
-  if (func.raw) return parseWat(func.raw)
-
-  const { name, body, exported, sig } = func
-  const multi = sig.results.length > 1
-
-  // Reset per-function state
+function enterFunc(func) {
   ctx.func.stack = []
   ctx.func.uniq = 0
-  ctx.func.current = sig
-  ctx.func.body = body
+  ctx.func.current = func.sig
+  ctx.func.body = func.body
   ctx.func.directClosures = null
+  ctx.func.localProps = null
+}
 
-  // Pre-analyze local types from body
-  // Block body vs object literal: object has ':' property nodes
+function analyzeFuncForEmit(func, programFacts) {
+  const { paramReps } = programFacts
+  if (func.raw) return null
+
+  const { name, body, sig } = func
+  enterFunc(func)
+
   const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
-  ctx.func.boxed = new Map()  // variable name → cell local name (i32) for mutable capture
-  ctx.func.localProps = null  // reset per function
-  ctx.func.repByLocal = null  // Map<name, ValueRep> — populated lazily; reset per function
+  ctx.func.boxed = new Map()
+  ctx.func.repByLocal = null
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
-  // Pre-seed cross-call param facts BEFORE analyzeLocals/analyzeValTypes(body) so that
-  // when the walker sees `const b0 = arr[i]` or `let n = arr.length`, lookupValType(arr)
-  // already resolves to VAL.TYPED — letting valTypeOf's `[]` rule propagate VAL.NUMBER
-  // to b0 (skips __to_num) and exprType's `.length` rule keep n as i32 (skips per-iter
-  // f64.convert_i32_s + i32.trunc_sat_f64_s on the loop counter). Without this seed,
-  // params don't gain VAL.TYPED until after analyzeLocals freezes counter widths.
+
   const _reps = paramReps.get(name)
   if (_reps) {
     for (const [k, r] of _reps) {
@@ -229,6 +214,39 @@ function emitFunc(func, programFacts) {
     if (p.ptrAux != null) fields.ptrAux = p.ptrAux
     updateRep(p.name, fields)
   }
+
+  return {
+    block,
+    locals: new Map(ctx.func.locals),
+    boxed: new Map(ctx.func.boxed),
+    typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
+    repByLocal: cloneRepMap(ctx.func.repByLocal),
+  }
+}
+
+/**
+ * Phase: emit one user function to WAT IR.
+ *
+ * Reads precomputed `funcFacts` and the narrowed `func.sig`; applies scoped
+ * schema param bindings during emission so they cannot leak between functions.
+ */
+function emitFunc(func, funcFacts, programFacts) {
+  const { paramReps } = programFacts
+
+  // Raw WAT functions (e.g., _alloc, _reset from memory module)
+  if (func.raw) return parseWat(func.raw)
+
+  const { name, body, exported, sig } = func
+  const multi = sig.results.length > 1
+  const _reps = paramReps.get(name)
+
+  enterFunc(func)
+  const block = funcFacts.block
+  ctx.func.locals = new Map(funcFacts.locals)
+  ctx.func.boxed = new Map(funcFacts.boxed)
+  ctx.func.repByLocal = cloneRepMap(funcFacts.repByLocal)
+  ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
+
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
   // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
@@ -1032,7 +1050,9 @@ export default function compile(ast, profiler) {
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast))
 
-  const funcs = ctx.func.list.map(func => emitFunc(func, programFacts))
+  const funcFacts = new Map()
+  for (const func of ctx.func.list) if (!func.raw) funcFacts.set(func, analyzeFuncForEmit(func, programFacts))
+  const funcs = ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts))
   funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []

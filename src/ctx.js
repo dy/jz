@@ -109,6 +109,7 @@ export function reset(proto, globals) {
     resolvedModules: new Map(),
     moduleStack: [],
     moduleInits: [],
+    initFacts: null,
     currentPrefix: null,
   }
 

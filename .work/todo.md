@@ -8,6 +8,7 @@
 * [x] Add wasm2c/w2c2 integration tests.
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
+
 ## [ ] Integrate into edge.js
 
 Goal: present JZ as a JS-subset → WASM accelerator inside EdgeJS, not as an
@@ -88,10 +89,15 @@ example/benchmark PR.
 
 ## Backlog
 
+
+* [ ] `import.meta`
+
+
+
 * [x] Update benchmark
-* [ ] Ensure the proper way for template tags
+* [x] Ensure the proper way for template tags
 * [x] Compile floatbeats
-* [ ] test262 coverage expansion: grow full-denominator coverage with meaningful jz features, not selected-subset pass rate
+* [x] test262 coverage expansion: grow full-denominator coverage with meaningful jz features, not selected-subset pass rate
   * [x] Report overall test262 percentage against all `test262/test/**/*.js` files
   * [x] Fix object destructuring assignment regressions blocking full test suite
   * [x] Add/enable `rest-parameters` tests that map to existing jz semantics
@@ -117,25 +123,25 @@ example/benchmark PR.
 * [x] Report built-ins coverage separately from language coverage: pass/fail/skip for tracked built-ins and pass count over all `test/built-ins/**/*.js`
 * [x] Run `node test/test262-builtins.js`, `node test/test262-builtins.js --filter=Math/random`, and `npm test`; fix any real functionality failures before reporting done
 * [x] After `Math.random` passes, add follow-up TODOs for curated functionality subsets of `Math`, then `JSON`, `Number`, `String`, `Array`, `Object`, typed arrays, `Map`, `Set`, `RegExp`, and `Symbol`, keeping metadata/prototype semantics out unless deliberately chosen
-* [ ] Next built-ins pass: add curated functionality tests for implemented `Math` functions/constants only; keep descriptor/name/length/constructor/prototype tests skipped
-* [ ] Next built-ins pass: add curated `JSON.parse`/`JSON.stringify` functionality tests that match current object/array/string semantics; skip reviver/replacer/property-order edge cases unless verified
-* [ ] Next built-ins pass: add curated `Number`, `String`, `Array`, and `Object` functionality tests for methods already implemented in `module/`; skip descriptor/prototype/spec-internal tests
-* [ ] Next built-ins pass: add curated typed-array, `Map`, `Set`, `RegExp`, and `Symbol` functionality tests only after probing implemented behavior against local tests
+* [x] Next built-ins pass: add curated functionality tests for implemented `Math` functions/constants only; keep descriptor/name/length/constructor/prototype tests skipped
+* [x] Next built-ins pass: add curated `JSON.parse`/`JSON.stringify` functionality tests that match current object/array/string semantics; skip reviver/replacer/property-order edge cases unless verified
+* [x] Next built-ins pass: add curated `Number` functionality tests for constants/conversion/predicates already implemented in `module/`; skip descriptor/prototype/spec-internal tests
+* [x] Next built-ins pass: add curated `String`, `Array`, and `Object` functionality tests for methods already implemented in `module/`; skip descriptor/prototype/spec-internal tests
+* [x] Next built-ins pass: add curated `Map`/`Set` functionality tests for verified `get`/`set`/`has`/`add` behavior; skip internal-slot/prototype metadata tests
+* [x] Next built-ins pass: probe typed-array, `RegExp`, and `Symbol` in smaller method-specific batches before adding any test262 files; promoted verified ArrayBuffer/DataView typed-memory functionality, `RegExp.prototype.exec` unicode smoke files, and `Symbol` identity coverage. Direct `TypedArray.prototype` test262 directories remain blocked by fixture-heavy harness requirements, not simple functionality files.
 
-* [ ] `import.meta`
-
-## [ ] speed up compiler itself (faster than eval)
+## [x] speed up compiler itself (faster than eval)
   * [x] Add compile-time benchmark that reports parse / prepare / plan / emit / watr separately
   * [x] Benchmark cold vs repeated template compilation; decide whether any cache is worth its complexity
-  * [x] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, dynamic keys, schemas, first-class function values, or module init blocks
+  * [x] Fast-path tiny scalar programs: skip expensive whole-program narrowing phases when there are no callsites, closures, dynamic keys, schemas, or first-class function values; simple module init blocks no longer block the fast path
   * [x] Skip schema slot observation passes when no static object-literal schemas were collected
   * [x] Keep function-name membership current during prepare so call/export checks avoid repeated linear scans of `ctx.func.list`
-  * [ ] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
-  * [ ] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
-  * [ ] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
+  * [x] Replace repeated `analyzeBody` invalidation/re-walks in `narrow` with versioned fact slices or an explicit phase-state object
+  * [x] Collapse duplicated callsite fixpoint passes in `narrow` into one lattice runner for wasm type, VAL kind, schema, array elem, and typed ctor facts
+  * [x] Reuse caller fact maps across narrowing phases; rebuild only the slices affected by valResult / ptrKind changes
   * [x] Delay expensive typed-array bimorphic clone analysis unless a param is proven `VAL.TYPED` and has conflicting ctor observations
-  * [ ] Avoid scanning all module init bodies after autoload when the loaded modules do not introduce value facts used by the current program
-* [ ] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
+  * [x] Avoid remaining module init body scans after autoload when the loaded modules do not introduce facts used by the current program; value-fact scanning is already recorded during prepare
+* [x] make sure it fails with error on unsupported syntaxes (class, caller, arguments etc)
 
 ### Compiler refactor notes
 
@@ -143,10 +149,10 @@ example/benchmark PR.
 * [x] Split pre-emit planning into `plan.js`, signature specialization into `narrow.js`, autoload policy into `autoload.js`, and static key folding into `key.js`
 * [x] Keep `plan.js` separate from `analyze.js`; merging them would make orchestration depend on narrowing while narrowing depends on analysis helpers
 * [x] Make `narrow.js` read as named phases inside one file before creating more files: reachability, param facts, result facts, pointer ABI, typed clones, dyn-key refinement
-* [ ] Move per-function pre-analysis out of `emitFunc` only after a measured design exists: target `emitFunc(func, funcFacts, programFacts)` with no surprise cache invalidation inside emission
-* [ ] Replace hidden global cache invalidation with explicit phase inputs/outputs where it reduces walks; keep global `ctx` for compile state as intended
-* [ ] Keep `autoload.js` honest: it owns implicit runtime-module policy; if explicit stdlib imports become the direction, delete policy instead of spreading it back into `prepare.js`
-* [ ] Do not recreate a convenience facade in `compile.js`; noisy direct imports are preferable to hidden cross-layer coupling
+* [x] Move per-function pre-analysis out of `emitFunc` only after a measured design exists: target `emitFunc(func, funcFacts, programFacts)` with no surprise cache invalidation inside emission
+* [x] Replace hidden global cache invalidation with explicit phase inputs/outputs where it reduces walks; keep global `ctx` for compile state as intended
+* [x] Audit `prepare.js` for remaining hardcoded runtime-module policy; move reusable stdlib/module selection into `autoload.js` helpers, or delete the autoload policy if explicit stdlib imports become the chosen direction
+* [x] Do not recreate a convenience facade in `compile.js`; noisy direct imports are preferable to hidden cross-layer coupling
 
 ### Build & tooling
 

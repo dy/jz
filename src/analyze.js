@@ -1588,7 +1588,11 @@ export function analyzeDynKeys(...roots) {
   }
   for (const r of roots) walk(r)
   if (ctx.func.list) for (const f of ctx.func.list) if (f.body) walk(f.body)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walk(mi)
+  const initFacts = ctx.module.initFacts
+  if (initFacts?.anyDyn) {
+    anyDyn = true
+    for (const v of initFacts.dynVars) dynVars.add(v)
+  }
 
   ctx.types.dynKeyVars = dynVars
   ctx.types.anyDynKey = anyDyn
@@ -1841,7 +1845,20 @@ export function collectProgramFacts(ast) {
   }
   walkFacts(ast, true, false, null)
   for (const func of ctx.func.list) if (func.body && !func.raw) walkFacts(func.body, true, false, func)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkFacts(mi, false, false, null)
+  const initFacts = ctx.module.initFacts
+  if (initFacts) {
+    if (initFacts.anyDyn) {
+      anyDyn = true
+      for (const v of initFacts.dynVars) dynVars.add(v)
+    }
+    if (doArity) {
+      if (initFacts.maxDef > maxDef) maxDef = initFacts.maxDef
+      if (initFacts.maxCall > maxCall) maxCall = initFacts.maxCall
+      if (initFacts.hasRest) hasRest = true
+      if (initFacts.hasSpread) hasSpread = true
+    }
+    if (doSchema && initFacts.hasSchemaLiterals) hasSchemaLiterals = true
+  }
 
   // Slot-type observation pass: walk every `{}` literal with the right scope's
   // valTypes installed as `ctx.func.localValTypesOverlay` so shorthand `{x}`
@@ -1902,7 +1919,7 @@ export function observeProgramSlots(ast) {
     ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
     visit(func.body)
   }
-  if (ctx.module.moduleInits) {
+  if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
     ctx.func.localValTypesOverlay = null
     for (const mi of ctx.module.moduleInits) visit(mi)
   }

@@ -2,7 +2,7 @@
 
 
 
-## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=gray)](http://npmjs.org/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
+## ![stability](https://img.shields.io/badge/stability-experimental-black) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml)
 
 
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
@@ -17,15 +17,17 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, features overhead and perf quirks.
+**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, specs evolution and perf quirks.
 
 * **Static** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
 * **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
 
-Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
-<!-- Used internally by: web-audio-api, color-space, audiojs -->
+**Used by**: [web-audio-api](https://github.com/audiojs/web-audio-api), [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/colorjs/audiojs). Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+<!-- * [audio-filter](https://github.com/audiojs/audio-filter)
+* [digital-filter](https://github.com/audiojs/digital-filter)
+* [time-stretch](https://github.com/audiojs/time-stretch) -->
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
@@ -82,7 +84,7 @@ flowchart TB
     subgraph JS[JS — not supported]
         subgraph JZify[JZ + jzify]
             subgraph JZ[JZ strict]
-                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
+                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch/finally, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
             end
             z1["var, function, arguments, switch, new Foo(), ==, !=, instanceof"]:::plain
         end
@@ -104,15 +106,16 @@ flowchart TB
 │                                                                        │
 │ ┌────────────────────────────────────────────────────────────────────┐ │
 │ │ JZ                                                                 │ │
-│ │   let/const  =>  ...xs  destructuring  import/export               │ │
+│ │   let/const  =>  ...xs  destructuring  import/export  `${}`        │ │
 │ │   if/else  for/while/do-while/of/in  break/continue                │ │
 │ │   try/catch/finally  throw                                         │ │
-│ │   operators  strings  booleans  numbers  arrays  objects  `${}`    │ │
-│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol  null  │ │
+│ │   operators  strings  booleans  numbers  arrays  objects  null     │ │
+│ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
 │ │   ArrayBuffer  DataView  TypedArray  Map  Set                      │ │
 │ │   console  setTimeout/setInterval  Date  performance               │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────┘
+
 Not supported
   async/await  Promise  function*  yield
   this  class  super  extends  delete  labels
@@ -120,44 +123,39 @@ Not supported
   dynamic import  DOM  fetch  Intl  Node APIs
 ```
 
-## Compiler layout
 
-jz keeps the compiler as a small set of one-purpose passes:
+## Benchmark
 
-| File | Role |
-|------|------|
-| `src/prepare.js` | Normalizes parsed JS, resolves scopes/imports, and loads runtime modules. |
-| `src/autoload.js` | Built-in module autoload rules used by `prepare`. |
-| `src/analyze.js` | Type, value, local, capture, and program-fact analysis helpers. |
-| `src/plan.js` | Pre-emit compile plan: collect facts, resolve ABIs, run narrowing. |
-| `src/narrow.js` | Whole-program signature/result specialization. |
-| `src/emit.js` | AST to WASM-IR emission. |
-| `src/ir.js` | WASM-IR constructors, NaN-boxing, memory and ABI helpers. |
-| `src/compile.js` | Final module assembly: plan, emit functions, wrap exports, optimize. |
-| `src/key.js` | Static computed-property key evaluation. |
+| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Rust](https://www.rust-lang.org/) |
+|---|---|---|---|---|---|---|---|
+| [**biquad**](bench/biquad/biquad.js) | **6.44 ms**<br>**3.4 kB** | 12.30 ms<br>3.2 kB | 9.04 ms<br>1.9 kB | 6.48 ms<br>767 B | 5.43 ms<br>32.7 kB | 9.03 ms<br>1.60 MB<br>fma | 5.33 ms<br>380.7 kB |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10 ms**<br>**1.6 kB** | 0.18 ms<br>1.4 kB | 0.08 ms<br>1.5 kB | — | 0.13 ms<br>32.9 kB | 0.07 ms<br>1.60 MB | 0.12 ms<br>380.7 kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.00 ms**<br>**1.7 kB** | 11.64 ms<br>1.1 kB | 9.18 ms<br>1.5 kB | 7.99 ms<br>353 B | 2.62 ms<br>32.8 kB | 11.93 ms<br>1.60 MB | 0.80 ms<br>380.7 kB |
+| [**aos**](bench/aos/aos.js) | **1.50 ms**<br>**2.3 kB** | 1.81 ms<br>1.1 kB | 1.91 ms<br>2.2 kB | — | 1.22 ms<br>32.9 kB | 0.90 ms<br>1.60 MB | 1.20 ms<br>380.7 kB |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.93 ms**<br>**1.2 kB** | 5.31 ms<br>1005 B | 12.36 ms<br>1.5 kB | 4.96 ms<br>355 B | 1.31 ms<br>32.9 kB | 5.24 ms<br>1.60 MB | 1.30 ms<br>380.7 kB |
+| [**poly**](bench/poly/poly.js) | **1.13 ms**<br>**1.3 kB** | 2.31 ms<br>1014 B | 1.14 ms<br>1.3 kB | — | 0.52 ms<br>32.9 kB | 0.80 ms<br>1.60 MB | 0.52 ms<br>380.7 kB |
+| [**callback**](bench/callback/callback.js) | **0.01 ms**<br>**1.5 kB** | 1.03 ms<br>828 B | 1.48 ms<br>1.9 kB | — | 0.09 ms<br>32.9 kB | 0.20 ms<br>1.60 MB | 0.08 ms<br>380.7 kB |
+| [**json**](bench/json/json.js) | **0.20 ms**<br>**2.8 kB** | 0.38 ms<br>923 B | — | — | 0.02 ms<br>32.8 kB | 1.06 ms<br>1.97 MB | 0.03 ms<br>380.7 kB |
+| [**watr**](bench/watr/watr.js) | **1.82 ms**<br>**137.1 kB** | 1.50 ms<br>2.6 kB | — | — | — | — | — |
 
-Runtime modules live in `module/`. They import only the seams they use: IR helpers from `src/ir.js`, emitters from `src/emit.js`, and analysis helpers from `src/analyze.js`. `src/compile.js` is the final assembler, not a re-export hub.
+_Numbers from `node bench/bench.mjs` on Apple Silicon, May 2026. `jz` uses host imports for benchmark timing/logging (measures wasm without WASI console/perf bloat). Raw-JS size is the entry file; jz size is the bundled wasm artifact. `fma` is the documented Go arm64 fused-multiply-add checksum class. See [benchmark](./bench/)._
+
 
 
 
 ## FAQ
 
-<details>
-<summary><strong>How to pass data between JS and WASM?</strong></summary>
+### How to pass data between JS and WASM?
 
-<br>
-
-
-Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
+Numbers pass directly as f64. Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
 ```js
-const { exports, memory } = jz`
+const { exports, memory } = jz(\`
   export let greet = (s) => s.length
   export let sum = (a) => a.reduce((s, x) => s + x, 0)
   export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
-  export let rgb = (c) => [c, c * 0.5, c * 0.2]
   export let process = (buf) => buf.map(x => x * 2)
-`
+\`)
 
 // JS → WASM (write)
 memory.String('hello')               // → string pointer
@@ -165,9 +163,8 @@ memory.Array([1, 2, 3])              // → array pointer
 memory.Float64Array([1.0, 2.0])      // → typed array pointer
 memory.Int32Array([10, 20, 30])      // all typed array constructors available
 
-// ⚠ Objects: keys and order must match the jz source declaration.
+// Objects: keys and order must match the jz source declaration.
 // jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-// If the jz source declares `{ x, y }`, you must pass `{ x, y }` in that order.
 memory.Object({ x: 3, y: 4 })       // → object pointer
 
 // Strings/arrays inside objects are auto-wrapped to pointers:
@@ -178,17 +175,14 @@ exports.greet(memory.String('hello'))          // 5
 exports.sum(memory.Array([1, 2, 3]))           // 6
 exports.dist(memory.Object({ x: 3, y: 4 }))   // 5
 
-// direct JS array return
-exports.rgb(100)      // [100, 50, 20]
-
-// read pointer value
+// WASM → JS (read)
 memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
 ```
 
 Template interpolation handles most of this automatically — strings, arrays, numbers, and numeric objects are marshaled for you:
 
 ```js
-jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
+jz\`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x\`
 ```
 
 <!--
@@ -219,12 +213,7 @@ All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. H
 **NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
 -->
 
-</details>
-
-<details>
-<summary><strong>How does template interpolation work?</strong></summary>
-
-<br>
+### How does template interpolation work?
 
 Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
 
@@ -239,56 +228,25 @@ jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
 
 Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
 
-</details>
+### Does it support imports?
 
-<details>
-<summary><strong>Does it support ES module imports?</strong></summary>
-
-<br>
-
-Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
+Yes — standard ES `import` syntax, bundled at compile-time into one WASM.
 
 ```js
+// modules: jz source bundled at compile time
 const { exports } = jz(
   'import { add } from "./math.jz"; export let f = (a, b) => add(a, b)',
   { modules: { './math.jz': 'export let add = (a, b) => a + b' } }
 )
-```
 
-Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
-
-**CLI** resolves filesystem imports automatically.
-
-```sh
-jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
-```
-
-**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
-
-```js
-// Transitive bundling — all merged into one WASM
-const { exports } = jz(mainSrc, { modules: {
-  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
-  // Fetch sources yourself, pass them in
-  './utils.jz': await fetch('./util.jz').then(r => r.text())
-} })
-```
-
-</details>
-
-<details>
-<summary><strong>Can I call JS/host functions from jz?</strong></summary>
-
-<br>
-
-Yes — JS functions are wired at instantiation via the `imports` option:
-
-```js
+// imports: JS functions wired at instantiation
 const { exports } = jz(
   'import { log } from "host"; export let f = (x) => { log(x); return x }',
   { imports: { host: { log: console.log } } }
 )
 ```
+
+Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
 
 You can also pass whole host environment objects — `Math`, `Date`, `window`, `console`, or any custom namespace object. jz extracts the functions it needs via `Object.getOwnPropertyNames`, so non-enumerable built-ins (like `Math.sin`) work automatically:
 
@@ -312,12 +270,24 @@ const { exports } = jz(
 )
 ```
 
-</details>
+**CLI** resolves filesystem imports automatically.
 
-<details>
-<summary><strong>Can two modules share data?</strong></summary>
+```sh
+jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
+```
 
-<br>
+**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
+
+```js
+// Transitive bundling — all merged into one WASM
+const { exports } = jz(mainSrc, { modules: {
+  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
+  // Fetch sources yourself, pass them in
+  './utils.jz': await fetch('./util.jz').then(r => r.text())
+} })
+```
+
+### Can two modules share data?
 
 Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
 
@@ -343,12 +313,7 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
 
-</details>
-
-<details>
-<summary><strong>How do I run compiled WASM outside the browser?</strong></summary>
-
-<br>
+### How do I run compiled WASM outside the browser?
 
 ```sh
 jz program.js -o program.wasm
@@ -370,12 +335,7 @@ small `jz/wasi` polyfill; pass `{ write(fd, text) { ... } }` to capture or route
 stdout/stderr without depending on `process.stdout`.
 
 
-</details>
-
-<details>
-<summary><strong>What host features are supported?</strong></summary>
-
-<br>
+### What host features are supported?
 
 The compiled `.wasm` uses one import namespace:
 
@@ -391,41 +351,7 @@ The compiled `.wasm` uses one import namespace:
 | `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
 | `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
 
-</details>
-
-<details>
-<summary><strong>How do I add custom operators / extend the stdlib?</strong></summary>
-
-<br>
-
-jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
-
-```js
-import { emitter } from './src/emit.js'
-import { typed } from './src/ir.js'
-
-// Register a custom operator: my.double(x) → x * 2
-emitter['my.double'] = (x) => {
-  return ['f64.mul', ['f64.const', 2], typed(x, 'f64')]
-}
-```
-
-The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that receives `ctx` and registers emitters, stdlib, globals, or helpers.
-
-Inside a runtime module, import directly from the layer you need:
-
-```js
-import { emit } from '../src/emit.js'
-import { asF64, temp } from '../src/ir.js'
-import { valTypeOf, VAL } from '../src/analyze.js'
-```
-
-</details>
-
-<details>
-<summary><strong>Can I compile jz to C?</strong></summary>
-
-<br>
+### Can I compile jz to C?
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
@@ -434,24 +360,6 @@ jz program.js -o program.wasm
 wasm2c program.wasm -o program.c
 cc program.c -o program
 ```
-</details>
-
-
-## Benchmark
-
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44ms**<br>**3.4kB** | 12.30ms<br>3.2kB | 9.04ms<br>1.9kB | 6.48ms<br>767 B | 5.43ms | 9.03ms<br>fma | 5.09ms | 5.33ms | 3.15s | — |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.6kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.13ms | 0.07ms | 0.12ms | 0.12ms | 5.21ms | 0.46ms<br>2.6kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00ms**<br>**1.7kB** | 11.64ms<br>1.1kB | 9.18ms<br>1.5kB | 7.99ms<br>353 B | 2.62ms | 11.93ms | 2.60ms | 0.80ms | 323.69ms | 87.65ms<br>2.3kB |
-| [**aos**](bench/aos/aos.js) | **1.50ms**<br>**2.3kB** | 1.81ms<br>1.1kB | 1.91ms<br>2.2kB | — | 1.22ms | 0.90ms | 0.99ms | 1.20ms | 2.23ms | — |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93ms**<br>**1.2kB** | 5.31ms<br>1005 B | 12.36ms<br>1.5kB | 4.96ms<br>355 B | 1.31ms | 5.24ms | 4.26ms | 1.30ms | 14.89ms | — |
-| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.31ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | 0.60ms | — |
-| [**callback**](bench/callback/callback.js) | **0.01ms**<br>**1.5kB** | 1.03ms<br>828 B | 1.48ms<br>1.9kB | — | 0.09ms | 0.20ms | 0.01ms | 0.08ms | 1.84ms | — |
-| [**json**](bench/json/json.js) | **0.20ms**<br>**2.8kB** | 0.38ms<br>923 B | — | — | 0.02ms | 1.06ms | — | 0.03ms | 1.19ms | — |
-| [**watr**](bench/watr/watr.js) | **1.82ms**<br>**137.1kB** | 1.50ms<br>85.3kB | — | — | — | — | — | — | — | — |
-
-_Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 
 ## Alternatives

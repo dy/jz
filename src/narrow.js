@@ -202,6 +202,49 @@ function resetParamWasmFacts(paramReps) {
   for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
 }
 
+function createPhaseState() {
+  const callerCtx = buildCallerCtx()
+  const elemCtx = new Map()
+  let callerTypedCtx = null
+
+  const clearDerived = () => {
+    elemCtx.clear()
+    callerTypedCtx = null
+  }
+
+  return {
+    callerCtx,
+
+    callerElems(sliceKey) {
+      let m = elemCtx.get(sliceKey)
+      if (!m) { m = buildCallerElems(sliceKey); elemCtx.set(sliceKey, m) }
+      return m
+    },
+
+    callerTyped() {
+      callerTypedCtx ||= buildCallerTypedCtx()
+      return callerTypedCtx
+    },
+
+    invalidateBodyFacts() {
+      for (const func of ctx.func.list) {
+        if (func.body && !func.raw) invalidateValTypesCache(func.body)
+      }
+      clearDerived()
+    },
+
+    refreshValTypes() {
+      refreshCallerValTypes(callerCtx)
+      clearDerived()
+    },
+
+    refreshLocals() {
+      refreshCallerLocals(callerCtx)
+      clearDerived()
+    },
+  }
+}
+
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps, hasSchemaLiterals } = programFacts
 
@@ -225,83 +268,78 @@ export default function narrowSignatures(programFacts, ast) {
   // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
-  const callerCtx = buildCallerCtx()
-  // Per-caller arr-elem observations. Recomputed each fixpoint iteration so
-  // newly-narrowed func.arrayElemSchema/.arrayElemValType results propagate
-  // from `const rows = initRows()` observations. Two-pass fixpoint: first
-  // pass learns from literals + module vars; second pass forwards through
-  // chained helpers (f → addXY → {getX, getY}).
-  let callerArrElemsCtx = buildCallerElems('arrElemSchemas')
-  const rebuildArrElems = () => { callerArrElemsCtx = buildCallerElems('arrElemSchemas') }
-  let callerArrElemValsCtx = buildCallerElems('arrElemValTypes')
-  const rebuildArrElemVals = () => { callerArrElemValsCtx = buildCallerElems('arrElemValTypes') }
-  const runFixpoint = () => {
+  const phase = createPhaseState()
+  const { callerCtx } = phase
+  const intConstArg = (arg) => {
+    let raw = null
+    if (typeof arg === 'number') raw = arg
+    else if (Array.isArray(arg) && arg[0] == null && typeof arg[1] === 'number') raw = arg[1]
+    else if (Array.isArray(arg) && arg[0] === 'u-' && typeof arg[1] === 'number') raw = -arg[1]
+    else if (typeof arg === 'string' && ctx.scope.constInts?.has(arg)) raw = ctx.scope.constInts.get(arg)
+    return (raw != null && Number.isInteger(raw) && raw >= -2147483648 && raw <= 2147483647) ? raw : null
+  }
+
+  const runCallsiteLattice = (rules) => {
     for (let s = 0; s < callSites.length; s++) {
       const { callee, argList, callerFunc } = callSites[s]
       const func = ctx.func.map.get(callee)
       if (!func || func.exported || valueUsed.has(callee)) continue
       const ctxEntry = callerCtx.get(callerFunc)
       if (!ctxEntry) continue
-      const { callerLocals, callerValTypes } = ctxEntry
-      const callerSchemas = callerParamFactMap(paramReps, callerFunc, 'schemaId')
       const restIdx = func.rest ? func.sig.params.length - 1 : -1
+      const paramFacts = new Map()
+      const state = {
+        callee, callerFunc, argList, func, restIdx,
+        callerLocals: ctxEntry.callerLocals,
+        callerValTypes: ctxEntry.callerValTypes,
+        callerParamFacts(key) {
+          if (!paramFacts.has(key)) paramFacts.set(key, callerParamFactMap(paramReps, callerFunc, key))
+          return paramFacts.get(key)
+        },
+      }
       for (let k = 0; k < func.sig.params.length; k++) {
         const r = ensureParamRep(paramReps, callee, k)
-        if (k < argList.length) {
-          if (r.val !== null) mergeParamFact(r, 'val', inferArgType(argList[k], callerValTypes))
-          // Wasm-type lattice: exprType always returns 'i32'|'f64' — no null sentinel.
-          if (r.wasm !== null) {
-            const wt = exprType(argList[k], callerLocals)
-            if (r.wasm === undefined) r.wasm = wt
-            else if (r.wasm !== wt) r.wasm = null
-          }
-          if (r.schemaId !== null) mergeParamFact(r, 'schemaId', inferArgSchema(argList[k], callerSchemas))
-          // intConst lattice: bare-integer literal at every site → param has fixed value.
-          // Skip rest position — argList[restIdx] is just the first packed arg, not the
-          // whole array. Drop intConst for the rest param so it's never substituted.
-          if (k === restIdx) r.intConst = null
-          else if (r.intConst !== null) {
-            // Literal forms after prepare: bare number, `[null, n]` (literal wrap),
-            // or `['u-', n]` (negative literal). A bare string referencing a known
-            // module-scope `const NAME = <int-literal>` resolves through ctx.scope.constInts.
-            // Anything else → no-consensus.
-            const a = argList[k]
-            let raw = null
-            if (typeof a === 'number') raw = a
-            else if (Array.isArray(a) && a[0] == null && typeof a[1] === 'number') raw = a[1]
-            else if (Array.isArray(a) && a[0] === 'u-' && typeof a[1] === 'number') raw = -a[1]
-            else if (typeof a === 'string' && ctx.scope.constInts?.has(a)) raw = ctx.scope.constInts.get(a)
-            const v = (raw != null && Number.isInteger(raw) && raw >= -2147483648 && raw <= 2147483647) ? raw : null
-            mergeParamFact(r, 'intConst', v)
-          }
-        } else {
-          // Missing arg — call pads with nullExpr (f64). Prevents narrowing.
-          r.val = null; r.wasm = null; r.schemaId = null; r.intConst = null
-        }
+        if (k >= argList.length) { for (const rule of rules) rule.missing(r, k, state); continue }
+        const arg = argList[k]
+        for (const rule of rules) rule.apply(r, arg, k, state)
       }
     }
   }
-  // Generic arr-elem fixpoint: same shape for arrayElemSchema (schema-id),
-  // arrayElemValType (VAL.*), and typedCtor. `field` selects which fact;
-  // `inferFn` and `elemsCtxMap` provide per-callee inference.
+
+  const poison = field => r => { r[field] = null }
+  const mergeRule = (field, infer) => ({
+    missing: poison(field),
+    apply(r, arg, k, state) {
+      if (r[field] !== null) mergeParamFact(r, field, infer(arg, k, state))
+    },
+  })
+  const runFixpoint = () => runCallsiteLattice([
+    mergeRule('val', (arg, _k, state) => inferArgType(arg, state.callerValTypes)),
+    {
+      missing: poison('wasm'),
+      apply(r, arg, _k, state) {
+        if (r.wasm === null) return
+        const wt = exprType(arg, state.callerLocals)
+        if (r.wasm === undefined) r.wasm = wt
+        else if (r.wasm !== wt) r.wasm = null
+      },
+    },
+    mergeRule('schemaId', (arg, _k, state) => inferArgSchema(arg, state.callerParamFacts('schemaId'))),
+    {
+      missing: poison('intConst'),
+      apply(r, arg, k, state) {
+        if (k === state.restIdx) r.intConst = null
+        else if (r.intConst !== null) mergeParamFact(r, 'intConst', intConstArg(arg))
+      },
+    },
+  ])
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap) => {
-    for (let s = 0; s < callSites.length; s++) {
-      const { callee, argList, callerFunc } = callSites[s]
-      const func = ctx.func.map.get(callee)
-      if (!func || func.exported || valueUsed.has(callee)) continue
-      if (!callerCtx.get(callerFunc)) continue
-      const callerParams = callerParamFactMap(paramReps, callerFunc, field)
-      const callerElems = elemsCtxMap.get(callerFunc)
-      for (let k = 0; k < func.sig.params.length; k++) {
-        const r = ensureParamRep(paramReps, callee, k)
-        if (k >= argList.length) { r[field] = null; continue }
-        if (r[field] === null) continue
-        mergeParamFact(r, field, inferFn(argList[k], callerElems, callerParams))
-      }
-    }
+    runCallsiteLattice([mergeRule(field, (arg, _k, state) =>
+      inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field))
+    )])
   }
-  const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArgArrElemSchema, callerArrElemsCtx)
-  const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArgArrElemValType, callerArrElemValsCtx)
+  const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArgArrElemSchema, phase.callerElems('arrElemSchemas'))
+  const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArgArrElemValType, phase.callerElems('arrElemValTypes'))
   runFixpoint()
   runFixpoint()
 
@@ -426,10 +464,8 @@ export default function narrowSignatures(programFacts, ast) {
   // valResult was unset back then.
   narrowReturnArrayElems('arrayElemSchema', paramReps, valueUsed)
   narrowReturnArrayElems('arrayElemValType', paramReps, valueUsed)
-  for (const func of ctx.func.list) {
-    if (func.body && !func.raw) invalidateValTypesCache(func.body)
-  }
-  refreshCallerValTypes(callerCtx)
+  phase.invalidateBodyFacts()
+  phase.refreshValTypes()
   // Re-observe schema slot val-types now that E2 has set `valResult` on user
   // funcs. First pass runs in collectProgramFacts before valResult is known, so
   // a slot like `cs` in `{ ..., cs }` (where `cs = checksum(out)`) gets observed
@@ -437,8 +473,6 @@ export default function narrowSignatures(programFacts, ast) {
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
   if (hasSchemaLiterals) observeProgramSlots(ast)
-  rebuildArrElems()
-  rebuildArrElemVals()
   // Clear sticky-null on val/schemaId — first 2 passes ran with valResult unset, so
   // call args resolving via `f.valResult` returned null and got stuck. Re-running
   // with refreshed callerValTypes lets these flow.
@@ -601,10 +635,8 @@ export default function narrowSignatures(programFacts, ast) {
   // Cache invalidation: analyzeBody.typedElems reads `ctx.func.map.get(...).sig.ptrKind`
   // for `let x = mkInput(...)` decls; entries cached during the initial walk
   // (before E3 ran) are stale (mkInput's ptrKind was unset then).
-  for (const func of ctx.func.list) {
-    if (func.body && !func.raw) invalidateValTypesCache(func.body)
-  }
-  const callerTypedCtx = buildCallerTypedCtx()
+  phase.invalidateBodyFacts()
+  const callerTypedCtx = phase.callerTyped()
   // Two-pass fixpoint: lets a caller's params, once typed, propagate further to
   // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
   // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
@@ -641,7 +673,7 @@ export default function narrowSignatures(programFacts, ast) {
   // numeric narrowing to propagate i32 through chains of i32-only helpers
   // (callback bench: mix is FNV — params and result all i32-shaped, but inferred
   // only after E phase narrowed mix's result).
-  refreshCallerLocals(callerCtx)
+  phase.refreshLocals()
   // Reset wasm field unconditionally — first pass populated it from stale callerLocals
   // (where `let h = mix(...)` widened h to f64 because mix's result wasn't narrowed
   // yet). clearStickyNull only resets null; here we need to reset f64-observed too
@@ -887,7 +919,7 @@ export function refineDynKeys(programFacts) {
     if (!f.body || !isLive(f)) continue
     visit(buildTypeMap(f.name, f.body, f.sig?.params), f.body)
   }
-  if (!real && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
+  if (!real && ctx.module.initFacts?.anyDyn && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
     if (real) break
     visit(topMap, mi)
   }

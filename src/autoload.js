@@ -40,6 +40,7 @@ export const OP_MODULES = {
   '[': ['core', 'array'],
   '{': ['core', 'object', 'string', 'collection'],
   '//': ['core', 'string', 'regex'],
+  '**': ['math'],
 }
 
 export const CALL_MODULES = dict({
@@ -87,6 +88,9 @@ export const GENERIC_METHOD_MODULES = dict({
 })
 
 export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
+export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
+export const COLLECTION_CTORS = ['Set', 'Map']
+export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 
 export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
 
@@ -105,6 +109,60 @@ const MOD_DEPS = {
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
 
 export const includeMods = (...names) => names.forEach(includeModule)
+
+export const includeForOp = op => {
+  const modules = OP_MODULES[op]
+  if (!modules) return false
+  includeMods(...modules)
+  return true
+}
+
+export const includeForCallableValue = () => includeMods('core', 'fn')
+export const includeForNumericCoercion = () => includeMods('number', 'string')
+export const includeForStringValue = () => includeMods('core', 'string', 'number')
+export const includeForStringOnly = () => includeMods('core', 'string')
+export const includeForArrayLiteral = () => includeMods('core', 'array')
+export const includeForArrayAccess = () => includeMods('core', 'array', 'collection')
+export const includeForArrayPattern = includeForArrayAccess
+export const includeForObjectLiteral = () => includeMods('core', 'object')
+export const includeForObjectPattern = () => includeMods('core', 'object', 'string', 'collection')
+export const includeForKnownKeyIteration = includeForStringOnly
+export const includeForRuntimeKeyIteration = () => includeMods('core', 'string', 'collection')
+export const includeForTimerRuntime = () => {
+  ctx.features.timers = true
+  includeModule('timer')
+  includeModule('fn')
+}
+
+export const includeForNamedCall = callee => {
+  const modules = CALL_MODULES[callee]
+  if (!modules) return false
+  includeMods(...modules)
+  return true
+}
+
+export const includeForGenericMethod = prop => {
+  const modules = GENERIC_METHOD_MODULES[prop]
+  if (!modules) return false
+  includeMods(...modules)
+  return true
+}
+
+export const includeForProperty = prop => {
+  if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') includeMods('core', 'typedarray')
+  if (typeof prop === 'string' && PROP_MODULES[prop]) includeMods(...PROP_MODULES[prop])
+  else includeMods('core', 'object', 'array', 'string', 'collection')
+}
+
+export const runtimeCtorKind = name =>
+  TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : null
+
+export const includeForRuntimeCtor = name => {
+  const kind = runtimeCtorKind(name)
+  if (kind === 'typedarray') includeMods('core', 'typedarray')
+  else if (kind === 'collection') includeMods('core', 'collection')
+  return kind
+}
 
 export function includeModule(name) {
   const modName = MOD_ALIAS[name] || name

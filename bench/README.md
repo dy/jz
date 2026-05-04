@@ -87,7 +87,6 @@ correctly-rounded; cascade is the same algorithm.
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | jz output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
-| `zig` | Zig `build-exe -O ReleaseFast`, when a matching `.zig` exists |
 | `jz-wasmtime` | jz output on wasmtime |
 | `jz-w2c` | jz wasm translated by wabt `wasm2c`, then clang `-O3` |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
@@ -95,12 +94,12 @@ correctly-rounded; cascade is the same algorithm.
 | `porf` | Porffor (`porf run`) when installed |
 | `jawsm` | jawsm when installed |
 
-The `size` column reports the artifact size each target measures:
-the produced `.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
-executable), the source file for raw-JS interpreters, and `—` for native
-compilers where runtime dominates. The `watr` raw-JS size is the package's
-bundled minified singleton (`node_modules/watr/dist/watr.min.js`), because the
-tiny benchmark entry imports the compiler bundle.
+The `size` column reports the artifact size each target measures: the
+compiled native binary for `nat`/`rust`/`go`/`zig`, the produced
+`.wasm` for `jz`/`as`/hand-WAT/jawsm/`jz-w2c` (the C-translated
+executable), or the source file for raw-JS interpreters where there is no
+compile step. For source files with imports, raw-JS size is only the entry file;
+jz size is the bundled wasm artifact.
 
 Runtime command overrides:
 

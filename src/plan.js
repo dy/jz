@@ -83,12 +83,10 @@ const canSkipWholeProgramNarrowing = (programFacts) =>
   !programFacts.anyDyn &&
   programFacts.propMap.size === 0 &&
   !programFacts.hasSchemaLiterals &&
-  !ctx.closure.make &&
-  !(ctx.module.moduleInits?.length)
+  !ctx.closure.make
 
 export default function plan(ast) {
   scanGlobalValueFacts(ast)
-  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) scanGlobalValueFacts(init)
   unboxConstTypedGlobals()
 
   const programFacts = collectProgramFacts(ast)
