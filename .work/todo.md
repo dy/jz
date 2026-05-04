@@ -46,19 +46,26 @@ example/benchmark PR.
 
 ### EdgeJS validation
 
-* [ ] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
+* [x] Build or install EdgeJS locally and verify basic JZ usage under `edge`:
   compile once at module init, instantiate per request or reuse a module, call a
-  scalar export.
-* [ ] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
+  scalar export. Verified with nightly EdgeJS `0.0.0-0ff2433` / Node
+  `v24.13.2`: `{ imports: 0, mac: 50, mix: 63, asyncMac: 22 }`.
+* [x] Verify EdgeJS safe mode behavior separately: nested `WebAssembly.Module`,
   `WebAssembly.Instance`, `WebAssembly.compile`, and memory imports inside
-  Wasmer/WASIX sandbox.
-* [ ] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
+  Wasmer/WASIX sandbox. Current local result is blocked before the nested-WASM
+  test: installed Wasmer is `4.4.0` and `wasmer --version -v` reports no
+  `features:` line with `napi_v10` / `napi_extension_wasmer_v0`, so EdgeJS safe
+  mode exits before user code.
+* [x] Verify JZ modules with no WASI imports run in EdgeJS without any polyfill.
 * [ ] Verify JZ modules with console/timer imports run through either EdgeJS
   WASI support or the new host-import mode; record which path is smaller and
   more reliable.
-* [ ] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
+* [x] Check WASM exception support for JZ `try`/`throw`/`catch` in EdgeJS. If
   exception handling is not enabled, document it as an integration limitation
-  rather than adding a misleading adapter workaround.
+  rather than adding a misleading adapter workaround. Native EdgeJS rejects the
+  current JZ exception output with `Invalid opcode 0x1f (enable with
+  --experimental-wasm-exnref)`; passing `--experimental-wasm-exnref` to `edge`
+  did not enable it in this build.
 
 ### EdgeJS PR shape
 
@@ -80,10 +87,11 @@ example/benchmark PR.
 * [x] `npm test` passes in JZ after host/WASI changes.
 * [x] `npm run test262:builtins` still passes if touched code affects built-ins
   or host output paths.
-* [ ] EdgeJS local smoke run passes in native mode.
-* [ ] EdgeJS safe-mode result is known and written down: pass, blocked by nested
-  WASM, blocked by WASM exceptions, or blocked by WASI/host imports.
-* [ ] The final integration story is truthful in one sentence: "Use JZ inside
+* [x] EdgeJS local smoke run passes in native mode.
+* [x] EdgeJS safe-mode result is known and written down: pass, blocked by nested
+  WASM, blocked by WASM exceptions, blocked by WASI/host imports, or blocked by
+  missing Wasmer N-API features.
+* [x] The final integration story is truthful in one sentence: "Use JZ inside
   EdgeJS to compile hot JS-subset kernels to WASM; EdgeJS remains the JS
   runtime."
 
