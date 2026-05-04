@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr } from '../src/ir.js'
+import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
@@ -1147,13 +1147,26 @@ export default (ctx) => {
       ['local.get', `$${result}`]], 'f64')
   }
 
+  // Boxed pointer values (strings/objects/etc.) carry NaN payloads, and
+  // f64.eq treats NaN as not-equal to anything — even bit-identical NaN —
+  // so a raw f64 compare misses string and reference matches. Route those
+  // through __eq, the same helper `==` uses for STRING/BIGINT/cross-type.
+  // f64.eq stays the fast path when the search value is statically NUMBER.
+  const arrEqIR = (val) => {
+    const vt = resolveValType(val, valTypeOf, lookupValType)
+    if (vt === VAL.NUMBER) return (item, vv) => ['f64.eq', item, vv]
+    inc('__eq')
+    return (item, vv) => ['call', '$__eq', item, vv]
+  }
+
   ctx.core.emit['.indexOf'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
     const vv = asF64(emit(val))
+    const eq = arrEqIR(val)
     const result = tempI32('ix')
     const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', ['f64.eq', item, vv],
+      ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['local.get', `$${i}`]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
@@ -1166,10 +1179,11 @@ export default (ctx) => {
   ctx.core.emit['.includes'] = (arr, val) => {
     const recv = hoistArrayValue(arr)
     const vv = asF64(emit(val))
+    const eq = arrEqIR(val)
     const result = tempI32('ic')
     const exit = `$exit${ctx.func.uniq++}`
     const loop = arrayLoop(recv.value, (_ptr, _len, i, item) => [
-      ['if', ['f64.eq', item, vv],
+      ['if', eq(item, vv),
         ['then', ['local.set', `$${result}`, ['i32.const', 1]], ['br', exit]]]
     ])
     return typed(['block', ['result', 'f64'],
