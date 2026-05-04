@@ -5,9 +5,6 @@
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
-* [x] `import.meta`: static `import.meta.url`, `import.meta.resolve("...")`,
-  `new URL("...", import.meta.url)`, CLI entry URL plumbing, and CLI `--resolve`
-  via Node ESM resolution.
 
 ### Build & tooling
 
@@ -86,6 +83,9 @@
 
 ## Done
 
+* [x] `import.meta`: static `import.meta.url`, `import.meta.resolve("...")`,
+  `new URL("...", import.meta.url)`, CLI entry URL plumbing, and CLI `--resolve`
+  via Node ESM resolution.
 
 # Performance
 
@@ -113,7 +113,6 @@ codegen quality.
   regressed V8 by blocking `processCascade` inlining. Keep only local/proven
   integer narrowing rules that do not perturb hot function ABI.
 
-
 ### Concrete size cuts
 
 * [x] **Drop unconditional `inc('__sso_char', '__str_char', '__char_at',
@@ -129,9 +128,6 @@ codegen quality.
   correctly keep the generic string parser. Do not break the module cycle as a
   standalone perf patch; handle it with explicit stdlib imports or host-print
   lowering so dependency semantics stay honest.
-
-
-
 
 * [x] **Strip data segment for non-emitted strings.** Empty `data` in jz
   biquad was 185 B for unused string literals from helpers. Current
