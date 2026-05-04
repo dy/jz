@@ -60,6 +60,27 @@ const addHostImport = (mod, name, alias, spec) => {
   if (vt) ctx.module.hostImportValTypes.set(alias, vt)
 }
 
+const isImportMeta = node => Array.isArray(node) && node[0] === '.' && node[1] === 'import' && node[2] === 'meta'
+const isImportMetaProp = (node, prop) => Array.isArray(node) && node[0] === '.' && isImportMeta(node[1]) && node[2] === prop
+const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
+const flatArgs = args => args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+
+function staticString(value) {
+  includeForStringValue()
+  return ['str', value]
+}
+
+function importMetaUrl() {
+  if (!ctx.transform.importMetaUrl) err('`import.meta.url` requires compile option `importMetaUrl`')
+  return ctx.transform.importMetaUrl
+}
+
+function resolveImportMeta(spec) {
+  const base = importMetaUrl()
+  try { return new URL(spec, base).href }
+  catch { err(`Cannot resolve import.meta specifier '${spec}' from '${base}'`) }
+}
+
 function recordGlobalValueFact(name, expr) {
   if (typeof name !== 'string') return
   const vt = valTypeOf(expr)
@@ -1055,6 +1076,14 @@ const handlers = {
     // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
     if (args.length === 0) return prep(callee)
 
+    if (isImportMetaProp(callee, 'resolve')) {
+      const callArgs = flatArgs(args).filter(a => a != null)
+      if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument')
+      const spec = stringValue(callArgs[0])
+      if (spec == null) err('`import.meta.resolve` supports only string literal arguments')
+      return staticString(resolveImportMeta(spec))
+    }
+
     const hasRealArgs = args.some(a => a != null)
 
     if (typeof callee === 'string') {
@@ -1071,7 +1100,7 @@ const handlers = {
       if (resolved?.includes('.')) callee = resolved
       else if (resolved && hasFunc(resolved)) callee = resolved
       else if (resolved && !resolved.includes('.')) {
-        if (!ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
+        if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       }
       else if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`)) {
         includeForCallableValue()
@@ -1251,6 +1280,7 @@ const handlers = {
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
     if (prop === 'caller' || prop === 'callee') err('`.caller` and `.callee` are prohibited: deprecated stack introspection')
+    if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     const mod = ctx.scope.chain[obj]
     // Only treat as module namespace if it's a known built-in module (not a mangled import name)
     if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod))
@@ -1271,6 +1301,15 @@ const handlers = {
     // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
+
+    if (name === 'URL') {
+      const literalArgs = ctorArgs.filter(a => a != null)
+      if (literalArgs.length === 2 && isImportMetaProp(literalArgs[1], 'url')) {
+        const spec = stringValue(literalArgs[0])
+        if (spec == null) err('`new URL(relative, import.meta.url)` supports only string literal relatives')
+        return staticString(resolveImportMeta(spec))
+      }
+    }
 
     // Wrap multi-arg ctor arg lists back into a single comma-group — the '()' op
     // expects callArgs as a single element (possibly comma-grouped).

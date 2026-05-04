@@ -1,10 +1,11 @@
 // CLI tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { execFileSync, execSync } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, mkdtempSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { pathToFileURL } from 'url'
 
 const CLI = new URL('../cli.js', import.meta.url).pathname
 
@@ -102,6 +103,18 @@ test('cli: compile default output name', () => {
   unlinkSync(output)
 })
 
+test('cli: supplies import.meta.url for entry file', () => {
+  const input = join(tmp, 'meta.js')
+  const output = join(tmp, 'meta.wat')
+  writeFileSync(input, 'export let f = () => import.meta.url')
+  cli(input, '--wat', '-o', output)
+
+  const wat = readFileSync(output, 'utf8')
+  ok(wat.includes(pathToFileURL(input).href), 'WAT contains entry file URL')
+
+  unlinkSync(output)
+})
+
 test('cli: -e with console.log (WASI)', () => {
   const file = join(tmp, 'wasi-eval.js')
   writeFileSync(file, 'export let main = () => { console.log(42); return 0 }')
@@ -145,6 +158,27 @@ test('cli: transitive filesystem imports', () => {
   unlinkSync(mainFile)
   unlinkSync(mathFile)
   unlinkSync(utilsFile)
+})
+
+test('cli: --resolve resolves bare modules from input directory', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz-bare-resolve-'))
+  const pkgDir = join(dir, 'node_modules', 'pkg')
+  const mainFile = join(dir, 'main.js')
+  const modFile = join(pkgDir, 'index.js')
+  const pkgFile = join(pkgDir, 'package.json')
+  const outFile = join(dir, 'main.wasm')
+
+  mkdirSync(pkgDir, { recursive: true })
+  writeFileSync(pkgFile, JSON.stringify({ type: 'module', main: './index.js' }))
+  writeFileSync(modFile, 'export let val = () => 42')
+  writeFileSync(mainFile, 'import { val } from "pkg"; export let f = () => val()')
+
+  cli(mainFile, '--resolve', '-o', outFile)
+
+  const wasm = readFileSync(outFile)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod)
+  is(inst.exports.f(), 42)
 })
 
 // Cleanup temp files

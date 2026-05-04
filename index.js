@@ -117,6 +117,8 @@ jz.memory = enhanceMemory
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
+ * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
+ *   and static `import.meta.resolve("...")` expressions.
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
@@ -139,6 +141,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
   if (opts.runtimeExports === false) ctx.transform.runtimeExports = false
+  if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
 

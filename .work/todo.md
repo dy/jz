@@ -5,7 +5,9 @@
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
-* [ ] `import.meta`
+* [x] `import.meta`: static `import.meta.url`, `import.meta.resolve("...")`,
+  `new URL("...", import.meta.url)`, CLI entry URL plumbing, and CLI `--resolve`
+  via Node ESM resolution.
 
 ### Build & tooling
 

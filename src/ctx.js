@@ -199,6 +199,7 @@ export function reset(proto, globals) {
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.
+    importMetaUrl: null, // compile-time URL for import.meta.url / import.meta.resolve static lowering.
   }
 
   // Feature flags: capabilities the compiled module may exercise at runtime.
@@ -238,7 +239,10 @@ export function err(msg) {
     const line = before.split('\n').length
     const col = ctx.error.loc - before.lastIndexOf('\n')
     const src = ctx.error.src.split('\n')[line - 1]
-    throw Error(`${msg}\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`)
+    const detail = `${msg}\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`
+    const e = new Error(detail)
+    e.stack = `${e.name}: ${detail}`
+    throw e
   }
-  throw Error(msg)
+  throw new Error(msg)
 }

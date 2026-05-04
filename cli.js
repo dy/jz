@@ -6,6 +6,8 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { dirname, resolve, join } from 'path'
+import { pathToFileURL } from 'url'
+import { execFileSync } from 'child_process'
 import { parse } from 'subscript/jessie'
 import jz, { compile } from './index.js'
 import jzifyFn, { codegen } from './src/jzify.js'
@@ -36,6 +38,7 @@ Options:
   --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
+  --resolve                 Resolve bare specifiers via Node.js module resolution
   `)
 }
 
@@ -96,12 +99,13 @@ async function handleJzify(args) {
 }
 
 async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false, strict = false
+  let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
     else if (args[i] === '--strict') strict = true
+    else if (args[i] === '--resolve') resolveNode = true
     else if (!inputFile) inputFile = args[i]
   }
 
@@ -128,17 +132,31 @@ async function handleCompile(args) {
 
   // Recursively resolve relative imports from entry file and all discovered modules
   const importRe = /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g
+  const resolveBareModule = (specifier, fromDir) => execFileSync(
+    process.execPath,
+    ['--input-type=module', '-e', 'process.stdout.write(import.meta.resolve(process.argv[1]))', specifier],
+    { cwd: fromDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+  ).trim()
   const resolveModule = (specifier, fromDir) => {
     if (modules[specifier]) return
-    if (!specifier.startsWith('./') && !specifier.startsWith('../')) return
-    const full = resolve(fromDir, specifier)
-    let src
-    try { src = readFileSync(full, 'utf8') }
-    catch { try { src = readFileSync(full + '.js', 'utf8') } catch { return } }
-    modules[specifier] = src
-    // Resolve this module's imports relative to its own directory
-    let m; importRe.lastIndex = 0
-    while ((m = importRe.exec(src)) !== null) resolveModule(m[1], dirname(full))
+    // Relative imports: resolve from filesystem
+    if (specifier.startsWith('./') || specifier.startsWith('../')) {
+      const full = resolve(fromDir, specifier)
+      let src
+      try { src = readFileSync(full, 'utf8') }
+      catch { try { src = readFileSync(full + '.js', 'utf8') } catch { return } }
+      modules[specifier] = src
+      let m; importRe.lastIndex = 0
+      while ((m = importRe.exec(src)) !== null) resolveModule(m[1], dirname(full))
+      return
+    }
+    // Bare specifiers: opt-in Node.js resolution
+    if (resolveNode) {
+      try {
+        const resolved = resolveBareModule(specifier, fromDir)
+        if (resolved.startsWith('file:')) modules[specifier] = readFileSync(new URL(resolved), 'utf8')
+      } catch {}
+    }
   }
   let m; importRe.lastIndex = 0
   while ((m = importRe.exec(code)) !== null) resolveModule(m[1], dir)
@@ -148,6 +166,7 @@ async function handleCompile(args) {
   const opts = {
     wat,
     jzify: !strict && !inputFile.endsWith('.jz'),
+    importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(Object.keys(modules).length && { modules }),
   }
 

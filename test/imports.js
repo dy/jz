@@ -213,6 +213,25 @@ test('import: bundled module newline ! after comment', () => {
   is(exports.g(), 42)
 })
 
+test('import.meta.url lowers from compile option', () => {
+  const result = jz('export let f = () => import.meta.url', { importMetaUrl: 'file:///tmp/jz/main.js' })
+  is(result.memory.read(result.exports.f()), 'file:///tmp/jz/main.js')
+})
+
+test('import.meta.resolve lowers static relative specifier', () => {
+  const result = jz('export let f = () => import.meta.resolve("./dep.js")', { importMetaUrl: 'file:///tmp/jz/main.js' })
+  is(result.memory.read(result.exports.f()), 'file:///tmp/jz/dep.js')
+})
+
+test('new URL(relative, import.meta.url) lowers to href string', () => {
+  const result = jz('export let f = () => new URL("../asset.txt", import.meta.url)', { importMetaUrl: 'file:///tmp/jz/src/main.js' })
+  is(result.memory.read(result.exports.f()), 'file:///tmp/jz/asset.txt')
+})
+
+test('import.meta.url requires importMetaUrl option', () => {
+  throws(() => compile('export let f = () => import.meta.url'), /importMetaUrl/)
+})
+
 test('import: unknown export errors', () => {
   throws(() => jz(
     'import { nope } from "./m.jz"; export let f = () => nope()',
@@ -427,4 +446,13 @@ test('import: trailing comma in host-module specifier', () => {
     { imports: { host: { add: (a, b) => a + b, mul: (a, b) => a * b } } }
   )
   is(exports.f(), 11)
+})
+
+// Regression: calling a user-defined function whose name matches a non-existent
+// built-in module (e.g. "polyfill") must not trigger autoload and crash.
+test('autoload: user function named like missing built-in', () => {
+  const { exports } = jz(
+    'export let polyfill = (x) => x + 1; export let f = () => polyfill(41)'
+  )
+  is(exports.f(), 42)
 })
