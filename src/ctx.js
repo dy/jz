@@ -97,6 +97,9 @@ export function reset(proto, globals) {
     stdlib: {},
     stdlibDeps: {},   // populated per-module at init time (was STDLIB_DEPS in this file)
     includes: new Set(),
+    extImports: new Set(),  // __ext_* helpers actually emitted as env imports —
+                            // pullStdlib() removes them from `includes` after wiring,
+                            // so post-compile auditors (host: 'wasi') read this instead.
   }
 
 
@@ -200,6 +203,10 @@ export function reset(proto, globals) {
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.
     importMetaUrl: null, // compile-time URL for import.meta.url / import.meta.resolve static lowering.
+    host: 'js',         // 'js' (default): allow `env.__ext_*` imports to be wired by the JS host at
+                        // instantiation time. 'wasi': error at compile time if any `__ext_*` import
+                        // would be emitted, since wasmtime/wasmer hosts have no JS runtime to satisfy
+                        // them and silent fallback would corrupt output.
   }
 
   // Feature flags: capabilities the compiled module may exercise at runtime.

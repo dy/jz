@@ -950,10 +950,15 @@ function pullStdlib(sec) {
     const v = ctx.core.stdlib[name]
     return typeof v === 'function' ? v() : v
   }
+  // Track __ext_* names emitted to host imports. The cleanup below deletes them
+  // from ctx.core.includes (moved into sec.extStdlib instead), so any post-compile
+  // audit (e.g. host: 'wasi') needs to read this list rather than the includes set.
+  ctx.core.extImports ??= new Set()
   for (const name of Object.keys(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
       const parsed = parseWat(stdlibStr(name))
       sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
+      ctx.core.extImports.add(name)
       ctx.core.includes.delete(name)
     }
   }

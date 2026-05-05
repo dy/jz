@@ -40,7 +40,7 @@
 
 import { parse } from 'subscript/jessie'
 import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } from "watr";
-import { ctx, reset } from './src/ctx.js'
+import { ctx, reset, err } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
 import { emitter } from './src/emit.js'
@@ -140,6 +140,7 @@ jz.compile = (code, opts = {}) => {
   if (opts.jzify) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
+  if (opts.host) ctx.transform.host = opts.host
   if (opts.runtimeExports === false) ctx.transform.runtimeExports = false
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
@@ -158,6 +159,21 @@ jz.compile = (code, opts = {}) => {
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
   const module = time('compile', () => compile(ast, profiler))
+
+  // host: 'wasi' — error if the wasm would import any env.__ext_* helper. Those exist
+  // only to defer to a JS host's value-aware semantics; in a wasmtime/wasmer/deno
+  // sandbox the imports either go unsatisfied or are stubbed out and silently produce
+  // wrong output. Surface the gap at compile so the caller can pick a comparator,
+  // type-annotate the receiver, or wait for native lowering. Read `extImports`
+  // (populated in pullStdlib) — `core.includes` has had these removed by then.
+  if (ctx.transform.host === 'wasi' && ctx.core.extImports?.size) {
+    const ext = [...ctx.core.extImports].sort()
+    err(
+      `host: 'wasi' — compiled wasm would require JS-host imports that wasmtime/wasmer/deno cannot satisfy:\n  ` +
+      ext.map(n => `env.${n}`).join('\n  ') +
+      `\nThis happens when jz falls through to dynamic dispatch for a method or property without a native lowering. ` +
+      `Either annotate the receiver type, switch to a natively-supported method, or compile with the default host.`)
+  }
 
   const cfg = ctx.transform.optimize
   const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module)) : module
