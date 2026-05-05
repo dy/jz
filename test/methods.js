@@ -129,6 +129,79 @@ test('.includes: string via variable still matches', () => {
   is(run(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), 1)
 })
 
+// === .sort ===
+
+test('.sort: numeric ascending', () => {
+  is(run(`export let f = () => {
+    let a = [3, 1, 2]
+    a.sort((x, y) => x - y)
+    return a[0] * 100 + a[1] * 10 + a[2]
+  }`).f(), 123)
+})
+
+test('.sort: numeric descending', () => {
+  is(run(`export let f = () => {
+    let a = [1, 3, 2]
+    a.sort((x, y) => y - x)
+    return a[0] * 100 + a[1] * 10 + a[2]
+  }`).f(), 321)
+})
+
+test('.sort: returns the array (mutates in place)', () => {
+  // r and a should both be sorted; .sort returns the receiver, not a copy.
+  const { f } = run(`export let f = () => {
+    let a = [3, 1, 2]
+    let r = a.sort((x, y) => x - y)
+    return r[0] === a[0] ? r[0] * 10 + a[2] : -1
+  }`)
+  is(f(), 13)
+})
+
+test('.sort: empty array', () => {
+  is(run(`export let f = () => {
+    let a = []
+    a.sort((x, y) => x - y)
+    return a.length
+  }`).f(), 0)
+})
+
+test('.sort: single-element array', () => {
+  is(run(`export let f = () => {
+    let a = [42]
+    a.sort((x, y) => x - y)
+    return a[0]
+  }`).f(), 42)
+})
+
+test('.sort: stable for equal keys', () => {
+  // Sort by tens digit only — units digit ties must preserve insertion order.
+  // Input: [22, 11, 21, 12, 23] sorted by floor(x/10) →
+  // 1x's first (in original order: 11, 12), then 2x's (in original order: 22, 21, 23).
+  is(run(`export let f = () => {
+    let a = [22, 11, 21, 12, 23]
+    a.sort((x, y) => Math.floor(x / 10) - Math.floor(y / 10))
+    return a[0] * 10000 + a[1] * 100 + a[2]
+  }`).f(), 111222)
+})
+
+test('.sort: comparator may mutate outer let', () => {
+  // The comparator is dispatched through makeCallback (same path .find /
+  // .filter use), so a closure that mutates a captured local works.
+  is(run(`export let f = () => {
+    let count = 0
+    let a = [3, 1, 2]
+    a.sort((x, y) => { count = count + 1; return x - y })
+    return count > 0 && a[0] === 1 ? count : -1
+  }`).f() > 0, true)
+})
+
+test('.sort: bare call without comparator errors with hint', () => {
+  let err = null
+  try { compile(`export let f = () => [3,1,2].sort()`) }
+  catch (e) { err = e.message }
+  ok(err && err.includes('comparator'), `expected comparator-required error, got: ${err}`)
+})
+
 // === .shift ===
 
 test('.shift: repeated shifts update visible array', () => {
