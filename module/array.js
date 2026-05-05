@@ -1215,6 +1215,69 @@ export default (ctx) => {
       ['local.get', `$${result}`]], 'f64')
   }
 
+  // Insertion sort — stable, in-place, O(n²). The comparator is called per
+  // shift; positive return → swap. NaN returns become "no swap" via f64.gt's
+  // IEEE 754 semantics (NaN compares false), matching the spec's NaN-as-0
+  // behavior. The no-comparator (lex-by-toString) form is not implemented.
+  ctx.core.emit['.sort'] = (arr, fn) => {
+    if (fn == null) err('Array.prototype.sort requires a comparator in jz. Pass one like (a, b) => a - b — the no-comparator (lex-by-toString) form is not yet implemented.')
+
+    const recv = hoistArrayValue(arr)
+    const arrTmp = temp('sr')
+    const base = tempI32('sb')
+    const len = tempI32('sl')
+    const i = tempI32('si')
+    const j = tempI32('sj')
+    const cur = temp('sc')
+    const neighbor = temp('sn')
+    const id = ctx.func.uniq++
+    const outerExit = `$sortexit${id}`, innerExit = `$sortinnerexit${id}`
+    const outerLoop = `$sortouter${id}`, innerLoop = `$sortinner${id}`
+
+    const cb = makeCallback(fn, [])
+    inc('__ptr_offset')
+
+    const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
+    const jPlus1 = ['i32.add', ['local.get', `$${j}`], ['i32.const', 1]]
+
+    return typed(['block', ['result', 'f64'],
+      recv.setup,
+      cb.setup,
+      ['local.set', `$${arrTmp}`, recv.value],
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${arrTmp}`]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
+
+      ['local.set', `$${i}`, ['i32.const', 1]],
+      ['block', outerExit,
+        ['loop', outerLoop,
+          ['br_if', outerExit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ['local.set', `$${cur}`, ['f64.load', addr(['local.get', `$${i}`])]],
+          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${i}`], ['i32.const', 1]]],
+
+          ['block', innerExit,
+            ['loop', innerLoop,
+              ['br_if', innerExit, ['i32.lt_s', ['local.get', `$${j}`], ['i32.const', 0]]],
+              ['local.set', `$${neighbor}`, ['f64.load', addr(['local.get', `$${j}`])]],
+              // Break unless cmp(neighbor, cur) > 0. f64.gt is false for NaN.
+              ['br_if', innerExit, ['i32.eqz',
+                ['f64.gt',
+                  asF64(cb.call([
+                    typed(['local.get', `$${neighbor}`], 'f64'),
+                    typed(['local.get', `$${cur}`], 'f64')
+                  ])),
+                  ['f64.const', 0]]]],
+              ['f64.store', addr(jPlus1), ['local.get', `$${neighbor}`]],
+              ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
+              ['br', innerLoop]]],
+
+          ['f64.store', addr(jPlus1), ['local.get', `$${cur}`]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', outerLoop]]],
+
+      ['local.get', `$${arrTmp}`]
+    ], 'f64')
+  }
+
   // Boxed pointer values (strings/objects/etc.) carry NaN payloads, and
   // f64.eq treats NaN as not-equal to anything — even bit-identical NaN —
   // so a raw f64 compare misses string and reference matches. Route those
