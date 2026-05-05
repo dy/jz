@@ -43,6 +43,7 @@ export default (ctx) => {
     __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
     __str_idx: [],
     __str_eq: ['__char_at'],
+    __str_cmp: ['__char_at', '__str_byteLen'],
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
     __str_encode: ['__str_byteLen', '__str_copy'],
@@ -234,6 +235,36 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lm)))
     (i32.const 1))`
+
+  // Three-way byte-wise compare: -1 if a < b, 0 if equal, +1 if a > b. Returns
+  // i32 so callers can `i32.lt_s 0`, `i32.gt_s 0`, etc. without coercion.
+  // Comparison is unsigned (i32.load8_u via __char_at) — matches JS spec for
+  // ASCII; for non-ASCII it's a UTF-8 byte order, which collates the same as
+  // codepoint order for code points < 0x80 and well-formed strings. NOT locale-
+  // aware: this is the byte-wise variant suitable for sort-stability use cases,
+  // not human-language collation.
+  ctx.core.stdlib['__str_cmp'] = `(func $__str_cmp (param $a i64) (param $b i64) (result i32)
+    (local $lenA i32) (local $lenB i32) (local $minLen i32) (local $i i32)
+    (local $ca i32) (local $cb i32)
+    ;; Bit-equal pointers (including same SSO inline form) ⇒ identical strings.
+    (if (i64.eq (local.get $a) (local.get $b))
+      (then (return (i32.const 0))))
+    (local.set $lenA (call $__str_byteLen (local.get $a)))
+    (local.set $lenB (call $__str_byteLen (local.get $b)))
+    (local.set $minLen (select (local.get $lenA) (local.get $lenB)
+      (i32.lt_s (local.get $lenA) (local.get $lenB))))
+    (block $done (loop $next
+      (br_if $done (i32.ge_s (local.get $i) (local.get $minLen)))
+      (local.set $ca (call $__char_at (local.get $a) (local.get $i)))
+      (local.set $cb (call $__char_at (local.get $b) (local.get $i)))
+      (if (i32.lt_u (local.get $ca) (local.get $cb)) (then (return (i32.const -1))))
+      (if (i32.gt_u (local.get $ca) (local.get $cb)) (then (return (i32.const 1))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    ;; Common prefix matches — shorter string sorts first.
+    (if (i32.lt_s (local.get $lenA) (local.get $lenB)) (then (return (i32.const -1))))
+    (if (i32.gt_s (local.get $lenA) (local.get $lenB)) (then (return (i32.const 1))))
+    (i32.const 0))`
 
   // === WAT: unified byte length (SSO → aux low bits, heap → header) ===
 
@@ -903,6 +934,18 @@ export default (ctx) => {
   ctx.core.emit['.toLowerCase'] = (str) => {
     inc('__str_case')
     return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', 65], ['i32.const', 90], ['i32.const', 32]], 'f64')
+  }
+
+  // Byte-wise variant of String.prototype.localeCompare. Returns -1/0/1 from
+  // an unsigned byte-by-byte compare with shorter-string-sorts-first tiebreak.
+  // NOT locale-aware: real localeCompare is ICU-driven (CLDR collation, case
+  // folding, accent ordering). For ASCII inputs the byte-wise result matches
+  // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
+  // codepoint order for well-formed strings — close enough for sort-stability
+  // use cases, wrong for human-language collation.
+  ctx.core.emit['.localeCompare'] = (str, other) => {
+    inc('__str_cmp')
+    return typed(['f64.convert_i32_s', ['call', '$__str_cmp', asI64(emit(str)), asI64(emit(other))]], 'f64')
   }
 
   ctx.core.emit['.string:concat'] = (str, ...others) => {

@@ -833,6 +833,16 @@ export function emitBody(node) {
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const va = emit(a), vb = emit(b)
   if (isLit(va) && isLit(vb)) return emitNum(fn(litVal(va), litVal(vb)) ? 1 : 0)
+  // String compare: NaN-boxed string pointers compare as NaN under f64.lt/gt
+  // (always false), so without this the spec-correct `"a" < "b"` returns 0.
+  // Route both-STRING operands through __str_cmp's three-way result, then apply
+  // the same i32 sign op as numeric (lt_s/gt_s/le_s/ge_s vs 0).
+  const vta = resolveValType(a, valTypeOf, lookupValType)
+  const vtb = resolveValType(b, valTypeOf, lookupValType)
+  if (vta === VAL.STRING && vtb === VAL.STRING) {
+    inc('__str_cmp')
+    return typed([`i32.${i32op}`, ['call', '$__str_cmp', asI64(va), asI64(vb)], ['i32.const', 0]], 'i32')
+  }
   const ai = intConstValue(a), bi = intConstValue(b)
   if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
   if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
