@@ -151,8 +151,8 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
     `${name}: expected ${expected}±${tol} bytes, got ${actual}`)
 })
 
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 3306)
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 6416)
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 3481)
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 6817)
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''

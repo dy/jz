@@ -665,9 +665,9 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     const bt = `${T}box`
     ctx.func.locals.set(bt, 'i32')
     for (const [name, { schemaId, schema }] of ctx.schema.autoBox) {
-      inc('__alloc', '__mkptr')
+      inc('__alloc_hdr', '__mkptr')
       boxInit.push(
-        ['local.set', `$${bt}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+        ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]],
         ['f64.store', ['local.get', `$${bt}`],
           ctx.func.names.has(name) ? ['f64.const', 0] : ['global.get', `$${name}`]],
         ...schema.slice(1).map((_, i) =>
@@ -1015,6 +1015,8 @@ function optimizeModule(sec) {
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7
     ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
+    if (ctx.scope.globals.has('__heap_start'))
+      ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
     for (const s of sec.stdlib)
       if (s[0] === 'func' && s[1] === '$__reset')
         for (let i = 2; i < s.length; i++)

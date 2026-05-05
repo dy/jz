@@ -165,6 +165,11 @@ export default (ctx) => {
 
   // === Bump allocator ===
 
+  // Heap-base watermark: gates header-backed propsPtr fast paths so static-data
+  // OBJECT slots (offsets < heap base) don't misread arbitrary memory at off-16.
+  // Updated by optimizeModule() when data segment exceeds 1024 bytes.
+  ctx.scope.globals.set('__heap_start', '(global $__heap_start (mut i32) (i32.const 1024))')
+
   if (ctx.memory.shared) {
     // Shared memory: heap offset stored at memory[1020] (i32), just before heap start at 1024
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)

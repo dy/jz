@@ -16,10 +16,15 @@ import { ctx, err, inc, PTR } from '../src/ctx.js'
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
 
-  // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId
+  // Object literal: {x: 1, y: 2} → allocate, fill, return pointer with schemaId.
+  // OBJECT alloc uses __alloc_hdr (16-byte header at off-16) to enable per-object
+  // propsPtr — dyn property writes (e.g. `ctx.metadata = {}` in watr) hit the
+  // per-object hash directly, skipping the global __dyn_props probe. The
+  // header gate `off >= __heap_start` keeps static-segment objects on the
+  // global-hash path (their off-16 belongs to neighboring static slots).
   ctx.core.emit['{}'] = (...rawProps) => {
     if (rawProps.length === 0)
-      return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc', ['i32.const', 8]])
+      return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1], ['i32.const', 8]])
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
     const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
@@ -68,7 +73,7 @@ export default (ctx) => {
     }
 
     const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]],
     ]
     for (let i = 0; i < values.length; i++)
       body.push(['f64.store', slotAddr(t, i), asF64(emit(values[i]))])
@@ -143,7 +148,7 @@ export default (ctx) => {
         updateRep(target, { schemaId })
         const t = tempI32('bx'), s = temp('bs')
         const body = [
-          ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', boxedSchema.length * 8]]],
+          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, boxedSchema.length)], ['i32.const', 8]]],
           ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
         ]
         const sBase = tempI32('sb')
@@ -271,7 +276,7 @@ export default (ctx) => {
     const srcBase = tempI32('cb')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
-      ['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', n * 8]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, n)], ['i32.const', 8]]],
       ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]],
     ]
     // Copy all properties from proto
@@ -328,7 +333,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   const ptr = temp('objp')
   const src = tempI32('osp')
 
-  const body = [['local.set', `$${t}`, ['call', '$__alloc', ['i32.const', schema.length * 8]]]]
+  const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]]]
 
   // Process props in order — later props override earlier (JS semantics)
   let srcF

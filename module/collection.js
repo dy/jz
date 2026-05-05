@@ -336,6 +336,7 @@ export default (ctx) => {
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_has']
       : ['__str_hash', '__str_eq', '__ptr_type'],
     __hash_new: ['__alloc_hdr'],
+    __hash_new_small: ['__alloc_hdr', '__mkptr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: ['__str_eq'],
@@ -351,7 +352,7 @@ export default (ctx) => {
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop']
       : ['__dyn_get_t', '__hash_get_local'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
   })
 
@@ -566,6 +567,13 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
+  // Small initial capacity for propsPtr-style hashes (per-object dyn props).
+  // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front
+  // is wasted memory + probe-loop cache pressure. Grows to 4/8/... on demand.
+  ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
+    (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
+      (call $__alloc_hdr (i32.const 0) (i32.const 2) (i32.const ${MAP_ENTRY}))))`
+
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)
   ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEq, PTR.HASH)
@@ -587,6 +595,11 @@ export default (ctx) => {
   // presence (lifted in compile.js whenever __dyn_get is included). Static-shape
   // monomorphic OBJECTs hit the compile-time slot read path and never reach here.
   const hasSchemas = ctx.schema.list.length > 0
+  // Schema-arm key compare uses i64.eq instead of __str_eq: schema keys and
+  // the call-site key both come from the interned string pool (same NaN-box
+  // bits for identical literals), so bit-equality is correct and skips a
+  // per-iter function call. Real-world strings sharing prefix bytes are not
+  // a concern here — keys are static literals from the source program.
   const objectSchemaArm = hasSchemas ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
@@ -598,12 +611,13 @@ export default (ctx) => {
               (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
             (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const 0xFFFFFFFF))))
             (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
+            (local.set $kbits (i64.reinterpret_f64 (local.get $key)))
             (local.set $idx (i32.const 0))
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-              (if (call $__str_eq
-                    (f64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
-                    (local.get $key))
+              (if (i64.eq
+                    (i64.reinterpret_f64 (f64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3)))))
+                    (local.get $kbits))
                 (then (return (f64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
@@ -643,6 +657,16 @@ export default (ctx) => {
               (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $props)) (i64.const 47)) (i64.const 0xF)))
               (i32.const ${PTR.HASH})))
             (local.set $props (f64.const 0))))
+        ;; OBJECT: heap-allocated (off >= __heap_start) carries propsPtr at
+        ;; off-16 from __alloc_hdr. The slot is either 0 (no dyn props yet) or
+        ;; a HASH — no forwarding-garbage case like ARRAY, so a bit-zero test
+        ;; is enough. Static-segment objects fall through to the global hash.
+        (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                     (i32.ge_u (local.get $off) (global.get $__heap_start)))
+          (then
+            (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
+            (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props))))
+            (br $haveProps)))
         ;; Other header types (TYPED/HASH/SET/MAP) carry propsPtr at off-16
         ;; directly, bypassing the global __dyn_props hash.
         (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
@@ -654,10 +678,9 @@ export default (ctx) => {
             (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
             (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props))))
             (br $haveProps)))
-        ;; Fall back to the global __dyn_props hash (OBJECT, CLOSURE, shifted ARRAY).
-        ;; 1-slot cache covers BOTH hits (props=HASH) and misses (props=0 sentinel).
-        ;; Caching misses matters when the global hash is non-empty but the current
-        ;; off has no entry — without it every header-less type pays a probe.
+        ;; Fall back to the global __dyn_props hash (CLOSURE, shifted ARRAY,
+        ;; static-segment OBJECT). 1-slot cache covers both hits and misses
+        ;; (props=0 sentinel) so header-less types skip __ihash_get_local probes.
         (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
         (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
           (then
@@ -778,12 +801,27 @@ export default (ctx) => {
               (then
                 (local.set $props
                   (if (result f64) (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
-                    (then (call $__hash_new))
+                    (then (call $__hash_new_small))
                     (else (local.get $oldProps))))
                 (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
                 (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
                   (then (f64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $props))))
                 (return (local.get $val))))))))
+    ;; OBJECT: heap-allocated (off >= __heap_start) writes propsPtr directly at
+    ;; off-16. The slot is 0 (init) or HASH — no forwarding-garbage like ARRAY.
+    ;; Static-segment OBJECTs fall through to the global __dyn_props.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                 (i32.ge_u (local.get $off) (global.get $__heap_start)))
+      (then
+        (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $props
+          (if (result f64) (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
+            (then (call $__hash_new_small))
+            (else (local.get $oldProps))))
+        (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
+        (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
+          (then (f64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $props))))
+        (return (local.get $val))))
     (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
           (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
@@ -793,7 +831,7 @@ export default (ctx) => {
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
         (local.set $props
           (if (result f64) (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
-            (then (call $__hash_new))
+            (then (call $__hash_new_small))
             (else (local.get $oldProps))))
         (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
         (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
@@ -807,7 +845,7 @@ export default (ctx) => {
     (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
     (local.set $props
       (if (result f64) (call $__is_nullish (local.get $oldProps))
-        (then (call $__hash_new))
+        (then (call $__hash_new_small))
         (else (local.get $oldProps))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
     (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
