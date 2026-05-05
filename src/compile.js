@@ -459,11 +459,25 @@ function emitClosureBody(cb) {
   const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
   let bodyIR
   if (block) {
+    invalidateLocalsCache(cb.body)
     for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    analyzeValTypes(cb.body)
+    analyzeIntCertain(cb.body)
     // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
     analyzeBoxedCaptures(cb.body)
     for (const name of ctx.func.boxed.keys()) {
       if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
+    }
+    const unbox = analyzePtrUnboxable(cb.body, ctx.func.locals, ctx.func.boxed)
+    for (const [name, kind] of unbox) {
+      if (cb.params.includes(name) || cb.captures.includes(name)) continue
+      ctx.func.locals.set(name, 'i32')
+      const fields = { ptrKind: kind }
+      if (kind === VAL.TYPED) {
+        const aux = typedElemAux(ctx.types.typedElem?.get(name))
+        if (aux != null) fields.ptrAux = aux
+      }
+      updateRep(name, fields)
     }
     bodyIR = emitBody(cb.body)
   } else {

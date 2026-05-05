@@ -12,7 +12,7 @@
 
 import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
 import { emit, isReassigned } from '../src/emit.js'
-import { T, lookupValType, repOf } from '../src/analyze.js'
+import { T, lookupValType, repOf, findFreeVars } from '../src/analyze.js'
 import { PTR, inc, err } from '../src/ctx.js'
 
 
@@ -60,6 +60,22 @@ export default (ctx) => {
       if (elemType != null) captureTypedElems.set(name, elemType)
       const bodyName = ctx.func.directClosures?.get(name)
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
+    }
+
+    // Propagate schema facts for global/imported references referenced in the
+    // closure body but not captured as locals. Without this, closures that
+    // reference module-level objects (e.g. `encode[t]` inside an object-literal
+    // method) lose schema resolution and fall back to dynamic property dispatch.
+    const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
+    if (schemaNames?.size) {
+      const refs = []
+      findFreeVars(body, new Set(params), refs, schemaNames)
+      for (const def of Object.values(defaults || {})) findFreeVars(def, new Set(params), refs, schemaNames)
+      for (const name of refs) {
+        if (captureSchemaVars.has(name)) continue
+        const schemaId = ctx.schema.idOf(name)
+        if (schemaId != null) captureSchemaVars.set(name, schemaId)
+      }
     }
 
     // All closures use uniform convention: (env: f64, args_array: f64) → f64

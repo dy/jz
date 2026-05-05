@@ -203,6 +203,7 @@ export default (ctx) => {
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
+    __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
   })
 
   // .map/.filter invoke callbacks with arity 1 internally.
@@ -614,6 +615,34 @@ export default (ctx) => {
                     (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
   }
+
+  // Runtime-dispatch typed indexed write: reads element type from pointer aux,
+  // writes with correct stride. Used when compile-time typedElem resolution
+  // fails (e.g. ternary with mixed typed-array constructors).
+  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
+      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
+    (local.set $et (i32.and (local.get $aux) (i32.const 7)))
+    (if (i32.eq (local.get $et) (i32.const 7))
+      (then (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $v)))
+      (else
+        (if (i32.eq (local.get $et) (i32.const 6))
+          (then (f32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (f32.demote_f64 (local.get $v))))
+          (else
+            (local.set $bits
+              (i32.wrap_i64
+                (if (result i64) (f64.lt (local.get $v) (f64.const 0))
+                  (then (i64.trunc_sat_f64_s (local.get $v)))
+                  (else (i64.trunc_sat_f64_u (local.get $v))))))
+            (if (i32.ge_u (local.get $et) (i32.const 4))
+              (then (i32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (local.get $bits)))
+              (else (if (i32.ge_u (local.get $et) (i32.const 2))
+                (then (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $bits)))
+                (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))
+    (local.get $v))`
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, idx) => {

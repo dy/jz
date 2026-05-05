@@ -1055,6 +1055,12 @@ export const emitter = {
           lookupValType(arr) === 'typed') {
         const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val)
         if (r) return r
+        inc('__typed_set_idx')
+        const valTmp = temp('tsu')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${valTmp}`, valueExpr],
+          ['call', '$__typed_set_idx', asF64(emit(arr)), asI32(emit(idx)), ['local.get', `$${valTmp}`]],
+          ['local.get', `$${valTmp}`]], 'f64')
       }
       if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
         const inner = ctx.schema.emitInner(arr)

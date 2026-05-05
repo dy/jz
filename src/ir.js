@@ -411,9 +411,13 @@ export function usesDynProps(vt) {
  *  `target` is the var name receiving the literal (or null when escaping). */
 export function needsDynShadow(target) {
   if (!ctx.module.modules.collection) return false
+  // Functions/CLOSURE always need dynamic props so cross-module property
+  // access (fn.parse, i32.parse aliases) sees the same value as schema slots.
+  const vt = typeof target === 'string' ? (ctx.func.repByLocal?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
+  if (vt === 'closure' || usesDynProps(vt)) return true
   const dyn = ctx.types?.dynKeyVars
-  if (target == null) return ctx.types?.anyDynKey ?? true
-  return dyn ? dyn.has(target) : true
+  if (target == null) return ctx.types?.anyDynKey ?? false
+  return dyn ? dyn.has(target) : false
 }
 
 // === Variable storage abstraction ===
