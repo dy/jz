@@ -34,7 +34,7 @@ export default (ctx) => {
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
-    __str_idx: ['__str_byteLen', '__char_at', '__mkptr'],
+    __str_idx: [],
     __str_eq: ['__char_at'],
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
@@ -121,18 +121,28 @@ export default (ctx) => {
         (i32.load8_u (i32.add (local.get $off) (local.get $i))))))`
 
   ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $len i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local $bits i64) (local $t i32) (local $off i32) (local $len i32)
+    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $len
+      (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
+        (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+        (else
+          (if (result i32) (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
+            (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
+            (else (i32.const 0))))))
     (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.or (i32.lt_s (local.get $i) (i32.const 0)) (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (call $__mkptr
-          (i32.const ${PTR.SSO})
-          (i32.const 1)
-          (call $__char_at (local.get $ptr) (local.get $i))))))`
+        (f64.reinterpret_i64
+          (i64.or
+            (i64.const 0x7FFA800100000000)
+            (i64.extend_i32_u
+              (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
+                (then (i32.and (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8))) (i32.const 0xFF)))
+                (else (i32.load8_u (i32.add (local.get $off) (local.get $i)))))))))))`
 
   // Hot: ~53M calls in watr self-host. Bit-eq covers identity. SSO/SSO with !bit-eq
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs

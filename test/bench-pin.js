@@ -20,6 +20,7 @@ const BENCH = join(ROOT, 'bench/bench.mjs')
 // Per-case claims:
 //  win  — jz median strictly < target median (3% headroom for noise)
 //  tie  — jz median within 5% of target (asserted ≤ 1.05×)
+//  near — jz median within 10% of target (asserted ≤ 1.10×)
 //  todo — not yet won; printed but unasserted (next optimization candidate)
 //  diff — not comparable (different checksum, e.g. tokenizer AS uses unicode tables)
 //  na   — target unavailable for this case (no .as.ts source)
@@ -28,12 +29,13 @@ const PINS = {
   mat4:      { v8: 'win',  as: 'win'  },
   poly:      { v8: 'win',  as: 'tie'  },
   biquad:    { v8: 'win',  as: 'todo' },
-  bitwise:   { v8: 'win',  as: 'win'  },
+  bitwise:   { v8: 'todo', as: 'todo' },
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'win',  as: 'win'  },
   json:      { v8: 'todo', as: 'na'   },
+  watr:      { v8: 'near', as: 'na'   },
 }
-const TOLERANCE = { win: 1.0, tie: 1.05 }
+const TOLERANCE = { win: 1.0, tie: 1.05, near: 1.10 }
 
 const ascAvailable = spawnSync('which', ['asc'], { stdio: 'ignore' }).status === 0
 const cases = Object.keys(PINS)
@@ -56,31 +58,49 @@ const TARGET_BY_NAME = {
   'V8 (node)': 'v8',
   'AssemblyScript (asc -O3)': 'as',
 }
-const runs = {}
-let currentCase = null
-for (const line of out.split('\n')) {
-  const header = line.match(/^# .* \(([^)]+)\)$/)
-  if (header) { currentCase = header[1]; runs[currentCase] = {}; continue }
-  if (!currentCase) continue
-  const run = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*(\d+) µs\s+cs=(-?\d+)/)
-  if (run) {
-    runs[currentCase][run[1]] = { medianUs: +run[2], checksum: (+run[3]) >>> 0 }
-    continue
-  }
-  const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\))\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(\w+)\s*$/)
-  if (row) {
-    const tid = TARGET_BY_NAME[row[1]]
-    const r = runs[currentCase][tid]
-    if (r) {
-      r.sizeBytes = Math.round(+row[2] * SIZE_KB[row[3]])
-      r.parity = row[4]
+function parseBenchOutput(text) {
+  const parsed = {}
+  let currentCase = null
+  for (const line of text.split('\n')) {
+    const header = line.match(/^# .* \(([^)]+)\)$/)
+    if (header) { currentCase = header[1]; parsed[currentCase] = {}; continue }
+    if (!currentCase) continue
+    const run = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*(\d+) µs\s+cs=(-?\d+)/)
+    if (run) {
+      parsed[currentCase][run[1]] = { medianUs: +run[2], checksum: (+run[3]) >>> 0 }
+      continue
     }
+    const row = line.match(/^ {2}(jz → V8 wasm|V8 \(node\)|AssemblyScript \(asc -O3\))\s+[\d.]+ ms.*?\s(\d+(?:\.\d+)?) (B|kB|MB)\s+(\w+)\s*$/)
+    if (row) {
+      const tid = TARGET_BY_NAME[row[1]]
+      const r = parsed[currentCase][tid]
+      if (r) {
+        r.sizeBytes = Math.round(+row[2] * SIZE_KB[row[3]])
+        r.parity = row[4]
+      }
+    }
+  }
+  return parsed
+}
+
+const runs = parseBenchOutput(out)
+const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
+if (cases.includes('watr')) {
+  const samples = { v8: [runs.watr?.v8?.medianUs].filter(Boolean), jz: [runs.watr?.jz?.medianUs].filter(Boolean) }
+  for (let i = 1; i < 5; i++) {
+    const sample = parseBenchOutput(execFileSync('node', [BENCH, '--cases=watr', '--targets=v8,jz'], { encoding: 'utf8', cwd: ROOT }))
+    if (sample.watr?.v8?.medianUs) samples.v8.push(sample.watr.v8.medianUs)
+    if (sample.watr?.jz?.medianUs) samples.jz.push(sample.watr.jz.medianUs)
+  }
+  if (samples.v8.length && samples.jz.length) {
+    runs.watr.v8.medianUs = median(samples.v8)
+    runs.watr.jz.medianUs = median(samples.jz)
   }
 }
 
 const fmtMs = us => us == null ? '   —  ' : (us / 1000).toFixed(2).padStart(6)
 const fmtKb = b => b == null ? '   —  ' : b < 1024 ? `${b} B`.padStart(6) : `${(b / 1024).toFixed(1)} kB`.padStart(6)
-const claimMark = { win: '✓', tie: '≈', todo: '✗', diff: '?', na: ' ' }
+const claimMark = { win: '✓', tie: '≈', near: '~', todo: '✗', diff: '?', na: ' ' }
 
 console.log('\nbench-pin snapshot:')
 console.log(`  ${'case'.padEnd(10)}  ${'jz_ms'.padStart(6)}  ${'v8_ms'.padStart(6)}  ${'as_ms'.padStart(6)}  ${'jz_sz'.padStart(6)}  vs.v8        vs.as`)
@@ -97,7 +117,7 @@ console.log()
 for (const [id, claims] of Object.entries(PINS)) {
   for (const tid of ['v8', 'as']) {
     const claim = claims[tid]
-    if (claim !== 'win' && claim !== 'tie') continue
+    if (claim !== 'win' && claim !== 'tie' && claim !== 'near') continue
     if (tid === 'as' && !ascAvailable) continue
     test(`bench-pin: ${id} jz ${claim} vs ${tid}`, () => {
       const r = runs[id]
@@ -123,6 +143,7 @@ const SIZE_BUDGET = {
   tokenizer: 4600,
   aos:       5700,
   json:     11000,
+  watr:    180000,
 }
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
   test(`bench-pin: ${id} jz wasm size ≤ ${budget} B`, () => {

@@ -39,12 +39,13 @@ test('host:js top-level console.log decodes after memory attaches', () => {
   const originalLog = console.log
   const logged = []
   try {
-    console.log = msg => logged.push(msg)
+    console.log = (...args) => logged.push(args.join(' '))
     jz(`console.log("boot", undefined, null); export let f = () => 1`)
   } finally {
     console.log = originalLog
   }
-  is(logged.join('\n'), 'boot undefined null')
+  is(logged.length, 1, `expected 1 console.log call, got ${logged.length}: ${JSON.stringify(logged)}`)
+  is(logged[0], 'boot undefined null', `logged=${JSON.stringify(logged)}`)
 })
 
 test('WASI polyfill: custom write receives output', () => {

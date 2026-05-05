@@ -69,10 +69,12 @@ export default (ctx) => {
             (f64.eq (local.get $b) (local.get $b)))
           (then (f64.eq (local.get $a) (local.get $b)))
           (else
-            ;; ≥1 is a NaN-box. Heap-allocated STRING with same content can have different
-            ;; offsets — fall through to byte-wise __str_eq.
+            ;; At least one operand is a NaN-box. Heap STRINGs with same content can
+            ;; have different offsets; SSO strings with different bits cannot be equal.
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
+            (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
+              (then (return (i32.const 0))))
             (if (result i32)
               (i32.and
                 (i32.or
@@ -81,8 +83,8 @@ export default (ctx) => {
                 (i32.or
                   (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
                   (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
-              (then (call $__str_eq (local.get $a) (local.get $b)))
-              (else (i32.const 0))))))))`
+                (then (call $__str_eq (local.get $a) (local.get $b)))
+                (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v f64) (result i32)
     (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})))`
