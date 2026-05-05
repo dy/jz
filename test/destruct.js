@@ -231,6 +231,42 @@ test('optional: ?.prop on dynamic HASH object', () => {
   }`).f(), 1)
 })
 
+// obj?.method(args) evaluates obj once, returns null when nullish, otherwise
+// dispatches the same as obj.method(args). These pin that the optional-callee
+// shape (['()', ['?.', ...], ...]) reaches the standard method dispatch — so
+// type-aware lowerings like .toLowerCase apply to optional chains too.
+
+test('optional: ?.method() on string literal', () => {
+  const { f } = jz(`export let f = () => "Express"?.toLowerCase()`).exports
+  is(f(), 'express')
+})
+
+test('optional: ?.method() on local string', () => {
+  const { f } = jz(`export let f = () => {
+    let s = "Express"
+    return s?.toLowerCase()
+  }`).exports
+  is(f(), 'express')
+})
+
+test('optional: ?.method() on null returns null', () => {
+  const { f } = run(`export let f = () => {
+    let s = null
+    return s?.toLowerCase()
+  }`)
+  ok(isNaN(f()), '?.method() on null returns NULL_NAN')
+})
+
+test('optional: ?.method() on hash member', () => {
+  // The compound case: hash-derived string flowing into an optional method
+  // chain — exercises both the hash read and the optional-call lowering.
+  const { f } = jz(`export let f = () => {
+    let h = JSON.parse('{"name":"Express"}')
+    return h.name?.toLowerCase()
+  }`).exports
+  is(f(), 'express')
+})
+
 // ============================================
 // typeof
 // ============================================

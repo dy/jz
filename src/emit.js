@@ -1680,6 +1680,26 @@ export const emitter = {
 
     const parsed = parseArgs(argList)
 
+    // Optional method call: obj?.method(args) — null if obj is nullish, else
+    // obj.method(args). The parser shapes this as ['()', ['?.', obj, method], args],
+    // distinct from the regular method call's ['.', obj, method] callee. Receiver
+    // hoists into a temp so the nullish check and the method dispatch below see
+    // the same evaluation; recursion with a synthetic '.'-callee reuses the type-
+    // aware method-dispatch in this same handler rather than duplicating it.
+    if (Array.isArray(callee) && callee[0] === '?.') {
+      const [, obj, method] = callee
+      const t = `${T}om${ctx.func.uniq++}`
+      ctx.func.locals.set(t, 'f64')
+      const va = asF64(emit(obj))
+      const methodCall = emitter['()'](['.', t, method], callArgs)
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, va],
+        ['if', ['result', 'f64'],
+          ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
+          ['then', asF64(methodCall)],
+          ['else', nullExpr()]]], 'f64')
+    }
+
     // Method call: obj.method(args) → type-aware dispatch
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
