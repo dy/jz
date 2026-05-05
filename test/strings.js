@@ -48,6 +48,60 @@ test('string !=: different contents compare unequal', () => {
   is(run('export let f = () => "module" != "memory"').f(), 1)
 })
 
+// === string ordering: < > <= >= ===
+// Pre-fix, NaN-boxed string pointers fell into f64.lt/gt which always returns 0
+// (NaN comparisons in IEEE 754 are false). cmpOp now routes both-STRING operands
+// through __str_cmp's three-way result.
+
+test('string <: lex order', () => {
+  is(run('export let f = () => "a" < "b"').f(), 1)
+  is(run('export let f = () => "b" < "a"').f(), 0)
+  is(run('export let f = () => "a" < "a"').f(), 0)
+})
+
+test('string >: lex order', () => {
+  is(run('export let f = () => "b" > "a"').f(), 1)
+  is(run('export let f = () => "a" > "b"').f(), 0)
+})
+
+test('string <=: includes equality', () => {
+  is(run('export let f = () => "a" <= "a"').f(), 1)
+  is(run('export let f = () => "a" <= "b"').f(), 1)
+  is(run('export let f = () => "b" <= "a"').f(), 0)
+})
+
+test('string <: shared prefix, shorter sorts first', () => {
+  is(run('export let f = () => "app" < "apple"').f(), 1)
+  is(run('export let f = () => "apple" < "app"').f(), 0)
+})
+
+test('string <: empty sorts before non-empty', () => {
+  is(run('export let f = () => "" < "a"').f(), 1)
+  is(run('export let f = () => "a" < ""').f(), 0)
+})
+
+test('string < via variables', () => {
+  const { f } = run(`export let f = () => {
+    let x = "banana"; let y = "cherry"
+    return x < y
+  }`)
+  is(f(), 1)
+})
+
+// === localeCompare ===
+// Byte-wise variant — not locale-aware. Returns -1/0/1.
+
+test('.localeCompare: returns -1/0/1', () => {
+  is(run('export let f = () => "a".localeCompare("b")').f(), -1)
+  is(run('export let f = () => "a".localeCompare("a")').f(), 0)
+  is(run('export let f = () => "b".localeCompare("a")').f(), 1)
+})
+
+test('.localeCompare: shared prefix tiebreaks by length', () => {
+  is(run('export let f = () => "app".localeCompare("apple")').f(), -1)
+  is(run('export let f = () => "apple".localeCompare("app")').f(), 1)
+})
+
 // === parseInt ===
 
 test('parseInt: decimal', () => {
