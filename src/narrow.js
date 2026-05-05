@@ -308,14 +308,41 @@ export default function narrowSignatures(programFacts, ast) {
   }
 
   const poison = field => r => { r[field] = null }
+  // Default-aware val inference. Adds two fallbacks beyond inferArgType's
+  // body-local `callerValTypes` lookup so a hot recursive helper like
+  // `uleb(n, buffer = []) { ... return uleb(n, buffer) }` resolves the
+  // recursive `buffer` arg to VAL.ARRAY (via callerParamFacts on iter 2,
+  // or via the caller's own default expression on iter 1).
+  const inferValAtSite = (arg, state) => {
+    const v = inferArgType(arg, state.callerValTypes)
+    if (v != null) return v
+    if (typeof arg !== 'string') return null
+    const fromParam = state.callerParamFacts('val')?.get(arg)
+    if (fromParam != null) return fromParam
+    const def = state.callerFunc?.defaults?.[arg]
+    return def != null ? valTypeOf(def) || null : null
+  }
+  // Substitute the default expression for a missing positional arg, so
+  // `uleb(n)` doesn't poison buffer.val despite `buffer = []` provably
+  // yielding VAL.ARRAY at runtime — unblocks inline ARRAY len/push fast
+  // paths in encode.js's hot uleb/i32/i64 helpers.
+  const defaultArg = (state, k) => {
+    const pname = state.func.sig.params[k]?.name
+    return pname != null ? state.func.defaults?.[pname] : null
+  }
   const mergeRule = (field, infer) => ({
-    missing: poison(field),
+    missing(r, k, state) {
+      if (r[field] === null) return
+      const def = defaultArg(state, k)
+      if (def != null) mergeParamFact(r, field, infer(def, k, state))
+      else r[field] = null
+    },
     apply(r, arg, k, state) {
       if (r[field] !== null) mergeParamFact(r, field, infer(arg, k, state))
     },
   })
   const runFixpoint = () => runCallsiteLattice([
-    mergeRule('val', (arg, _k, state) => inferArgType(arg, state.callerValTypes)),
+    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state)),
     {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {

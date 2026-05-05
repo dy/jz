@@ -65,7 +65,9 @@ function builtinFunctionValue(name) {
   }
   let idx = ctx.closure.table.indexOf(fn)
   if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(fn) }
-  return mkPtrIR(PTR.CLOSURE, idx, 0)
+  const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
+  ir.closureFuncIdx = idx
+  return ir
 }
 
 /** Emit unary negation: constant-fold, or i32 sub from 0 / f64.neg. */
@@ -572,7 +574,7 @@ export function emitDecl(...inits) {
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
     // isReassigned is conservative across nested arrow shadows — we miss the optimization
     // rather than emit a wrong direct call.
-    if (val?.closureBodyName && !ctx.func.boxed.has(name) && !isGlobal(name)
+    if (Array.isArray(init) && init[0] === '=>' && val?.closureBodyName && !ctx.func.boxed.has(name) && !isGlobal(name)
         && ctx.func.body && !isReassigned(ctx.func.body, name)) {
       if (!ctx.func.directClosures) ctx.func.directClosures = new Map()
       ctx.func.directClosures.set(name, val.closureBodyName)
@@ -1055,12 +1057,11 @@ export const emitter = {
           lookupValType(arr) === 'typed') {
         const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val)
         if (r) return r
+        // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx
+        // returns the stored value as f64, used directly as the expr result.
         inc('__typed_set_idx')
-        const valTmp = temp('tsu')
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${valTmp}`, valueExpr],
-          ['call', '$__typed_set_idx', asF64(emit(arr)), asI32(emit(idx)), ['local.get', `$${valTmp}`]],
-          ['local.get', `$${valTmp}`]], 'f64')
+        return typed(['call', '$__typed_set_idx',
+          asF64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
       }
       if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
         const inner = ctx.schema.emitInner(arr)
@@ -1087,9 +1088,34 @@ export const emitter = {
         return storeArrayValue(asF64(va), keyExpr, persist)
       }
       // arr is non-ARRAY here (VAL.ARRAY branch was taken above); safe to skip forwarding.
-      const arrVT = (typeof arr === 'string' ? lookupValType(arr) : null) || VAL.OBJECT
+      const knownArrVT = typeof arr === 'string' ? lookupValType(arr) : null
+      const arrVT = knownArrVT || VAL.OBJECT
       if (useRuntimeKeyDispatch) {
         inc('__dyn_set', '__is_str_key')
+        // When arr type is unknown (could be TypedArray) and __typed_set_idx is
+        // available, dispatch the numeric branch through __ptr_type so TypedArray
+        // writes go by element type. Without this, ternary-typed arrays (e.g.
+        // `num === 4 ? new Uint32Array(4) : new Uint8Array(16)`) would silently
+        // f64.store boxed bytes regardless of element width.
+        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
+        if (knownArrVT == null && hasTypedSet) {
+          const objTmp = temp('asu')
+          const idxTmp = tempI32('asi')
+          inc('__ptr_type', '__typed_set_idx')
+          return dispatchKey(keyNode => {
+            const keyI32 = asI32(typed(keyNode, 'f64'))
+            return ['block', ['result', 'f64'],
+              ['local.set', `$${objTmp}`, asF64(va)],
+              ['local.set', `$${idxTmp}`, keyI32],
+              ['local.set', `$${t}`, vv],
+              ['if', ['result', 'f64'],
+                ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
+                ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+                ['else', ['block', ['result', 'f64'],
+                  ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
+                  ['local.get', `$${t}`]]]]]
+          })
+        }
         return dispatchKey(keyNode => {
           const keyI32 = asI32(typed(keyNode, 'f64'))
           return ['block', ['result', 'f64'],
@@ -1097,6 +1123,62 @@ export const emitter = {
             ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), arrVT), ['i32.shl', keyI32, ['i32.const', 3]]], ['local.get', `$${t}`]],
             ['local.get', `$${t}`]]
         })
+      }
+      if (typeof arr !== 'string') {
+        const objTmp = temp('asu')
+        const idxTmp = tempI32('asi')
+        const ptrTmp = temp('asp')
+        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
+        inc('__ptr_type', '__arr_set_idx_ptr')
+        if (hasTypedSet) inc('__typed_set_idx')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${objTmp}`, asF64(va)],
+          ['local.set', `$${idxTmp}`, vi],
+          ['local.set', `$${t}`, vv],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.ARRAY]],
+            ['then', ['block', ['result', 'f64'],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['local.get', `$${t}`]]],
+            ['else', hasTypedSet ? ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
+              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['else', ['block', ['result', 'f64'],
+                ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
+                ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
+              ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
+              ['local.get', `$${t}`]]]]], 'f64')
+      }
+      if (typeof arr === 'string' && knownArrVT == null) {
+        const objTmp = temp('asu')
+        const idxTmp = tempI32('asi')
+        const ptrTmp = temp('asp')
+        const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
+        inc('__ptr_type', '__arr_set_idx_ptr')
+        if (hasTypedSet) inc('__typed_set_idx')
+        const persist = ptr => {
+          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
+          if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
+          return ['local.set', `$${arr}`, ptr]
+        }
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${objTmp}`, asF64(va)],
+          ['local.set', `$${idxTmp}`, vi],
+          ['local.set', `$${t}`, vv],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.ARRAY]],
+            ['then', ['block', ['result', 'f64'],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              persist(['local.get', `$${ptrTmp}`]),
+              ['local.get', `$${t}`]]],
+            ['else', hasTypedSet ? ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
+              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['else', ['block', ['result', 'f64'],
+                ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
+                ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
+              ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
+              ['local.get', `$${t}`]]]]], 'f64')
       }
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, vv],
@@ -1129,6 +1211,10 @@ export const emitter = {
           inc('__dyn_set')
           return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
         }
+        if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
+          inc('__dyn_set')
+          return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+        }
         if (objType == null) ctx.features.external = true
         inc('__hash_set')
         const setCall = typed(['call', '$__hash_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
@@ -1142,6 +1228,10 @@ export const emitter = {
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     const void_ = _expect === 'void'
+    if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
+      inc('__to_num')
+      return writeVar(name, typed(['call', '$__to_num', asF64(emit(name))], 'f64'), void_)
+    }
     return writeVar(name, emit(val), void_)
   },
 
@@ -1282,7 +1372,11 @@ export const emitter = {
   'u+': a => {
     if (valTypeOf(a) === VAL.BIGINT)
       return typed(['f64.convert_i64_s', asI64(emit(a))], 'f64')
-    return toNumF64(a, emit(a))
+    const v = emit(a)
+    if (v.type === 'i32') return asF64(v)
+    if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
+    inc('__to_num')
+    return typed(['call', '$__to_num', asF64(v)], 'f64')
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {
@@ -1313,7 +1407,6 @@ export const emitter = {
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
-
   // === Comparisons (always i32 result) ===
 
   '==': (a, b) => {
@@ -1431,7 +1524,21 @@ export const emitter = {
       }
     }
     const fb = asF64(vb), fc = asF64(vc)
-    if (isPureIR(fb) && isPureIR(fc))
+    const vtb = resolveValType(b, valTypeOf, lookupValType)
+    const vtc = resolveValType(c, valTypeOf, lookupValType)
+    const isNaNBoxLit = n => Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'string' && n[1].startsWith('nan:')
+    const refPayload = (vtb && vtb === vtc && REF_EQ_KINDS.has(vtb))
+      || vb.closureFuncIdx != null || vc.closureFuncIdx != null
+      || isNaNBoxLit(fb) || isNaNBoxLit(fc)
+    if (refPayload) {
+      const ib = ['i64.reinterpret_f64', fb]
+      const ic = ['i64.reinterpret_f64', fc]
+      const bits = isPureIR(fb) && isPureIR(fc)
+        ? ['select', ib, ic, cond]
+        : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
+      return typed(['f64.reinterpret_i64', bits], 'f64')
+    }
+    if (!refPayload && isPureIR(fb) && isPureIR(fc))
       return typed(['select', fb, fc, cond], 'f64')
     return typed(['if', ['result', 'f64'], cond, ['then', fb], ['else', fc]], 'f64')
   },
@@ -1667,6 +1774,8 @@ export const emitter = {
     let argList = Array.isArray(callArgs)
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
+    // Trailing comma in call: parser emits a trailing null sentinel — drop it
+    while (argList.length && argList[argList.length - 1] == null) argList.pop()
 
     // Helper: expand spread arguments into flat list of normal arguments + spread markers
     // Returns { normal: [...], spreads: [(pos, expr), ...] }
@@ -1975,6 +2084,19 @@ export const emitter = {
       }
 
       // Schema property function call: x.prop(args) where prop is a closure in boxed schema
+      if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
+        const idx = ctx.schema.find(obj, method)
+        if (idx >= 0 && !ctx.schema.isBoxed?.(obj)) {
+          const propRead = typed(['f64.load', ['i32.add', ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+          if (parsed.hasSpread) {
+            const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+            return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
+          }
+          return ctx.closure.call(propRead, parsed.normal)
+        }
+      }
+
+      // Schema property function call: x.prop(args) where prop is a closure in boxed schema
       if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
         const idx = ctx.schema.find(obj, method)
         if (idx >= 0) {
@@ -2049,7 +2171,7 @@ export const emitter = {
     }
 
     // Direct call if callee is a known top-level function
-    if (typeof callee === 'string' && ctx.func.names.has(callee)) {
+    if (typeof callee === 'string' && ctx.func.names.has(callee) && !ctx.func.locals?.has(callee)) {
       const func = ctx.func.map.get(callee)
 
       // Rest param case: collect all args (including expanded spreads) into array
@@ -2192,7 +2314,9 @@ export function emit(node, expect) {
       }
       let idx = ctx.closure.table.indexOf(trampolineName)
       if (idx < 0) { idx = ctx.closure.table.length; ctx.closure.table.push(trampolineName) }
-      return mkPtrIR(PTR.CLOSURE, idx, 0)
+      const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
+      ir.closureFuncIdx = idx
+      return ir
     }
     // Emitter table: only namespace-resolved names (contain '.', e.g. 'math.PI') — safe from user variable collision
     if (node.includes('.') && ctx.core.emit[node]) {

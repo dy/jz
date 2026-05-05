@@ -181,6 +181,8 @@ const arrayGrowDeps = (knownArray = false) => () => [
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
 ]
 
+// Arrays keep dynamic props in the global table because old/new array storage can
+// be forwarded. Relocate that entry when growth moves the backing store.
 const maybeDynMoveIR = () => needsArrayDynMove()
   ? '(call $__dyn_move (local.get $off) (local.get $newOff))'
   : ''
@@ -327,7 +329,39 @@ export default (ctx) => {
     (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.core.emit['Array.from'] = (src) => {
+  function arrayLikeLength(src) {
+    if (!Array.isArray(src) || src[0] !== '{}') return null
+    for (let i = 1; i < src.length; i++) {
+      const prop = src[i]
+      if (!Array.isArray(prop) || prop[0] !== ':') continue
+      const key = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
+      if (key === 'length') return prop[2]
+    }
+    return null
+  }
+
+  ctx.core.emit['Array.from'] = (src, mapFn) => {
+    const lengthExpr = arrayLikeLength(src)
+    if (lengthExpr) {
+      const len = tempI32('fl'), i = tempI32('fi')
+      const lenIR = ['local.get', `$${len}`]
+      const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'fr' })
+      const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+      const undef = typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
+      const item = cb ? cb.call([undef, idxArg(cb, i)]) : undef
+      const id = ctx.func.uniq++
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${len}`, asI32(emit(lengthExpr))],
+        out.init,
+        ...(cb ? [cb.setup] : []),
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
+          elemStore(out.local, i, asF64(item)),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
     inc('__arr_from')
     return typed(['call', '$__arr_from', asF64(emit(src))], 'f64')
   }
@@ -565,7 +599,7 @@ export default (ctx) => {
       // Fast path fires on schemaId (Array<{x,y,z}> shapes) OR plain elem-val
       // (Array<NUMBER> from `.map(x => x*k)` etc.).
       const rep = typeof arr === 'string' ? ctx.func.repByLocal?.get(arr) : null
-      const hasElemFact = rep?.arrayElemSchema != null || rep?.arrayElemValType != null
+      const hasElemFact = rep?.arrayElemSchema != null
       if (hasElemFact && keyIsNum) {
         inc('__ptr_offset')
         // __ptr_offset returns i32 — base local must be i32 (not the default
@@ -1219,6 +1253,7 @@ export default (ctx) => {
       ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${a}`]],
         ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
   }
+  ctx.core.emit['.at'] = ctx.core.emit['.array:at']
 
   ctx.core.emit['.slice'] = (arr, start, end) => {
     // BUFFER slice → byte-level copy handled in typedarray module.

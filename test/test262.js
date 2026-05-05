@@ -134,7 +134,6 @@ const EXCLUDED_PATTERNS = [
   /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
   /iterator/i, /symbol\.species/i, /symbol\.toPrimitive/i,
   /symbol\.iterator/i, /for[\s-]*of/i, /regexp/i,
-  /template/i, /tagged/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
   /\bexport\s+default\b/,
   /\bdelete\b/,

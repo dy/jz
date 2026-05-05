@@ -60,13 +60,21 @@ export default (ctx) => {
   ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
   ctx.core.emit['math.trunc'] = a => fInt('f64.trunc', a)
   ctx.core.emit['math.min'] = (a, b, ...rest) => {
+    if (a === undefined) return typed(['f64.const', Infinity], 'f64')
     // Spread: Math.min(...arr) — iterate array to find min
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.min', a[1], Infinity)
-    return f2('f64.min', a, b)
+    if (b === undefined) return typed(['f64.min', asF64(emit(a)), ['f64.const', Infinity]], 'f64')
+    let r = f2('f64.min', a, b)
+    for (const x of rest) r = typed(['f64.min', r, asF64(emit(x))], 'f64')
+    return r
   }
   ctx.core.emit['math.max'] = (a, b, ...rest) => {
+    if (a === undefined) return typed(['f64.const', -Infinity], 'f64')
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.max', a[1], -Infinity)
-    return f2('f64.max', a, b)
+    if (b === undefined) return typed(['f64.max', asF64(emit(a)), ['f64.const', -Infinity]], 'f64')
+    let r = f2('f64.max', a, b)
+    for (const x of rest) r = typed(['f64.max', r, asF64(emit(x))], 'f64')
+    return r
   }
   ctx.core.emit['math.round'] = a => fInt('f64.nearest', a)
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
@@ -107,7 +115,16 @@ export default (ctx) => {
   ctx.core.emit['math.pow'] = (a, b) => callDeps(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
   ctx.core.emit['**'] = ctx.core.emit['math.pow']
   ctx.core.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
-  ctx.core.emit['math.hypot'] = (a, b) => call('math.hypot', a, b)
+  ctx.core.emit['math.hypot'] = (a, b, ...rest) => {
+    if (a === undefined) return typed(['f64.const', 0], 'f64')
+    if (b === undefined) return f('f64.abs', a)
+    let r = call('math.hypot', a, b)
+    for (const x of rest) {
+      inc('math.hypot')
+      r = typed(['call', '$math.hypot', r, asF64(emit(x))], 'f64')
+    }
+    return r
+  }
 
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
   // store/return boundaries; consumers staying in i32 (bit chains, i32 locals)

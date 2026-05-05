@@ -432,6 +432,7 @@ export default (ctx) => {
   // ArrayBuffer.isView(x) — true iff x is a TYPED pointer. (DataView passthrough cannot be
   // distinguished from ArrayBuffer since both are BUFFER pointers; both report false.)
   ctx.core.emit['ArrayBuffer.isView'] = (v) => {
+    if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
     return typed(['f64.convert_i32_s',
       ['i32.eq', ['call', '$__ptr_type', va], ['i32.const', PTR.TYPED]]], 'f64')
@@ -616,9 +617,6 @@ export default (ctx) => {
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
   }
 
-  // Runtime-dispatch typed indexed write: reads element type from pointer aux,
-  // writes with correct stride. Used when compile-time typedElem resolution
-  // fails (e.g. ternary with mixed typed-array constructors).
   ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
@@ -664,37 +662,53 @@ export default (ctx) => {
     const { et, isView } = r
     const objIR = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
-    if (et === 7) return ['f64.store', off, vv] // Float64Array
-    if (et === 6) return ['f32.store', off, ['f32.demote_f64', vv]] // Float32Array
-    // Integer types: truncate f64 to i32, then store. Peel f64.convert_i32_*(x) → x:
-    // store of bitwise-result already-i32 needs no round-trip.
-    const isConv = Array.isArray(vv) && (vv[0] === 'f64.convert_i32_s' || vv[0] === 'f64.convert_i32_u')
-    const i32val = isConv ? vv[1] : [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', vv]
-    return [STORE[et], off, i32val]
+    const vt = temp('tw')
+    if (et === 7) return typed(['block', ['result', 'f64'],
+      ['local.set', `$${vt}`, vv],
+      ['f64.store', off, ['local.get', `$${vt}`]],
+      ['local.get', `$${vt}`]], 'f64') // Float64Array
+    if (et === 6) return typed(['block', ['result', 'f64'],
+      ['local.set', `$${vt}`, vv],
+      ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
+      ['local.get', `$${vt}`]], 'f64') // Float32Array
+    const i32val = ['i32.wrap_i64',
+      ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
+        ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
+        ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${vt}`, vv],
+      [STORE[et], off, i32val],
+      ['local.get', `$${vt}`]], 'f64')
   }
 
   // TypedArray.prototype.set(source, offset = 0). Copies array-like numeric
-  // values into the receiver; enough for watr's Uint8Array merge path and normal
-  // JZ typed-array sources. Overlapping self-copy is not special-cased yet.
+  // values into the receiver. Falls back to runtime aux-byte dispatch via
+  // __typed_set_idx when sibling-scope decls poison the dst's typedElem (e.g.
+  // v128const's i-branch ternary `num===16 ? Uint8Array : Uint32Array`
+  // hoisted alongside the f-branch's plain `new Uint8Array(16)`).
   ctx.core.emit['.typed:set'] = (arr, src, offset) => {
     const r = resolveElem(arr)
-    if (r == null) return null
-    const { et, isView } = r
     inc('__len', '__typed_idx')
-
+    if (r == null) inc('__typed_set_idx')
     const srcVal = src === undefined ? undefExpr() : asF64(emit(src))
     const offVal = offset === undefined ? typed(['i32.const', 0], 'i32') : asI32(emit(offset))
-    const dstPtr = tempI32('tsd'), srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
+    const dst = r ? tempI32('tsd') : temp('tsd')
+    const srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
     const idx = ['i32.add', ['local.get', `$${off}`], ['local.get', `$${i}`]]
-    const addr = ['i32.add', ['local.get', `$${dstPtr}`], ['i32.shl', idx, ['i32.const', SHIFT[et]]]]
     const val = typed(['call', '$__typed_idx', ['local.get', `$${srcTmp}`], ['local.get', `$${i}`]], 'f64')
-    const store = et === 7 ? ['f64.store', addr, val]
-      : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
-      : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
+    let store
+    if (r) {
+      const { et } = r
+      const addr = ['i32.add', ['local.get', `$${dst}`], ['i32.shl', idx, ['i32.const', SHIFT[et]]]]
+      store = et === 7 ? ['f64.store', addr, val]
+        : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
+        : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
+    } else {
+      store = ['drop', ['call', '$__typed_set_idx', ['local.get', `$${dst}`], idx, val]]
+    }
     const id = ctx.func.uniq++
-
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${dstPtr}`, typedDataAddr(emit(arr), isView)],
+      ['local.set', `$${dst}`, r ? typedDataAddr(emit(arr), r.isView) : asF64(emit(arr))],
       ['local.set', `$${srcTmp}`, srcVal],
       ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcTmp}`]]],
       ['local.set', `$${off}`, offVal],

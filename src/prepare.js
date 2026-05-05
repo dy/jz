@@ -418,6 +418,8 @@ function prep(node) {
       if (PROHIBITED[node]) err(PROHIBITED[node])
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
+      // Block locals shadow module imports/globals, even when the local keeps the same name.
+      if (scopes.length && isDeclared(node)) return resolveScope(node)
       const resolved = ctx.scope.chain[node]
       if (resolved?.includes('.')) return resolved
       // Cross-module import: mangled name (e.g. __util_js$clone)
@@ -695,7 +697,7 @@ const handlers = {
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
       && hasFunc(lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
       const name = `${lhs[1]}$${lhs[2]}`
-      if (defFunc(name, prep(rhs))) return null  // extracted as function, no assignment needed
+      if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
     return ['=', prep(lhs), prep(rhs)]
   },
@@ -1096,8 +1098,10 @@ const handlers = {
         }
       }
 
-      const resolved = ctx.scope.chain[callee]
-      if (resolved?.includes('.')) callee = resolved
+      const local = scopes.length && isDeclared(callee)
+      const resolved = local ? null : ctx.scope.chain[callee]
+      if (local) callee = resolveScope(callee)
+      else if (resolved?.includes('.')) callee = resolved
       else if (resolved && hasFunc(resolved)) callee = resolved
       else if (resolved && !resolved.includes('.')) {
         if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
@@ -1130,6 +1134,16 @@ const handlers = {
       callee = prep(callee)
     }
 
+    // Drop trailing-comma sentinel inside a comma group: `f(a, b,)` parses as
+    // ['()', 'f', [',', a, b, null]] — without trimming, the trailing null
+    // becomes a [, 0] literal and inflates arguments.length.
+    if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') {
+      let end = args[0].length
+      while (end > 1 && args[0][end - 1] == null) end--
+      if (end < args[0].length) {
+        args[0] = end === 2 ? args[0][1] : args[0].slice(0, end)
+      }
+    }
     const preppedArgs = args.filter(a => a != null).map(prep)
     for (const a of preppedArgs) {
       if (typeof a === 'string' && hasFunc(a)) {

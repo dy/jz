@@ -322,13 +322,18 @@ export default (ctx) => {
                 (br $follow)))))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
-  // Alloc header(8) + data(cap*stride), store len+cap, return data offset (past header)
+  // Alloc header(16) + data(cap*stride). Layout: [propsPtr@-16(f64=0), len@-8, cap@-4],
+  // data starts at returned offset. propsPtr at -16 holds a per-object dynamic-property hash
+  // (NaN-boxed PTR.HASH) for ARRAY/HASH/MAP/SET; 0 means "no dyn props yet". This lets
+  // __dyn_get_t / __dyn_set sidestep the global __dyn_props lookup on the hot path.
+  // Read offsets relative to the returned data ptr stay unchanged (-8 len, -4 cap).
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)
     (local $ptr i32)
-    (local.set $ptr (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (local.get $stride)))))
-    (i32.store (local.get $ptr) (local.get $len))
-    (i32.store (i32.add (local.get $ptr) (i32.const 4)) (local.get $cap))
-    (i32.add (local.get $ptr) (i32.const 8)))`
+    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
+    (i64.store (local.get $ptr) (i64.const 0))
+    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
+    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
+    (i32.add (local.get $ptr) (i32.const 16)))`
 
   // Allocator + exports are deferred: only included when memory is actually needed.
   // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.

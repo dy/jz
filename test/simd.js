@@ -156,6 +156,21 @@ test('Float32Array - type-aware read/write', () => {
   ok(Math.abs(r - 4) < 0.01, `Expected ~4, got ${r}`)
 })
 
+test('TypedArray - polymorphic indexed write dispatches by runtime element type', () => {
+  is(run(`export let main = (wide) => {
+    let arr = wide ? new Uint32Array(1) : new Uint8Array(4)
+    arr[0] = wide ? 0xffffffff : -128
+    let bytes = new Uint8Array(arr.buffer)
+    return bytes[0] + bytes[1] + bytes[2] + bytes[3]
+  }`).main(1), 1020)
+  is(run(`export let main = (wide) => {
+    let arr = wide ? new Uint32Array(1) : new Uint8Array(4)
+    arr[0] = wide ? 0xffffffff : -128
+    let bytes = new Uint8Array(arr.buffer)
+    return bytes[0]
+  }`).main(0), 128)
+})
+
 // === TypedArray.from ===
 
 test('Uint8Array.from: basic', () => {

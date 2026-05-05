@@ -62,10 +62,6 @@ export default (ctx) => {
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
     }
 
-    // Propagate schema facts for global/imported references referenced in the
-    // closure body but not captured as locals. Without this, closures that
-    // reference module-level objects (e.g. `encode[t]` inside an object-literal
-    // method) lose schema resolution and fall back to dynamic property dispatch.
     const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
     if (schemaNames?.size) {
       const refs = []

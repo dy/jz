@@ -99,10 +99,13 @@ export const memory = (src) => {
 
   // JS-side bump allocator (heap ptr at byte 1020, same convention as WASM)
   const jsAlloc = (bytes) => {
-    const d = dv(), p = d.getInt32(1020, true)
+    let d = dv(), p = d.getInt32(1020, true)
     const aligned = (p + 7) & ~7  // 8-byte align
     const next = aligned + bytes
-    if (next > mem.buffer.byteLength) mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
+    if (next > mem.buffer.byteLength) {
+      mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
+      d = dv()  // buffer was detached by grow
+    }
     d.setInt32(1020, next, true)
     return aligned
   }
@@ -160,8 +163,11 @@ export const memory = (src) => {
   mem._extMap = extMap
 
   mem.Array = (data) => {
-    const n = data.length, off = hdr(n, n, n * 8), m = dv()
-    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, mem.wrapVal(data[i]), true)
+    const n = data.length, off = hdr(n, n, n * 8)
+    const wrapped = new Array(n)
+    for (let i = 0; i < n; i++) wrapped[i] = mem.wrapVal(data[i])
+    const m = dv()
+    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, wrapped[i], true)
     return ptr(1, 0, off)
   }
 

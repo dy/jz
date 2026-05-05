@@ -340,8 +340,8 @@ export default (ctx) => {
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: ['__str_eq'],
     __hash_set_local: ['__str_hash', '__str_eq'],
-    __ihash_get_local: ['__hash'],
-    __ihash_set_local: ['__hash', '__alloc_hdr', '__mkptr'],
+    __ihash_get_local: ['__map_hash'],
+    __ihash_set_local: ['__map_hash', '__alloc_hdr', '__mkptr'],
     __dyn_get_t: ['__ihash_get_local', '__str_hash', '__str_eq', '__is_nullish'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local'],
@@ -359,6 +359,16 @@ export default (ctx) => {
 
   if (!ctx.scope.globals.has('__dyn_props'))
     ctx.scope.globals.set('__dyn_props', '(global $__dyn_props (mut f64) (f64.const 0))')
+  // 1-slot inline cache for the global __dyn_props lookup. Hot path for
+  // metacircular workloads (watr WAT parser): ~96% of execution sits in
+  // __dyn_get_t / __ihash_get_local. Caches last-seen (off → propsPtr) at
+  // the top of __dyn_get_t; invalidated by __dyn_set when the same off's
+  // propsPtr is replaced (rehash on grow). Sentinel cache_off = -1 cannot
+  // collide with a real memory offset (always non-negative i32).
+  if (!ctx.scope.globals.has('__dyn_get_cache_off'))
+    ctx.scope.globals.set('__dyn_get_cache_off', '(global $__dyn_get_cache_off (mut i32) (i32.const -1))')
+  if (!ctx.scope.globals.has('__dyn_get_cache_props'))
+    ctx.scope.globals.set('__dyn_get_cache_props', '(global $__dyn_get_cache_props (mut f64) (f64.const 0))')
   // Schema name table for __dyn_get's OBJECT-schema fallback (polymorphic-receiver
   // `.prop` access). Same declaration as json.js — defined here too so collection
   // doesn't transitively require json. compile.js's schemaInit populates it when
@@ -558,8 +568,8 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64), value is per-object props hash.
   // Uses bit-hash + f64.eq — no string allocation for the unique integer key.
-  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
-  ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH, true)
+  ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
+  ctx.core.stdlib['__ihash_set_local'] = genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__map_hash', '(f64.eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH, true)
 
   // Inline __ptr_offset (forwarding-aware) and __hash_get_local body — dyn_get is the
   // single hottest stdlib symbol in watr self-host (~95M calls). props returned by
@@ -610,16 +620,34 @@ export default (ctx) => {
       (then
         (block $done
           (loop $follow
-            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
             (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
     (block $dynDone
-      (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
-      (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
-        (f64.convert_i32_s (local.get $off))))
-      (br_if $dynDone (call $__is_nullish (local.get $props)))
+      ;; Header types (TYPED/HASH/SET/MAP) carry propsPtr at off-16 directly,
+      ;; bypassing the global __dyn_props hash. Other types still go through it.
+      ;; ARRAY stays on the global map: array forwarding/legacy allocation paths
+      ;; make off-16 unsafe as a universal inline slot.
+      (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+            (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+                (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
+                        (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
+        (then
+          (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
+          (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props)))))
+        (else
+          (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
+          (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
+            (then (local.set $props (global.get $__dyn_get_cache_props)))
+            (else
+              (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
+                (f64.convert_i32_s (local.get $off))))
+              (br_if $dynDone (call $__is_nullish (local.get $props)))
+              (global.set $__dyn_get_cache_off (local.get $off))
+              (global.set $__dyn_get_cache_props (local.get $props))))))
       (local.set $bits (i64.reinterpret_f64 (local.get $props)))
       (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
@@ -694,23 +722,42 @@ export default (ctx) => {
   // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $oldProps f64) (local $objKey f64)
-    (local $bits i64) (local $off i32)
-    (local.set $root (global.get $__dyn_props))
-    (if (f64.eq (local.get $root) (f64.const 0))
-      (then (local.set $root (call $__hash_new))))
+    (local $bits i64) (local $off i32) (local $type i32)
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
-          (i32.const ${PTR.ARRAY}))
+    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
           (loop $follow
-            (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
             (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
+    ;; Header types carry propsPtr at off-16. Read/grow/write directly there;
+    ;; skip the global __dyn_props hash entirely.
+    ;; ARRAY stays on the global map because not every array allocation path has
+    ;; the extended header, and forwarding is already handled by __dyn_move.
+    (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+          (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+            (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
+                      (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
+      (then
+        (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+        (local.set $props
+          (if (result f64) (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
+            (then (call $__hash_new))
+            (else (local.get $oldProps))))
+        (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
+        (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
+          (then (f64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $props))))
+        (return (local.get $val))))
+    ;; Fallback: non-header types use the global __dyn_props.
+    (local.set $root (global.get $__dyn_props))
+    (if (f64.eq (local.get $root) (f64.const 0))
+      (then (local.set $root (call $__hash_new))))
     (local.set $objKey (f64.convert_i32_s (local.get $off)))
     (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
     (local.set $props
@@ -721,7 +768,9 @@ export default (ctx) => {
     (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
       (then
         (local.set $root (call $__ihash_set_local (local.get $root) (local.get $objKey) (local.get $props)))
-        (global.set $__dyn_props (local.get $root))))
+        (global.set $__dyn_props (local.get $root))
+        (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
+          (then (global.set $__dyn_get_cache_props (local.get $props))))))
     (local.get $val))`
 
   ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32)

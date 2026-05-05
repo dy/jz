@@ -135,3 +135,5 @@ dist
 /out.wat
 /output.txt
 __pycache__
+/test/test262/
+/bench/*.bak

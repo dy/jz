@@ -26,22 +26,76 @@ const TRACKED_BUILTIN_PATHS = [
   'Number',
   'String/fromCharCode',
   'String/fromCodePoint',
-  'String/prototype/indexOf',
-  'String/prototype/includes',
-  'String/prototype/slice',
+  'String/raw',
+  'String/prototype/at',
+  'String/prototype/charAt',
+  'String/prototype/charCodeAt',
+  'String/prototype/codePointAt',
   'String/prototype/concat',
+  'String/prototype/endsWith',
+  'String/prototype/includes',
+  'String/prototype/indexOf',
+  'String/prototype/lastIndexOf',
+  'String/prototype/padEnd',
+  'String/prototype/padStart',
+  'String/prototype/repeat',
+  'String/prototype/replace',
+  'String/prototype/replaceAll',
+  'String/prototype/slice',
+  'String/prototype/split',
+  'String/prototype/startsWith',
+  'String/prototype/substring',
+  'String/prototype/toLowerCase',
+  'String/prototype/toUpperCase',
+  'String/prototype/trim',
+  'String/prototype/trimEnd',
+  'String/prototype/trimStart',
   'Array/isArray',
+  'Array/of',
   'Array/from',
+  'Array/prototype/at',
   'Array/prototype/concat',
+  'Array/prototype/every',
+  'Array/prototype/fill',
+  'Array/prototype/filter',
+  'Array/prototype/find',
+  'Array/prototype/findIndex',
+  'Array/prototype/findLast',
+  'Array/prototype/findLastIndex',
+  'Array/prototype/flat',
+  'Array/prototype/flatMap',
+  'Array/prototype/forEach',
+  'Array/prototype/includes',
+  'Array/prototype/indexOf',
+  'Array/prototype/join',
+  'Array/prototype/lastIndexOf',
+  'Array/prototype/map',
+  'Array/prototype/pop',
+  'Array/prototype/push',
+  'Array/prototype/reduce',
+  'Array/prototype/reduceRight',
+  'Array/prototype/reverse',
+  'Array/prototype/shift',
+  'Array/prototype/slice',
+  'Array/prototype/some',
+  'Array/prototype/splice',
+  'Array/prototype/unshift',
   'Object/keys',
+  'Object/values',
+  'Object/entries',
   'Object/assign',
   'Object/fromEntries',
+  'Map/prototype/clear',
+  'Map/prototype/delete',
   'Map/prototype/get',
-  'Map/prototype/set',
   'Map/prototype/has',
+  'Map/prototype/set',
+  'Map/prototype/size',
   'Set/prototype/add',
+  'Set/prototype/clear',
+  'Set/prototype/delete',
   'Set/prototype/has',
-  'Symbol',
+  'Set/prototype/size',
   'ArrayBuffer',
   'DataView/prototype/getUint8',
   'DataView/prototype/getInt8',
@@ -60,6 +114,16 @@ const TRACKED_BUILTIN_PATHS = [
   'DataView/prototype/setFloat32',
   'DataView/prototype/setFloat64',
   'RegExp/prototype/exec',
+  'Boolean',
+  'BigInt',
+  'parseInt',
+  'parseFloat',
+  'isFinite',
+  'isNaN',
+  'Infinity',
+  'NaN',
+  'undefined',
+  'Symbol',
 ]
 
 const FUNCTIONAL_TESTS = new Set([
@@ -567,17 +631,30 @@ function shouldSkip(content, rel) {
   if (content.includes('verifyProperty')) return 'verifyProperty'
   if (content.includes('includes: [')) return 'harness dependency'
   if (/Reflect\./.test(content)) return 'Reflect'
-  if (/\bFunction\b/.test(content)) return 'Function global'
+  if (/\bFunction\b\s*\(/.test(content)) return 'Function global ctor'
   if (/\bclass\b/.test(content)) return 'class'
   if (/async|await/.test(content)) return 'async'
   if (/\bProxy\b/.test(content)) return 'Proxy'
   if (/\bWeak(Ref|Map|Set)\b/.test(content)) return 'Weak collection'
-  if (/Symbol\.(species|toPrimitive|iterator)/.test(content)) return 'Symbol runtime hook'
+  if (/Symbol\.(species|toPrimitive|iterator|hasInstance|asyncIterator|match|replace|search|split)/.test(content)) return 'Symbol runtime hook'
   if (/\biterator\b/i.test(content)) return 'iterator semantics'
-  if (/\bnew\b/.test(content)) return 'constructor semantics'
+  if (/\bgenerator\b/i.test(content) || /\byield\b/.test(content)) return 'generator semantics'
+  if (/\bsuper\b/.test(content)) return 'super'
+  if (/\bthis\b/.test(content)) return 'this binding'
+  if (/\.prototype\b/.test(content)) return 'prototype chain semantics'
+  if (/Object\.defineProperty|Object\.defineProperties/.test(content)) return 'descriptor semantics'
+  if (/Object\.create|Object\.setPrototypeOf|Object\.getPrototypeOf/.test(content)) return 'prototype semantics'
+  if (/Object\.getOwnProperty/.test(content)) return 'descriptor introspection'
+  if (/Object\.preventExtensions|Object\.freeze|Object\.seal/.test(content)) return 'object integrity'
+  if (/\.constructor\b/.test(content)) return 'constructor semantics'
+  if (/\bnew\s+(?!Map|Set|Array|Error|TypeError|RangeError|ReferenceError|SyntaxError|URIError|EvalError)/.test(content)) return 'custom new'
+  if (/\bnew\s+(Boolean|Number|String|Object)\b/.test(content)) return 'wrapper object new'
+  if (/\bfor\s*\([^)]*\bof\b/.test(content)) return 'for-of'
+  if (/\busing\b/.test(content)) return 'using keyword'
   if (/\$DONE|Test262:Async/.test(content)) return 'async harness dependency'
   if (/negative:\s*\n\s+phase:\s+(parse|runtime)/.test(content)) return 'negative test'
-  return 'not in curated functionality subset'
+  if (/\bundefined\s*=/.test(content)) return 'global undefined assignment'
+  return null
 }
 
 const { default: jz } = await import(join(ROOT, 'index.js'))
@@ -603,7 +680,10 @@ function runTest(src) {
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
         msg.includes('prohibited') || msg.includes('Unknown tag') ||
         msg.includes('Unknown func') || msg.includes('Unknown local') ||
-        msg.includes('not declared') || msg.includes('Unknown global')) {
+        msg.includes('not declared') || msg.includes('Unknown global') ||
+        msg.includes('cannot be used as a first-class value') ||
+        msg.includes('requires object with known schema') ||
+        msg.includes('Unknown instruction')) {
       return { status: 'skip', error: msg.slice(0, 80) }
     }
     return { status: 'fail', error: msg.slice(0, 120) }

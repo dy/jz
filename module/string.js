@@ -664,7 +664,7 @@ export default (ctx) => {
     (local.set $len (call $__len (local.get $arr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
-    (local.set $result (f64.load (local.get $off)))
+    (local.set $result (call $__to_str (f64.load (local.get $off))))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
@@ -863,7 +863,10 @@ export default (ctx) => {
     return typed(['call', '$__to_str', asF64(emit(value))], 'f64')
   }
 
-  ctx.core.emit['String.fromCharCode'] = (code) => mkPtrIR(PTR.SSO, 1, asI32(emit(code)))
+  ctx.core.emit['String.fromCharCode'] = (code) => {
+    if (code === undefined) return emit(['str', ''])
+    return mkPtrIR(PTR.SSO, 1, asI32(emit(code)))
+  }
 
   // String.fromCodePoint(cp) → UTF-8 encoded string
   ctx.core.stdlib['__fromCodePoint'] = `(func $__fromCodePoint (param $cp i32) (result f64)
@@ -893,12 +896,13 @@ export default (ctx) => {
         (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))))`
 
   ctx.core.emit['String.fromCodePoint'] = (code) => {
+    if (code === undefined) return emit(['str', ''])
     inc('__fromCodePoint')
     return typed(['call', '$__fromCodePoint', asI32(emit(code))], 'f64')
   }
 
   // .at(i) → charAt with negative index support
-  ctx.core.emit['.at'] = (str, idx) => {
+  ctx.core.emit['.string:at'] = (str, idx) => {
     inc('__char_at', '__str_byteLen')
     const t = tempI32('at'), s = temp('as')
     return typed(['block', ['result', 'f64'],

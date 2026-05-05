@@ -132,6 +132,20 @@ test('Number: Number(string) coerces', () => {
   is(run(`export let f = () => Number("7.5")`).f(), 7.5)
 })
 
+test('Number: parseFloat common decimal parity', () => {
+  is(run(`export let f = () =>
+    (parseFloat("6.28318530717958623") === 6.283185307179586) +
+    (parseFloat("0.1") === 0.1) +
+    (parseFloat("1e2") === 100) +
+    (parseFloat("1e-2") === 0.01) +
+    (parseFloat("1e") === 1) +
+    (parseFloat("1e-") === 1) +
+    (parseFloat(".5") === 0.5) +
+    (parseFloat("000.00000123456789012345") === 0.00000123456789012345) +
+    (parseFloat("123456789012345678901") === 123456789012345680000) +
+    isNaN(parseFloat("."))`).f(), 10)
+})
+
 test('Number: String(0)', () => {
   is(run(`export let f = () => String(0).length`).f(), 1)
 })

@@ -234,6 +234,7 @@ export function valTypeOf(expr) {
     // Literal forms: [] = undefined, [null, null] = null, [null, n] = number/bigint
     if (args.length === 0) return null              // undefined literal
     if (args[0] == null) return null                // null literal
+    if (typeof args[0] === 'symbol') return null    // prepared null sentinel
     return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
   }
 
@@ -341,16 +342,21 @@ export function valTypeOf(expr) {
         return null
       }
       if (method === 'push') return VAL.ARRAY
+      if ((method === 'shift' || method === 'pop') && typeof obj === 'string') {
+        const elemVt = ctx.func.repByLocal?.get(obj)?.arrayElemValType
+        if (elemVt) return elemVt
+      }
       if (method === 'add' || method === 'delete') return VAL.SET
       if (method === 'set') return VAL.MAP
       // String-returning methods
       if (['toUpperCase', 'toLowerCase', 'trim', 'trimStart', 'trimEnd',
-        'repeat', 'padStart', 'padEnd', 'replace', 'charAt', 'substring'].includes(method)) return VAL.STRING
+        'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring'].includes(method)) return VAL.STRING
+      if (method === 'split') return VAL.ARRAY
       // slice/concat preserve caller type (string.slice → string, array.slice → array)
       if (method === 'slice' || method === 'concat') {
         const objType = valTypeOf(obj)
         if (objType) return objType
-        return VAL.ARRAY // default to array when unknown
+        return null
       }
     }
   }
@@ -458,6 +464,15 @@ export function staticObjectProps(args) {
   return names.length ? { names, values } : null
 }
 
+function staticArrayElems(expr) {
+  if (!Array.isArray(expr)) return null
+  if (expr[0] === '[') return expr.slice(1)
+  if (expr[0] !== '[]' || expr.length >= 3) return null
+  const arg = expr[1]
+  if (arg == null) return []
+  return Array.isArray(arg) && arg[0] === ',' ? arg.slice(1) : [arg]
+}
+
 /** Schema-id for an object literal expression. Returns null on dynamic keys, spread, shorthand. */
 function objLiteralSchemaId(expr) {
   if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
@@ -533,6 +548,29 @@ export function ctorFromElemAux(aux) {
   const name = _ELEM_NAMES[aux & 7]
   if (!name) return null
   return isView ? `new.${name}.view` : `new.${name}`
+}
+
+/** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
+ *  different typed-array ctors — caller should drop any cached entry rather
+ *  than leave a stale ctor (which would lock the wrong store width). */
+export const MIXED_CTORS = Symbol('MIXED_CTORS')
+
+/** A `?:`/`&&`/`||` expression — value depends on a condition, so its ctor
+ *  must be derived by walking branches (handled by `ternaryCtorOfRhs`). */
+const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&&' || e[0] === '||')
+
+/** Walk a `?:`/`&&`/`||` expression and return:
+ *  - a single ctor string when every branch resolves to the same ctor,
+ *  - MIXED_CTORS when branches resolve to different ctors,
+ *  - null when no branch resolves (caller's behavior unchanged). */
+export function ternaryCtorOfRhs(rhs) {
+  if (!Array.isArray(rhs)) return null
+  const op = rhs[0]
+  const lo = op === '?:' ? 2 : (op === '&&' || op === '||') ? 1 : 0
+  if (!lo) return null
+  const a = ternaryCtorOfRhs(rhs[lo]) ?? typedElemCtor(rhs[lo])
+  const b = ternaryCtorOfRhs(rhs[lo + 1]) ?? typedElemCtor(rhs[lo + 1])
+  return a && b ? (a === b ? a : MIXED_CTORS) : (a || b || null)
 }
 
 // === Cross-call argument inference helpers (used by narrowSignatures fixpoint) ===
@@ -726,16 +764,33 @@ export function analyzeBody(body) {
     return valTypeOf(expr)
   }
 
+  const typedPoison = new Set()
+  const invalidateTyped = (name) => {
+    typedPoison.add(name)
+    typedElems.delete(name)
+  }
   const trackTyped = (name, rhs) => {
+    if (typedPoison.has(name)) return
+    const setOrInvalidate = (c) => {
+      if (c === MIXED_CTORS) return invalidateTyped(name)
+      const prev = typedElems.get(name)
+      if (prev && prev !== c) invalidateTyped(name)
+      else typedElems.set(name, c)
+    }
     const ctor = typedElemCtor(rhs)
-    if (ctor) { typedElems.set(name, ctor); return }
+    if (ctor) return setOrInvalidate(ctor)
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
       const f = ctx.func.map?.get(rhs[1])
       if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
         const c = ctorFromElemAux(f.sig.ptrAux)
-        if (c) typedElems.set(name, c)
+        if (c) setOrInvalidate(c)
       }
+      return
     }
+    // Heterogeneous ternary: ctors that don't unify must invalidate so a sibling
+    // decl (jz hoists `let` to function scope) can't lock in the wrong width.
+    const tc = ternaryCtorOfRhs(rhs)
+    if (tc) setOrInvalidate(tc)
   }
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
@@ -756,14 +811,17 @@ export function analyzeBody(body) {
     if (doSchemas) {
       const sid = exprSchemaId(rhs, localSchemaMap)
       if (sid != null) localSchemaMap.set(name, sid)
-      if (Array.isArray(rhs) && rhs[0] === '[]') {
-        const elems = rhs.slice(1).filter(e => e != null)
-        if (elems.length) {
-          let common = exprSchemaId(elems[0], localSchemaMap)
-          for (let k = 1; k < elems.length && common != null; k++) {
-            if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
+      {
+        const rawElems = staticArrayElems(rhs)
+        if (rawElems) {
+          const elems = rawElems.filter(e => e != null)
+          if (elems.length && elems.length === rawElems.length) {
+            let common = exprSchemaId(elems[0], localSchemaMap)
+            for (let k = 1; k < elems.length && common != null; k++) {
+              if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
+            }
+            if (common != null) observeArrSchema(name, common)
           }
-          if (common != null) observeArrSchema(name, common)
         }
       }
       if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
@@ -781,14 +839,17 @@ export function analyzeBody(body) {
     }
 
     // arr-elem val type (arrElemValTypes slice) — array-literal init + call return + alias + .map/.filter/.slice/.concat chain
-    if (Array.isArray(rhs) && rhs[0] === '[]') {
-      const elems = rhs.slice(1).filter(e => e != null)
-      if (elems.length) {
-        let common = exprElemSourceVal(elems[0])
-        for (let k = 1; k < elems.length && common != null; k++) {
-          if (exprElemSourceVal(elems[k]) !== common) common = null
+    {
+      const rawElems = staticArrayElems(rhs)
+      if (rawElems) {
+        const elems = rawElems.filter(e => e != null)
+        if (elems.length && elems.length === rawElems.length) {
+          let common = exprElemSourceVal(elems[0])
+          for (let k = 1; k < elems.length && common != null; k++) {
+            if (exprElemSourceVal(elems[k]) !== common) common = null
+          }
+          if (common != null) observeArrValType(name, common)
         }
-        if (common != null) observeArrValType(name, common)
       }
     }
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
@@ -806,6 +867,8 @@ export function analyzeBody(body) {
       if (method === 'filter' || method === 'slice' || method === 'concat') {
         const v = elemValOf(recvName)
         if (v) observeArrValType(name, v)
+      } else if (method === 'split' && valTypeOf(recvName) === VAL.STRING) {
+        observeArrValType(name, VAL.STRING)
       } else if (method === 'map') {
         const arrowFn = rhs[2]
         const recvVt = elemValOf(recvName)
@@ -831,11 +894,16 @@ export function analyzeBody(body) {
         }
       }
     }
+    if (Array.isArray(rhs) && rhs[0] === '()' &&
+        Array.isArray(rhs[1]) && rhs[1][0] === '.' && rhs[1][2] === 'split' &&
+        valTypeOf(rhs[1][1]) === VAL.STRING) {
+      observeArrValType(name, VAL.STRING)
+    }
   }
 
   // arrElem invalidation rule — fires on `=` reassign of tracked name to non-array
   const isArrayProducingRhs = (rhs) =>
-    Array.isArray(rhs) && (rhs[0] === '[]' ||
+    Array.isArray(rhs) && (staticArrayElems(rhs) != null ||
       (rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
        (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))
 
@@ -980,20 +1048,42 @@ export function analyzeValTypes(body) {
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
+  // Names whose decls disagree on element ctor (e.g. two `let arr = ...` decls
+  // in different scopes — jz hoists `let` to function scope so they share a name).
+  // Once invalidated, no later setter can re-establish a definite ctor.
+  const typedPoison = new Set()
+  const invalidate = (name) => {
+    typedPoison.add(name)
+    ctx.types.typedElem?.delete(name)
+  }
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
+    if (typedPoison.has(name)) return
+    const setOrInvalidate = (c) => {
+      if (c === MIXED_CTORS) return invalidate(name)
+      const prev = ctx.types.typedElem.get(name)
+      if (prev && prev !== c) invalidate(name)
+      else ctx.types.typedElem.set(name, c)
+    }
     const ctor = typedElemCtor(rhs)
-    if (ctor) { ctx.types.typedElem.set(name, ctor); return }
+    if (ctor) return setOrInvalidate(ctor)
     // TYPED-narrowed call result carries elem aux on f.sig.ptrAux — reverse-map it
     // back to a canonical ctor string so analyzePtrUnboxable's typedElemAux lookup
     // (compile.js) restores the same aux on the unboxed local's rep.
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
       const f = ctx.func.map?.get(rhs[1])
       if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
-        const ctor = ctorFromElemAux(f.sig.ptrAux)
-        if (ctor) ctx.types.typedElem.set(name, ctor)
+        const c = ctorFromElemAux(f.sig.ptrAux)
+        if (c) setOrInvalidate(c)
       }
+      return
     }
+    // Heterogeneous ternary (e.g. `n === 16 ? new Uint8Array(16) : new Uint16Array(8)`):
+    // typedElemCtor returns null for `?:`. When branches don't unify to the same ctor,
+    // poison the name so a later sibling-scope decl (jz hoists `let` to function scope)
+    // can't lock in the wrong store width.
+    const tc = ternaryCtorOfRhs(rhs)
+    if (tc) setOrInvalidate(tc)
   }
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -1019,7 +1109,10 @@ export function analyzeValTypes(body) {
         const vt = valTypeOf(a[2])
         setVal(a[1], vt)
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
-        if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(a[1], a[2])
+        // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
+        // returning null but may still need ctor unification (or poisoning when
+        // branches disagree, since jz hoists `let` to function scope).
+        if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(a[2])) trackTyped(a[1], a[2])
         propagateTyped(a[1], a[2])
         // JSON-shape propagation. When the RHS resolves to a known JSON shape
         // (root: `JSON.parse(literal)`; nested: `o.meta`, `items[j]` from a known
@@ -1059,7 +1152,7 @@ export function analyzeValTypes(body) {
       const vt = valTypeOf(args[1])
       setVal(args[0], vt)
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
-      if (vt === VAL.TYPED || vt === VAL.BUFFER) trackTyped(args[0], args[1])
+      if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
     }
     // Track property assignments for auto-boxing: x.prop = val

@@ -191,15 +191,21 @@ function analyzeFuncForEmit(func, programFacts) {
     analyzeIntCertain(body)
     analyzeBoxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
+    // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,
+    // the use site can't pick the right i32.store{8,16}/i32.store width and
+    // the rebox path can't reconstruct the NaN-box. Heterogeneous decls (two
+    // `let arr = ...` with different ctors, or a multi-ctor ternary) leave
+    // typedElem unset; skip unbox so reads/writes go through `__typed_set_idx`.
     const unbox = analyzePtrUnboxable(body, ctx.func.locals, ctx.func.boxed)
     if (unbox.size > 0) {
       for (const [n, kind] of unbox) {
-        ctx.func.locals.set(n, 'i32')
         const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
           const aux = typedElemAux(ctx.types.typedElem?.get(n))
-          if (aux != null) fields.ptrAux = aux
+          if (aux == null) continue
+          fields.ptrAux = aux
         }
+        ctx.func.locals.set(n, 'i32')
         updateRep(n, fields)
       }
     }
@@ -471,12 +477,13 @@ function emitClosureBody(cb) {
     const unbox = analyzePtrUnboxable(cb.body, ctx.func.locals, ctx.func.boxed)
     for (const [name, kind] of unbox) {
       if (cb.params.includes(name) || cb.captures.includes(name)) continue
-      ctx.func.locals.set(name, 'i32')
       const fields = { ptrKind: kind }
       if (kind === VAL.TYPED) {
         const aux = typedElemAux(ctx.types.typedElem?.get(name))
-        if (aux != null) fields.ptrAux = aux
+        if (aux == null) continue
+        fields.ptrAux = aux
       }
+      ctx.func.locals.set(name, 'i32')
       updateRep(name, fields)
     }
     bodyIR = emitBody(cb.body)

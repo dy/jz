@@ -158,7 +158,7 @@ const compileJzHost = c => {
     ...(c.id === 'watr' ? {
       jzify: true,
       memoryPages: 4096,
-      optimize: { watr: false, smallConstForUnroll: false },
+      optimize: { smallConstForUnroll: false },
     } : {}),
     runtimeExports: false,
   })
