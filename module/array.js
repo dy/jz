@@ -187,6 +187,34 @@ const maybeDynMoveIR = () => needsArrayDynMove()
   ? '(call $__dyn_move (local.get $off) (local.get $newOff))'
   : ''
 
+// Per-object propsPtr lives in the 16-byte header at $off-16. On grow we copy it
+// from old to new header (still HASH-tagged → unshifted ARRAY case). On shift we
+// migrate it to the global __dyn_props because the forwarding writes overwrite
+// the destination's $newOff-16 slot. The HASH-tag check rejects 0 (no props) and
+// forwarding garbage from a prior shift, so chained shift→grow is safe — the
+// global hash takes over and __dyn_move keeps it in sync.
+const headerPropsCopyIR = () => needsArrayDynMove() ? `
+    (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+    (if (i32.eq
+          (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+          (i32.const ${PTR.HASH}))
+      (then (f64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $oldProps))))` : ''
+
+const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
+    (if (i32.ge_u (local.get $off) (i32.const 16))
+      (then
+        (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+        (if (i32.eq
+              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+              (i32.const ${PTR.HASH}))
+          (then
+            (local.set $root (global.get $__dyn_props))
+            (if (f64.eq (local.get $root) (f64.const 0))
+              (then (local.set $root (call $__hash_new))))
+            (local.set $root (call $__ihash_set_local (local.get $root)
+              (f64.convert_i32_s (local.get $newOff)) (local.get $oldProps)))
+            (global.set $__dyn_props (local.get $root)))))) ` : ''
+
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __arr_idx: [],
@@ -194,7 +222,7 @@ export default (ctx) => {
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
       '__ptr_offset',
-      ...(needsArrayDynMove() ? ['__dyn_move'] : []),
+      ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', '__set_len'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
@@ -371,6 +399,7 @@ export default (ctx) => {
   // seeing the current backing store after growth.
   ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
     (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+    ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
@@ -392,6 +421,7 @@ export default (ctx) => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
@@ -399,6 +429,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr f64) (param $minCap i32) (result f64)
     (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
+    ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
@@ -410,6 +441,7 @@ export default (ctx) => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
+    ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
@@ -770,6 +802,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr f64) (result f64)
     (local $bits i64) (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
+    ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
     (local.set $bits (i64.reinterpret_f64 (local.get $arr)))
     (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
@@ -783,6 +816,7 @@ export default (ctx) => {
             (local.set $val (f64.load (local.get $off)))
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
             (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
+            ${headerPropsToGlobalIR()}
             (i32.store (local.get $off) (i32.sub (local.get $len) (i32.const 1)))
             (i32.store (i32.add (local.get $off) (i32.const 4))
               (select (i32.sub (local.get $cap) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $cap) (i32.const 0))))

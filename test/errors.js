@@ -286,6 +286,12 @@ test('error: unknown op produces readable message', () => {
   ok(error, 'should throw')
 })
 
+test('error: invalid host option', () => {
+  let error
+  try { compile('export let f = () => 1', { host: 'edge' }) } catch (e) { error = e }
+  ok(error && error.message.includes('Invalid host'), `expected Invalid host, got "${error?.message}"`)
+})
+
 test('error: circular import detected', () => {
   let error
   try {

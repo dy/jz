@@ -1,10 +1,19 @@
 /**
  * Timer module — setTimeout/setInterval/clearTimeout/clearInterval.
  *
- * Pure-WASM timer queue using WASI clock_time_get for deadlines.
- * Runs inline after __start — no JS host, no Rust runner needed.
+ * Two host-mode lowerings:
  *
- * Timer queue: heap-allocated array of entries in linear memory.
+ *   `host: 'js'` (default): emit `env.setTimeout(cb: f64, delay: f64, repeat: i32) -> f64`
+ *     and `env.clearTimeout(id: f64) -> f64`. The JS host (src/host.js) drives both
+ *     via global setTimeout/setInterval and calls back into wasm through the
+ *     exported `__invoke_closure(clos: f64) -> f64` trampoline. No queue, no
+ *     polling — the host's event loop does the scheduling.
+ *
+ *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
+ *     deadlines. Runs inline after __start (or via __timer_loop on wasmtime/
+ *     wasmer). No JS host needed.
+ *
+ * WASI queue layout: heap-allocated array of entries in linear memory.
  *   Each entry (40 bytes):
  *     [0]  id (i32)           — unique timer ID
  *     [4]  pad (i32)
@@ -24,7 +33,25 @@ import { inc, PTR } from '../src/ctx.js'
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
 
-export default (ctx) => {
+const addImportOnce = (ctx, mod, name, fn) => {
+  if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
+  ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
+}
+
+// Shared "fire a NaN-boxed closure with 0 args" trampoline. Funcref index lives
+// in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
+// Closure is also passed as $__env so captures resolve via env-load.
+// `exported` adds (export "__invoke_closure") so the JS host can call it.
+const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos f64) (result f64)
+  (call_indirect (type \$ftN)
+    (local.get $clos)
+    (i32.const 0)
+    ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
+    (i32.wrap_i64 (i64.and
+      (i64.shr_u (i64.reinterpret_f64 (local.get $clos)) (i64.const 32))
+      (i64.const 0x7FFF)))))`
+
+const setupWasi = (ctx) => {
   // Always include init + tick + loop when timer module loads (structural, not per-emitter)
   inc('__timer_init', '__timer_tick', '__timer_loop')
 
@@ -32,7 +59,7 @@ export default (ctx) => {
     __timer_init: ['__alloc'],
     __timer_add: ['__time_ns'],
     __timer_cancel: [],
-    __timer_dispatch: [],
+    __timer_dispatch: ['__invoke_closure'],
     __timer_tick: ['__time_ns', '__timer_dispatch'],
     __timer_loop: ['__time_ns', '__timer_dispatch'],
   })
@@ -41,12 +68,8 @@ export default (ctx) => {
   // call_indirect always matches the $ftN type (env, argc, a0..a7)
   ctx.closure.floor = MAX_CLOSURE_ARITY
 
-  // Import WASI clock_time_get if not already imported (console.js may have done it)
-  if (!ctx.module.imports.some(i => i[1] === '"wasi_snapshot_preview1"' && i[2] === '"clock_time_get"')) {
-    ctx.module.imports.push(
-      ['import', '"wasi_snapshot_preview1"', '"clock_time_get"',
-        ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']]])
-  }
+  addImportOnce(ctx, 'wasi_snapshot_preview1', 'clock_time_get',
+    ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
 
   // __time_ns() → i64 — current monotonic nanoseconds
   // Reuses address 0-7 for the i64 output (same as __time_ms in console.js)
@@ -173,15 +196,8 @@ export default (ctx) => {
                   ;; Timeout: mark dead
                   (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))) (i32.const 0))
                   (global.set $__timer_count (i32.sub (global.get $__timer_count) (i32.const 1)))))
-              ;; Invoke closure via call_indirect on $ftN
-              ;; (env f64, argc i32, a0..a7 f64) → f64
-              (drop (call_indirect (type \$ftN)
-                (local.get $clos)                        ;; env = closure pointer itself
-                (i32.const 0)                             ;; argc = 0
-                ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n                ')}
-                (i32.wrap_i64 (i64.and
-                  (i64.shr_u (i64.reinterpret_f64 (local.get $clos)) (i64.const 32))
-                  (i64.const 0x7FFF)))))
+              ;; Fire closure with 0 args (shared trampoline)
+              (drop (call $__invoke_closure (local.get $clos)))
               (local.set $dispatched (i32.add (local.get $dispatched) (i32.const 1)))))))
       (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
       (br $scan)))
@@ -212,6 +228,8 @@ export default (ctx) => {
       (drop (call $__timer_dispatch (local.get $now)))
       ;; Loop
       (br $poll))))`
+
+  ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(false)
 
   // Register globals for timer state
   // $__timer_queue: i32 — base address of timer array
@@ -250,4 +268,38 @@ export default (ctx) => {
     inc('__timer_cancel')
     return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
   }
+}
+
+const setupJsHost = (ctx) => {
+  // Timer callbacks are invoked through __invoke_closure, which always pads to
+  // MAX_CLOSURE_ARITY. Set the ABI floor before plan() resolves $ftN width.
+  ctx.closure.floor = MAX_CLOSURE_ARITY
+
+  const needSetTimeout = () => addImportOnce(ctx, 'env', 'setTimeout',
+    ['func', '$__set_timeout', ['param', 'f64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
+  const needClearTimeout = () => addImportOnce(ctx, 'env', 'clearTimeout',
+    ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
+
+  ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(true)
+
+  const emitSet = (closureExpr, delayExpr, repeat) => {
+    needSetTimeout()
+    inc('__invoke_closure')
+    return typed(['call', '$__set_timeout',
+      asF64(emit(closureExpr)), asF64(emit(delayExpr)), ['i32.const', repeat]], 'f64')
+  }
+  ctx.core.emit['setTimeout'] = (c, d) => emitSet(c, d, 0)
+  ctx.core.emit['setInterval'] = (c, d) => emitSet(c, d, 1)
+
+  const emitClear = (idExpr) => {
+    needClearTimeout()
+    return typed(['call', '$__clear_timeout', asF64(emit(idExpr))], 'f64')
+  }
+  ctx.core.emit['clearTimeout'] = emitClear
+  ctx.core.emit['clearInterval'] = emitClear
+}
+
+export default (ctx) => {
+  if (ctx.transform.host === 'wasi') setupWasi(ctx)
+  else setupJsHost(ctx)
 }

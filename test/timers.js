@@ -11,7 +11,7 @@ const skip = !hasCmd('wasmtime') && !hasCmd('wasmer')
 function nativeRun(code, runtime = 'wasmtime') {
   if (!hasCmd(runtime)) runtime = runtime === 'wasmtime' ? 'wasmer' : 'wasmtime'
   if (!hasCmd(runtime)) throw new Error('No native runtime (wasmtime/wasmer) found')
-  const wasm = compile(code, { nativeTimers: true })
+  const wasm = compile(code, { nativeTimers: true, host: 'wasi' })
   const path = '/tmp/jz_timer_test.wasm'
   writeFileSync(path, wasm)
   return execSync(`${runtime} ${path} 2>/dev/null`, { encoding: 'utf-8' })

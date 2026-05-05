@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -21,10 +21,36 @@ test('console.log: multiple args', () => {
   is(run(`export let f = () => { console.log("x", 1, "y"); return 1 }`).f(), 1)
 })
 
+test('host:js console/time imports are demand-driven', () => {
+  const consoleImports = WebAssembly.Module.imports(new WebAssembly.Module(
+    compile(`export let f = () => { console.log("x"); return 1 }`)
+  )).map(i => i.module + '.' + i.name)
+  ok(consoleImports.includes('env.print'), `expected env.print: ${consoleImports}`)
+  ok(!consoleImports.includes('env.now'), `console.log should not import env.now: ${consoleImports}`)
+
+  const timeImports = WebAssembly.Module.imports(new WebAssembly.Module(
+    compile(`export let f = () => Date.now()`)
+  )).map(i => i.module + '.' + i.name)
+  ok(timeImports.includes('env.now'), `expected env.now: ${timeImports}`)
+  ok(!timeImports.includes('env.print'), `Date.now should not import env.print: ${timeImports}`)
+})
+
+test('host:js top-level console.log decodes after memory attaches', () => {
+  const originalLog = console.log
+  const logged = []
+  try {
+    console.log = msg => logged.push(msg)
+    jz(`console.log("boot", undefined, null); export let f = () => 1`)
+  } finally {
+    console.log = originalLog
+  }
+  is(logged.join('\n'), 'boot undefined null')
+})
+
 test('WASI polyfill: custom write receives output', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push([fd, text]) })
-  const wasm = compile(`export let f = () => { console.log("custom"); console.warn("err"); return 1 }`)
+  const wasm = compile(`export let f = () => { console.log("custom"); console.warn("err"); return 1 }`, { host: 'wasi' })
   const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
   imports._setMemory(inst.exports.memory)
   is(inst.exports.f(), 1)
@@ -45,7 +71,7 @@ function runWithCapturedFallback(processValue, source) {
     console.log = msg => logged.push(msg)
     console.warn = msg => warned.push(msg)
     const imports = wasi()
-    const wasm = compile(source)
+    const wasm = compile(source, { host: 'wasi' })
     const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
     imports._setMemory(inst.exports.memory)
     result = inst.exports.f()
@@ -105,7 +131,7 @@ function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); retu
 
 test('WASI: wasmtime native', () => {
   if (!hasCmd('wasmtime')) return
-  const wasm = compile(`export let _start = () => { console.log("jz-wasmtime"); return 0 }`)
+  const wasm = compile(`export let _start = () => { console.log("jz-wasmtime"); return 0 }`, { host: 'wasi' })
   writeFileSync('/tmp/jz_wasi_test.wasm', wasm)
   const out = execSync('wasmtime /tmp/jz_wasi_test.wasm 2>/dev/null', { encoding: 'utf-8' })
   ok(out.includes('jz-wasmtime'))
@@ -126,7 +152,7 @@ test('performance.now: monotonic', () => {
 
 test('WASI: wasmer native', () => {
   if (!hasCmd('wasmer')) return
-  const wasm = compile(`export let _start = () => { console.log("jz-wasmer"); return 0 }`)
+  const wasm = compile(`export let _start = () => { console.log("jz-wasmer"); return 0 }`, { host: 'wasi' })
   writeFileSync('/tmp/jz_wasi_test.wasm', wasm)
   const out = execSync('wasmer /tmp/jz_wasi_test.wasm 2>/dev/null', { encoding: 'utf-8' })
   ok(out.includes('jz-wasmer'))

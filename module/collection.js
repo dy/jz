@@ -417,7 +417,11 @@ export default (ctx) => {
     (local $bits i64) (local $t i32) (local $h i32)
     (local.set $bits (i64.reinterpret_f64 (local.get $v)))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO})))
+    ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
+    ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
+    ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
+    (if (i32.and (f64.ne (local.get $v) (local.get $v))
+          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (call $__str_hash (local.get $v)))))
     (if (f64.eq (local.get $v) (f64.const 0)) (then (return (i32.const 2))))
     (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $v) (local.get $v)))
@@ -626,28 +630,49 @@ export default (ctx) => {
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
     (block $dynDone
-      ;; Header types (TYPED/HASH/SET/MAP) carry propsPtr at off-16 directly,
-      ;; bypassing the global __dyn_props hash. Other types still go through it.
-      ;; ARRAY stays on the global map: array forwarding/legacy allocation paths
-      ;; make off-16 unsafe as a universal inline slot.
-      (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
-            (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
-              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
-                (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
-                        (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
-        (then
-          (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
-          (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props)))))
-        (else
-          (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
-          (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
-            (then (local.set $props (global.get $__dyn_get_cache_props)))
-            (else
-              (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
-                (f64.convert_i32_s (local.get $off))))
-              (br_if $dynDone (call $__is_nullish (local.get $props)))
-              (global.set $__dyn_get_cache_off (local.get $off))
-              (global.set $__dyn_get_cache_props (local.get $props))))))
+      (block $haveProps
+        ;; ARRAY: header propsPtr at $off-16 is valid only when shift hasn't
+        ;; rewritten the slot with forwarding bytes. Validate via HASH tag —
+        ;; rejects 0 (no props) and forwarding garbage. Misses fall through to
+        ;; the global hash, where __arr_shift migrates props on first .shift().
+        (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+                     (i32.ge_u (local.get $off) (i32.const 16)))
+          (then
+            (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
+            (br_if $haveProps (i32.eq
+              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $props)) (i64.const 47)) (i64.const 0xF)))
+              (i32.const ${PTR.HASH})))
+            (local.set $props (f64.const 0))))
+        ;; Other header types (TYPED/HASH/SET/MAP) carry propsPtr at off-16
+        ;; directly, bypassing the global __dyn_props hash.
+        (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+                (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+                  (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
+                          (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
+          (then
+            (local.set $props (f64.load (i32.sub (local.get $off) (i32.const 16))))
+            (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props))))
+            (br $haveProps)))
+        ;; Fall back to the global __dyn_props hash (OBJECT, CLOSURE, shifted ARRAY).
+        ;; 1-slot cache covers BOTH hits (props=HASH) and misses (props=0 sentinel).
+        ;; Caching misses matters when the global hash is non-empty but the current
+        ;; off has no entry — without it every header-less type pays a probe.
+        (br_if $dynDone (f64.eq (global.get $__dyn_props) (f64.const 0)))
+        (if (i32.eq (local.get $off) (global.get $__dyn_get_cache_off))
+          (then
+            (local.set $props (global.get $__dyn_get_cache_props))
+            (br_if $dynDone (i64.eqz (i64.reinterpret_f64 (local.get $props)))))
+          (else
+            (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
+              (f64.convert_i32_s (local.get $off))))
+            (global.set $__dyn_get_cache_off (local.get $off))
+            (if (call $__is_nullish (local.get $props))
+              (then
+                (global.set $__dyn_get_cache_props (f64.const 0))
+                (br $dynDone))
+              (else
+                (global.set $__dyn_get_cache_props (local.get $props)))))))
       (local.set $bits (i64.reinterpret_f64 (local.get $props)))
       (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
@@ -736,9 +761,29 @@ export default (ctx) => {
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
     ;; Header types carry propsPtr at off-16. Read/grow/write directly there;
-    ;; skip the global __dyn_props hash entirely.
-    ;; ARRAY stays on the global map because not every array allocation path has
-    ;; the extended header, and forwarding is already handled by __dyn_move.
+    ;; skip the global __dyn_props hash entirely. ARRAY also uses this slot, but
+    ;; only when shift hasn't overwritten it with forwarding bytes (HASH-tagged
+    ;; check rejects 0 + forwarding garbage). Shifted ARRAYs fall back to the
+    ;; global __dyn_props where __arr_shift has migrated their props.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+      (then
+        (if (i32.ge_u (local.get $off) (i32.const 16))
+          (then
+            (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
+            (if (i32.or
+                  (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
+                  (i32.eq
+                    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+                    (i32.const ${PTR.HASH})))
+              (then
+                (local.set $props
+                  (if (result f64) (i64.eqz (i64.reinterpret_f64 (local.get $oldProps)))
+                    (then (call $__hash_new))
+                    (else (local.get $oldProps))))
+                (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
+                (if (i64.ne (i64.reinterpret_f64 (local.get $props)) (i64.reinterpret_f64 (local.get $oldProps)))
+                  (then (f64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $props))))
+                (return (local.get $val))))))))
     (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
           (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))

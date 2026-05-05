@@ -5,6 +5,9 @@
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
+* [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
+* [ ] Options breakdown in readme
+
 
 ### Build & tooling
 
@@ -18,10 +21,16 @@
 
 ### JZ-side prep
 
-* [ ] Add host-import mode for runtime services used by JS hosts:
-  `console.log` / `Date.now` / `performance.now` can lower to `env.printLine`
-  / `env.now` instead of WASI `fd_write` / `clock_time_get` when requested.
-  Keep WASI as the standalone `.wasm` / CLI default.
+* [x] Host-import mode — `compile({ host: 'js' | 'wasi' })`.
+  - `'js'` (default): `console.log` → `env.print(val,fd,sep)`,
+    `Date.now`/`performance.now` → `env.now(clock)`. Host stringifies, so jz
+    drops `__ftoa`/`__write_*`/`__to_str`. `jz()` auto-wires both.
+  - `'wasi'`: `fd_write` + `clock_time_get`. Errors on `env.__ext_*`.
+* [x] `setTimeout` / `setInterval` host-driven — `host: 'js'` lowers to
+  `env.setTimeout(cb, delay, repeat) -> f64` + `env.clearTimeout(id) -> f64`
+  and exports `__invoke_closure(clos) -> f64` so the JS host fires scheduled
+  callbacks. Saves the entire `__timer_*` queue (~650B at small sizes).
+  `host: 'wasi'` keeps the pure-WASM queue (no JS host to schedule).
 
 
 ## Phase 14: Internal Parser (Future)

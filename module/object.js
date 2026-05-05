@@ -217,15 +217,25 @@ export default (ctx) => {
     if (protoType === VAL.ARRAY) {
       // Clone array data + link named-prop sidecar so for-in/bracket-name lookups
       // keep working after Object.create (watr's ctx.local = Object.create(param) pattern).
+      // Header propsPtr lives at $off-16 (current ARRAY layout). We alias src's hash
+      // by copying the slot; __dyn_move covers the shifted-array case where props
+      // were migrated to the global __dyn_props.
       inc('__arr_from', '__dyn_move', '__ptr_offset')
       const src = temp('ocs')
       const dst = temp('ocd')
+      const srcOff = tempI32('ocso')
+      const dstOff = tempI32('ocdo')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${src}`, asF64(emit(proto))],
         ['local.set', `$${dst}`, ['call', '$__arr_from', ['local.get', `$${src}`]]],
+        ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['local.get', `$${src}`]]],
+        ['local.set', `$${dstOff}`, ['call', '$__ptr_offset', ['local.get', `$${dst}`]]],
+        ['f64.store',
+          ['i32.sub', ['local.get', `$${dstOff}`], ['i32.const', 16]],
+          ['f64.load', ['i32.sub', ['local.get', `$${srcOff}`], ['i32.const', 16]]]],
         ['call', '$__dyn_move',
-          ['call', '$__ptr_offset', ['local.get', `$${src}`]],
-          ['call', '$__ptr_offset', ['local.get', `$${dst}`]]],
+          ['local.get', `$${srcOff}`],
+          ['local.get', `$${dstOff}`]],
         ['local.get', `$${dst}`]], 'f64')
     }
     const schema = resolveSchema(proto)
@@ -234,15 +244,22 @@ export default (ctx) => {
         const value = temp('ocr')
         inc('__arr_from', '__dyn_move', '__ptr_offset')
         const dst2 = temp('ocd')
+        const srcOff2 = tempI32('ocso')
+        const dstOff2 = tempI32('ocdo')
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${value}`]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
               ['local.set', `$${dst2}`, ['call', '$__arr_from', ['local.get', `$${value}`]]],
+              ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['local.get', `$${value}`]]],
+              ['local.set', `$${dstOff2}`, ['call', '$__ptr_offset', ['local.get', `$${dst2}`]]],
+              ['f64.store',
+                ['i32.sub', ['local.get', `$${dstOff2}`], ['i32.const', 16]],
+                ['f64.load', ['i32.sub', ['local.get', `$${srcOff2}`], ['i32.const', 16]]]],
               ['call', '$__dyn_move',
-                ['call', '$__ptr_offset', ['local.get', `$${value}`]],
-                ['call', '$__ptr_offset', ['local.get', `$${dst2}`]]],
+                ['local.get', `$${srcOff2}`],
+                ['local.get', `$${dstOff2}`]],
               ['local.get', `$${dst2}`]]],
             ['else', ['local.get', `$${value}`]]]] , 'f64')
       }

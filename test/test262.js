@@ -298,7 +298,7 @@ for (const subdir of TRACKED_LANGUAGE_DIRS) {
       results[status]++
       count++
 
-      if (status === 'fail' && fails.length < 30) {
+      if (status === 'fail') {
         fails.push(`${rel}: ${error}`)
       }
     } catch {

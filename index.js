@@ -140,7 +140,10 @@ jz.compile = (code, opts = {}) => {
   if (opts.jzify) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
-  if (opts.host) ctx.transform.host = opts.host
+  if (opts.host) {
+    if (opts.host !== 'js' && opts.host !== 'wasi') err(`Invalid host '${opts.host}'. Expected 'js' or 'wasi'.`)
+    ctx.transform.host = opts.host
+  }
   if (opts.runtimeExports === false) ctx.transform.runtimeExports = false
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start

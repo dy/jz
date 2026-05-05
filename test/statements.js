@@ -350,6 +350,41 @@ test('multiple simultaneous timers', async () => {
   is(result.exports.b.value, 2)
 })
 
+// host: 'js' setTimeout/setInterval lower to env imports + __invoke_closure
+// trampoline (no in-wasm queue). Lock the surface in.
+test('host:js timers: env.setTimeout/clearTimeout imports, __invoke_closure export', () => {
+  const wasm = compile(`
+    setTimeout(() => {}, 10)
+    setInterval(() => {}, 5)
+    clearTimeout(1)
+    clearInterval(1)
+    export let f = () => 1
+  `)
+  const mod = new WebAssembly.Module(wasm)
+  const imports = WebAssembly.Module.imports(mod).map(i => i.module + '.' + i.name).sort()
+  const exports = WebAssembly.Module.exports(mod).map(e => e.name)
+  ok(imports.includes('env.setTimeout'), `expected env.setTimeout: ${imports}`)
+  ok(imports.includes('env.clearTimeout'), `expected env.clearTimeout: ${imports}`)
+  ok(!imports.some(i => i.includes('clock_time_get')), `should not import clock_time_get: ${imports}`)
+  ok(exports.includes('__invoke_closure'), `expected __invoke_closure export: ${exports}`)
+  ok(!exports.includes('__timer_tick'), `should not export __timer_tick: ${exports}`)
+})
+
+test('host:js timers import only the requested host functions', () => {
+  const timeoutMod = new WebAssembly.Module(compile(`setTimeout(() => {}, 10); export let f = () => 1`))
+  const timeoutImports = WebAssembly.Module.imports(timeoutMod).map(i => i.module + '.' + i.name).sort()
+  ok(timeoutImports.includes('env.setTimeout'), `expected env.setTimeout: ${timeoutImports}`)
+  ok(!timeoutImports.includes('env.clearTimeout'), `setTimeout should not import env.clearTimeout: ${timeoutImports}`)
+
+  const clearMod = new WebAssembly.Module(compile(`clearTimeout(1); export let f = () => 1`))
+  const clearImports = WebAssembly.Module.imports(clearMod).map(i => i.module + '.' + i.name).sort()
+  ok(clearImports.includes('env.clearTimeout'), `expected env.clearTimeout: ${clearImports}`)
+  ok(!clearImports.includes('env.setTimeout'), `clearTimeout should not import env.setTimeout: ${clearImports}`)
+
+  const clearOnly = jz(`clearTimeout(1); clearInterval(1); export let f = () => 1`)
+  is(clearOnly.exports.f(), 1)
+})
+
 // === Auto-boxing: property assignment ===
 
 test('fn.prop: auto-box write + read', () => {

@@ -1,24 +1,51 @@
 /**
- * WASI module — console.log/warn/error via fd_write.
+ * Console + clocks module — two host-mode lowerings.
  *
- * Imports wasi_snapshot_preview1.fd_write — standard WASI Preview 1.
- * Output .wasm runs natively on wasmtime/wasmer/deno.
- * For browser/Node, use jz/wasi polyfill.
+ * `host: 'js'` (default): emit `env.print(val: f64, fd: i32, sep: i32)` and
+ *   `env.now(clock: i32) -> f64`. The JS host (src/host.js) wires both
+ *   automatically — `print` reads the NaN-boxed value via `mem.read`, so
+ *   stringification happens host-side (no __ftoa / __write_str / __write_val
+ *   stdlib in the binary). `sep`: 10=newline, 32=space, 0=no separator.
+ *   `clock`: 0=Date.now (epoch ms), 1=performance.now (monotonic ms).
  *
- * console.log(a, b, c) → serialize each arg to string bytes,
- *   write space-separated to fd=1, append newline.
- * console.warn/error → fd=2.
+ * `host: 'wasi'`: emit `wasi_snapshot_preview1.fd_write` + `clock_time_get`.
+ *   Output runs natively on wasmtime/wasmer/deno and on browsers/Node via the
+ *   tiny `jz/wasi` polyfill auto-applied by the `jz()` runtime.
  *
- * @module wasi
+ * console.log/warn/error: variadic. fd=1 for log, fd=2 for warn/error.
+ *
+ * @module console
  */
 
-import { typed, asF64 } from '../src/ir.js'
+import { typed, asF64, mkPtrIR } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { valTypeOf, VAL } from '../src/analyze.js'
-import { exprType } from '../src/analyze.js'
+import { valTypeOf, VAL, exprType } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
-export default (ctx) => {
+const addImportOnce = (ctx, mod, name, fn) => {
+  if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
+  ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
+}
+
+// Template-literal concat chains (`a${x}b`) lower to ['()', ['.', X, 'concat'], Y]
+// in prepare. Walking left from the chain root recovers the parts in order; if the
+// base is a `['str', ...]` it's a template-shaped chain (vs an arbitrary user
+// .concat call). Returning the parts lets console.log skip __str_concat/__to_str
+// entirely — biquad's only string churn is the perf-summary line.
+const flattenTemplateConcat = (node) => {
+  const parts = []
+  let n = node
+  while (Array.isArray(n) && n[0] === '()' && n.length === 3 &&
+         Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'concat') {
+    parts.unshift(n[2])
+    n = n[1][1]
+  }
+  if (!(Array.isArray(n) && n[0] === 'str')) return null
+  parts.unshift(n)
+  return parts
+}
+
+const setupWasi = (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __write_val: ['__ptr_type', '__write_str', '__write_num', '__write_int', '__write_byte', '__static_str'],
     __write_num: ['__ftoa', '__write_str'],
@@ -26,22 +53,15 @@ export default (ctx) => {
     __write_str: ['__sso_char', '__str_len'],
   })
 
+  const needFdWrite = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_write',
+    ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
-  // Import fd_write from WASI
-  ctx.module.imports.push(
-    ['import', '"wasi_snapshot_preview1"', '"fd_write"',
-      ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']]])
-
-  // __write_str(fd: i32, ptr: f64) — write a NaN-boxed string to fd via iov
-  // Handles both SSO and heap strings
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr f64)
     (local $iov i32) (local $type i32) (local $len i32) (local $off i32) (local $buf i32)
-    ;; Allocate iov (8 bytes: ptr + len) + nwritten (4 bytes)
     (local.set $iov (call $__alloc (i32.const 12)))
     (local.set $type (call $__ptr_type (local.get $ptr)))
     (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
       (then
-        ;; SSO: unpack chars to memory buffer, then write
         (local.set $len (call $__ptr_aux (local.get $ptr)))
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $off (i32.const 0))
@@ -54,13 +74,11 @@ export default (ctx) => {
         (i32.store (local.get $iov) (local.get $buf))
         (i32.store (i32.add (local.get $iov) (i32.const 4)) (local.get $len)))
       (else
-        ;; Heap string: offset points directly to char data
         (i32.store (local.get $iov) (call $__ptr_offset (local.get $ptr)))
         (i32.store (i32.add (local.get $iov) (i32.const 4)) (call $__str_len (local.get $ptr)))))
     (drop (call $__fd_write (local.get $fd) (local.get $iov) (i32.const 1)
       (i32.add (local.get $iov) (i32.const 8)))))`
 
-  // __write_byte(fd: i32, byte: i32) — write a single byte (space, newline)
   ctx.core.stdlib['__write_byte'] = `(func $__write_byte (param $fd i32) (param $byte i32)
     (local $iov i32)
     (local.set $iov (call $__alloc (i32.const 13)))
@@ -70,72 +88,39 @@ export default (ctx) => {
     (drop (call $__fd_write (local.get $fd) (local.get $iov) (i32.const 1)
       (i32.add (local.get $iov) (i32.const 8)))))`
 
-  // __write_num(fd: i32, val: f64) — convert number to string, write to fd
   ctx.core.stdlib['__write_num'] = `(func $__write_num (param $fd i32) (param $val f64)
     (call $__write_str (local.get $fd) (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
-  // __write_int(fd: i32, val: f64) — convert integer to string, write to fd
-  // Skips __ftoa (~600 B) for values proven integer by exprType.
   ctx.core.stdlib['__write_int'] = `(func $__write_int (param $fd i32) (param $val f64)
     (local $buf i32)
     (local.set $buf (call $__alloc (i32.const 12)))
     (call $__write_str (local.get $fd)
       (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf)))))`
-  // __write_val(fd: i32, val: f64) — write any value, auto-detecting type
   ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
     (local $type i32)
-    ;; Not NaN → plain number
     (if (f64.eq (local.get $val) (local.get $val))
       (then (call $__write_num (local.get $fd) (local.get $val)) (return)))
-    ;; NaN: check if it's a pointer (type > 0) or plain NaN (type = 0)
     (local.set $type (call $__ptr_type (local.get $val)))
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 0))) (return)))
-    ;; String pointer
     (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
                 (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
       (then (call $__write_str (local.get $fd) (local.get $val)) (return)))
-    ;; Array/Object placeholder
     (call $__write_str (local.get $fd) (call $__static_str
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
         (then (i32.const 7)) (else (i32.const 8))))))`
 
-  // Template-literal concat chains (`a${x}b`) lower to ['()', ['.', X, 'concat'], Y]
-  // in prepare. Walking left from the chain root recovers the parts in order; if the
-  // base is a `['str', ...]` it's a template-shaped chain (vs an arbitrary user
-  // .concat call). Returning the parts lets console.log skip __str_concat/__to_str
-  // entirely — biquad's only string churn is the perf-summary line.
-  const flattenTemplateConcat = (node) => {
-    const parts = []
-    let n = node
-    while (Array.isArray(n) && n[0] === '()' && n.length === 3 &&
-           Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'concat') {
-      parts.unshift(n[2])
-      n = n[1][1]
-    }
-    if (!(Array.isArray(n) && n[0] === 'str')) return null
-    parts.unshift(n)
-    return parts
-  }
-
-  // console.log(...args) — variadic, each arg separated by space, followed by newline.
-  // Per-arg dispatch is monomorphized when valTypeOf proves the arg is a string or
-  // number — direct __write_str / __write_num skips the polymorphic __write_val
-  // helper (and its transitive __ptr_type / __static_str / number-or-string-test
-  // arms), which is the entire stdlib floor for size-conscious benches.
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
+      needFdWrite()
       inc('__write_byte')
       const ir = []
       const writePart = (part) => {
-        // Empty string segments (template boundaries) write nothing.
         if (Array.isArray(part) && part[0] === 'str' && part[1] === '') return
         const vt = valTypeOf(part)
         if (vt === VAL.STRING) {
           inc('__write_str')
           ir.push(['call', '$__write_str', ['i32.const', fd], asF64(emit(part))])
         } else if (vt === VAL.NUMBER) {
-          // Integer-valued numbers use __write_int (__itoa) instead of __write_num (__ftoa).
-          // exprType sees i32 for literals, bitwise ops, .length on arrays, Math.imul, etc.
           if (exprType(part, ctx.func.locals) === 'i32') {
             inc('__write_int')
             ir.push(['call', '$__write_int', ['i32.const', fd], asF64(emit(part))])
@@ -149,13 +134,13 @@ export default (ctx) => {
         }
       }
       for (let i = 0; i < args.length; i++) {
-        if (i > 0) ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]])  // space
+        if (i > 0) ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 32]])
         const parts = flattenTemplateConcat(args[i])
         if (parts) for (const p of parts) writePart(p)
         else writePart(args[i])
       }
-      ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 10]])  // newline
-      ir.push(['f64.const', 0])  // return undefined
+      ir.push(['call', '$__write_byte', ['i32.const', fd], ['i32.const', 10]])
+      ir.push(['f64.const', 0])
       return typed(['block', ['result', 'f64'], ...ir], 'f64')
     }
   }
@@ -164,29 +149,87 @@ export default (ctx) => {
   makeConsole('warn', 2)
   makeConsole('error', 2)
 
-  // === Date.now / performance.now via WASI clock_time_get ===
+  const needClock = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'clock_time_get',
+    ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
 
-  ctx.module.imports.push(
-    ['import', '"wasi_snapshot_preview1"', '"clock_time_get"',
-      ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']]])
-
-  // __time_ms(clock_id) → f64 milliseconds
-  // clock_time_get writes i64 nanoseconds to memory, we convert to f64 ms
   ctx.core.stdlib['__time_ms'] = `(func $__time_ms (param $clock i32) (result f64)
     (drop (call $__clock_time_get (local.get $clock) (i64.const 1000) (i32.const 0)))
     (f64.div (f64.convert_i64_u (i64.load (i32.const 0))) (f64.const 1000000)))`
 
   ctx.core.emit['Date.now'] = () => {
+    needClock()
     inc('__time_ms')
-    return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')  // clock 0 = realtime
+    return typed(['call', '$__time_ms', ['i32.const', 0]], 'f64')
   }
-
   ctx.core.emit['performance.now'] = () => {
+    needClock()
     inc('__time_ms')
-    return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')  // clock 1 = monotonic
+    return typed(['call', '$__time_ms', ['i32.const', 1]], 'f64')
   }
-
-  // Aliases for explicit import: import { now, perfNow } from 'console'
   ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
   ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
+}
+
+const setupJsHost = (ctx) => {
+  const needPrint = () => addImportOnce(ctx, 'env', 'print',
+    ['func', '$__print', ['param', 'f64'], ['param', 'i32'], ['param', 'i32']])
+  const needNow = () => addImportOnce(ctx, 'env', 'now',
+    ['func', '$__now', ['param', 'i32'], ['result', 'f64']])
+
+  // Empty SSO string ("") for zero-arg console.log() — host reads as "".
+  const emptyStr = () => mkPtrIR(PTR.SSO, 0, 0)
+
+  const makeConsole = (method, fd) => {
+    ctx.core.emit[`console.${method}`] = (...args) => {
+      needPrint()
+      // Each segment carries its trailing separator (0=none, 32=space, 10=newline).
+      // Template-concat chains (`a${x}b`) flatten to per-`${}` segments — the host
+      // stringifies, so jz drops __str_concat/__to_str entirely.
+      const segments = []
+      for (let i = 0; i < args.length; i++) {
+        const before = segments.length
+        const flat = flattenTemplateConcat(args[i])
+        const sub = flat || [args[i]]
+        for (const p of sub) {
+          if (Array.isArray(p) && p[0] === 'str' && p[1] === '') continue
+          segments.push({ expr: asF64(emit(p)), sep: 0 })
+        }
+        // Empty arg (`console.log('', 'a')`) still needs to mark its boundary
+        // so the inter-arg space lands in the right place.
+        if (segments.length === before) segments.push({ expr: emptyStr(), sep: 0 })
+        if (i < args.length - 1) segments[segments.length - 1].sep = 32
+      }
+      const ir = []
+      if (segments.length === 0) {
+        ir.push(['call', '$__print', emptyStr(), ['i32.const', fd], ['i32.const', 10]])
+      } else {
+        segments[segments.length - 1].sep = 10
+        for (const { expr, sep } of segments) {
+          ir.push(['call', '$__print', expr, ['i32.const', fd], ['i32.const', sep]])
+        }
+      }
+      ir.push(['f64.const', 0])
+      return typed(['block', ['result', 'f64'], ...ir], 'f64')
+    }
+  }
+
+  makeConsole('log', 1)
+  makeConsole('warn', 2)
+  makeConsole('error', 2)
+
+  ctx.core.emit['Date.now'] = () => {
+    needNow()
+    return typed(['call', '$__now', ['i32.const', 0]], 'f64')
+  }
+  ctx.core.emit['performance.now'] = () => {
+    needNow()
+    return typed(['call', '$__now', ['i32.const', 1]], 'f64')
+  }
+  ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
+  ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
+}
+
+export default (ctx) => {
+  if (ctx.transform.host === 'wasi') setupWasi(ctx)
+  else setupJsHost(ctx)
 }

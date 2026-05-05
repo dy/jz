@@ -339,15 +339,19 @@ deno run program.wasm
 ```
 
 Pure numeric modules have no imports and instantiate with standard
-`WebAssembly.Module` / `WebAssembly.Instance`, which is the right shape for JS
-hosts such as EdgeJS. Compile once at startup or build time, then reuse the
-module; do not compile JZ source per request.
+`WebAssembly.Module` / `WebAssembly.Instance`, which is the right shape for JS hosts such as EdgeJS. Compile once at startup or build time, then reuse the module; do not compile JZ source per request.
 
-`console.log` compiles to WASI `fd_write` by default — works natively on
-wasmtime/wasmer/deno without polyfills. In JS hosts, `jz()` auto-applies the
-small `jz/wasi` polyfill; pass `{ write(fd, text) { ... } }` to capture or route
-stdout/stderr without depending on `process.stdout`.
+Two host modes select how runtime services lower:
 
+```js
+jz.compile(code)                      // host: 'js' (default) — env.* imports
+jz.compile(code, { host: 'wasi' })    // wasi_snapshot_preview1.* imports
+```
+
+`host: 'js'` (default) — `console.log`/`Date.now`/`performance.now` import from `env.*` and the JS host (`jz()` runtime) wires them automatically. Host-side stringification means jz drops `__ftoa`/`__write_*`/`__to_str` from the binary.
+
+`host: 'wasi'` — `console.log` compiles to WASI `fd_write`, clocks to
+`clock_time_get`. Output runs natively on wasmtime/wasmer/deno. In JS hosts, the small `jz/wasi` polyfill is auto-applied; pass `{ write(fd, text) {…} }` to capture stdout/stderr. `host: 'wasi'` errors at compile time if a program would emit `env.__ext_*` (dynamic dispatch into the JS host) — annotate the receiver or stay on `host: 'js'`.
 
 </details>
 
@@ -356,19 +360,21 @@ stdout/stderr without depending on `process.stdout`.
 
 <br>
 
-The compiled `.wasm` uses one import namespace:
+| JS API | `host: 'js'` (default) | `host: 'wasi'` |
+|---|---|---|
+| `console.log()` | `env.print(val: f64, fd: i32, sep: i32)` — host stringifies | WASI `fd_write` (fd=1), space-separated, newline appended |
+| `console.warn`/`error` | same, fd=2 | WASI `fd_write` (fd=2) |
+| `Date.now()` | `env.now(0) -> f64` (epoch ms) | `clock_time_get` (realtime) |
+| `performance.now()` | `env.now(1) -> f64` (monotonic ms) | `clock_time_get` (monotonic) |
+| `setTimeout`/`clearTimeout` | `env.setTimeout(cb, delay, repeat) -> f64` / `env.clearTimeout(id) -> f64` — host schedules; fires via exported `__invoke_closure` | WASM timer queue + `__timer_tick` (or blocking `__timer_loop` on wasmtime) |
+| `setInterval`/`clearInterval` | same `env.setTimeout` (repeat=1) / `env.clearTimeout` | WASM timer queue + `__timer_tick` |
+| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
+
+The compiled `.wasm` uses at most one import namespace:
 
 - none — pure scalar/compute modules. Instantiate directly with standard WebAssembly APIs.
-- `wasi_snapshot_preview1` — standard WASI Preview 1 calls. Run natively on wasmtime, wasmer, deno; for browsers/Node/EdgeJS-like hosts, jz ships a tiny polyfill (`jz/wasi`) auto-applied by the `jz()` runtime.
-
-| JS API | Maps to | Notes |
-|--------|---------|-------|
-| `console.log()` | WASI `fd_write` (fd=1) | Multiple args space-separated, newline appended |
-| `console.warn()`, `console.error()` | WASI `fd_write` (fd=2) | Writes to stderr |
-| `Date.now()` | WASI `clock_time_get` (realtime) | Returns ms since epoch |
-| `performance.now()` | WASI `clock_time_get` (monotonic) | Returns ms, high-resolution |
-| `setTimeout`, `clearTimeout` | WASM timer queue + `__timer_tick` | JS runtime drives tick via `setInterval`; wasmtime uses blocking `__timer_loop` |
-| `setInterval`, `clearInterval` | WASM timer queue + `__timer_tick` | Same — native WASM implementation, no host imports |
+- `env` — JS-host services (default). Auto-wired by the `jz()` runtime.
+- `wasi_snapshot_preview1` — standard WASI Preview 1. Run natively on wasmtime/wasmer/deno.
 
 </details>
 

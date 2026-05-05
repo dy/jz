@@ -734,12 +734,15 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     for (const s of ctx.runtime.typeofStrs)
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
-  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || ctx.features.timers) {
+  // WASI timer queue needs an init call in __start; JS-host mode delegates
+  // scheduling to the host so no init/loop is needed.
+  const wasiTimers = ctx.features.timers && ctx.transform.host === 'wasi'
+  if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || wasiTimers) {
     const initIR = normalizeIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
     startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit,
-      ...(ctx.features.timers ? [['call', '$__timer_init']] : []),
+      ...(wasiTimers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
       ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),
     )
@@ -964,6 +967,12 @@ function pullStdlib(sec) {
   }
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
   sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
+}
+
+function syncImports(sec) {
+  for (const imp of ctx.module.imports) {
+    if (!sec.imports.some(i => i[1] === imp[1] && i[2] === imp[2])) sec.imports.push(imp)
+  }
 }
 
 /**
@@ -1205,6 +1214,8 @@ export default function compile(ast, profiler) {
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
   buildStartFn(ast, sec, closureFuncs, compilePendingClosures)
+
+  syncImports(sec)
 
   dedupClosureBodies(closureFuncs, sec)
 

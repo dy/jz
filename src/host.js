@@ -465,6 +465,67 @@ const prepareInterop = (opts) => {
   return state
 }
 
+// Default JS-host wiring for env.print + env.now — auto-installed when the wasm
+// imports them (host: 'js' mode lowering in module/console.js). Caller-provided
+// opts.imports.env entries take precedence.
+const installDefaultEnvImports = (mod, imports, state) => {
+  const envFns = new Set(WebAssembly.Module.imports(mod)
+    .filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
+  if (!envFns.size) return
+  if (!imports.env) imports.env = {}
+  if (envFns.has('print') && !imports.env.print) {
+    const buf = ['', '', '']  // fd 0/1/2 line buffers
+    const pending = []
+    const flush = (fd) => {
+      const out = fd === 2 ? console.error : console.log
+      out(buf[fd])
+      buf[fd] = ''
+    }
+    const write = (val, fd, sep) => {
+      const v = state.mem.read(val)
+      buf[fd] += String(v)
+      if (sep === 32) buf[fd] += ' '
+      else if (sep === 10) flush(fd)
+    }
+    imports.env.print = (val, fd, sep) => {
+      if (!state.mem) pending.push([val, fd, sep])
+      else write(val, fd, sep)
+    }
+    state.flushPrint = () => {
+      for (const args of pending) write(...args)
+      pending.length = 0
+    }
+  }
+  if (envFns.has('now') && !imports.env.now) {
+    imports.env.now = (clock) =>
+      clock === 1 ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) : Date.now()
+  }
+  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
+  // callbacks back via the exported __invoke_closure trampoline (state.invoke).
+  // Each id maps to a cancel thunk so set/clear share state without tagging.
+  if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
+    const cancel = new Map()
+    let nextId = 1
+    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbPtr, delayMs, repeat) => {
+      const id = nextId++
+      const fire = () => state.invoke?.(cbPtr)
+      if (repeat) {
+        const h = setInterval(fire, delayMs)
+        cancel.set(id, () => clearInterval(h))
+      } else {
+        const h = setTimeout(() => { cancel.delete(id); fire() }, delayMs)
+        cancel.set(id, () => clearTimeout(h))
+      }
+      return id
+    }
+    if (envFns.has('clearTimeout') && !imports.env.clearTimeout) imports.env.clearTimeout = (id) => {
+      const c = cancel.get(id)
+      if (c) { c(); cancel.delete(id) }
+      return 0
+    }
+  }
+}
+
 const buildImports = (mod, opts, state) => {
   const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
   const imports = needsWasi ? wasi(opts) : {}
@@ -483,6 +544,8 @@ const buildImports = (mod, opts, state) => {
         }
     }
   }
+
+  installDefaultEnvImports(mod, imports, state)
   // Shared memory: normalize (auto-wrap raw Memory), pass as import
   if (opts.memory) {
     // Auto-wrap raw WebAssembly.Memory → enhanced jz.memory
@@ -507,6 +570,9 @@ const buildImports = (mod, opts, state) => {
 const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   if (needsWasi) imports._setMemory(inst.exports.memory)
 
+  // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
+  state.invoke = inst.exports.__invoke_closure || null
+
   // Drive WASM timer queue via JS scheduling (non-blocking)
   if (inst.exports.__timer_tick) {
     const tick = inst.exports.__timer_tick
@@ -523,6 +589,7 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
   const enhanced = memory(memSrc)
   state.mem = enhanced
+  state.flushPrint?.()
   return { exports: wrap(memSrc), memory: enhanced, instance: inst, module: mod }
 }
 
