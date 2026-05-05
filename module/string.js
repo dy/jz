@@ -539,8 +539,41 @@ export default (ctx) => {
           (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF)))
           (local.get $len)))))`
 
+  // Bump-extend fast path: when `a` is a heap STRING sitting at the top of the
+  // bump allocator, extend its allocation in place instead of copying. Mutates
+  // memory[a.off-4] to the new length and bumps __heap. This makes the canonical
+  // `buf += char` build pattern O(N) instead of O(N²) — closing the asymptotic
+  // gap with V8's cons-strings. Tradeoff: aliased refs to `a` see the larger
+  // length too, so this departs from strict JS string immutability for the rare
+  // `let b = a; a += x` aliasing case. The fast path can't trigger when other
+  // allocations have happened since `a` was created (it's no longer at heap top).
+  // Only emitted for own-memory mode; shared memory falls back to slow path.
+  const concatFast = !ctx.memory.shared ? `
+    (local.set $abits (i64.reinterpret_f64 (local.get $a)))
+    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $abits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $aoff (i32.wrap_i64 (i64.and (local.get $abits) (i64.const 0xFFFFFFFF))))
+    (if (i32.and
+          (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+          (i32.eq
+            (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 7)) (i32.const -8))
+            (global.get $__heap)))
+      (then
+        (local.set $newHeap
+          (i32.and (i32.add (i32.add (local.get $aoff) (local.get $total)) (i32.const 7)) (i32.const -8)))
+        (if (i32.gt_u (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536)))
+          (then (if (i32.eq (memory.grow
+            (i32.shr_u (i32.add (i32.sub (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
+            (i32.const -1)) (then (unreachable)))))
+        (call $__str_copy (local.get $b)
+          (i32.add (local.get $aoff) (local.get $alen))
+          (local.get $blen))
+        (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (local.get $total))
+        (global.set $__heap (local.get $newHeap))
+        (return (local.get $a))))` : ''
+
   ctx.core.stdlib['__str_concat'] = `(func $__str_concat (param $a f64) (param $b f64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
+    (local $abits i64) (local $ta i32) (local $aoff i32) (local $newHeap i32)
     ;; Coerce operands to strings if needed
     (local.set $a (call $__to_str (local.get $a)))
     (local.set $b (call $__to_str (local.get $b)))
@@ -549,6 +582,7 @@ export default (ctx) => {
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
+    ${concatFast}
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
