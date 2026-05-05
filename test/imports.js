@@ -456,3 +456,34 @@ test('autoload: user function named like missing built-in', () => {
   )
   is(exports.f(), 42)
 })
+
+// A re-exported binding that's also used in-module must keep its original
+// cross-module mangled name. Renaming under the consuming module's prefix
+// orphans the in-module call site.
+test('import: cross-module binding both used and re-exported keeps original mangling', () => {
+  const { exports } = jz(
+    `import { f } from './b'; export let g = () => f()`,
+    {
+      modules: {
+        './b': `import { x } from './c'; export let f = () => x() + 1; export { x }`,
+        './c': `export let x = () => 10`,
+      },
+    }
+  )
+  is(exports.g(), 11)
+})
+
+test('import: transitive re-export-only chain still resolves', () => {
+  // Pure re-export (no in-module use) — was already supported, pinned alongside
+  // the use+re-export case so a future bundler change can't quietly break it.
+  const { exports } = jz(
+    `import { x } from './b'; export let f = () => x()`,
+    {
+      modules: {
+        './b': `import { x } from './c'; export { x }`,
+        './c': `export let x = () => 7`,
+      },
+    }
+  )
+  is(exports.f(), 7)
+})
