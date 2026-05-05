@@ -170,9 +170,15 @@ function nonNegIntLiteral(node) {
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)
   const rightLit = stringLiteral(b)
-  const indexed = leftLit?.length === 1 ? b : rightLit?.length === 1 ? a : null
-  const lit = leftLit?.length === 1 ? leftLit : rightLit?.length === 1 ? rightLit : null
-  if (!lit || lit.charCodeAt(0) > 0x7F || !Array.isArray(indexed) || indexed[0] !== '[]') return null
+  const aIdx = Array.isArray(a) && a[0] === '[]'
+  const bIdx = Array.isArray(b) && b[0] === '[]'
+  let indexed, lit
+  if (bIdx && leftLit != null) { indexed = b; lit = leftLit }
+  else if (aIdx && rightLit != null) { indexed = a; lit = rightLit }
+  else return null
+
+  if (lit.length === 0) return null
+  if ([...lit].some(c => c.charCodeAt(0) > 0x7F)) return null
 
   const [, obj, key] = indexed
   const idx = nonNegIntLiteral(key)
@@ -180,7 +186,14 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
 
   const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
   if (vt && vt !== VAL.STRING) return null
-  if (!ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
+
+  const finish = expr => negate ? ['i32.eqz', expr] : expr
+
+  // Known STRING: s[i] always returns 1-char SSO. Multi-char literal → always false.
+  if (vt === VAL.STRING && lit.length > 1) return emitNum(negate ? 1 : 0)
+
+  // Single-char literal: compare byte directly, skipping __str_idx allocation.
+  if (lit.length !== 1 || !ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
 
   const ptr = temp('sc'), idxIR = ['i32.const', idx]
   inc('__str_byteLen', '__char_at')
@@ -188,7 +201,6 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
     ['i32.gt_u', ['call', '$__str_byteLen', ['local.get', `$${ptr}`]], idxIR],
     ['then', ['i32.eq', ['call', '$__char_at', ['local.get', `$${ptr}`], idxIR], ['i32.const', lit.charCodeAt(0)]]],
     ['else', ['i32.const', 0]]]
-  const finish = expr => negate ? ['i32.eqz', expr] : expr
 
   if (vt === VAL.STRING) {
     return typed(['block', ['result', 'i32'],
