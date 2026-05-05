@@ -401,3 +401,53 @@ test('Regression: through-fn nested with multiple props', () => {
   `)
   is(f(), 30)
 })
+
+// Object.keys on a receiver whose static type is unknown (param sourced from
+// JSON.parse(runtimeStr), destructured from an untyped chain, returned by a
+// polymorphic helper, etc.). The runtime dispatch checks ptr-type at the call
+// site: HASH walks the probe table, anything else returns [].
+test('Object.keys: runtime dispatch — untyped param holding HASH', () => {
+  const { f } = run(`
+    let inner = (h) => Object.keys(h).length
+    export let f = (s) => inner(JSON.parse(s))
+  `)
+  is(f('{"a":1,"b":2,"c":3,"d":4}'), 4)
+})
+
+test('Object.keys: runtime dispatch — picks first key from HASH', () => {
+  const { f } = run(`
+    let pickFirst = (h) => Object.keys(h)[0]
+    export let f = (s) => pickFirst(JSON.parse(s))
+  `)
+  const r = f('{"only":"value"}')
+  is(r, 'only')
+})
+
+test('Object.keys: runtime dispatch — empty HASH', () => {
+  const { f } = run(`
+    let inner = (h) => Object.keys(h).length
+    export let f = (s) => inner(JSON.parse(s))
+  `)
+  is(f('{}'), 0)
+})
+
+test('Object.keys: runtime dispatch — destructured-from-untyped chain', () => {
+  // Param flows through destructuring on a chain whose root is
+  // JSON.parse(runtimeStr), so `m` arrives shapeless even though it holds a
+  // HASH at runtime.
+  const { f } = run(`
+    let countKeys = ({m}) => Object.keys(m.values).length
+    export let f = (s) => countKeys(JSON.parse(s))
+  `)
+  is(f('{"m":{"values":{"a":1,"b":2,"c":3}}}'), 3)
+})
+
+test('Object.keys: runtime dispatch — non-HASH receiver returns empty', () => {
+  // The empty-array fallback covers everything that isn't HASH at runtime
+  // (number, nullish, primitives) without crashing.
+  const { f } = run(`
+    let inner = (h) => Object.keys(h).length
+    export let f = (n) => inner(n + 0)
+  `)
+  is(f(42), 0)
+})
