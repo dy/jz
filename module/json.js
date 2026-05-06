@@ -206,7 +206,7 @@ export default (ctx) => {
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
-    (local.set $sid (call $__ptr_aux (local.get $val)))
+    (local.set $sid (call $__ptr_aux (i64.reinterpret_f64 (local.get $val))))
     ;; Load keys array from schema table: schema_tbl + sid * 8
     (local.set $keys (call $__ptr_offset
       (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))

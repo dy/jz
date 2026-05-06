@@ -1114,7 +1114,7 @@ function walkRewrite(node, doInline, counts) {
       ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', node[2]], ['i64.const', 47]]],
       ['i32.const', 0xF]]
     if (fname === '$__ptr_aux') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', node[2]], ['i64.const', 32]]],
+      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', 32]]],
       ['i32.const', 0x7FFF]]
     if (fname === '$__is_null') return ['i64.eq', node[2], ['i64.const', '0x7FF8000100000000']]
     if (fname === '$__is_nullish' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'

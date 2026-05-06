@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, T, repOf, updateRep } from '../src/analyze.js'
 import { err, inc, PTR } from '../src/ctx.js'
@@ -160,8 +160,8 @@ export default (ctx) => {
             (br $follow)))))
     (local.get $off))`
 
-  ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 32)) (i64.const 0x7FFF))))`
+  ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr i64) (result i32)
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))`
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr f64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 47)) (i64.const 0xF))))`
@@ -222,7 +222,7 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr f64) (result i32)
     (local $off i32)
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (if (result i32) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8))
+    (if (result i32) (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8))
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`
 
@@ -281,7 +281,7 @@ export default (ctx) => {
       (then
         (if (result i32) (i32.eq (local.get $t) (i32.const 3))
           (then
-            (local.set $aux (call $__ptr_aux (local.get $ptr)))
+            (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
             (if (result i32) (i32.and (local.get $aux) (i32.const 8))
               ;; views are non-growable: cap = len (byteLen at [off])
               (then (i32.shr_u (i32.load (local.get $off))
@@ -535,7 +535,7 @@ export default (ctx) => {
             (else ${lenArm}))`
     const afterNumber = ctx.features.sso
       ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
-          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
+          (then (f64.convert_i32_s (call $__ptr_aux (i64.reinterpret_f64 (local.get $v)))))
           (else ${stringArm}))`
       : stringArm
     return `(func $__length (param $v f64) (result f64)
@@ -706,7 +706,7 @@ export default (ctx) => {
   // Low-level pointer helpers callable from jz code
   ctx.core.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')
   ctx.core.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asF64(emit(p))]], 'f64')
-  ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asF64(emit(p))]], 'f64')
+  ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64')
   ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asF64(emit(p))]], 'f64')
 
   // Error(msg) — passthrough (throw handles any value)

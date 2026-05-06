@@ -68,7 +68,7 @@ const setupWasi = (ctx) => {
     (local.set $type (call $__ptr_type (local.get $ptr)))
     (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
       (then
-        (local.set $len (call $__ptr_aux (local.get $ptr)))
+        (local.set $len (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $off (i32.const 0))
         (block $done (loop $loop

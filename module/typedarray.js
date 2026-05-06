@@ -229,7 +229,7 @@ export default (ctx) => {
         (if (result i32)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
+            (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
           (then (i32.load (local.get $off)))
           (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
       (else (i32.const 0))))`
@@ -249,7 +249,7 @@ export default (ctx) => {
         (if (result f64)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
+            (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
           (then (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0)
                   (i32.load (i32.add (local.get $off) (i32.const 8)))))
           (else (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $off)))))))`
@@ -421,7 +421,7 @@ export default (ctx) => {
     (if (result i32)
       (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
-        (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
+        (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
       (then
         (local.set $off (call $__ptr_offset (local.get $ptr)))
         (i32.sub
@@ -582,7 +582,7 @@ export default (ctx) => {
     }
     return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if
       (i32.and
@@ -619,7 +619,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))

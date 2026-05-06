@@ -661,7 +661,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $type) (i32.const 4))
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (local.set $len (call $__ptr_aux (local.get $ptr)))
+    (local.set $len (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $buf (call $__alloc (local.get $len)))
     (local.set $i (i32.const 0))
     (block $done (loop $next
