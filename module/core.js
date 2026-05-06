@@ -52,27 +52,27 @@ export default (ctx) => {
       (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
       (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))))`
 
-  ctx.core.stdlib['__eq'] = `(func $__eq (param $a f64) (param $b f64) (result i32)
-    (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
+  ctx.core.stdlib['__eq'] = `(func $__eq (param $a i64) (param $b i64) (result i32)
+    (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
     ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
     ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string').
-    (local.set $ra (i64.reinterpret_f64 (local.get $a)))
-    (local.set $rb (i64.reinterpret_f64 (local.get $b)))
-    (if (result i32) (i64.eq (local.get $ra) (local.get $rb))
-      (then (i64.ne (local.get $ra) (i64.const 0x7FF8000000000000)))
+    (if (result i32) (i64.eq (local.get $a) (local.get $b))
+      (then (i64.ne (local.get $a) (i64.const 0x7FF8000000000000)))
       (else
         ;; Bits differ. Numeric path covers -0/+0 and any normal numeric inequality.
+        (local.set $fa (f64.reinterpret_i64 (local.get $a)))
+        (local.set $fb (f64.reinterpret_i64 (local.get $b)))
         (if (result i32)
           (i32.and
-            (f64.eq (local.get $a) (local.get $a))
-            (f64.eq (local.get $b) (local.get $b)))
-          (then (f64.eq (local.get $a) (local.get $b)))
+            (f64.eq (local.get $fa) (local.get $fa))
+            (f64.eq (local.get $fb) (local.get $fb)))
+          (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
             ;; At least one operand is a NaN-box. Heap STRINGs with same content can
             ;; have different offsets; SSO strings with different bits cannot be equal.
-            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 47)) (i64.const 0xF))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 47)) (i64.const 0xF))))
             (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
               (then (return (i32.const 0))))
             (if (result i32)
@@ -83,7 +83,7 @@ export default (ctx) => {
                 (i32.or
                   (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
                   (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
-                (then (call $__str_eq (local.get $ra) (local.get $rb)))
+                (then (call $__str_eq (local.get $a) (local.get $b)))
                 (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)

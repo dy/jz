@@ -1226,7 +1226,7 @@ export default (ctx) => {
     const vt = resolveValType(val, valTypeOf, lookupValType)
     if (vt === VAL.NUMBER) return (item, vv) => ['f64.eq', item, vv]
     inc('__eq')
-    return (item, vv) => ['call', '$__eq', item, vv]
+    return (item, vv) => ['call', '$__eq', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vv]]
   }
 
   ctx.core.emit['.indexOf'] = (arr, val) => {

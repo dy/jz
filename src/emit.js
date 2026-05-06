@@ -212,8 +212,8 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   const tag = tempI32('st')
   inc('__ptr_type', '__typed_idx', '__eq')
   const genericEq = ['call', '$__eq',
-    ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR],
-    asF64(emit(['str', lit]))]
+    ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR]],
+    asI64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
     ['i32.or',
       ['i32.eq', ['local.tee', `$${tag}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]]], ['i32.const', PTR.STRING]],
@@ -1488,7 +1488,7 @@ export const emitter = {
       return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     }
     inc('__eq')
-    return typed(['call', '$__eq', asF64(va), asF64(vb)], 'i32')
+    return typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
   },
   '!=': (a, b) => {
     const charCmp = emitSingleCharIndexCmp(a, b, true)
@@ -1511,7 +1511,7 @@ export const emitter = {
       return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     }
     inc('__eq')
-    return typed(['i32.eqz', ['call', '$__eq', asF64(va), asF64(vb)]], 'i32')
+    return typed(['i32.eqz', ['call', '$__eq', asI64(va), asI64(vb)]], 'i32')
   },
   '<':  cmpOp('lt_s', 'lt', (a, b) => a < b),
   '>':  cmpOp('gt_s', 'gt', (a, b) => a > b),
