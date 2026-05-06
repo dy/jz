@@ -83,7 +83,7 @@ export default (ctx) => {
                 (i32.or
                   (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
                   (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
-                (then (call $__str_eq (local.get $a) (local.get $b)))
+                (then (call $__str_eq (local.get $ra) (local.get $rb)))
                 (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)

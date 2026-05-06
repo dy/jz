@@ -41,8 +41,8 @@ function numConstLiteral(expr) {
 }
 
 // Equality expressions for probe templates
-const sameValueZeroEq = '(call $__same_value_zero (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
-const strEq = '(call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
+const sameValueZeroEq = '(call $__same_value_zero (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.reinterpret_f64 (local.get $key)))'
+const strEq = '(call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.reinterpret_f64 (local.get $key)))'
 
 /** Generate upsert (add/set) probe function. hasVal: store value at slot+16.
  *  hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching type).
@@ -394,21 +394,21 @@ export default (ctx) => {
       (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))))`
   inc('__hash')
 
-  ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a f64) (param $b f64) (result i32)
-    (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
-    (local.set $ra (i64.reinterpret_f64 (local.get $a)))
-    (local.set $rb (i64.reinterpret_f64 (local.get $b)))
-    (if (result i32) (i64.eq (local.get $ra) (local.get $rb))
+  ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
+    (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
+    (if (result i32) (i64.eq (local.get $a) (local.get $b))
       (then (i32.const 1))
       (else
+        (local.set $fa (f64.reinterpret_i64 (local.get $a)))
+        (local.set $fb (f64.reinterpret_i64 (local.get $b)))
         (if (result i32)
           (i32.and
-            (f64.eq (local.get $a) (local.get $a))
-            (f64.eq (local.get $b) (local.get $b)))
-          (then (f64.eq (local.get $a) (local.get $b)))
+            (f64.eq (local.get $fa) (local.get $fa))
+            (f64.eq (local.get $fb) (local.get $fb)))
+          (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
-            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ra) (i64.const 47)) (i64.const 0xF))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $rb) (i64.const 47)) (i64.const 0xF))))
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 47)) (i64.const 0xF))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 47)) (i64.const 0xF))))
             (if (result i32)
               (i32.and
                 (i32.or
@@ -657,8 +657,8 @@ export default (ctx) => {
         (block $schemaSetDone (loop $schemaSetLoop
           (br_if $schemaSetDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
           (if (call $__str_eq
-                (f64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
-                (local.get $key))
+                (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                (i64.reinterpret_f64 (local.get $key)))
             (then
               (f64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
               (br $schemaSetDone)))
@@ -744,7 +744,7 @@ export default (ctx) => {
       (block $hdone (loop $hprobe
         (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
         (br_if $dynDone (f64.eq (f64.load (local.get $slot)) (f64.const 0)))
-        (if (call $__str_eq (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
+        (if (call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (i64.reinterpret_f64 (local.get $key)))
           (then (return (f64.load (i32.add (local.get $slot) (i32.const 16))))))
         (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))

@@ -149,18 +149,16 @@ export default (ctx) => {
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
   // ⇒ bytes differ). STRING/STRING uses raw load8_u — no per-byte function calls.
   // Mixed SSO×STRING is rare; falls back to __char_at.
-  ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a f64) (param $b f64) (result i32)
+  ctx.core.stdlib['__str_eq'] = `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $lenB i32) (local $i i32)
-    (local $ba i64) (local $bb i64) (local $ta i32) (local $tb i32)
+    (local $ta i32) (local $tb i32)
     (local $offA i32) (local $offB i32)
-    (local.set $ba (i64.reinterpret_f64 (local.get $a)))
-    (local.set $bb (i64.reinterpret_f64 (local.get $b)))
-    (if (i64.eq (local.get $ba) (local.get $bb))
+    (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
-    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ba) (i64.const 47)) (i64.const 0xF))))
-    (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bb) (i64.const 47)) (i64.const 0xF))))
-    (local.set $offA (i32.wrap_i64 (i64.and (local.get $ba) (i64.const 0xFFFFFFFF))))
-    (local.set $offB (i32.wrap_i64 (i64.and (local.get $bb) (i64.const 0xFFFFFFFF))))
+    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 47)) (i64.const 0xF))))
+    (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 47)) (i64.const 0xF))))
+    (local.set $offA (i32.wrap_i64 (i64.and (local.get $a) (i64.const 0xFFFFFFFF))))
+    (local.set $offB (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))))
     ;; Both SSO with !bit-eq ⇒ content differs (high 32 bits hold type+len; both equal here).
     (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
       (then (return (i32.const 0))))
@@ -196,12 +194,12 @@ export default (ctx) => {
         (return (i32.const 1))))
     ;; Mixed (SSO×STRING) or anything else: compute len per side then per-byte via __char_at.
     (if (i32.eq (local.get $ta) (i32.const ${PTR.SSO}))
-      (then (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ba) (i64.const 32)) (i64.const 0x7FFF)))))
+      (then (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 32)) (i64.const 0x7FFF)))))
       (else
         (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offA) (i32.const 4)))
           (then (local.set $len (i32.load (i32.sub (local.get $offA) (i32.const 4))))))))
     (if (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))
-      (then (local.set $lenB (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bb) (i64.const 32)) (i64.const 0x7FFF)))))
+      (then (local.set $lenB (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 32)) (i64.const 0x7FFF)))))
       (else
         (if (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offB) (i32.const 4)))
           (then (local.set $lenB (i32.load (i32.sub (local.get $offB) (i32.const 4))))))))
@@ -209,8 +207,8 @@ export default (ctx) => {
       (then (return (i32.const 0))))
     (block $dm (loop $lm
       (br_if $dm (i32.ge_s (local.get $i) (local.get $len)))
-      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
-                  (call $__char_at (local.get $b) (local.get $i)))
+      (if (i32.ne (call $__char_at (f64.reinterpret_i64 (local.get $a)) (local.get $i))
+                  (call $__char_at (f64.reinterpret_i64 (local.get $b)) (local.get $i)))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lm)))
