@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -239,17 +239,17 @@ export default (ctx) => {
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
   // TYPED view: retag as BUFFER at the parent data offset (descriptor[8]) — reconstructs
   // the root ArrayBuffer so its own header supplies byteLength.
-  ctx.core.stdlib['__to_buffer'] = `(func $__to_buffer (param $ptr f64) (result f64)
+  ctx.core.stdlib['__to_buffer'] = `(func $__to_buffer (param $ptr i64) (result f64)
     (local $t i32) (local $off i32)
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $t (call $__ptr_type (local.get $ptr)))
     (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
-      (then (local.get $ptr))
+      (then (f64.reinterpret_i64 (local.get $ptr)))
       (else
-        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+        (local.set $off (call $__ptr_offset (local.get $ptr)))
         (if (result f64)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
+            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
           (then (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0)
                   (i32.load (i32.add (local.get $off) (i32.const 8)))))
           (else (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $off)))))))`
@@ -368,7 +368,7 @@ export default (ctx) => {
       }
     }
     inc('__to_buffer')
-    return typed(['call', '$__to_buffer', asF64(emit(obj))], 'f64')
+    return typed(['call', '$__to_buffer', asI64(emit(obj))], 'f64')
   }
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride. View TYPED: descriptor[0].
