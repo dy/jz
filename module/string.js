@@ -1028,18 +1028,19 @@ export default (ctx) => {
         ['else',
           // Build 1-element array containing the search string
           ['call', '$__wrap1',
-            ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
-              ['local.get', `$${idx}`],
-              ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]], 'f64')
+            ['i64.reinterpret_f64',
+              ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+                ['local.get', `$${idx}`],
+                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
   }
 
-  // __wrap1(val: f64) → f64 — create 1-element array [val]
-  ctx.core.stdlib['__wrap1'] = `(func $__wrap1 (param $val f64) (result f64)
+  // __wrap1(val: i64) → f64 — create 1-element array [val]
+  ctx.core.stdlib['__wrap1'] = `(func $__wrap1 (param $val i64) (result f64)
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.const 16)))
     (i32.store (local.get $ptr) (i32.const 1))
     (i32.store (i32.add (local.get $ptr) (i32.const 4)) (i32.const 1))
-    (f64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
+    (i64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
     (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`
 
   // TextEncoder() / TextDecoder() → dummy values (methods do the work)

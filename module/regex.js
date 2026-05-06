@@ -788,9 +788,10 @@ export default (ctx) => {
           ['then', ['f64.const', 0]],
           ['else',
             ['call', '$__wrap1',
-              ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
-                ['local.get', `$${idx}`],
-                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]], 'f64')
+              ['i64.reinterpret_f64',
+                ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+                  ['local.get', `$${idx}`],
+                  ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
