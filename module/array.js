@@ -248,16 +248,15 @@ export default (ctx) => {
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
   // the redundant double pass through __len then __ptr_offset that both follow forwarding.
-  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $bits i64) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32)
     (if (result f64)
       (i32.ne
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF)))
         (i32.const ${PTR.ARRAY}))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -274,9 +273,9 @@ export default (ctx) => {
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (else (f64.const nan:${UNDEF_NAN})))))) `
 
-  ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr f64) (param $i i32) (result f64)
+  ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
-    (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
     (block $done
       (loop $follow
         (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -505,7 +504,7 @@ export default (ctx) => {
         const spreadVal = multiCount(e[1]) ? materializeMulti(e[1]) : asF64(emit(e[1]))
         const srcVT = valTypeOf(e[1])
         const spreadItem = srcVT === VAL.ARRAY
-          ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+          ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
           : srcVT === VAL.STRING
             ? (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
             : ctx.module.modules['string']
@@ -655,12 +654,12 @@ export default (ctx) => {
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = asI32(typed(keyExpr, 'f64'))
             inc('__arr_idx')
-            return (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], keyI32])
+            return (['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], keyI32])
           })], 'f64')
       inc('__arr_idx_known')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${baseTmp}`, ptrExpr],
-        (['call', '$__arr_idx_known', ['local.get', `$${baseTmp}`], vi])], 'f64')
+        (['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], vi])], 'f64')
     }
     // Known string → single-char SSO string
     if (vt === 'string')
