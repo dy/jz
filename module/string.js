@@ -1048,26 +1048,26 @@ export default (ctx) => {
 
   // .encode(str) → Uint8Array of string's UTF-8 bytes
   // Copies bytes from string (SSO or heap) into a new Uint8Array
-  ctx.core.stdlib['__str_encode'] = `(func $__str_encode (param $str f64) (result f64)
+  ctx.core.stdlib['__str_encode'] = `(func $__str_encode (param $str i64) (result f64)
     (local $len i32) (local $dst i32)
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $len))))
     (i32.store (local.get $dst) (local.get $len))
     (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))
     (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
-    (call $__str_copy (i64.reinterpret_f64 (local.get $str)) (local.get $dst) (local.get $len))
+    (call $__str_copy (local.get $str) (local.get $dst) (local.get $len))
     (call $__mkptr (i32.const 3) (i32.const 1) (local.get $dst)))`
 
   ctx.core.emit['.encode'] = (obj, str) => {
     inc('__str_encode')
-    return typed(['call', '$__str_encode', asF64(emit(str))], 'f64')
+    return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
   }
 
   // .decode(uint8arr) → string from byte data
-  ctx.core.stdlib['__bytes_decode'] = `(func $__bytes_decode (param $arr f64) (result f64)
+  ctx.core.stdlib['__bytes_decode'] = `(func $__bytes_decode (param $arr i64) (result f64)
     (local $off i32) (local $len i32) (local $dst i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
     (local.set $dst (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $dst) (local.get $len))
     (local.set $dst (i32.add (local.get $dst) (i32.const 4)))
@@ -1076,6 +1076,6 @@ export default (ctx) => {
 
   ctx.core.emit['.decode'] = (obj, arr) => {
     inc('__bytes_decode')
-    return typed(['call', '$__bytes_decode', asF64(emit(arr))], 'f64')
+    return typed(['call', '$__bytes_decode', asI64(emit(arr))], 'f64')
   }
 }
