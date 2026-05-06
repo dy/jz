@@ -763,7 +763,7 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string search (indexOf)
       inc('__str_indexof')
-      return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
+      return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
     }
     const s = temp('ss'), ms = tempI32('ssms'), me = tempI32('ssme')
     return typed(['block', ['result', 'f64'],
@@ -783,7 +783,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${q}`, asF64(emit(search))],
-        ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`]]],
+        ['local.set', `$${idx}`, ['call', '$__str_indexof', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
           ['then', ['f64.const', 0]],
           ['else',

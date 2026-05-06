@@ -290,23 +290,21 @@ export default (ctx) => {
 
   // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
   // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
-  ctx.core.stdlib['__str_indexof'] = `(func $__str_indexof (param $hay f64) (param $ndl f64) (param $from i32) (result i32)
+  ctx.core.stdlib['__str_indexof'] = `(func $__str_indexof (param $hay i64) (param $ndl i64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
-    (local $hbits i64) (local $nbits i64) (local $hoff i32) (local $noff i32)
+    (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
-    (local.set $hlen (call $__str_byteLen (i64.reinterpret_f64 (local.get $hay))))
-    (local.set $nlen (call $__str_byteLen (i64.reinterpret_f64 (local.get $ndl))))
+    (local.set $hlen (call $__str_byteLen (local.get $hay)))
+    (local.set $nlen (call $__str_byteLen (local.get $ndl)))
     (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
     (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
-    (local.set $hbits (i64.reinterpret_f64 (local.get $hay)))
-    (local.set $nbits (i64.reinterpret_f64 (local.get $ndl)))
-    (local.set $hoff (i32.wrap_i64 (i64.and (local.get $hbits) (i64.const 0xFFFFFFFF))))
-    (local.set $noff (i32.wrap_i64 (i64.and (local.get $nbits) (i64.const 0xFFFFFFFF))))
+    (local.set $hoff (i32.wrap_i64 (i64.and (local.get $hay) (i64.const 0xFFFFFFFF))))
+    (local.set $noff (i32.wrap_i64 (i64.and (local.get $ndl) (i64.const 0xFFFFFFFF))))
     (local.set $hsso (i32.eq
-      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $hbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $hay) (i64.const 47)) (i64.const 0xF)))
       (i32.const ${PTR.SSO})))
     (local.set $nsso (i32.eq
-      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $nbits) (i64.const 47)) (i64.const 0xF)))
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ndl) (i64.const 47)) (i64.const 0xF)))
       (i32.const ${PTR.SSO})))
     (local.set $i (if (result i32) (i32.gt_s (local.get $from) (i32.const 0)) (then (local.get $from)) (else (i32.const 0))))
     (block $done (loop $outer
@@ -661,7 +659,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_replace'] = `(func $__str_replace (param $str f64) (param $search f64) (param $repl f64) (result f64)
     (local $idx i32) (local $slen i32)
-    (local.set $idx (call $__str_indexof (local.get $str) (local.get $search) (i32.const 0)))
+    (local.set $idx (call $__str_indexof (i64.reinterpret_f64 (local.get $str)) (i64.reinterpret_f64 (local.get $search)) (i32.const 0)))
     (if (result f64) (i32.lt_s (local.get $idx) (i32.const 0))
       (then (local.get $str))
       (else
@@ -679,7 +677,7 @@ export default (ctx) => {
     (local.set $result (local.get $str))
     (local.set $pos (i32.const 0))
     (block $done (loop $next
-      (local.set $idx (call $__str_indexof (local.get $result) (local.get $search) (local.get $pos)))
+      (local.set $idx (call $__str_indexof (i64.reinterpret_f64 (local.get $result)) (i64.reinterpret_f64 (local.get $search)) (local.get $pos)))
       (br_if $done (i32.lt_s (local.get $idx) (i32.const 0)))
       (local.set $result (call $__str_concat
         (call $__str_concat
@@ -817,13 +815,13 @@ export default (ctx) => {
 
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {
     inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), from ? asI32(emit(from)) : ['i32.const', 0]]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), from ? asI32(emit(from)) : ['i32.const', 0]]], 'f64')
   }
 
   ctx.core.emit['.string:includes'] = (str, search) => {
     inc('__str_indexof')
     return typed(['f64.convert_i32_s',
-      ['i32.ge_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), ['i32.const', 0]], ['i32.const', 0]]], 'f64')
+      ['i32.ge_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]], ['i32.const', 0]]], 'f64')
   }
 
   // Generic (no collision)
@@ -1012,7 +1010,7 @@ export default (ctx) => {
   // .search(str) → indexOf (same as indexOf for string args)
   ctx.core.emit['.search'] = (str, search) => {
     inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search)), ['i32.const', 0]]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
   }
 
   // .match(str) → [match] array if found, or 0 (null) if not
@@ -1024,7 +1022,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${q}`, asF64(emit(search))],
-      ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`], ['i32.const', 0]]],
+      ['local.set', `$${idx}`, ['call', '$__str_indexof', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],  // null
         ['else',
