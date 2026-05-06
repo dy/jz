@@ -934,7 +934,7 @@ export default (ctx) => {
     const objVal = ['local.get', `$${objTmp}`]
     const idxVal = ['local.get', `$${idxTmp}`]
     const typeVal = ['local.get', `$${typeTmp}`]
-    const isStringKey = ['call', '$__is_str_key', keyVal]
+    const isStringKey = ['call', '$__is_str_key', ['i64.reinterpret_f64', keyVal]]
     const isStringLike = ['i32.or',
       ['i32.eq', typeVal, ['i32.const', PTR.STRING]],
       ['i32.eq', typeVal, ['i32.const', PTR.SSO]]]

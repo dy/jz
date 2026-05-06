@@ -1057,7 +1057,7 @@ export const emitter = {
         const keyTmp = temp()
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, keyExpr],
-          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['local.get', `$${keyTmp}`]],
+          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
             ['then', ['call', '$__dyn_set', asF64(emit(arr)), ['local.get', `$${keyTmp}`], valueExpr]],
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
@@ -1382,8 +1382,8 @@ export const emitter = {
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
       inc('__str_concat', '__is_str_key')
-      const checkA = vtA == null ? ['call', '$__is_str_key', ['local.tee', `$${tA}`, asF64(emit(a))]] : null
-      const checkB = vtB == null ? ['call', '$__is_str_key', ['local.tee', `$${tB}`, asF64(emit(b))]] : null
+      const checkA = vtA == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, asF64(emit(a))]]] : null
+      const checkB = vtB == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, asF64(emit(b))]]] : null
       const concat = ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
       const add    = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
       if (checkA && checkB) {

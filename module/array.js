@@ -597,7 +597,7 @@ export default (ctx) => {
       inc('__is_str_key')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, asF64(emit(idx))],
-        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['local.get', `$${keyTmp}`]],
+        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
           ['else', numericLoad(['local.get', `$${keyTmp}`])]]], 'f64')
     }

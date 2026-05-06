@@ -105,12 +105,13 @@ export default (ctx) => {
             (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
             (i64.ne (local.get $v) (i64.const 0x7FFA800000000000)))))))`
 
-  ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v f64) (result i32)
-    (local $t i32)
-    (if (result i32) (f64.eq (local.get $v) (local.get $v))
+  ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v i64) (result i32)
+    (local $f f64) (local $t i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (result i32) (f64.eq (local.get $f) (local.get $f))
       (then (i32.const 0))
       (else
-        (local.set $t (call $__ptr_type (local.get $v)))
+        (local.set $t (call $__ptr_type (local.get $f)))
         (i32.or
           (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
           (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))))`
