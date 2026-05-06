@@ -120,14 +120,13 @@ export default (ctx) => {
       (else
         (i32.load8_u (i32.add (local.get $off) (local.get $i))))))`
 
-  ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $bits i64) (local $t i32) (local $off i32) (local $len i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+  ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $t i32) (local $off i32) (local $len i32)
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
     (local.set $len
       (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
-        (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+        (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))
         (else
           (if (result i32) (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
             (then (i32.load (i32.sub (local.get $off) (i32.const 4))))

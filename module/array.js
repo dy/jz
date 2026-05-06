@@ -507,13 +507,13 @@ export default (ctx) => {
         const spreadItem = srcVT === VAL.ARRAY
           ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['local.get', `$${src}`], ['local.get', `$${si}`]])
           : srcVT === VAL.STRING
-            ? (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+            ? (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
             : ctx.module.modules['string']
               ? ['if', ['result', 'f64'],
                 ['i32.or',
                   ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
                   ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.SSO]]],
-                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])],
+                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])],
                 ['else', (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
               : (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
 
@@ -590,7 +590,7 @@ export default (ctx) => {
       inc('__dyn_get')
       return ['call', '$__dyn_get', objExpr, keyExpr]
     }
-    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, vi])
+    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const arrayLoad = (['call', '$__typed_idx', ptrExpr, vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
@@ -687,7 +687,7 @@ export default (ctx) => {
             ['i32.or',
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
-            ['then', (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, keyI32])],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
             ['else', (['call', '$__typed_idx', ptrExpr, keyI32])]]
         }
         return (['call', '$__typed_idx', ptrExpr, keyI32])
