@@ -26,7 +26,7 @@
  * @module timer
  */
 
-import { typed, asF64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { inc, PTR } from '../src/ctx.js'
 
@@ -86,9 +86,9 @@ const setupWasi = (ctx) => {
     (global.set $__timer_queue (call $__alloc (i32.const ${MAX_TIMERS * ENTRY_SIZE})))
     (memory.fill (global.get $__timer_queue) (i32.const 0) (i32.const ${MAX_TIMERS * ENTRY_SIZE})))`
 
-  // __timer_add(closure_ptr: f64, delay_ms: f64, interval: i32) → f64 (timer ID)
+  // __timer_add(closure_ptr: i64, delay_ms: f64, interval: i32) → f64 (timer ID)
   // interval=0 → setTimeout, interval=1 → setInterval
-  ctx.core.stdlib['__timer_add'] = `(func $__timer_add (param $clos f64) (param $delay f64) (param $is_interval i32) (result f64)
+  ctx.core.stdlib['__timer_add'] = `(func $__timer_add (param $clos i64) (param $delay f64) (param $is_interval i32) (result f64)
     (local $id i32)
     (local $slot i32)
     (local $base i32)
@@ -120,7 +120,7 @@ const setupWasi = (ctx) => {
     (i32.store (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))
       (local.get $id))
     ;; closure_ptr @ offset+8
-    (f64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))
+    (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))
       (local.get $clos))
     ;; deadline_ns @ offset+16
     (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 16)))
@@ -166,7 +166,7 @@ const setupWasi = (ctx) => {
     (local $slot i32)
     (local $base i32)
     (local $dispatched i32)
-    (local $clos f64)
+    (local $clos i64)
     (local $interval f64)
     (local $id i32)
     (local.set $dispatched (i32.const 0))
@@ -183,7 +183,7 @@ const setupWasi = (ctx) => {
                 (local.get $now))
             (then
               ;; Read closure and interval before potentially clearing
-              (local.set $clos (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))))
+              (local.set $clos (i64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))))
               (local.set $interval (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 24)))))
               (local.set $id (i32.load (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))))
               ;; Interval? Reschedule
@@ -197,7 +197,7 @@ const setupWasi = (ctx) => {
                   (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))) (i32.const 0))
                   (global.set $__timer_count (i32.sub (global.get $__timer_count) (i32.const 1)))))
               ;; Fire closure with 0 args (shared trampoline)
-              (drop (call $__invoke_closure (local.get $clos)))
+              (drop (call $__invoke_closure (f64.reinterpret_i64 (local.get $clos))))
               (local.set $dispatched (i32.add (local.get $dispatched) (i32.const 1)))))))
       (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
       (br $scan)))
@@ -242,18 +242,18 @@ const setupWasi = (ctx) => {
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
     inc('__timer_add')
-    const t = temp('tc')
+    const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['local.set', `$${t}`, asI64(emit(closureExpr))],
       ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 0]]], 'f64')
   }
 
   // Emitter: setInterval(closure, delay) → timer_id
   ctx.core.emit['setInterval'] = (closureExpr, delayExpr) => {
     inc('__timer_add')
-    const t = temp('tc')
+    const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['local.set', `$${t}`, asI64(emit(closureExpr))],
       ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 1]]], 'f64')
   }
 
