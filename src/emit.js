@@ -1438,11 +1438,13 @@ export const emitter = {
     const tc = emitTypeofCmp(a, b, 'eq'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.eq', va, vb], 'i32')
-    // Both sides known-pure NUMBER → f64.eq (skip __eq's pointer-identity/string path).
-    // valTypeOf handles literals/arithmetic exprs; lookupValType covers typed locals/params.
+    // Either side known-pure NUMBER (literal or typed) → f64.eq is correct regardless
+    // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
+    // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
+    // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
     const vta = resolveValType(a, valTypeOf, lookupValType)
     const vtb = resolveValType(b, valTypeOf, lookupValType)
-    if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
+    if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
     // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
     // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
     // STRING needs __eq (heap strings can be equal by content but different pointers).
@@ -1469,7 +1471,7 @@ export const emitter = {
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
     const vta = resolveValType(a, valTypeOf, lookupValType)
     const vtb = resolveValType(b, valTypeOf, lookupValType)
-    if (vta === VAL.NUMBER && vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
+    if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
     if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
       return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     }
