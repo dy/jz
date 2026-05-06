@@ -388,7 +388,7 @@ export default (ctx) => {
     // commonly passed from JS via jz.memory.* without an in-program constructor.
     inc('__length')
     ctx.features.typedarray = true
-    return typed(['call', '$__length', va], 'f64')
+    return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
   }
 
   // Known-schema fields live in the object payload. Dynamic sidecars are only
@@ -524,27 +524,28 @@ export default (ctx) => {
     const lenArm = `(if (result f64) ${disj}
               (then
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
-                  (then (f64.convert_i32_s (call $__len (i64.reinterpret_f64 (local.get $v)))))
+                  (then (f64.convert_i32_s (call $__len (local.get $v))))
                   (else (f64.const nan:${UNDEF_NAN}))))
               (else (f64.const nan:${UNDEF_NAN})))`
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (then
               (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
-                (then (f64.convert_i32_s (call $__str_len (i64.reinterpret_f64 (local.get $v)))))
+                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
                 (else (f64.const nan:${UNDEF_NAN}))))
             (else ${lenArm}))`
     const afterNumber = ctx.features.sso
       ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
-          (then (f64.convert_i32_s (call $__ptr_aux (i64.reinterpret_f64 (local.get $v)))))
+          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
           (else ${stringArm}))`
       : stringArm
-    return `(func $__length (param $v f64) (result f64)
-    (local $t i32) (local $off i32)
-    (if (result f64) (f64.eq (local.get $v) (local.get $v))
+    return `(func $__length (param $v i64) (result f64)
+    (local $f f64) (local $t i32) (local $off i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (result f64) (f64.eq (local.get $f) (local.get $f))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
-        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $v))))
+        (local.set $t (call $__ptr_type (local.get $v)))
+        (local.set $off (call $__ptr_offset (local.get $v)))
         ${afterNumber})))`
   }
 
@@ -674,7 +675,7 @@ export default (ctx) => {
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
     ctx.features.closure = true
-    return typed(['call', '$__typeof', asF64(emit(a))], 'f64')
+    return typed(['call', '$__typeof', asI64(emit(a))], 'f64')
   }
 
   ctx.core.stdlib['__typeof'] = () => {
@@ -685,13 +686,14 @@ export default (ctx) => {
       ? `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
       (then (return (global.get $__tof_function))))`
       : ''
-    return `(func $__typeof (param $v f64) (result f64)
-    (local $t i32)
-    (if (f64.eq (local.get $v) (local.get $v))
+    return `(func $__typeof (param $v i64) (result f64)
+    (local $f f64) (local $t i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
       (then (return (global.get $__tof_number))))
-    (if (call $__is_nullish (i64.reinterpret_f64 (local.get $v)))
+    (if (call $__is_nullish (local.get $v))
       (then (return (global.get $__tof_undefined))))
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
+    (local.set $t (call $__ptr_type (local.get $v)))
     (if ${stringTest}
       (then (return (global.get $__tof_string))))
     ${closureArm}
