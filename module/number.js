@@ -502,39 +502,40 @@ export default (ctx) => {
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
-  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v f64) (result f64)
+  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64)
-    (if (f64.eq (local.get $v) (local.get $v))
-      (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $v))))))
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
+    (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $f))))))
+    (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.eqz
           (i32.or
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $v))))
+    (local.set $len (call $__str_byteLen (local.get $v)))
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
-      (br_if $ws (i32.gt_s (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 32)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 45)))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 43)))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     (local.set $radix (i32.const 10))
     (if (i32.and
       (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-      (i32.and (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 48))
-        (i32.or (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
-          (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
+      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
+        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
       (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
     (block $done (loop $lp
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
       (local.set $digit (i32.const -1))
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 48)))))
@@ -639,8 +640,7 @@ export default (ctx) => {
     if (vt === VAL.NUMBER)
       return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
     inc('__to_bigint')
-    return typed(['f64.reinterpret_i64',
-      ['i64.reinterpret_f64', ['call', '$__to_bigint', asF64(emit(x))]]], 'f64')
+    return typed(['call', '$__to_bigint', asI64(emit(x))], 'f64')
   }
 
   // BigInt.asIntN(bits, bigint) — truncate to signed N-bit
