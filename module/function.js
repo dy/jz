@@ -140,14 +140,14 @@ export default (ctx) => {
       const arrT = tempI32('sa')
       const lenL = tempI32('sl')
       const setup = [
-        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', asF64(args[0])]],
+        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(args[0])]]],
         ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${t}`]]],  // placeholder — set below
       ]
       // Rebuild setup properly since we need the array ptr before len call
       setup.length = 0
       const arrPtrF64 = temp('sp')
       setup.push(['local.set', `$${arrPtrF64}`, asF64(args[0])])
-      setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['local.get', `$${arrPtrF64}`]]])
+      setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrPtrF64}`]]]])
       setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrPtrF64}`]]])
 
       const W = ctx.closure.width ?? MAX_CLOSURE_ARITY

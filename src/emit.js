@@ -733,7 +733,7 @@ export function buildArrayWithSpreads(items) {
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
       if (sec.baseLocal) {
-        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['local.get', `$${sec.local}`]]])
+        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
         ir.push(['local.set', `$${sec.lenLocal}`, ['i32.load', ['i32.sub', ['local.get', `$${sec.baseLocal}`], ['i32.const', 8]]]])
       } else {
         // Cache __len once per spread; reused below for total-len sum and inner copy bound.
@@ -1922,7 +1922,7 @@ export const emitter = {
           ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
           ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           if (srcIsArr) {
-            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${sa}`]]])
+            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
             ir.push(['local.set', `$${sl}`, ['i32.load', ['i32.sub', ['local.get', `$${srcBase}`], ['i32.const', 8]]]])
           } else {
             ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
@@ -1930,7 +1930,7 @@ export const emitter = {
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
             ir.push(['local.set', `$${ol}`,
-              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${o}`]], ['i32.const', 8]]]])
+              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', 8]]]])
           } else {
             ir.push(['local.set', `$${ol}`, ['call', '$__len', ['local.get', `$${o}`]]])
           }
@@ -1938,7 +1938,7 @@ export const emitter = {
           ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['local.get', `$${o}`],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
           // base captured AFTER grow (grow may relocate the array).
-          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${o}`]]])
+          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
           // Tight store loop.
           ir.push(['local.set', `$${si}`, ['i32.const', 0]])
           const loopId = ctx.func.uniq++

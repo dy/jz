@@ -152,7 +152,7 @@ export default (ctx) => {
       (then
         (call $__jput (i32.const 91))  ;; [
         (local.set $len (call $__len (local.get $val)))
-        (local.set $off (call $__ptr_offset (local.get $val)))
+        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
         (local.set $i (i32.const 0))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
@@ -177,7 +177,7 @@ export default (ctx) => {
   // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
   ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val f64)
     (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32)
-    (local.set $off (call $__ptr_offset (local.get $val)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $first (i32.const 1))
     (call $__jput (i32.const 123))
@@ -205,11 +205,11 @@ export default (ctx) => {
   ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val f64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32)
-    (local.set $off (call $__ptr_offset (local.get $val)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
     (local.set $sid (call $__ptr_aux (i64.reinterpret_f64 (local.get $val))))
     ;; Load keys array from schema table: schema_tbl + sid * 8
-    (local.set $keys (call $__ptr_offset
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+    (local.set $keys (call $__ptr_offset (i64.reinterpret_f64
+      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))))
     (local.set $nkeys (call $__len
       (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
@@ -481,7 +481,7 @@ export default (ctx) => {
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l))))
       (else
-        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
+        (memory.copy (local.get $buf) (call $__ptr_offset (i64.reinterpret_f64 (local.get $str))) (local.get $len))))
     (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))

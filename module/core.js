@@ -140,9 +140,9 @@ export default (ctx) => {
           (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const 0x7FFF)) (i64.const 32))
           (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const 0xFFFFFFFF)))))))`
 
-  ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr f64) (result i32)
+  ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr i64) (result i32)
     (local $bits i64) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $bits (local.get $ptr))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     ;; Arrays can be reallocated during growth; follow forwarding pointer (cap=-1 sentinel).
     ;; Bounds are checked inside the loop so non-array ptrs skip them entirely, and well-formed
@@ -221,7 +221,7 @@ export default (ctx) => {
   // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
   ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr f64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
     (if (result i32) (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8))
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`
@@ -268,7 +268,7 @@ export default (ctx) => {
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
     (if (result i32)
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 4))
@@ -294,7 +294,7 @@ export default (ctx) => {
   // String (heap): [-4:len(i32)][chars...]
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
     (if (result i32)
       (i32.and
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.STRING}))
@@ -544,7 +544,7 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
-        (local.set $off (call $__ptr_offset (local.get $v)))
+        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $v))))
         ${afterNumber})))`
   }
 
@@ -707,7 +707,7 @@ export default (ctx) => {
   ctx.core.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')
   ctx.core.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64')
   ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64')
-  ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asF64(emit(p))]], 'f64')
+  ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64')
 
   // Error(msg) — passthrough (throw handles any value)
   ctx.core.emit['Error'] = (msg) => asF64(emit(msg))

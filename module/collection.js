@@ -132,7 +132,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
   return `(func $${name} (param $coll f64) (param $key f64) (result i32)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     (if (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $coll))) (i32.const ${expectedType})) (then (return (i32.const 0))))
-    (local.set $off (call $__ptr_offset (local.get $coll)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $coll))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -174,7 +174,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (local $size i32) (local $newptr i32) (local $newcap i32) (local $i i32)
     (local $oldslot i32) (local $newidx i32) (local $newslot i32)
     ${typeGuard}
-    (local.set $off (call $__ptr_offset (local.get $obj)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $obj))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ;; Grow if load factor > 75%: size * 4 >= cap * 3
@@ -1008,7 +1008,7 @@ export default (ctx) => {
     const va = asF64(emit(src))
     const bodyFlat = emitFlat(body)
     return [
-      ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
+      ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${cap}`, ['call', '$__cap', va]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,

@@ -760,7 +760,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_join'] = `(func $__str_join (param $arr f64) (param $sep f64) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $result f64)
-    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
     (local.set $len (call $__len (local.get $arr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
@@ -1074,7 +1074,7 @@ export default (ctx) => {
   // .decode(uint8arr) → string from byte data
   ctx.core.stdlib['__bytes_decode'] = `(func $__bytes_decode (param $arr f64) (result f64)
     (local $off i32) (local $len i32) (local $dst i32)
-    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
     (local.set $len (call $__len (local.get $arr)))
     (local.set $dst (call $__alloc (i32.add (i32.const 4) (local.get $len))))
     (i32.store (local.get $dst) (local.get $len))

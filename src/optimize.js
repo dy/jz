@@ -453,9 +453,11 @@ export function hoistInvariantPtrOffset(fn) {
       const callee = node[1]
       if (callee === '$__ptr_offset' && node.length === 3) {
         const a = node[2]
-        if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && params.has(a[1])) {
-          let arr = sites.get(a[1])
-          if (!arr) { arr = []; sites.set(a[1], arr) }
+        // Post-i64 migration: arg may be (i64.reinterpret_f64 (local.get X)).
+        const inner = (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) ? a[1] : a
+        if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string' && params.has(inner[1])) {
+          let arr = sites.get(inner[1])
+          if (!arr) { arr = []; sites.set(inner[1], arr) }
           arr.push({ parent, idx: pi })
           return
         }
@@ -463,8 +465,9 @@ export function hoistInvariantPtrOffset(fn) {
       const isSafe = SAFE_OFFSET_CALLS.has(callee)
       for (let i = 2; i < node.length; i++) {
         const arg = node[i]
-        if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string' && params.has(arg[1])) {
-          if (!isSafe) unsafe.add(arg[1])
+        const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
+        if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string' && params.has(inner[1])) {
+          if (!isSafe) unsafe.add(inner[1])
           continue
         }
         walk(arg, node, i)
@@ -501,7 +504,7 @@ export function hoistInvariantPtrOffset(fn) {
     if (arr.length < 2) continue
     const tLocal = `$__po${hoistId++}`
     newLocals.push(['local', tLocal, 'i32'])
-    snaps.push(['local.set', tLocal, ['call', '$__ptr_offset', ['local.get', X]]])
+    snaps.push(['local.set', tLocal, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', X]]]])
     for (const { parent, idx } of arr) {
       parent[idx] = ['local.get', tLocal]
     }

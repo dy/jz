@@ -186,7 +186,7 @@ export function ptrOffsetIR(valIR, valType) {
     return ['i32.wrap_i64', ['i64.reinterpret_f64', valIR]]
   }
   inc('__ptr_offset')
-  return ['call', '$__ptr_offset', valIR]
+  return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
 }
 
 /** Map VAL.* → PTR.* when unambiguous. STRING is ambiguous (heap vs SSO). ARRAY maps
@@ -588,7 +588,7 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
     inc('__ptr_offset')
     setup.push(
       ['local.set', `$${arr}`, asF64(arrExpr)],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]],
     )
   }
   if (!lenLocal) setup.push(

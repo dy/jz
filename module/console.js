@@ -80,7 +80,7 @@ const setupWasi = (ctx) => {
         (i32.store (local.get $iov) (local.get $buf))
         (i32.store (i32.add (local.get $iov) (i32.const 4)) (local.get $len)))
       (else
-        (i32.store (local.get $iov) (call $__ptr_offset (local.get $ptr)))
+        (i32.store (local.get $iov) (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
         (i32.store (i32.add (local.get $iov) (i32.const 4)) (call $__str_len (local.get $ptr)))))
     (drop (call $__fd_write (local.get $fd) (local.get $iov) (i32.const 1)
       (i32.add (local.get $iov) (i32.const 8)))))`

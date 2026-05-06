@@ -329,7 +329,7 @@ export default (ctx) => {
           (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 4))
           (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 5)))
       (then (return (f64.const nan))))
-    (local.set $off (call $__ptr_offset (local.get $str)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $str))))
     (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $i (i32.const 0))
     ;; Skip whitespace

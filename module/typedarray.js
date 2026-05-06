@@ -225,7 +225,7 @@ export default (ctx) => {
         (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then
-        (local.set $off (call $__ptr_offset (local.get $ptr)))
+        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
         (if (result i32)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -245,7 +245,7 @@ export default (ctx) => {
     (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
       (then (local.get $ptr))
       (else
-        (local.set $off (call $__ptr_offset (local.get $ptr)))
+        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
         (if (result f64)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -290,7 +290,7 @@ export default (ctx) => {
       // TYPED retagged at the same offset — the byteLen header is shared with the parent.
       // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
-        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', asF64(emit(lenExpr))])
+        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
@@ -313,7 +313,7 @@ export default (ctx) => {
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.ARRAY]],
               ['then', ctx.core.emit[`${name}.from`](src)],
               ['else', mkPtrIR(PTR.TYPED, elemType,
-                ['call', '$__ptr_offset', ['local.get', `$${src}`]])]]]]], 'f64')
+                ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
@@ -346,7 +346,7 @@ export default (ctx) => {
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
     ctx.features.typedarray = true
     const va = asF64(emit(bufExpr))
-    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', va])
+    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
   }
 
   // .buffer — always aliased (zero-copy). BUFFER/DataView: passthrough.
@@ -423,7 +423,7 @@ export default (ctx) => {
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
       (then
-        (local.set $off (call $__ptr_offset (local.get $ptr)))
+        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
         (i32.sub
           (i32.load (i32.add (local.get $off) (i32.const 4)))
           (i32.load (i32.add (local.get $off) (i32.const 8)))))
@@ -461,7 +461,7 @@ export default (ctx) => {
       out.init,
       ['memory.copy',
         ['local.get', `$${out.local}`],
-        ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${src}`]], ['local.get', `$${beg}`]],
+        ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['local.get', `$${beg}`]],
         ['local.get', `$${bytes}`]],
       out.ptr], 'f64')
   }
@@ -530,7 +530,7 @@ export default (ctx) => {
             ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${srcL}`]]],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
         ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcL}`]]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
@@ -578,12 +578,12 @@ export default (ctx) => {
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
-      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
+      (else (f64.load (i32.add (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
     return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
     (if
       (i32.and
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
@@ -620,7 +620,7 @@ export default (ctx) => {
   ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
     (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
