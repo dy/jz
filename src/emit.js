@@ -1935,7 +1935,7 @@ export const emitter = {
             ir.push(['local.set', `$${ol}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
           }
           // Single grow for the full spread (vs per-element grow check in the generic loop).
-          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['local.get', `$${o}`],
+          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
           // base captured AFTER grow (grow may relocate the array).
           ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])

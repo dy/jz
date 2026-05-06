@@ -395,11 +395,11 @@ export default (ctx) => {
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
   // Old storage is left behind as a forwarding header so existing aliases keep
   // seeing the current backing store after growth.
-  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr i64) (param $minCap i32) (result f64)
     (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
     (if
       (i32.or
@@ -411,7 +411,7 @@ export default (ctx) => {
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
-      (then (return (local.get $ptr))))
+      (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (local.get $oldCap) (i32.const 1))
@@ -425,13 +425,13 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
 
-  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr i64) (param $minCap i32) (result f64)
     (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
-      (then (return (local.get $ptr))))
+      (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (local.get $oldCap) (i32.const 1))
@@ -456,7 +456,7 @@ export default (ctx) => {
     (if (i32.ge_u (local.get $i)
                   (i32.load (i32.sub (local.get $base) (i32.const 8))))
       (then
-        (local.set $ptr (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
+        (local.set $ptr (call $__arr_grow (i64.reinterpret_f64 (local.get $ptr)) (i32.add (local.get $i) (i32.const 1))))
         (call $__set_len (i64.reinterpret_f64 (local.get $ptr)) (i32.add (local.get $i) (i32.const 1)))
         (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))))
     (f64.store
@@ -736,7 +736,7 @@ export default (ctx) => {
             ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],
             ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]],
           ['then',
-            ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
+            ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
               ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
             ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]],
       )
@@ -744,7 +744,7 @@ export default (ctx) => {
       body.push(
         ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
         // Grow if needed: ensure cap >= len + vals.length
-        ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
+        ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
           ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
         ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       )
@@ -892,7 +892,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
     (local $off i32) (local $len i32)
-    (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (i64.reinterpret_f64 (local.get $arr))) (i32.const 1))))
+    (local.set $arr (call $__arr_grow (i64.reinterpret_f64 (local.get $arr)) (i32.add (call $__len (i64.reinterpret_f64 (local.get $arr))) (i32.const 1))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
     (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
     (memory.copy
