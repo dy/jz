@@ -1361,17 +1361,17 @@ export const emitter = {
         if (keyValType(b[1]) === VAL.STRING) {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
-            asF64(emit(a)),
+            asI64(emit(a)),
             ['call', '$__char_at', asI64(emit(b[1])), asI32(emit(b[2]))],
           ], 'f64')
         }
       }
       inc('__str_concat_raw')
-      return typed(['call', '$__str_concat_raw', asF64(emit(a)), asF64(emit(b))], 'f64')
+      return typed(['call', '$__str_concat_raw', asI64(emit(a)), asI64(emit(b))], 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       inc('__str_concat')
-      return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
+      return typed(['call', '$__str_concat', asI64(emit(a)), asI64(emit(b))], 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
@@ -1384,7 +1384,7 @@ export const emitter = {
       inc('__str_concat', '__is_str_key')
       const checkA = vtA == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, asF64(emit(a))]]] : null
       const checkB = vtB == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, asF64(emit(b))]]] : null
-      const concat = ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
       const add    = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')

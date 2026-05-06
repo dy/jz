@@ -822,11 +822,11 @@ export default (ctx) => {
         ['then', ['local.get', `$${s}`]],
         ['else',
           ['call', '$__str_concat',
-            ['call', '$__str_concat',
-              ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i32.const', 0], ['local.get', `$${ms}`]],
-              ['local.get', `$${r}`]],
-            ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
-              ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]], 'f64')
+            ['i64.reinterpret_f64', ['call', '$__str_concat',
+              ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i32.const', 0], ['local.get', `$${ms}`]]],
+              ['i64.reinterpret_f64', ['local.get', `$${r}`]]]],
+            ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
+              ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]]], 'f64')
   }
 
   // str.split(/re/) → array of substrings
