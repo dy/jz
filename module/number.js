@@ -319,45 +319,46 @@ export default (ctx) => {
   }
 
   // parseInt(str, radix) — parse string to integer
-  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
+  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str i64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $result f64) (local $digit i32) (local $seen i32)
+    (local $result f64) (local $digit i32) (local $seen i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $str)))
     ;; If input is a number, just truncate
-    (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.trunc (local.get $f)))))
     ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
     (if (i32.and
-          (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 4))
-          (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 5)))
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
+          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
       (then (return (f64.const nan))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $str))))
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $off (call $__ptr_offset (local.get $str)))
+    (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $i (i32.const 0))
     ;; Skip whitespace
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
-      (br_if $ws (i32.gt_s (call $__char_at (i64.reinterpret_f64 (local.get $str)) (local.get $i)) (i32.const 32)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $str) (local.get $i)) (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
     ;; Sign
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $str)) (local.get $i)) (i32.const 45)))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 45)))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $str)) (local.get $i)) (i32.const 43)))
+      (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     ;; 0x prefix → radix 16
     (if (i32.and (i32.eqz (local.get $radix))
       (i32.and (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-        (i32.and (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $str)) (local.get $i)) (i32.const 48))
-          (i32.or (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
-            (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (i32.const 1))) (i32.const 88))))))
+        (i32.and (i32.eq (call $__char_at (local.get $str) (local.get $i)) (i32.const 48))
+          (i32.or (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+            (i32.eq (call $__char_at (local.get $str) (i32.add (local.get $i) (i32.const 1))) (i32.const 88))))))
       (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
     (if (i32.eqz (local.get $radix)) (then (local.set $radix (i32.const 10))))
     ;; Parse digits
     (local.set $result (f64.const 0))
     (block $done (loop $lp
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (i64.reinterpret_f64 (local.get $str)) (local.get $i)))
+      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
       ;; Digit value
       (local.set $digit (i32.const -1))
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
@@ -559,7 +560,7 @@ export default (ctx) => {
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
-    return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
+    return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
   ctx.core.emit['Number.parseFloat'] = (x) => {
