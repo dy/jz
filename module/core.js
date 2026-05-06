@@ -228,9 +228,9 @@ export default (ctx) => {
 
   // Hot (~85M calls in watr self-host). Type/offset extraction inlined; forwarding
   // loop only entered for ARRAY. ARRAY fast path dominates (nodes?.length, out.length …).
-  ctx.core.stdlib['__len'] = `(func $__len (param $ptr f64) (result i32)
+  ctx.core.stdlib['__len'] = `(func $__len (param $ptr i64) (result i32)
     (local $bits i64) (local $t i32) (local $off i32) (local $aux i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $bits (local.get $ptr))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     ;; ARRAY fast path: follow forwarding inline, then load len at off-8.
@@ -375,7 +375,7 @@ export default (ctx) => {
       return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', off, ['i32.const', 8]]]], 'f64')
     }
     if (vt === VAL.TYPED)
-      return typed(['f64.convert_i32_s', ['call', '$__len', va]], 'f64')
+      return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     // Known string → byteLen (handles SSO + heap)
     if (vt === VAL.STRING) {
       inc('__str_byteLen')
@@ -524,7 +524,7 @@ export default (ctx) => {
     const lenArm = `(if (result f64) ${disj}
               (then
                 (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
-                  (then (f64.convert_i32_s (call $__len (local.get $v))))
+                  (then (f64.convert_i32_s (call $__len (i64.reinterpret_f64 (local.get $v)))))
                   (else (f64.const nan:${UNDEF_NAN}))))
               (else (f64.const nan:${UNDEF_NAN})))`
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
@@ -555,7 +555,7 @@ export default (ctx) => {
     if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
       if (prop === 'length') {
         const inner = ctx.schema.emitInner(obj)
-        return typed(['f64.convert_i32_s', ['call', '$__len', inner]], 'f64')
+        return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', inner]]], 'f64')
       }
       const idx = ctx.schema.find(obj, prop)
       if (idx >= 0) return emitSchemaSlotRead(asF64(emit(obj)), idx)

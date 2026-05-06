@@ -170,7 +170,7 @@ function genSimdMap(name, elemType, pattern) {
     (local $i i32) (local $simdLen i32) (local $byteOff i32)
     (local $v v128)
     ${scalarLocal}
-    (local.set $len (call $__len (local.get $src)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
     (local.set $srcOff (call $__typed_data (local.get $src)))
     ;; Alloc result typed array: header(8) + data. Header stores byteLen = len << ${shift}.
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $len) (i32.const ${shift})))))
@@ -376,7 +376,7 @@ export default (ctx) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer' || ctor === 'new.DataView') {
-        return typed(['f64.convert_i32_s', ['call', '$__len', asF64(emit(obj))]], 'f64')
+        return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]]], 'f64')
       }
       if (ctor && ctor.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
@@ -388,7 +388,7 @@ export default (ctx) => {
               ['i32.load', ptrOffsetIR(emit(obj), VAL.TYPED)]], 'f64')
           }
           return typed(['f64.convert_i32_s',
-            ['i32.shl', ['call', '$__len', asF64(emit(obj))], ['i32.const', SHIFT[et]]]], 'f64')
+            ['i32.shl', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]], ['i32.const', SHIFT[et]]]], 'f64')
         }
       }
     }
@@ -448,7 +448,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
     const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
     const endWat = endExpr == null
-      ? ['call', '$__len', ['local.get', `$${src}`]]
+      ? ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
       : asI32(emit(endExpr))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${src}`, asF64(emit(obj))],
@@ -531,7 +531,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
         ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
-        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcL}`]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -572,7 +572,7 @@ export default (ctx) => {
     if (!ctx.features.typedarray && !ctx.features.external) {
       return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $len i32)
-    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
@@ -589,7 +589,7 @@ export default (ctx) => {
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
@@ -710,7 +710,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${dst}`, r ? typedDataAddr(emit(arr), r.isView) : asF64(emit(arr))],
       ['local.set', `$${srcTmp}`, srcVal],
-      ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcTmp}`]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]]]],
       ['local.set', `$${off}`, offVal],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -772,7 +772,7 @@ export default (ctx) => {
       const id = ctx.func.uniq++
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
-        ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
         dst.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,

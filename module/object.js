@@ -201,7 +201,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
-      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
         ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
@@ -413,7 +413,7 @@ function emitHashKeys(obj) {
   const id = ctx.func.uniq++
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, va],
-    ['local.set', `$${n}`, ['call', '$__len', ['local.get', `$${t}`]]],
+    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${t}`]]],

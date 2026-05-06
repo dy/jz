@@ -467,7 +467,7 @@ export default (ctx) => {
   }
 
   ctx.core.emit['.size'] = (expr) => {
-    return typed(['f64.convert_i32_s', ['call', '$__len', asF64(emit(expr))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
   }
 
   // Generated Set probe functions
@@ -976,7 +976,7 @@ export default (ctx) => {
           ['if', isStringLike,
             ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_byteLen', objVal]]]]],
           ['if', isArrayLike,
-            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', objVal]]]]]]],
+            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', ['i64.reinterpret_f64', objVal]]]]]]]],
 
       ['if', isStringKey,
         ['then',

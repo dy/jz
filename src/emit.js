@@ -737,7 +737,7 @@ export function buildArrayWithSpreads(items) {
         ir.push(['local.set', `$${sec.lenLocal}`, ['i32.load', ['i32.sub', ['local.get', `$${sec.baseLocal}`], ['i32.const', 8]]]])
       } else {
         // Cache __len once per spread; reused below for total-len sum and inner copy bound.
-        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['local.get', `$${sec.local}`]]])
+        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
       }
     }
   }
@@ -1925,14 +1925,14 @@ export const emitter = {
             ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
             ir.push(['local.set', `$${sl}`, ['i32.load', ['i32.sub', ['local.get', `$${srcBase}`], ['i32.const', 8]]]])
           } else {
-            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
+            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
           }
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
             ir.push(['local.set', `$${ol}`,
               ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', 8]]]])
           } else {
-            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['local.get', `$${o}`]]])
+            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
           }
           // Single grow for the full spread (vs per-element grow check in the generic loop).
           ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['local.get', `$${o}`],
@@ -1992,7 +1992,7 @@ export const emitter = {
           inc('__len')
           const n = multiCount(spreadExpr)
           ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-          ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
+          ir.push(['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]])
           ir.push(['local.set', `$${idx}`,
             reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
           const loopId = ctx.func.uniq++
@@ -2043,7 +2043,7 @@ export const emitter = {
               const n = multiCount(spreadExpr)
               irG.push(
                 ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-                ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+                ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
                 ['local.set', `$${idxL}`, ['i32.const', 0]])
               const loopId = ctx.func.uniq++
               const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
@@ -2082,7 +2082,7 @@ export const emitter = {
             const n = multiCount(spreadExpr)
             irG.push(
               ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-              ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+              ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
               ['local.set', `$${idxL}`, ['i32.const', 0]])
             const loopId = ctx.func.uniq++
             const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))

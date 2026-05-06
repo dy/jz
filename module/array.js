@@ -301,7 +301,7 @@ export default (ctx) => {
     if (!ctx.features.typedarray && !ctx.features.external) {
       return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
     (local $len i32)
-    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
@@ -321,7 +321,7 @@ export default (ctx) => {
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (local.get $ptr)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
@@ -352,7 +352,7 @@ export default (ctx) => {
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
   ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
     (local $len i32) (local $dst i32)
-    (local.set $len (call $__len (local.get $src)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
     (memory.copy (local.get $dst) (call $__ptr_offset (i64.reinterpret_f64 (local.get $src))) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
@@ -519,7 +519,7 @@ export default (ctx) => {
 
         body.push(
           ['local.set', `$${src}`, spreadVal],
-          ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${src}`]]],
+          ['local.set', `$${slen}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
           ['local.set', `$${si}`, ['i32.const', 0]],
           ['block', `$brk${id}`, ['loop', `$loop${id}`,
             ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
@@ -744,7 +744,7 @@ export default (ctx) => {
       )
     } else {
       body.push(
-        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
         // Grow if needed: ensure cap >= len + vals.length
         ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
           ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
@@ -788,7 +788,7 @@ export default (ctx) => {
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const rawLen = vt === VAL.ARRAY
       ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]
-      : ['call', '$__len', ['local.get', `$${t}`]]
+      : ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, ['i32.sub', rawLen, ['i32.const', 1]]],
@@ -841,7 +841,7 @@ export default (ctx) => {
     const svt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const lenInit = svt === VAL.ARRAY
       ? ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]
-      : ['local.set', `$${len}`, ['call', '$__len', va]]
+      : ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]]
     const body = [
       recv.setup,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
@@ -894,9 +894,9 @@ export default (ctx) => {
 
   ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
     (local $off i32) (local $len i32)
-    (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
+    (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (i64.reinterpret_f64 (local.get $arr))) (i32.const 1))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
-    (local.set $len (call $__len (local.get $arr)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
     (memory.copy
       (i32.add (local.get $off) (i32.const 8))
       (local.get $off)
@@ -1283,7 +1283,7 @@ export default (ctx) => {
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-          ['call', '$__len', ['local.get', `$${a}`]]]]]],
+          ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]]]]],
       ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${a}`]]],
         ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
   }
@@ -1335,14 +1335,14 @@ export default (ctx) => {
     // Calculate total length
     const body = [
       recv.setup,
-      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
     ]
 
     const otherVals = []
     for (const other of others) {
       const vo = asF64(emit(other))
       otherVals.push(vo)
-      body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', vo]]])
+      body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', ['i64.reinterpret_f64', vo]]]])
     }
 
     body.push(out.init)
@@ -1351,7 +1351,7 @@ export default (ctx) => {
     const srcOff = tempI32('co')
     body.push(
       ['local.set', `$${pos}`, ['i32.const', 0]],
-      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]]
     )
     const id = ctx.func.uniq++
@@ -1367,7 +1367,7 @@ export default (ctx) => {
 
     // Copy each other array
     const offset = tempI32('off')
-    body.push(['local.set', `$${offset}`, ['call', '$__len', va]])
+    body.push(['local.set', `$${offset}`, ['call', '$__len', ['i64.reinterpret_f64', va]]])
 
     const otherOff = tempI32('co2')
     for (let i = 0; i < otherVals.length; i++) {
@@ -1375,7 +1375,7 @@ export default (ctx) => {
       const id2 = ctx.func.uniq++
       body.push(
         ['local.set', `$${pos}`, ['i32.const', 0]],
-        ['local.set', `$${len}`, ['call', '$__len', vo]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', vo]]],
         ['local.set', `$${otherOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', vo]]],
         ['block', `$done${id2}`, ['loop', `$loop${id2}`,
           ['br_if', `$done${id2}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
@@ -1397,7 +1397,7 @@ export default (ctx) => {
     (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
     (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $src))))
-    (local.set $len (call $__len (local.get $src)))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
     ;; First pass: count total elements
     (local.set $total (i32.const 0)) (local.set $i (i32.const 0))
     (block $c1 (loop $cl1
@@ -1405,7 +1405,7 @@ export default (ctx) => {
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
-        (then (local.set $total (i32.add (local.get $total) (call $__len (local.get $elem)))))
+        (then (local.set $total (i32.add (local.get $total) (call $__len (i64.reinterpret_f64 (local.get $elem))))))
         (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl1)))
@@ -1423,7 +1423,7 @@ export default (ctx) => {
         (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
         (then
           (local.set $subOff (call $__ptr_offset (i64.reinterpret_f64 (local.get $elem))))
-          (local.set $subLen (call $__len (local.get $elem)))
+          (local.set $subLen (call $__len (i64.reinterpret_f64 (local.get $elem))))
           (local.set $j (i32.const 0))
           (block $s (loop $sl
             (br_if $s (i32.ge_s (local.get $j) (local.get $subLen)))

@@ -151,7 +151,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (call $__jput (i32.const 91))  ;; [
-        (local.set $len (call $__len (local.get $val)))
+        (local.set $len (call $__len (i64.reinterpret_f64 (local.get $val))))
         (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
         (local.set $i (i32.const 0))
         (block $d (loop $l
@@ -210,8 +210,8 @@ export default (ctx) => {
     ;; Load keys array from schema table: schema_tbl + sid * 8
     (local.set $keys (call $__ptr_offset (i64.reinterpret_f64
       (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))))
-    (local.set $nkeys (call $__len
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+    (local.set $nkeys (call $__len (i64.reinterpret_f64
+      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))))
     (local.set $koff (local.get $keys))
     (call $__jput (i32.const 123))
     (block $d (loop $l
