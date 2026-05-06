@@ -305,3 +305,29 @@ test('Object.keys: existing OBJECT-literal path still works', () => {
   }`)
   is(f(), 3)
 })
+// Trailing commas in object literals: subscript represents `{a:1, b,}` as
+// `[",", [":","a",1], "b", null]` — a phantom `null` entry past the last
+// real prop. Without filtering in prep, the literal carried an extra
+// "literal 0" slot and any downstream destructure or read-by-position
+// resolved against the wrong layout.
+test('Regression: object literal trailing comma after shorthand', () => {
+  is(run(`export let f = () => {
+    let a = 10, b = 20
+    let o = { a, b, }
+    return o.a + o.b
+  }`).f(), 30)
+})
+
+test('Regression: object literal trailing comma feeding cross-fn destruct', () => {
+  is(run(`
+    let g = ({ method, input }) => method && input ? 1 : 0
+    export let f = () => {
+      let m = { name: "x" }
+      let input = { y: 1 }
+      return g({
+        method: m,
+        input,
+      })
+    }
+  `).f(), 1)
+})

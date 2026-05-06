@@ -1216,9 +1216,14 @@ const handlers = {
       }
       return prep(p)
     }
-    const result = Array.isArray(inner) && inner[0] === ','
-      ? ['{}', ...inner.slice(1).map(prop)]
-      : ['{}', prop(inner)]
+    // Drop trailing-comma artifacts: subscript represents `{a:1, b,}` as
+    // `[",", [":","a",1], "b", null]` — the trailing `null` would prep to a
+    // literal-0 entry, leaving the literal carrying a phantom slot and
+    // shifting any subsequent slot-position resolution.
+    const items = Array.isArray(inner) && inner[0] === ','
+      ? inner.slice(1).filter(p => p != null)
+      : [inner]
+    const result = ['{}', ...items.map(prop)]
     // Register schema so property access works for function params (duck typing)
     const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
     if (props.length && ctx.schema.register) ctx.schema.register(props)
