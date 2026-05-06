@@ -165,13 +165,13 @@ function genSimdMap(name, elemType, pattern) {
     : `(local.set $ei (${scalarLoad} ${byteOff}))`
   const scalarStoreExpr = `${scalarLoadSet}\n      (${store} ${dstByteOff} ${scalarOp})`
 
-  return `(func $${name} (param $src f64) (result f64)
+  return `(func $${name} (param $src i64) (result f64)
     (local $len i32) (local $srcOff i32) (local $dstOff i32) (local $dst i32)
     (local $i i32) (local $simdLen i32) (local $byteOff i32)
     (local $v v128)
     ${scalarLocal}
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
-    (local.set $srcOff (call $__typed_data (i64.reinterpret_f64 (local.get $src))))
+    (local.set $len (call $__len (local.get $src)))
+    (local.set $srcOff (call $__typed_data (local.get $src)))
     ;; Alloc result typed array: header(8) + data. Header stores byteLen = len << ${shift}.
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $len) (i32.const ${shift})))))
     (i32.store (local.get $dst) (i32.shl (local.get $len) (i32.const ${shift})))
@@ -742,7 +742,7 @@ export default (ctx) => {
         if (wat) {
           ctx.core.stdlib[funcName] = wat
           inc(funcName, '__typed_data', '__len')
-          return typed(['call', `$${funcName}`, asF64(emit(arr))], 'f64')
+          return typed(['call', `$${funcName}`, asI64(emit(arr))], 'f64')
         }
       }
     }
