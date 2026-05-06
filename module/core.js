@@ -119,11 +119,11 @@ export default (ctx) => {
 
   // Default dynamic-property helpers are harmless stubs. The collection module
   // overrides them with the real sidecar-property implementation.
-  ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (f64.const nan:${UNDEF_NAN}))`
-  ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
+  ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
+    (i64.const ${UNDEF_NAN}))`
+  ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj i64) (param $key i64) (param $fallback i64) (result i64)
     (local.get $fallback))`
-  ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
+  ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local.get $val))`
   ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32))`
 
@@ -402,27 +402,27 @@ export default (ctx) => {
 
   function emitHashGetLocalConst(base, key, prop) {
     inc('__hash_get_local_h')
-    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
-    return typed(['call', '$__hash_get_local_h', receiver, key, ['i32.const', strHashLiteral(prop)]], 'f64')
+    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', receiver, key, ['i32.const', strHashLiteral(prop)]]], 'f64')
   }
 
   function emitTypeTag(receiver, vt) {
     const p = PTR_BY_VAL[vt]
     if (p != null) return ['i32.const', p]
     inc('__ptr_type')
-    return ['call', '$__ptr_type', ['i64.reinterpret_f64', receiver]]
+    return ['call', '$__ptr_type', receiver]
   }
 
   function emitDynGetExprTyped(base, key, vt) {
     inc('__dyn_get_expr_t')
-    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
-    return typed(['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)], 'f64')
+    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
   }
 
   function emitDynGetAnyTyped(base, key, vt) {
     inc('__dyn_get_any_t')
-    const receiver = base?.type ? asF64(base) : typed(base, 'f64')
-    return typed(['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)], 'f64')
+    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
   }
 
   // Walk an AST expression that may resolve to an OBJECT literal at compile
@@ -479,7 +479,7 @@ export default (ctx) => {
     const slot = literalSlot(obj, prop)
     if (slot >= 0) return emitSchemaSlotRead(asF64(va), slot)
     const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
-    const key = asF64(emit(['str', prop]))
+    const key = asI64(emit(['str', prop]))
     if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
@@ -494,7 +494,7 @@ export default (ctx) => {
         return emitDynGetAnyTyped(va, key, vt)
       }
       inc('__hash_get', '__str_hash', '__str_eq')
-      return typed(['call', '$__hash_get', asF64(va), key], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__hash_get', asI64(va), key]], 'f64')
     }
     // Non-string receiver: route through HASH fast path when valTypeOf can
     // resolve the chain to a known HASH (e.g. `o.meta.bias` where `o.meta` is
@@ -504,7 +504,7 @@ export default (ctx) => {
       return emitHashGetLocalConst(va, key, prop)
     }
     inc('__dyn_get_expr')
-    return typed(['call', '$__dyn_get_expr', asF64(va), key], 'f64')
+    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', asI64(va), key]], 'f64')
   }
 
   // Runtime .length dispatch — factory elides branches for types that can't exist in
@@ -615,21 +615,21 @@ export default (ctx) => {
         if (typeof obj === 'string') {
           const objType = lookupValType(obj)
           if (usesDynProps(objType)) {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), objType)
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
           } else if (objType === VAL.HASH) {
-            access = emitHashGetLocalConst(['local.get', `$${t}`], asF64(emit(['str', prop])), prop)
+            access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else if (objType == null) {
             ctx.features.external = true
-            access = emitDynGetAnyTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), objType)
+            access = emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
-            access = ['call', '$__hash_get', ['local.get', `$${t}`], asF64(emit(['str', prop]))]
+            access = ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
           }
         } else {
           if (valTypeOf(obj) === VAL.HASH) {
-            access = emitHashGetLocalConst(['local.get', `$${t}`], asF64(emit(['str', prop])), prop)
+            access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asF64(emit(['str', prop])), valTypeOf(obj))
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj))
           }
         }
       }

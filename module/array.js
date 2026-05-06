@@ -211,8 +211,10 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (local.set $root (global.get $__dyn_props))
             (if (f64.eq (local.get $root) (f64.const 0))
               (then (local.set $root (call $__hash_new))))
-            (local.set $root (call $__ihash_set_local (local.get $root)
-              (f64.convert_i32_s (local.get $newOff)) (local.get $oldProps)))
+            (local.set $root (f64.reinterpret_i64 (call $__ihash_set_local
+              (i64.reinterpret_f64 (local.get $root))
+              (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff)))
+              (i64.reinterpret_f64 (local.get $oldProps)))))
             (global.set $__dyn_props (local.get $root)))))) ` : ''
 
 export default (ctx) => {
@@ -573,11 +575,11 @@ export default (ctx) => {
     }
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
-      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')
     }
     if (litKey != null && typeof arr !== 'string' && valTypeOf(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
-      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
@@ -587,7 +589,7 @@ export default (ctx) => {
     const dynLoad = (objExpr, keyExpr) => {
       if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       inc('__dyn_get')
-      return ['call', '$__dyn_get', objExpr, keyExpr]
+      return ['f64.reinterpret_i64', ['call', '$__dyn_get', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])

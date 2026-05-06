@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep } from '../src/analyze.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
@@ -65,8 +65,8 @@ export default (ctx) => {
         inc('__dyn_set')
         const body = [['local.set', `$${ptr}`, staticPtr]]
         for (let i = 0; i < schema.length; i++)
-          body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`],
-            emit(['str', String(schema[i])]), asF64(emitted[i])]])
+          body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]],
+            asI64(emit(['str', String(schema[i])])), asI64(emitted[i])]])
         body.push(['local.get', `$${ptr}`])
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
@@ -81,8 +81,8 @@ export default (ctx) => {
     if (shadow) {
       inc('__dyn_set')
       for (let i = 0; i < schema.length; i++)
-        body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-          ['f64.load', slotAddr(t, i)]]])
+        body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
+          ['i64.load', slotAddr(t, i)]]])
     }
     body.push(['local.get', `$${ptr}`])
 
@@ -209,9 +209,9 @@ export default (ctx) => {
         ['local.set', `$${pair}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64',
           ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]],
         // hash_set(result, pair[0], pair[1])
-        ['local.set', `$${t}`, ['call', '$__hash_set', ['local.get', `$${t}`],
-          ['f64.load', ['local.get', `$${pair}`]],
-          ['f64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]],
+        ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+          ['i64.load', ['local.get', `$${pair}`]],
+          ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
       ['local.get', `$${t}`]], 'f64')
@@ -351,9 +351,9 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
         for (let i = 0; i < schema.length; i++) {
           const slot = slotAddr(t, i)
           body.push(['f64.store', slot,
-            ['call', '$__dyn_get_or', ['local.get', `$${srcF}`],
-              emit(['str', String(schema[i])]),
-              ['f64.load', slot]]])
+            ['f64.reinterpret_i64', ['call', '$__dyn_get_or', ['i64.reinterpret_f64', ['local.get', `$${srcF}`]],
+              asI64(emit(['str', String(schema[i])])),
+              ['i64.load', slot]]]])
         }
         continue
       }
@@ -373,8 +373,8 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   if (needsDynShadow(spreadTarget)) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)
-      body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-        ['f64.load', slotAddr(t, i)]]])
+      body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
+        ['i64.load', slotAddr(t, i)]]])
   }
   body.push(['local.get', `$${ptr}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')

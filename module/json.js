@@ -62,7 +62,7 @@ export default (ctx) => {
       const body = [obj.init, ['local.set', `$${h}`, obj.ptr]]
       for (const k of keys) {
         body.push(['local.set', `$${h}`,
-          ['call', '$__hash_set_local_h', ['local.get', `$${h}`], asF64(emit(['str', k])), ['i32.const', strHashLiteral(k)], emitJsonConstValue(v[k])]])
+          ['f64.reinterpret_i64', ['call', '$__hash_set_local_h', ['i64.reinterpret_f64', ['local.get', `$${h}`]], asI64(emit(['str', k])), ['i32.const', strHashLiteral(k)], asI64(emitJsonConstValue(v[k]))]]])
       }
       body.push(['local.get', `$${h}`])
       if (keys.length) inc('__hash_set_local_h')
@@ -430,7 +430,7 @@ export default (ctx) => {
       (if (i32.eq (call $__jp_peek) (i32.const 58))
         (then (call $__jp_adv (i32.const 1))))
       (call $__jp_ws)
-      (local.set $obj (call $__hash_set_local (local.get $obj) (local.get $key) (call $__jp_val)))
+      (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (call $__jp_val)))))
       (call $__jp_ws)
       (local.set $ch (call $__jp_peek))
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))

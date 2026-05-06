@@ -1049,7 +1049,7 @@ export const emitter = {
         if (ctx.transform.strict)
           err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
         inc('__dyn_set')
-        return typed(['call', '$__dyn_set', asF64(emit(arr)), keyExpr, valueExpr], 'f64')
+        return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
       }
       const dispatchKey = (numericIR) => {
         if (ctx.transform.strict)
@@ -1058,7 +1058,7 @@ export const emitter = {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, keyExpr],
           ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
-            ['then', ['call', '$__dyn_set', asF64(emit(arr)), ['local.get', `$${keyTmp}`], valueExpr]],
+            ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
       // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
@@ -1234,7 +1234,7 @@ export const emitter = {
             ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]], ['local.get', `$${t}`]],
           ]
           if (shadow)
-            stmts.push(['drop', ['call', '$__dyn_set', asF64(va), asF64(emit(['str', prop])), ['local.get', `$${t}`]]])
+            stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
           stmts.push(['local.get', `$${t}`])
           return typed(['block', ['result', 'f64'], ...stmts], 'f64')
         }
@@ -1243,22 +1243,22 @@ export const emitter = {
         const objType = keyValType(obj)
         if (usesDynProps(objType)) {
           inc('__dyn_set')
-          return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }
         if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
           inc('__dyn_set')
-          return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }
         if (objType == null) ctx.features.external = true
         inc('__hash_set')
-        const setCall = typed(['call', '$__hash_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+        const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
           ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
         return typed(['local.tee', `$${obj}`, setCall], 'f64')
       }
       ctx.features.external = true
       inc('__dyn_set')
-      return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     const void_ = _expect === 'void'
@@ -2187,7 +2187,7 @@ export const emitter = {
         ctx.func.locals.set(objTmp, 'f64')
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
         const arrayIR = buildArrayWithSpreads(combined)
-        const propRead = typed(['call', '$__dyn_get_expr', ['local.get', `$${objTmp}`], asF64(emit(['str', method]))], 'f64')
+        const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
         const propTmp = `${T}mprop${ctx.func.uniq++}`
         ctx.func.locals.set(propTmp, 'f64')
         if (usesDynProps(vt)) {
