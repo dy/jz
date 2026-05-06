@@ -17,7 +17,7 @@
  * @module console
  */
 
-import { typed, asF64, mkPtrIR } from '../src/ir.js'
+import { typed, asF64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL, exprType } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -97,8 +97,14 @@ const setupWasi = (ctx) => {
       (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf)))))`
   ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
     (local $type i32)
+    (local $bits i64)
     (if (f64.eq (local.get $val) (local.get $val))
       (then (call $__write_num (local.get $fd) (local.get $val)) (return)))
+    (local.set $bits (i64.reinterpret_f64 (local.get $val)))
+    (if (i64.eq (local.get $bits) (i64.const ${NULL_NAN}))
+      (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 5))) (return)))
+    (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
+      (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 6))) (return)))
     (local.set $type (call $__ptr_type (local.get $val)))
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 0))) (return)))
