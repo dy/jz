@@ -219,7 +219,7 @@ export default (ctx) => {
   // at descriptor[0].
   ctx.core.stdlib['__byte_length'] = `(func $__byte_length (param $ptr f64) (result i32)
     (local $t i32) (local $off i32)
-    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (if (result i32)
       (i32.or
         (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
@@ -241,7 +241,7 @@ export default (ctx) => {
   // the root ArrayBuffer so its own header supplies byteLength.
   ctx.core.stdlib['__to_buffer'] = `(func $__to_buffer (param $ptr f64) (result f64)
     (local $t i32) (local $off i32)
-    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
       (then (local.get $ptr))
       (else
@@ -310,7 +310,7 @@ export default (ctx) => {
               numAlloc.ptr]],
             // Pointer: array → copy elements; buffer/typed → zero-copy view on same offset
             ['else', ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.ARRAY]],
               ['then', ctx.core.emit[`${name}.from`](src)],
               ['else', mkPtrIR(PTR.TYPED, elemType,
                 ['call', '$__ptr_offset', ['local.get', `$${src}`]])]]]]], 'f64')
@@ -420,7 +420,7 @@ export default (ctx) => {
     (local $off i32)
     (if (result i32)
       (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
       (then
         (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -435,7 +435,7 @@ export default (ctx) => {
     if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
     return typed(['f64.convert_i32_s',
-      ['i32.eq', ['call', '$__ptr_type', va], ['i32.const', PTR.TYPED]]], 'f64')
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', va]], ['i32.const', PTR.TYPED]]], 'f64')
   }
 
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
@@ -586,7 +586,7 @@ export default (ctx) => {
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if
       (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $len (call $__len (local.get $ptr)))
@@ -596,7 +596,7 @@ export default (ctx) => {
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (if (result f64) (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
           (then
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))

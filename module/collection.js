@@ -131,7 +131,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
 function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
   return `(func $${name} (param $coll f64) (param $key f64) (result i32)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
+    (if (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $coll))) (i32.const ${expectedType})) (then (return (i32.const 0))))
     (local.set $off (call $__ptr_offset (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
@@ -158,14 +158,14 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
  *  Object.create) that receive property writes — without it writes silently vanish. */
 function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false, hasExt = false) {
   const nonHashFallback = hasExt
-    ? `(if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL}))
+    ? `(if (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $obj))) (i32.const ${PTR.EXTERNAL}))
             (then (call $__ext_set (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $val))) drop)
             (else (call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop))`
     : `(call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop`
   const typeGuard = strict
-    ? `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
+    ? `(if (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $obj))) (i32.const ${typeConst}))
       (then (return (local.get $obj))))`
-    : `(if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${typeConst}))
+    : `(if (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $obj))) (i32.const ${typeConst}))
         (then
           ${nonHashFallback}
           (return (local.get $obj))))`
@@ -666,7 +666,7 @@ export default (ctx) => {
           (br $schemaSetLoop)))))` : ''
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
-    (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+    (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (i64.reinterpret_f64 (local.get $obj)))))`
 
   ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj f64) (param $key f64) (param $type i32) (result f64)
     (local $props f64) (local $bits i64) (local $off i32)
@@ -761,7 +761,7 @@ export default (ctx) => {
       (else (local.get $val))))`
 
   ctx.core.stdlib['__dyn_get_expr'] = `(func $__dyn_get_expr (param $obj f64) (param $key f64) (result f64)
-    (call $__dyn_get_expr_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+    (call $__dyn_get_expr_t (local.get $obj) (local.get $key) (call $__ptr_type (i64.reinterpret_f64 (local.get $obj)))))`
 
   ctx.core.stdlib['__dyn_get_expr_t'] = `(func $__dyn_get_expr_t (param $obj f64) (param $key f64) (param $t i32) (result f64)
     (local $val f64)
@@ -783,7 +783,7 @@ export default (ctx) => {
     // call was always wasted work on hashes — and JSON.parse / Map-style code is the
     // dominant HASH consumer.
     return `(func $__dyn_get_any (param $obj f64) (param $key f64) (result f64)
-    (call $__dyn_get_any_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
+    (call $__dyn_get_any_t (local.get $obj) (local.get $key) (call $__ptr_type (i64.reinterpret_f64 (local.get $obj)))))`
   }
 
   ctx.core.stdlib['__dyn_get_any_t'] = () => {
@@ -964,7 +964,7 @@ export default (ctx) => {
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${keyTmp}`, asF64(emit(key))],
       ['local.set', `$${outTmp}`, ['i32.const', 0]],
-      ['local.set', `$${typeTmp}`, ['call', '$__ptr_type', objVal]],
+      ['local.set', `$${typeTmp}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', objVal]]],
       ['local.set', `$${idxTmp}`, ['i32.trunc_sat_f64_s', keyVal]],
 
       ['if', ['i32.and',

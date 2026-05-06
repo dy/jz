@@ -111,7 +111,7 @@ export default (ctx) => {
     (if (result i32) (f64.eq (local.get $f) (local.get $f))
       (then (i32.const 0))
       (else
-        (local.set $t (call $__ptr_type (local.get $f)))
+        (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $f))))
         (i32.or
           (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
           (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))))`
@@ -163,8 +163,8 @@ export default (ctx) => {
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))`
 
-  ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr f64) (result i32)
-    (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $ptr)) (i64.const 47)) (i64.const 0xF))))`
+  ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))`
 
   // === Bump allocator ===
 
@@ -267,7 +267,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)
-    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
@@ -297,7 +297,7 @@ export default (ctx) => {
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.STRING}))
         (i32.ge_u (local.get $off) (i32.const 4)))
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
@@ -410,7 +410,7 @@ export default (ctx) => {
     const p = PTR_BY_VAL[vt]
     if (p != null) return ['i32.const', p]
     inc('__ptr_type')
-    return ['call', '$__ptr_type', receiver]
+    return ['call', '$__ptr_type', ['i64.reinterpret_f64', receiver]]
   }
 
   function emitDynGetExprTyped(base, key, vt) {
@@ -543,7 +543,7 @@ export default (ctx) => {
     (if (result f64) (f64.eq (local.get $v) (local.get $v))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $t (call $__ptr_type (local.get $v)))
+        (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
         (local.set $off (call $__ptr_offset (local.get $v)))
         ${afterNumber})))`
   }
@@ -691,7 +691,7 @@ export default (ctx) => {
       (then (return (global.get $__tof_number))))
     (if (call $__is_nullish (i64.reinterpret_f64 (local.get $v)))
       (then (return (global.get $__tof_undefined))))
-    (local.set $t (call $__ptr_type (local.get $v)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
     (if ${stringTest}
       (then (return (global.get $__tof_string))))
     ${closureArm}
@@ -705,7 +705,7 @@ export default (ctx) => {
 
   // Low-level pointer helpers callable from jz code
   ctx.core.emit['__mkptr'] = (t, a, o) => typed(['call', '$__mkptr', asI32(emit(t)), asI32(emit(a)), asI32(emit(o))], 'f64')
-  ctx.core.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asF64(emit(p))]], 'f64')
+  ctx.core.emit['__ptr_type'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_type', asI64(emit(p))]], 'f64')
   ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64')
   ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asF64(emit(p))]], 'f64')
 

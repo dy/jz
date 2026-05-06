@@ -326,8 +326,8 @@ export default (ctx) => {
     (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
     ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
     (if (i32.and
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
+          (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 4))
+          (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 5)))
       (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (local.get $str)))
     (local.set $len (call $__str_byteLen (local.get $str)))
@@ -383,7 +383,7 @@ export default (ctx) => {
     (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
     (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
-    (local.set $t (call $__ptr_type (local.get $v)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
     (if (i32.eqz
           (i32.or
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
@@ -506,7 +506,7 @@ export default (ctx) => {
     (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64)
     (if (f64.eq (local.get $v) (local.get $v))
       (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $v))))))
-    (local.set $t (call $__ptr_type (local.get $v)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
     (if (i32.eqz
           (i32.or
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))

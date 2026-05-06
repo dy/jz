@@ -255,7 +255,7 @@ export default (ctx) => {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${value}`]], ['i32.const', PTR.ARRAY]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${value}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
               ['local.set', `$${dst2}`, ['call', '$__arr_from', ['local.get', `$${value}`]]],
               ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['local.get', `$${value}`]]],

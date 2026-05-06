@@ -243,7 +243,7 @@ export default (ctx) => {
     const t = temp('t')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
@@ -400,7 +400,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
     (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
-    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
     (if
@@ -511,8 +511,8 @@ export default (ctx) => {
             : ctx.module.modules['string']
               ? ['if', ['result', 'f64'],
                 ['i32.or',
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.STRING]],
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.SSO]]],
+                  ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
+                  ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.SSO]]],
                 ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])],
                 ['else', (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
               : (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
@@ -685,8 +685,8 @@ export default (ctx) => {
         if (ctx.module.modules['string']) {
           return ['if', ['result', 'f64'],
             ['i32.or',
-              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, keyI32])],
             ['else', (['call', '$__typed_idx', ptrExpr, keyI32])]]
         }
@@ -697,8 +697,8 @@ export default (ctx) => {
       return typed(
         ['if', ['result', 'f64'],
           ['i32.or',
-            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
-            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
           ['then', stringLoad()],
           ['else', arrayLoad]],
         'f64')
@@ -1404,7 +1404,7 @@ export default (ctx) => {
       (br_if $c1 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
         (then (local.set $total (i32.add (local.get $total) (call $__len (local.get $elem)))))
         (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
@@ -1420,7 +1420,7 @@ export default (ctx) => {
       (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
         (then
           (local.set $subOff (call $__ptr_offset (local.get $elem)))
           (local.set $subLen (call $__len (local.get $elem)))

@@ -134,7 +134,7 @@ export default (ctx) => {
             (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
         (call $__jput_num (local.get $val)) (return)))
     ;; NaN-boxed pointer
-    (local.set $type (call $__ptr_type (local.get $val)))
+    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $val))))
     ;; Plain NaN (type=0) → null
     (if (i32.eqz (local.get $type))
       (then
@@ -471,7 +471,7 @@ export default (ctx) => {
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
     (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
     ;; SSO: byte-by-byte via __sso_char; STRING: bulk memcpy from string offset.
-    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
+    (if (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const ${PTR.SSO}))
       (then
         (local.set $i (i32.const 0))
         (block $d (loop $l

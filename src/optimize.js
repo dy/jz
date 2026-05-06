@@ -139,8 +139,10 @@ export function hoistPtrType(fn) {
 
     if (op === 'call' && node[1] === '$__ptr_type' && node.length === 3) {
       const arg = node[2]
-      if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string') {
-        const x = arg[1]
+      // Post-i64 migration: arg is (i64.reinterpret_f64 (local.get X)). Peel both wrappers.
+      const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
+      if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string') {
+        const x = inner[1]
         let region = open.get(x)
         if (!region) {
           region = []
@@ -1111,7 +1113,7 @@ function walkRewrite(node, doInline, counts) {
   if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {
     const fname = node[1]
     if (fname === '$__ptr_type') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', node[2]], ['i64.const', 47]]],
+      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', 47]]],
       ['i32.const', 0xF]]
     if (fname === '$__ptr_aux') return ['i32.and',
       ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', 32]]],

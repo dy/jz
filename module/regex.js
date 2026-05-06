@@ -657,7 +657,7 @@ export default (ctx) => {
   // SSO → heap normalizer: returns data offset (i32) for direct byte access
   ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
     (local $type i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
-    (local.set $type (call $__ptr_type (local.get $ptr)))
+    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.eq (local.get $type) (i32.const 4))
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))

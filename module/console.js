@@ -65,7 +65,7 @@ const setupWasi = (ctx) => {
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr f64)
     (local $iov i32) (local $type i32) (local $len i32) (local $off i32) (local $buf i32)
     (local.set $iov (call $__alloc (i32.const 12)))
-    (local.set $type (call $__ptr_type (local.get $ptr)))
+    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
       (then
         (local.set $len (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
@@ -111,7 +111,7 @@ const setupWasi = (ctx) => {
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 5))) (return)))
     (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 6))) (return)))
-    (local.set $type (call $__ptr_type (local.get $val)))
+    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $val))))
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 0))) (return)))
     (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))

@@ -513,7 +513,7 @@ export default (ctx) => {
       (then (return (call $__static_str (i32.const 5)))))
     (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
       (then (return (call $__static_str (i32.const 6)))))
-    (local.set $type (call $__ptr_type (local.get $val)))
+    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $val))))
     ;; Plain NaN (type=0) → "NaN" string
     (if (i32.eqz (local.get $type))
       (then (return (call $__static_str (i32.const 0)))))
