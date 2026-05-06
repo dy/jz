@@ -570,7 +570,7 @@ export default (ctx) => {
   ctx.core.emit['Boolean'] = (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
     inc('__is_truthy')
-    const v = asF64(emit(x))
+    const v = asI64(emit(x))
     return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
   }
 

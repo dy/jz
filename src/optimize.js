@@ -1121,9 +1121,10 @@ function walkRewrite(node, doInline, counts) {
         && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') return ['i32.or',
       ['i64.eq', node[2], ['i64.const', '0x7FF8000100000000']],
       ['i64.eq', node[2], ['i64.const', '0x7FF8000000000001']]]
-    if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'local.get') {
-      const lget = node[2]
-      const bits = ['i64.reinterpret_f64', lget]
+    if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
+        && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') {
+      const lget = node[2][1]
+      const bits = node[2]
       return ['if', ['result', 'i32'],
         ['f64.eq', lget, lget],
         ['then', ['f64.ne', lget, ['f64.const', 0]]],

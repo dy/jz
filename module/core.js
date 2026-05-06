@@ -91,19 +91,19 @@ export default (ctx) => {
 
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
-  ctx.core.stdlib['__is_truthy'] = `(func $__is_truthy (param $v f64) (result i32)
-    (local $bits i64)
-    (if (result i32) (f64.eq (local.get $v) (local.get $v))
-      (then (f64.ne (local.get $v) (f64.const 0)))
+  ctx.core.stdlib['__is_truthy'] = `(func $__is_truthy (param $v i64) (result i32)
+    (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (result i32) (f64.eq (local.get $f) (local.get $f))
+      (then (f64.ne (local.get $f) (f64.const 0)))
       (else
-        (local.set $bits (i64.reinterpret_f64 (local.get $v)))
         (i32.and
           (i32.and
-            (i64.ne (local.get $bits) (i64.const 0x7FF8000000000000))
-            (i64.ne (local.get $bits) (i64.const ${NULL_NAN})))
+            (i64.ne (local.get $v) (i64.const 0x7FF8000000000000))
+            (i64.ne (local.get $v) (i64.const ${NULL_NAN})))
           (i32.and
-            (i64.ne (local.get $bits) (i64.const ${UNDEF_NAN}))
-            (i64.ne (local.get $bits) (i64.const 0x7FFA800000000000)))))))`
+            (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
+            (i64.ne (local.get $v) (i64.const 0x7FFA800000000000)))))))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v f64) (result i32)
     (local $t i32)

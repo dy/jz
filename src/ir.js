@@ -393,7 +393,7 @@ export function truthyIR(e) {
     }
   }
   inc('__is_truthy')
-  return typed(['call', '$__is_truthy', asF64(e)], 'i32')
+  return typed(['call', '$__is_truthy', asI64(e)], 'i32')
 }
 export const toBoolFromEmitted = truthyIR
 

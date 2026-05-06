@@ -1532,7 +1532,7 @@ export const emitter = {
       return isNullish(asF64(v))
     }
     inc('__is_truthy')
-    return typed(['i32.eqz', ['call', '$__is_truthy', asF64(v)]], 'i32')
+    return typed(['i32.eqz', ['call', '$__is_truthy', asI64(v)]], 'i32')
   },
 
   '?:': (a, b, c) => {
