@@ -275,8 +275,12 @@ const setupJsHost = (ctx) => {
   // MAX_CLOSURE_ARITY. Set the ABI floor before plan() resolves $ftN width.
   ctx.closure.floor = MAX_CLOSURE_ARITY
 
+  // env.setTimeout's cb param is i64 (NaN-box bits) to dodge V8's f64 NaN
+  // canonicalization at the wasm→JS boundary (same reason as env.print —
+  // see module/console.js header). delay is a real numeric f64 (no NaN-box
+  // hazard), repeat is i32, return is the timer id (numeric int).
   const needSetTimeout = () => addImportOnce(ctx, 'env', 'setTimeout',
-    ['func', '$__set_timeout', ['param', 'f64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
+    ['func', '$__set_timeout', ['param', 'i64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
   const needClearTimeout = () => addImportOnce(ctx, 'env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
@@ -286,7 +290,9 @@ const setupJsHost = (ctx) => {
     needSetTimeout()
     inc('__invoke_closure')
     return typed(['call', '$__set_timeout',
-      asF64(emit(closureExpr)), asF64(emit(delayExpr)), ['i32.const', repeat]], 'f64')
+      ['i64.reinterpret_f64', asF64(emit(closureExpr))],
+      asF64(emit(delayExpr)),
+      ['i32.const', repeat]], 'f64')
   }
   ctx.core.emit['setTimeout'] = (c, d) => emitSet(c, d, 0)
   ctx.core.emit['setInterval'] = (c, d) => emitSet(c, d, 1)

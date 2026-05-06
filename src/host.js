@@ -20,6 +20,19 @@ import { wasi } from '../wasi.js'
 
 // NaN-boxing encode/decode — shared 8-byte scratch buffer
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
+// Cross-typed-array view for i64↔f64 reinterpretation. Used at every wasm↔JS
+// boundary that carries a NaN-boxed pointer as i64 bits — V8 may canonicalize
+// f64 NaN payloads at the boundary, so the carrier is BigInt and reinterpret
+// runs once on each side. Separate buffer so it never aliases _u32/_f64.
+const _bi64 = (() => {
+  const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
+  return {
+    i64ToF64: (big) => { bi[0] = big; return fv[0] },
+    f64ToI64: (f) => { fv[0] = f; return bi[0] },
+  }
+})()
+export const i64ToF64 = _bi64.i64ToF64
+export const f64ToI64 = _bi64.f64ToI64
 // Sentinel NaN for "undefined/missing arg" (payload=1, distinct from JS NaN payload=0)
 _u32[1] = 0x7FF80000; _u32[0] = 1; export const UNDEF_NAN = _f64[0]
 // Null NaN: type=0 (ATOM), aux=1, offset=0 — distinct from 0, NaN, and UNDEF_NAN
@@ -484,10 +497,6 @@ const installDefaultEnvImports = (mod, imports, state) => {
     // env.print's val param is i64 to dodge V8's f64 NaN canonicalization
     // across the wasm→JS boundary (see module/console.js header). Reinterpret
     // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
-    const i64ToF64 = (() => {
-      const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
-      return (big) => { bi[0] = big; return fv[0] }
-    })()
     const write = (valBig, fd, sep) => {
       const v = state.mem.read(i64ToF64(valBig))
       buf[fd] += String(v)
@@ -510,11 +519,14 @@ const installDefaultEnvImports = (mod, imports, state) => {
   // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
   // callbacks back via the exported __invoke_closure trampoline (state.invoke).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js.
+  // Reinterpret back to f64 to feed the wasm trampoline that still takes f64.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1
-    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbPtr, delayMs, repeat) => {
+    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbBig, delayMs, repeat) => {
       const id = nextId++
+      const cbPtr = i64ToF64(cbBig)
       const fire = () => state.invoke?.(cbPtr)
       if (repeat) {
         const h = setInterval(fire, delayMs)
