@@ -401,6 +401,17 @@ export const wrap = (memSrc, inst) => {
         restFuncs.set(typeof entry === 'string' ? entry : entry.name, typeof entry === 'string' ? 0 : entry.fixed)
     } catch (e) { /* ignore */ }
   }
+  // i64-ABI exports: boundary-wrapped funcs whose NaN-boxed pointer params/
+  // result ride i64 to dodge V8's NaN canonicalization. Map: name → { p, r }
+  // with p = bit mask of i64 params, r = 1 iff result is i64. JS side
+  // reinterprets f64↔BigInt only at those positions (see
+  // synthesizeBoundaryWrappers).
+  const i64Exp = new Map()
+  const i64Secs = WebAssembly.Module.customSections(mod, 'jz:i64exp')
+  if (i64Secs.length) {
+    try { for (const e of JSON.parse(new TextDecoder().decode(i64Secs[0]))) i64Exp.set(e.name, e) }
+    catch { /* ignore */ }
+  }
 
   const mem = memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
@@ -417,32 +428,53 @@ export const wrap = (memSrc, inst) => {
     throw wrapped
   }
   const exports = {}
+  // Per-position carrier swap: f64 stays Number, i64 positions reinterpret to
+  // BigInt before the call and back to Number after. pmask bit i = param i is
+  // i64; r = result is i64. Numeric (f64) positions pass through unchanged.
+  const adaptArgs = (a, pmask) => pmask === 0 ? a : a.map((x, i) => (pmask & (1 << i)) ? f64ToI64(x) : x)
+  const adaptRet = (ret, r) => r ? i64ToF64(ret) : ret
+
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
   if (!mem) {
-    for (const [name, fn] of Object.entries(realInst.exports))
-      exports[name] = typeof fn === 'function'
-        ? (...args) => { while (args.length < fn.length) args.push(undefined); try { return decode(fn(...args.map(coerce))) } catch (e) { decodeThrown(e) } }
-        : fn
+    for (const [name, fn] of Object.entries(realInst.exports)) {
+      if (typeof fn !== 'function') { exports[name] = fn; continue }
+      const sig = i64Exp.get(name)
+      const pmask = sig?.p || 0, r = sig?.r || 0
+      exports[name] = (...args) => {
+        while (args.length < fn.length) args.push(undefined)
+        try {
+          const wasmArgs = adaptArgs(args.map(coerce), pmask)
+          return decode(adaptRet(fn(...wasmArgs), r))
+        } catch (e) { decodeThrown(e) }
+      }
+    }
     return exports
   }
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
+      const sig = i64Exp.get(name)
+      const pmask = sig?.p || 0, r = sig?.r || 0
       exports[name] = (...args) => {
         const a = args.slice(0, fixed).map(x => mem.wrapVal(x))
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
         try {
-          return mem.read(fn.apply(null, a))
+          const ret = fn.apply(null, adaptArgs(a, pmask))
+          return mem.read(adaptRet(ret, r))
         } catch (error) {
           decodeThrown(error)
         }
       }
     } else if (typeof fn === 'function') {
+      const sig = i64Exp.get(name)
+      const pmask = sig?.p || 0, r = sig?.r || 0
       exports[name] = (...args) => {
         while (args.length < fn.length) args.push(undefined)
         try {
-          return mem.read(fn.apply(null, args.map(x => mem.wrapVal(x))))
+          const boxed = args.map(x => mem.wrapVal(x))
+          const ret = fn.apply(null, adaptArgs(boxed, pmask))
+          return mem.read(adaptRet(ret, r))
         } catch (error) {
           decodeThrown(error)
         }

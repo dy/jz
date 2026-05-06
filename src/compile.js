@@ -360,18 +360,22 @@ function emitFunc(func, funcFacts, programFacts) {
  *
  * For each `isBoundaryWrapped(func)`, emit a sibling `$${name}$exp` that:
  *   - holds the (export "name") attribute (JS sees the wrapper)
- *   - takes f64 params always (JS calling convention via host.js wrap)
+ *   - takes i64 params always — JS-side carrier is BigInt that reinterprets to
+ *     f64 NaN-box bits. i64 dodges V8's spec-permitted NaN canonicalization at
+ *     the wasm↔JS boundary (see ToJSValue / ToWebAssemblyValue). Host wrap()
+ *     in src/host.js pairs by converting BigInt↔f64 via reinterpret bits.
  *   - converts each narrowed param at the call: f64 → i32 (truncate-sat) for
  *     numeric narrowed, f64 → i32-offset (`i32.wrap_i64 + i64.reinterpret_f64`)
- *     for pointer narrowed
+ *     for pointer narrowed. The reinterpret happens once at param decode and
+ *     once at result encode; numeric exports without narrowing skip wrapping
+ *     entirely (no NaN-class values).
  *   - forwards args to the inner $${name}
- *   - reboxes the narrowed result back to f64 so JS sees Number / NaN-boxed ptr
+ *   - reboxes the narrowed result and reinterprets to i64 for the boundary
  *
- * Param convert cases (each narrowed inner-param):
- *   - p.type = 'i32', no ptrKind  → i32.trunc_sat_f64_s(local.get $p)
- *   - p.type = 'i32', ptrKind set → i32.wrap_i64(i64.reinterpret_f64(local.get $p))
+ * Param decode (i64 → f64): each param gets `f64.reinterpret_i64` before the
+ * existing narrowing convert. f64 inner params just need the reinterpret.
  *
- * Result rebox cases:
+ * Result rebox cases (then reinterpret to i64 at the boundary):
  *   - sig.ptrKind != null  → mkPtrIR(ptrKind, ptrAux ?? 0, callIR)
  *   - sig.results[0] = i32 → f64.convert_i32_s(callIR)
  *   - sig.results[0] = f64 → callIR (some params narrowed but result stayed f64)
@@ -381,18 +385,23 @@ function synthesizeBoundaryWrappers() {
   for (const func of ctx.func.list) {
     if (!isBoundaryWrapped(func)) continue
     const { name, sig } = func
+    // Per-position i64 carrier: only swap to i64 where a NaN-boxed pointer
+    // actually crosses the boundary (param.ptrKind set, or result with
+    // sig.ptrKind set). Numeric narrowing (i32 trunc-sat / convert) keeps f64
+    // so callers seeing the raw export get a plain Number for numerics.
+    const paramI64 = sig.params.map(p => p.ptrKind != null)
+    const resultI64 = sig.ptrKind != null
     const wrapNode = ['func', `$${name}$exp`, ['export', `"${name}"`]]
-    // External ABI: every param is f64 (JS Number / NaN-boxed ptr).
-    for (const p of sig.params) wrapNode.push(['param', `$${p.name}`, 'f64'])
-    wrapNode.push(['result', 'f64'])
-    const args = sig.params.map(p => {
+    sig.params.forEach((p, i) => wrapNode.push(['param', `$${p.name}`, paramI64[i] ? 'i64' : 'f64']))
+    wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
+    const args = sig.params.map((p, i) => {
       const get = ['local.get', `$${p.name}`]
-      if (p.type === 'f64') return get
       if (p.ptrKind != null) {
-        // NaN-boxed f64 → raw i32 offset
-        return ['i32.wrap_i64', ['i64.reinterpret_f64', get]]
+        // ptrKind: i64 carrier carries NaN-box bits → wrap to i32 offset
+        return ['i32.wrap_i64', get]
       }
-      // Numeric i32 — JS Number → i32 truncation (matches `n | 0` for integers).
+      if (p.type === 'f64') return get
+      // Numeric narrowing: f64 → i32 truncate
       return ['i32.trunc_sat_f64_s', get]
     })
     const callIR = ['call', `$${name}`, ...args]
@@ -405,7 +414,9 @@ function synthesizeBoundaryWrappers() {
     } else {
       body = callIR
     }
-    wrapNode.push(body)
+    wrapNode.push(resultI64 ? ['i64.reinterpret_f64', body] : body)
+    func._exportUsesI64 = resultI64 || paramI64.some(Boolean)
+    func._exportI64Sig = { params: paramI64, result: resultI64 }
     wrappers.push(wrapNode)
   }
   return wrappers
@@ -1308,6 +1319,28 @@ export default function compile(ast, profiler) {
     .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
   if (restParamFuncs.length)
     sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // Custom section: per-export i64 ABI map. Each entry describes an export
+  // whose boundary wrapper carries NaN-boxed pointers via i64 (rather than
+  // f64) to dodge V8's NaN canonicalization. Format: { name, p, r } where p
+  // is a bit-packed param mask (LSB = param 0) and r is 1 if result is i64.
+  // host.js wrap() reads this and reinterprets BigInt↔f64 only at the i64
+  // positions; numeric f64 positions stay as Numbers on the JS side.
+  const i64Exports = []
+  for (const f of ctx.func.list) {
+    if (!f.exported || !isBoundaryWrapped(f) || !f._exportUsesI64) continue
+    let pmask = 0
+    f._exportI64Sig.params.forEach((b, i) => { if (b) pmask |= (1 << i) })
+    const r = f._exportI64Sig.result ? 1 : 0
+    i64Exports.push({ name: f.name, p: pmask, r })
+    // Aliases (export { foo as bar }) re-export the same wrapper under a
+    // different JS-visible name; list each alias too so wrap() finds it.
+    for (const [alias, val] of Object.entries(ctx.func.exports)) {
+      if (val === f.name && alias !== f.name) i64Exports.push({ name: alias, p: pmask, r })
+    }
+  }
+  if (i64Exports.length)
+    sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }
   for (const [name, val] of Object.entries(ctx.func.exports)) {

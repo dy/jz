@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { i64ToF64 } from '../src/host.js'
 import { run } from './util.js'
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {
@@ -32,7 +33,7 @@ test('Regression: mem.write partial object update preserves omitted fields', asy
     export let make = () => ({x: 1, y: 2, z: 3})
   `))
   const m = jz.memory(r)
-  const ptr = r.instance.exports.make()
+  const ptr = i64ToF64(r.instance.exports.make())
   m.write(ptr, { y: 99 })
   const out = m.read(ptr)
   is(out.x, 1)
