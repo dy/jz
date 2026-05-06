@@ -465,24 +465,24 @@ export default (ctx) => {
   // past the end so __jp_peek can omit its bounds check. Pad is 8 bytes so any
   // overshoot from speculative peek/adv on malformed input still hits sentinel,
   // not unallocated memory.
-  ctx.core.stdlib['__jp'] = `(func $__jp (param $str f64) (result f64)
+  ctx.core.stdlib['__jp'] = `(func $__jp (param $str i64) (result f64)
     (local $len i32) (local $buf i32) (local $i i32)
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
     (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
     ;; SSO: byte-by-byte via __sso_char; STRING: bulk memcpy from string offset.
-    (if (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const ${PTR.SSO}))
+    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
       (then
         (local.set $i (i32.const 0))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (i32.store8 (i32.add (local.get $buf) (local.get $i))
-            (call $__sso_char (i64.reinterpret_f64 (local.get $str)) (local.get $i)))
+            (call $__sso_char (local.get $str) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l))))
       (else
-        (memory.copy (local.get $buf) (call $__ptr_offset (i64.reinterpret_f64 (local.get $str))) (local.get $len))))
+        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
     (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
@@ -502,6 +502,6 @@ export default (ctx) => {
       catch { /* fall through to runtime parser for invalid JSON so runtime behavior stays unchanged */ }
     }
     inc('__jp')
-    return typed(['call', '$__jp', asF64(emit(x))], 'f64')
+    return typed(['call', '$__jp', asI64(emit(x))], 'f64')
   }
 }
