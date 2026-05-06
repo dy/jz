@@ -797,14 +797,14 @@ export default (ctx) => {
   }
 
   // .shift() → remove first element, shift remaining left, return removed
-  ctx.core.emit['.shift'] = arrMethod('__arr_shift')
+  ctx.core.emit['.shift'] = (arr) => (inc('__arr_shift'),
+    typed(['call', '$__arr_shift', asI64(emit(arr))], 'f64'))
 
-  ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr f64) (result f64)
-    (local $bits i64) (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
+  ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
+    (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
-    (local.set $bits (i64.reinterpret_f64 (local.get $arr)))
-    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
+    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const 0xFFFFFFFF))))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
     (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
       (then (f64.const 0))
       (else
@@ -889,19 +889,20 @@ export default (ctx) => {
   }
 
   // .unshift(val) → prepend element, shift existing right
-  ctx.core.emit['.unshift'] = arrMethod('__arr_unshift', 1)
+  ctx.core.emit['.unshift'] = (arr, val) => (inc('__arr_unshift'),
+    typed(['call', '$__arr_unshift', asI64(emit(arr)), asF64(emit(val))], 'f64'))
 
-  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
-    (local $off i32) (local $len i32)
-    (local.set $arr (call $__arr_grow (i64.reinterpret_f64 (local.get $arr)) (i32.add (call $__len (i64.reinterpret_f64 (local.get $arr))) (i32.const 1))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
+  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
+    (local $off i32) (local $len i32) (local $a f64)
+    (local.set $a (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $a))))
     (memory.copy
       (i32.add (local.get $off) (i32.const 8))
       (local.get $off)
       (i32.shl (local.get $len) (i32.const 3)))
     (f64.store (local.get $off) (local.get $val))
-    (call $__set_len (i64.reinterpret_f64 (local.get $arr)) (i32.add (local.get $len) (i32.const 1)))
+    (call $__set_len (i64.reinterpret_f64 (local.get $a)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)
@@ -1392,11 +1393,11 @@ export default (ctx) => {
   }
 
   // .flat() → flatten one level of nested arrays
-  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src i64) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
     (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $src))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
+    (local.set $off (call $__ptr_offset (local.get $src)))
+    (local.set $len (call $__len (local.get $src)))
     ;; First pass: count total elements
     (local.set $total (i32.const 0)) (local.set $i (i32.const 0))
     (block $c1 (loop $cl1
@@ -1438,13 +1439,14 @@ export default (ctx) => {
       (br $cl2)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.core.emit['.flat'] = arrMethod('__arr_flat')
+  ctx.core.emit['.flat'] = (arr) => (inc('__arr_flat'),
+    typed(['call', '$__arr_flat', asI64(emit(arr))], 'f64'))
 
   // .flatMap(fn) → map then flatten
   ctx.core.emit['.flatMap'] = (arr, fn) => {
     const mapped = ctx.core.emit['.map'](arr, fn)
     inc('__arr_flat')
-    return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')
+    return typed(['call', '$__arr_flat', asI64(mapped)], 'f64')
   }
 
   // .join(sep) → concatenate array elements with separator string
