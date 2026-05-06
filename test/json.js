@@ -150,6 +150,36 @@ test('JSON.parse: add new property', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"x":1}'); o.y = 2; return o.x + o.y }`).f(), 3)
 })
 
+// HASH bracket-read with non-literal key — local string var, function param,
+// or any expression resolving to a runtime string. Routes through
+// __hash_get_local; the hash code is computed at call time rather than
+// baked in as it is for literal keys.
+test('JSON.parse: HASH bracket with local string var', () => {
+  is(run(`export let f = () => {
+    let o = JSON.parse('{"a":1,"b":2,"c":3}')
+    let k = "b"
+    return o[k]
+  }`).f(), 2)
+})
+
+test('JSON.parse: HASH bracket with param key', () => {
+  const { f } = run(`export let f = (k) => {
+    let o = JSON.parse('{"foo":42,"bar":99}')
+    return o[k]
+  }`)
+  is(f('foo'), 42)
+  is(f('bar'), 99)
+})
+
+test('JSON.parse: HASH bracket misses return undefined', () => {
+  const v = run(`export let f = () => {
+    let o = JSON.parse('{"a":1}')
+    let k = "absent"
+    return o[k]
+  }`).f()
+  ok(v === null || v === undefined)
+})
+
 // === JSON.stringify: objects ===
 
 test('JSON.stringify: schema object', () => {
