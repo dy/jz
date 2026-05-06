@@ -655,13 +655,13 @@ export default (ctx) => {
   ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
 
   // SSO → heap normalizer: returns data offset (i32) for direct byte access
-  ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
+  ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr i64) (result i32)
     (local $type i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
-    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $type (call $__ptr_type (local.get $ptr)))
     (if (i32.eq (local.get $type) (i32.const 4))
-      (then (return (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $len (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
+      (then (return (call $__ptr_offset (local.get $ptr)))))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (local.set $len (call $__ptr_aux (local.get $ptr)))
     (local.set $buf (call $__alloc (local.get $len)))
     (local.set $i (i32.const 0))
     (block $done (loop $next
@@ -691,10 +691,10 @@ export default (ctx) => {
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
     const searchName = `__regex_search_${id}`
-    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str f64) (result i32 i32)
+    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str i64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+      (local.set $len (call $__str_byteLen (local.get $str)))
       (local.set $pos (i32.const 0))
       (block $done (loop $next
         (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
@@ -735,7 +735,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       // search returns (start, end) multi-value; capture both
       ['if', ['result', 'f64'], ['i32.ge_s', ['local.get', `$${mstart}`], ['i32.const', 0]],
         ['then', ['f64.const', 1]],
@@ -751,7 +751,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
         ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
@@ -769,7 +769,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['f64.convert_i32_s', ['local.get', `$${ms}`]]], 'f64')
   }
 
@@ -798,7 +798,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
         ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
@@ -818,7 +818,7 @@ export default (ctx) => {
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${r}`, asF64(emit(repl))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['local.get', `$${s}`]],
         ['else',
@@ -843,13 +843,13 @@ export default (ctx) => {
     const splitName = `__regex_split_${id}`
     if (!ctx.core.stdlib[splitName]) {
       inc('__str_to_buf', '__str_slice', '__alloc')
-      ctx.core.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
+      ctx.core.stdlib[splitName] = `(func $${splitName} (param $str i64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
         (local $arrOff i32) (local $count i32) (local $cap i32)
         (local $newArr i32) (local $j i32)
         (local.set $off (call $__str_to_buf (local.get $str)))
-        (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+        (local.set $len (call $__str_byteLen (local.get $str)))
         ;; Alloc result array (cap=8 initially)
         (local.set $cap (i32.const 8))
         (local.set $arrOff (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
@@ -881,7 +881,7 @@ export default (ctx) => {
                 (br $cl)))
               (local.set $arrOff (local.get $newArr))))
           (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
-            (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $prevEnd) (local.get $mstart)))
+            (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))
           (local.set $count (i32.add (local.get $count) (i32.const 1)))
           (local.set $prevEnd (local.get $mend))
           ;; Advance past match (at least 1 to avoid infinite loop on zero-length match)
@@ -901,7 +901,7 @@ export default (ctx) => {
               (br $cl2)))
             (local.set $arrOff (local.get $newArr))))
         (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
-          (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $prevEnd) (local.get $len)))
+          (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))
         (local.set $count (i32.add (local.get $count) (i32.const 1)))
         ;; Write array header (len + cap at arrOff)
         (i32.store (local.get $arrOff) (local.get $count))
@@ -910,6 +910,6 @@ export default (ctx) => {
       inc(splitName)
     }
 
-    return typed(['call', `$${splitName}`, asF64(emit(str))], 'f64')
+    return typed(['call', `$${splitName}`, asI64(emit(str))], 'f64')
   }
 }
