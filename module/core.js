@@ -424,8 +424,59 @@ export default (ctx) => {
     return typed(['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)], 'f64')
   }
 
+  // Walk an AST expression that may resolve to an OBJECT literal at compile
+  // time. Returns the literal `['{}', ...]` node, or null. Handles direct
+  // literals and `.prop` chains over them. Spread props are unsupported —
+  // they shift slot positions and would need their own resolution.
+  function literalAst(obj) {
+    if (Array.isArray(obj) && obj[0] === '{}') {
+      // Bail on spreads — they change effective slot ordering.
+      const props = obj.slice(1)
+      const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ','
+        ? props[0].slice(1) : props
+      for (const p of flat) if (Array.isArray(p) && p[0] === '...') return null
+      return obj
+    }
+    if (Array.isArray(obj) && obj[0] === '.' && typeof obj[2] === 'string') {
+      const inner = literalAst(obj[1])
+      if (!inner) return null
+      const innerProps = inner.slice(1)
+      const innerFlat = innerProps.length === 1 && Array.isArray(innerProps[0]) && innerProps[0][0] === ','
+        ? innerProps[0].slice(1) : innerProps
+      for (const p of innerFlat) {
+        if (Array.isArray(p) && p[0] === ':' && p[1] === obj[2]) return literalAst(p[2])
+      }
+    }
+    return null
+  }
+
+  // Slot index of `prop` within a literal-resolved expression, or -1.
+  function literalSlot(obj, prop) {
+    const lit = literalAst(obj)
+    if (!lit) return -1
+    const props = lit.slice(1)
+    const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ','
+      ? props[0].slice(1) : props
+    for (let i = 0; i < flat.length; i++) {
+      const p = flat[i]
+      if (Array.isArray(p) && p[0] === ':' && p[1] === prop) return i
+    }
+    return -1
+  }
+
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop) {
+    // Anonymous-literal fast path: when `obj` resolves at compile time to an
+    // object literal `{...}` (either directly, or through a `.prop` chain
+    // walked back to one), use the literal's slot index instead of falling
+    // through to `__dyn_get_expr`. Fresh OBJECT literals carry no off-16
+    // propsPtr so the dispatcher reads NULL_NAN. The varName-bound path
+    // (`let o = {a:1}; o.a`) already works via `ctx.schema.idOf(varName)`;
+    // this extends the same shape resolution to `({a:1}).a` and chains like
+    // `({a:{b:1}}).a.b` where the receiver is anonymous. Spread sources
+    // (`{...x}`) shift slot ordering and would need their own resolution.
+    const slot = literalSlot(obj, prop)
+    if (slot >= 0) return emitSchemaSlotRead(asF64(va), slot)
     const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
     const key = asF64(emit(['str', prop]))
     if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)

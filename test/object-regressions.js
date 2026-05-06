@@ -331,3 +331,30 @@ test('Regression: object literal trailing comma feeding cross-fn destruct', () =
     }
   `).f(), 1)
 })
+
+// `.prop` on an anonymous object literal must read its declared slot. Without
+// schema resolution from the literal's AST, the access fell through to
+// __dyn_get_expr, which probes the off-16 propsPtr — fresh OBJECT literals
+// have none, so the read returned NULL_NAN. The varName-bound form
+// (`let o = {b:1}; o.b`) already worked because ctx.schema.idOf carries the
+// schema; this extends the same shape resolution to anonymous receivers.
+test('Regression: .prop on anonymous object literal resolves slot', () => {
+  is(run(`export let f = () => ({b: 1}).b`).f(), 1)
+})
+
+test('Regression: .prop on multi-prop anonymous literal', () => {
+  is(run(`export let f = () => ({a: 10, b: 20, c: 30}).b`).f(), 20)
+  is(run(`export let f = () => ({a: 10, b: 20, c: 30}).c`).f(), 30)
+})
+
+// Chained `.prop.prop` over nested literals — outer `.a` returns the inner
+// OBJECT pointer, and the outer `.b` slot read needs the inner literal's
+// schema. The literal walk recurses through `.prop` chains over known
+// literals to find the receiver schema at the deepest reachable node.
+test('Regression: chained .prop on nested anonymous literals', () => {
+  is(run(`export let f = () => ({a: {b: 7}}).a.b`).f(), 7)
+})
+
+test('Regression: deeply nested anonymous literals', () => {
+  is(run(`export let f = () => ({x: {y: {z: 42}}}).x.y.z`).f(), 42)
+})
