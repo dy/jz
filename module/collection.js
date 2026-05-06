@@ -67,7 +67,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    (local.set $h (call ${hashFn} (i64.reinterpret_f64 (local.get $key))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
@@ -114,7 +114,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    (local.set $h (call ${hashFn} (i64.reinterpret_f64 (local.get $key))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
@@ -134,7 +134,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (if (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $coll))) (i32.const ${expectedType})) (then (return (i32.const 0))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $coll))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    (local.set $h (call ${hashFn} (i64.reinterpret_f64 (local.get $key))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
@@ -188,7 +188,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           (local.set $oldslot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${entrySize}))))
           (if (f64.ne (f64.load (local.get $oldslot)) (f64.const 0))
             (then
-              (local.set $h (call ${hashFn} (f64.load (i32.add (local.get $oldslot) (i32.const 8)))))
+              (local.set $h (call ${hashFn} (i64.load (i32.add (local.get $oldslot) (i32.const 8)))))
               (local.set $newidx (i32.and (local.get $h) (i32.sub (local.get $newcap) (i32.const 1))))
               (block $ins (loop $probe2
                 (local.set $newslot (i32.add (local.get $newptr) (i32.mul (local.get $newidx) (i32.const ${entrySize}))))
@@ -206,7 +206,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
         (local.set $cap (local.get $newcap))
         (local.set $obj (call $__mkptr (i32.const ${typeConst}) (i32.const 0) (local.get $newptr)))))
     ;; Insert/update
-    (local.set $h (call ${hashFn} (local.get $key)))
+    (local.set $h (call ${hashFn} (i64.reinterpret_f64 (local.get $key))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
@@ -237,7 +237,7 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
       (then (return (f64.const nan:${missing}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (local.set $h (call ${hashFn} (local.get $key)))
+    (local.set $h (call ${hashFn} (i64.reinterpret_f64 (local.get $key))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const ${entrySize}))))
@@ -388,10 +388,10 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
-  ctx.core.stdlib['__hash'] = `(func $__hash (param $v f64) (result i32)
+  ctx.core.stdlib['__hash'] = `(func $__hash (param $v i64) (result i32)
     (i32.wrap_i64 (i64.xor
-      (i64.reinterpret_f64 (local.get $v))
-      (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))))`
+      (local.get $v)
+      (i64.shr_u (local.get $v) (i64.const 32)))))`
   inc('__hash')
 
   ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
@@ -420,18 +420,18 @@ export default (ctx) => {
               (then (call $__str_eq (local.get $a) (local.get $b)))
               (else (i32.const 0))))))))`
 
-  ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v f64) (result i32)
-    (local $bits i64) (local $t i32) (local $h i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $v)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+  ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
+    (local $f f64) (local $t i32) (local $h i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const 47)) (i64.const 0xF))))
     ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
     ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
     ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
-    (if (i32.and (f64.ne (local.get $v) (local.get $v))
+    (if (i32.and (f64.ne (local.get $f) (local.get $f))
           (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (call $__str_hash (local.get $v)))))
-    (if (f64.eq (local.get $v) (f64.const 0)) (then (return (i32.const 2))))
-    (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $v) (local.get $v)))
+    (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
+    (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
       (then (return (i32.const 3))))
     (local.set $h (call $__hash (local.get $v)))
     (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
@@ -526,15 +526,14 @@ export default (ctx) => {
   // FNV-1a. ~95M calls in watr self-host. Inline char-fetch: hoist type/offset out of the
   // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
   // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
-  ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s f64) (result i32)
-    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $bits i64) (local $w i32)
+  ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s i64) (result i32)
+    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $w i32)
     (local.set $h (i32.const 0x811c9dc5))
-    (local.set $bits (i64.reinterpret_f64 (local.get $s)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $s) (i64.const 0xFFFFFFFF))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
       (then
-        (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+        (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const 32)) (i64.const 0x7FFF))))
         (block $ds (loop $ls
           (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
@@ -739,7 +738,7 @@ export default (ctx) => {
       (local.set $bits (i64.reinterpret_f64 (local.get $props)))
       (local.set $poff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
-      (local.set $h (call $__str_hash (local.get $key)))
+      (local.set $h (call $__str_hash (i64.reinterpret_f64 (local.get $key))))
       (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
       (block $hdone (loop $hprobe
         (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
