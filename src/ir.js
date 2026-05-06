@@ -75,8 +75,8 @@ export const asI32 = n => {
 export const asPtrOffset = (n, ptrKind) =>
   n.ptrKind === ptrKind ? n : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(n)]], 'i32')
 
-/** Coerce emitted IR to a target WASM param type ('i32' | 'f64'). */
-export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
+/** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
+export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : asF64(n)
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN

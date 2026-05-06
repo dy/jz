@@ -555,7 +555,9 @@ const buildImports = (mod, opts, state) => {
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
 
-  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz values.
+  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz
+  // values. Args/return ride i64 across the boundary (Step 2c) so V8 cannot
+  // canonicalize the NaN payload — convert BigInt↔f64 via reinterpret bits.
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
     if (!imports[modName]) imports[modName] = {}
     for (const name of Object.getOwnPropertyNames(fns)) {
@@ -563,8 +565,14 @@ const buildImports = (mod, opts, state) => {
       const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
       if (typeof fn === 'function')
         imports[modName][name] = (...args) => {
-          const ret = fn.call(fns, ...args.map(a => state.mem ? state.mem.read(a) : a))
-          return state.mem ? state.mem.wrapVal(ret) : coerce(ret)
+          // i64 carrier: reinterpret BigInt bits → f64 NaN-box. Pure-scalar modules
+          // have no memory so skip mem.read; the f64 IS the JS number for numerics.
+          const decoded = args.map(a => {
+            const f = typeof a === 'bigint' ? i64ToF64(a) : a
+            return state.mem ? state.mem.read(f) : decode(f)
+          })
+          const ret = fn.call(fns, ...decoded)
+          return f64ToI64(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
         }
     }
   }

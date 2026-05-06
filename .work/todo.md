@@ -89,13 +89,19 @@
      helpers, and constant emitters. Run full suite — `wat: true` test
      snapshots will need regen.
      Sub-steps:
-     - 2a. Add `globalTypes` tracking for host-imported globals (i64).
+     - 2a. [x] Add `globalTypes` tracking for host-imported globals (i64).
        Update `readVar` / `setVar` to honor it with reinterpret on read.
      - 2b. Switch wasm-export ABI from f64 → i64 for boxed-result paths
        (synthesizeBoundaryWrappers + direct exports), update host.js
        wrap() to call with BigInt args + read BigInt return.
-     - 2c. Switch user opts.imports declared sig from f64 → i64; update
-       host wrapper at [src/host.js:565](../src/host.js#L565) to convert.
+     - 2c. [x] Switch user opts.imports declared sig from f64 → i64;
+       update host wrapper at [src/host.js:565](../src/host.js#L565) to
+       convert. Path: addHostImport emits i64 params/result, compile.js
+       registers them in func.map with the i64 sig, emit's known-callee
+       path coerces args via emitArgForParam → asParamType, which now
+       handles 'i64' (asI64 reinterpret) alongside 'i32'/'f64'. Host
+       wrapper reinterprets BigInt↔f64 bits on each side; pure-scalar
+       modules (no memory) bypass mem.read/wrapVal via decode/coerce.
      - 2d. Switch internal stdlib boxed-value sigs (`__dyn_get`, etc.)
        from f64 to i64 module-by-module. Reinterpret at edges that still
        carry numerics.
