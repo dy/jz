@@ -151,11 +151,19 @@ export default function prepare(node) {
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
   // module's closure.table machinery. defFunc paths don't trigger fn-module load,
   // so scan post-prep and include `fn` if any user func appears in a value position.
-  if (!ctx.module.modules.fn && ctx.func.list.length) {
+  // Same scan also catches inline arrows that survive prep (e.g. `{ m: (x) => x }`)
+  // — defFunc only lifts arrows that are the direct RHS of a let/const/export default,
+  // and depth-0 arrows in any other position (object property, ternary arm, return
+  // value, ...) skip the depth>0 prep-time include, so they reach emit unsupported
+  // unless we catch them here.
+  if (!ctx.module.modules.fn) {
     const funcNames = new Set(ctx.func.list.map(f => f.name))
     const visit = (n) => {
       if (!Array.isArray(n)) return false
       const [op, ...args] = n
+      // Any inline arrow surviving prep is a closure value (defFunc-lifted ones
+      // are extracted from the AST into ctx.func.list).
+      if (op === '=>') return true
       if (op === '()') {
         // callee at args[0]: skip if it's a bare func name (direct call); recurse rest
         if (typeof args[0] !== 'string' || !funcNames.has(args[0])) {
@@ -172,10 +180,6 @@ export default function prepare(node) {
         // obj at args[0] can be a func ref; prop at args[1] is a name, never a ref
         if (typeof args[0] === 'string' && funcNames.has(args[0])) return true
         return visit(args[0])
-      }
-      if (op === '=>') {
-        // body only — params are bindings, not refs
-        return visit(args[1])
       }
       for (const a of args) {
         if (typeof a === 'string' && funcNames.has(a)) return true

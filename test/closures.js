@@ -1,13 +1,18 @@
 // Closures: capture by value, currying, callbacks, first-class functions
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 function run(code, opts) {
   const wasm = compile(code, opts)
   const mod = new WebAssembly.Module(wasm)
   return new WebAssembly.Instance(mod).exports
 }
+
+// Method-dispatch tests pull dynamic-property helpers that need host imports;
+// jz() wires them. Plain-closure tests above use raw instantiation since they
+// don't hit those code paths.
+const runFull = (code, opts) => jz(code, opts).exports
 
 // === Basic closure (capture outer variable) ===
 
@@ -233,4 +238,80 @@ test('HOF: top-level function as argument', async () => {
 test('HOF: top-level function with args', async () => {
   const wasm = compile('let add = (a, b) => a + b; let apply = (g, x, y) => g(x, y); export let f = () => apply(add, 3, 4)')
   is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 7)
+})
+
+// === Method dispatch (closure stored as object property, called as o.m(args)) ===
+//
+// `o.m(args)` where `m` is a closure-valued property goes through schema-known
+// slot read + closure.call (src/emit.js) for fixed-shape objects. The fn module
+// must be auto-loaded for any inline arrow that survives prep — defFunc only
+// lifts arrows that are the direct RHS of a let/const, so an arrow inside an
+// object literal stays as a closure value and needs the closure runtime.
+
+test('method: inline arrow called as o.m(args)', () => {
+  is(runFull(`
+    let o = { mul: (x) => x * 2 }
+    export let f = () => o.mul(5)
+  `).f(), 10)
+})
+
+test('method: multiple methods on same object', () => {
+  is(runFull(`
+    let o = { mul: (x) => x * 2, add: (x) => x + 3 }
+    export let f = () => o.mul(5) + o.add(10)
+  `).f(), 23)
+})
+
+test('method: polymorphic ?: receiver — distinct schemas, shared method name', () => {
+  // (w==0 ? a : b).f(5) — different OBJECT shapes (a, b have different `f`
+  // closures); receiver type is unioned, dispatch resolves at runtime via the
+  // schema-property closure path with per-arm aux→sid lookup.
+  const { f } = runFull(`
+    let a = { f: (x) => x + 1 }
+    let b = { f: (x) => x * 10 }
+    export let f = (w) => (w == 0 ? a : b).f(5)
+  `)
+  is(f(0), 6)
+  is(f(1), 50)
+})
+
+test('method: dynamic key dispatch via o[k](args)', () => {
+  const { f } = runFull(`
+    let o = { mul: (x) => x * 2, add: (x) => x + 100 }
+    export let f = (k) => o[k](5)
+  `)
+  is(f('mul'), 10)
+  is(f('add'), 105)
+})
+
+test('method: chained call through factory return', () => {
+  is(runFull(`
+    let mk = () => ({ inc: (x) => x + 1 })
+    export let f = () => mk().inc(5)
+  `).f(), 6)
+})
+
+test('method: nested object dispatch', () => {
+  is(runFull(`
+    let o = { sub: { times3: (x) => x * 3 } }
+    export let f = () => o.sub.times3(5)
+  `).f(), 15)
+})
+
+test('method: closure captures outer state', () => {
+  is(runFull(`
+    let n = 7
+    let o = { get: () => n, mul: (x) => x * n }
+    export let f = () => o.get() + o.mul(3)
+  `).f(), 28)  // 7 + 21
+})
+
+test('method: dispatch under host:wasi', () => {
+  // WASI host disallows JS-side runtime imports — closure dispatch must work
+  // with pure-WASM closure machinery (no host help).
+  const ex = runFull(`
+    let o = { mul: (x) => x * 2, add: (x) => x + 3 }
+    export let calc = () => o.mul(5) + o.add(10)
+  `, { jzify: true, host: 'wasi' })
+  is(ex.calc(), 23)
 })
