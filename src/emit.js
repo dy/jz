@@ -1095,7 +1095,7 @@ export const emitter = {
         // returns the stored value as f64, used directly as the expr result.
         inc('__typed_set_idx')
         return typed(['call', '$__typed_set_idx',
-          asF64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
+          asI64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
       }
       if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
         const inner = ctx.schema.emitInner(arr)
@@ -1144,7 +1144,7 @@ export const emitter = {
               ['local.set', `$${t}`, vv],
               ['if', ['result', 'f64'],
                 ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-                ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+                ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
                 ['else', ['block', ['result', 'f64'],
                   ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                   ['local.get', `$${t}`]]]]]
@@ -1176,7 +1176,7 @@ export const emitter = {
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['else', ['block', ['result', 'f64'],
                 ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                 ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
@@ -1207,7 +1207,7 @@ export const emitter = {
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['else', ['block', ['result', 'f64'],
                 ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                 ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],

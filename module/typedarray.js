@@ -217,19 +217,19 @@ export default (ctx) => {
   // __byte_length(ptr) — byte size for BUFFER/TYPED; 0 otherwise.
   // BUFFER and owned TYPED store byteLen at [-8]. TYPED view (aux bit 3) stores byteLen
   // at descriptor[0].
-  ctx.core.stdlib['__byte_length'] = `(func $__byte_length (param $ptr f64) (result i32)
+  ctx.core.stdlib['__byte_length'] = `(func $__byte_length (param $ptr i64) (result i32)
     (local $t i32) (local $off i32)
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $t (call $__ptr_type (local.get $ptr)))
     (if (result i32)
       (i32.or
         (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then
-        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+        (local.set $off (call $__ptr_offset (local.get $ptr)))
         (if (result i32)
           (i32.and
             (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
-            (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
+            (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
           (then (i32.load (local.get $off)))
           (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
       (else (i32.const 0))))`
@@ -393,7 +393,7 @@ export default (ctx) => {
       }
     }
     inc('__byte_length')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_length', asF64(emit(obj))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__byte_length', asI64(emit(obj))]], 'f64')
   }
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
@@ -412,18 +412,18 @@ export default (ctx) => {
       if (ctor?.startsWith('new.') && ELEM[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
     inc('__byte_offset')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asF64(emit(obj))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asI64(emit(obj))]], 'f64')
   }
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
-  ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr f64) (result i32)
+  ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr i64) (result i32)
     (local $off i32)
     (if (result i32)
       (i32.and
-        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
-        (i32.ne (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8)) (i32.const 0)))
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8)) (i32.const 0)))
       (then
-        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+        (local.set $off (call $__ptr_offset (local.get $ptr)))
         (i32.sub
           (i32.load (i32.add (local.get $off) (i32.const 4)))
           (i32.load (i32.add (local.get $off) (i32.const 8)))))
@@ -617,10 +617,10 @@ export default (ctx) => {
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
   }
 
-  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
+  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
-    (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
@@ -704,7 +704,7 @@ export default (ctx) => {
         : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
         : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
     } else {
-      store = ['drop', ['call', '$__typed_set_idx', ['local.get', `$${dst}`], idx, val]]
+      store = ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${dst}`]], idx, val]]
     }
     const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
