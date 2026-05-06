@@ -270,9 +270,9 @@ export default (ctx) => {
         (memory.copy (local.get $off) (i32.add (local.get $srcOff) (local.get $start)) (local.get $nlen))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
-  ctx.core.stdlib['__str_substring'] = `(func $__str_substring (param $ptr f64) (param $start i32) (param $end i32) (result f64)
+  ctx.core.stdlib['__str_substring'] = `(func $__str_substring (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $tmp i32)
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.const 0))))
     (if (i32.lt_s (local.get $end) (i32.const 0))
@@ -286,7 +286,7 @@ export default (ctx) => {
         (local.set $tmp (local.get $start))
         (local.set $start (local.get $end))
         (local.set $end (local.get $tmp))))
-    (call $__str_slice (i64.reinterpret_f64 (local.get $ptr)) (local.get $start) (local.get $end)))`
+    (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
 
   // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
   // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
@@ -834,11 +834,11 @@ export default (ctx) => {
   // Generic (no collision)
   ctx.core.emit['.substring'] = (str, start, end) => {
     inc('__str_substring')
-    if (end != null) return typed(['call', '$__str_substring', asF64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
+    if (end != null) return typed(['call', '$__str_substring', asI64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['local.get', `$${t}`], asI32(emit(start)),
+      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
