@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
@@ -835,7 +835,7 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string split
       inc('__str_split')
-      return typed(['call', '$__str_split', asF64(emit(str)), asF64(emit(sep))], 'f64')
+      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep))], 'f64')
     }
 
     // Generate a split-by-regex WAT function for this regex

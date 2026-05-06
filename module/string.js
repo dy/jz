@@ -466,16 +466,16 @@ export default (ctx) => {
 
   // Materialize source bytes once via __str_copy (handles SSO/heap), then memory.copy
   // each subsequent repetition (single bulk op vs len byte stores per copy).
-  ctx.core.stdlib['__str_repeat'] = `(func $__str_repeat (param $ptr f64) (param $n i32) (result f64)
+  ctx.core.stdlib['__str_repeat'] = `(func $__str_repeat (param $ptr i64) (param $n i32) (result f64)
     (local $len i32) (local $total i32) (local $off i32) (local $i i32)
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
     (if (i32.or (i32.eqz (local.get $n)) (i32.eqz (local.get $len)))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $total (i32.mul (local.get $len) (local.get $n)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
-    (call $__str_copy (i64.reinterpret_f64 (local.get $ptr)) (local.get $off) (local.get $len))
+    (call $__str_copy (local.get $ptr) (local.get $off) (local.get $len))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
@@ -685,12 +685,12 @@ export default (ctx) => {
       (br $next)))
     (f64.reinterpret_i64 (local.get $result)))`
 
-  ctx.core.stdlib['__str_split'] = `(func $__str_split (param $str f64) (param $sep f64) (result f64)
+  ctx.core.stdlib['__str_split'] = `(func $__str_split (param $str i64) (param $sep i64) (result f64)
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
     (local $arr i32) (local $piece_start i32) (local $piece_idx i32)
-    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
-    (local.set $plen (call $__str_byteLen (i64.reinterpret_f64 (local.get $sep))))
+    (local.set $slen (call $__str_byteLen (local.get $str)))
+    (local.set $plen (call $__str_byteLen (local.get $sep)))
     (local.set $count (i32.const 1))
     (local.set $i (i32.const 0))
     (block $d1 (loop $l1
@@ -699,8 +699,8 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $n1 (loop $c1
         (br_if $n1 (i32.ge_s (local.get $j) (local.get $plen)))
-        (if (i32.ne (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (local.get $j)))
-                    (call $__char_at (i64.reinterpret_f64 (local.get $sep)) (local.get $j)))
+        (if (i32.ne (call $__char_at (local.get $str) (i32.add (local.get $i) (local.get $j)))
+                    (call $__char_at (local.get $sep) (local.get $j)))
           (then (local.set $match (i32.const 0)) (br $n1)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $c1)))
@@ -723,14 +723,14 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $n2 (loop $c2
         (br_if $n2 (i32.ge_s (local.get $j) (local.get $plen)))
-        (if (i32.ne (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (local.get $j)))
-                    (call $__char_at (i64.reinterpret_f64 (local.get $sep)) (local.get $j)))
+        (if (i32.ne (call $__char_at (local.get $str) (i32.add (local.get $i) (local.get $j)))
+                    (call $__char_at (local.get $sep) (local.get $j)))
           (then (local.set $match (i32.const 0)) (br $n2)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $c2)))
       (if (local.get $match) (then
         (f64.store (i32.add (local.get $arr) (i32.shl (local.get $piece_idx) (i32.const 3)))
-          (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $piece_start) (local.get $i)))
+          (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $i)))
         (local.set $piece_idx (i32.add (local.get $piece_idx) (i32.const 1)))
         (local.set $i (i32.add (local.get $i) (local.get $plen)))
         (local.set $piece_start (local.get $i))
@@ -738,7 +738,7 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l2)))
     (f64.store (i32.add (local.get $arr) (i32.shl (local.get $piece_idx) (i32.const 3)))
-      (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $piece_start) (local.get $slen)))
+      (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $slen)))
     (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))`
 
   ctx.core.stdlib['__str_join'] = `(func $__str_join (param $arr f64) (param $sep f64) (result f64)
@@ -850,8 +850,10 @@ export default (ctx) => {
     typed(['call', '$__str_trimStart', asI64(emit(str))], 'f64'))
   ctx.core.emit['.trimEnd'] = (str) => (inc('__str_trimEnd'),
     typed(['call', '$__str_trimEnd', asI64(emit(str))], 'f64'))
-  ctx.core.emit['.repeat'] = strMethod('__str_repeat', ['i'])
-  ctx.core.emit['.split'] = strMethod('__str_split', ['f'])
+  ctx.core.emit['.repeat'] = (str, n) => (inc('__str_repeat'),
+    typed(['call', '$__str_repeat', asI64(emit(str)), asI32(emit(n))], 'f64'))
+  ctx.core.emit['.split'] = (str, sep) => (inc('__str_split'),
+    typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep))], 'f64'))
   ctx.core.emit['.replace'] = (str, search, repl) => (inc('__str_replace'),
     typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64'))
   ctx.core.emit['.replaceAll'] = (str, search, repl) => (inc('__str_replaceall'),
