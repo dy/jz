@@ -760,22 +760,22 @@ export default (ctx) => {
 
   // Source string copied via __str_copy (handles SSO/heap with memory.copy where possible).
   // Pad fill loops a single tile of pad bytes — hoist pad dispatch out of the byte loop.
-  ctx.core.stdlib['__str_pad'] = `(func $__str_pad (param $str f64) (param $target i32) (param $pad f64) (param $before i32) (result f64)
+  ctx.core.stdlib['__str_pad'] = `(func $__str_pad (param $str i64) (param $target i32) (param $pad i64) (param $before i32) (result f64)
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
     (local $str_off i32) (local $pad_off i32)
     (local $pbits i64) (local $poff i32) (local $psso i32)
-    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $slen (call $__str_byteLen (local.get $str)))
     (if (i32.ge_s (local.get $slen) (local.get $target))
-      (then (return (local.get $str))))
-    (local.set $plen (call $__str_byteLen (i64.reinterpret_f64 (local.get $pad))))
+      (then (return (f64.reinterpret_i64 (local.get $str)))))
+    (local.set $plen (call $__str_byteLen (local.get $pad)))
     (local.set $fill (i32.sub (local.get $target) (local.get $slen)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $target))))
     (i32.store (local.get $off) (local.get $target))
     (local.set $off (i32.add (local.get $off) (i32.const 4)))
     (local.set $str_off (select (local.get $fill) (i32.const 0) (local.get $before)))
     (local.set $pad_off (select (i32.const 0) (local.get $slen) (local.get $before)))
-    (call $__str_copy (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $off) (local.get $str_off)) (local.get $slen))
-    (local.set $pbits (i64.reinterpret_f64 (local.get $pad)))
+    (call $__str_copy (local.get $str) (i32.add (local.get $off) (local.get $str_off)) (local.get $slen))
+    (local.set $pbits (local.get $pad))
     (local.set $poff (i32.wrap_i64 (i64.and (local.get $pbits) (i64.const 0xFFFFFFFF))))
     (local.set $psso (i32.eq
       (i32.wrap_i64 (i64.and (i64.shr_u (local.get $pbits) (i64.const 47)) (i64.const 0xF)))
@@ -914,14 +914,14 @@ export default (ctx) => {
 
   ctx.core.emit['.padStart'] = (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asF64(emit(pad)) : mkPtrIR(PTR.SSO, 1, 32)
-    return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
+    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.SSO, 1, 32)]
+    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 1]], 'f64')
   }
 
   ctx.core.emit['.padEnd'] = (str, len, pad) => {
     inc('__str_pad')
-    const vpad = pad != null ? asF64(emit(pad)) : mkPtrIR(PTR.SSO, 1, 32)
-    return typed(['call', '$__str_pad', asF64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
+    const vpad = pad != null ? asI64(emit(pad)) : ['i64.reinterpret_f64', mkPtrIR(PTR.SSO, 1, 32)]
+    return typed(['call', '$__str_pad', asI64(emit(str)), asI32(emit(len)), vpad, ['i32.const', 0]], 'f64')
   }
 
   // .charAt(i) → 1-char string from char code at index i
