@@ -730,7 +730,7 @@ export default (ctx) => {
             (local.set $props (call $__ihash_get_local (global.get $__dyn_props)
               (f64.convert_i32_s (local.get $off))))
             (global.set $__dyn_get_cache_off (local.get $off))
-            (if (call $__is_nullish (local.get $props))
+            (if (call $__is_nullish (i64.reinterpret_f64 (local.get $props)))
               (then
                 (global.set $__dyn_get_cache_props (f64.const 0))
                 (br $dynDone))
@@ -885,7 +885,7 @@ export default (ctx) => {
     (local.set $objKey (f64.convert_i32_s (local.get $off)))
     (local.set $oldProps (call $__ihash_get_local (local.get $root) (local.get $objKey)))
     (local.set $props
-      (if (result f64) (call $__is_nullish (local.get $oldProps))
+      (if (result f64) (call $__is_nullish (i64.reinterpret_f64 (local.get $oldProps)))
         (then (call $__hash_new_small))
         (else (local.get $oldProps))))
     (local.set $props (call $__hash_set_local (local.get $props) (local.get $key) (local.get $val)))
@@ -901,7 +901,7 @@ export default (ctx) => {
     (local $props f64) (local $root f64)
     (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return)))
     (local.set $props (call $__ihash_get_local (global.get $__dyn_props) (f64.convert_i32_s (local.get $oldOff))))
-    (if (call $__is_nullish (local.get $props)) (then (return)))
+    (if (call $__is_nullish (i64.reinterpret_f64 (local.get $props))) (then (return)))
     (local.set $root (call $__ihash_set_local (global.get $__dyn_props) (f64.convert_i32_s (local.get $newOff)) (local.get $props)))
     (global.set $__dyn_props (local.get $root)))`
 
@@ -982,7 +982,7 @@ export default (ctx) => {
         ['then',
           ['if', hasDynProps,
             ['then', ['local.set', `$${outTmp}`,
-              ['i32.eqz', ['call', '$__is_nullish', ['call', '$__dyn_get', objVal, keyVal]]]]]]]],
+              ['i32.eqz', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['call', '$__dyn_get', objVal, keyVal]]]]]]]]],
 
       ['if', ['i32.eq', typeVal, ['i32.const', PTR.HASH]],
         ['then', ['local.set', `$${outTmp}`,

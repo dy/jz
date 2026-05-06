@@ -47,10 +47,10 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
   })
 
-  ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v f64) (result i32)
+  ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
     (i32.or
-      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN}))
-      (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN}))))`
+      (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
+      (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))))`
 
   ctx.core.stdlib['__eq'] = `(func $__eq (param $a f64) (param $b f64) (result i32)
     (local $ra i64) (local $rb i64) (local $ta i32) (local $tb i32)
@@ -86,8 +86,8 @@ export default (ctx) => {
                 (then (call $__str_eq (local.get $a) (local.get $b)))
                 (else (i32.const 0))))))))`
 
-  ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v f64) (result i32)
-    (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})))`
+  ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
+    (i64.eq (local.get $v) (i64.const ${NULL_NAN})))`
 
   // Truthy check: handles regular numbers AND NaN-boxed pointers
   // Falsy: 0, -0, NaN, null, undefined, "" (empty SSO)
@@ -688,7 +688,7 @@ export default (ctx) => {
     (local $t i32)
     (if (f64.eq (local.get $v) (local.get $v))
       (then (return (global.get $__tof_number))))
-    (if (call $__is_nullish (local.get $v))
+    (if (call $__is_nullish (i64.reinterpret_f64 (local.get $v)))
       (then (return (global.get $__tof_undefined))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if ${stringTest}

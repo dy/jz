@@ -547,7 +547,7 @@ export const isNullish = (f64expr) => {
   }
   // Non-trivial expr: fall back to the helper — keeps binary size stable & preserves eval once.
   inc('__is_nullish')
-  return typed(['call', '$__is_nullish', f64expr], 'i32')
+  return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', f64expr]], 'i32')
 }
 
 // === Array layout helpers ===
