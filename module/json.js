@@ -94,14 +94,14 @@ export default (ctx) => {
     (i32.store8 (i32.add (global.get $__jbuf) (global.get $__jpos)) (local.get $b))
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
 
-  // __jput_str(ptr: f64) — append string chars (without quotes) to buffer
-  ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr f64)
+  // __jput_str(ptr: i64) — append string chars (without quotes) to buffer
+  ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr i64)
     (local $len i32) (local $i i32) (local $ch i32)
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
     (local.set $i (i32.const 0))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $ch (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (local.get $i)))
+      (local.set $ch (call $__char_at (local.get $ptr) (local.get $i)))
       ;; Escape special JSON chars
       (if (i32.le_u (local.get $ch) (i32.const 13))
         (then
@@ -120,7 +120,7 @@ export default (ctx) => {
 
   // __jput_num(val: f64) — convert number to string, append bytes to buffer
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
-    (call $__jput_str (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
+    (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
   // __json_val(val: f64) — stringify any value, append to buffer
   ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val f64)
@@ -145,7 +145,7 @@ export default (ctx) => {
                 (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
       (then
         (call $__jput (i32.const 34))
-        (call $__jput_str (local.get $val))
+        (call $__jput_str (i64.reinterpret_f64 (local.get $val)))
         (call $__jput (i32.const 34)) (return)))
     ;; Array
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
@@ -190,7 +190,7 @@ export default (ctx) => {
             (then (call $__jput (i32.const 44))))
           (local.set $first (i32.const 0))
           (call $__jput (i32.const 34))
-          (call $__jput_str (f64.load (i32.add (local.get $slot) (i32.const 8))))
+          (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
           (call $__jput (i32.const 34))
           (call $__jput (i32.const 58))
           (call $__json_val (f64.load (i32.add (local.get $slot) (i32.const 16))))))
@@ -218,7 +218,7 @@ export default (ctx) => {
       (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
       (if (local.get $i) (then (call $__jput (i32.const 44))))
       (call $__jput (i32.const 34))
-      (call $__jput_str (f64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
+      (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
       (call $__jput (i32.const 34))
       (call $__jput (i32.const 58))
       (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
