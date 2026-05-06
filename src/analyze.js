@@ -1672,6 +1672,9 @@ export function observeNodeFacts(node, f) {
   if (op === '[]') {
     const [obj, idx] = args
     if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
+  } else if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
+    const [, obj, idx] = args[0]
+    if (!isLiteralStr(idx)) { f.anyDyn = true; if (typeof obj === 'string') f.dynVars.add(obj) }
   } else if (op === 'for-in') {
     f.anyDyn = true
     if (typeof args[1] === 'string') f.dynVars.add(args[1])
@@ -1762,6 +1765,13 @@ export function analyzeDynKeys(...roots) {
     const [op, ...args] = node
     if (op === '[]') {
       const [obj, idx] = args
+      if (!isLiteralStr(idx)) {
+        anyDyn = true
+        if (typeof obj === 'string') dynVars.add(obj)
+      }
+    }
+    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
+      const [, obj, idx] = args[0]
       if (!isLiteralStr(idx)) {
         anyDyn = true
         if (typeof obj === 'string') dynVars.add(obj)

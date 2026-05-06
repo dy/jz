@@ -352,7 +352,7 @@ export default (ctx) => {
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop']
       : ['__dyn_get_t', '__hash_get_local'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
   })
 
@@ -624,6 +624,33 @@ export default (ctx) => {
   const objectSchemaLocals = hasSchemas
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
     : ''
+  const objectSchemaSetLocals = hasSchemas
+    ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32) (local $idx i32)'
+    : ''
+  const objectSchemaSetArm = hasSchemas ? `
+    ;; If a dynamic write targets an existing fixed-shape field, update the
+    ;; payload slot as well as the dynamic sidecar below. Otherwise bracket
+    ;; writes and later dot reads can diverge.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                 (i32.ne (global.get $__schema_tbl) (i32.const 0)))
+      (then
+        (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u
+          (i64.reinterpret_f64 (local.get $obj)) (i64.const 32)) (i64.const 0x7FFF))))
+        (local.set $kbits (i64.reinterpret_f64
+          (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+        (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const 0xFFFFFFFF))))
+        (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
+        (local.set $idx (i32.const 0))
+        (block $schemaSetDone (loop $schemaSetLoop
+          (br_if $schemaSetDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
+          (if (call $__str_eq
+                (f64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                (local.get $key))
+            (then
+              (f64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (local.get $val))
+              (br $schemaSetDone)))
+          (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
+          (br $schemaSetLoop)))))` : ''
 
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
@@ -770,7 +797,7 @@ export default (ctx) => {
   // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
   ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $oldProps f64) (local $objKey f64)
-    (local $bits i64) (local $off i32) (local $type i32)
+    (local $bits i64) (local $off i32) (local $type i32) ${objectSchemaSetLocals}
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
@@ -783,6 +810,7 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
+    ${objectSchemaSetArm}
     ;; Header types carry propsPtr at off-16. Read/grow/write directly there;
     ;; skip the global __dyn_props hash entirely. ARRAY also uses this slot, but
     ;; only when shift hasn't overwritten it with forwarding bytes (HASH-tagged

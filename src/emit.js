@@ -38,6 +38,7 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads,
 } from './ir.js'
+import { staticPropertyKey } from './key.js'
 
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.
@@ -860,6 +861,12 @@ function intConstValue(expr) {
   return null
 }
 
+function arrayIndexKey(key) {
+  const n = Number(key)
+  const u = n >>> 0
+  return String(u) === key && u !== 0xffffffff ? u : null
+}
+
 /** Compound assignment: read → op → write back (via readVar/writeVar). */
 function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
@@ -1039,10 +1046,14 @@ export const emitter = {
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
       const setDyn = () => {
+        if (ctx.transform.strict)
+          err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
         inc('__dyn_set')
         return typed(['call', '$__dyn_set', asF64(emit(arr)), keyExpr, valueExpr], 'f64')
       }
       const dispatchKey = (numericIR) => {
+        if (ctx.transform.strict)
+          err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
         const keyTmp = temp()
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, keyExpr],
@@ -1051,7 +1062,9 @@ export const emitter = {
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
       // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
-      const litKey = isLiteralStr(idx) ? idx[1] : null
+      const litKey = isLiteralStr(idx) ? idx[1]
+        : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
+        : null
       if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
         const slot = ctx.schema.find(arr, litKey)
         if (slot >= 0) {
@@ -1063,6 +1076,15 @@ export const emitter = {
               ['local.get', `$${t}`]],
             ['local.get', `$${t}`]], 'f64')
         }
+      }
+      const arrIndex = litKey != null ? arrayIndexKey(litKey) : null
+      if (arrIndex != null && typeof arr === 'string' && keyValType(arr) === VAL.ARRAY) {
+        const persist = ptr => {
+          if (ctx.func.boxed?.has(arr)) return ['f64.store', boxedAddr(arr), ptr]
+          if (isGlobal(arr)) return ['global.set', `$${arr}`, ptr]
+          return ['local.set', `$${arr}`, ptr]
+        }
+        return storeArrayValue(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), persist)
       }
       if (keyType === VAL.STRING) return setDyn()
       if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&

@@ -217,6 +217,9 @@ const throwsStrict = (code, match, msg) => {
 test('strict: dynamic property access errors', () =>
   throwsStrict('export let f = (k) => { let p = {}; p[k] = 1; return p[k] }', 'strict mode', 'p[k] should error'))
 
+test('strict: dynamic property assignment errors without a later dynamic read', () =>
+  throwsStrict('export let f = (k) => { let p = { x: 1 }; p[k] = 2; return p.x }', 'strict mode', 'p[k] assignment should error'))
+
 test('strict: for-in errors', () =>
   throwsStrict('export let f = (o) => { let s = 0; for (let k in o) s++; return s }', 'strict mode', 'for-in should error'))
 

@@ -44,6 +44,12 @@
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
 * [ ] test262 basics
+* [ ] JS-equivalence audit for dynamic property writes:
+  - Runtime string keys on ARRAY/TYPED receivers need canonical array-index
+    detection (`"0"` writes element 0, `"01"` is a named property).
+  - Dynamic writes to fixed-shape OBJECT fields are now slot+sidecar coherent;
+    keep adding negative tests for aliasing, enumeration, and mixed receiver
+    shapes before more type-driven optimizations.
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
 * [ ] wasm2c / w2c2 integration test

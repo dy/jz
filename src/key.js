@@ -1,5 +1,7 @@
 /** Static property-key evaluation for computed member names. */
 
+import { ctx } from './ctx.js'
+
 const NO_VALUE = Symbol('no-static-property-key')
 
 export function staticPropertyKey(node) {
@@ -9,7 +11,8 @@ export function staticPropertyKey(node) {
 
 function staticValue(node) {
   if (node === undefined) return undefined
-  if (node === null || typeof node === 'number' || typeof node === 'string' || typeof node === 'boolean') return node
+  if (node === null || typeof node === 'number' || typeof node === 'boolean') return node
+  if (typeof node === 'string') return ctx.scope.constStrs?.get(node) ?? NO_VALUE
   if (!Array.isArray(node)) return NO_VALUE
 
   const [op, ...args] = node

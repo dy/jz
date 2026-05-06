@@ -219,3 +219,37 @@ test('Regression: unknown-typed receiver does not take OBJECT slot fast-path', (
   is(f(0), 'hi')
   is(f(1), 'bye')
 })
+
+test('Regression: dynamic key write updates existing fixed-shape object slot', () => {
+  const { dot, dyn, noFold } = run(`
+    export let dot = (k) => {
+      let o = { x: 1 }
+      o[k] = 2
+      return o.x
+    }
+    export let dyn = (k) => {
+      let o = { x: 1 }
+      o.x = 2
+      o[k] = 3
+      return o[k]
+    }
+    export let noFold = () => {
+      let o = { k: 7, x: 9 }
+      let k = "x"
+      o[k] = 11
+      return o.x + o.k
+    }
+  `)
+  is(dot('x'), 2)
+  is(dyn('x'), 3)
+  is(noFold(), 18)
+})
+
+test('Regression: literal numeric string array assignment updates element storage', () => {
+  const { f } = run(`export let f = () => {
+    let a = [1]
+    a["0"] = 2
+    return a[0]
+  }`)
+  is(f(), 2)
+})
