@@ -1954,7 +1954,7 @@ export const emitter = {
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$continue${loopId}`]]])
           // Single set_len for the full spread.
-          ir.push(['call', '$__set_len', ['local.get', `$${o}`],
+          ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
           // Update source variable: grow may have moved the pointer.
           if (ctx.func.boxed?.has(objArg)) {

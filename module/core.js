@@ -219,10 +219,10 @@ export default (ctx) => {
         (else (i32.shr_u (local.get $et) (i32.const 1)))))))`
 
   // Real data address for any TYPED ptr: owned → offset, view → [offset+4].
-  ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr f64) (result i32)
+  ctx.core.stdlib['__typed_data'] = `(func $__typed_data (param $ptr i64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
-    (if (result i32) (i32.and (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))) (i32.const 8))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
+    (if (result i32) (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const 8))
       (then (i32.load (i32.add (local.get $off) (i32.const 4))))
       (else (local.get $off))))`
 
@@ -265,10 +265,10 @@ export default (ctx) => {
               (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
           (else (i32.const 0))))))`
 
-  ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr f64) (result i32)
+  ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr i64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
         (i32.ge_u (local.get $off) (i32.const 4))
@@ -281,7 +281,7 @@ export default (ctx) => {
       (then
         (if (result i32) (i32.eq (local.get $t) (i32.const 3))
           (then
-            (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
+            (local.set $aux (call $__ptr_aux (local.get $ptr)))
             (if (result i32) (i32.and (local.get $aux) (i32.const 8))
               ;; views are non-growable: cap = len (byteLen at [off])
               (then (i32.shr_u (i32.load (local.get $off))
@@ -292,21 +292,21 @@ export default (ctx) => {
       (else (i32.const 0))))`
 
   // String (heap): [-4:len(i32)][chars...]
-  ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr f64) (result i32)
+  ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr i64) (result i32)
     (local $off i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if (result i32)
       (i32.and
-        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.STRING}))
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
         (i32.ge_u (local.get $off) (i32.const 4)))
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
 
   // Set len in memory (for push/pop). Hot (~42M calls in watr self-host).
   // Type/offset extraction inlined; forwarding loop only entered for ARRAY.
-  ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr f64) (param $len i32)
+  ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr i64) (param $len i32)
     (local $bits i64) (local $t i32) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+    (local.set $bits (local.get $ptr))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     ;; Only ARRAY (1), TYPED (3), HASH (7), SET (8), MAP (9) carry an 8-byte header.
@@ -530,7 +530,7 @@ export default (ctx) => {
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (then
               (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
-                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
+                (then (f64.convert_i32_s (call $__str_len (i64.reinterpret_f64 (local.get $v)))))
                 (else (f64.const nan:${UNDEF_NAN}))))
             (else ${lenArm}))`
     const afterNumber = ctx.features.sso

@@ -1009,7 +1009,7 @@ export default (ctx) => {
     const bodyFlat = emitFlat(body)
     return [
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
-      ['local.set', `$${cap}`, ['call', '$__cap', va]],
+      ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
         ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],

@@ -416,7 +416,7 @@ function emitHashKeys(obj) {
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${t}`]]],
+    ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['local.set', `$${o}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,

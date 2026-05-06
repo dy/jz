@@ -459,7 +459,7 @@ export default (ctx) => {
                   (i32.load (i32.sub (local.get $base) (i32.const 8))))
       (then
         (local.set $ptr (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
-        (call $__set_len (local.get $ptr) (i32.add (local.get $i) (i32.const 1)))
+        (call $__set_len (i64.reinterpret_f64 (local.get $ptr)) (i32.add (local.get $i) (i32.const 1)))
         (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))))
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
@@ -764,7 +764,7 @@ export default (ctx) => {
     }
 
     // Update length header, update source variable (pointer may have changed from grow), return new length
-    body.push(['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]])
+    body.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]])
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
       if (ctx.func.boxed?.has(arr)) {
@@ -792,7 +792,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, ['i32.sub', rawLen, ['i32.const', 1]]],
-      ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
+      ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
       ['f64.load',
         ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
   }
@@ -883,7 +883,7 @@ export default (ctx) => {
           ['i32.sub', ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]], ['local.get', `$${cnt}`]],
           ['i32.const', 3]]],
       // update length
-      ['call', '$__set_len', va, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
+      ['call', '$__set_len', ['i64.reinterpret_f64', va], ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
       out.ptr,
     ]
     return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -902,7 +902,7 @@ export default (ctx) => {
       (local.get $off)
       (i32.shl (local.get $len) (i32.const 3)))
     (f64.store (local.get $off) (local.get $val))
-    (call $__set_len (local.get $arr) (i32.add (local.get $len) (i32.const 1)))
+    (call $__set_len (i64.reinterpret_f64 (local.get $arr)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)

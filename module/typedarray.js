@@ -171,7 +171,7 @@ function genSimdMap(name, elemType, pattern) {
     (local $v v128)
     ${scalarLocal}
     (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
-    (local.set $srcOff (call $__typed_data (local.get $src)))
+    (local.set $srcOff (call $__typed_data (i64.reinterpret_f64 (local.get $src))))
     ;; Alloc result typed array: header(8) + data. Header stores byteLen = len << ${shift}.
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $len) (i32.const ${shift})))))
     (i32.store (local.get $dst) (i32.shl (local.get $len) (i32.const ${shift})))
