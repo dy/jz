@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
+import { typed, asF64, asI64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
 import { err, inc, PTR } from '../src/ctx.js'
@@ -122,19 +122,20 @@ export default (ctx) => {
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
     (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
-  // __json_val(val: f64) — stringify any value, append to buffer
-  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val f64)
-    (local $type i32) (local $len i32) (local $i i32) (local $off i32)
+  // __json_val(val: i64) — stringify any value, append to buffer
+  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val i64)
+    (local $type i32) (local $len i32) (local $i i32) (local $off i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Number (not NaN) — but Infinity must be null per JSON spec
-    (if (f64.eq (local.get $val) (local.get $val))
+    (if (f64.eq (local.get $f) (local.get $f))
       (then
-        (if (f64.eq (f64.abs (local.get $val)) (f64.const inf))
+        (if (f64.eq (f64.abs (local.get $f)) (f64.const inf))
           (then
             (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
             (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
-        (call $__jput_num (local.get $val)) (return)))
+        (call $__jput_num (local.get $f)) (return)))
     ;; NaN-boxed pointer
-    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $val))))
+    (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → null
     (if (i32.eqz (local.get $type))
       (then
@@ -145,19 +146,19 @@ export default (ctx) => {
                 (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
       (then
         (call $__jput (i32.const 34))
-        (call $__jput_str (i64.reinterpret_f64 (local.get $val)))
+        (call $__jput_str (local.get $val))
         (call $__jput (i32.const 34)) (return)))
     ;; Array
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (call $__jput (i32.const 91))  ;; [
-        (local.set $len (call $__len (i64.reinterpret_f64 (local.get $val))))
-        (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
+        (local.set $len (call $__len (local.get $val)))
+        (local.set $off (call $__ptr_offset (local.get $val)))
         (local.set $i (i32.const 0))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (if (local.get $i) (then (call $__jput (i32.const 44))))  ;; ,
-          (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (call $__jput (i32.const 93))  ;; ]
@@ -173,11 +174,11 @@ export default (ctx) => {
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
 
-  // __json_hash(val: f64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
+  // __json_hash(val: i64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
   // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
-  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val f64)
+  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val i64)
     (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
+    (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $first (i32.const 1))
     (call $__jput (i32.const 123))
@@ -193,7 +194,7 @@ export default (ctx) => {
           (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
           (call $__jput (i32.const 34))
           (call $__jput (i32.const 58))
-          (call $__json_val (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+          (call $__json_val (i64.load (i32.add (local.get $slot) (i32.const 16))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (call $__jput (i32.const 125)))`
@@ -202,16 +203,16 @@ export default (ctx) => {
   // Schema name table: global $__schema_tbl → array of f64 pointers.
   //   schema_tbl[schemaId * 8] = f64 pointer to jz Array of key name strings.
   // Object props are sequential f64 at ptr_offset, indexed same as schema.
-  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val f64)
+  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val i64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $val))))
-    (local.set $sid (call $__ptr_aux (i64.reinterpret_f64 (local.get $val))))
+    (local.set $off (call $__ptr_offset (local.get $val)))
+    (local.set $sid (call $__ptr_aux (local.get $val)))
     ;; Load keys array from schema table: schema_tbl + sid * 8
-    (local.set $keys (call $__ptr_offset (i64.reinterpret_f64
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))))
-    (local.set $nkeys (call $__len (i64.reinterpret_f64
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))))
+    (local.set $keys (call $__ptr_offset
+      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+    (local.set $nkeys (call $__len
+      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
     (call $__jput (i32.const 123))
     (block $d (loop $l
@@ -221,13 +222,13 @@ export default (ctx) => {
       (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
       (call $__jput (i32.const 34))
       (call $__jput (i32.const 58))
-      (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (call $__jput (i32.const 125)))`
 
-  // __stringify(val: f64) → f64 (NaN-boxed string)
-  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val f64) (result f64)
+  // __stringify(val: i64) → f64 (NaN-boxed string)
+  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (result f64)
     ;; Reset output buffer
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
@@ -491,7 +492,7 @@ export default (ctx) => {
 
   ctx.core.emit['JSON.stringify'] = (x) => {
     inc('__stringify')
-    return typed(['call', '$__stringify', asF64(emit(x))], 'f64')
+    return typed(['call', '$__stringify', asI64(emit(x))], 'f64')
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
