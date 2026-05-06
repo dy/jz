@@ -556,15 +556,14 @@ const installDefaultEnvImports = (mod, imports, state) => {
   // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
   // callbacks back via the exported __invoke_closure trampoline (state.invoke).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
-  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js.
-  // Reinterpret back to f64 to feed the wasm trampoline that still takes f64.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js;
+  // __invoke_closure also takes i64 now, so the BigInt feeds it directly.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1
     if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbBig, delayMs, repeat) => {
       const id = nextId++
-      const cbPtr = i64ToF64(cbBig)
-      const fire = () => state.invoke?.(cbPtr)
+      const fire = () => state.invoke?.(cbBig)
       if (repeat) {
         const h = setInterval(fire, delayMs)
         cancel.set(id, () => clearInterval(h))

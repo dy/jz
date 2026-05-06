@@ -6,7 +6,7 @@
  *   `host: 'js'` (default): emit `env.setTimeout(cb: f64, delay: f64, repeat: i32) -> f64`
  *     and `env.clearTimeout(id: f64) -> f64`. The JS host (src/host.js) drives both
  *     via global setTimeout/setInterval and calls back into wasm through the
- *     exported `__invoke_closure(clos: f64) -> f64` trampoline. No queue, no
+ *     exported `__invoke_closure(clos: i64) -> f64` trampoline. No queue, no
  *     polling — the host's event loop does the scheduling.
  *
  *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
@@ -42,13 +42,13 @@ const addImportOnce = (ctx, mod, name, fn) => {
 // in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
 // Closure is also passed as $__env so captures resolve via env-load.
 // `exported` adds (export "__invoke_closure") so the JS host can call it.
-const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos f64) (result f64)
+const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos i64) (result f64)
   (call_indirect (type \$ftN)
-    (local.get $clos)
+    (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
     ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
-      (i64.shr_u (i64.reinterpret_f64 (local.get $clos)) (i64.const 32))
+      (i64.shr_u (local.get $clos) (i64.const 32))
       (i64.const 0x7FFF)))))`
 
 const setupWasi = (ctx) => {
@@ -197,7 +197,7 @@ const setupWasi = (ctx) => {
                   (i32.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 32))) (i32.const 0))
                   (global.set $__timer_count (i32.sub (global.get $__timer_count) (i32.const 1)))))
               ;; Fire closure with 0 args (shared trampoline)
-              (drop (call $__invoke_closure (f64.reinterpret_i64 (local.get $clos))))
+              (drop (call $__invoke_closure (local.get $clos)))
               (local.set $dispatched (i32.add (local.get $dispatched) (i32.const 1)))))))
       (local.set $slot (i32.add (local.get $slot) (i32.const 1)))
       (br $scan)))
