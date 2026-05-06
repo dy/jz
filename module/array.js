@@ -448,21 +448,22 @@ export default (ctx) => {
   // Hot for arr[i] = val (~18M calls in watr self-host). Compute base via __ptr_offset
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
   // forwarding follow. On the rare grow path the base is recomputed after relocation.
-  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr f64) (param $i i32) (param $val f64) (result f64)
-    (local $base i32)
+  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
+    (local $base i32) (local $p f64)
+    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.lt_s (local.get $i) (i32.const 0))
-      (then (return (local.get $ptr))))
-    (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+      (then (return (local.get $p))))
+    (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.ge_u (local.get $i)
                   (i32.load (i32.sub (local.get $base) (i32.const 8))))
       (then
-        (local.set $ptr (call $__arr_grow (i64.reinterpret_f64 (local.get $ptr)) (i32.add (local.get $i) (i32.const 1))))
-        (call $__set_len (i64.reinterpret_f64 (local.get $ptr)) (i32.add (local.get $i) (i32.const 1)))
-        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))))
+        (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
+        (call $__set_len (i64.reinterpret_f64 (local.get $p)) (i32.add (local.get $i) (i32.const 1)))
+        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
-    (local.get $ptr))`
+    (local.get $p))`
 
   // === Array literal ===
 
@@ -521,13 +522,13 @@ export default (ctx) => {
           ['local.set', `$${si}`, ['i32.const', 0]],
           ['block', `$brk${id}`, ['loop', `$loop${id}`,
             ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
-            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], spreadItem]],
+            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], spreadItem]],
             ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$loop${id}`]]])
       } else {
         body.push(
-          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], asF64(emit(e))]],
+          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], asF64(emit(e))]],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]])
       }
     }

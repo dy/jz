@@ -1039,7 +1039,7 @@ export const emitter = {
           ['local.set', `$${arrTmp}`, arrExpr],
           ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
           ['local.set', `$${valTmp}`, valueExpr],
-          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${arrTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
         ]
         if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
         body.push(['local.get', `$${valTmp}`])
@@ -1172,7 +1172,7 @@ export const emitter = {
           ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
@@ -1202,7 +1202,7 @@ export const emitter = {
           ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               persist(['local.get', `$${ptrTmp}`]),
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
