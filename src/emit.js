@@ -200,7 +200,7 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   inc('__str_byteLen', '__char_at')
   const charEq = ['if', ['result', 'i32'],
     ['i32.gt_u', ['call', '$__str_byteLen', ['local.get', `$${ptr}`]], idxIR],
-    ['then', ['i32.eq', ['call', '$__char_at', ['local.get', `$${ptr}`], idxIR], ['i32.const', lit.charCodeAt(0)]]],
+    ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR], ['i32.const', lit.charCodeAt(0)]]],
     ['else', ['i32.const', 0]]]
 
   if (vt === VAL.STRING) {
@@ -1362,7 +1362,7 @@ export const emitter = {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
             asF64(emit(a)),
-            ['call', '$__char_at', asF64(emit(b[1])), asI32(emit(b[2]))],
+            ['call', '$__char_at', asI64(emit(b[1])), asI32(emit(b[2]))],
           ], 'f64')
         }
       }

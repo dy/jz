@@ -10,7 +10,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -92,27 +92,26 @@ export default (ctx) => {
 
   // SSO/STRING ptrs never have forwarding pointers (only ARRAY does), so we extract
   // the raw offset directly instead of paying the __ptr_offset function-call overhead.
-  ctx.core.stdlib['__sso_char'] = `(func $__sso_char (param $ptr f64) (param $i i32) (result i32)
+  ctx.core.stdlib['__sso_char'] = `(func $__sso_char (param $ptr i64) (param $i i32) (result i32)
     (i32.and
       (i32.shr_u
-        (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF)))
+        (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF)))
         (i32.mul (local.get $i) (i32.const 8)))
       (i32.const 0xFF)))`
 
-  ctx.core.stdlib['__str_char'] = `(func $__str_char (param $ptr f64) (param $i i32) (result i32)
+  ctx.core.stdlib['__str_char'] = `(func $__str_char (param $ptr i64) (param $i i32) (result i32)
     (i32.load8_u (i32.add
-      (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF)))
+      (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF)))
       (local.get $i))))`
 
-  // Hot (~37M calls in watr self-host). Type+offset extracted once from $bits;
+  // Hot (~37M calls in watr self-host). Type+offset extracted once from $ptr;
   // SSO/STRING bodies merged inline to skip 2 function calls per char fetch.
-  ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr f64) (param $i i32) (result i32)
-    (local $bits i64) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+  ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
+    (local $off i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
     (if (result i32)
       (i32.eq
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF)))
         (i32.const ${PTR.SSO}))
       (then
         (i32.and
@@ -207,8 +206,8 @@ export default (ctx) => {
       (then (return (i32.const 0))))
     (block $dm (loop $lm
       (br_if $dm (i32.ge_s (local.get $i) (local.get $len)))
-      (if (i32.ne (call $__char_at (f64.reinterpret_i64 (local.get $a)) (local.get $i))
-                  (call $__char_at (f64.reinterpret_i64 (local.get $b)) (local.get $i)))
+      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
+                  (call $__char_at (local.get $b) (local.get $i)))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lm)))
@@ -443,12 +442,12 @@ export default (ctx) => {
     (local.set $end (local.get $len))
     (block $d1 (loop $l1
       (br_if $d1 (i32.ge_s (local.get $start) (local.get $end)))
-      (br_if $d1 (i32.gt_u (call $__char_at (local.get $ptr) (local.get $start)) (i32.const 32)))
+      (br_if $d1 (i32.gt_u (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (local.get $start)) (i32.const 32)))
       (local.set $start (i32.add (local.get $start) (i32.const 1)))
       (br $l1)))
     (block $d2 (loop $l2
       (br_if $d2 (i32.le_s (local.get $end) (local.get $start)))
-      (br_if $d2 (i32.gt_u (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
+      (br_if $d2 (i32.gt_u (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
       (local.set $end (i32.sub (local.get $end) (i32.const 1)))
       (br $l2)))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
@@ -459,7 +458,7 @@ export default (ctx) => {
     (local.set $start (i32.const 0))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $start) (local.get $len)))
-      (br_if $done (i32.gt_u (call $__char_at (local.get $ptr) (local.get $start)) (i32.const 32)))
+      (br_if $done (i32.gt_u (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (local.get $start)) (i32.const 32)))
       (local.set $start (i32.add (local.get $start) (i32.const 1)))
       (br $loop)))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $len)))`
@@ -470,7 +469,7 @@ export default (ctx) => {
     (local.set $end (local.get $len))
     (block $done (loop $loop
       (br_if $done (i32.le_s (local.get $end) (i32.const 0)))
-      (br_if $done (i32.gt_u (call $__char_at (local.get $ptr) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
+      (br_if $done (i32.gt_u (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
       (local.set $end (i32.sub (local.get $end) (i32.const 1)))
       (br $loop)))
     (call $__str_slice (local.get $ptr) (i32.const 0) (local.get $end)))`
@@ -714,8 +713,8 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $n1 (loop $c1
         (br_if $n1 (i32.ge_s (local.get $j) (local.get $plen)))
-        (if (i32.ne (call $__char_at (local.get $str) (i32.add (local.get $i) (local.get $j)))
-                    (call $__char_at (local.get $sep) (local.get $j)))
+        (if (i32.ne (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (local.get $j)))
+                    (call $__char_at (i64.reinterpret_f64 (local.get $sep)) (local.get $j)))
           (then (local.set $match (i32.const 0)) (br $n1)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $c1)))
@@ -738,8 +737,8 @@ export default (ctx) => {
       (local.set $j (i32.const 0))
       (block $n2 (loop $c2
         (br_if $n2 (i32.ge_s (local.get $j) (local.get $plen)))
-        (if (i32.ne (call $__char_at (local.get $str) (i32.add (local.get $i) (local.get $j)))
-                    (call $__char_at (local.get $sep) (local.get $j)))
+        (if (i32.ne (call $__char_at (i64.reinterpret_f64 (local.get $str)) (i32.add (local.get $i) (local.get $j)))
+                    (call $__char_at (i64.reinterpret_f64 (local.get $sep)) (local.get $j)))
           (then (local.set $match (i32.const 0)) (br $n2)))
         (local.set $j (i32.add (local.get $j) (i32.const 1)))
         (br $c2)))
@@ -936,7 +935,7 @@ export default (ctx) => {
     const t = tempI32('ch')
     // Get char code, create SSO string with 1 byte
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, ['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))]],
+      ['local.set', `$${t}`, ['call', '$__char_at', asI64(emit(str)), asI32(emit(idx))]],
       mkPtrIR(PTR.SSO, 1, ['local.get', `$${t}`])], 'f64')
   }
 
@@ -946,7 +945,7 @@ export default (ctx) => {
   // `c - 48` arithmetic skip the per-iteration f64 widen + i32 trunc round-trip.
   ctx.core.emit['.charCodeAt'] = (str, idx) => {
     inc('__char_at')
-    return typed(['call', '$__char_at', asF64(emit(str)), asI32(emit(idx))], 'i32')
+    return typed(['call', '$__char_at', asI64(emit(str)), asI32(emit(idx))], 'i32')
   }
 
   // String.fromCharCode(code) → 1-char SSO string
@@ -1010,7 +1009,7 @@ export default (ctx) => {
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
           ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]],
-      mkPtrIR(PTR.SSO, 1, ['call', '$__char_at', ['local.get', `$${s}`], ['local.get', `$${t}`]])], 'f64')
+      mkPtrIR(PTR.SSO, 1, ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${t}`]])], 'f64')
   }
 
   // .search(str) → indexOf (same as indexOf for string args)

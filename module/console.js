@@ -74,7 +74,7 @@ const setupWasi = (ctx) => {
         (block $done (loop $loop
           (br_if $done (i32.ge_s (local.get $off) (local.get $len)))
           (i32.store8 (i32.add (local.get $buf) (local.get $off))
-            (call $__sso_char (local.get $ptr) (local.get $off)))
+            (call $__sso_char (i64.reinterpret_f64 (local.get $ptr)) (local.get $off)))
           (local.set $off (i32.add (local.get $off) (i32.const 1)))
           (br $loop)))
         (i32.store (local.get $iov) (local.get $buf))

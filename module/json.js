@@ -101,7 +101,7 @@ export default (ctx) => {
     (local.set $i (i32.const 0))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $ch (call $__char_at (local.get $ptr) (local.get $i)))
+      (local.set $ch (call $__char_at (i64.reinterpret_f64 (local.get $ptr)) (local.get $i)))
       ;; Escape special JSON chars
       (if (i32.le_u (local.get $ch) (i32.const 13))
         (then
@@ -477,7 +477,7 @@ export default (ctx) => {
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (i32.store8 (i32.add (local.get $buf) (local.get $i))
-            (call $__sso_char (local.get $str) (local.get $i)))
+            (call $__sso_char (i64.reinterpret_f64 (local.get $str)) (local.get $i)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l))))
       (else
