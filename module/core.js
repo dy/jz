@@ -179,7 +179,7 @@ export default (ctx) => {
       (local.set $ptr (i32.load (i32.const 1020)))
       (i32.store (i32.const 1020) (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
       (local.get $ptr))`
-    ctx.core.stdlib['__reset'] = `(func $__reset
+    ctx.core.stdlib['__clear'] = `(func $__clear
       (i32.store (i32.const 1020) (i32.const 1024)))`
   } else {
     // Own memory: heap offset in a global, auto-grow when needed
@@ -196,7 +196,7 @@ export default (ctx) => {
           (i32.const -1)) (then (unreachable)))))
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
-    ctx.core.stdlib['__reset'] = `(func $__reset
+    ctx.core.stdlib['__clear'] = `(func $__clear
       (global.set $__heap (i32.const 1024)))`
   }
 
@@ -344,10 +344,10 @@ export default (ctx) => {
 
   // Allocator + exports are deferred: only included when memory is actually needed.
   // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.
-  // compile.js emits _alloc/_reset exports + memory section only when __alloc is in includes.
+  // compile.js emits _alloc/_clear exports + memory section only when __alloc is in includes.
   ctx.core._allocRawFuncs = [
     '(func (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
-    '(func (export "_reset") (call $__reset))',
+    '(func (export "_clear") (call $__clear))',
   ]
 
   // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN.

@@ -252,7 +252,7 @@ function analyzeFuncForEmit(func, programFacts) {
 function emitFunc(func, funcFacts, programFacts) {
   const { paramReps } = programFacts
 
-  // Raw WAT functions (e.g., _alloc, _reset from memory module)
+  // Raw WAT functions (e.g., _alloc, _clear from memory module)
   if (func.raw) return parseWat(func.raw)
 
   const { name, body, exported, sig } = func
@@ -867,8 +867,7 @@ function dedupClosureBodies(closureFuncs, sec) {
  *      Both `call` and `return_call` (tail call) sites are rewritten in the same walk.
  */
 function finalizeClosureTable(sec) {
-  if (!ctx.closure.table?.length) return
-  let indirectUsed = false
+  let indirectUsed = ctx.transform.host === 'wasi'
   const scan = (n) => {
     if (!Array.isArray(n) || indirectUsed) return
     if (n[0] === 'call_indirect') { indirectUsed = true; return }
@@ -882,8 +881,9 @@ function finalizeClosureTable(sec) {
   }
   // Keep table if call_indirect is used (closures, timer dispatch, etc.)
   if (indirectUsed) {
+    if (!ctx.closure.table) ctx.closure.table = []
     sec.table = [['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref']]
-    sec.elem = [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]]
+    sec.elem = ctx.closure.table.length ? [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]] : []
     return
   }
   sec.table = []
@@ -947,7 +947,7 @@ function finalizeClosureTable(sec) {
  *   1. resolveIncludes() — close the include set under stdlib dependencies.
  *   2. Emit memory section ONLY when some included helper uses memory ops
  *      (G optimization: pure scalar programs ship without memory + __heap).
- *      When memory is needed, the allocator (__alloc + __alloc_hdr + __reset)
+ *      When memory is needed, the allocator (__alloc + __alloc_hdr + __clear)
  *      is force-included since stdlib funcs may call into it.
  *   3. Pull external (host) stdlibs into sec.extStdlib (must precede normal
  *      imports in the module byte order).
@@ -963,7 +963,7 @@ function pullStdlib(sec) {
   const needsMemory = [...ctx.core.includes].some(n => ctx.core.stdlib[n] && MEM_OPS.test(ctx.core.stdlib[n]))
   if (!needsMemory) ctx.scope.globals.delete('__heap')
   if (needsMemory && ctx.module.modules.core) {
-    for (const fn of ['__alloc', '__alloc_hdr', '__reset']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
+    for (const fn of ['__alloc', '__alloc_hdr', '__clear']) if (!ctx.core.includes.has(fn)) ctx.core.includes.add(fn)
     const pages = ctx.memory.pages || 1
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sec.memory.push(['memory', ['export', '"memory"'], pages])
@@ -1040,7 +1040,7 @@ function optimizeModule(sec) {
     if (ctx.scope.globals.has('__heap_start'))
       ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
     for (const s of sec.stdlib)
-      if (s[0] === 'func' && s[1] === '$__reset')
+      if (s[0] === 'func' && s[1] === '$__clear')
         for (let i = 2; i < s.length; i++)
           if (Array.isArray(s[i]) && s[i][0] === 'global.set' && Array.isArray(s[i][2]) && s[i][2][0] === 'i32.const')
             s[i][2][1] = `${heapBase}`
