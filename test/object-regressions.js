@@ -253,3 +253,55 @@ test('Regression: literal numeric string array assignment updates element storag
   }`)
   is(f(), 2)
 })
+
+// Object.keys on HASH receivers — JSON.parse'd dynamic objects carry no
+// compile-time schema. The HASH path walks the probe table at runtime,
+// pre-sized to __len. Iteration order is hash-derived (matches `for-in`
+// on HASH), not JS spec insertion order — assertions cover count + key
+// set rather than order.
+test('Object.keys: returns count for HASH from JSON.parse', () => {
+  const { f } = run(`export let f = () => Object.keys(JSON.parse('{"a":1,"b":2,"c":3}')).length`)
+  is(f(), 3)
+})
+
+test('Object.keys: empty HASH returns empty array', () => {
+  const { f } = run(`export let f = () => Object.keys(JSON.parse('{}')).length`)
+  is(f(), 0)
+})
+
+test('Object.keys: HASH key set matches input', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{"a":1,"b":2,"c":3}')
+    let k = Object.keys(o)
+    return (k.indexOf("a") >= 0) + (k.indexOf("b") >= 0) + (k.indexOf("c") >= 0)
+  }`)
+  is(f(), 3)
+})
+
+test('Object.keys: HASH does not return absent keys', () => {
+  const { f } = run(`export let f = () => Object.keys(JSON.parse('{"a":1}')).indexOf("zzz")`)
+  is(f(), -1)
+})
+
+test('Object.keys: HASH count grows with mutation', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{"a":1}')
+    o.b = 2
+    o.c = 3
+    return Object.keys(o).length
+  }`)
+  is(f(), 3)
+})
+
+test('Object.keys: nested HASH', () => {
+  const { f } = run(`export let f = () => Object.keys(JSON.parse('{"x":{"a":1,"b":2,"c":3,"d":4}}').x).length`)
+  is(f(), 4)
+})
+
+test('Object.keys: existing OBJECT-literal path still works', () => {
+  const { f } = run(`export let f = () => {
+    let o = {x: 1, y: 2, z: 3}
+    return Object.keys(o).length
+  }`)
+  is(f(), 3)
+})

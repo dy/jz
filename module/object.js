@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr } from '../src/ir.js'
+import { typed, asF64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep } from '../src/analyze.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
@@ -92,6 +92,7 @@ export default (ctx) => {
   // === Object static methods ===
 
   ctx.core.emit['Object.keys'] = (obj) => {
+    if (isHashTyped(obj)) return emitHashKeys(obj)
     const schema = resolveSchema(obj)
     if (!schema) err('Object.keys requires object with known schema')
     return emitStringArray(schema)
@@ -387,4 +388,47 @@ function emitStringArray(names) {
     body.push(['f64.store', slotAddr(out.local, i), emit(['str', names[i]])])
   body.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+// VAL.HASH covers both literal-typed bindings and JSON-shape inferred chains
+// (e.g. JSON.parse('{...}') → walked via shapeOf for nested `.prop` access).
+// Schema fallback only fires when the static path can't classify the receiver.
+function isHashTyped(obj) {
+  if (typeof obj === 'string') return lookupValType(obj) === VAL.HASH
+  return valTypeOf(obj) === VAL.HASH
+}
+
+// HASH layout: open-addressed probe table, each entry 24 bytes —
+// [hash:f64][key:f64][value:f64]. Slot is empty when hash field == 0
+// (tombstone == 1). __len exposes live entry count at off-8; __cap exposes
+// slot count at off-4. Output array is pre-sized to __len; walk all cap
+// slots and append occupied keys. Iteration order is hash-derived, matching
+// jz's `for-in` over HASH — not the JS spec's insertion order.
+function emitHashKeys(obj) {
+  inc('__ptr_offset', '__cap', '__len')
+  const va = asF64(emit(obj))
+  const t = temp('hk'), off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
+  const i = tempI32('hki'), o = tempI32('hkj'), slot = tempI32('hks')
+  const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
+  const id = ctx.func.uniq++
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, va],
+    ['local.set', `$${n}`, ['call', '$__len', ['local.get', `$${t}`]]],
+    out.init,
+    ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
+    ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${t}`]]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['local.set', `$${o}`, ['i32.const', 0]],
+    ['block', `$brk${id}`, ['loop', `$loop${id}`,
+      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
+      ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
+        ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
+      ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
+        ['then',
+          elemStore(out.local, o,
+            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]),
+          ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$loop${id}`]]],
+    out.ptr], 'f64')
 }
