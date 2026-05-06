@@ -198,7 +198,17 @@ const setupJsHost = (ctx) => {
         const sub = flat || [args[i]]
         for (const p of sub) {
           if (Array.isArray(p) && p[0] === 'str' && p[1] === '') continue
-          segments.push({ expr: asF64(emit(p)), sep: 0 })
+          // V8 (notably node 22) canonicalizes f64 NaN payloads at the wasm→JS
+          // boundary, collapsing NULL_NAN's high-mantissa discriminator and
+          // making the host unable to tell null from a generic NaN. Substitute
+          // literal null/undefined with a string literal so wasm passes a real
+          // pointer, sidestepping the canonicalization entirely.
+          let arg = p
+          if (Array.isArray(p) && p[0] == null && p.length === 2) {
+            if (p[1] === undefined) arg = ['str', 'undefined']
+            else if (p[1] === null) arg = ['str', 'null']
+          } else if (typeof p === 'symbol') arg = ['str', 'null']
+          segments.push({ expr: asF64(emit(arg)), sep: 0 })
         }
         // Empty arg (`console.log('', 'a')`) still needs to mark its boundary
         // so the inter-arg space lands in the right place.
