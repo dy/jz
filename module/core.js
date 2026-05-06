@@ -379,7 +379,7 @@ export default (ctx) => {
     // Known string → byteLen (handles SSO + heap)
     if (vt === VAL.STRING) {
       inc('__str_byteLen')
-      return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', va]], 'f64')
+      return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', ['i64.reinterpret_f64', va]]], 'f64')
     }
     // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
     // only when user code actually constructs Set/Map (collection.js sets the

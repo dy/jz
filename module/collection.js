@@ -973,7 +973,7 @@ export default (ctx) => {
           ['i32.ge_s', idxVal, ['i32.const', 0]]]],
         ['then',
           ['if', isStringLike,
-            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_byteLen', objVal]]]]],
+            ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__str_byteLen', ['i64.reinterpret_f64', objVal]]]]]],
           ['if', isArrayLike,
             ['then', ['local.set', `$${outTmp}`, ['i32.lt_u', idxVal, ['call', '$__len', ['i64.reinterpret_f64', objVal]]]]]]]],
 

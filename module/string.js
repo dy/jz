@@ -215,14 +215,13 @@ export default (ctx) => {
 
   // === WAT: unified byte length (SSO → aux, heap → header) ===
 
-  ctx.core.stdlib['__str_byteLen'] = `(func $__str_byteLen (param $ptr f64) (result i32)
-    (local $bits i64) (local $t i32) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
+  ctx.core.stdlib['__str_byteLen'] = `(func $__str_byteLen (param $ptr i64) (result i32)
+    (local $t i32) (local $off i32)
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))
     (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
-      (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+      (then (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
         (if (result i32)
           (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
           (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -235,7 +234,7 @@ export default (ctx) => {
   ctx.core.stdlib['__str_slice'] = `(func $__str_slice (param $ptr f64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $nlen i32) (local $off i32) (local $i i32)
     (local $bits i64) (local $srcOff i32) (local $isSso i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
     (if (i32.lt_s (local.get $end) (i32.const 0))
@@ -275,7 +274,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_substring'] = `(func $__str_substring (param $ptr f64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $tmp i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.lt_s (local.get $start) (i32.const 0))
       (then (local.set $start (i32.const 0))))
     (if (i32.lt_s (local.get $end) (i32.const 0))
@@ -297,8 +296,8 @@ export default (ctx) => {
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hbits i64) (local $nbits i64) (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
-    (local.set $hlen (call $__str_byteLen (local.get $hay)))
-    (local.set $nlen (call $__str_byteLen (local.get $ndl)))
+    (local.set $hlen (call $__str_byteLen (i64.reinterpret_f64 (local.get $hay))))
+    (local.set $nlen (call $__str_byteLen (i64.reinterpret_f64 (local.get $ndl))))
     (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
     (if (i32.gt_s (local.get $nlen) (local.get $hlen)) (then (return (i32.const -1))))
     (local.set $hbits (i64.reinterpret_f64 (local.get $hay)))
@@ -338,8 +337,8 @@ export default (ctx) => {
   ctx.core.stdlib['__str_startswith'] = `(func $__str_startswith (param $str f64) (param $pfx f64) (result i32)
     (local $plen i32) (local $i i32)
     (local $sbits i64) (local $pbits i64) (local $soff i32) (local $poff i32) (local $ssso i32) (local $psso i32)
-    (local.set $plen (call $__str_byteLen (local.get $pfx)))
-    (if (i32.gt_s (local.get $plen) (call $__str_byteLen (local.get $str)))
+    (local.set $plen (call $__str_byteLen (i64.reinterpret_f64 (local.get $pfx))))
+    (if (i32.gt_s (local.get $plen) (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
       (then (return (i32.const 0))))
     (local.set $sbits (i64.reinterpret_f64 (local.get $str)))
     (local.set $pbits (i64.reinterpret_f64 (local.get $pfx)))
@@ -368,8 +367,8 @@ export default (ctx) => {
   ctx.core.stdlib['__str_endswith'] = `(func $__str_endswith (param $str f64) (param $sfx f64) (result i32)
     (local $slen i32) (local $flen i32) (local $off i32) (local $i i32) (local $k i32)
     (local $sbits i64) (local $fbits i64) (local $soff i32) (local $foff i32) (local $ssso i32) (local $fsso i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
-    (local.set $flen (call $__str_byteLen (local.get $sfx)))
+    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $flen (call $__str_byteLen (i64.reinterpret_f64 (local.get $sfx))))
     (if (i32.gt_s (local.get $flen) (local.get $slen))
       (then (return (i32.const 0))))
     (local.set $off (i32.sub (local.get $slen) (local.get $flen)))
@@ -402,7 +401,7 @@ export default (ctx) => {
   ctx.core.stdlib['__str_case'] = `(func $__str_case (param $ptr f64) (param $lo i32) (param $hi i32) (param $delta i32) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $c i32)
     (local $bits i64) (local $srcOff i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $len))))
@@ -437,7 +436,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_trim'] = `(func $__str_trim (param $ptr f64) (result f64)
     (local $len i32) (local $start i32) (local $end i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $start (i32.const 0))
     (local.set $end (local.get $len))
     (block $d1 (loop $l1
@@ -454,7 +453,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_trimStart'] = `(func $__str_trimStart (param $ptr f64) (result f64)
     (local $len i32) (local $start i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $start (i32.const 0))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $start) (local.get $len)))
@@ -465,7 +464,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__str_trimEnd'] = `(func $__str_trimEnd (param $ptr f64) (result f64)
     (local $len i32) (local $end i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (local.set $end (local.get $len))
     (block $done (loop $loop
       (br_if $done (i32.le_s (local.get $end) (i32.const 0)))
@@ -478,7 +477,7 @@ export default (ctx) => {
   // each subsequent repetition (single bulk op vs len byte stores per copy).
   ctx.core.stdlib['__str_repeat'] = `(func $__str_repeat (param $ptr f64) (param $n i32) (result f64)
     (local $len i32) (local $total i32) (local $off i32) (local $i i32)
-    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $ptr))))
     (if (i32.or (i32.eqz (local.get $n)) (i32.eqz (local.get $len)))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $total (i32.mul (local.get $len) (local.get $n)))
@@ -623,7 +622,7 @@ export default (ctx) => {
                 (local.get $aoff)
                 (i32.shl (local.get $byte) (i32.shl (local.get $alen) (i32.const 3))))))))))
     ;; Slow path: allocate new heap STRING with original bytes + 1 new byte
-    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $alen (call $__str_byteLen (i64.reinterpret_f64 (local.get $a))))
     (local.set $total (i32.add (local.get $alen) (i32.const 1)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
@@ -638,8 +637,8 @@ export default (ctx) => {
     ;; Coerce operands to strings if needed
     (local.set $a (call $__to_str (local.get $a)))
     (local.set $b (call $__to_str (local.get $b)))
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_byteLen (i64.reinterpret_f64 (local.get $a))))
+    (local.set $blen (call $__str_byteLen (i64.reinterpret_f64 (local.get $b))))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
@@ -654,8 +653,8 @@ export default (ctx) => {
   ctx.core.stdlib['__str_concat_raw'] = `(func $__str_concat_raw (param $a f64) (param $b f64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $abits i64) (local $ta i32) (local $aoff i32) (local $newHeap i32)
-    (local.set $alen (call $__str_byteLen (local.get $a)))
-    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $alen (call $__str_byteLen (i64.reinterpret_f64 (local.get $a))))
+    (local.set $blen (call $__str_byteLen (i64.reinterpret_f64 (local.get $b))))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
@@ -673,17 +672,17 @@ export default (ctx) => {
     (if (result f64) (i32.lt_s (local.get $idx) (i32.const 0))
       (then (local.get $str))
       (else
-        (local.set $slen (call $__str_byteLen (local.get $search)))
+        (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $search))))
         (call $__str_concat
           (call $__str_concat
             (call $__str_slice (local.get $str) (i32.const 0) (local.get $idx))
             (local.get $repl))
           (call $__str_slice (local.get $str) (i32.add (local.get $idx) (local.get $slen))
-            (call $__str_byteLen (local.get $str)))))))`
+            (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))))))`
 
   ctx.core.stdlib['__str_replaceall'] = `(func $__str_replaceall (param $str f64) (param $search f64) (param $repl f64) (result f64)
     (local $idx i32) (local $slen i32) (local $pos i32) (local $result f64)
-    (local.set $slen (call $__str_byteLen (local.get $search)))
+    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $search))))
     (local.set $result (local.get $str))
     (local.set $pos (i32.const 0))
     (block $done (loop $next
@@ -694,8 +693,8 @@ export default (ctx) => {
           (call $__str_slice (local.get $result) (i32.const 0) (local.get $idx))
           (local.get $repl))
         (call $__str_slice (local.get $result) (i32.add (local.get $idx) (local.get $slen))
-          (call $__str_byteLen (local.get $result)))))
-      (local.set $pos (i32.add (local.get $idx) (call $__str_byteLen (local.get $repl))))
+          (call $__str_byteLen (i64.reinterpret_f64 (local.get $result))))))
+      (local.set $pos (i32.add (local.get $idx) (call $__str_byteLen (i64.reinterpret_f64 (local.get $repl)))))
       (br $next)))
     (local.get $result))`
 
@@ -703,8 +702,8 @@ export default (ctx) => {
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
     (local $arr i32) (local $piece_start i32) (local $piece_idx i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
-    (local.set $plen (call $__str_byteLen (local.get $sep)))
+    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
+    (local.set $plen (call $__str_byteLen (i64.reinterpret_f64 (local.get $sep))))
     (local.set $count (i32.const 1))
     (local.set $i (i32.const 0))
     (block $d1 (loop $l1
@@ -778,10 +777,10 @@ export default (ctx) => {
     (local $slen i32) (local $plen i32) (local $fill i32) (local $off i32) (local $i i32)
     (local $str_off i32) (local $pad_off i32)
     (local $pbits i64) (local $poff i32) (local $psso i32)
-    (local.set $slen (call $__str_byteLen (local.get $str)))
+    (local.set $slen (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
     (if (i32.ge_s (local.get $slen) (local.get $target))
       (then (return (local.get $str))))
-    (local.set $plen (call $__str_byteLen (local.get $pad)))
+    (local.set $plen (call $__str_byteLen (i64.reinterpret_f64 (local.get $pad))))
     (local.set $fill (i32.sub (local.get $target) (local.get $slen)))
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $target))))
     (i32.store (local.get $off) (local.get $target))
@@ -820,7 +819,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_slice', ['local.get', `$${t}`], asI32(emit(start)),
-        ['call', '$__str_byteLen', ['local.get', `$${t}`]]]], 'f64')
+        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {
@@ -842,7 +841,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
       ['call', '$__str_substring', ['local.get', `$${t}`], asI32(emit(start)),
-        ['call', '$__str_byteLen', ['local.get', `$${t}`]]]], 'f64')
+        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
   // Factory for simple str→call patterns: [emitKey, stdlibName, argCoercions, i32Result?]
@@ -895,7 +894,7 @@ export default (ctx) => {
 
     for (let i = 0; i < parts.length; i++) {
       ir.push(['local.set', `$${vals[i]}`, ['call', '$__to_str', asF64(emit(parts[i]))]])
-      ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['local.get', `$${vals[i]}`]]])
+      ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', 0]])
     for (const len of lens)
@@ -1008,7 +1007,7 @@ export default (ctx) => {
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-          ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]],
+          ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]],
       mkPtrIR(PTR.SSO, 1, ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${t}`]])], 'f64')
   }
 
@@ -1035,7 +1034,7 @@ export default (ctx) => {
           ['call', '$__wrap1',
             ['call', '$__str_slice', ['local.get', `$${s}`],
               ['local.get', `$${idx}`],
-              ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
+              ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]], 'f64')
   }
 
   // __wrap1(val: f64) → f64 — create 1-element array [val]
@@ -1055,7 +1054,7 @@ export default (ctx) => {
   // Copies bytes from string (SSO or heap) into a new Uint8Array
   ctx.core.stdlib['__str_encode'] = `(func $__str_encode (param $str f64) (result f64)
     (local $len i32) (local $dst i32)
-    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
     (local.set $dst (call $__alloc (i32.add (i32.const 8) (local.get $len))))
     (i32.store (local.get $dst) (local.get $len))
     (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $len))

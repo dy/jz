@@ -330,7 +330,7 @@ export default (ctx) => {
           (i32.ne (call $__ptr_type (i64.reinterpret_f64 (local.get $str))) (i32.const 5)))
       (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $str))))
-    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
     (local.set $i (i32.const 0))
     ;; Skip whitespace
     (block $ws (loop $wsl
@@ -389,7 +389,7 @@ export default (ctx) => {
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (f64.const nan))))
-    (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $v))))
     ;; Skip leading whitespace.
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
@@ -512,7 +512,7 @@ export default (ctx) => {
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
-    (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $v))))
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
       (br_if $ws (i32.gt_s (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 32)))

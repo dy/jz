@@ -694,7 +694,7 @@ export default (ctx) => {
     ctx.core.stdlib[searchName] = `(func $${searchName} (param $str f64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
-      (local.set $len (call $__str_byteLen (local.get $str)))
+      (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
       (local.set $pos (i32.const 0))
       (block $done (loop $next
         (br_if $done (i32.gt_s (local.get $pos) (local.get $len)))
@@ -790,7 +790,7 @@ export default (ctx) => {
             ['call', '$__wrap1',
               ['call', '$__str_slice', ['local.get', `$${s}`],
                 ['local.get', `$${idx}`],
-                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
+                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
@@ -826,7 +826,7 @@ export default (ctx) => {
               ['call', '$__str_slice', ['local.get', `$${s}`], ['i32.const', 0], ['local.get', `$${ms}`]],
               ['local.get', `$${r}`]],
             ['call', '$__str_slice', ['local.get', `$${s}`], ['local.get', `$${me}`],
-              ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]]], 'f64')
+              ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]], 'f64')
   }
 
   // str.split(/re/) → array of substrings
@@ -848,7 +848,7 @@ export default (ctx) => {
         (local $arrOff i32) (local $count i32) (local $cap i32)
         (local $newArr i32) (local $j i32)
         (local.set $off (call $__str_to_buf (local.get $str)))
-        (local.set $len (call $__str_byteLen (local.get $str)))
+        (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $str))))
         ;; Alloc result array (cap=8 initially)
         (local.set $cap (i32.const 8))
         (local.set $arrOff (call $__alloc (i32.add (i32.const 8) (i32.mul (local.get $cap) (i32.const 8)))))
