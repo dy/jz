@@ -1228,15 +1228,19 @@ const handlers = {
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
       // Hoist .length / .size / .byteLength from for-condition:
-      //   `i < arr.length` → `let __len = arr.length; ... i < __len`
-      // All three return i32 (TYPED/ARRAY/STRING/BUFFER/SET/MAP), so the hoisted
-      // local stays i32 once exprType narrows it.
+      //   `i < arr.length` → `let __len = arr.length | 0; ... i < __len`
+      // The `| 0` forces i32 even for unknown-typed receivers (where __length
+      // returns f64). NaN→0 via i32.trunc_sat matches JS semantics: a NaN bound
+      // makes `i < NaN` false on both representations, so the loop is skipped
+      // either way. Keeping the hoisted bound i32 lets the counter `i` stay i32
+      // through the comparison and `i++`, eliminating the per-iteration
+      // f64.convert_i32_s + f64.lt + f64.add + i32.trunc_sat_f64_s sequence.
       if (cond && Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || cond[0] === '>' || cond[0] === '>=')) {
         const lenExpr = cond[0] === '<' || cond[0] === '<=' ? cond[2] : cond[1]
         if (Array.isArray(lenExpr) && lenExpr[0] === '.' &&
             (lenExpr[2] === 'length' || lenExpr[2] === 'size' || lenExpr[2] === 'byteLength')) {
           const lenVar = `${T}len${ctx.func.uniq++}`
-          const lenDecl = ['let', ['=', lenVar, lenExpr]]
+          const lenDecl = ['let', ['=', lenVar, ['|', lenExpr, [, 0]]]]
           init = init ? [';', init, lenDecl] : lenDecl
           if (cond[0] === '<' || cond[0] === '<=') cond = [cond[0], cond[1], lenVar]
           else cond = [cond[0], lenVar, cond[2]]
@@ -1253,9 +1257,12 @@ const handlers = {
       const lenVar = `${T}len${ctx.func.uniq++}`
       const trivial = typeof src === 'string'
       const arrVar = trivial ? src : `${T}arr${ctx.func.uniq++}`
+      // Wrap .length in `| 0` so the hoisted bound is i32 even for unknown
+      // receivers (same rationale as the for-cond hoist above).
+      const lenE = ['|', ['.', arrVar, 'length'], [, 0]]
       const decls = trivial
-        ? ['let', ['=', idx, [, 0]], ['=', lenVar, ['.', arrVar, 'length']]]
-        : ['let', ['=', arrVar, src], ['=', idx, [, 0]], ['=', lenVar, ['.', arrVar, 'length']]]
+        ? ['let', ['=', idx, [, 0]], ['=', lenVar, lenE]]
+        : ['let', ['=', arrVar, src], ['=', idx, [, 0]], ['=', lenVar, lenE]]
       const cond = ['<', idx, lenVar]
       const step = ['++', idx]
       const inner = [';', ['let', ['=', varName, ['[]', arrVar, idx]]], body]

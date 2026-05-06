@@ -530,6 +530,12 @@ export default (ctx) => {
           return typed(['f64.convert_i32_s', lenI32], 'f64')
         }
       }
+      // String literal: fold to its UTF-8 byte length. jz strings are stored as
+      // UTF-8 and __str_byteLen returns byte count, so this matches the runtime
+      // semantics. Skips the call + NaN-unbox round-trip entirely.
+      if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
+        return typed(['f64.const', Buffer.byteLength(obj[1], 'utf8')], 'f64')
+      }
       const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
       return emitLengthAccess(asF64(emit(obj)), vt)
     }
