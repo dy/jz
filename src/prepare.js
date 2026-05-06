@@ -1525,6 +1525,15 @@ function prepareModule(specifier, source) {
         moduleExports.set(name, val)
         continue
       }
+      // Re-export of a binding imported from another module: val already carries
+      // that other module's prefix (e.g. `__c$x`). Renaming it under our own
+      // prefix would break in-module call sites that still reference the
+      // original mangled name. Pass through verbatim.
+      if (val.includes('$') &&
+          (ctx.func.list.some(f => f.name === val) || ctx.scope.globals.has(val))) {
+        moduleExports.set(name, val)
+        continue
+      }
       if (ctx.func.list.some(f => f.name === val || f.name === `${prefix}$${val}`) || ctx.scope.globals.has(val) || ctx.scope.globals.has(`${prefix}$${val}`)) {
         exportLocal(name, val)
         continue
