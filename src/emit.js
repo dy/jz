@@ -1331,6 +1331,19 @@ export const emitter = {
     const vtA = keyValType(a)
     const vtB = keyValType(b)
     if (vtA === VAL.STRING && vtB === VAL.STRING) {
+      // Fused append-byte: `buf += s[i]` skips 1-char SSO construction +
+      // generic concat dispatch when rhs is a string-index. The byte flows
+      // straight from __char_at into memory, and the bump-extend path elides
+      // the alloc+copy when lhs is the heap-top STRING.
+      if (Array.isArray(b) && b[0] === '[]' && ctx.core.stdlib['__str_append_byte'] && ctx.core.stdlib['__char_at']) {
+        if (keyValType(b[1]) === VAL.STRING) {
+          inc('__str_append_byte', '__char_at')
+          return typed(['call', '$__str_append_byte',
+            asF64(emit(a)),
+            ['call', '$__char_at', asF64(emit(b[1])), asI32(emit(b[2]))],
+          ], 'f64')
+        }
+      }
       inc('__str_concat_raw')
       return typed(['call', '$__str_concat_raw', asF64(emit(a)), asF64(emit(b))], 'f64')
     }

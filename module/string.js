@@ -20,6 +20,7 @@ export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
+    __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
     __str_indexof: ['__str_byteLen'],
@@ -580,6 +581,59 @@ export default (ctx) => {
         (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (local.get $total))
         (global.set $__heap (local.get $newHeap))
         (return (local.get $a))))` : ''
+
+  // Fused single-byte append: `buf += str[i]` lowers to this when both sides are
+  // VAL.STRING and the rhs is a string-index. Skips __str_idx's 1-char SSO
+  // construction and __str_concat's type-dispatch — byte goes directly from
+  // __char_at to memory. Bump-extends in place when `a` is at heap top.
+  ctx.core.stdlib['__str_append_byte'] = `(func $__str_append_byte (param $a f64) (param $byte i32) (result f64)
+    (local $abits i64) (local $ta i32) (local $aoff i32) (local $alen i32)
+    (local $newHeap i32) (local $off i32) (local $total i32)
+    (local.set $abits (i64.reinterpret_f64 (local.get $a)))
+    (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $abits) (i64.const 47)) (i64.const 0xF))))
+    (local.set $aoff (i32.wrap_i64 (i64.and (local.get $abits) (i64.const 0xFFFFFFFF))))
+    ;; Heap STRING at heap top: bump-extend by 1 byte (own-memory mode only)
+    ${!ctx.memory.shared ? `
+    (if (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+      (then
+        (local.set $alen (i32.load (i32.sub (local.get $aoff) (i32.const 4))))
+        (if (i32.eq
+              (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 7)) (i32.const -8))
+              (global.get $__heap))
+          (then
+            (local.set $newHeap
+              (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 8)) (i32.const -8)))
+            (if (i32.gt_u (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536)))
+              (then (if (i32.eq (memory.grow
+                (i32.shr_u (i32.add (i32.sub (local.get $newHeap) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
+                (i32.const -1)) (then (unreachable)))))
+            (i32.store8 (i32.add (local.get $aoff) (local.get $alen)) (local.get $byte))
+            (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (i32.add (local.get $alen) (i32.const 1)))
+            (global.set $__heap (local.get $newHeap))
+            (return (local.get $a))))))` : ''}
+    ;; SSO with len < 4 and ASCII byte: pack into SSO without allocation
+    (if (i32.eq (local.get $ta) (i32.const ${PTR.SSO}))
+      (then
+        (local.set $alen (i32.wrap_i64 (i64.and (i64.shr_u (local.get $abits) (i64.const 32)) (i64.const 0x7FFF))))
+        (if (i32.and
+              (i32.lt_u (local.get $alen) (i32.const 4))
+              (i32.lt_u (local.get $byte) (i32.const 0x80)))
+          (then
+            (return (call $__mkptr
+              (i32.const ${PTR.SSO})
+              (i32.add (local.get $alen) (i32.const 1))
+              (i32.or
+                (local.get $aoff)
+                (i32.shl (local.get $byte) (i32.shl (local.get $alen) (i32.const 3))))))))))
+    ;; Slow path: allocate new heap STRING with original bytes + 1 new byte
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $total (i32.add (local.get $alen) (i32.const 1)))
+    (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
+    (i32.store (local.get $off) (local.get $total))
+    (local.set $off (i32.add (local.get $off) (i32.const 4)))
+    (call $__str_copy (local.get $a) (local.get $off) (local.get $alen))
+    (i32.store8 (i32.add (local.get $off) (local.get $alen)) (local.get $byte))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
 
   ctx.core.stdlib['__str_concat'] = `(func $__str_concat (param $a f64) (param $b f64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)

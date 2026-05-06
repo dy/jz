@@ -30,7 +30,7 @@ import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
 import {
   T, VAL, analyzeValTypes, analyzeIntCertain, analyzeLocals,
   analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
-  analyzeBoxedCaptures, updateRep,
+  analyzeBoxedCaptures, updateRep, inferStringParams,
 } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -186,6 +186,19 @@ function analyzeFuncForEmit(func, programFacts) {
   // cached widths reflect the pre-narrow state. Re-walk now with reps in place.
   invalidateLocalsCache(body)
   ctx.func.locals = block ? analyzeLocals(body) : new Map()
+  // Usage-based VAL.STRING inference for params not already typed by paramReps.
+  // Descends into nested closures so a param used as STRING only inside an inner
+  // arrow (e.g. parseLevel's `str` capture in watr) still gets seeded — the
+  // closure capture path then propagates VAL.STRING via captureValTypes.
+  if (block) {
+    const candidates = sig.params
+      .filter(p => !ctx.func.repByLocal?.get(p.name)?.val)
+      .map(p => p.name)
+    if (candidates.length) {
+      const inferred = inferStringParams(body, candidates)
+      for (const [n, vt] of inferred) updateRep(n, { val: vt })
+    }
+  }
   if (block) {
     analyzeValTypes(body)
     analyzeIntCertain(body)
@@ -467,6 +480,15 @@ function emitClosureBody(cb) {
   if (block) {
     invalidateLocalsCache(cb.body)
     for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    // Usage-based STRING inference for closure params not seeded by captureValTypes.
+    // (Captures already have their parent's val type via cb.valTypes above.)
+    {
+      const candidates = cb.params.filter(p => !ctx.func.repByLocal?.get(p)?.val)
+      if (candidates.length) {
+        const inferred = inferStringParams(cb.body, candidates)
+        for (const [n, vt] of inferred) updateRep(n, { val: vt })
+      }
+    }
     analyzeValTypes(cb.body)
     analyzeIntCertain(cb.body)
     // Detect captures from deeper nested arrows that mutate this body's locals/params/captures

@@ -253,6 +253,9 @@ export function valTypeOf(expr) {
     // .typed:[] emit path already handles their f64-cast correctly; this only affects
     // arithmetic-time __to_num elision, where assuming Number is safe-by-construction).
     if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) return VAL.NUMBER
+    // Indexed read on a STRING returns a 1-char string (SSO at runtime).
+    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
+    if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING
     // Indexed read on a known Array<VAL> receiver: bind by rep.arrayElemValType.
     // Set by analyzeValTypes from body observations + emitFunc preseed for params.
     if (typeof args[0] === 'string') {
@@ -1008,6 +1011,69 @@ export function analyzeBody(body) {
  *  Same hook as `invalidateValTypesCache` — split names preserve caller intent. */
 export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') _bodyFactsCache.delete(body)
+}
+
+// String-only methods: presence of `name.method(...)` is definite evidence that
+// `name` is VAL.STRING. Excludes ambiguous methods (length, slice, indexOf, [],
+// concat) that strings share with arrays/typed-arrays.
+const STRING_ONLY_METHODS = new Set([
+  'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
+  'toUpperCase', 'toLowerCase', 'normalize', 'localeCompare',
+  'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
+  'matchAll', 'match', 'replace', 'replaceAll', 'split',
+])
+// Array-only methods: presence rules out STRING.
+const ARRAY_ONLY_METHODS = new Set([
+  'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',
+  'flat', 'flatMap', 'copyWithin',
+])
+
+/** Infer VAL.STRING for `names` from method-call evidence in `body`.
+ *  Descends into nested closures (captured names retain shape) but respects
+ *  shadowing: a param of a nested `=>` removes that name from the inference
+ *  scope inside that closure. Returns Map<name, VAL.STRING> for names that
+ *  have at least one string-only method call and no array-only conflicts. */
+export function inferStringParams(body, names) {
+  if (!names || names.length === 0) return new Map()
+  const evidence = new Map() // name → 'string' | 'conflict'
+  function walk(node, scope) {
+    if (!Array.isArray(node) || scope.size === 0) return
+    const op = node[0]
+    if (op === '=>') {
+      const shadowed = collectParamNames([node[1]])
+      let inner = scope
+      for (const s of shadowed) {
+        if (inner.has(s)) {
+          if (inner === scope) inner = new Set(scope)
+          inner.delete(s)
+        }
+      }
+      walk(node[2], inner)
+      return
+    }
+    // `name.method` — observe positive/negative evidence
+    if (op === '.' && typeof node[1] === 'string' && scope.has(node[1])) {
+      const m = node[2]
+      if (typeof m === 'string') {
+        if (STRING_ONLY_METHODS.has(m)) {
+          if (evidence.get(node[1]) !== 'conflict') evidence.set(node[1], 'string')
+        } else if (ARRAY_ONLY_METHODS.has(m)) {
+          evidence.set(node[1], 'conflict')
+        }
+      }
+    }
+    // Reassignment to an unambiguously non-string RHS poisons the inference
+    if (op === '=' && typeof node[1] === 'string' && scope.has(node[1])) {
+      const rhs = node[2]
+      const vt = valTypeOf(rhs)
+      if (vt && vt !== VAL.STRING) evidence.set(node[1], 'conflict')
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i], scope)
+  }
+  walk(body, new Set(names))
+  const out = new Map()
+  for (const [n, ev] of evidence) if (ev === 'string') out.set(n, VAL.STRING)
+  return out
 }
 
 /** Drop the cached analyzeBody entry. Used after E2-phase valResult narrowing
