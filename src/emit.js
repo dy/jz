@@ -212,7 +212,7 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   const tag = tempI32('st')
   inc('__ptr_type', '__typed_idx', '__eq')
   const genericEq = ['call', '$__eq',
-    ['call', '$__typed_idx', ['local.get', `$${ptr}`], idxIR],
+    ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR],
     asF64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
     ['i32.or',
@@ -774,8 +774,8 @@ export function buildArrayWithSpreads(items) {
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.STRING]],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.SSO]]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])],
-            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])]]
-          : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])
+            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])]]
+          : (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])
       ir.push(
         ['local.set', `$${sidx}`, ['i32.const', 0]],
         ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,

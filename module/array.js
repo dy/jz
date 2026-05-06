@@ -298,29 +298,28 @@ export default (ctx) => {
   // and features.external are both off, collapses to ARRAY-only f64 indexing.
   ctx.core.stdlib['__typed_idx'] = () => {
     if (!ctx.features.typedarray && !ctx.features.external) {
-      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
-      (else (f64.load (i32.add (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))) (i32.shl (local.get $i) (i32.const 3)))))))`
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
-    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $bits.
-    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $bits i64) (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $ptr.
+    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
     (if
       (i32.and
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
@@ -513,8 +512,8 @@ export default (ctx) => {
                   ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
                   ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.SSO]]],
                 ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])],
-                ['else', (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
-              : (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+                ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])]]
+              : (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
 
         body.push(
           ['local.set', `$${src}`, spreadVal],
@@ -590,7 +589,7 @@ export default (ctx) => {
       return ['call', '$__dyn_get', objExpr, keyExpr]
     }
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
-    const arrayLoad = (['call', '$__typed_idx', ptrExpr, vi])
+    const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       inc('__is_str_key')
@@ -674,9 +673,9 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch && !keyIsNum)
         return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
           const keyI32 = asI32(typed(keyExpr, 'f64'))
-          return (['call', '$__typed_idx', ptrExpr, keyI32])
+          return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
         })
-      return typed((['call', '$__typed_idx', ptrExpr, vi]), 'f64')
+      return typed((['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
     }
     if (useRuntimeKeyDispatch)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
@@ -687,9 +686,9 @@ export default (ctx) => {
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
-            ['else', (['call', '$__typed_idx', ptrExpr, keyI32])]]
+            ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])]]
         }
-        return (['call', '$__typed_idx', ptrExpr, keyI32])
+        return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
       })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     if (ctx.module.modules['string'])

@@ -570,33 +570,33 @@ export default (ctx) => {
   // Identical factory in array.js; whichever module loads last wins the registration.
   ctx.core.stdlib['__typed_idx'] = () => {
     if (!ctx.features.typedarray && !ctx.features.external) {
-      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
-      (else (f64.load (i32.add (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))) (i32.shl (local.get $i) (i32.const 3)))))))`
+      (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
-    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $aux (call $__ptr_aux (i64.reinterpret_f64 (local.get $ptr))))
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $off (call $__ptr_offset (local.get $ptr)))
     (if
       (i32.and
-        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $ptr))))
+    (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
       (i32.or
         (i32.lt_s (local.get $i) (i32.const 0))
         (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (if (result f64) (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $ptr))) (i32.const ${PTR.TYPED}))
+        (if (result f64) (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
           (then
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
@@ -695,7 +695,7 @@ export default (ctx) => {
     const dst = r ? tempI32('tsd') : temp('tsd')
     const srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
     const idx = ['i32.add', ['local.get', `$${off}`], ['local.get', `$${i}`]]
-    const val = typed(['call', '$__typed_idx', ['local.get', `$${srcTmp}`], ['local.get', `$${i}`]], 'f64')
+    const val = typed(['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]], ['local.get', `$${i}`]], 'f64')
     let store
     if (r) {
       const { et } = r

@@ -765,7 +765,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   const SPECS = {
     '$__mkptr':     { params: ['i32', 'i32', 'i32'], result: 'f64', inline: true },
     '$__alloc_hdr': { params: ['i32', 'i32', 'i32'], result: 'i32' },
-    '$__typed_idx': { params: ['f64', 'i32'],        result: 'f64' },
+    '$__typed_idx': { params: ['i64', 'i32'],        result: 'f64' },
     '$__str_idx':   { params: ['i64', 'i32'],        result: 'f64' },
   }
   const MIN_USES = 5
