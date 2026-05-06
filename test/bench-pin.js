@@ -33,7 +33,7 @@ const PINS = {
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'win',  as: 'win'  },
   json:      { v8: 'todo', as: 'na'   },
-  watr:      { v8: 'near', as: 'na'   },
+  watr:      { v8: 'win',  as: 'na'   },
 }
 const TOLERANCE = { win: 1.0, tie: 1.05, near: 1.10 }
 
