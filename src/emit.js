@@ -2268,10 +2268,15 @@ export const emitter = {
 
       // Regular function call without rest params
       if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
-      // Pad missing args with canonical NaN (triggers default param init)
+      // Pad missing args with canonical NaN (triggers default param init).
+      // Drop extras to match JS calling convention — emitting them anyway
+      // produces an invalid call when the callee is a fixed-arity import
+      // (e.g. `_interp`-registered host stubs) since wasm validates arg count.
+      // Use ?? rather than || so a legitimate 0-arity callee isn't bypassed.
       const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
-      const expected = func?.sig.params.length || args.length
+      const expected = func?.sig.params.length ?? args.length
       while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+      if (args.length > expected) args.length = expected
       // Multi-value return: materialize as heap array (caller expects single pointer)
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
@@ -2312,8 +2317,27 @@ export const emitter = {
       return ctx.closure.call(emit(callee), parsed.normal)
     }
 
-    // Unknown callee — assume direct call
-    return typed(['call', `$${callee}`, ...argList.map(a => asF64(emit(a)))], 'f64')
+    // Unknown callee — assume direct call. Match arg count to the declared
+    // signature when the callee is a registered env import (e.g. `_interp`-
+    // wired host stubs). JS calling convention drops extras and pads missing;
+    // wasm requires exact arity, so emitting raw argList against a fixed-arity
+    // import would invalidate the module.
+    let calleeArity = null
+    if (typeof callee === 'string') {
+      const imp = ctx.module.imports?.find(i =>
+        Array.isArray(i) && i[0] === 'import' && i[3]?.[0] === 'func' && i[3]?.[1] === `$${callee}`)
+      if (imp) {
+        let n = 0
+        for (let k = 2; k < imp[3].length; k++) if (Array.isArray(imp[3][k]) && imp[3][k][0] === 'param') n++
+        calleeArity = n
+      }
+    }
+    const emittedArgs = argList.map(a => asF64(emit(a)))
+    if (calleeArity != null) {
+      while (emittedArgs.length < calleeArity) emittedArgs.push(nullExpr())
+      if (emittedArgs.length > calleeArity) emittedArgs.length = calleeArity
+    }
+    return typed(['call', `$${callee}`, ...emittedArgs], 'f64')
   },
 }
 

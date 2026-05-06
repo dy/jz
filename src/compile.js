@@ -1125,9 +1125,24 @@ export default function compile(ast, profiler) {
   ctx.func.names.clear()
   ctx.func.map.clear()
   for (const f of ctx.func.list) { ctx.func.names.add(f.name); ctx.func.map.set(f.name, f) }
-  // Include imported functions for call resolution (e.g. template interpolations)
-  for (const imp of ctx.module.imports)
-    if (imp[3]?.[0] === 'func') ctx.func.names.add(imp[3][1].replace(/^\$/, ''))
+  // Include imported functions for call resolution (e.g. template interpolations).
+  // Also register a synthesized sig in func.map so emit's arity-aware branches see
+  // the import's declared param count — needed for arg pad/truncate to match it.
+  for (const imp of ctx.module.imports) {
+    if (imp[3]?.[0] !== 'func') continue
+    const fname = imp[3][1].replace(/^\$/, '')
+    ctx.func.names.add(fname)
+    if (!ctx.func.map.has(fname)) {
+      const params = []
+      let result = 'f64'
+      for (let k = 2; k < imp[3].length; k++) {
+        const part = imp[3][k]
+        if (Array.isArray(part) && part[0] === 'param') params.push({ type: part[1] || 'f64' })
+        else if (Array.isArray(part) && part[0] === 'result') result = part[1] || 'f64'
+      }
+      ctx.func.map.set(fname, { name: fname, sig: { params, results: [result] } })
+    }
+  }
 
   // Check user globals don't conflict with runtime globals (modules loaded after user decls)
   for (const name of ctx.scope.userGlobals)
