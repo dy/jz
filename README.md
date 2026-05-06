@@ -19,7 +19,7 @@ dist(3, 4) // 5
 
 **Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, features overhead and perf quirks.
 
-* **Static** – no runtime, no GC, no dynamic constructs.
+* **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
 * **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
@@ -362,7 +362,7 @@ jz.compile(code, { host: 'wasi' })    // wasi_snapshot_preview1.* imports
 
 | JS API | `host: 'js'` (default) | `host: 'wasi'` |
 |---|---|---|
-| `console.log()` | `env.print(val: f64, fd: i32, sep: i32)` — host stringifies | WASI `fd_write` (fd=1), space-separated, newline appended |
+| `console.log()` | `env.print(val: i64, fd: i32, sep: i32)` — host stringifies | WASI `fd_write` (fd=1), space-separated, newline appended |
 | `console.warn`/`error` | same, fd=2 | WASI `fd_write` (fd=2) |
 | `Date.now()` | `env.now(0) -> f64` (epoch ms) | `clock_time_get` (realtime) |
 | `performance.now()` | `env.now(1) -> f64` (monotonic ms) | `clock_time_get` (monotonic) |

@@ -481,8 +481,15 @@ const installDefaultEnvImports = (mod, imports, state) => {
       out(buf[fd])
       buf[fd] = ''
     }
-    const write = (val, fd, sep) => {
-      const v = state.mem.read(val)
+    // env.print's val param is i64 to dodge V8's f64 NaN canonicalization
+    // across the wasm→JS boundary (see module/console.js header). Reinterpret
+    // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
+    const i64ToF64 = (() => {
+      const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
+      return (big) => { bi[0] = big; return fv[0] }
+    })()
+    const write = (valBig, fd, sep) => {
+      const v = state.mem.read(i64ToF64(valBig))
       buf[fd] += String(v)
       if (sep === 32) buf[fd] += ' '
       else if (sep === 10) flush(fd)

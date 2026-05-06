@@ -1,12 +1,18 @@
 /**
  * Console + clocks module — two host-mode lowerings.
  *
- * `host: 'js'` (default): emit `env.print(val: f64, fd: i32, sep: i32)` and
+ * `host: 'js'` (default): emit `env.print(val: i64, fd: i32, sep: i32)` and
  *   `env.now(clock: i32) -> f64`. The JS host (src/host.js) wires both
  *   automatically — `print` reads the NaN-boxed value via `mem.read`, so
  *   stringification happens host-side (no __ftoa / __write_str / __write_val
  *   stdlib in the binary). `sep`: 10=newline, 32=space, 0=no separator.
  *   `clock`: 0=Date.now (epoch ms), 1=performance.now (monotonic ms).
+ *
+ *   The val param is i64 (not f64): V8 (notably node 22 on x64) intermittently
+ *   canonicalizes f64 NaN payloads at the wasm→JS boundary, collapsing the
+ *   high-mantissa discriminator bits and corrupting NaN-boxed pointers. i64
+ *   is integer-typed and preserves all 64 bits exactly. Host reinterprets the
+ *   bits as f64 with a DataView before calling mem.read.
  *
  * `host: 'wasi'`: emit `wasi_snapshot_preview1.fd_write` + `clock_time_get`.
  *   Output runs natively on wasmtime/wasmer/deno and on browsers/Node via the
@@ -178,12 +184,13 @@ const setupWasi = (ctx) => {
 
 const setupJsHost = (ctx) => {
   const needPrint = () => addImportOnce(ctx, 'env', 'print',
-    ['func', '$__print', ['param', 'f64'], ['param', 'i32'], ['param', 'i32']])
+    ['func', '$__print', ['param', 'i64'], ['param', 'i32'], ['param', 'i32']])
   const needNow = () => addImportOnce(ctx, 'env', 'now',
     ['func', '$__now', ['param', 'i32'], ['result', 'f64']])
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
   const emptyStr = () => mkPtrIR(PTR.SSO, 0, 0)
+  const asI64Bits = (e) => ['i64.reinterpret_f64', asF64(emit(e))]
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
@@ -198,26 +205,16 @@ const setupJsHost = (ctx) => {
         const sub = flat || [args[i]]
         for (const p of sub) {
           if (Array.isArray(p) && p[0] === 'str' && p[1] === '') continue
-          // V8 (notably node 22) canonicalizes f64 NaN payloads at the wasm→JS
-          // boundary, collapsing NULL_NAN's high-mantissa discriminator and
-          // making the host unable to tell null from a generic NaN. Substitute
-          // literal null/undefined with a string literal so wasm passes a real
-          // pointer, sidestepping the canonicalization entirely.
-          let arg = p
-          if (Array.isArray(p) && p[0] == null && p.length === 2) {
-            if (p[1] === undefined) arg = ['str', 'undefined']
-            else if (p[1] === null) arg = ['str', 'null']
-          } else if (typeof p === 'symbol') arg = ['str', 'null']
-          segments.push({ expr: asF64(emit(arg)), sep: 0 })
+          segments.push({ expr: asI64Bits(p), sep: 0 })
         }
         // Empty arg (`console.log('', 'a')`) still needs to mark its boundary
         // so the inter-arg space lands in the right place.
-        if (segments.length === before) segments.push({ expr: emptyStr(), sep: 0 })
+        if (segments.length === before) segments.push({ expr: ['i64.reinterpret_f64', emptyStr()], sep: 0 })
         if (i < args.length - 1) segments[segments.length - 1].sep = 32
       }
       const ir = []
       if (segments.length === 0) {
-        ir.push(['call', '$__print', emptyStr(), ['i32.const', fd], ['i32.const', 10]])
+        ir.push(['call', '$__print', ['i64.reinterpret_f64', emptyStr()], ['i32.const', fd], ['i32.const', 10]])
       } else {
         segments[segments.length - 1].sep = 10
         for (const { expr, sep } of segments) {

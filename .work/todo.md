@@ -6,6 +6,89 @@
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 
 * [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
+
+* [ ] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
+  Context: print regression on node 22 (b5333df) was a flaky V8 NaN-payload
+  canonicalization at the wasm→JS boundary. Spec-permitted (§ToJSValue);
+  V8/SpiderMonkey both occasionally do it. Today's hotfix changes
+  `env.print` to take i64 + reinterpret_f64 ([module/console.js:184](../module/console.js#L184),
+  [src/host.js:484](../src/host.js#L484)), but the carrier is still f64 NaN-box
+  everywhere else, so the same hazard exists at every other wasm↔JS f64
+  boundary (`env.setTimeout` cbPtr, generic export wrappers in
+  [src/host.js wrap()](../src/host.js#L536), user `opts.imports` taking f64).
+
+  Design intent already aligns: numeric hot path uses flat repr (raw f64
+  number, i32 offset, type in analysis facts via `ptrKind`/`val` —
+  [src/analyze.js:88](../src/analyze.js#L88)). NaN-boxing is the
+  polymorphic/transport fallback, not the arithmetic carrier. So the
+  "NaN-box keeps numeric ops free" argument is moot: numeric ops live on
+  the flat path. Boxed values are rare and cold; their carrier can be i64
+  without measurable cost.
+
+  Wins over f64 NaN-box:
+  - Canonicalization risk eliminated by construction at every layer (no
+    boundary marshal needed; the carrier is the transport).
+  - Full 64-bit budget. Today: type:4 / aux:15 / offset:32 = 51 bits in
+    NaN payload. Proposed: type:8 / aux:24 / offset:32. 256 type tags,
+    16M aux — kills near-term pressure on schemaId range and frees bits
+    for elem-type / discriminator extensions.
+  - Type-tag extraction is integer ops (`i64.shr_u`, `i32.eq`), not
+    exponent-bit arithmetic on f64.
+  - `i64.eq` is total — no NaN-vs-NaN inequality footgun on pointer
+    equality checks.
+
+  Costs:
+  - Boxed-numeric values (rare: heterogeneous slot, untyped return) cost
+    one `f64.reinterpret_i64` to operate on. On x86-64/arm64 this is a
+    cross-register-file move, not free but cheap. Hot loops are flat-path
+    so unaffected.
+  - Migration touches: `mkPtrIR` and call sites ([src/ir.js:167](../src/ir.js#L167)),
+    NULL_NAN/UNDEF_NAN constants ([src/ir.js:124](../src/ir.js#L124),
+    [src/host.js:24-26](../src/host.js#L24)), `type/aux/offset` extractors
+    ([src/host.js:44-46](../src/host.js#L44)), boundary `decode` routine
+    ([src/host.js:32](../src/host.js#L32)), every `asF64` site that exists
+    to bridge to NaN-box (some collapse to identity, others become
+    `f64.reinterpret_i64`), every `f64.const nan:0x7FF...` literal
+    (static SSO strings, schema sentinels, NULL/UNDEF in IR), and `wat:
+    true` test snapshots.
+
+  Suggested layout:
+  ```
+  i64 bits:
+    [63:56] type   (8 bits)
+    [55:32] aux    (24 bits)
+    [31: 0] offset (32 bits)
+  ```
+  Sentinels (i64-eq comparable, no NaN class):
+  - `null`      → `0xFF00_0000_0000_0000`
+  - `undefined` → `0xFF00_0000_0000_0001`
+  Reserve a high-tag pattern for "boxed number" (boxed-numeric fallback)
+  if/when needed; today the flat path is the right answer for numerics.
+
+  Migration order (each step independently shippable):
+  1. Extend boundary fix to remaining f64 NaN-box edges still passing as
+     f64: `env.setTimeout` cbPtr, generic export wrap in
+     [src/host.js wrap()](../src/host.js#L536), user `opts.imports`
+     declared with f64 carrying NaN-box. Lock the i64-at-boundary
+     invariant before the internal switch.
+  2. Switch carrier of boxed values inside compiled functions: locals,
+     globals, slot reads/writes, return values. Update `mkPtrIR`, IR
+     helpers, and constant emitters. Run full suite — `wat: true` test
+     snapshots will need regen.
+  3. Lay out the new bit scheme (type:8 / aux:24 / offset:32). Update
+     `type/aux/offset` extractors and analysis facts that hard-code the
+     old widths.
+  4. Audit and remove now-obsolete f64-NaN-payload literals from
+     `module/*` (SSO string consts, schema sentinels) — these become
+     plain `i64.const`.
+  5. Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags
+     for typed arrays, cleaner null/undefined sentinels.
+
+  Independent of this: externref for **host-object handles**
+  ([src/host.js:249](../src/host.js#L249) — `t === 11`). Today indexed
+  via `state.extMap`; with externref params/results, the JS object
+  flows through the boundary directly. Separate refactor, complementary.
+
 * [ ] Options breakdown in readme
 
 
@@ -19,18 +102,6 @@
 * [ ] align with Crockford practices
 * [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
 
-### JZ-side prep
-
-* [x] Host-import mode — `compile({ host: 'js' | 'wasi' })`.
-  - `'js'` (default): `console.log` → `env.print(val,fd,sep)`,
-    `Date.now`/`performance.now` → `env.now(clock)`. Host stringifies, so jz
-    drops `__ftoa`/`__write_*`/`__to_str`. `jz()` auto-wires both.
-  - `'wasi'`: `fd_write` + `clock_time_get`. Errors on `env.__ext_*`.
-* [x] `setTimeout` / `setInterval` host-driven — `host: 'js'` lowers to
-  `env.setTimeout(cb, delay, repeat) -> f64` + `env.clearTimeout(id) -> f64`
-  and exports `__invoke_closure(clos) -> f64` so the JS host fires scheduled
-  callbacks. Saves the entire `__timer_*` queue (~650B at small sizes).
-  `host: 'wasi'` keeps the pure-WASM queue (no JS host to schedule).
 
 
 ## Phase 14: Internal Parser (Future)
@@ -44,12 +115,12 @@
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
 * [ ] test262 basics
-* [ ] JS-equivalence audit for dynamic property writes:
-  - Runtime string keys on ARRAY/TYPED receivers need canonical array-index
-    detection (`"0"` writes element 0, `"01"` is a named property).
-  - Dynamic writes to fixed-shape OBJECT fields are now slot+sidecar coherent;
-    keep adding negative tests for aliasing, enumeration, and mixed receiver
-    shapes before more type-driven optimizations.
+* [x] JS-equivalence audit for dynamic property writes:
+  - Dynamic writes to fixed-shape OBJECT fields are slot+sidecar coherent.
+  - Runtime string keys on ARRAY/TYPED receivers now detect canonical indexes
+    (`"0"` hits element 0, `"01"` remains a named property).
+  - Numeric hot paths are guarded by WAT tests so the string-index parser is
+    only emitted on runtime string-capable key paths.
 * [ ] Warn/error on hitting memory limits
 * [ ] Excellent WASM output
 * [ ] wasm2c / w2c2 integration test
@@ -95,8 +166,21 @@
   pulling large optional dependencies or network setup.
 
 
-
 ## Done
+
+### JZ-side prep
+
+* [x] Host-import mode — `compile({ host: 'js' | 'wasi' })`.
+  - `'js'` (default): `console.log` → `env.print(val,fd,sep)`,
+    `Date.now`/`performance.now` → `env.now(clock)`. Host stringifies, so jz
+    drops `__ftoa`/`__write_*`/`__to_str`. `jz()` auto-wires both.
+  - `'wasi'`: `fd_write` + `clock_time_get`. Errors on `env.__ext_*`.
+* [x] `setTimeout` / `setInterval` host-driven — `host: 'js'` lowers to
+  `env.setTimeout(cb, delay, repeat) -> f64` + `env.clearTimeout(id) -> f64`
+  and exports `__invoke_closure(clos) -> f64` so the JS host fires scheduled
+  callbacks. Saves the entire `__timer_*` queue (~650B at small sizes).
+  `host: 'wasi'` keeps the pure-WASM queue (no JS host to schedule).
+
 
 * [x] `import.meta`: static `import.meta.url`, `import.meta.resolve("...")`,
   `new URL("...", import.meta.url)`, CLI entry URL plumbing, and CLI `--resolve`
