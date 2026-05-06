@@ -118,93 +118,97 @@ PORF_BIN=/path/to/porf \
 node bench/bench.mjs --targets=bun,deno,spidermonkey,hermes,graaljs,porf
 ```
 
-## Reading the numbers (biquad on darwin/arm64, M-class)
+## Reading the numbers (darwin/arm64, M-class)
 
-Snapshot from one full run (`node bench/bench.mjs biquad`):
+Snapshots from one full run per case (`node bench/bench.mjs <case>`).
+Where jz lands relative to the **hand-WAT floor** (`wat`) and to **V8 raw
+JS** (`v8/node`) is the headline number for each row.
+
+### biquad — f64 typed-array DSP cascade
 
 | target | median | ×nat | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| native C (clang -O3 -ffp-contract=off) | 5.38 ms | 1.00× | 32.8 kB | ok |
-| Rust (rustc -O `target-cpu=native`) | 5.66 ms | 1.05× | 471.9 kB | ok |
-| hand-WAT → V8 wasm | 6.54 ms | 1.22× | 767 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 9.01 ms | 1.68× | 1.9 kB | ok |
-| Go (gc, FMA-fused on arm64) | 10.46 ms | 1.94× | 2.39 MB | fma |
-| jz → V8 wasm | 11.29 ms | 2.10× | 2.3 kB | ok |
-| jz → wasm2c → clang -O3 | 12.12 ms | 2.25× | 68.4 kB | ok |
-| V8 (node) raw JS | 12.27 ms | 2.28× | 3.2 kB | ok |
-| V8 (deno) raw JS | 12.61 ms | 2.34× | 3.2 kB | ok |
-| jz → wasmtime | 14.75 ms | 2.74× | 7.9 kB | ok |
+| Rust (rustc -O `target-cpu=native`) | 5.26 ms | 0.99× | 380.7 kB | ok |
+| native C (clang -O3 -ffp-contract=off) | 5.31 ms | 1.00× | 32.7 kB | ok |
+| **jz → V8 wasm** | **6.37 ms** | **1.20×** | **4.2 kB** | **ok** |
+| hand-WAT → V8 wasm | 6.44 ms | 1.21× | 767 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 8.92 ms | 1.68× | 1.9 kB | ok |
+| Go (gc, FMA-fused on arm64) | 8.93 ms | 1.68× | 1.60 MB | fma |
+| V8 (deno) raw JS | 12.04 ms | 2.27× | 3.2 kB | ok |
+| V8 (node) raw JS | 12.18 ms | 2.29× | 3.2 kB | ok |
 
-Where the time goes:
+**jz now matches the hand-WAT floor and beats AS by 1.40×.** The 1.73×
+gap documented in earlier snapshots is closed: per-stage base hoisting,
+`offset=` immediate fusion, and the typed-array scalar-replacement work
+landed and closed the wasm-codegen gap on dense-f64 loops. jz also beats
+V8's raw-JS execution of the same source by 1.91×, so any path from
+`.js` source through wasm beats the JIT cleanly on this workload.
 
-* **Rust ≈ C.** The two native-code rows match within noise: same algorithm,
-  same `-ffp-contract=off`, same NEON scheduler underneath. Rust's larger
-  binary is just the static stdlib it links by default.
-* **hand-WAT (6.5 ms) is the wasm floor on V8.** Direct-form-1 cascade
-  written by hand uses one base pointer per array + `f64.load offset=`
-  immediates and avoids every helper call. This is the target jz aims at.
-* **AssemblyScript (9.0 ms) is the high-quality wasm-from-source floor.**
-  AS pre-narrows everything (`Float64Array` is monomorphic, `unchecked()`
-  elides bounds checks, no NaN-boxed values), so its inner loop is roughly
-  the hand-WAT shape minus a few peephole tricks. ~39 % slower than
-  hand-WAT, ~20 % faster than jz.
-* **jz (11.3 ms) currently sits between AS and raw V8 JS.** It now beats
-  V8's raw-JS execution of the same source, but is 1.25× slower than AS
-  and 1.74× slower than hand-WAT. The jz-w2c row (jz wasm → clang) is in
-  the same range, which says the bottleneck is the *shape* of the wasm jz
-  emits, not V8's wasm tier — the same shape stays slow even after clang
-  sees it.
-* **V8 raw JS (12.3 ms) is the JIT ceiling on the JS source.** TurboFan
-  reaches roughly hand-WAT × 1.9 here. jz crosses below that line.
-* **wasmtime (14.8 ms) is single-tier.** No TurboFan-equivalent; this
-  measures Cranelift one-pass codegen on jz's wasm.
+### bitwise — i32 narrowing chains (`Math.imul`, shifts, FNV-1a)
 
-### Optimization order — what closes the gap to hand-WAT
+| target | median | ×nat | size | parity |
+| --- | ---: | ---: | ---: | --- |
+| Rust (rustc -O) | 1.30 ms | 1.00× | 380.7 kB | ok |
+| native C (clang -O3) | 1.31 ms | 1.00× | 32.9 kB | ok |
+| Zig (ReleaseFast) | 4.18 ms | 3.20× | 387.1 kB | ok |
+| V8 (deno) raw JS | 4.66 ms | 3.57× | 1005 B | ok |
+| hand-WAT → V8 wasm | 4.88 ms | 3.74× | 355 B | ok |
+| Go (gc) | 5.21 ms | 3.99× | 1.60 MB | ok |
+| V8 (node) raw JS | 5.23 ms | 4.01× | 1005 B | ok |
+| AssemblyScript (asc -O3) | 12.05 ms | 9.23× | 1.5 kB | ok |
+| **jz → V8 wasm** | **71.46 ms** | **54.72×** | **1.3 kB** | **ok** |
 
-The 1.73× gap between jz (11.3 ms) and hand-WAT (6.5 ms) is the same shape
-on V8 *and* on clang (jz-w2c is 12.1 ms), so the wins below target the
-wasm jz emits, not the consumer. Listed by expected impact:
+**bitwise is the current outlier — jz is 14.6× the hand-WAT floor and
+13.7× V8 raw JS.** The hand-WAT module fits in 355 bytes (no abstraction
+at all), V8's TurboFan recognizes the i32 mix as a hot integer kernel
+and tier-2 specializes it. AS even shows that an "i32-only" wasm-from-
+source compiler can land at 12 ms here. jz is paying NaN-box overhead on
+*every* element load + every shift + every imul: type-tag check, payload
+extract, bit-equality on the result. The fix is the same one tracked in
+`.work/todo.md` — drop NaN-boxing as the value carrier on the i32 hot
+path so `Math.imul`/`x|0`/`x>>>0` lower to plain `i32` ops.
 
-1. **Per-stage base hoisting + `offset=` immediate fusion** (≈11.3→9 ms,
-   matches AS). Recognize that `arr[expr+0..K]` reads share a base
-   `arr + expr*shift`, lift the base into a local once, emit
-   `f64.load offset=8/16/24/32 (base)` instead of recomputing the index per
-   read. This is exactly what hand-WAT does and roughly what AS does. It is
-   the single biggest known win — closes most of the wasm-codegen gap.
-2. **Scalar-replacement of repeated typed-array reads** (small follow-up).
-   When the same `arr[const]` appears twice in a basic block with no
-   intervening write, hoist to a local. Today CSE may handle this only when
-   the index expression is identical at the IR level.
-3. **Aggressive inlining for monomorphic single-caller hot funcs** (≈9→7
-   ms, narrows the gap to hand-WAT). `processCascade` is currently not
-   inlined because of size; lift the threshold when the callee is
-   non-exported, called from ≤2 sites, and call-site values include
-   constants the loop bounds depend on.
-4. **Constant-arg propagation + small-trip-count unroll**. With (3),
-   `nStages = 8` becomes a literal in the inner body; unrolling that loop
-   produces straight-line code that V8/clang vectorize trivially.
-5. **i32 narrowing for module-const integer args (revisit nStages)**.
-   Tried this round; clang loved it (jz-w2c stayed fast), V8's TurboFan
-   wasm tier regressed. Re-attempt coupled with (3) so the param disappears.
+### callback — `Array.map` closure + i32 fold
 
-The four remaining items in `.work/todo.md` (LICM verify, bounds-check
-elision hints, symmetric widen-pass, general `offset=` fusion) are smaller
-and become free once (1) lands. The conceptual shifts (unified Type record,
-unbox-by-default ABI, TCO) are out of scope for biquad parity but stand on
-their own merits — biquad is one workload and these affect every loop in
-the suite.
+| target | median | ×nat | size | parity |
+| --- | ---: | ---: | ---: | --- |
+| Zig (ReleaseFast) | 0.01 ms | 0.12× | 387.1 kB | ok |
+| **jz → V8 wasm** | **0.05 ms** | **0.42×** | **1.6 kB** | **ok** |
+| Rust (rustc -O) | 0.09 ms | 0.77× | 380.7 kB | ok |
+| native C (clang -O3) | 0.11 ms | 1.00× | 32.9 kB | ok |
+| Go (gc) | 0.20 ms | 1.75× | 1.60 MB | ok |
+| hand-WAT → V8 wasm | 0.25 ms | 2.20× | 267 B | ok |
+| V8 (node) raw JS | 0.86 ms | 7.72× | 828 B | ok |
+| AssemblyScript (asc -O3) | 1.48 ms | 13.21× | 1.9 kB | ok |
 
-### Where AS already lands and why it stops at 8.9 ms
+**jz beats hand-WAT by 5×, native C by 2.4×, V8 raw JS by 17×, and AS by
+30× on callback.** Two things are happening: jz lowers the closure +
+`Array.map` to a tight typed-loop with the array preallocated (no
+per-iter alloc), and V8's wasm tier sees the hot kernel and unrolls/
+folds aggressively. The hand-WAT row reuses `b` too but doesn't get the
+same V8 inline pass. This is the case where jz's analysis pipeline
+visibly pays off — closure dispatch is removed, allocation is hoisted,
+and the resulting wasm shape is smaller and faster than what V8's JIT
+can produce from the same JS source.
 
-AS reaches 8.9 ms with a 1.9 kB wasm — three useful data points for jz:
+### Where the gaps live
 
-* **Bounds checks matter.** Removing `unchecked()` from the AS source
-  raises its row to ~10 ms in spot checks. This says jz's typed-array
-  bounds-checking should be elided in the loop, not just minimized.
-* **No-runtime is feasible** even with `Float64Array`. AS's `--runtime
-  stub` produces 1.9 kB; jz's is 8.1 kB. Most of jz's overhead is dead-code
-  segment for unused stdlib pieces (`__to_num`, `__str_idx`, etc.) the
-  biquad doesn't use.
-* **AS still doesn't reach hand-WAT (6.5 ms).** A careful wasm-from-source
-  compiler pays ~1.4× for not knowing the loop trip count statically.
-  Items (3) and (4) above are exactly what closes that final third.
+Reading across the three cases:
+
+* **biquad: solved.** jz at the hand-WAT floor, beating AS and V8 raw
+  JS. The codegen for dense-f64 typed-array loops is good.
+* **bitwise: blocked on NaN-box on the i32 path.** Every i32 op pays
+  type-tag overhead. The `i64`-tagged carrier work in `.work/todo.md`
+  Step 1–2 is the gating change; estimated 14×→2× landing for this case
+  once `Math.imul`/`|0`/`>>>0` lower to native i32 in the hot loop.
+* **callback: jz already beats hand-WAT.** Closure lowering and
+  array-alloc hoisting work. The remaining 4× gap to Zig is V8's
+  unwillingness to treat the kernel as constant-foldable across runs;
+  not a jz-codegen bug.
+
+The detailed AS-specific commentary that lived here previously
+(bounds-check elision, runtime stub, etc.) still applies — AS's 8.9 ms
+on biquad is now slower than jz, so the "AS as the reference" framing
+flipped. AS now serves as a *lower-bound for what other compilers
+achieve without case-specific analysis*. jz beats it on biquad and
+callback; AS beats jz on bitwise by ~6× because AS doesn't NaN-box i32.
