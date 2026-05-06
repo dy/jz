@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
 import { ctx, inc, err, PTR } from '../src/ctx.js'
@@ -1449,5 +1449,6 @@ export default (ctx) => {
   }
 
   // .join(sep) → concatenate array elements with separator string
-  ctx.core.emit['.join'] = arrMethod('__str_join', 1)
+  ctx.core.emit['.join'] = (arr, sep) => (inc('__str_join'),
+    typed(['call', '$__str_join', asI64(emit(arr)), asI64(emit(sep))], 'f64'))
 }

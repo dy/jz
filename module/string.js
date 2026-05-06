@@ -505,8 +505,8 @@ export default (ctx) => {
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 0))))))
     ;; Array (type=1) → join(",") like JS Array.toString()
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
-      (then (return (i64.reinterpret_f64 (call $__str_join (local.get $f)
-        (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (i32.const 44)))))))
+      (then (return (i64.reinterpret_f64 (call $__str_join (local.get $val)
+        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (i32.const 44))))))))
     (local.get $val))`
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
@@ -741,17 +741,17 @@ export default (ctx) => {
       (call $__str_slice (local.get $str) (local.get $piece_start) (local.get $slen)))
     (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))`
 
-  ctx.core.stdlib['__str_join'] = `(func $__str_join (param $arr f64) (param $sep f64) (result f64)
+  ctx.core.stdlib['__str_join'] = `(func $__str_join (param $arr i64) (param $sep i64) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $result f64)
-    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $arr))))
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
+    (local.set $off (call $__ptr_offset (local.get $arr)))
+    (local.set $len (call $__len (local.get $arr)))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
     (local.set $result (f64.reinterpret_i64 (call $__to_str (i64.load (local.get $off)))))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (i64.reinterpret_f64 (local.get $sep))))
+      (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result)) (local.get $sep)))
       (local.set $result (call $__str_concat (i64.reinterpret_f64 (local.get $result))
         (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
