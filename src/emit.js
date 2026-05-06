@@ -2210,7 +2210,10 @@ export const emitter = {
             ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
             ['else', ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.EXTERNAL]],
-              ['then', ['call', '$__ext_call', ['local.get', `$${objTmp}`], asF64(emit(['str', method])), arrayIR]],
+              ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+                ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+                ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+                ['i64.reinterpret_f64', arrayIR]]]],
               ['else', undefExpr()]]]]], 'f64')
       }
 
@@ -2221,7 +2224,10 @@ export const emitter = {
       ctx.features.external = true
       const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
       const arrayIR = buildArrayWithSpreads(combined)
-      return typed(['call', '$__ext_call', asF64(emit(obj)), asF64(emit(['str', method])), arrayIR], 'f64');
+      return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+        ['i64.reinterpret_f64', asF64(emit(obj))],
+        ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+        ['i64.reinterpret_f64', arrayIR]]], 'f64');
     }
 
     if (ctx.core.emit[callee]) {

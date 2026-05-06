@@ -55,7 +55,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     : `(then (br $done))`
 
   const extBranch = hasVal
-    ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
+    ? '(then (call $__ext_set (i64.reinterpret_f64 (local.get $coll)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $val))) drop)'
     : '(then (nop))'
   const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))`
   const typeGuard = hasExt
@@ -102,7 +102,9 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
   const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))`
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
-        (then (return (call $__ext_${wantValue ? 'prop' : 'has'} (local.get $coll) (local.get $key))))
+        (then (return ${wantValue
+          ? '(f64.reinterpret_i64 (call $__ext_prop (i64.reinterpret_f64 (local.get $coll)) (i64.reinterpret_f64 (local.get $key))))'
+          : '(call $__ext_has (i64.reinterpret_f64 (local.get $coll)) (i64.reinterpret_f64 (local.get $key)))'}))
         (else ${onEmpty}))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then ${onEmpty}))`
 
@@ -157,7 +159,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
 function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = false, hasExt = false) {
   const nonHashFallback = hasExt
     ? `(if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.EXTERNAL}))
-            (then (call $__ext_set (local.get $obj) (local.get $key) (local.get $val)) drop)
+            (then (call $__ext_set (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $val))) drop)
             (else (call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop))`
     : `(call $__dyn_set (local.get $obj) (local.get $key) (local.get $val)) drop`
   const typeGuard = strict
@@ -256,7 +258,7 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
       (then
         (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
-          (then (return (call $__ext_prop (local.get $coll) (local.get $key))))
+          (then (return (f64.reinterpret_i64 (call $__ext_prop (i64.reinterpret_f64 (local.get $coll)) (i64.reinterpret_f64 (local.get $key))))))
           (else (return (f64.const nan:${missing}))))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
       (then (return (f64.const nan:${missing}))))`
@@ -377,10 +379,14 @@ export default (ctx) => {
   if (!ctx.scope.globals.has('__schema_tbl'))
     ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
 
-  ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param f64 f64) (result f64)))'
-  ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param f64 f64) (result i32)))'
-  ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param f64 f64 f64) (result i32)))'
-  ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param f64 f64 f64) (result f64)))'
+  // __ext_* imports carry NaN-boxed pointers across the env boundary as i64
+  // (not f64) to dodge V8's f64 NaN canonicalization at the wasm↔JS edge —
+  // same hazard as env.print / env.setTimeout (see module/console.js header).
+  // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
+  ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
+  ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
+  ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
   ctx.core.stdlib['__hash'] = `(func $__hash (param $v f64) (result i32)
     (i32.wrap_i64 (i64.xor
@@ -783,7 +789,7 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_get_any_t'] = () => {
     const extArm = ctx.features.external
       ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
-            (then (call $__ext_prop (local.get $obj) (local.get $key)))
+            (then (f64.reinterpret_i64 (call $__ext_prop (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)))))
             (else (f64.const nan:${NULL_NAN})))`
       : `(f64.const nan:${NULL_NAN})`
     return `(func $__dyn_get_any_t (param $obj f64) (param $key f64) (param $t i32) (result f64)
@@ -985,7 +991,8 @@ export default (ctx) => {
             ['else', ['call', '$__hash_has', objVal, ['call', '$__to_str', keyVal]]]]]]],
 
       ...(ctx.features.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
-        ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has', objVal, keyVal]]]]] : []),
+        ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has',
+          ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]] : []),
 
       ['local.get', `$${outTmp}`]], 'i32')
   }

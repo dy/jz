@@ -457,23 +457,28 @@ export const wrap = (memSrc, inst) => {
 const prepareInterop = (opts) => {
   const state = { extMap: [null], mem: null }
   opts._interp = opts._interp || {}
-  opts._interp.__ext_prop = (objPtr, propPtr) => {
+  // __ext_* receive NaN-boxed pointers across the env boundary as i64 (BigInt
+  // in JS) — see module/collection.js header for rationale. f64 returns are
+  // wrapped back to BigInt so the wasm side reinterprets a non-canonicalized
+  // bit pattern.
+  opts._interp.__ext_prop = (objBig, propBig) => {
+    const objPtr = i64ToF64(objBig), propPtr = i64ToF64(propBig)
     const obj = state.extMap[offset(objPtr)]
     const prop = state.mem.read(propPtr)
-    return state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop])
+    return f64ToI64(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
   }
-  opts._interp.__ext_has = (objPtr, propPtr) => {
-    return (state.mem.read(propPtr) in state.extMap[offset(objPtr)]) ? 1 : 0
+  opts._interp.__ext_has = (objBig, propBig) => {
+    return (state.mem.read(i64ToF64(propBig)) in state.extMap[offset(i64ToF64(objBig))]) ? 1 : 0
   }
-  opts._interp.__ext_set = (objPtr, propPtr, valPtr) => {
-    state.extMap[offset(objPtr)][state.mem.read(propPtr)] = state.mem.read(valPtr)
+  opts._interp.__ext_set = (objBig, propBig, valBig) => {
+    state.extMap[offset(i64ToF64(objBig))][state.mem.read(i64ToF64(propBig))] = state.mem.read(i64ToF64(valBig))
     return 1
   }
-  opts._interp.__ext_call = (objPtr, propPtr, argsPtr) => {
-    const obj = state.extMap[offset(objPtr)]
-    const prop = state.mem.read(propPtr)
-    const args = state.mem.read(argsPtr)
-    return state.mem.wrapVal(obj[prop].apply(obj, args))
+  opts._interp.__ext_call = (objBig, propBig, argsBig) => {
+    const obj = state.extMap[offset(i64ToF64(objBig))]
+    const prop = state.mem.read(i64ToF64(propBig))
+    const args = state.mem.read(i64ToF64(argsBig))
+    return f64ToI64(state.mem.wrapVal(obj[prop].apply(obj, args)))
   }
   return state
 }
