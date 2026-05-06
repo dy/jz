@@ -577,14 +577,16 @@ const buildImports = (mod, opts, state) => {
     if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory instanceof WebAssembly.Memory ? opts.memory : opts.memory
   }
-  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed external refs
+  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed
+  // external refs. Carrier is i64 so the NaN payload survives V8's boundary
+  // canonicalization — wasm side reinterprets to f64 (see asF64 in src/ir.js).
   for (const imp of WebAssembly.Module.imports(mod)) {
     if (imp.kind === 'global' && imp.module === 'env') {
       const host = globalThis[imp.name]
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
         let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: false }, ptr(11, 0, id))
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, f64ToI64(ptr(11, 0, id)))
       }
     }
   }

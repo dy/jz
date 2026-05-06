@@ -2427,8 +2427,13 @@ export function emit(node, expect) {
     if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {
       ctx.features.external = true
       ctx.scope.globals.set(node, null)
-      ctx.module.imports.push(['import', '"env"', `"${node}"`, ['global', `$${node}`, ['mut', 'f64']]])
-      return typed(['global.get', `$${node}`], 'f64')
+      // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed
+      // external-ref payload across the wasm↔JS global boundary (same hazard
+      // as env.print/setTimeout — see module/console.js header). asF64()
+      // reinterprets to f64 at every read site.
+      ctx.module.imports.push(['import', '"env"', `"${node}"`, ['global', `$${node}`, 'i64']])
+      ctx.scope.globalTypes.set(node, 'i64')
+      return typed(['global.get', `$${node}`], 'i64')
     }
     const t = ctx.func.locals?.get(node) || ctx.func.current?.params.find(p => p.name === node)?.type || 'f64'
     return typed(['local.get', `$${node}`], t)
