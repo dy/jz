@@ -233,7 +233,7 @@ export default (ctx) => {
       const dstOff = tempI32('ocdo')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${src}`, asF64(emit(proto))],
-        ['local.set', `$${dst}`, ['call', '$__arr_from', ['local.get', `$${src}`]]],
+        ['local.set', `$${dst}`, ['call', '$__arr_from', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
         ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
         ['local.set', `$${dstOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${dst}`]]]],
         ['f64.store',
@@ -257,7 +257,7 @@ export default (ctx) => {
           ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${value}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${dst2}`, ['call', '$__arr_from', ['local.get', `$${value}`]]],
+              ['local.set', `$${dst2}`, ['call', '$__arr_from', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
               ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
               ['local.set', `$${dstOff2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${dst2}`]]]],
               ['f64.store',

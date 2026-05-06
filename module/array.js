@@ -348,11 +348,11 @@ export default (ctx) => {
   }
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
-  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src i64) (result f64)
     (local $len i32) (local $dst i32)
-    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $src))))
+    (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
-    (memory.copy (local.get $dst) (call $__ptr_offset (i64.reinterpret_f64 (local.get $src))) (i32.shl (local.get $len) (i32.const 3)))
+    (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
   function arrayLikeLength(src) {
@@ -389,7 +389,7 @@ export default (ctx) => {
         out.ptr], 'f64')
     }
     inc('__arr_from')
-    return typed(['call', '$__arr_from', asF64(emit(src))], 'f64')
+    return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
   }
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
