@@ -375,45 +375,46 @@ export default (ctx) => {
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
-  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v f64) (result f64)
+  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $result f64)
-    (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
-    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
-    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
-    (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
+    (local $result f64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
+    (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
+    (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.eqz
           (i32.or
             (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
             (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
       (then (return (f64.const nan))))
-    (local.set $len (call $__str_byteLen (i64.reinterpret_f64 (local.get $v))))
+    (local.set $len (call $__str_byteLen (local.get $v)))
     ;; Skip leading whitespace.
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
-      (br_if $ws (i32.gt_s (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 32)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
     ;; Sign.
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 45)))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 43)))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     ;; 0x prefix → hex parse and early return
     (if (i32.and
       (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-      (i32.and (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 48))
-        (i32.or (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
-          (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
+      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
+        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
+          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
       (then
         (local.set $i (i32.add (local.get $i) (i32.const 2)))
         (block $hexDone (loop $hexLoop
           (br_if $hexDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
           (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
             (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
               (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
@@ -428,7 +429,7 @@ export default (ctx) => {
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     (block $numDone (loop $numLoop
       (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
       (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
         (then
           (local.set $dot (i32.const 1))
@@ -466,19 +467,19 @@ export default (ctx) => {
     ;; Scientific notation.
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.or
-        (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 101))
-        (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 69))))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
       (then
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 45)))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
           (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
         (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)) (i32.const 43)))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
           (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
         (block $expDone (loop $expLoop
           (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (i64.reinterpret_f64 (local.get $v)) (local.get $i)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
           (br_if $expDone
             (i32.or
               (i32.lt_s (local.get $c) (i32.const 48))
@@ -562,7 +563,7 @@ export default (ctx) => {
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
   ctx.core.emit['Number.parseFloat'] = (x) => {
     inc('__to_num')
-    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+    return typed(['call', '$__to_num', asI64(emit(x))], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 

@@ -1264,7 +1264,7 @@ export const emitter = {
     const void_ = _expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
       inc('__to_num')
-      return writeVar(name, typed(['call', '$__to_num', asF64(emit(name))], 'f64'), void_)
+      return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)
     }
     return writeVar(name, emit(val), void_)
   },
@@ -1423,7 +1423,7 @@ export const emitter = {
     if (v.type === 'i32') return asF64(v)
     if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
     inc('__to_num')
-    return typed(['call', '$__to_num', asF64(v)], 'f64')
+    return typed(['call', '$__to_num', asI64(v)], 'f64')
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {

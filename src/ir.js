@@ -351,7 +351,7 @@ export function toNumF64(node, v) {
   }
   if (!ctx.core.stdlib['__to_num']) return asF64(v)
   inc('__to_num')
-  return typed(['call', '$__to_num', asF64(v)], 'f64')
+  return typed(['call', '$__to_num', asI64(v)], 'f64')
 }
 
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
