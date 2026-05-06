@@ -23,7 +23,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
     ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
     ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', N]],
     ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]],
-      ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+      ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
         ['local.get', `$${msLocal}`], ['local.get', `$${meLocal}`]]],
   ]
   for (let i = 1; i <= nGroups; i++) {
@@ -31,7 +31,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
       ['if', ['result', 'f64'],
         ['i32.lt_s', ['global.get', `$__re_g${i}_start`], ['i32.const', 0]],
         ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
-        ['else', ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+        ['else', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
           ['global.get', `$__re_g${i}_start`], ['global.get', `$__re_g${i}_end`]]]]])
   }
   stmts.push(mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]))
@@ -788,7 +788,7 @@ export default (ctx) => {
           ['then', ['f64.const', 0]],
           ['else',
             ['call', '$__wrap1',
-              ['call', '$__str_slice', ['local.get', `$${s}`],
+              ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
                 ['local.get', `$${idx}`],
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]], 'f64')
     }
@@ -823,9 +823,9 @@ export default (ctx) => {
         ['else',
           ['call', '$__str_concat',
             ['call', '$__str_concat',
-              ['call', '$__str_slice', ['local.get', `$${s}`], ['i32.const', 0], ['local.get', `$${ms}`]],
+              ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i32.const', 0], ['local.get', `$${ms}`]],
               ['local.get', `$${r}`]],
-            ['call', '$__str_slice', ['local.get', `$${s}`], ['local.get', `$${me}`],
+            ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
               ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]], 'f64')
   }
 
@@ -880,7 +880,7 @@ export default (ctx) => {
                 (br $cl)))
               (local.set $arrOff (local.get $newArr))))
           (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
-            (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $mstart)))
+            (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $prevEnd) (local.get $mstart)))
           (local.set $count (i32.add (local.get $count) (i32.const 1)))
           (local.set $prevEnd (local.get $mend))
           ;; Advance past match (at least 1 to avoid infinite loop on zero-length match)
@@ -900,7 +900,7 @@ export default (ctx) => {
               (br $cl2)))
             (local.set $arrOff (local.get $newArr))))
         (f64.store (i32.add (i32.add (local.get $arrOff) (i32.const 8)) (i32.mul (local.get $count) (i32.const 8)))
-          (call $__str_slice (local.get $str) (local.get $prevEnd) (local.get $len)))
+          (call $__str_slice (i64.reinterpret_f64 (local.get $str)) (local.get $prevEnd) (local.get $len)))
         (local.set $count (i32.add (local.get $count) (i32.const 1)))
         ;; Write array header (len + cap at arrOff)
         (i32.store (local.get $arrOff) (local.get $count))
