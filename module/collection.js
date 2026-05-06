@@ -987,7 +987,7 @@ export default (ctx) => {
         ['then', ['local.set', `$${outTmp}`,
           ['if', ['result', 'i32'], isStringKey,
             ['then', ['call', '$__hash_has', objVal, keyVal]],
-            ['else', ['call', '$__hash_has', objVal, ['call', '$__to_str', keyVal]]]]]]],
+            ['else', ['call', '$__hash_has', objVal, ['f64.reinterpret_i64', ['call', '$__to_str', ['i64.reinterpret_f64', keyVal]]]]]]]]],
 
       ...(ctx.features.external ? [['if', ['i32.eq', typeVal, ['i32.const', PTR.EXTERNAL]],
         ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has',

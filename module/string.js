@@ -489,25 +489,24 @@ export default (ctx) => {
 
   // Coerce value to string: numbers → __ftoa, nullish → static strings,
   // plain NaN → "NaN", arrays → join(","), other string-like pointers pass through.
-  ctx.core.stdlib['__to_str'] = `(func $__to_str (param $val f64) (result f64)
-    (local $type i32)
-    (local $bits i64)
+  ctx.core.stdlib['__to_str'] = `(func $__to_str (param $val i64) (result i64)
+    (local $type i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Not NaN → number, convert
-    (if (f64.eq (local.get $val) (local.get $val))
-      (then (return (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))
-    (local.set $bits (i64.reinterpret_f64 (local.get $val)))
-    (if (i64.eq (local.get $bits) (i64.const ${NULL_NAN}))
-      (then (return (call $__static_str (i32.const 5)))))
-    (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
-      (then (return (call $__static_str (i32.const 6)))))
-    (local.set $type (call $__ptr_type (i64.reinterpret_f64 (local.get $val))))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (i64.reinterpret_f64 (call $__ftoa (local.get $f) (i32.const 0) (i32.const 0))))))
+    (if (i64.eq (local.get $val) (i64.const ${NULL_NAN}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 5))))))
+    (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 6))))))
+    (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → "NaN" string
     (if (i32.eqz (local.get $type))
-      (then (return (call $__static_str (i32.const 0)))))
+      (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 0))))))
     ;; Array (type=1) → join(",") like JS Array.toString()
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
-      (then (return (call $__str_join (local.get $val)
-        (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (i32.const 44))))))
+      (then (return (i64.reinterpret_f64 (call $__str_join (local.get $f)
+        (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 1) (i32.const 44)))))))
     (local.get $val))`
 
   // Copy bytes of a string (SSO or heap) into memory at dst. Uses memory.copy for
@@ -626,8 +625,8 @@ export default (ctx) => {
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $abits i64) (local $ta i32) (local $aoff i32) (local $newHeap i32)
     ;; Coerce operands to strings if needed
-    (local.set $a (call $__to_str (local.get $a)))
-    (local.set $b (call $__to_str (local.get $b)))
+    (local.set $a (f64.reinterpret_i64 (call $__to_str (i64.reinterpret_f64 (local.get $a)))))
+    (local.set $b (f64.reinterpret_i64 (call $__to_str (i64.reinterpret_f64 (local.get $b)))))
     (local.set $alen (call $__str_byteLen (i64.reinterpret_f64 (local.get $a))))
     (local.set $blen (call $__str_byteLen (i64.reinterpret_f64 (local.get $b))))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
@@ -751,7 +750,7 @@ export default (ctx) => {
     (local.set $len (call $__len (i64.reinterpret_f64 (local.get $arr))))
     (if (i32.eqz (local.get $len))
       (then (return (call $__mkptr (i32.const ${PTR.SSO}) (i32.const 0) (i32.const 0)))))
-    (local.set $result (call $__to_str (f64.load (local.get $off))))
+    (local.set $result (f64.reinterpret_i64 (call $__to_str (i64.load (local.get $off)))))
     (local.set $i (i32.const 1))
     (block $done (loop $loop
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
@@ -879,7 +878,7 @@ export default (ctx) => {
   ctx.core.emit['strcat'] = (...parts) => {
     inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
     if (!parts.length) return mkPtrIR(PTR.SSO, 0, 0)
-    if (parts.length === 1) return typed(['call', '$__to_str', asF64(emit(parts[0]))], 'f64')
+    if (parts.length === 1) return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(parts[0]))]], 'f64')
 
     const vals = parts.map(() => temp('s'))
     const lens = parts.map(() => tempI32('sl'))
@@ -889,7 +888,7 @@ export default (ctx) => {
     const ir = []
 
     for (let i = 0; i < parts.length; i++) {
-      ir.push(['local.set', `$${vals[i]}`, ['call', '$__to_str', asF64(emit(parts[i]))]])
+      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(parts[i]))]]])
       ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', 0]])
@@ -952,7 +951,7 @@ export default (ctx) => {
       return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
     }
     inc('__to_str')
-    return typed(['call', '$__to_str', asF64(emit(value))], 'f64')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(value))]], 'f64')
   }
 
   ctx.core.emit['String.fromCharCode'] = (code) => {
