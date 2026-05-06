@@ -7,7 +7,9 @@
 
 * [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
 
-* [ ] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
+* [ ] Options breakdown in readme
+
+##  [ ] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
   Context: print regression on node 22 (b5333df) was a flaky V8 NaN-payload
   canonicalization at the wasm→JS boundary. Spec-permitted (§ToJSValue);
   V8/SpiderMonkey both occasionally do it. Today's hotfix changes
@@ -83,14 +85,17 @@
      plain `i64.const`.
   5. Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags
      for typed arrays, cleaner null/undefined sentinels.
+  6. Rewrite `__same_value_zero` (and `__str_eq`) to pure `i64.eq` —
+     today they use `f64.eq` + NaN-detection via `i64.reinterpret_f64`
+     + bit masks ([module/collection.js:391](../module/collection.js#L391)).
+     With i64-tagged values, two NaN-class-free i64 values are equal iff
+     `i64.eq` says so. Eliminates the entire NaN-comparison helper and
+     all call sites (Set/Map/Array `.includes`, `.indexOf`, etc.).
 
   Independent of this: externref for **host-object handles**
   ([src/host.js:249](../src/host.js#L249) — `t === 11`). Today indexed
   via `state.extMap`; with externref params/results, the JS object
   flows through the boundary directly. Separate refactor, complementary.
-
-* [ ] Options breakdown in readme
-
 
 ### Build & tooling
 
