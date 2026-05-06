@@ -358,3 +358,46 @@ test('Regression: chained .prop on nested anonymous literals', () => {
 test('Regression: deeply nested anonymous literals', () => {
   is(run(`export let f = () => ({x: {y: {z: 42}}}).x.y.z`).f(), 42)
 })
+
+// __dyn_get_t's OBJECT-schema arm is gated on `ctx.schema.list.length > 0`.
+// Setting the stdlib template at module-init time froze the gate to false
+// because schemas register lazily as the source is processed — the arm
+// dropped out for any schema added later in the compile, leaving runtime
+// `.prop` reads on OBJECT receivers without a static schemaId returning
+// NULL_NAN. Lifting the gate to template-expansion time captures the final
+// schema count.
+test('Regression: cross-call OBJECT literal — `.prop` resolves via runtime schemaId', () => {
+  const { f } = run(`
+    let go = (o) => o.b
+    export let f = () => go({a: 1, b: 2})
+  `)
+  is(f(), 2)
+})
+
+test('Regression: cross-call nested OBJECT literal — chained .prop resolves at runtime', () => {
+  const { f } = run(`
+    let go = (o) => o.a.b
+    export let f = () => go({a: {b: 7}})
+  `)
+  is(f(), 7)
+})
+
+test('Regression: destructured-param OBJECT literal — inner .prop resolves', () => {
+  const { f } = run(`
+    let go = ({a}) => a.b
+    export let f = () => go({a: {b: 11}})
+  `)
+  is(f(), 11)
+})
+
+test('Regression: through-fn nested with multiple props', () => {
+  // Models the function-core pattern: `({methods, input}) => input.cart.x`.
+  // Both `input` (param) and `input.cart` (slot value) are OBJECT pointers
+  // with schemaId in NaN-box aux — runtime dispatch reads schema_tbl, finds
+  // the prop's slot, returns the value.
+  const { f } = run(`
+    let go = ({a, b}) => a.x + b.y.z
+    export let f = () => go({a: {x: 10}, b: {y: {z: 20}}})
+  `)
+  is(f(), 30)
+})

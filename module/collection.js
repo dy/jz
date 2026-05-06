@@ -594,13 +594,17 @@ export default (ctx) => {
   // time but lives at runtime in the NaN-box aux bits. Gated on schema name table
   // presence (lifted in compile.js whenever __dyn_get is included). Static-shape
   // monomorphic OBJECTs hit the compile-time slot read path and never reach here.
-  const hasSchemas = ctx.schema.list.length > 0
+  // Wrapped in a factory: `ctx.schema.list.length` is observed at template
+  // expansion time, after all schemas have been registered. Setting the
+  // template at module-init froze hasSchemas to false and dropped the arm
+  // for any schema registered later in the compile (the common case for
+  // anonymous-literal arguments crossing call boundaries).
   // Schema-arm key compare uses i64.eq instead of __str_eq: schema keys and
   // the call-site key both come from the interned string pool (same NaN-box
   // bits for identical literals), so bit-equality is correct and skips a
   // per-iter function call. Real-world strings sharing prefix bytes are not
   // a concern here — keys are static literals from the source program.
-  const objectSchemaArm = hasSchemas ? `
+  const buildObjectSchemaArm = () => ctx.schema.list.length > 0 ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
         (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
@@ -621,13 +625,16 @@ export default (ctx) => {
                 (then (return (f64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
-  const objectSchemaLocals = hasSchemas
+  const buildObjectSchemaLocals = () => ctx.schema.list.length > 0
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
     : ''
-  const objectSchemaSetLocals = hasSchemas
+  // Same lazy-gating story as buildObjectSchemaArm above — observed at
+  // template-expansion time so schemas registered later in the compile
+  // still pull the arm in.
+  const buildObjectSchemaSetLocals = () => ctx.schema.list.length > 0
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32) (local $idx i32)'
     : ''
-  const objectSchemaSetArm = hasSchemas ? `
+  const buildObjectSchemaSetArm = () => ctx.schema.list.length > 0 ? `
     ;; If a dynamic write targets an existing fixed-shape field, update the
     ;; payload slot as well as the dynamic sidecar below. Otherwise bracket
     ;; writes and later dot reads can diverge.
@@ -655,10 +662,10 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj f64) (param $key f64) (result f64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
-  ctx.core.stdlib['__dyn_get_t'] = `(func $__dyn_get_t (param $obj f64) (param $key f64) (param $type i32) (result f64)
+  ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj f64) (param $key f64) (param $type i32) (result f64)
     (local $props f64) (local $bits i64) (local $off i32)
     (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
-    ${objectSchemaLocals}
+    ${buildObjectSchemaLocals()}
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
@@ -736,7 +743,7 @@ export default (ctx) => {
         (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
-        (br $hprobe))))${objectSchemaArm}
+        (br $hprobe))))${buildObjectSchemaArm()}
     (f64.const nan:${UNDEF_NAN}))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj f64) (param $key f64) (param $fallback f64) (result f64)
@@ -795,9 +802,9 @@ export default (ctx) => {
   // Defer the root insert to the end and gate it on props-ptr change: most calls hit
   // the no-grow case where the ptr is unchanged and the root slot already points to it.
   // __ptr_offset inlined (forwarding-aware) — only ARRAY ever has forwarding.
-  ctx.core.stdlib['__dyn_set'] = `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
+  ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj f64) (param $key f64) (param $val f64) (result f64)
     (local $root f64) (local $props f64) (local $oldProps f64) (local $objKey f64)
-    (local $bits i64) (local $off i32) (local $type i32) ${objectSchemaSetLocals}
+    (local $bits i64) (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
     (local.set $bits (i64.reinterpret_f64 (local.get $obj)))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
@@ -810,7 +817,7 @@ export default (ctx) => {
             (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
             (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (br $follow)))))
-    ${objectSchemaSetArm}
+    ${buildObjectSchemaSetArm()}
     ;; Header types carry propsPtr at off-16. Read/grow/write directly there;
     ;; skip the global __dyn_props hash entirely. ARRAY also uses this slot, but
     ;; only when shift hasn't overwritten it with forwarding bytes (HASH-tagged
