@@ -41,6 +41,16 @@ test('features.external ON: untyped .prop read — __ext_prop import present', (
   is(hasImport(w, '__ext_prop'), true)
 })
 
+test('features.external OFF: untyped ?.prop read — no __ext_prop import', () => {
+  // `?.` on an unknown receiver routes through __dyn_get_any_t but does NOT
+  // pull __ext_prop: the EXTERNAL arm only fires for non-nullish receivers,
+  // and `?.` short-circuits to null on nullish ones — so the import is dead
+  // weight unless the caller has actual externals (in which case features.external
+  // is already on via opts.imports).
+  const w = wat(`export let f = (o) => o?.x`)
+  is(hasImport(w, '__ext_prop'), false)
+})
+
 test('features.external ON: untyped .prop write — __ext_set import present', () => {
   const w = wat(`export let f = (o, v) => { o.x = v }`)
   is(hasImport(w, '__ext_set'), true)
