@@ -267,6 +267,37 @@ test('optional: ?.method() on hash member', () => {
   is(f(), 'express')
 })
 
+// Optional-chain continuation: per ECMAScript, an optional access short-circuits
+// the entire continuation chain, not just its own step. `a?.b.c` with nullish `a`
+// must evaluate to undefined — not run `.c` on the nullish result of `a?.b`.
+
+test('optional: ?.b.c continuation with nullish base returns undefined', () => {
+  const { f } = run(`export let f = (a) => a?.b.c`)
+  ok(isNaN(f(null)), 'a?.b.c with null returns undef NaN')
+  ok(isNaN(f(undefined)), 'a?.b.c with undefined returns undef NaN')
+})
+
+test('optional: ?.b.c continuation with non-null base reads through', () => {
+  const { f } = run(`export let f = () => {
+    let o = {b: {c: 42}}
+    return o?.b.c
+  }`)
+  is(f(), 42)
+})
+
+test('optional: ?.b[i] continuation with nullish base returns undefined', () => {
+  const { f } = run(`export let f = (a) => a?.b[0]`)
+  ok(isNaN(f(null)), 'a?.b[0] with null returns undef NaN')
+})
+
+test('optional: nested ?.b?.c.d short-circuits at deepest nullish', () => {
+  const { f } = run(`export let f = () => {
+    let o = {b: null}
+    return o?.b?.c.d
+  }`)
+  ok(isNaN(f()), 'o?.b?.c.d with null b returns undef NaN')
+})
+
 // ============================================
 // typeof
 // ============================================
