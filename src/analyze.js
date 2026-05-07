@@ -1393,6 +1393,14 @@ export function exprType(expr, locals) {
     if (locals?.has?.(expr)) return locals.get(expr)
     const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
     if (paramType) return paramType
+    // Module-level numeric consts (top-level `const N = 128`) are emitted as
+    // wasm globals with a known wasm type. Without this lookup, references to
+    // them inside functions fall back to f64, widening counters bounded by the
+    // const (`for (let r = 0; r < N_ROUNDS; r++)`) to f64 via the comparison
+    // pass. Only propagate primitive numeric kinds — i64 globals are reserved
+    // for the NaN-box carrier ABI and shouldn't influence local typing.
+    const gt = ctx.scope?.globalTypes?.get?.(expr)
+    if (gt === 'i32' || gt === 'f64') return gt
     return 'f64'
   }
   if (!Array.isArray(expr)) return 'f64'
