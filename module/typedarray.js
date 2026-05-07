@@ -660,23 +660,39 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView } = r
-    const objIR = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
+    const objIR = emit(arr), vi = asI32(emit(idx)), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    if (et === 7) {
+      const vt = temp('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f64.store', off, ['local.get', `$${vt}`]],
+        ['local.get', `$${vt}`]], 'f64') // Float64Array
+    }
+    if (et === 6) {
+      const vt = temp('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
+        ['local.get', `$${vt}`]], 'f64') // Float32Array
+    }
+    // Integer store: when the source is already i32-typed (bitwise ops, |0,
+    // typed-array load, known-i32 var), store it directly — skip the f64
+    // detour that costs a sign branch + i64 trunc + i32 wrap on every write.
+    if (valIR.type === 'i32') {
+      const v32 = tempI32('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${v32}`, valIR],
+        [STORE[et], off, ['local.get', `$${v32}`]],
+        [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], 'f64')
+    }
     const vt = temp('tw')
-    if (et === 7) return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
-      ['f64.store', off, ['local.get', `$${vt}`]],
-      ['local.get', `$${vt}`]], 'f64') // Float64Array
-    if (et === 6) return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
-      ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
-      ['local.get', `$${vt}`]], 'f64') // Float32Array
     const i32val = ['i32.wrap_i64',
       ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
         ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
         ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
+      ['local.set', `$${vt}`, asF64(valIR)],
       [STORE[et], off, i32val],
       ['local.get', `$${vt}`]], 'f64')
   }
