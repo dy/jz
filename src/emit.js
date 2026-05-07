@@ -2352,6 +2352,54 @@ export const emitter = {
 
 // === Emit dispatch ===
 
+// Optional-chain continuation: `a?.b.c` → if `a` nullish then undefined, else `a.b.c`.
+// Per ECMAScript, an optional access short-circuits the entire continuation, not just
+// its own access. Without this, `a?.b.c` parses as `(a?.b).c` and `.c` runs on the
+// nullish result of `a?.b`, returning a wrong value (or trapping in typed lowerings).
+//
+// At the outermost `.` / `[]` / `()` whose leftmost descent contains an optional, hoist
+// the deepest such optional's head into a temp, nullish-guard, and rebuild the chain
+// with that optional replaced by a regular access. The single guard short-circuits the
+// whole continuation. Nested optionals further inside the chain are left intact and
+// handle their own short-circuiting on recursion.
+function liftOptionalChain(node) {
+  const path = []
+  let cur = node
+  while (Array.isArray(cur) && (cur[0] === '.' || cur[0] === '[]' || cur[0] === '()' ||
+                                 cur[0] === '?.' || cur[0] === '?.[]' || cur[0] === '?.()')) {
+    path.push(cur)
+    cur = cur[1]
+  }
+  // Find the deepest optional with continuation outside it. optIdx === 0 means the
+  // chain root itself is optional with no continuation — handled by the regular
+  // `?.` / `?.[]` / `?.()` emitters.
+  let optIdx = -1
+  for (let i = path.length - 1; i >= 1; i--) {
+    if (path[i][0] === '?.' || path[i][0] === '?.[]' || path[i][0] === '?.()') {
+      optIdx = i
+      break
+    }
+  }
+  if (optIdx <= 0) return null
+  const opt = path[optIdx]
+  const headExpr = opt[1]
+  const t = temp('oc')
+  let rebuilt
+  if (opt[0] === '?.') rebuilt = ['.', t, opt[2]]
+  else if (opt[0] === '?.[]') rebuilt = ['[]', t, opt[2]]
+  else rebuilt = ['()', t, ...opt.slice(2)]
+  for (let i = optIdx - 1; i >= 0; i--) {
+    const outer = path[i]
+    rebuilt = [outer[0], rebuilt, ...outer.slice(2)]
+  }
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(headExpr))],
+    ['if', ['result', 'f64'],
+      ['i32.eqz', isNullish(typed(['local.get', `$${t}`], 'f64'))],
+      ['then', asF64(emit(rebuilt))],
+      ['else', undefExpr()]]], 'f64')
+}
+
 /**
  * Emit single AST node to typed WASM IR.
  * Every returned node has .type = 'i32' | 'f64'.
@@ -2451,6 +2499,14 @@ export function emit(node, expect) {
   if (op == null && args.length === 1) {
     const v = args[0]
     return v === undefined ? undefExpr() : v === null ? nullExpr() : emit(v)
+  }
+
+  // Optional-chain continuation: `a?.b.c` → if `a` nullish then undefined else `a.b.c`.
+  // Lift before dispatch so the regular `.` / `[]` / `()` handler sees the rebuilt chain
+  // with the optional already replaced by a non-optional access on a guarded temp.
+  if (op === '.' || op === '[]' || op === '()') {
+    const lifted = liftOptionalChain(node)
+    if (lifted) return lifted
   }
 
   const handler = ctx.core.emit[op]
