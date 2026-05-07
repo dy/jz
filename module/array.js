@@ -10,9 +10,8 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, extractParams, updateRep, staticPropertyKey } from '../src/analyze.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
-import { staticPropertyKey } from '../src/key.js'
 import { strHashLiteral } from './collection.js'
 
 

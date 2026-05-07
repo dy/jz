@@ -1,4 +1,27 @@
-/** Pre-emit compile planning: collect facts, resolve ABIs, and run narrowing. */
+/**
+ * Pre-emit compile planning: bridges prepare (AST shape) and emit (wasm bytes).
+ *
+ * # Stage contract
+ *   IN:  populated `ctx` from prepare.js (functions, schemas, scopes, modules)
+ *        plus the prepared AST.
+ *   OUT: returns a `programFacts` object; mutates `ctx` so each function has
+ *        narrowed signatures, finalized global reps, and per-call decisions.
+ *
+ * # Pipeline (top-level `plan(ast)`)
+ *   1. scanGlobalValueFacts / unboxConstTypedGlobals — finalize global storage.
+ *   2. collectProgramFacts — sweep arrow bodies for typed-elem usage, key sets,
+ *      loop depth, control-transfer shapes; rerun if hot inlining changes the AST.
+ *   3. materializeAutoBoxSchemas / resolveClosureWidth — settle layout decisions.
+ *   4. Whole-program narrowing (skipped on simple programs):
+ *        - narrowSignatures — pick a specialization per function from call sites
+ *        - specializeBimorphicTyped — split typed-elem hot paths into two variants
+ *          when callers diverge between two ctors
+ *        - refineDynKeys — tighten dynamic property-key sets
+ *
+ * No bytes are emitted here; emit.js consumes the planned ctx + programFacts.
+ *
+ * @module plan
+ */
 
 import { ctx } from './ctx.js'
 import { T } from './analyze.js'

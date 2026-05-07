@@ -23,7 +23,7 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey } from './analyze.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -38,7 +38,6 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads,
 } from './ir.js'
-import { staticPropertyKey } from './key.js'
 
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.

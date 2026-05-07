@@ -24,8 +24,7 @@
 
 import { parse } from 'subscript/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam, observeNodeFacts } from './analyze.js'
-import { staticPropertyKey } from './key.js'
+import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
 import { isFuncRef } from './ir.js'
 import { normalizeSource } from './source.js'
 import {

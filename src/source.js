@@ -1,6 +1,20 @@
+/**
+ * Pre-parse text rewriter: works around three subscript/jessie parser gaps before
+ * the AST stage ever runs. All three are tracked as `test.todo` in subscript's
+ * test/jessie.js — drop the corresponding rewrite when the parser is fixed.
+ *
+ *   1. Shebang `#!...` at file start  → rewritten to `//...` (parser rejects `#!`).
+ *   2. Optional catch binding `catch {` → `catch(_e){` (ES2019; parser requires `(`).
+ *   3. `;\n(` ambiguity  → emits an extra `;` so a parenthesized expression
+ *      starting on the next line begins a new statement instead of becoming a
+ *      call on the previous statement's value.
+ *
+ * Comments and string literals are skipped so rewrites don't corrupt source text.
+ *
+ * @module source
+ */
 export function normalizeSource(code) {
   let source = code.startsWith('#!') ? `//${code.slice(2)}` : code
-  // Optional catch binding: `catch {` → `catch(_e) {` (parser gap workaround)
   source = source.replace(/\bcatch\s*\{/g, 'catch(_e){')
   let out = ''
   let parenDepth = 0
