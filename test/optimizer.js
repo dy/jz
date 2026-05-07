@@ -321,9 +321,10 @@ test('sourceInline: inlines returnless hot internal helper calls', () => {
     const hot = (a, n) => {
       for (let i = 0; i < n; i++) a[i] = i + 1
     }
+    const runKernel = (a) => { hot(a, 4) }
     export const main = () => {
       const a = new Float64Array(4)
-      hot(a, 4)
+      runKernel(a)
       return a[3] | 0
     }
   `
@@ -334,8 +335,63 @@ test('sourceInline: inlines returnless hot internal helper calls', () => {
   is(main(), 4)
 })
 
-test('sourceInline: disabled by default level 2', () => {
+test('sourceInline: enabled by default at level 2 — inlines void hot helper', () => {
   const wat = jz.compile(`
+    const hot = (a, n) => {
+      for (let i = 0; i < n; i++) a[i] = i + 1
+    }
+    const runKernel = (a) => { hot(a, 4) }
+    export const main = () => {
+      const a = new Float64Array(4)
+      runKernel(a)
+      return a[3] | 0
+    }
+  `, { wat: true, optimize: { watr: false } })
+  ok(!/\(call \$hot\b/.test(wat), 'level 2 source optimizer should inline the helper before watr')
+})
+
+test('sourceInline: trailing-return helper inlines into `let X = call(...)` initializer', () => {
+  const src = `
+    const sum = (arr) => {
+      let s = 0
+      for (let i = 0; i < arr.length; i++) s += arr[i]
+      return s
+    }
+    const runKernel = (a) => { const t = sum(a); return t | 0 }
+    export const main = () => {
+      const a = new Float64Array(4)
+      a[0] = 1; a[1] = 2; a[2] = 3; a[3] = 4
+      return runKernel(a)
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$sum\b/.test(wat), 'expected trailing-return sum to be inlined at expr-position call')
+  const { main } = run(src)
+  is(main(), 10)
+})
+
+test('sourceInline: trailing-return helper inlines into `X = call(...)` assignment', () => {
+  const src = `
+    const acc = (arr) => {
+      let s = 0
+      for (let i = 0; i < arr.length; i++) s += arr[i]
+      return s + 1
+    }
+    const runKernel = (a) => { let r = 0; r = acc(a); return r | 0 }
+    export const main = () => {
+      const a = new Float64Array(3)
+      a[0] = 10; a[1] = 20; a[2] = 30
+      return runKernel(a)
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$acc\b/.test(wat), 'expected trailing-return acc to be inlined at assignment-rhs')
+  const { main } = run(src)
+  is(main(), 61)
+})
+
+test('sourceInline: does NOT inline into exported entry — preserves V8 wasm tier-up', () => {
+  const src = `
     const hot = (a, n) => {
       for (let i = 0; i < n; i++) a[i] = i + 1
     }
@@ -344,8 +400,11 @@ test('sourceInline: disabled by default level 2', () => {
       hot(a, 4)
       return a[3] | 0
     }
-  `, { wat: true, optimize: { watr: false } })
-  ok(/\(call \$hot\b/.test(wat), 'level 2 source optimizer should keep the helper call before watr')
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(/\(call \$hot\b/.test(wat), 'expected call kept inside exported entry (skip-into-export rule)')
+  const { main } = run(src)
+  is(main(), 4)
 })
 
 test('sourceInline: disabled by optimize:false', () => {
@@ -429,7 +488,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(0).watr, false)
   is(resolveOptimize(0).treeshake, false)
   is(resolveOptimize(2).watr, true)
-  is(resolveOptimize(2).sourceInline, false)
+  is(resolveOptimize(2).sourceInline, true)
   is(resolveOptimize(2).nestedSmallConstForUnroll, false)
   is(resolveOptimize(3).sourceInline, true)
   is(resolveOptimize(3).nestedSmallConstForUnroll, true)
@@ -447,7 +506,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(o.treeshake, false)
   // undefined: default = level 2
   is(resolveOptimize(undefined).watr, true)
-  is(resolveOptimize(undefined).sourceInline, false)
+  is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, false)
 })
 

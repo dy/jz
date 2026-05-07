@@ -43,6 +43,25 @@ const scanBody = (node, fn) => {
   return false
 }
 
+const loopDepth = (node, depth) => {
+  if (!Array.isArray(node)) return depth
+  if (node[0] === '=>') return depth
+  const here = LOOP_OPS.has(node[0]) ? depth + 1 : depth
+  let max = here
+  for (let i = 1; i < node.length; i++) {
+    const d = loopDepth(node[i], here)
+    if (d > max) max = d
+  }
+  return max
+}
+
+const nodeSize = (node) => {
+  if (!Array.isArray(node)) return 1
+  let n = 1
+  for (let i = 1; i < node.length; i++) n += nodeSize(node[i])
+  return n
+}
+
 const collectBindings = (node, out) => {
   if (!Array.isArray(node)) return
   const op = node[0]
@@ -83,6 +102,9 @@ const cloneWithSubst = (node, subst, rename) => {
   return node.map((part, i) => i === 0 ? part : cloneWithSubst(part, subst, rename))
 }
 
+// Returns { prefix, value } where prefix is the substituted body statements
+// (excluding any trailing `return X`), and value is the substituted return
+// expression — null if void or no trailing return value.
 const inlinedBody = (func, args) => {
   const params = func.sig.params
   if (args.length !== params.length || !args.every(isSimpleArg)) return null
@@ -99,15 +121,73 @@ const inlinedBody = (func, args) => {
   const rename = new Map()
   for (const name of locals) rename.set(name, `${T}inl${ctx.func.uniq++}_${name}`)
 
-  return blockStmts(func.body).map(stmt => cloneWithSubst(stmt, subst, rename))
+  const stmts = blockStmts(func.body)
+  // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
+  // *is* the return value. Treat as zero-prefix + value.
+  if (!stmts) return { prefix: [], value: cloneWithSubst(func.body, subst, rename) }
+  const last = stmts.length ? stmts[stmts.length - 1] : null
+  const isTrailingReturn = Array.isArray(last) && last[0] === 'return'
+  const prefixSrc = isTrailingReturn ? stmts.slice(0, -1) : stmts
+  const prefix = prefixSrc.map(stmt => cloneWithSubst(stmt, subst, rename))
+  const value = isTrailingReturn && last.length > 1 ? cloneWithSubst(last[1], subst, rename) : null
+  return { prefix, value }
+}
+
+const isCandidateCall = (node, candidates) =>
+  Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && candidates.has(node[1])
+
+// Recursively substitute calls to expr-bodied candidates anywhere in `node`.
+// Used for tiny pure-expression helpers (`isAlpha(c) => …`) that get called
+// from expression contexts (if-conditions, ternary tests). For these the
+// inlined body is value-only (zero prefix), so a pure substitution is safe.
+const inlineInExpr = (node, candidates) => {
+  if (!Array.isArray(node)) return { node, changed: false }
+  if (node[0] === '=>') return { node, changed: false }
+  let changed = false
+  const next = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = inlineInExpr(node[i], candidates)
+    if (r.changed) changed = true
+    next.push(r.node)
+  }
+  if (isCandidateCall(next, candidates)) {
+    const args = callArgs(next)
+    const shape = args && inlinedBody(candidates.get(next[1]), args)
+    if (shape && shape.value !== null && shape.prefix.length === 0) {
+      return { node: shape.value, changed: true }
+    }
+  }
+  return { node: changed ? next : node, changed }
 }
 
 const inlineInStmt = (stmt, candidates) => {
   if (!Array.isArray(stmt)) return { node: stmt, changed: false }
-  if (stmt[0] === '()' && typeof stmt[1] === 'string' && candidates.has(stmt[1])) {
+  // Statement-position call: discard return value, splice prefix in place.
+  if (isCandidateCall(stmt, candidates)) {
     const args = callArgs(stmt)
-    const body = args && inlinedBody(candidates.get(stmt[1]), args)
-    if (body) return { node: ['{}', [';', ...body]], changed: true, splice: body }
+    const shape = args && inlinedBody(candidates.get(stmt[1]), args)
+    if (shape) return { node: ['{}', [';', ...shape.prefix]], changed: true, splice: shape.prefix }
+  }
+  // `let/const X = call(...)` with single decl: inline as prefix + decl(value).
+  if ((stmt[0] === 'let' || stmt[0] === 'const') && stmt.length === 2) {
+    const decl = stmt[1]
+    if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && isCandidateCall(decl[2], candidates)) {
+      const args = callArgs(decl[2])
+      const shape = args && inlinedBody(candidates.get(decl[2][1]), args)
+      if (shape && shape.value !== null) {
+        const splice = [...shape.prefix, [stmt[0], ['=', decl[1], shape.value]]]
+        return { node: ['{}', [';', ...splice]], changed: true, splice }
+      }
+    }
+  }
+  // `X = call(...)` at statement position: inline as prefix + assign(value).
+  if (stmt[0] === '=' && typeof stmt[1] === 'string' && isCandidateCall(stmt[2], candidates)) {
+    const args = callArgs(stmt[2])
+    const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
+    if (shape && shape.value !== null) {
+      const splice = [...shape.prefix, ['=', stmt[1], shape.value]]
+      return { node: ['{}', [';', ...splice]], changed: true, splice }
+    }
   }
   const op = stmt[0]
   if (op === ';') {
@@ -171,20 +251,70 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     if (func.defaults && Object.keys(func.defaults).length) continue
     const sites = sitesByCallee.get(func.name)
     if (!sites || sites.length < 1 || sites.length > 2) continue
-    if (!blockStmts(func.body)) continue
+    const stmts = blockStmts(func.body)
+    // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
+    // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     if (scanBody(func.body, n => n[0] === '=>')) continue
-    if (scanBody(func.body, n => CONTROL_TRANSFER.has(n[0]))) continue
-    if (!scanBody(func.body, n => LOOP_OPS.has(n[0]))) continue
+    // throw/break/continue are unsupported; return is OK if it's a single
+    // trailing return (rewritten to a value at inlining time).
+    if (scanBody(func.body, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) continue
+    let returnCount = 0
+    scanBody(func.body, n => { if (n[0] === 'return') returnCount++; return false })
+    if (returnCount > 1) continue
+    if (returnCount === 1 && stmts) {
+      const last = stmts[stmts.length - 1]
+      if (!Array.isArray(last) || last[0] !== 'return') continue
+    }
+    // Either a kernel (has a loop) or a tiny leaf (no loop, no calls, small body).
+    // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
+    // that get hammered from a hot caller's loop — replacing the call with its
+    // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
+    const hasLoop = scanBody(func.body, n => LOOP_OPS.has(n[0]))
+    if (!hasLoop) {
+      if (scanBody(func.body, n => n[0] === '()')) continue
+      if (nodeSize(func.body) > 30) continue
+    }
     if (scanBody(func.body, n => n[0] === '()' && n[1] === func.name)) continue
+    // Kernels with nested loops (depth ≥ 2) are typically large and the inner
+    // loop carries most of the cost. Inlining them into a host that V8 can't
+    // tier up (e.g. a once-called wrapper) freezes the kernel in baseline.
+    // Keep them as standalone functions so V8 wasm tier-up can warm them.
+    if (loopDepth(func.body, 0) >= 2) continue
+    // Factory functions that allocate pointers (`new TypedArray`, `new Array`,
+    // object/array literals returned) break downstream pointer-ABI specialization
+    // when inlined: narrow.js can't trace the post-inline alias chain back to a
+    // single ctor, so the typed-array param of a callee like processCascade(x, …)
+    // stays at generic f64 ABI with __typed_idx dispatch instead of i32 + f64.load.
+    // Keeping the factory as a callable function preserves the call-site type fact.
+    if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
     candidates.set(func.name, func)
   }
   if (!candidates.size) return false
 
+  // Trivial expr-bodied candidates can be substituted at any expression position
+  // (if-condition, ternary, etc.). Stmt-bodied ones go through inlineInStmt's
+  // statement-level path which preserves prefix ordering.
+  const exprOnlyCandidates = new Map()
+  for (const [name, func] of candidates) {
+    if (!Array.isArray(func.body) || func.body[0] !== '{}') exprOnlyCandidates.set(name, func)
+  }
+
   let changed = false
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
+    // Skip exports: they're entry points usually invoked once. Inlining a
+    // hot kernel here would put the loop into a function V8's wasm tier-up
+    // never warms (kernel stays in baseline). Keeping the kernel as its own
+    // callable function lets V8 promote it to TurboFan after a few calls.
+    if (func.exported) continue
     const r = inlineInStmt(func.body, candidates)
-    if (r.changed) { func.body = r.node; changed = true }
+    let body = r.changed ? r.node : func.body
+    let bodyChanged = r.changed
+    if (exprOnlyCandidates.size) {
+      const e = inlineInExpr(body, exprOnlyCandidates)
+      if (e.changed) { body = e.node; bodyChanged = true }
+    }
+    if (bodyChanged) { func.body = body; changed = true }
   }
   if (ast) {
     const r = inlineInStmt(ast, candidates)

@@ -70,7 +70,7 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: Object.freeze({ ...ALL_ON, sourceInline: false, nestedSmallConstForUnroll: false }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: false }),
   3: ALL_ON,
 })
 
