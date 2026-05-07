@@ -97,6 +97,26 @@ test('block scope: else shadow', () => {
   is(run('export let f = (c) => { let x = 1; if (c) { let x = 10 } else { let x = 20; x = 30 }; return x }').f(0), 1)
 })
 
+test('block scope: same const name in sibling blocks resolves correctly', () => {
+  // Two `const g = () => N` in if/else arms used to collapse to one WASM
+  // local. When `g` was passed as a value to a callback (rather than direct-
+  // called from the same arm), both arms' references resolved to one body —
+  // f(0) returned 1 instead of 2. Renaming the second decl restores per-block
+  // uniqueness at the WASM-local level.
+  const { f } = run(`export let f = (c) => {
+    const out = (g) => g()
+    if (c) {
+      const g = () => 1
+      return out(g)
+    } else {
+      const g = () => 2
+      return out(g)
+    }
+  }`)
+  is(f(1), 1)
+  is(f(0), 2)
+})
+
 // ============================================================================
 // Default params — internal calls
 // ============================================================================
