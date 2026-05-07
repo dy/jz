@@ -618,7 +618,10 @@ export default (ctx) => {
           } else if (objType === VAL.HASH) {
             access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else if (objType == null) {
-            ctx.features.external = true
+            // Unknown receiver — runtime dispatch via __dyn_get_any_t. Unlike
+            // the non-`?.` path, don't enable features.external: `?.` short-
+            // circuits on nullish, so the EXTERNAL arm is dead unless the
+            // caller has externals (then features.external is already on).
             access = emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
