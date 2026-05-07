@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, nullExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -43,6 +43,19 @@ export default (ctx) => {
     __jp_obj: ['__jp_val', '__hash_new', '__hash_set_local'],
   })
 
+  // Emit a compile-time-known JSON value tree.
+  //
+  // Objects → fixed-shape OBJECT (schema-tagged, slot-based). Property reads
+  // on the receiving binding compile to direct f64.load at the slot offset
+  // (no hash probe, no key-string compare). Per-iter cost ≈ alloc + N stores
+  // where N is the schema length, vs HASH's alloc + N hash_set_local_h calls.
+  //
+  // Arrays → ARRAY pointer with f64 element slots, same as before.
+  //
+  // For pure-numeric/literal trees (no nested objects with computed values),
+  // the {...} static-data fast path in module/object.js would apply if we
+  // routed through the same recognizer; for now we always alloc fresh per
+  // call to preserve `JSON.parse(SRC); a.x = 7; b.x === original` semantics.
   function emitJsonConstValue(v) {
     if (v == null) return asF64(emit(nullExpr))
     if (typeof v === 'number') return asF64(emit(v))
@@ -57,15 +70,19 @@ export default (ctx) => {
     }
     if (typeof v === 'object') {
       const keys = Object.keys(v)
-      const obj = allocPtr({ type: PTR.HASH, len: 0, cap: hashCapFor(keys.length), stride: 24, tag: 'jhash' })
-      const h = temp('jhash')
-      const body = [obj.init, ['local.set', `$${h}`, obj.ptr]]
-      for (const k of keys) {
-        body.push(['local.set', `$${h}`,
-          ['f64.reinterpret_i64', ['call', '$__hash_set_local_h', ['i64.reinterpret_f64', ['local.get', `$${h}`]], asI64(emit(['str', k])), ['i32.const', strHashLiteral(k)], asI64(emitJsonConstValue(v[k]))]]])
+      // Empty object: minimal OBJECT with no slots.
+      if (keys.length === 0) {
+        return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1], ['i32.const', 8]])
       }
-      body.push(['local.get', `$${h}`])
-      if (keys.length) inc('__hash_set_local_h')
+      const schemaId = ctx.schema.register(keys)
+      const t = tempI32('jobj')
+      const body = [
+        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', keys.length], ['i32.const', 8]]],
+      ]
+      for (let i = 0; i < keys.length; i++) {
+        body.push(['f64.store', slotAddr(t, i), asF64(emitJsonConstValue(v[keys[i]]))])
+      }
+      body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
     return asF64(emit(nullExpr))

@@ -255,22 +255,22 @@ test('Regression: literal numeric string array assignment updates element storag
   is(f(), 2)
 })
 
-// Object.keys on HASH receivers — JSON.parse'd dynamic objects carry no
-// compile-time schema. The HASH path walks the probe table at runtime,
-// pre-sized to __len. Iteration order is hash-derived (matches `for-in`
-// on HASH), not JS spec insertion order — assertions cover count + key
-// set rather than order.
-test('Object.keys: returns count for HASH from JSON.parse', () => {
+// Object.keys on JSON.parse'd objects — folds to a fixed-shape OBJECT with
+// known schema, so Object.keys returns the schema names. Mutation through
+// __dyn_set stores into the per-OBJECT propsPtr sidecar; like object literals,
+// runtime-added keys are not enumerated by Object.keys. Iteration order
+// follows JSON insertion order (the schema preserves it).
+test('Object.keys: returns schema names for JSON.parse OBJECT', () => {
   const { f } = run(`export let f = () => Object.keys(JSON.parse('{"a":1,"b":2,"c":3}')).length`)
   is(f(), 3)
 })
 
-test('Object.keys: empty HASH returns empty array', () => {
+test('Object.keys: empty JSON.parse returns empty array', () => {
   const { f } = run(`export let f = () => Object.keys(JSON.parse('{}')).length`)
   is(f(), 0)
 })
 
-test('Object.keys: HASH key set matches input', () => {
+test('Object.keys: JSON.parse OBJECT key set matches input', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":1,"b":2,"c":3}')
     let k = Object.keys(o)
@@ -279,22 +279,25 @@ test('Object.keys: HASH key set matches input', () => {
   is(f(), 3)
 })
 
-test('Object.keys: HASH does not return absent keys', () => {
+test('Object.keys: JSON.parse OBJECT does not return absent keys', () => {
   const { f } = run(`export let f = () => Object.keys(JSON.parse('{"a":1}')).indexOf("zzz")`)
   is(f(), -1)
 })
 
-test('Object.keys: HASH count grows with mutation', () => {
+// Mutation via __dyn_set writes into the OBJECT's propsPtr sidecar; the
+// fixed schema view from Object.keys does not grow — same rule as for
+// object literals (`let o = {a:1}; o.b = 2; Object.keys(o).length === 1`).
+test('Object.keys: JSON.parse OBJECT mutation does not grow schema view', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":1}')
     o.b = 2
     o.c = 3
     return Object.keys(o).length
   }`)
-  is(f(), 3)
+  is(f(), 1)
 })
 
-test('Object.keys: nested HASH', () => {
+test('Object.keys: nested JSON.parse OBJECT', () => {
   const { f } = run(`export let f = () => Object.keys(JSON.parse('{"x":{"a":1,"b":2,"c":3,"d":4}}').x).length`)
   is(f(), 4)
 })

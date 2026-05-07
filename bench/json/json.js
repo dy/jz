@@ -1,6 +1,10 @@
 import { medianUs, mix, printResult } from '../_lib/benchlib.js'
 
-const SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}'
+// `let` (not const) keeps SRC out of jz's constStrs registry, defeating the
+// compile-time JSON.parse fold. Each iteration goes through the runtime parser
+// (__jp) — apples-to-apples with C/Rust/Zig/Go/V8 which all scan the literal
+// at runtime. (Switch to `const` to measure the static-fold path.)
+let SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}'
 const N_ITERS = 512
 const N_RUNS = 21
 const N_WARMUP = 5

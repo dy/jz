@@ -1230,7 +1230,12 @@ export const emitter = {
       }
       if (typeof obj === 'string') {
         const objType = keyValType(obj)
-        if (usesDynProps(objType)) {
+        // OBJECT receivers (incl. JSON.parse-derived bindings) with off-schema
+        // properties go through __dyn_set, which writes to the per-OBJECT
+        // propsPtr at off-16 — same path as object-literal dyn shadow writes
+        // (module/object.js). __hash_set assumes HASH bucket layout and would
+        // corrupt OBJECT memory.
+        if (usesDynProps(objType) || objType === VAL.OBJECT) {
           inc('__dyn_set')
           return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }

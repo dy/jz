@@ -11,7 +11,7 @@
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, T, repOf, updateRep } from '../src/analyze.js'
+import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -468,7 +468,18 @@ export default (ctx) => {
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
     if (slot >= 0) return emitSchemaSlotRead(asF64(va), slot)
-    const schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
+    let schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
+    // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
+    // OBJECT shape via JSON-shape propagation, the parent shape's `names`
+    // gives the slot directly. Avoids the structural ambiguity of
+    // ctx.schema.find(null, prop) when multiple registered schemas share a key.
+    if (schemaIdx < 0 && typeof obj !== 'string') {
+      const sh = shapeOf(obj)
+      if ((sh?.vt === VAL.OBJECT || sh?.vt === VAL.HASH) && sh.names) {
+        const i = sh.names.indexOf(prop)
+        if (i >= 0) schemaIdx = i
+      }
+    }
     const key = asI64(emit(['str', prop]))
     if (schemaIdx >= 0) return emitSchemaSlotRead(asF64(va), schemaIdx)
     if (typeof obj === 'string') {
@@ -478,6 +489,12 @@ export default (ctx) => {
       }
       if (vt === VAL.HASH) {
         return emitHashGetLocalConst(va, key, prop)
+      }
+      // OBJECT off-schema prop: __dyn_get_expr_t reads the per-OBJECT propsPtr
+      // at off-16 (set by __dyn_set). __hash_get assumes HASH bucket layout
+      // and would mis-read OBJECT memory.
+      if (vt === VAL.OBJECT) {
+        return emitDynGetExprTyped(va, key, vt)
       }
       if (vt == null) {
         ctx.features.external = true

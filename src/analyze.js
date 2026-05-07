@@ -272,12 +272,12 @@ export function valTypeOf(expr) {
     const slotVT = ctx.schema.slotVT(args[0], args[1])
     if (slotVT) return slotVT
   }
-  // VAL.HASH `.prop` propagation: when the receiver chain roots at a binding
+  // OBJECT `.prop` propagation: when the receiver chain roots at a binding
   // sourced from `JSON.parse(stringConst)`, walk the shape tree to recover the
   // child's val-type. Generic for any compile-time-known JSON literal.
   if (op === '.' && typeof args[1] === 'string') {
     const sh = shapeOf(args[0])
-    if (sh?.vt === VAL.HASH) {
+    if (sh?.vt === VAL.OBJECT || sh?.vt === VAL.HASH) {
       const child = sh.props[args[1]]
       if (child) return child.vt
     }
@@ -315,7 +315,10 @@ export function valTypeOf(expr) {
         const src = jsonConstString(args[1])
         if (src != null) {
           const c = src.trimStart()[0]
-          if (c === '{') return VAL.HASH
+          // Objects emit as fixed-shape OBJECT (slot-based) — see
+          // module/json.js:emitJsonConstValue. The downstream `.prop` reads
+          // hit emitSchemaSlotRead via ctx.schema.find, bypassing hash probes.
+          if (c === '{') return VAL.OBJECT
           if (c === '[') return VAL.ARRAY
           if (c === '"') return VAL.STRING
           if (c === 't' || c === 'f' || c === '-' || (c >= '0' && c <= '9')) return VAL.NUMBER
@@ -394,18 +397,19 @@ function shapeOfJsonValue(v) {
   }
   if (typeof v === 'object') {
     const props = Object.create(null)
-    for (const k of Object.keys(v)) {
+    const names = Object.keys(v)
+    for (const k of names) {
       const s = shapeOfJsonValue(v[k])
       if (s) props[k] = s
     }
-    return { vt: VAL.HASH, props }
+    return { vt: VAL.OBJECT, props, names }
   }
   return null
 }
 
 function shapeUnifies(a, b) {
   if (!a || !b || a.vt !== b.vt) return false
-  if (a.vt === VAL.HASH) {
+  if (a.vt === VAL.OBJECT || a.vt === VAL.HASH) {
     const ak = Object.keys(a.props), bk = Object.keys(b.props)
     if (ak.length !== bk.length) return false
     for (const k of ak) {
@@ -442,7 +446,7 @@ export function shapeOf(expr) {
   }
   if (op === '.' && typeof args[1] === 'string') {
     const parent = shapeOf(args[0])
-    if (parent?.vt === VAL.HASH) return parent.props[args[1]] || null
+    if (parent?.vt === VAL.OBJECT || parent?.vt === VAL.HASH) return parent.props[args[1]] || null
   }
   if (op === '[]' && args.length === 2) {
     const parent = shapeOf(args[0])
@@ -1268,6 +1272,17 @@ export function analyzeValTypes(body) {
           updateRep(a[1], { jsonShape: sh })
           if (sh.vt === VAL.ARRAY && sh.elem?.vt) {
             updateRep(a[1], { arrayElemValType: sh.elem.vt })
+            // Array of fixed-shape OBJECTs: register elem schema so `it = items[j]`
+            // → `it.prop` lowers to slot read via the existing arr-elem-schema path.
+            if (sh.elem.vt === VAL.OBJECT && sh.elem.names && ctx.schema.register) {
+              const elemSid = ctx.schema.register(sh.elem.names)
+              updateRep(a[1], { arrayElemSchema: elemSid })
+            }
+          }
+          if (sh.vt === VAL.OBJECT && sh.names && ctx.schema.register) {
+            const sid = ctx.schema.register(sh.names)
+            updateRep(a[1], { schemaId: sid })
+            ctx.schema.vars.set(a[1], sid)
           }
         }
         // Propagate schemaId from a narrowed call result so subsequent valTypeOf

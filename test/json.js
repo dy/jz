@@ -74,13 +74,17 @@ test('JSON.parse: object dot access', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"x":42}'); return o.x }`).f(), 42)
 })
 
-test('JSON.parse: static object dot access uses local HASH lookup', () => {
+test('JSON.parse: static object dot access uses fixed-slot OBJECT load', () => {
+  // const o = JSON.parse(SRC) folds to a fixed-shape OBJECT (schema-tagged,
+  // slot-based). o.x reads `f64.load offset=0` from the object payload — no
+  // hash dispatch, no runtime parser.
   const wat = compile(`const SRC = '{"x":42}'; export let f = () => { const o = JSON.parse(SRC); return o.x }`, { wat: true })
   ok(!wat.includes('$__jp'))
-  ok(wat.includes('$__hash_get_local_h'))
-  ok(wat.includes('$__hash_get_local'))
+  ok(!wat.includes('$__hash_get'))
+  ok(!wat.includes('$__hash_get_local'))
   ok(!wat.includes('$__dyn_get_any'))
   ok(!wat.includes('$__dyn_get_expr'))
+  ok(wat.includes('f64.load'))
 })
 
 test('JSON.parse: static parse returns fresh HASH each call', () => {
@@ -92,10 +96,10 @@ test('JSON.parse: static parse returns fresh HASH each call', () => {
   }`).f(), 42)
 })
 
-test('JSON.parse: nested chains stay on HASH fast path', () => {
-  // o.meta.bias and items[j].id should both route through __hash_get_local —
+test('JSON.parse: nested chains stay on OBJECT fast path', () => {
+  // o.meta.bias and items[j].id should resolve to fixed-slot f64.load reads —
   // shape propagation lifts intermediate `o.meta` and `items[j]` to known
-  // HASH so the dispatcher is never pulled in.
+  // OBJECT schemas so neither hash dispatch nor the dyn dispatcher is pulled in.
   const src = `
     const SRC = '{"items":[{"id":1}],"meta":{"bias":11}}'
     export let f = () => {
@@ -107,10 +111,11 @@ test('JSON.parse: nested chains stay on HASH fast path', () => {
   `
   const wat = compile(src, { wat: true })
   ok(!wat.includes('$__jp'))
-  ok(wat.includes('$__hash_get_local_h'))
-  ok(wat.includes('$__hash_get_local'))
+  ok(!wat.includes('$__hash_get'))
+  ok(!wat.includes('$__hash_get_local'))
   ok(!wat.includes('$__dyn_get_any'))
   ok(!wat.includes('$__dyn_get_expr'))
+  ok(wat.includes('f64.load'))
   is(run(src).f(), 12)
 })
 
