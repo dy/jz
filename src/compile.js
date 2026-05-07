@@ -42,7 +42,7 @@ import {
   isLit, litVal, isNullishLit, isPureIR, isPostfix, emitNum,
   temp, tempI32, tempI64, f64rem, toNumF64, truthyIR, toBoolFromEmitted,
   keyValType, usesDynProps, needsDynShadow,
-  isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish,
+  isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish, isUndef,
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   valKindToPtr,
@@ -299,15 +299,15 @@ function emitFunc(func, funcFacts, programFacts) {
   fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
   fn.push(...sig.results.map(t => ['result', t]))
 
-  // Default params: missing JS args become canonical NaN (0x7FF8000000000000) in WASM f64 params.
-  // Check for canonical NaN specifically — NaN-boxed pointers are also NaN but have non-zero payload.
+  // Default params: ES spec says default applies only when arg is `undefined`
+  // (or missing). `null`, `0`, `false`, etc. all skip the default.
   const defaults = func.defaults || {}
   const defaultInits = []
   for (const [pname, defVal] of Object.entries(defaults)) {
     const p = sig.params.find(p => p.name === pname)
     const t = p?.type || 'f64'
     defaultInits.push(
-      ['if', isNullish(typed(['local.get', `$${pname}`], 'f64')),
+      ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
         ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
   }
 
@@ -636,13 +636,14 @@ function emitClosureBody(cb) {
   }
 
   // Default params for closures (check sentinel after unpack)
+  // Only `undefined` triggers default per spec — `null`/`0`/`false` pass through.
   if (cb.defaults) {
     for (const [pname, defVal] of Object.entries(cb.defaults)) {
       if (boxedParamNames.has(pname)) {
-        fn.push(['if', isNullish(['f64.load', boxedAddr(pname)]),
+        fn.push(['if', isUndef(['f64.load', boxedAddr(pname)]),
           ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
       } else {
-        fn.push(['if', isNullish(['local.get', `$${pname}`]),
+        fn.push(['if', isUndef(['local.get', `$${pname}`]),
           ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
       }
     }
@@ -723,7 +724,12 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // __dyn_get (set transitively by resolveIncludes() later) are listed
   // explicitly here because the dep graph hasn't been expanded yet at
   // start-fn build time.
-  const needsSchemaTbl = ctx.schema.list.length && (
+  // __jp_obj registers schemas at runtime, so the table must be allocated
+  // (and __schema_next initialized) even with zero compile-time schemas.
+  // __jp pulls __jp_obj transitively via the include-graph but resolveIncludes
+  // runs after buildStartFn, so check the top-level __jp parser as a proxy.
+  const hasJpObj = ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
+  const needsSchemaTbl = (ctx.schema.list.length && (
     ctx.core.includes.has('__stringify') ||
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
@@ -731,17 +737,24 @@ function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     ctx.core.includes.has('__dyn_get_any_t') ||
     ctx.core.includes.has('__dyn_get_expr') ||
     ctx.core.includes.has('__dyn_get_expr_t') ||
-    ctx.core.includes.has('__dyn_get_or'))
+    ctx.core.includes.has('__dyn_get_or'))) ||
+    hasJpObj
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length
+    // Reserve trailing slots for runtime-registered schemas (used by JSON.parse
+    // shape caching). __schema_next tracks the first free runtime slot.
+    const runtimeReserve = hasJpObj ? 256 : 0
     const stbl = `${T}stbl`
     const sarr = `${T}sarr`
     ctx.func.locals.set(stbl, 'i32')
     ctx.func.locals.set(sarr, 'i32')
     inc('__alloc', '__alloc_hdr', '__mkptr')
     schemaInit.push(
-      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', nSchemas * 8]]],
+      ['local.set', `$${stbl}`, ['call', '$__alloc', ['i32.const', (nSchemas + runtimeReserve) * 8]]],
       ['global.set', '$__schema_tbl', ['local.get', `$${stbl}`]])
+    if (runtimeReserve) {
+      schemaInit.push(['global.set', '$__schema_next', ['i32.const', nSchemas]])
+    }
     for (let s = 0; s < nSchemas; s++) {
       const keys = ctx.schema.list[s]
       const n = keys.length

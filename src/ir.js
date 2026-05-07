@@ -552,6 +552,28 @@ export const isNullish = (f64expr) => {
   return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', f64expr]], 'i32')
 }
 
+/** Check if f64 expr is exactly `undefined` (UNDEF_NAN). Returns i32.
+ *  Used by default-param semantics — only `undefined` (or missing arg) triggers
+ *  the default; `null` should pass through. */
+export const isUndef = (f64expr) => {
+  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
+  if (Array.isArray(f64expr)) {
+    if (f64expr[0] === 'f64.const') {
+      const lit = String(f64expr[1])
+      if (lit.startsWith('nan:')) {
+        const bits = lit.slice(4)
+        return typed(['i32.const', bits === UNDEF_NAN ? 1 : 0], 'i32')
+      }
+      return typed(['i32.const', 0], 'i32')
+    }
+    if (f64expr[0] === 'f64.reinterpret_i64' && Array.isArray(f64expr[1]) && f64expr[1][0] === 'i64.const') {
+      const bits = String(f64expr[1][1])
+      return typed(['i32.const', bits === UNDEF_NAN ? 1 : 0], 'i32')
+    }
+  }
+  return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]], 'i32')
+}
+
 // === Array layout helpers ===
 
 /** Slot address: `base + idx*8` IR. Uses `local.get` directly when idx=0. */

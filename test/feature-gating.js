@@ -89,9 +89,12 @@ test('features.hash OFF: scalar-only — no hash substrate', () => {
   is(hasDef(w, '__str_hash'), false)
 })
 
-test('features.hash ON: JSON.parse pulls hash substrate', () => {
+test('features.hash ON: JSON.parse pulls schema substrate', () => {
+  // JSON.parse builds OBJECT pointers via a runtime schema cache (__jp_obj
+  // routes through __jp_schema_get); previously it emitted HASH and pulled
+  // __hash_set_local. The schema substrate is what gets exercised now.
   const w = wat(`export let f = (s) => JSON.parse(s)`)
-  ok(hasDef(w, '__hash_set_local'))
+  ok(hasDef(w, '__jp_schema_get'))
 })
 
 test('features.hash ON: untyped .prop pulls __dyn_get_any_t', () => {

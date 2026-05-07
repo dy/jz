@@ -241,15 +241,27 @@ const renameFunc = (func, nextName) => {
 
 /** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
 const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6 }
+// Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
+function staticTypeofString(x) {
+  // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
+  if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && ctx.core.emit?.[x]?.length > 0) return 'function'
+  const px = prep(x)
+  if (typeof px === 'string' && px.includes('.') && ctx.core.emit?.[px]?.length > 0) return 'function'
+  return null
+}
 function resolveTypeof(node) {
   const [op, a, b] = node
   // typeof x == 'string' → type check
   if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null && typeof b[1] === 'string') {
+    const known = staticTypeofString(a[1])
+    if (known != null) return [, op === '==' ? known === b[1] : known !== b[1]]
     const code = TYPEOF_MAP[b[1]]
     if (code != null) return [op, ['typeof', a[1]], [, code]]
   }
   // 'string' == typeof x
   if (Array.isArray(b) && b[0] === 'typeof' && Array.isArray(a) && a[0] == null && typeof a[1] === 'string') {
+    const known = staticTypeofString(b[1])
+    if (known != null) return [, op === '==' ? known === a[1] : known !== a[1]]
     const code = TYPEOF_MAP[a[1]]
     if (code != null) return [op, ['typeof', b[1]], [, code]]
   }
@@ -1037,6 +1049,8 @@ const handlers = {
   // Boolean literals NaN-box as f64 — typeof at runtime returns 'number'. Fold here so the JS-spec value survives.
   'typeof'(a) {
     if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeForStringOnly(); return ['str', 'boolean'] }
+    const known = staticTypeofString(a)
+    if (known != null) { includeForStringOnly(); return ['str', known] }
     return ['typeof', prep(a)]
   },
 

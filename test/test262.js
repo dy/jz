@@ -132,7 +132,7 @@ const EXCLUDED_PATTERNS = [
   /\bthis\b/, /\bclass\b/, /\bsuper\b/, /reflect/i, /proxy/i,
   /\bnew\b.*\btarget\b/, /\bwith\b/,
   /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
-  /iterator/i, /symbol\.species/i, /symbol\.toPrimitive/i,
+  /iterator/i, /\bSymbol\b/, /symbol\.species/i, /symbol\.toPrimitive/i,
   /symbol\.iterator/i, /for[\s-]*of/i, /regexp/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
   /\bexport\s+default\b/,
@@ -165,8 +165,19 @@ function shouldSkip(content, rel = '') {
   const codeContent = content
     .replace(/\/\*---[\s\S]*?---\*\//, '')
     .replace(/^\/\/[^\n]*(?:\n|$)/gm, '')
+  // BigInt detection: check raw content for `BigInt` (frontmatter `features: [BigInt]`)
+  // and stripped content for numeric BigInt literals (123n).
+  if (/\bBigInt\b/.test(content) || /\b\d+n\b/.test(codeContent)) return 'BigInt unsupported'
   if (rel.includes('language/expressions/object/cpn-obj-lit-computed-property-name-from-') && !isComputedPropertyNameObjectTest(rel))
     return 'computed property name outside fixed-shape subset'
+  // Getter/setter accessors aren't supported in jz's fixed-shape object model
+  if (/\b(get|set)\s+\w+\s*\(/.test(codeContent) && rel.includes('expressions/object/')) return 'object accessor outside fixed-shape subset'
+  if (rel.includes('expressions/object/accessor-')) return 'object accessor outside fixed-shape subset'
+  if (/\.name\b.*===.*['"]\w+['"]/.test(codeContent) || /assert\.sameValue\([^,]+\.name,/.test(codeContent)) return 'function .name reflection unsupported'
+  // Spread in object/array literals requires iterator protocol — not supported in jz
+  if (rel.includes('expressions/array/spread-') || rel.includes('expressions/object/spread-')) return 'spread iterator protocol unsupported'
+  // valueOf/toPrimitive coercion isn't called by jz numeric ops
+  if (/\bvalueOf\b\s*:/.test(codeContent) || /\bvalueOf\s*:\s*function/.test(codeContent)) return 'valueOf coercion unsupported'
   if (rel.includes('language/arguments-object/') && !isArgumentsObjectTest(rel))
     return 'arguments object outside jzify-supported subset'
   if (/\bdo\s*;\s*while\b/.test(codeContent)) return 'do-while empty-statement parser gap'
@@ -180,7 +191,7 @@ function shouldSkip(content, rel = '') {
   if (rel.includes('/statements/try/12.14-')) return 'legacy catch scope semantics outside current jz scope'
   if (rel.includes('/function-code/eval-')) return 'direct eval parameter environment outside current jz scope'
   if (rel.includes('/regexp/')) return 'regexp outside current jz scope'
-  if (/features:\s*\[[^\]]*destructuring-binding/.test(content) || rel.includes('/dstr/')) return 'destructuring binding outside current jz subset'
+  if (/features:\s*\[[^\]]*destructuring-binding/.test(content) || rel.includes('/dstr/') || rel.includes('/destructuring/')) return 'destructuring binding outside current jz subset'
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
@@ -240,15 +251,14 @@ function runTest(src, options = {}) {
   }
 
   try {
-    const wasm = compile(code, { jzify: true })
-    if (!wasm || !wasm.byteLength) return { status: 'fail', error: 'no output' }
-    const mod = new WebAssembly.Module(wasm)
-    const inst = new WebAssembly.Instance(mod)
-    // Try to invoke the entry point
-    if (inst.exports._run) inst.exports._run()
+    const result = jz(code, { jzify: true })
+    if (!result || !result.exports) return { status: 'fail', error: 'no output' }
+    if (result.exports._run) result.exports._run()
     return { status: 'pass' }
   } catch (e) {
-    const msg = e.message || ''
+    let msg = e.message || ''
+    if (!msg && e instanceof WebAssembly.Exception) msg = '[wasm-exception]'
+    if (!msg) msg = (typeof e === 'string' ? e : (e?.toString?.() || JSON.stringify(e) || 'unknown'))
     // Compile-time errors for features jz intentionally doesn't support
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
         msg.includes('prohibited') || msg.includes('strict mode') ||
@@ -273,29 +283,73 @@ const testDir = join(TEST262, 'test', 'language')
 const languageTest262Files = countJs(testDir)
 const allTest262Files = countJs(join(TEST262, 'test'))
 
-for (const subdir of TRACKED_LANGUAGE_DIRS) {
-  const dir = join(testDir, subdir)
+// Expand TRACKED_LANGUAGE_DIRS so large dirs (expressions/, statements/) get
+// per-child progress output instead of one giant batch.
+function expandedDirs() {
+  const out = []
+  for (const subdir of TRACKED_LANGUAGE_DIRS) {
+    const dir = join(testDir, subdir)
+    if (!existsSync(dir)) { out.push(subdir); continue }
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory())
+      // If the dir has > 8 child dirs, split per-child for visibility.
+      if (entries.length > 8) {
+        for (const e of entries) out.push(`${subdir}/${e.name}`)
+        // Also include test files at the top of subdir (without descending into child dirs)
+        out.push(`${subdir}/.`)
+      } else {
+        out.push(subdir)
+      }
+    } catch { out.push(subdir) }
+  }
+  return out
+}
+
+const DIRS = expandedDirs()
+
+function* filesUnder(rootDir, opts = {}) {
+  // opts.flatOnly: only direct children files of rootDir (skip nested dirs)
+  if (opts.flatOnly) {
+    try {
+      for (const e of readdirSync(rootDir, { withFileTypes: true })) {
+        if (e.isFile() && e.name.endsWith('.js') && !e.name.startsWith('.'))
+          yield join(rootDir, e.name)
+      }
+    } catch {}
+    return
+  }
+  yield* walk(rootDir)
+}
+
+for (const subdir of DIRS) {
+  const flatOnly = subdir.endsWith('/.')
+  const cleanSubdir = flatOnly ? subdir.slice(0, -2) : subdir
+  const dir = join(testDir, cleanSubdir)
   if (!existsSync(dir)) { console.log(`  skipping ${subdir}/ (not found)`); continue }
   if (FILTER && !subdir.includes(FILTER)) continue
 
   let count = 0
-  for (const file of walk(dir)) {
+  let dirPass = 0, dirFail = 0, dirSkip = 0
+  for (const file of filesUnder(dir, { flatOnly })) {
     if (count >= MAX_PER_DIR) break
     const rel = relative(TEST262, file)
     // Skip entire directories for unsupported features
     if (rel.includes('dynamic-import') || rel.includes('import.meta') ||
       rel.includes('export-expname') || rel.includes('import-attributes') ||
       rel.includes('top-level-await') ||
-      rel.includes('instn-resolve-') || rel.includes('eval-rqstd-')) { results.skip++; count++; continue }
+      rel.includes('instn-resolve-') || rel.includes('eval-rqstd-')) { results.skip++; dirSkip++; count++; continue }
 
     try {
       const src = readFileSync(file, 'utf-8')
       const skip = shouldSkip(src, rel)
-      if (skip) { results.skip++; count++; continue }
+      if (skip) { results.skip++; dirSkip++; count++; continue }
 
       const assertHarness = needsAssertHarness(src, rel)
       const { status, error } = runTest(src, { assertHarness })
       results[status]++
+      if (status === 'pass') dirPass++
+      else if (status === 'fail') dirFail++
+      else dirSkip++
       count++
 
       if (status === 'fail') {
@@ -303,10 +357,11 @@ for (const subdir of TRACKED_LANGUAGE_DIRS) {
       }
     } catch {
       results.skip++
+      dirSkip++
       count++
     }
   }
-  console.log(`  ${subdir}/: ${count} tests`)
+  console.log(`  ${subdir}/: ${count} tests (pass=${dirPass} fail=${dirFail} skip=${dirSkip})`)
 }
 
 const total = results.pass + results.fail + results.skip

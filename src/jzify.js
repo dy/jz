@@ -29,16 +29,32 @@ export default function jzify(ast) {
   return transformScope(ast)
 }
 
+/** Convert a named function declaration to a hoisted const arrow */
+function hoistFnDecl(name, params, body) {
+  const [p2, b2] = lowerArguments(params, body)
+  const decl = ['const', ['=', name, ['=>', p2, wrapArrowBody(b2)]]]
+  decl._hoisted = true
+  return decl
+}
+
 /** Transform a scope (module top-level or block body). Collects hoisted functions. */
 function transformScope(node) {
   if (!Array.isArray(node)) return transform(node)
 
   const [op, ...args] = node
 
+  // Single named function-statement at scope position: hoist as const arrow
+  if (op === 'function' && args[0]) return hoistFnDecl(...args)
+
   // Statement sequence: collect hoisted functions
   if (op === ';') {
     const hoisted = [], rest = []
     for (const stmt of args) {
+      // Statement-form named function declaration: hoist directly (skip expression handler)
+      if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
+        hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
+        continue
+      }
       const t = transform(stmt)
       if (t == null) continue
       // Hoist function declarations to top of scope
@@ -152,11 +168,19 @@ const handlers = {
     }
   },
 
-  // function → arrow (named → hoisted const)
+  // function → arrow. Named function expression desugars to IIFE so the name is
+  // bound inside body per ES spec: `function f(){...f...}` → `(()=>{let f;f=arrow;return f})()`.
+  // Statement-form named functions are hoisted by transformScope before reaching here.
   'function'(name, params, body) {
     const [p2, b2] = lowerArguments(params, body)
     const arrow = ['=>', p2, wrapArrowBody(b2)]
-    if (name) { const decl = ['const', ['=', name, arrow]]; decl._hoisted = true; return decl }
+    if (name) {
+      return ['()', ['()', ['=>', null, ['{}', [';',
+        ['let', name],
+        ['=', name, arrow],
+        ['return', name]
+      ]]]], null]
+    }
     return arrow
   },
 

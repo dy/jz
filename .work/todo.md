@@ -4,10 +4,12 @@
 
 * [ ] Add source maps or at least function/name-section diagnostics.
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
-
 * [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
-
 * [ ] Options breakdown in readme
+* [ ] Date
+* [ ] Intl
+* [ ] test262
+
 
 ## Phase 14: Internal Parser (Future)
 * [ ] Extract minimal jz parser from subscript features
@@ -31,7 +33,6 @@
 
 * [ ] color-space converter (validates multi profile)
 * [ ] digital-filter biquad (validates memory profile)
-* [ ] test262 basics
 * [x] JS-equivalence audit for dynamic property writes:
   - Dynamic writes to fixed-shape OBJECT fields are slot+sidecar coherent.
   - Runtime string keys on ARRAY/TYPED receivers now detect canonical indexes
@@ -39,8 +40,8 @@
   - Numeric hot paths are guarded by WAT tests so the string-index parser is
     only emitted on runtime string-capable key paths.
 * [ ] Warn/error on hitting memory limits
-* [ ] Excellent WASM output
-* [ ] wasm2c / w2c2 integration test
+* [x] Excellent WASM output
+* [x] wasm2c / w2c2 integration test
 
 ### Future
 
@@ -54,20 +55,6 @@
 ## Performance — closing the native-language gap
 
 Goal: match C/Zig on `mat4`, `aos`; match Rust on `bitwise`, `poly`, `json`.
-
-**2026-05-07 update — module-const type propagation (1-line fix in
-`exprType` 88e1944) closed most of the gap unexpectedly fast.** Bench
-numbers refreshed in README. Remaining gaps:
-
-| case     | before | now    | target | remaining gap | bottleneck                       |
-|----------|--------|--------|--------|----------------|----------------------------------|
-| biquad   | 6.39ms | 4.48ms | 5.30ms (C) | **already past**       | beats C/Rust/Zig now              |
-| mat4     | 3.96ms | 2.86ms | 2.60ms (C/Zig) | 1.10×       | small — V8 turbofan vs LLVM      |
-| aos      | 1.52ms | 1.09ms | 0.91ms (Zig) | 1.20×         | LICM / shuffle SIMD              |
-| bitwise  | 4.86ms | 1.38ms | 1.30ms (C/Rust) | 1.06×          | parity via SIMD-128 (i8/i16/i32/i64/f32/f64) + reductions |
-| poly     | 1.12ms | 0.73ms | 0.63ms (Rust) | 1.16×        | small — needs f64x2 + i32x4 SIMD |
-| tokenizer| 0.10ms | 0.06ms | 0.07ms (Go)  | **already past** | beats native targets         |
-| json     | 0.21ms | 0.13ms | 0.03ms (C) | **4.3×**       | structural — NaN-box per node    |
 
 Most cases are now within ~20% of native. Only **bitwise** (2.6× behind)
 and **json** (4.3× behind) still have meaningful gaps — and the gaps
@@ -102,10 +89,10 @@ structural fast-path that drops NaN-boxing inside the parser.
       `sum(arr)` per concrete elem ctor and rewrites call sites. Poly's
       remaining ~16% gap to Rust isn't dispatch-related.
 
-* [ ] **mat4 unroll-4 recognizer** — DEFERRED. Mat4 is already at 2.86ms,
+* [~] **mat4 unroll-4 recognizer** — DEFERRED. Mat4 is already at 2.86ms,
       ~10% behind C/Zig 2.60ms. The remaining gap is V8 turbofan vs LLVM
       codegen quality, not pattern-recognition; explicit f64x2 SIMD would
-      help but the absolute win is small (~0.3ms).
+      help but the absolute win is small (~0.3ms)
 
 * [ ] **json arena/raw-u8 fast path** — biggest remaining structural gap.
       Realistic only if we restructure the parser's value-shape. Out of

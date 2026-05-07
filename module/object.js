@@ -10,7 +10,7 @@
 import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep, shapeOf } from '../src/analyze.js'
-import { ctx, err, inc, PTR } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 
 
 export default (ctx) => {
@@ -449,17 +449,58 @@ function hashKeysFromTemp(t) {
 }
 
 // Type-unknown receiver: bind the value, branch on ptr-type. HASH walks the
-// probe table; everything else (ARRAY, OBJECT-without-resolvable-schema,
-// nullish, primitives) returns an empty array. The empty-array fallback is
-// allocated in both arms for type uniformity at the if-result boundary.
+// probe table; OBJECT loads the schema's key array (registered statically at
+// compile time or lazily at runtime by JSON.parse via __jp_schema_get); other
+// types (ARRAY, nullish, primitives) return an empty array. The empty-array
+// fallback is allocated in all arms for type uniformity at the if boundary.
 function emitRuntimeKeys(obj) {
   inc('__ptr_type')
-  const t = temp('rk')
+  // Ensure the schema table global exists even in programs that never use
+  // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
+  // and the watr resolver requires the symbol to be declared.
+  if (!ctx.scope.globals.has('__schema_tbl'))
+    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+  const t = temp('rk'), tt = tempI32('rkt')
   const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rke' })
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
+    ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
-      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.HASH]],
+      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
       ['then', hashKeysFromTemp(t)],
-      ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]], 'f64')
+      ['else', ['if', ['result', 'f64'],
+        ['i32.and',
+          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
+          ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
+        ['then', objectKeysFromTemp(t)],
+        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
+}
+
+// Schema-keyed Object.keys: copy the schema's keys array (a jz Array of
+// STRINGs registered in __schema_tbl[sid]) into a fresh ARRAY so callers can
+// mutate without aliasing the schema substrate.
+function objectKeysFromTemp(t) {
+  inc('__alloc_hdr')
+  const sid = tempI32('oks'), src = tempI32('oksrc'), n = tempI32('okn'), out = tempI32('oko'), i = tempI32('oki')
+  const id = ctx.func.uniq++
+  return ['block', ['result', 'f64'],
+    ['local.set', `$${sid}`, ['i32.wrap_i64', ['i64.and',
+      ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
+      ['i64.const', LAYOUT.AUX_MASK]]]],
+    ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
+      ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
+      ['i64.const', LAYOUT.OFFSET_MASK]]]],
+    ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+    ['local.set', `$${out}`, ['call', '$__alloc_hdr',
+      ['local.get', `$${n}`], ['local.get', `$${n}`], ['i32.const', 8]]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['block', `$kbrk${id}`, ['loop', `$kloop${id}`,
+      ['br_if', `$kbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['i64.store',
+        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]],
+        ['i64.load',
+          ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$kloop${id}`]]],
+    mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }

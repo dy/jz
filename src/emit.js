@@ -499,7 +499,7 @@ export function materializeMulti(callNode) {
     ? rawArgs[0].slice(1) : rawArgs
   const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
   while (emittedArgs.length < func.sig.params.length)
-    emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+    emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
   const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]
@@ -561,7 +561,7 @@ export function emitDecl(...inits) {
             ? rawArgs[0].slice(1) : rawArgs
           const emittedArgs = argList.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
           result.push(['call', `$${init[1]}`, ...emittedArgs])
           for (let k = n - 1; k >= 0; k--)
             result.push(['local.set', `$${targets[k]}`])
@@ -1869,7 +1869,7 @@ export const emitter = {
           const func = ctx.func.map.get(fname)
           const emittedArgs = parsed.normal.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
           while (emittedArgs.length < func.sig.params.length)
-            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+            emittedArgs.push(func.sig.params[emittedArgs.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
           const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
           if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
           if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
@@ -2245,10 +2245,10 @@ export const emitter = {
       if (func?.rest) {
         const fixedParamCount = func.sig.params.length - 1
         const fixedArgs = parsed.normal.slice(0, fixedParamCount)
-        // Pad missing fixed args with sentinel for defaults
+        // Pad missing fixed args with `undefined` so default-param init triggers per spec.
         const emittedFixed = fixedArgs.map((a, k) => emitArgForParam(emit(a), func.sig.params[k]))
         while (emittedFixed.length < fixedParamCount)
-          emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+          emittedFixed.push(func.sig.params[emittedFixed.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
 
         // Reconstruct with spreads, then take rest args
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -2266,14 +2266,15 @@ export const emitter = {
 
       // Regular function call without rest params
       if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
-      // Pad missing args with canonical NaN (triggers default param init).
-      // Drop extras to match JS calling convention — emitting them anyway
-      // produces an invalid call when the callee is a fixed-arity import
-      // (e.g. `_interp`-registered host stubs) since wasm validates arg count.
-      // Use ?? rather than || so a legitimate 0-arity callee isn't bypassed.
+      // Pad missing args with `undefined` so default-param init triggers per spec
+      // (only undefined, not null, should trigger defaults). Drop extras to match
+      // JS calling convention — emitting them anyway produces an invalid call
+      // when the callee is a fixed-arity import (e.g. `_interp`-registered host
+      // stubs) since wasm validates arg count. Use ?? rather than || so a
+      // legitimate 0-arity callee isn't bypassed.
       const args = parsed.normal.map((a, k) => emitArgForParam(emit(a), func?.sig.params[k]))
       const expected = func?.sig.params.length ?? args.length
-      while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : nullExpr())
+      while (args.length < expected) args.push(func?.sig.params[args.length]?.type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
       if (args.length > expected) args.length = expected
       // Multi-value return: materialize as heap array (caller expects single pointer)
       if (func?.sig.results.length > 1) return materializeMulti(['()', callee, ...parsed.normal])
@@ -2332,7 +2333,7 @@ export const emitter = {
     }
     const emittedArgs = argList.map(a => asF64(emit(a)))
     if (calleeArity != null) {
-      while (emittedArgs.length < calleeArity) emittedArgs.push(nullExpr())
+      while (emittedArgs.length < calleeArity) emittedArgs.push(undefExpr())
       if (emittedArgs.length > calleeArity) emittedArgs.length = calleeArity
     }
     return typed(['call', `$${callee}`, ...emittedArgs], 'f64')

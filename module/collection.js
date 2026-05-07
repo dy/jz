@@ -601,7 +601,17 @@ export default (ctx) => {
   // bits for identical literals), so bit-equality is correct and skips a
   // per-iter function call. Real-world strings sharing prefix bytes are not
   // a concern here — keys are static literals from the source program.
-  const buildObjectSchemaArm = () => ctx.schema.list.length > 0 ? `
+  // Schema-arm key compare: i64.eq first for the static-shape case (compile-time
+  // schemas hold pool-interned keys with identical NaN-box bits as call-site
+  // literals — single bit-eq decides). Falls back to __str_eq when bits differ
+  // so runtime-registered schemas (e.g. JSON.parse OBJECTs whose keys are
+  // freshly heap-allocated by __jp_str) still resolve correctly.
+  const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
+    ? `(i32.or
+        (i64.eq ${storedKey} ${userKey})
+        (call $__str_eq ${storedKey} ${userKey}))`
+    : `(i64.eq ${storedKey} ${userKey})`
+  const buildObjectSchemaArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
         (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
@@ -615,22 +625,20 @@ export default (ctx) => {
             (local.set $idx (i32.const 0))
             (block $kdone (loop $kloop
               (br_if $kdone (i32.ge_s (local.get $idx) (local.get $nkeys)))
-              (if (i64.eq
-                    (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
-                    (local.get $key))
+              (if ${schemaKeyEq(`(i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))`, `(local.get $key)`)}
                 (then (return (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3)))))))
               (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
               (br $kloop)))))))` : ''
-  const buildObjectSchemaLocals = () => ctx.schema.list.length > 0
+  const buildObjectSchemaLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32)'
     : ''
   // Same lazy-gating story as buildObjectSchemaArm above — observed at
   // template-expansion time so schemas registered later in the compile
   // still pull the arm in.
-  const buildObjectSchemaSetLocals = () => ctx.schema.list.length > 0
+  const buildObjectSchemaSetLocals = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj'))
     ? '(local $sid i32) (local $kbits i64) (local $koff i32) (local $nkeys i32) (local $idx i32)'
     : ''
-  const buildObjectSchemaSetArm = () => ctx.schema.list.length > 0 ? `
+  const buildObjectSchemaSetArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
     ;; If a dynamic write targets an existing fixed-shape field, update the
     ;; payload slot as well as the dynamic sidecar below. Otherwise bracket
     ;; writes and later dot reads can diverge.

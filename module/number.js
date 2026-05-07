@@ -17,7 +17,7 @@ import { inc, PTR } from '../src/ctx.js'
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __mkstr: ['__alloc'],
-    __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str'],
+    __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __to_num: ['__char_at', '__str_byteLen', '__pow10'],
     __to_bigint: ['__char_at', '__str_byteLen'],
@@ -86,6 +86,17 @@ export default (ctx) => {
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
+    ;; ES spec: |x| >= 1e21 or 0 < |x| < 1e-6 → exponential notation (default mode only).
+    ;; Cap prec at 9: mantissa fits i32, avoiding trunc_f64_u trap. Fewer digits than
+    ;; ECMAScript shortest-repr ideal, but valid output for very large/small numbers.
+    (if (i32.eqz (local.get $mode))
+      (then
+        (if (f64.ge (f64.abs (local.get $val)) (f64.const 1e21))
+          (then (return (call $__toExp (local.get $val) (i32.const 9)))))
+        (if (i32.and
+              (f64.gt (f64.abs (local.get $val)) (f64.const 0))
+              (f64.lt (f64.abs (local.get $val)) (f64.const 1e-6)))
+          (then (return (call $__toExp (local.get $val) (i32.const 9)))))))
     (local.set $buf (call $__alloc (i32.const 40)))
     ;; Sign
     (if (f64.lt (local.get $val) (f64.const 0))

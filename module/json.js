@@ -41,7 +41,8 @@ export default (ctx) => {
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
-    __jp_obj: ['__jp_val', '__jp_str', '__hash_new', '__hash_set_local', '__hash_set_local_h'],
+    __jp_obj: ['__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr'],
+    __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr'],
   })
 
   // Emit a compile-time-known JSON value tree.
@@ -264,6 +265,17 @@ export default (ctx) => {
   // and skips the redundant __str_hash call inside the generic insert. 0 is a
   // sentinel meaning "string had escapes — recompute via __str_hash".
   ctx.scope.globals.set('__jp_keyh', '(global $__jp_keyh (mut i32) (i32.const 0))')
+  // Runtime schema infrastructure. __schema_next points at the first free slot
+  // in $__schema_tbl reserved for runtime registration; compile.js initializes
+  // it to ctx.schema.list.length when __jp_obj is included. The schema cache
+  // is a 64-entry open-addressed hash on key-sequence FNV — repeated parses of
+  // the same shape reuse a previously-registered sid, so __jp_obj allocates a
+  // fresh-shape OBJECT once and converts to slot stores thereafter (skipping
+  // every __hash_set_local). Cache slot layout: i32 hash, i32 sid (8 bytes).
+  // Hash 0 = empty slot; we bump <=1 to 2 like __str_hash to avoid sentinel
+  // collision with valid hashes.
+  ctx.scope.globals.set('__schema_next', '(global $__schema_next (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__schema_cache', '(global $__schema_cache (mut i32) (i32.const 0))')
 
   // Sentinel-driven peek: __jp copies input to a scratch buffer with 0xFF bytes
   // appended past the end. i32.load8_s sign-extends, so the sentinel reads as -1
@@ -448,65 +460,146 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
 
-  // Parse object → HASH (dynamic string-keyed object).
-  // __jp_str folds FNV-1a into its scan and stashes the hash in $__jp_keyh.
-  // The fresh-table inline insert path skips function-call overhead, type
-  // guards, growth checks, and key-equality compares: __hash_new returns a
-  // cap-8 table, and parser inserts are always-new with low collision rates,
-  // so we just probe to an empty slot and store. Beyond the 75% threshold
-  // (size ≥ 6) we fall back to __hash_set_local_h which handles growth.
+  // Schema cache lookup/register. Cache is a 64-entry open-addressed table
+  // keyed by FNV of (key1_hash, key2_hash, ..., n). On hit, sid is reused
+  // and the OBJECT is allocated with that schemaId so subsequent property
+  // accesses go through the slot fast path. On miss, register a new schema
+  // by allocating a jz Array of key STRINGs and storing it in $__schema_tbl
+  // at the next free slot. Allocated lazily on first call.
+  //
+  // kbuf layout: 16 bytes per entry — [key:i64][val:i64]. n entries at $kbuf.
+  // Returns sid (i32). Caller materializes OBJECT with given sid + values.
+  ctx.core.stdlib['__jp_schema_get'] = `(func $__jp_schema_get (param $kbuf i32) (param $n i32) (param $hh i32) (result i32)
+    (local $cache i32) (local $idx i32) (local $entry i32) (local $eh i32) (local $sid i32)
+    (local $karr i32) (local $karr_off i32) (local $i i32) (local $tries i32)
+    (local.set $cache (global.get $__schema_cache))
+    ;; Lazy-init cache: 64 entries × 8 bytes = 512 bytes, zero-filled by alloc.
+    (if (i32.eqz (local.get $cache))
+      (then
+        (local.set $cache (call $__alloc (i32.const 512)))
+        (global.set $__schema_cache (local.get $cache))))
+    (local.set $idx (i32.and (local.get $hh) (i32.const 63)))
+    (block $found (block $miss (loop $probe
+      (local.set $entry (i32.add (local.get $cache) (i32.shl (local.get $idx) (i32.const 3))))
+      (local.set $eh (i32.load (local.get $entry)))
+      (br_if $miss (i32.eqz (local.get $eh)))
+      (if (i32.eq (local.get $eh) (local.get $hh))
+        (then
+          (local.set $sid (i32.load (i32.add (local.get $entry) (i32.const 4))))
+          ;; Verify by comparing key i64s against schema_tbl[sid]'s key array.
+          (local.set $karr (i32.wrap_i64 (i64.and
+            (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))
+            (i64.const ${LAYOUT.OFFSET_MASK}))))
+          (if (i32.eq (i32.load (i32.sub (local.get $karr) (i32.const 8))) (local.get $n))
+            (then
+              (local.set $i (i32.const 0))
+              (block $eq (block $neq (loop $cmp
+                (br_if $eq (i32.ge_s (local.get $i) (local.get $n)))
+                (br_if $neq (i64.ne
+                  (i64.load (i32.add (local.get $karr) (i32.shl (local.get $i) (i32.const 3))))
+                  (i64.load (i32.add (local.get $kbuf) (i32.shl (local.get $i) (i32.const 4))))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $cmp)))
+                (br $found)))))
+        ;; Hash collision or length mismatch — keep probing.
+      )
+      (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
+      (br_if $miss (i32.ge_s (local.get $tries) (i32.const 64)))
+      (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.const 63)))
+      (br $probe)))
+      ;; miss: register new schema.
+      (local.set $sid (global.get $__schema_next))
+      (global.set $__schema_next (i32.add (local.get $sid) (i32.const 1)))
+      ;; Allocate jz Array of n keys. __alloc_hdr(len, cap, stride) returns base
+      ;; of slot region with len@-8 and cap@-4. The schema dispatch arm reads
+      ;; nkeys from -8, so len must equal cap=n.
+      (local.set $karr (call $__alloc_hdr (local.get $n) (local.get $n) (i32.const 8)))
+      (local.set $i (i32.const 0))
+      (block $cd (loop $cl
+        (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
+        (i64.store
+          (i32.add (local.get $karr) (i32.shl (local.get $i) (i32.const 3)))
+          (i64.load (i32.add (local.get $kbuf) (i32.shl (local.get $i) (i32.const 4)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $cl)))
+      ;; Store ARRAY ptr in schema table at sid.
+      (i64.store
+        (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))
+        (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $karr))))
+      ;; Insert into cache at probe position.
+      (i32.store (local.get $entry) (local.get $hh))
+      (i32.store (i32.add (local.get $entry) (i32.const 4)) (local.get $sid)))
+    (local.get $sid))`
+
+  // Parse object → OBJECT (schema-tagged, slot-based) when key sequence has a
+  // cached/registerable shape; falls back to HASH only on extreme key counts.
+  // Builds a transient (key, val) buffer during parse, then resolves a sid via
+  // the runtime schema cache, allocs an OBJECT, and copies values into slots.
+  // Walk-side `obj.prop` accesses then route through the OBJECT fast path
+  // (slot load) instead of the dispatcher → __hash_get_local chain.
   ctx.core.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
-    (local $obj f64) (local $key i64) (local $val i64) (local $h i32) (local $ch i32)
-    (local $off i32) (local $cap i32) (local $size i32) (local $idx i32) (local $slot i32)
-    (local.set $obj (call $__hash_new))
+    (local $kbuf i32) (local $kn i32) (local $kcap i32) (local $hh i32)
+    (local $key i64) (local $val i64) (local $h i32) (local $ch i32)
+    (local $sid i32) (local $obj i32) (local $i i32) (local $newbuf i32)
+    (local.set $kcap (i32.const 8))
+    (local.set $kbuf (call $__alloc (i32.shl (local.get $kcap) (i32.const 4))))
+    (local.set $hh (i32.const 0x811c9dc5))
     ${WS()}
+    ;; Empty object — alloc an empty OBJECT with sid 0 (schema slot 0 may be
+    ;; empty/unused; downstream Object.keys handles 0-length names array).
     (if (i32.eq ${PEEK} (i32.const 125))
-      (then ${ADV(1)} (return (local.get $obj))))
-    (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $obj)) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (then ${ADV(1)}
+        (local.set $sid (call $__jp_schema_get (local.get $kbuf) (i32.const 0) (local.get $hh)))
+        (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid)
+          (call $__alloc_hdr (i32.const 0) (i32.const 1) (i32.const 8))))))
     (block $d (loop $l
       ${WS()}
       (if (i32.eq ${PEEK} (i32.const 34))
         (then ${ADV(1)}))
       (local.set $key (i64.reinterpret_f64 (call $__jp_str)))
       (local.set $h (global.get $__jp_keyh))
+      ;; Mix key hash into running sequence hash. Escape-bearing keys (h=0)
+      ;; still mix; identical key sequences differing only by escapes will
+      ;; collide here, but the verify-step in __jp_schema_get rejects via
+      ;; i64.ne on the actual key bytes.
+      (local.set $hh (i32.mul (i32.xor (local.get $hh) (local.get $h)) (i32.const 0x01000193)))
       ${WS()}
       (if (i32.eq ${PEEK} (i32.const 58))
         (then ${ADV(1)}))
       ${WS()}
       (local.set $val (i64.reinterpret_f64 (call $__jp_val)))
-      (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-      ;; Fast path: hash known, load factor < 75%, never grows. Probe → store.
-      (if (i32.and (local.get $h)
-            (i32.lt_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
+      ;; Grow kbuf if at capacity.
+      (if (i32.ge_s (local.get $kn) (local.get $kcap))
         (then
-          (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
-          (block $iend (loop $iprobe
-            (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const 24))))
-            (br_if $iend (i64.eqz (i64.load (local.get $slot))))
-            (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
-            (br $iprobe)))
-          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
-          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))
-          (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
-          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $size) (i32.const 1))))
-        (else
-          ;; Slow path: hash sentinel 0 (escape) or table full → growth-aware insert.
-          (if (local.get $h)
-            (then
-              (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local_h (i64.reinterpret_f64 (local.get $obj)) (local.get $key) (local.get $h) (local.get $val)))))
-            (else
-              (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local (i64.reinterpret_f64 (local.get $obj)) (local.get $key) (local.get $val))))))
-          ;; Refresh off/cap in case growth reallocated the table.
-          (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $obj)) (i64.const ${LAYOUT.OFFSET_MASK}))))
-          (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+          (local.set $kcap (i32.shl (local.get $kcap) (i32.const 1)))
+          (local.set $newbuf (call $__alloc (i32.shl (local.get $kcap) (i32.const 4))))
+          (memory.copy (local.get $newbuf) (local.get $kbuf) (i32.shl (local.get $kn) (i32.const 4)))
+          (local.set $kbuf (local.get $newbuf))))
+      ;; Append (key, val).
+      (i64.store (i32.add (local.get $kbuf) (i32.shl (local.get $kn) (i32.const 4))) (local.get $key))
+      (i64.store (i32.add (local.get $kbuf) (i32.add (i32.shl (local.get $kn) (i32.const 4)) (i32.const 8))) (local.get $val))
+      (local.set $kn (i32.add (local.get $kn) (i32.const 1)))
       ${WS()}
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
       (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)}))
       (br $l)))
     ${ADV(1)}
-    (local.get $obj))`
+    ;; Resolve schema sid (cached or freshly registered).
+    (local.set $sid (call $__jp_schema_get (local.get $kbuf) (local.get $kn) (local.get $hh)))
+    ;; Allocate OBJECT slot region: kn × 8 bytes, with header (size at -8,
+    ;; cap at -4) matching the static-fold path's emitJsonConstValue layout.
+    (local.set $obj (call $__alloc_hdr (i32.const 0) (local.get $kn) (i32.const 8)))
+    ;; Copy values into OBJECT slots.
+    (local.set $i (i32.const 0))
+    (block $vd (loop $vl
+      (br_if $vd (i32.ge_s (local.get $i) (local.get $kn)))
+      (i64.store
+        (i32.add (local.get $obj) (i32.shl (local.get $i) (i32.const 3)))
+        (i64.load (i32.add (local.get $kbuf) (i32.add (i32.shl (local.get $i) (i32.const 4)) (i32.const 8)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $vl)))
+    (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $obj)))`
 
   // Main value dispatcher
   ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)

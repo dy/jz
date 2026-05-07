@@ -576,10 +576,10 @@ test('?? triggers on null/undefined', () => {
   is(r.exports.f(10), 10)
 })
 
-test('default params trigger on null/undefined', () => {
+test('default params trigger only on undefined (per ES spec)', () => {
   const r = jz('export let f = (x = 99) => x')
   is(r.exports.f(), 99)
-  is(r.exports.f(null), 99)
+  is(r.exports.f(null), null)
   is(r.exports.f(undefined), 99)
   is(r.exports.f(5), 5)
 })

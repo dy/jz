@@ -187,6 +187,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.exp'] = `(func $math.exp (param $x f64) (result f64)
     (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $pow2 f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (if (result f64) (f64.gt (local.get $x) (f64.const 709.0)) (then (f64.const 1.7976931348623157e+308)) (else
       (if (result f64) (f64.lt (local.get $x) (f64.const -745.0)) (then (f64.const 0.0)) (else
         (local.set $k (i32.trunc_f64_s (f64.div (local.get $x) (f64.const ${Math.LN2}))))
@@ -264,42 +265,59 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.pow'] = `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)
-    (if (result f64) (f64.eq (local.get $y) (f64.const 0.0))
-      (then (f64.const 1.0))
-      (else (if (result f64) (f64.eq (local.get $x) (f64.const 0.0))
-        (then (f64.const 0.0))
-        (else (if (result f64) (f64.eq (local.get $x) (f64.const 1.0))
-          (then (f64.const 1.0))
-          (else (if (result f64) (f64.eq (local.get $y) (f64.const 1.0))
-            (then (local.get $x))
-            (else
-              (if (result f64)
-                (i32.and
-                  (f64.eq (f64.nearest (local.get $y)) (local.get $y))
-                  (f64.le (f64.abs (local.get $y)) (f64.const 100.0)))
-                (then
-                  (local.set $abs_x (f64.abs (local.get $x)))
-                  (local.set $neg_base (i32.and (f64.lt (local.get $x) (f64.const 0.0))
-                                                (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
-                  (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
-                  (local.set $result (f64.const 1.0))
-                  (block $done
-                    (loop $loop
-                      (br_if $done (i32.le_s (local.get $n) (i32.const 0)))
-                      (if (i32.and (local.get $n) (i32.const 1))
-                        (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
-                      (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
-                      (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
-                      (br $loop)))
-                  (if (f64.lt (local.get $y) (f64.const 0.0))
-                    (then (local.set $result (f64.div (f64.const 1.0) (local.get $result)))))
-                  (if (local.get $neg_base)
-                    (then (local.set $result (f64.neg (local.get $result)))))
-                  (local.get $result))
-                (else
-                  (if (result f64) (f64.lt (local.get $x) (f64.const 0.0))
-                    (then (f64.const 0.0))
-                    (else (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))))))))))))))`
+    ;; y == 0 -> 1 (covers pow(NaN,0), pow(±0,0), pow(±Inf,0))
+    (if (f64.eq (local.get $y) (f64.const 0.0)) (then (return (f64.const 1.0))))
+    ;; y is NaN -> NaN
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
+    ;; x is NaN -> NaN
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    ;; y is ±Infinity
+    (if (f64.eq (f64.abs (local.get $y)) (f64.const inf))
+      (then
+        (local.set $abs_x (f64.abs (local.get $x)))
+        (if (f64.eq (local.get $abs_x) (f64.const 1.0))
+          (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))
+        (if (i32.eq (f64.gt (local.get $abs_x) (f64.const 1.0))
+                    (f64.gt (local.get $y) (f64.const 0.0)))
+          (then (return (f64.const inf)))
+          (else (return (f64.const 0.0))))))
+    ;; x == 0 -> y<0 ? Infinity : 0
+    (if (f64.eq (local.get $x) (f64.const 0.0))
+      (then
+        (if (f64.lt (local.get $y) (f64.const 0.0))
+          (then (return (f64.const inf)))
+          (else (return (f64.const 0.0))))))
+    ;; x == 1 -> 1 (after y=±Inf check, so 1**Inf already returned NaN)
+    (if (f64.eq (local.get $x) (f64.const 1.0)) (then (return (f64.const 1.0))))
+    ;; y == 1 -> x
+    (if (f64.eq (local.get $y) (f64.const 1.0)) (then (return (local.get $x))))
+    ;; integer fast path: y integer, |y| <= 100
+    (if (i32.and
+          (f64.eq (f64.nearest (local.get $y)) (local.get $y))
+          (f64.le (f64.abs (local.get $y)) (f64.const 100.0)))
+      (then
+        (local.set $abs_x (f64.abs (local.get $x)))
+        (local.set $neg_base (i32.and (f64.lt (local.get $x) (f64.const 0.0))
+                                      (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
+        (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
+        (local.set $result (f64.const 1.0))
+        (block $done
+          (loop $loop
+            (br_if $done (i32.le_s (local.get $n) (i32.const 0)))
+            (if (i32.and (local.get $n) (i32.const 1))
+              (then (local.set $result (f64.mul (local.get $result) (local.get $abs_x)))))
+            (local.set $abs_x (f64.mul (local.get $abs_x) (local.get $abs_x)))
+            (local.set $n (i32.shr_s (local.get $n) (i32.const 1)))
+            (br $loop)))
+        (if (f64.lt (local.get $y) (f64.const 0.0))
+          (then (local.set $result (f64.div (f64.const 1.0) (local.get $result)))))
+        (if (local.get $neg_base)
+          (then (local.set $result (f64.neg (local.get $result)))))
+        (return (local.get $result))))
+    ;; x < 0, non-integer finite y -> NaN
+    (if (f64.lt (local.get $x) (f64.const 0.0))
+      (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))
+    (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`
 
   ctx.core.stdlib['math.atan'] = `(func $math.atan (param $x f64) (result f64)
     (local $x2 f64) (local $abs_x f64) (local $reduced f64)
