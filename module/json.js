@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, tempI32, nullExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, nullExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -59,7 +59,7 @@ export default (ctx) => {
   // routed through the same recognizer; for now we always alloc fresh per
   // call to preserve `JSON.parse(SRC); a.x = 7; b.x === original` semantics.
   function emitJsonConstValue(v) {
-    if (v == null) return asF64(emit(nullExpr))
+    if (v == null) return nullExpr()
     if (typeof v === 'number') return asF64(emit(v))
     if (typeof v === 'string') return asF64(emit(['str', v]))
     if (typeof v === 'boolean') return asF64(emit(v ? 1 : 0))
@@ -620,8 +620,8 @@ export default (ctx) => {
     (if (i32.eq (local.get $ch) (i32.const 102))
       (then ${ADV(5)} (return (f64.const 0))))
     (if (i32.eq (local.get $ch) (i32.const 110))
-      (then ${ADV(4)} (return (f64.const 0))))
-    (f64.const 0))`
+      (then ${ADV(4)} (return ${NULL_WAT})))
+    ${NULL_WAT})`
 
   // Entry point — copies input to a scratch buffer with 0xFF sentinel padding
   // past the end so __jp_peek can omit its bounds check. Pad is 8 bytes so any
