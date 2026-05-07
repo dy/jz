@@ -17,15 +17,13 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** – fast, portable and long-lasting. JZ distills the modern functional core – the "good parts" [Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk) – from legacy semantics, features overhead and perf quirks.
+**Write plain JS, compile to WASM** – fast, portable and long-lasting.<br>
+JZ distills the modern functional core – the "good parts" ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) – from legacy semantics, features overhead and perf quirks.
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
 * **Minimal** — output is close to hand-written WAT.
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
-
-Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
-<!-- Used internally by: web-audio-api, color-space, audiojs -->
 
 | Good for                    | Not for                    |
 |-----------------------------|----------------------------|
@@ -33,6 +31,9 @@ Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https:/
 | DSP / audio / bytebeats     | Backend / APIs             |
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
+
+Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+<!-- Used internally by: web-audio-api, color-space, audiojs -->
 
 
 ## Usage
