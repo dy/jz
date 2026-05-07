@@ -36,11 +36,12 @@ export default (ctx) => {
     __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
-    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
+    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
+    __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
-    __jp_obj: ['__jp_val', '__hash_new', '__hash_set_local'],
+    __jp_obj: ['__jp_val', '__jp_str', '__hash_new', '__hash_set_local', '__hash_set_local_h'],
   })
 
   // Emit a compile-time-known JSON value tree.
@@ -258,61 +259,78 @@ export default (ctx) => {
   ctx.scope.globals.set('__jpstr', '(global $__jpstr (mut i32) (i32.const 0))')  // input string offset
   ctx.scope.globals.set('__jplen', '(global $__jplen (mut i32) (i32.const 0))')  // input length
   ctx.scope.globals.set('__jppos', '(global $__jppos (mut i32) (i32.const 0))')  // current parse position
+  // Side-channel hash for the most-recently-parsed string. __jp_str folds an
+  // FNV-1a pass into its scan loop; __jp_obj forwards it to __hash_set_local_h
+  // and skips the redundant __str_hash call inside the generic insert. 0 is a
+  // sentinel meaning "string had escapes — recompute via __str_hash".
+  ctx.scope.globals.set('__jp_keyh', '(global $__jp_keyh (mut i32) (i32.const 0))')
 
   // Sentinel-driven peek: __jp copies input to a scratch buffer with 0xFF bytes
   // appended past the end. i32.load8_s sign-extends, so the sentinel reads as -1
-  // — exactly the EOF value all callers already test for. Bounds check and
-  // function-call overhead both gone; ~50 calls/parse char in well-formed JSON.
-  ctx.core.stdlib['__jp_peek'] = `(func $__jp_peek (result i32)
-    (i32.load8_s (i32.add (global.get $__jpstr) (global.get $__jppos))))`
+  // — exactly the EOF value all callers already test for. Inlined into every
+  // parser body via PEEK/ADV string templates; the per-char function-call
+  // overhead (~50 calls/char in well-formed JSON) was the dominant cost.
+  const PEEK = `(i32.load8_s (i32.add (global.get $__jpstr) (global.get $__jppos)))`
+  const ADV = (n) => `(global.set $__jppos (i32.add (global.get $__jppos) (i32.const ${n})))`
 
-  ctx.core.stdlib['__jp_adv'] = `(func $__jp_adv (param $n i32)
-    (global.set $__jppos (i32.add (global.get $__jppos) (local.get $n))))`
+  // Whitespace skip — inlined at every call site as a tight loop. Compact
+  // JSON often has zero whitespace between tokens, so the dominant case is
+  // a single peek + break. WS chars (9/10/13/32) all fit in [0..32]; we
+  // exit on anything > 32 unsigned. The sentinel byte (PEEK returns -1
+  // sign-extended) is 0xFFFFFFFF unsigned — > 32 — so the same check
+  // handles EOF without a separate guard. Other control chars in [0..8],
+  // [11..12], [14..31] would be falsely consumed as WS, but those aren't
+  // valid in well-formed JSON anyway.
+  let WS_ID = 0
+  const WS = () => {
+    const id = WS_ID++
+    return `(block $jpws_d${id} (loop $jpws_l${id}
+      (br_if $jpws_d${id} (i32.gt_u ${PEEK} (i32.const 32)))
+      ${ADV(1)}
+      (br $jpws_l${id})))`
+  }
 
-  ctx.core.stdlib['__jp_ws'] = `(func $__jp_ws
-    (local $ch i32)
-    (block $d (loop $l
-      (local.set $ch (call $__jp_peek))
-      (br_if $d (i32.and (i32.ne (local.get $ch) (i32.const 32))
-        (i32.and (i32.ne (local.get $ch) (i32.const 9))
-          (i32.and (i32.ne (local.get $ch) (i32.const 10))
-            (i32.ne (local.get $ch) (i32.const 13))))))
-      (call $__jp_adv (i32.const 1))
-      (br $l))))`
-
-  // Parse string (after opening " consumed). Two-phase: scan to closing quote
-  // tracking whether all chars are simple ASCII (no escapes, no high-bit), then
-  // either pack into SSO (≤4 simple chars) or heap-alloc + escape-decode.
+  // Parse string (after opening " consumed). Single-pass scan that folds three
+  // concerns into one byte loop: simplicity flag (no escapes / no high-bit),
+  // SSO byte packing for ≤4-char ASCII keys, and FNV-1a hash. The hash is
+  // stashed in $__jp_keyh so __jp_obj can use the prehashed insert and skip
+  // a redundant __str_hash call.
   ctx.core.stdlib['__jp_str'] = `(func $__jp_str (result f64)
-    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32)
+    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32) (local $h i32)
     (local.set $start (global.get $__jppos))
     (local.set $simple (i32.const 1))
+    (local.set $h (i32.const 0x811c9dc5))
     (block $d (loop $l
-      (local.set $ch (call $__jp_peek))
+      (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 34)))
       (br_if $d (i32.eq (local.get $ch) (i32.const -1)))
       ;; Mark non-simple: escape (\\=92) or non-ASCII (load8_s gives <0 for byte≥128).
       (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_s (local.get $ch) (i32.const 0)))
         (then (local.set $simple (i32.const 0))))
       (if (i32.eq (local.get $ch) (i32.const 92))
-        (then (call $__jp_adv (i32.const 2)))
-        (else (call $__jp_adv (i32.const 1))))
+        (then ${ADV(2)})
+        (else
+          ;; Pack first 4 bytes into SSO slot (used only when len ≤ 4).
+          (if (i32.lt_u (local.get $len) (i32.const 4))
+            (then (local.set $sso
+              (i32.or (local.get $sso)
+                (i32.shl (i32.and (local.get $ch) (i32.const 0xFF))
+                  (i32.shl (local.get $len) (i32.const 3)))))))
+          (local.set $h (i32.mul (i32.xor (local.get $h) (i32.and (local.get $ch) (i32.const 0xFF))) (i32.const 0x01000193)))
+          (local.set $len (i32.add (local.get $len) (i32.const 1)))
+          ${ADV(1)}))
       (br $l)))
-    (local.set $len (i32.sub (global.get $__jppos) (local.get $start)))
-    (call $__jp_adv (i32.const 1))  ;; skip "
-    ;; SSO fast path: ≤4 ASCII chars, no escapes — pack bytes into the offset slot,
-    ;; skip alloc + memcopy entirely. The dominant case for object keys (id/kind/meta/bias).
+    ;; Stash hash. 0/1 bumped to 2 to match __str_hash convention; escape strings
+    ;; (simple==0) get sentinel 0 so __jp_obj falls back to non-prehashed insert.
+    (global.set $__jp_keyh
+      (if (result i32) (local.get $simple)
+        (then (if (result i32) (i32.le_s (local.get $h) (i32.const 1))
+          (then (i32.add (local.get $h) (i32.const 2))) (else (local.get $h))))
+        (else (i32.const 0))))
+    ${ADV(1)}  ;; skip "
+    ;; SSO fast path: ≤4 ASCII chars, no escapes — bytes already packed inline.
     (if (i32.and (local.get $simple) (i32.le_u (local.get $len) (i32.const 4)))
       (then
-        (local.set $i (i32.const 0))
-        (block $sd (loop $sl
-          (br_if $sd (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $sso
-            (i32.or (local.get $sso)
-              (i32.shl (i32.load8_u (i32.add (i32.add (global.get $__jpstr) (local.get $start)) (local.get $i)))
-                       (i32.shl (local.get $i) (i32.const 3)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $sl)))
         (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $sso)))))
     ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
     ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
@@ -330,25 +348,25 @@ export default (ctx) => {
     (global.set $__jppos (local.get $start))  ;; rewind to re-scan
     (local.set $len (i32.const 0))  ;; actual output length
     (block $d2 (loop $l2
-      (local.set $ch (call $__jp_peek))
+      (local.set $ch ${PEEK})
       (br_if $d2 (i32.eq (local.get $ch) (i32.const 34)))
       (br_if $d2 (i32.eq (local.get $ch) (i32.const -1)))
       (if (i32.eq (local.get $ch) (i32.const 92))
         (then
-          (call $__jp_adv (i32.const 1))
-          (local.set $ch (call $__jp_peek))
-          (call $__jp_adv (i32.const 1))
+          ${ADV(1)}
+          (local.set $ch ${PEEK})
+          ${ADV(1)}
           ;; Decode escape: n→10 t→9 r→13 b→8 f→12, else literal
           (if (i32.eq (local.get $ch) (i32.const 110)) (then (local.set $ch (i32.const 10))))
           (if (i32.eq (local.get $ch) (i32.const 116)) (then (local.set $ch (i32.const 9))))
           (if (i32.eq (local.get $ch) (i32.const 114)) (then (local.set $ch (i32.const 13))))
           (if (i32.eq (local.get $ch) (i32.const 98))  (then (local.set $ch (i32.const 8))))
           (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))))
-        (else (call $__jp_adv (i32.const 1))))
+        (else ${ADV(1)}))
       (i32.store8 (i32.add (local.get $off) (local.get $len)) (local.get $ch))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
       (br $l2)))
-    (call $__jp_adv (i32.const 1))  ;; skip closing "
+    ${ADV(1)}  ;; skip closing "
     ;; Store actual length in header
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $len))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
@@ -357,37 +375,37 @@ export default (ctx) => {
   ctx.core.stdlib['__jp_num'] = `(func $__jp_num (result f64)
     (local $neg i32) (local $val f64) (local $scale f64) (local $ch i32)
     (local $exp i32) (local $expNeg i32)
-    (if (i32.eq (call $__jp_peek) (i32.const 45))
-      (then (local.set $neg (i32.const 1)) (call $__jp_adv (i32.const 1))))
+    (if (i32.eq ${PEEK} (i32.const 45))
+      (then (local.set $neg (i32.const 1)) ${ADV(1)}))
     (block $d (loop $l
-      (local.set $ch (call $__jp_peek))
+      (local.set $ch ${PEEK})
       (br_if $d (i32.or (i32.lt_s (local.get $ch) (i32.const 48)) (i32.gt_s (local.get $ch) (i32.const 57))))
       (local.set $val (f64.add (f64.mul (local.get $val) (f64.const 10))
         (f64.convert_i32_s (i32.sub (local.get $ch) (i32.const 48)))))
-      (call $__jp_adv (i32.const 1)) (br $l)))
-    (if (i32.eq (call $__jp_peek) (i32.const 46))
+      ${ADV(1)} (br $l)))
+    (if (i32.eq ${PEEK} (i32.const 46))
       (then
-        (call $__jp_adv (i32.const 1))
+        ${ADV(1)}
         (local.set $scale (f64.const 0.1))
         (block $fd (loop $fl
-          (local.set $ch (call $__jp_peek))
+          (local.set $ch ${PEEK})
           (br_if $fd (i32.or (i32.lt_s (local.get $ch) (i32.const 48)) (i32.gt_s (local.get $ch) (i32.const 57))))
           (local.set $val (f64.add (local.get $val)
             (f64.mul (local.get $scale) (f64.convert_i32_s (i32.sub (local.get $ch) (i32.const 48))))))
           (local.set $scale (f64.mul (local.get $scale) (f64.const 0.1)))
-          (call $__jp_adv (i32.const 1)) (br $fl)))))
-    (if (i32.or (i32.eq (call $__jp_peek) (i32.const 101)) (i32.eq (call $__jp_peek) (i32.const 69)))
+          ${ADV(1)} (br $fl)))))
+    (if (i32.or (i32.eq ${PEEK} (i32.const 101)) (i32.eq ${PEEK} (i32.const 69)))
       (then
-        (call $__jp_adv (i32.const 1))
-        (if (i32.eq (call $__jp_peek) (i32.const 45))
-          (then (local.set $expNeg (i32.const 1)) (call $__jp_adv (i32.const 1)))
-        (else (if (i32.eq (call $__jp_peek) (i32.const 43))
-          (then (call $__jp_adv (i32.const 1))))))
+        ${ADV(1)}
+        (if (i32.eq ${PEEK} (i32.const 45))
+          (then (local.set $expNeg (i32.const 1)) ${ADV(1)})
+        (else (if (i32.eq ${PEEK} (i32.const 43))
+          (then ${ADV(1)}))))
         (block $ed (loop $el
-          (local.set $ch (call $__jp_peek))
+          (local.set $ch ${PEEK})
           (br_if $ed (i32.or (i32.lt_s (local.get $ch) (i32.const 48)) (i32.gt_s (local.get $ch) (i32.const 57))))
           (local.set $exp (i32.add (i32.mul (local.get $exp) (i32.const 10)) (i32.sub (local.get $ch) (i32.const 48))))
-          (call $__jp_adv (i32.const 1)) (br $el)))
+          ${ADV(1)} (br $el)))
         (if (local.get $expNeg) (then (local.set $exp (i32.sub (i32.const 0) (local.get $exp)))))
         (local.set $val (f64.mul (local.get $val) (call $__pow10
           (if (result i32) (i32.lt_s (local.get $exp) (i32.const 0))
@@ -402,14 +420,14 @@ export default (ctx) => {
     (local.set $cap (i32.const 8))
     (local.set $ptr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $cap) (i32.const 3)))))
     (local.set $ptr (i32.add (local.get $ptr) (i32.const 8)))
-    (call $__jp_ws)
-    (if (i32.eq (call $__jp_peek) (i32.const 93))
-      (then (call $__jp_adv (i32.const 1))
+    ${WS()}
+    (if (i32.eq ${PEEK} (i32.const 93))
+      (then ${ADV(1)}
         (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (i32.const 0))
         (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))))
     (block $d (loop $l
-      (call $__jp_ws)
+      ${WS()}
       ;; Grow if needed
       (if (i32.ge_s (local.get $len) (local.get $cap))
         (then
@@ -420,61 +438,96 @@ export default (ctx) => {
           (local.set $ptr (local.get $new))))
       (f64.store (i32.add (local.get $ptr) (i32.shl (local.get $len) (i32.const 3))) (call $__jp_val))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
-      (call $__jp_ws)
-      (local.set $ch (call $__jp_peek))
+      ${WS()}
+      (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 93)))
-      (if (i32.eq (local.get $ch) (i32.const 44)) (then (call $__jp_adv (i32.const 1))))
+      (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)}))
       (br $l)))
-    (call $__jp_adv (i32.const 1))
+    ${ADV(1)}
     (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (local.get $len))
     (i32.store (i32.sub (local.get $ptr) (i32.const 4)) (local.get $cap))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
 
-  // Parse object → HASH (dynamic string-keyed object)
+  // Parse object → HASH (dynamic string-keyed object).
+  // __jp_str folds FNV-1a into its scan and stashes the hash in $__jp_keyh.
+  // The fresh-table inline insert path skips function-call overhead, type
+  // guards, growth checks, and key-equality compares: __hash_new returns a
+  // cap-8 table, and parser inserts are always-new with low collision rates,
+  // so we just probe to an empty slot and store. Beyond the 75% threshold
+  // (size ≥ 6) we fall back to __hash_set_local_h which handles growth.
   ctx.core.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
-    (local $obj f64) (local $key f64) (local $ch i32)
+    (local $obj f64) (local $key i64) (local $val i64) (local $h i32) (local $ch i32)
+    (local $off i32) (local $cap i32) (local $size i32) (local $idx i32) (local $slot i32)
     (local.set $obj (call $__hash_new))
-    (call $__jp_ws)
-    (if (i32.eq (call $__jp_peek) (i32.const 125))
-      (then (call $__jp_adv (i32.const 1)) (return (local.get $obj))))
+    ${WS()}
+    (if (i32.eq ${PEEK} (i32.const 125))
+      (then ${ADV(1)} (return (local.get $obj))))
+    (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $obj)) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (block $d (loop $l
-      (call $__jp_ws)
-      (if (i32.eq (call $__jp_peek) (i32.const 34))
-        (then (call $__jp_adv (i32.const 1))))
-      (local.set $key (call $__jp_str))
-      (call $__jp_ws)
-      (if (i32.eq (call $__jp_peek) (i32.const 58))
-        (then (call $__jp_adv (i32.const 1))))
-      (call $__jp_ws)
-      (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (call $__jp_val)))))
-      (call $__jp_ws)
-      (local.set $ch (call $__jp_peek))
+      ${WS()}
+      (if (i32.eq ${PEEK} (i32.const 34))
+        (then ${ADV(1)}))
+      (local.set $key (i64.reinterpret_f64 (call $__jp_str)))
+      (local.set $h (global.get $__jp_keyh))
+      ${WS()}
+      (if (i32.eq ${PEEK} (i32.const 58))
+        (then ${ADV(1)}))
+      ${WS()}
+      (local.set $val (i64.reinterpret_f64 (call $__jp_val)))
+      (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+      ;; Fast path: hash known, load factor < 75%, never grows. Probe → store.
+      (if (i32.and (local.get $h)
+            (i32.lt_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3))))
+        (then
+          (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
+          (block $iend (loop $iprobe
+            (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $idx) (i32.const 24))))
+            (br_if $iend (i64.eqz (i64.load (local.get $slot))))
+            (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
+            (br $iprobe)))
+          (i64.store (local.get $slot) (i64.extend_i32_u (local.get $h)))
+          (i64.store (i32.add (local.get $slot) (i32.const 8)) (local.get $key))
+          (i64.store (i32.add (local.get $slot) (i32.const 16)) (local.get $val))
+          (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $size) (i32.const 1))))
+        (else
+          ;; Slow path: hash sentinel 0 (escape) or table full → growth-aware insert.
+          (if (local.get $h)
+            (then
+              (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local_h (i64.reinterpret_f64 (local.get $obj)) (local.get $key) (local.get $h) (local.get $val)))))
+            (else
+              (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local (i64.reinterpret_f64 (local.get $obj)) (local.get $key) (local.get $val))))))
+          ;; Refresh off/cap in case growth reallocated the table.
+          (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $obj)) (i64.const ${LAYOUT.OFFSET_MASK}))))
+          (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+      ${WS()}
+      (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
-      (if (i32.eq (local.get $ch) (i32.const 44)) (then (call $__jp_adv (i32.const 1))))
+      (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)}))
       (br $l)))
-    (call $__jp_adv (i32.const 1))
+    ${ADV(1)}
     (local.get $obj))`
 
   // Main value dispatcher
   ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)
     (local $ch i32)
-    (call $__jp_ws)
-    (local.set $ch (call $__jp_peek))
+    ${WS()}
+    (local.set $ch ${PEEK})
     (if (i32.eq (local.get $ch) (i32.const 34))
-      (then (call $__jp_adv (i32.const 1)) (return (call $__jp_str))))
+      (then ${ADV(1)} (return (call $__jp_str))))
     (if (i32.eq (local.get $ch) (i32.const 91))
-      (then (call $__jp_adv (i32.const 1)) (return (call $__jp_arr))))
+      (then ${ADV(1)} (return (call $__jp_arr))))
     (if (i32.eq (local.get $ch) (i32.const 123))
-      (then (call $__jp_adv (i32.const 1)) (return (call $__jp_obj))))
+      (then ${ADV(1)} (return (call $__jp_obj))))
     (if (i32.or (i32.and (i32.ge_s (local.get $ch) (i32.const 48)) (i32.le_s (local.get $ch) (i32.const 57)))
                 (i32.eq (local.get $ch) (i32.const 45)))
       (then (return (call $__jp_num))))
     (if (i32.eq (local.get $ch) (i32.const 116))
-      (then (call $__jp_adv (i32.const 4)) (return (f64.const 1))))
+      (then ${ADV(4)} (return (f64.const 1))))
     (if (i32.eq (local.get $ch) (i32.const 102))
-      (then (call $__jp_adv (i32.const 5)) (return (f64.const 0))))
+      (then ${ADV(5)} (return (f64.const 0))))
     (if (i32.eq (local.get $ch) (i32.const 110))
-      (then (call $__jp_adv (i32.const 4)) (return (f64.const 0))))
+      (then ${ADV(4)} (return (f64.const 0))))
     (f64.const 0))`
 
   // Entry point — copies input to a scratch buffer with 0xFF sentinel padding
