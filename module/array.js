@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
@@ -610,6 +610,26 @@ export default (ctx) => {
       return typed(
         ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], ['i32.shl', vi, ['i32.const', 3]]]],
         'f64')
+    }
+    // HASH receiver with runtime string key: probe the HASH directly via
+    // __hash_get_local. Mirrors the literal-key path above but defers the
+    // hash computation to runtime. When the key's val-type is unknown at
+    // compile time, gate on __is_str_key — HASH has no numeric-key
+    // semantics, so non-string keys return undef.
+    if (vt === VAL.HASH) {
+      if (keyType === VAL.STRING) {
+        inc('__hash_get_local')
+        return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local', ['i64.reinterpret_f64', ptrExpr], asI64(emit(idx))]], 'f64')
+      }
+      if (useRuntimeKeyDispatch) {
+        inc('__hash_get_local', '__is_str_key')
+        const keyTmp = temp()
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${keyTmp}`, asF64(emit(idx))],
+          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
+            ['then', ['f64.reinterpret_i64', ['call', '$__hash_get_local', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]]]],
+            ['else', undefExpr()]]], 'f64')
+      }
     }
     // Known array → direct f64 element load, skip string check
     if (keyType === VAL.STRING)
