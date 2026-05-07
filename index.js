@@ -38,7 +38,7 @@
  * @module jz
  */
 
-import { parse } from 'subscript/jessie'
+import { parse } from 'subscript/feature/jessie'
 import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } from "watr";
 import { ctx, reset, err } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
@@ -46,7 +46,6 @@ import compile from './src/compile.js'
 import { emitter } from './src/emit.js'
 import { optimizeFunc, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
-import { normalizeSource } from './src/source.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './src/host.js'
@@ -158,7 +157,7 @@ jz.compile = (code, opts = {}) => {
     }
   }
 
-  let parsed = time('parse', () => parse(normalizeSource(code)))
+  let parsed = time('parse', () => parse(code))
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
   const module = time('compile', () => compile(ast, profiler))

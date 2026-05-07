@@ -3,7 +3,7 @@
 // before any codegen extension consumes it.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { parse } from 'subscript/jessie'
+import { parse } from 'subscript/feature/jessie'
 import prepare, { GLOBALS } from '../src/prepare.js'
 import { ctx, reset } from '../src/ctx.js'
 import { emitter } from '../src/emit.js'

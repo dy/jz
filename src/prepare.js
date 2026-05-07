@@ -22,11 +22,10 @@
  * @module prepare
  */
 
-import { parse } from 'subscript/jessie'
+import { parse } from 'subscript/feature/jessie'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
 import { isFuncRef } from './ir.js'
-import { normalizeSource } from './source.js'
 import {
   CTORS, TIMER_NAMES,
   hasModule, includeModule,
@@ -1503,7 +1502,7 @@ function prepareModule(specifier, source) {
   ctx.module.currentPrefix = prefix
 
   // Parse + prepare imported source (may trigger recursive imports)
-  let ast = parse(normalizeSource(source))
+  let ast = parse(source)
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   const savedDepth = depth; depth = 0
   const moduleInit = prep(ast)
