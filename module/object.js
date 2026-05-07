@@ -94,8 +94,10 @@ export default (ctx) => {
   ctx.core.emit['Object.keys'] = (obj) => {
     if (isHashTyped(obj)) return emitHashKeys(obj)
     const schema = resolveSchema(obj)
-    if (!schema) err('Object.keys requires object with known schema')
-    return emitStringArray(schema)
+    if (schema) return emitStringArray(schema)
+    // Receiver type unknown at compile time. Dispatch on ptr-type at
+    // runtime: HASH walks the probe table, anything else returns [].
+    return emitRuntimeKeys(obj)
   }
 
   ctx.core.emit['Object.values'] = (obj) => {
@@ -405,14 +407,23 @@ function isHashTyped(obj) {
 // slots and append occupied keys. Iteration order is hash-derived, matching
 // jz's `for-in` over HASH — not the JS spec's insertion order.
 function emitHashKeys(obj) {
+  const t = temp('hk')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    hashKeysFromTemp(t)], 'f64')
+}
+
+// Inline body of the HASH walk against an already-bound f64 local. Shared by
+// the static-HASH path and the runtime-dispatch path so both produce the same
+// IR shape from the same source — only difference is whether they enter from
+// a static type guard or a runtime ptr-type check.
+function hashKeysFromTemp(t) {
   inc('__ptr_offset', '__cap', '__len')
-  const va = asF64(emit(obj))
-  const t = temp('hk'), off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
+  const off = tempI32('hko'), cap = tempI32('hkc'), n = tempI32('hkn')
   const i = tempI32('hki'), o = tempI32('hkj'), slot = tempI32('hks')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
   const id = ctx.func.uniq++
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, va],
+  return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -430,5 +441,21 @@ function emitHashKeys(obj) {
           ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$loop${id}`]]],
-    out.ptr], 'f64')
+    out.ptr]
+}
+
+// Type-unknown receiver: bind the value, branch on ptr-type. HASH walks the
+// probe table; everything else (ARRAY, OBJECT-without-resolvable-schema,
+// nullish, primitives) returns an empty array. The empty-array fallback is
+// allocated in both arms for type uniformity at the if-result boundary.
+function emitRuntimeKeys(obj) {
+  inc('__ptr_type')
+  const t = temp('rk')
+  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rke' })
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    ['if', ['result', 'f64'],
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.HASH]],
+      ['then', hashKeysFromTemp(t)],
+      ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]], 'f64')
 }
