@@ -106,7 +106,7 @@ jz.memory = enhanceMemory
  *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
  *   into output; large size win for static programs.
  * @param {boolean} [opts.runtimeExports=true] - Export runtime allocator helpers
- *   (`_alloc`, `_reset`) for JS memory wrapping. Set false for standalone host-run
+ *   (`_alloc`, `_clear`) for JS memory wrapping. Set false for standalone host-run
  *   modules that only call exported wasm functions.
  * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
  *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).

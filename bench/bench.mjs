@@ -351,7 +351,9 @@ const targets = {
     name: 'Porffor',
     available: () => has(PORF_BIN),
     bin: flatPath,
-    run: c => tryRun('porf', c, () => writeFlat(c), [PORF_BIN, 'run', flatPath(c)]),
+    // --allocator-chunks=128 lifts the default 1 MB malloc budget so larger
+    // typed arrays (biquad: 3.84 MB, aos: 0.4 MB) don't OOB at runtime.
+    run: c => tryRun('porf', c, () => writeFlat(c), [PORF_BIN, '--allocator-chunks=128', 'run', flatPath(c)]),
   },
   jz: {
     name: 'jz → V8 wasm',

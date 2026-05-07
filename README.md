@@ -256,40 +256,39 @@ const { exports } = jz(mainSrc, { modules: {
 </details>
 
 <details>
-<summary><strong>Can I call JS/host functions from jz?</strong></summary>
+<summary><strong>How do I pass values from the host to jz?</strong></summary>
 
 <br>
 
-Yes — JS functions are wired at instantiation via the `imports` option:
+Any host namespace — functions, constants, custom objects — wires in via the `imports` option. jz extracts what's needed via `Object.getOwnPropertyNames`, so non-enumerable built-ins (`Math.sin`, `Date.now`) work automatically:
 
 ```js
+// Custom function
 const { exports } = jz(
   'import { log } from "host"; export let f = (x) => { log(x); return x }',
   { imports: { host: { log: console.log } } }
 )
-```
 
-You can also pass whole host environment objects — `Math`, `Date`, `window`, `console`, or any custom namespace object. jz extracts the functions it needs via `Object.getOwnPropertyNames`, so non-enumerable built-ins (like `Math.sin`) work automatically:
-
-```js
-// Pass the entire Math namespace — sin, cos, sqrt, PI, etc. auto-wired
+// Whole namespace — sin, cos, sqrt, PI, etc. all auto-wired
 const { exports } = jz(
   'import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
   { imports: { math: Math } }
 )
 
-// Pass Date static methods
+// Date static methods
 const { exports } = jz(
   'import { now } from "date"; export let f = () => now()',
   { imports: { date: Date } }
 )
 
-// Pass window / globalThis
+// window / globalThis
 const { exports } = jz(
   'import { parseInt } from "window"; export let f = () => parseInt("42")',
   { imports: { window: globalThis } }
 )
 ```
+
+For per-call data (numbers, strings, arrays, objects, typed arrays), see *How to pass data between JS and WASM?* above — pointers via `memory.String`/`memory.Array`/`memory.Object` or template interpolation.
 
 </details>
 
@@ -319,8 +318,47 @@ memory.Array([1, 2, 3])     // → NaN-boxed pointer
 
 `jz.memory()` returns an actual `WebAssembly.Memory` (monkey-patched with `.read()`, `.String()`, `.Array()`, `.Object()`, `.write()`, etc). You can also pass an existing memory: `jz.memory(new WebAssembly.Memory({ initial: 4 }))` patches and returns the same object. Passing raw `WebAssembly.Memory` to `{ memory }` auto-wraps it.
 
-All modules sharing a memory use a single bump allocator (heap pointer at byte 1020). Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
+Modules sharing a memory share a single bump allocator — see *How does memory work?* below. Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
 
+
+</details>
+
+<details>
+<summary><strong>How does memory work? How do I reset it?</strong></summary>
+
+<br>
+
+jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward. No free list, no GC, no per-object header overhead beyond `[len][cap]`. Bytes 0–1023 are reserved (data segment + heap-pointer slot at byte 1020); the heap starts at byte 1024 and grows the WASM memory automatically when full.
+
+This means **memory is never reclaimed implicitly** — long-running programs that allocate per call will grow without bound. The fix is to reset the heap pointer between independent batches:
+
+```js
+const { exports, memory } = jz`
+  export let process = (n) => {
+    let xs = []
+    for (let i = 0; i < n; i++) xs.push(i * 2)
+    return xs.reduce((s, x) => s + x, 0)
+  }
+`
+
+for (let i = 0; i < 1000; i++) {
+  const sum = exports.process(100)   // allocates an array each call
+  memory.reset()                     // drop everything; heap ptr → 1024
+}
+```
+
+After `memory.reset()` all previously returned pointers are invalid — read what you need first, then reset.
+
+For finer control, allocate manually: `memory.alloc(bytes)` returns a raw offset using the same bump pointer. Pure scalar modules (no strings/arrays/objects) are compiled without the allocator at all — no `_alloc`, no `_clear`, no memory section.
+
+**Non-JS hosts** (wasmtime, wasmer, deno, EdgeJS, embedded WASM) get the same allocator via two exports:
+
+```
+(func $_alloc (param $bytes i32) (result i32))   ;; returns heap offset
+(func $_clear)                                    ;; resets heap pointer to 1024
+```
+
+`memory.reset()` and `memory.alloc()` are JS-side aliases for these. To pass a string from a non-JS host: call `_alloc(8 + byteLen)`, write `[len:i32, cap:i32, utf8 bytes]` to the returned offset, then NaN-box the pointer (type=4, offset = returned + 8) before passing to the function. To reclaim, call `_clear()` between batches. Strip both with `compile(code, { runtimeExports: false })` if you only call exported functions and never marshal heap values across the boundary.
 
 </details>
 
@@ -424,17 +462,17 @@ cc program.c -o program
 
 ## Benchmark
 
-| | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
+| | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.39ms**<br>**4.2kB** | 12.17ms<br>3.2kB | 8.91ms<br>1.9kB | 6.45ms<br>8.0kB | 5.33ms | 8.92ms<br>fma | — | 5.29ms | 3.11s | — |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.8kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.13ms | 0.46ms<br>2.6kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.06ms**<br>**1.8kB** | 11.71ms<br>1.1kB | 9.12ms<br>1.5kB | 7.85ms<br>3.8kB | 2.62ms | 12.77ms | 2.60ms | 0.80ms | 312.02ms | 87.17ms<br>2.3kB |
-| [**aos**](bench/aos/aos.js) | **1.53ms**<br>**2.4kB** | 1.76ms<br>1.1kB | 1.87ms<br>2.2kB | — | 1.20ms | 0.90ms | 0.91ms | 1.21ms | 2.25ms | — |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.90ms**<br>**1.2kB** | 5.27ms<br>1005 B | 12.05ms<br>1.5kB | 4.88ms<br>3.1kB | 1.31ms | 5.25ms | 4.13ms | 1.30ms | 14.74ms | — |
-| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.29ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | 0.61ms | — |
-| [**callback**](bench/callback/callback.js) | **0.04ms**<br>**1.6kB** | 0.87ms<br>828 B | 1.48ms<br>1.9kB | 0.25ms<br>3.2kB | 0.08ms | 0.20ms | 0.01ms | 0.07ms | 1.79ms | — |
-| [**json**](bench/json/json.js) | **0.20ms**<br>**2.9kB** | 0.38ms<br>923 B | — | — | 0.03ms | 1.02ms | — | 0.03ms | 1.20ms | — |
-| [**watr**](bench/watr/watr.js) | **1.35ms**<br>**166.3kB** | 1.42ms<br>2.6kB | — | — | — | — | — | — | — | — |
+| [biquad](bench/biquad/biquad.js) | 6.39ms<br>4.2kB | 12.73ms<br>3.2kB | — | 8.90ms<br>1.9kB | 6.45ms<br>767 B | 5.30ms | 8.91ms<br>fma | 5.06ms | 5.28ms | 3.12s |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>1.8kB | 0.17ms<br>1.4kB | 0.46ms<br>2.6kB | 0.08ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
+| [mat4](bench/mat4/mat4.js) | 3.96ms<br>1.8kB | 11.62ms<br>1.1kB | 86.46ms<br>2.3kB | 9.09ms<br>1.5kB | 7.83ms<br>353 B | 2.60ms | 11.61ms | 2.60ms | 0.80ms | 311.06ms |
+| [aos](bench/aos/aos.js) | 1.52ms<br>2.4kB | 1.78ms<br>1.1kB | — | 1.92ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
+| [bitwise](bench/bitwise/bitwise.js) | 4.86ms<br>1.2kB | 5.21ms<br>1005 B | — | 12.19ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
+| [poly](bench/poly/poly.js) | 1.12ms<br>1.3kB | 2.29ms<br>1014 B | — | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
+| [callback](bench/callback/callback.js) | 0.04ms<br>1.6kB | 0.96ms<br>828 B | — | 1.47ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
+| [json](bench/json/json.js) | 0.21ms<br>2.9kB | 0.38ms<br>923 B | — | — | — | 0.02ms | 1.04ms | <0.01ms | 0.03ms | 1.17ms |
+| [watr](bench/watr/watr.js) | 1.34ms<br>166.3kB | 1.35ms<br>2.6kB | — | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon._
 
