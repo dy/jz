@@ -57,21 +57,56 @@ function findBodyStart(fn) {
 // ---- Lane type tables ------------------------------------------------------
 
 const LANE_INFO = {
-  i32: { lanes: 4, strideLog2: 2, stride: 4, splat: 'i32x4.splat', constOp: 'i32.const' },
-  i64: { lanes: 2, strideLog2: 3, stride: 8, splat: 'i64x2.splat', constOp: 'i64.const' },
-  f32: { lanes: 4, strideLog2: 2, stride: 4, splat: 'f32x4.splat', constOp: 'f32.const' },
-  f64: { lanes: 2, strideLog2: 3, stride: 8, splat: 'f64x2.splat', constOp: 'f64.const' },
+  i8:  { lanes: 16, strideLog2: 0, stride: 1, splat: 'i8x16.splat', constOp: 'i32.const' },
+  i16: { lanes: 8,  strideLog2: 1, stride: 2, splat: 'i16x8.splat', constOp: 'i32.const' },
+  i32: { lanes: 4,  strideLog2: 2, stride: 4, splat: 'i32x4.splat', constOp: 'i32.const' },
+  i64: { lanes: 2,  strideLog2: 3, stride: 8, splat: 'i64x2.splat', constOp: 'i64.const' },
+  f32: { lanes: 4,  strideLog2: 2, stride: 4, splat: 'f32x4.splat', constOp: 'f32.const' },
+  f64: { lanes: 2,  strideLog2: 3, stride: 8, splat: 'f64x2.splat', constOp: 'f64.const' },
 }
 
+// Narrow loads/stores (i32.load8_u etc.) define i8 / i16 lane types — values
+// computed in i32 then truncated by store{8,16}, which matches i{8,16}xN wrap
+// semantics exactly.
 const LOAD_OPS = {
+  'i32.load8_u': 'i8',  'i32.load8_s': 'i8',
+  'i32.load16_u': 'i16','i32.load16_s': 'i16',
   'i32.load': 'i32', 'i64.load': 'i64', 'f32.load': 'f32', 'f64.load': 'f64',
 }
 const STORE_OPS = {
+  'i32.store8': 'i8', 'i32.store16': 'i16',
   'i32.store': 'i32', 'i64.store': 'i64', 'f32.store': 'f32', 'f64.store': 'f64',
 }
 
 // scalar op → SIMD op. shamtScalar:true means second operand stays scalar i32.
+//
+// For i8/i16 lanes the SCALAR ops are i32.* — wasm has no native i8/i16 ops,
+// values flow as i32 and the trailing store{8,16} truncates. i{8,16}x{N}.add
+// wraps within each lane the same way, so the observable result matches.
+// Note: wasm SIMD has no i8x16.mul, so multiplication on byte arrays bails.
 const LANE_PURE = {
+  // Right shifts intentionally omitted for narrow lanes: scalar emits
+  // i32.shr_{s,u} on a load8/load16 i32 (zero- or sign-extended), while
+  // i{8,16}x{N}.shr_{s,u} treats lanes as their narrow type. The two diverge
+  // when load and shift signedness mismatch (e.g. load8_u + shr_s on byte
+  // 0xFF: scalar=0x7F, SIMD=0xFF). Safe set excludes shr_*.
+  i8: new Map([
+    ['i32.add', { simd: 'i8x16.add' }],
+    ['i32.sub', { simd: 'i8x16.sub' }],
+    ['i32.and', { simd: 'v128.and' }],
+    ['i32.or',  { simd: 'v128.or' }],
+    ['i32.xor', { simd: 'v128.xor' }],
+    ['i32.shl', { simd: 'i8x16.shl', shamtScalar: true }],
+  ]),
+  i16: new Map([
+    ['i32.add', { simd: 'i16x8.add' }],
+    ['i32.sub', { simd: 'i16x8.sub' }],
+    ['i32.mul', { simd: 'i16x8.mul' }],
+    ['i32.and', { simd: 'v128.and' }],
+    ['i32.or',  { simd: 'v128.or' }],
+    ['i32.xor', { simd: 'v128.xor' }],
+    ['i32.shl', { simd: 'i16x8.shl', shamtScalar: true }],
+  ]),
   i32: new Map([
     ['i32.add', { simd: 'i32x4.add' }],
     ['i32.sub', { simd: 'i32x4.sub' }],
@@ -117,6 +152,52 @@ const LANE_PURE = {
     ['f64.sqrt', { simd: 'f64x2.sqrt' }],
   ]),
 }
+
+// Horizontal reductions: associative+commutative ops applied to one
+// loop-carried accumulator. Each entry maps the SCALAR op (which is also
+// the op used to combine the SIMD result back into the accumulator at the
+// end) to its SIMD lane op, lane extractor, and identity element.
+//
+// Floats (add) are not strictly associative — vectorized order produces
+// ulp-level differences from scalar order. Acceptable for typical use
+// (reductions over typed arrays of well-conditioned data); strict-equal
+// callers must keep the pass off.
+//
+// Narrow lanes (i8/i16) intentionally absent: `s += a[i]` with a u8/u16
+// load expands the value to i32 before the add, so the accumulator's lane
+// type is always wider than the load's element type. That widening would
+// require pairwise/extending-add ops (i16x8.extadd_pairwise_*) — separate
+// recognizer.
+const REDUCE_OPS = {
+  i32: {
+    'i32.add': { simd: 'i32x4.add', extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
+    'i32.xor': { simd: 'v128.xor',  extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
+    'i32.and': { simd: 'v128.and',  extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', -1] },
+    'i32.or':  { simd: 'v128.or',   extract: 'i32x4.extract_lane', laneType: 'i32', constNode: ['i32.const', 0] },
+  },
+  i64: {
+    'i64.add': { simd: 'i64x2.add', extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
+    'i64.xor': { simd: 'v128.xor',  extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
+    'i64.and': { simd: 'v128.and',  extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', -1] },
+    'i64.or':  { simd: 'v128.or',   extract: 'i64x2.extract_lane', laneType: 'i64', constNode: ['i64.const', 0] },
+  },
+  f32: {
+    'f32.add': { simd: 'f32x4.add', extract: 'f32x4.extract_lane', laneType: 'f32', constNode: ['f32.const', 0] },
+  },
+  f64: {
+    'f64.add': { simd: 'f64x2.add', extract: 'f64x2.extract_lane', laneType: 'f64', constNode: ['f64.const', 0] },
+  },
+}
+
+// op-name → REDUCE entry across all lane types (the op-name itself encodes
+// the lane type prefix, e.g. `i32.add` ⇒ i32 lanes).
+const REDUCE_OP_LOOKUP = (() => {
+  const m = new Map()
+  for (const lt of Object.keys(REDUCE_OPS))
+    for (const op of Object.keys(REDUCE_OPS[lt]))
+      m.set(op, REDUCE_OPS[lt][op])
+  return m
+})()
 
 // ---- Recognizer ------------------------------------------------------------
 
@@ -451,6 +532,162 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- Reduction recognizer -------------------------------------------------
+//
+// Matches inner loops of shape:
+//     for (let i = 0; i < N; i++) S = OP(S, EXPR(arr[i], ...))
+// where OP is associative+commutative (REDUCE_OPS table) and EXPR is lane-
+// pure (operates on the loaded element with at most loop-invariant data).
+// S is a SCALAR loop-carried accumulator — exempt from the lane-local
+// "first access must be a write" check.
+//
+// Lift:
+//   acc = splat(IDENTITY)
+//   for (i = 0; i < bound & ~(L-1); i += L) acc = OP_v(acc, lifted EXPR)
+//   S = OP(S, horizontal_reduce(acc))
+//   <original scalar tail handles the remainder>
+//
+// Float adds are not strictly associative — vectorized reduction differs
+// from scalar reduction by ulps. Acceptable when bit-exact equality is not
+// required (which it isn't, by spec, in JS engines either).
+function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
+  if (!isArr(blockNode) || blockNode[0] !== 'block') return null
+
+  // Match outer (block (loop)) structure. Same loop-shape as tryVectorize.
+  let blockLabel = null
+  let loopNode = null
+  for (let i = 1; i < blockNode.length; i++) {
+    const c = blockNode[i]
+    if (typeof c === 'string' && c.startsWith('$') && blockLabel == null && i === 1) { blockLabel = c; continue }
+    if (isArr(c) && c[0] === 'loop') {
+      if (loopNode) return null
+      loopNode = c
+    } else if (isArr(c)) return null
+  }
+  if (!loopNode || !blockLabel) return null
+  const loopLabel = typeof loopNode[1] === 'string' && loopNode[1].startsWith('$') ? loopNode[1] : null
+  if (!loopLabel) return null
+  const endIdx = loopNode.length - 1
+  if (!(isArr(loopNode[endIdx]) && loopNode[endIdx][0] === 'br' && loopNode[endIdx][1] === loopLabel)) return null
+  const incIdx = endIdx - 1
+  const incVar = matchInc1(loopNode[incIdx])
+  if (!incVar) return null
+  const exitInfo = matchExitBrIf(loopNode[2], blockLabel)
+  if (!exitInfo) return null
+  if (exitInfo.ind !== incVar) return null
+
+  // Body must be a single statement: the accumulator update.
+  if (incIdx - 3 !== 1) return null
+  const stmt = loopNode[3]
+  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+  const accName = stmt[1]
+  if (typeof accName !== 'string') return null
+  const rhs = stmt[2]
+  if (!isArr(rhs) || rhs.length !== 3) return null
+  const opName = rhs[0]
+  const reduceEntry = REDUCE_OP_LOOKUP.get(opName)
+  if (!reduceEntry) return null
+  if (!isLocalGet(rhs[1], accName)) return null
+  const exprNode = rhs[2]
+
+  // Accumulator's declared local type must match the lane element type.
+  const accType = fnLocals.get(accName)
+  if (accType !== reduceEntry.laneType) return null
+
+  // Bound classification (same as tryVectorize).
+  let bound = exitInfo.bound
+  let boundLocal = null
+  if (isArr(bound) && bound[0] === 'local.get' && typeof bound[1] === 'string') boundLocal = bound[1]
+  else if (!isI32Const(bound)) return null
+
+  // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of
+  // accName forbidden (the accumulator only appears in the outer wrapper).
+  const laneType = reduceEntry.laneType
+  const stride = LANE_INFO[laneType].stride
+  const addrLocals = new Map()
+  let loadCount = 0
+  function scanExpr(node) {
+    if (!isArr(node)) return true
+    const op = node[0]
+    if (LOAD_OPS[op]) {
+      if (LOAD_OPS[op] !== laneType) return false
+      const m = matchLaneAddr(node[1], incVar, addrLocals)
+      if (!m) return false
+      if ((1 << m.strideLog2) !== stride) return false
+      if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      loadCount++
+      return true
+    }
+    if (STORE_OPS[op]) return false
+    if (op === 'local.set' || op === 'local.tee') return false  // no intermediates
+    if (op === 'local.get' && node[1] === accName) return false
+    for (let i = 1; i < node.length; i++) if (!scanExpr(node[i])) return false
+    return true
+  }
+  if (!scanExpr(exprNode)) return null
+  if (loadCount === 0) return null
+
+  // Classify locals referenced in EXPR. Anything not the induction var or an
+  // address-tee is invariant (we forbade local.set/tee in scanExpr).
+  const referenced = new Set()
+  const collectRefs = (n) => {
+    if (!isArr(n)) return
+    if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1])
+    for (let i = 1; i < n.length; i++) collectRefs(n[i])
+  }
+  collectRefs(exprNode)
+  const localKind = new Map()
+  for (const name of referenced) {
+    if (name === incVar) continue
+    if (addrLocals.has(name)) { localKind.set(name, 'addr'); continue }
+    localKind.set(name, 'invariant')
+  }
+  for (const name of addrLocals.keys()) localKind.set(name, 'addr')
+
+  const ctx = { laneType, incVar, localKind, newLanedLocals: new Map(), fail: false, failReason: null }
+  const liftedExpr = liftExprV(exprNode, ctx)
+  if (ctx.fail) return null
+  if (ctx.newLanedLocals.size > 0) return null
+
+  // Synthesize SIMD prefix block + horizontal reduce + (preserved scalar tail).
+  const id = freshIdRef.next++
+  const simdBoundName = `$__simd_bound${id}`
+  const simdAccName = `$__simd_acc${id}`
+  const simdBrkLabel = `$__simd_brk${id}`
+  const simdLoopLabel = `$__simd_loop${id}`
+  const info = LANE_INFO[laneType]
+  const lanes = info.lanes
+  const mask = -lanes
+  const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
+
+  const initAcc = ['local.set', simdAccName, [info.splat, reduceEntry.constNode]]
+  const simdBlock = ['block', simdBrkLabel,
+    ['loop', simdLoopLabel,
+      ['br_if', simdBrkLabel,
+        ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
+      ['local.set', simdAccName,
+        [reduceEntry.simd, ['local.get', simdAccName], liftedExpr]],
+      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
+      ['br', simdLoopLabel]
+    ]
+  ]
+
+  // Horizontal fold: scalar.op(extract 0, extract 1, …, extract L-1).
+  let horiz = [reduceEntry.extract, 0, ['local.get', simdAccName]]
+  for (let k = 1; k < lanes; k++) {
+    horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
+  }
+  const mergeBack = ['local.set', accName, [opName, ['local.get', accName], horiz]]
+  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', mask]]]
+
+  const wrapper = ['block', boundSetup, initAcc, simdBlock, mergeBack, blockNode]
+  const newLocalDecls = [
+    ['local', simdBoundName, 'i32'],
+    ['local', simdAccName, 'v128'],
+  ]
+  return { wrapper, newLocalDecls }
+}
+
 // Scalar locals that are ALWAYS computed as `(i32.add base (i32.shl ind K))`
 // or aliased to such an address are "address tees", not lane data. They stay
 // scalar i32 in the lifted body.
@@ -649,6 +886,7 @@ export function vectorizeLaneLocal(fn) {
     }
     if (node[0] === 'block') {
       const r = tryVectorize(node, fnLocals, freshIdRef)
+        ?? tryReduceVectorize(node, fnLocals, freshIdRef)
       if (r) {
         parent[idx] = r.wrapper
         newLocalDeclsAll.push(...r.newLocalDecls)

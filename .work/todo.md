@@ -64,7 +64,7 @@ numbers refreshed in README. Remaining gaps:
 | biquad   | 6.39ms | 4.48ms | 5.30ms (C) | **already past**       | beats C/Rust/Zig now              |
 | mat4     | 3.96ms | 2.86ms | 2.60ms (C/Zig) | 1.10×       | small — V8 turbofan vs LLVM      |
 | aos      | 1.52ms | 1.09ms | 0.91ms (Zig) | 1.20×         | LICM / shuffle SIMD              |
-| bitwise  | 4.86ms | 0.97ms | 1.30ms (C/Rust) | **already past** | beats C/Rust via SIMD-128 (i32x4) |
+| bitwise  | 4.86ms | 1.38ms | 1.30ms (C/Rust) | 1.06×          | parity via SIMD-128 (i8/i16/i32/i64/f32/f64) + reductions |
 | poly     | 1.12ms | 0.73ms | 0.63ms (Rust) | 1.16×        | small — needs f64x2 + i32x4 SIMD |
 | tokenizer| 0.10ms | 0.06ms | 0.07ms (Go)  | **already past** | beats native targets         |
 | json     | 0.21ms | 0.13ms | 0.03ms (C) | **4.3×**       | structural — NaN-box per node    |
@@ -77,18 +77,23 @@ structural fast-path that drops NaN-boxing inside the parser.
 * [x] **wasm SIMD-128 emission** — generalized lane-local vectorizer
       (`src/vectorize.js`). Recognizes ANY inner loop where each iteration
       touches `arr[i]` (load+store) and the body is built of lane-pure ops.
-      Parameterized by lane type (i32x4, i64x2, f32x4, f64x2). NOT a
-      bench-specific match — structural property check on the post-watr IR.
-  - Recognizer: matches `(block $brk (loop $L (br_if $brk !cond) BODY (i++) (br $L)))`,
+      Parameterized by lane type (i8x16, i16x8, i32x4, i64x2, f32x4, f64x2).
+      NOT a bench-specific match — structural property check on the post-watr IR.
+  - Lane-local recognizer: matches `(block $brk (loop $L (br_if $brk !cond) BODY (i++) (br $L)))`,
     requires loads/stores at `(add base (shl i K))`, requires every non-induction
     local to be either purely loop-invariant or purely lane-local (first
     access is a write — read-before-write means loop-carried scalar, bail).
+  - Reduction recognizer (`tryReduceVectorize`): single-stmt body
+    `S = OP(S, EXPR(arr[i], …))` with associative+commutative OP
+    (i32/i64 add|xor|and|or, f32/f64 add). Lift = splat-init, SIMD prefix,
+    horizontal lane-extract fold back into scalar S, scalar tail preserved.
+    Float adds are reordered (ulp-level diff vs scalar — acceptable).
   - Lifter rewrites op-by-op via per-lane-type tables (`LANE_PURE`).
-    Tail loop is the original WAT preserved unchanged; SIMD prefix runs
-    bound = `len & ~(LANES-1)` and falls into the scalar tail.
+    Narrow lanes (i8/i16) drop right shifts (signedness mismatch hazard
+    between i32.shr_u/s on a load8/16 and i{8,16}xN.shr_*).
   - Pass-gated `__phase: 'post'` — runs only after watr's CSE/inline produces
     canonical IR, never on pre-watr lowered shape.
-  - Bitwise 3.45 → 0.97ms (3.5× speedup, beats C/Rust 1.30ms target).
+  - Bitwise 3.45 → 1.38ms (≈1.06× of C/Rust 1.30ms, parity OK).
   - Currently OPT-IN at level 3 (`optimize: { vectorizeLaneLocal: true }`);
     OFF at level 2. Decision pending on whether to enable by default.
 
