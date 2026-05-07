@@ -146,6 +146,12 @@ test('Number: parseFloat common decimal parity', () => {
     isNaN(parseFloat("."))`).f(), 10)
 })
 
+test('Number: parseFloat coerces non-string via ToString', () => {
+  // Per JS spec, parseFloat(x) calls ToString(x) first. Array → "4", number → "12.5".
+  is(run(`export let f = () => parseFloat([4])`).f(), 4)
+  is(run(`export let f = () => parseFloat(12.5)`).f(), 12.5)
+})
+
 test('Number: String(0)', () => {
   is(run(`export let f = () => String(0).length`).f(), 1)
 })

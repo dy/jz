@@ -136,6 +136,22 @@ test('string: literal startsWith/endsWith', () => {
   is(f(), 22)
 })
 
+test('string: startsWith/endsWith coerce non-string args via ToString', () => {
+  // Per spec, the search arg goes through ToString. Without coercion, a numeric
+  // arg's __str_byteLen reads as 0, the suffix loop runs zero iterations, and
+  // the function falls through to "match" — `"100".endsWith(99)` would lie.
+  is(run(`export let f = () => "100".endsWith(99) ? 1 : 0`).f(), 0)
+  is(run(`export let f = () => "199".endsWith(99) ? 1 : 0`).f(), 1)
+  is(run(`export let f = () => "9foo".startsWith(9) ? 1 : 0`).f(), 1)
+})
+
+test('string: .toString and .valueOf return the receiver', () => {
+  // Spec 21.1.3.27/28 — both are identity for primitive strings.
+  is(run(`export let f = () => "hi".toString().length`).f(), 2)
+  is(run(`export let f = () => "world".valueOf().length`).f(), 5)
+  is(run(`export let f = () => { let s = "abc"; return s.toString() === s ? 1 : 0 }`).f(), 1)
+})
+
 test('string index: out-of-range returns undefined', () => {
   ok(Number.isNaN(run(`export let f = () => "hello"[99]`).f()))
 })

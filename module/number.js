@@ -19,7 +19,7 @@ export default (ctx) => {
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-    __to_num: ['__char_at', '__str_byteLen', '__pow10'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
     __to_bigint: ['__char_at', '__str_byteLen'],
     __parseInt: ['__char_at', '__str_byteLen'],
   })
@@ -395,8 +395,14 @@ export default (ctx) => {
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (local.set $t (call $__ptr_type (local.get $v)))
+    ;; Non-string values go through ToString per JS spec, then re-check the
+    ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
-      (then (return (f64.const nan))))
+      (then
+        (local.set $v (call $__to_str (local.get $v)))
+        (local.set $t (call $__ptr_type (local.get $v)))
+        (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
+          (then (return (f64.const nan))))))
     (local.set $len (call $__str_byteLen (local.get $v)))
     ;; Skip leading whitespace.
     (block $ws (loop $wsl

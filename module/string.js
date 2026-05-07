@@ -835,6 +835,21 @@ export default (ctx) => {
   // === Method emitters ===
 
   // Type-qualified (collide with array: slice, indexOf, includes)
+  // String.prototype.toString / .valueOf — both return the receiver per spec
+  // (21.1.3.27/28). Typed forms cover the static-string case; generic forms
+  // pair with them so the dispatcher can pick a runtime ptr-type branch when
+  // the receiver type can't be statically inferred (e.g. a callback param).
+  ctx.core.emit['.string:toString'] = (str) => asF64(emit(str))
+  ctx.core.emit['.string:valueOf'] = (str) => asF64(emit(str))
+  ctx.core.emit['.toString'] = (val) => {
+    inc('__to_str')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
+  }
+  ctx.core.emit['.valueOf'] = (val) => {
+    inc('__to_str')
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
+  }
+
   ctx.core.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')
     if (end != null) return typed(['call', '$__str_slice', asI64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
@@ -875,11 +890,19 @@ export default (ctx) => {
     return typed(i32Result ? ['f64.convert_i32_s', call] : call, 'f64')
   }
 
-  // Simple str methods: [emitKey, stdlibName, argCoercions, i32Result?]
-  ctx.core.emit['.startsWith'] = (str, p) => (inc('__str_startswith'),
-    typed(['f64.convert_i32_s', ['call', '$__str_startswith', asI64(emit(str)), asI64(emit(p))]], 'f64'))
-  ctx.core.emit['.endsWith'] = (str, p) => (inc('__str_endswith'),
-    typed(['f64.convert_i32_s', ['call', '$__str_endswith', asI64(emit(str)), asI64(emit(p))]], 'f64'))
+  // Search args go through ToString per spec — coerce non-string-typed args
+  // via __to_str so the underlying byte-compare receives an actual string.
+  const stringSearchMethod = (name) => (str, sfx) => {
+    inc(name)
+    let sfxArg = asI64(emit(sfx))
+    if (valTypeOf(sfx) !== VAL.STRING) {
+      inc('__to_str')
+      sfxArg = ['call', '$__to_str', sfxArg]
+    }
+    return typed(['f64.convert_i32_s', ['call', `$${name}`, asI64(emit(str)), sfxArg]], 'f64')
+  }
+  ctx.core.emit['.startsWith'] = stringSearchMethod('__str_startswith')
+  ctx.core.emit['.endsWith'] = stringSearchMethod('__str_endswith')
   ctx.core.emit['.trim'] = (str) => (inc('__str_trim'),
     typed(['call', '$__str_trim', asI64(emit(str))], 'f64'))
   ctx.core.emit['.trimStart'] = (str) => (inc('__str_trimStart'),
