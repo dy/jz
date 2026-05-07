@@ -28,6 +28,7 @@
  */
 
 import { LAYOUT } from './ctx.js'
+import { vectorizeLaneLocal } from './vectorize.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
 const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
@@ -62,6 +63,7 @@ export const PASS_NAMES = [
   'sourceInline',
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
+  'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
   'treeshake',
 ]
 
@@ -70,7 +72,7 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: false }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false }),
   3: ALL_ON,
 })
 
@@ -1067,13 +1069,19 @@ export function optimizeFunc(fn, cfg) {
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.hoistInvariantCellLoads === false &&
-      cfg.sortLocalsByUse === false) return
+      cfg.sortLocalsByUse === false &&
+      cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
+  // Vectorizer runs only in the POST-watr phase (`__phase === 'post'`), where
+  // narrow.js + watr have produced the canonical lane-local shape. Running it
+  // pre-watr matches a noisier IR and would re-fire post-watr on the residual
+  // tail — producing nested SIMD blocks. Single-pass via phase gating.
+  if (cfg && cfg.vectorizeLaneLocal === true && cfg.__phase === 'post') vectorizeLaneLocal(fn)
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
 }
 

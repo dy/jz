@@ -158,8 +158,8 @@ const compileJzHost = c => {
     ...(c.id === 'watr' ? {
       jzify: true,
       memoryPages: 4096,
-      optimize: { smallConstForUnroll: false },
-    } : {}),
+      optimize: { smallConstForUnroll: false, ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
+    } : (process.env.JZ_SIMD ? { optimize: { vectorizeLaneLocal: true } } : {})),
     runtimeExports: false,
   })
   writeFileSync(jzHostWasmPath(c), wasm)

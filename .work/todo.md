@@ -64,7 +64,7 @@ numbers refreshed in README. Remaining gaps:
 | biquad   | 6.39ms | 4.48ms | 5.30ms (C) | **already past**       | beats C/Rust/Zig now              |
 | mat4     | 3.96ms | 2.86ms | 2.60ms (C/Zig) | 1.10×       | small — V8 turbofan vs LLVM      |
 | aos      | 1.52ms | 1.09ms | 0.91ms (Zig) | 1.20×         | LICM / shuffle SIMD              |
-| bitwise  | 4.86ms | 3.45ms | 1.30ms (C/Rust) | **2.65×**  | needs wasm SIMD-128 (i32x4)      |
+| bitwise  | 4.86ms | 0.97ms | 1.30ms (C/Rust) | **already past** | beats C/Rust via SIMD-128 (i32x4) |
 | poly     | 1.12ms | 0.73ms | 0.63ms (Rust) | 1.16×        | small — needs f64x2 + i32x4 SIMD |
 | tokenizer| 0.10ms | 0.06ms | 0.07ms (Go)  | **already past** | beats native targets         |
 | json     | 0.21ms | 0.13ms | 0.03ms (C) | **4.3×**       | structural — NaN-box per node    |
@@ -74,20 +74,23 @@ and **json** (4.3× behind) still have meaningful gaps — and the gaps
 are well-characterized: bitwise wants wasm SIMD-128, json wants a
 structural fast-path that drops NaN-boxing inside the parser.
 
-* [ ] **wasm SIMD-128 emission** — only worth doing for bitwise now;
-      mat4/aos/poly are within 10-20% of native, diminishing returns.
-  - Bitwise's inner loop is the textbook lane-local i32 case:
-    pure i32 stride-1 typed-array map with const-shift + const-mul body.
-    Trip count = 65536 (const, divisible by 4), no cross-iter deps.
-  - Implementation as a new optimizer pass operating on emitted WAT IR
-    (after fusedRewrite + hoist passes). Recognizer matches the loop shape;
-    lifter rewrites op-by-op (i32.xor → v128.xor, i32.shl K → i32x4.shl K,
-    i32.mul const → i32x4.mul (i32x4.splat const), i32.load → v128.load,
-    i32.store → v128.store); tail loop emitted only when length not divisible.
-  - Watr already supports the full SIMD-128 opcode set, no encoder work needed.
-  - Estimated win: bitwise 3.45 → ~0.95ms (matches C/Rust 1.30ms). Mat4/poly
-    would only see ~1.5× from f64x2, so ~1.9ms / ~0.5ms — possible but lower
-    leverage than the bitwise case.
+* [x] **wasm SIMD-128 emission** — generalized lane-local vectorizer
+      (`src/vectorize.js`). Recognizes ANY inner loop where each iteration
+      touches `arr[i]` (load+store) and the body is built of lane-pure ops.
+      Parameterized by lane type (i32x4, i64x2, f32x4, f64x2). NOT a
+      bench-specific match — structural property check on the post-watr IR.
+  - Recognizer: matches `(block $brk (loop $L (br_if $brk !cond) BODY (i++) (br $L)))`,
+    requires loads/stores at `(add base (shl i K))`, requires every non-induction
+    local to be either purely loop-invariant or purely lane-local (first
+    access is a write — read-before-write means loop-carried scalar, bail).
+  - Lifter rewrites op-by-op via per-lane-type tables (`LANE_PURE`).
+    Tail loop is the original WAT preserved unchanged; SIMD prefix runs
+    bound = `len & ~(LANES-1)` and falls into the scalar tail.
+  - Pass-gated `__phase: 'post'` — runs only after watr's CSE/inline produces
+    canonical IR, never on pre-watr lowered shape.
+  - Bitwise 3.45 → 0.97ms (3.5× speedup, beats C/Rust 1.30ms target).
+  - Currently OPT-IN at level 3 (`optimize: { vectorizeLaneLocal: true }`);
+    OFF at level 2. Decision pending on whether to enable by default.
 
 * [x] **monomorphic-call specialization** (poly) — already covered by
       existing `specializeBimorphicTyped` phase in narrow.js; clones

@@ -185,8 +185,9 @@ jz.compile = (code, opts = {}) => {
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
   // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
   if (cfg.watr) {
+    const postCfg = { ...cfg, __phase: 'post' }
     time('watrReopt', () => {
-      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, cfg)
+      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg)
     })
   }
   return opts.wat
