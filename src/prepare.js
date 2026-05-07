@@ -37,6 +37,12 @@ import {
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]
+// Per-arrow set of names already declared anywhere in the function body. Used
+// to force a rename when the same identifier is declared in two sibling blocks
+// (else-if arms, separate { ... } chunks): without renaming, both decls lower
+// to the same WASM local, but downstream optimizations (directClosures) gate
+// on per-decl `isReassigned`, not per-WASM-local — they'd read a stale binding.
+let funcLocalNames = []
 
 const hostReturnValType = spec => {
   if (!spec || typeof spec === 'function') return null
@@ -146,6 +152,7 @@ function recordModuleInitFacts(root) {
 export default function prepare(node) {
   depth = 0
   scopes = []
+  funcLocalNames = [new Set()]
   includeModule('core')
   fuseSparseMapReads(node)
   const ast = prep(node)
@@ -615,13 +622,18 @@ function prepDecl(op, ...inits) {
 
     if (!defFunc(name, normed)) {
       let declName = name
-      // Block scope: rename if shadowing an outer declaration
-      if (typeof name === 'string' && scopes.length > 0 && isDeclared(name)) {
+      // Block scope: rename if shadowing an outer declaration, OR if a sibling
+      // block at the same arrow scope already declared this name (sibling
+      // blocks both lower to the same WASM local; see funcLocalNames comment).
+      const fnNames = funcLocalNames[funcLocalNames.length - 1]
+      const inCurrentBlock = scopes.length > 0 && scopes[scopes.length - 1].has(name)
+      if (typeof name === 'string' && scopes.length > 0 && (isDeclared(name) || (fnNames?.has(name) && !inCurrentBlock))) {
         declName = `${name}${T}${ctx.func.uniq++}`
         scopes[scopes.length - 1].set(name, declName)
       } else if (typeof name === 'string' && scopes.length > 0) {
         scopes[scopes.length - 1].set(name, name)
       }
+      if (typeof declName === 'string' && fnNames) fnNames.add(declName)
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
         if (ctx.module.currentPrefix) {
@@ -985,6 +997,7 @@ const handlers = {
 
     depth++
     scopes.push(fnScope)
+    funcLocalNames.push(new Set(collectParamNames(raw)))
 
     const nextParams = []
     const bodyPrefix = []
@@ -1017,6 +1030,7 @@ const handlers = {
     const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
     scopes.pop()
+    funcLocalNames.pop()
     depth--
     return result
   },
