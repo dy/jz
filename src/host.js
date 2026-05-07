@@ -126,6 +126,9 @@ export const memory = (src) => {
 
   // Use WASM allocator if available, else JS-side bump
   let alloc = wasmExports?._alloc || jsAlloc
+  // JS-side reset: rewind the bump pointer at byte 1020. Only used when no WASM
+  // _clear is present (otherwise the WASM global / shared slot is authoritative).
+  const jsReset = () => dv().setInt32(1020, 1024, true)
 
   // Initialize heap pointer if not yet set
   const initDv = dv()
@@ -167,7 +170,8 @@ export const memory = (src) => {
   if (_enhanced.has(mem)) {
     mem.schemas = schemas
     if (wasmExports?._alloc) { alloc = wasmExports._alloc; mem.alloc = alloc }
-    if (wasmExports?._reset) mem.reset = wasmExports._reset
+    if (wasmExports?._clear) mem.reset = wasmExports._clear
+    else if (!mem.reset) mem.reset = jsReset
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -375,7 +379,7 @@ export const memory = (src) => {
   }
 
   mem.alloc = alloc
-  mem.reset = wasmExports?._reset || null
+  mem.reset = wasmExports?._clear || jsReset
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {

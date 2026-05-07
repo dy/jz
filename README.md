@@ -355,10 +355,10 @@ For finer control, allocate manually: `memory.alloc(bytes)` returns a raw offset
 
 ```
 (func $_alloc (param $bytes i32) (result i32))   ;; returns heap offset
-(func $_clear)                                    ;; resets heap pointer to 1024
+(func $_clear)                                    ;; rewinds heap pointer to 1024
 ```
 
-`memory.reset()` and `memory.alloc()` are JS-side aliases for these. To pass a string from a non-JS host: call `_alloc(8 + byteLen)`, write `[len:i32, cap:i32, utf8 bytes]` to the returned offset, then NaN-box the pointer (type=4, offset = returned + 8) before passing to the function. To reclaim, call `_clear()` between batches. Strip both with `compile(code, { runtimeExports: false })` if you only call exported functions and never marshal heap values across the boundary.
+`memory.reset()` and `memory.alloc()` are JS-side aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The pointer crossing the WASM boundary is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Call `_clear()` between batches to reclaim. Strip both with `compile(code, { runtimeExports: false })` if you only call functions and never marshal heap values across the boundary.
 
 </details>
 

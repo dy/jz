@@ -401,3 +401,70 @@ test('one-off: inst.memory works without shared memory', () => {
   const arr = inst.memory.read(inst.instance.exports.f())
   is(arr[0], 1); is(arr[1], 2); is(arr[2], 3)
 })
+
+test('memory.reset(): own memory keeps page count flat across allocating calls', () => {
+  const { exports, memory, instance } = jz`
+    export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }
+  `
+  ok(typeof memory.reset === 'function', 'memory.reset is a function')
+  ok(typeof instance.exports._clear === 'function', '_clear export is present')
+  const before = memory.buffer.byteLength
+  for (let i = 0; i < 500; i++) { exports.f(100); memory.reset() }
+  is(memory.buffer.byteLength, before, 'no growth across 500 reset cycles')
+})
+
+test('memory.reset(): own memory grows without reset', () => {
+  const { exports, memory } = jz`
+    export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }
+  `
+  const before = memory.buffer.byteLength
+  for (let i = 0; i < 500; i++) exports.f(100)
+  ok(memory.buffer.byteLength > before, 'grows when reset is omitted')
+})
+
+test('memory.reset(): shared memory rewinds heap pointer to 1024', () => {
+  const memory = jz.memory()
+  const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
+  exports.f(100)
+  const dv = () => new DataView(memory.buffer)
+  ok(dv().getInt32(1020, true) > 1024, 'heap advanced after allocations')
+  memory.reset()
+  is(dv().getInt32(1020, true), 1024, 'heap rewound to 1024')
+})
+
+test('memory.reset(): JS-side fallback works before any module compile', () => {
+  const memory = jz.memory()
+  ok(typeof memory.reset === 'function', 'JS-side reset wired with no module')
+  memory.String('hello world')
+  memory.Array([1, 2, 3, 4, 5])
+  const dv = () => new DataView(memory.buffer)
+  ok(dv().getInt32(1020, true) > 1024, 'heap advanced after JS writes')
+  memory.reset()
+  is(dv().getInt32(1020, true), 1024, 'JS-side reset rewinds')
+})
+
+test('memory.reset(): JS writes valid after reset (WASM reads new pointer)', () => {
+  const { exports, memory } = jz`export let len = (s) => s.length`
+  is(exports.len(memory.String('hello world')), 11)
+  memory.reset()
+  is(exports.len(memory.String('hi')), 2, 'fresh allocation works after reset')
+})
+
+test('memory.reset(): wires up after compile when memory was JS-only', () => {
+  const memory = jz.memory()
+  // JS-side reset is present immediately
+  ok(typeof memory.reset === 'function')
+  const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
+  // After compile, reset upgrades to the WASM _clear export — same effect
+  ok(typeof memory.reset === 'function', 'reset still callable after compile')
+  exports.f(100)
+  memory.reset()
+  is(new DataView(memory.buffer).getInt32(1020, true), 1024)
+})
+
+test('pure scalar module exposes no memory and no allocator exports', () => {
+  const r = jz`export let add = (a, b) => a + b`
+  ok(!r.memory, 'no memory on pure scalar module')
+  ok(!('_alloc' in r.instance.exports), 'no _alloc export')
+  ok(!('_clear' in r.instance.exports), 'no _clear export')
+})
