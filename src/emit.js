@@ -104,10 +104,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === -2) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
-    const isStr = ['i32.or',
-      ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]]
+    const isStr = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]]
     return typed(eq ? ['i32.and', isPtr, isStr]
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
@@ -123,9 +120,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const notStrFn = ['i32.and',
-      ['i32.and',
-        ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
-        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
+      ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
       ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
     const notNullish = ['i32.eqz', isNullish(['local.get', `$${t}`])]
     const check = ['i32.and', ['i32.and', isPtr, notStrFn], notNullish]
@@ -209,15 +204,12 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
       finish(charEq)], 'i32')
   }
 
-  const tag = tempI32('st')
   inc('__ptr_type', '__typed_idx', '__eq')
   const genericEq = ['call', '$__eq',
     ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR]],
     asI64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
-    ['i32.or',
-      ['i32.eq', ['local.tee', `$${tag}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]]], ['i32.const', PTR.STRING]],
-      ['i32.eq', ['local.get', `$${tag}`], ['i32.const', PTR.SSO]]],
+    ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
     ['then', charEq],
     ['else', genericEq]]
   return typed(['block', ['result', 'i32'],
@@ -770,9 +762,7 @@ export function buildArrayWithSpreads(items) {
         ? ['f64.load', ['i32.add', ['local.get', `$${sec.baseLocal}`], ['i32.shl', ['local.get', `$${sidx}`], ['i32.const', 3]]]]
         : ctx.module.modules['string']
           ? ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.SSO]]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.STRING]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])],
             ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])]]
           : (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])
@@ -2145,9 +2135,7 @@ export const emitter = {
           ['local.set', `$${t}`, asF64(emit(obj))],
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
           ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
+            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
             ['then', callMethod(t, strEmitter)],
             ['else', callMethod(t, genEmitter)]]], 'f64')
       }

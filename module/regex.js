@@ -9,7 +9,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
@@ -654,14 +654,16 @@ export default (ctx) => {
 
   ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
 
-  // SSO → heap normalizer: returns data offset (i32) for direct byte access
+  // SSO → heap normalizer: returns data offset (i32) for direct byte access.
+  // Heap STRING: aux bit SSO_BIT is 0 → offset already points at bytes.
+  // SSO STRING:  aux bit SSO_BIT is 1 → bytes are packed in offset; spill to heap.
   ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr i64) (result i32)
-    (local $type i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
-    (local.set $type (call $__ptr_type (local.get $ptr)))
-    (if (i32.eq (local.get $type) (i32.const 4))
+    (local $aux i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.eqz (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT})))
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (local.set $len (call $__ptr_aux (local.get $ptr)))
+    (local.set $len (i32.and (local.get $aux) (i32.const 7)))
     (local.set $buf (call $__alloc (local.get $len)))
     (local.set $i (i32.const 0))
     (block $done (loop $next

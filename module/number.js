@@ -325,10 +325,8 @@ export default (ctx) => {
     (local.set $f (f64.reinterpret_i64 (local.get $str)))
     ;; If input is a number, just truncate
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.trunc (local.get $f)))))
-    ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
-    (if (i32.and
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
+    ;; If NaN-boxed but not a string → return NaN
+    (if (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
       (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (local.get $str)))
     (local.set $len (call $__str_byteLen (local.get $str)))
@@ -386,10 +384,7 @@ export default (ctx) => {
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (local.set $t (call $__ptr_type (local.get $v)))
-    (if (i32.eqz
-          (i32.or
-            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.const nan))))
     (local.set $len (call $__str_byteLen (local.get $v)))
     ;; Skip leading whitespace.
@@ -510,10 +505,7 @@ export default (ctx) => {
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $f))))))
     (local.set $t (call $__ptr_type (local.get $v)))
-    (if (i32.eqz
-          (i32.or
-            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (local.set $len (call $__str_byteLen (local.get $v)))
     (block $ws (loop $wsl

@@ -27,8 +27,12 @@
  * @module optimize
  */
 
+import { LAYOUT } from './ctx.js'
+
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
-const NAN_PREFIX_BITS = 0x7FF8n
+const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
+const NULL_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 
 /**
  * Optimization passes, partitioned by phase. The `level` presets pick which
@@ -822,9 +826,9 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     // $__mkptr inline fast path: bake (type, aux) literals into i64.const template.
     if (target === '$__mkptr' && spec.inline && parts[0].startsWith('L:') && parts[1].startsWith('L:')) {
       const type = +parts[0].slice(2), aux = +parts[1].slice(2)
-      const tmpl = (NAN_PREFIX_BITS << 48n)
-        | ((BigInt(type) & 0xFn) << 47n)
-        | ((BigInt(aux) & 0x7FFFn) << 32n)
+      const tmpl = LAYOUT.NAN_PREFIX_BITS
+        | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
+        | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
       // Third arg (offset) may also be literal — emit (f64.const nan:…) then.
       if (parts[2].startsWith('L:')) {
         // Fully literal: all sites can be f64.const — no helper needed, handled in rewrite below.
@@ -866,10 +870,10 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
     if (target === '$__mkptr' && parts[0].startsWith('L:') && parts[1].startsWith('L:') && parts[2].startsWith('L:')) {
       const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
-      const bits = (NAN_PREFIX_BITS << 48n)
-        | ((BigInt(type) & 0xFn) << 47n)
-        | ((BigInt(aux) & 0x7FFFn) << 32n)
-        | (BigInt(off >>> 0) & 0xFFFFFFFFn)
+      const bits = LAYOUT.NAN_PREFIX_BITS
+        | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
+        | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
+        | (BigInt(off >>> 0) & BigInt(LAYOUT.OFFSET_MASK))
       const n = ['f64.const', 'nan:0x' + bits.toString(16).toUpperCase().padStart(16, '0')]
       n.type = 'f64'
       parent[idx] = n
@@ -1116,16 +1120,16 @@ function walkRewrite(node, doInline, counts) {
   if (doInline && op === 'call' && node.length === 3 && typeof node[1] === 'string') {
     const fname = node[1]
     if (fname === '$__ptr_type') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', 47]]],
-      ['i32.const', 0xF]]
+      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', LAYOUT.TAG_SHIFT]]],
+      ['i32.const', LAYOUT.TAG_MASK]]
     if (fname === '$__ptr_aux') return ['i32.and',
-      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', 32]]],
-      ['i32.const', 0x7FFF]]
-    if (fname === '$__is_null') return ['i64.eq', node[2], ['i64.const', '0x7FF8000100000000']]
+      ['i32.wrap_i64', ['i64.shr_u', node[2], ['i64.const', LAYOUT.AUX_SHIFT]]],
+      ['i32.const', LAYOUT.AUX_MASK]]
+    if (fname === '$__is_null') return ['i64.eq', node[2], ['i64.const', NULL_BITS]]
     if (fname === '$__is_nullish' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
         && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') return ['i32.or',
-      ['i64.eq', node[2], ['i64.const', '0x7FF8000100000000']],
-      ['i64.eq', node[2], ['i64.const', '0x7FF8000000000001']]]
+      ['i64.eq', node[2], ['i64.const', NULL_BITS]],
+      ['i64.eq', node[2], ['i64.const', UNDEF_BITS]]]
     if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
         && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') {
       const lget = node[2][1]
@@ -1135,11 +1139,11 @@ function walkRewrite(node, doInline, counts) {
         ['then', ['f64.ne', lget, ['f64.const', 0]]],
         ['else', ['i32.and',
           ['i32.and',
-            ['i64.ne', bits, ['i64.const', '0x7FF8000000000000']],
-            ['i64.ne', bits, ['i64.const', '0x7FF8000100000000']]],
+            ['i64.ne', bits, ['i64.const', NAN_BITS]],
+            ['i64.ne', bits, ['i64.const', NULL_BITS]]],
           ['i32.and',
-            ['i64.ne', bits, ['i64.const', '0x7FF8000000000001']],
-            ['i64.ne', bits, ['i64.const', '0x7FFA800000000000']]]]]]
+            ['i64.ne', bits, ['i64.const', UNDEF_BITS]],
+            ['i64.ne', bits, ['i64.const', '0x7FFA400000000000']]]]]]
     }
   }
 

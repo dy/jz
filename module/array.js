@@ -11,7 +11,7 @@
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
-import { ctx, inc, err, PTR } from '../src/ctx.js'
+import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { staticPropertyKey } from '../src/key.js'
 import { strHashLiteral } from './collection.js'
 
@@ -196,7 +196,7 @@ const maybeDynMoveIR = () => needsArrayDynMove()
 const headerPropsCopyIR = () => needsArrayDynMove() ? `
     (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
     (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+          (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${PTR.HASH}))
       (then (f64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $oldProps))))` : ''
 
@@ -205,7 +205,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
       (then
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
         (if (i32.eq
-              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
           (then
             (local.set $root (global.get $__dyn_props))
@@ -254,11 +254,11 @@ export default (ctx) => {
     (local $off i32)
     (if (result f64)
       (i32.ne
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF)))
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
         (i32.const ${PTR.ARRAY}))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -277,7 +277,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (block $done
       (loop $follow
         (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -313,9 +313,9 @@ export default (ctx) => {
     // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $ptr.
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))
-    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF))))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if
       (i32.and
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -511,9 +511,7 @@ export default (ctx) => {
             ? (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
             : ctx.module.modules['string']
               ? ['if', ['result', 'f64'],
-                ['i32.or',
-                  ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
-                  ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.SSO]]],
+                ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
                 ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])],
                 ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])]]
               : (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
@@ -685,9 +683,7 @@ export default (ctx) => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
         if (ctx.module.modules['string']) {
           return ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
             ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])]]
         }
@@ -697,9 +693,7 @@ export default (ctx) => {
     if (ctx.module.modules['string'])
       return typed(
         ['if', ['result', 'f64'],
-          ['i32.or',
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.SSO]]],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
           ['then', stringLoad()],
           ['else', arrayLoad]],
         'f64')
@@ -805,7 +799,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
     (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
-    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const 0xFFFFFFFF))))
+    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
       (then (f64.const 0))

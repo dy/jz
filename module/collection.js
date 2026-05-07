@@ -11,7 +11,7 @@
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
 import { emit, emitFlat } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
 const MAP_ENTRY = 24  // hash + key + value
@@ -57,14 +57,14 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
   const extBranch = hasVal
     ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)'
     : '(then (nop))'
-  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const 47)) (i64.const 0xF)))`
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return (local.get $coll))))`
     : `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (return (local.get $coll))))`
   return `(func $${name} (param $coll i64) (param $key i64) ${valParam}(result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32)
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -98,7 +98,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
   const notFound = wantValue
     ? `(i64.const ${NULL_NAN})`
     : '(i32.const 0)'
-  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const 47)) (i64.const 0xF)))`
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType})) (then (if (i32.eq ${tExpr} (i32.const ${PTR.EXTERNAL}))
         (then (return ${wantValue
@@ -110,7 +110,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, has
   return `(func $${name} (param $coll i64) (param $key i64) (result ${rt})
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -229,10 +229,10 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
   return `(func $${name} (param $coll i64) (param $key i64) (result i64)
     (local $off i32) (local $cap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     (if (i32.ne
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const 47)) (i64.const 0xF)))
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (i64.const ${missing}))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $h (call ${hashFn} (local.get $key)))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
@@ -250,7 +250,7 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
 }
 
 function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing = UNDEF_NAN, hasExt = false) {
-  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const 47)) (i64.const 0xF)))`
+  const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
     ? `(if (i32.ne ${tExpr} (i32.const ${expectedType}))
       (then
@@ -262,7 +262,7 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
   return `(func $${name} (param $coll i64) (param $key i64) (param $h i32) (result i64)
     (local $off i32) (local $cap i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
@@ -282,10 +282,10 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType) {
   return `(func $${name} (param $obj i64) (param $key i64) (param $h i32) (param $val i64) (result i64)
     (local $off i32) (local $cap i32) (local $idx i32) (local $slot i32)
     (if (i32.ne
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const 47)) (i64.const 0xF)))
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (local.get $obj))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
     (block $done (loop $probe
@@ -402,28 +402,24 @@ export default (ctx) => {
             (f64.eq (local.get $fb) (local.get $fb)))
           (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
-            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 47)) (i64.const 0xF))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 47)) (i64.const 0xF))))
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (if (result i32)
               (i32.and
-                (i32.or
-                  (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                  (i32.eq (local.get $ta) (i32.const ${PTR.SSO})))
-                (i32.or
-                  (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
-                  (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
+                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
               (then (call $__str_eq (local.get $a) (local.get $b)))
               (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const 47)) (i64.const 0xF))))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ;; NaN-boxed strings carry the tag inside a NaN payload. Regular numbers
     ;; (e.g. f64.convert_i32_s offsets used as __ihash keys) can alias mantissa
     ;; bits onto the type slot — gate the str-hash dispatch on actual NaN.
     (if (i32.and (f64.ne (local.get $f) (local.get $f))
-          (i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+          (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
       (then (return (call $__str_hash (local.get $v)))))
     (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
     (if (i32.and (i32.eq (local.get $t) (i32.const 0)) (f64.ne (local.get $f) (local.get $f)))
@@ -522,13 +518,14 @@ export default (ctx) => {
   // byte loop so SSO branch uses dword shifts and STRING branch uses raw load8_u — neither
   // calls anything per byte (vs original 1×__char_at → __ptr_type + __ptr_offset per byte).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s i64) (result i32)
-    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $w i32)
+    (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32)
     (local.set $h (i32.const 0x811c9dc5))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const 47)) (i64.const 0xF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $s) (i64.const 0xFFFFFFFF))))
-    (if (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $s) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.shr_u (local.get $aux) (i32.const 14)))
       (then
-        (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $s) (i64.const 32)) (i64.const 0x7FFF))))
+        (local.set $len (i32.and (local.get $aux) (i32.const 7)))
         (block $ds (loop $ls
           (br_if $ds (i32.ge_s (local.get $i) (local.get $len)))
           (local.set $h (i32.mul
@@ -610,10 +607,10 @@ export default (ctx) => {
         (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
           (then
             (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u
-              (local.get $obj) (i64.const 32)) (i64.const 0x7FFF))))
+              (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
             (local.set $kbits
               (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))
-            (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const 0xFFFFFFFF))))
+            (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const ${LAYOUT.OFFSET_MASK}))))
             (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
             (local.set $idx (i32.const 0))
             (block $kdone (loop $kloop
@@ -641,10 +638,10 @@ export default (ctx) => {
                  (i32.ne (global.get $__schema_tbl) (i32.const 0)))
       (then
         (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u
-          (local.get $obj) (i64.const 32)) (i64.const 0x7FFF))))
+          (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
         (local.set $kbits
           (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))
-        (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const 0xFFFFFFFF))))
+        (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const ${LAYOUT.OFFSET_MASK}))))
         (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
         (local.set $idx (i32.const 0))
         (block $schemaSetDone (loop $schemaSetLoop
@@ -665,7 +662,7 @@ export default (ctx) => {
     (local $props i64) (local $off i32)
     (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
@@ -686,7 +683,7 @@ export default (ctx) => {
           (then
             (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
             (br_if $haveProps (i32.eq
-              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const 47)) (i64.const 0xF)))
+              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH})))
             (local.set $props (i64.const 0))))
         ;; OBJECT: heap-allocated (off >= __heap_start) carries propsPtr at
@@ -728,7 +725,7 @@ export default (ctx) => {
                 (br $dynDone))
               (else
                 (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props))))))))
-      (local.set $poff (i32.wrap_i64 (i64.and (local.get $props) (i64.const 0xFFFFFFFF))))
+      (local.set $poff (i32.wrap_i64 (i64.and (local.get $props) (i64.const ${LAYOUT.OFFSET_MASK}))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
       (local.set $h (call $__str_hash (local.get $key)))
       (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
@@ -802,8 +799,8 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_set'] = () => `(func $__dyn_set (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
     (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const 0xFFFFFFFF))))
-    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const 47)) (i64.const 0xF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
@@ -827,7 +824,7 @@ export default (ctx) => {
             (if (i32.or
                   (i64.eqz (local.get $oldProps))
                   (i32.eq
-                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const 47)) (i64.const 0xF)))
+                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                     (i32.const ${PTR.HASH})))
               (then
                 (local.set $props
@@ -925,9 +922,7 @@ export default (ctx) => {
     const idxVal = ['local.get', `$${idxTmp}`]
     const typeVal = ['local.get', `$${typeTmp}`]
     const isStringKey = ['call', '$__is_str_key', ['i64.reinterpret_f64', keyVal]]
-    const isStringLike = ['i32.or',
-      ['i32.eq', typeVal, ['i32.const', PTR.STRING]],
-      ['i32.eq', typeVal, ['i32.const', PTR.SSO]]]
+    const isStringLike = ['i32.eq', typeVal, ['i32.const', PTR.STRING]]
     const isArrayLike = ['i32.or',
       ['i32.eq', typeVal, ['i32.const', PTR.ARRAY]],
       ['i32.eq', typeVal, ['i32.const', PTR.TYPED]]]
@@ -938,9 +933,7 @@ export default (ctx) => {
           ['i32.eq', typeVal, ['i32.const', PTR.ARRAY]],
           ['i32.eq', typeVal, ['i32.const', PTR.TYPED]]],
         ['i32.or',
-          ['i32.or',
-            ['i32.eq', typeVal, ['i32.const', PTR.STRING]],
-            ['i32.eq', typeVal, ['i32.const', PTR.SSO]]],
+          ['i32.eq', typeVal, ['i32.const', PTR.STRING]],
           ['i32.or',
             ['i32.or',
               ['i32.eq', typeVal, ['i32.const', PTR.SET]],

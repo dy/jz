@@ -11,7 +11,7 @@
 import { typed, asF64, asI64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 function jsonConstString(ctx, expr) {
@@ -36,7 +36,7 @@ export default (ctx) => {
     __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
-    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws'],
+    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
@@ -142,8 +142,7 @@ export default (ctx) => {
         (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
         (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
     ;; String
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
       (then
         (call $__jput (i32.const 34))
         (call $__jput_str (local.get $val))
@@ -297,7 +296,7 @@ export default (ctx) => {
                        (i32.shl (local.get $i) (i32.const 3)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $sl)))
-        (return (call $__mkptr (i32.const ${PTR.SSO}) (local.get $len) (local.get $sso)))))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $sso)))))
     ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
     ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
     (if (local.get $simple)
@@ -471,8 +470,8 @@ export default (ctx) => {
     (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
     (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
-    ;; SSO: byte-by-byte via __sso_char; STRING: bulk memcpy from string offset.
-    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
+    ;; SSO: byte-by-byte via __sso_char; heap STRING: bulk memcpy from string offset.
+    (if (i32.and (call $__ptr_aux (local.get $str)) (i32.const ${LAYOUT.SSO_BIT}))
       (then
         (local.set $i (i32.const 0))
         (block $d (loop $l

@@ -26,7 +26,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { ctx, err, inc, resolveIncludes, PTR } from './ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
 import {
   T, VAL, analyzeValTypes, analyzeIntCertain, analyzeLocals,
   analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
@@ -54,10 +54,15 @@ const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : f
 // Per-compile func name set + map live on ctx.func.names / ctx.func.map,
 // populated at compile() entry. Both reset by ctx.js reset() and re-filled here.
 
-// NaN-box high-bits mask: used by the static-prefix-strip pass below to
-// identify pointer slots in the data segment. Kept local (ir.js owns the
-// runtime packing via mkPtrIR).
-const NAN_PREFIX_BITS = 0x7FF8n
+// NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
+// below to identify pointer slots in the data segment.
+const NAN_PREFIX = BigInt(LAYOUT.NAN_PREFIX)
+const TAG_MASK_BIG = BigInt(LAYOUT.TAG_MASK)
+const AUX_MASK_BIG = BigInt(LAYOUT.AUX_MASK)
+const OFFSET_MASK_BIG = BigInt(LAYOUT.OFFSET_MASK)
+const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT)
+const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT)
+const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
 
 // Low-level IR helpers previously lived here. Pure ones moved to src/ir.js;
 // emit-calling ones (toBool, emitTypeofCmp, emitDecl, materializeMulti,
@@ -1081,12 +1086,14 @@ function stripStaticDataPrefix(sec) {
     for (const slotOff of ctx.runtime.staticPtrSlots) {
       if (slotOff < prefix) continue
       const bits = dv.getBigUint64(slotOff, true)
-      if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX_BITS) continue
-      const ty = Number((bits >> 47n) & 0xFn)
+      if (((bits >> 48n) & 0xFFF8n) !== NAN_PREFIX) continue
+      const ty = Number((bits >> TAG_SHIFT_BIG) & TAG_MASK_BIG)
       if (!SHIFTABLE.has(ty)) continue
-      const off = Number(bits & 0xFFFFFFFFn)
+      // SSO STRING: "offset" holds packed bytes, not a heap address — never shift.
+      if (ty === PTR.STRING && ((bits >> AUX_SHIFT_BIG) & SSO_BIT_BIG)) continue
+      const off = Number(bits & OFFSET_MASK_BIG)
       if (off < prefix) continue
-      const hi = bits & ~0xFFFFFFFFn
+      const hi = bits & ~OFFSET_MASK_BIG
       dv.setBigUint64(slotOff, hi | BigInt(off - prefix), true)
     }
   }
@@ -1104,16 +1111,21 @@ function stripStaticDataPrefix(sec) {
         Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
         Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
         typeof child[4][1] === 'number' && child[4][1] >= prefix) {
-        child[4][1] -= prefix
+        // SSO STRING: aux carries SSO_BIT, "offset" holds packed bytes — don't shift.
+        const isSsoString = child[2][1] === PTR.STRING &&
+          Array.isArray(child[3]) && child[3][0] === 'i32.const' &&
+          typeof child[3][1] === 'number' && (child[3][1] & LAYOUT.SSO_BIT)
+        if (!isSsoString) child[4][1] -= prefix
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
         const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
-        if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
-          const ty = Number((bits >> 47n) & 0xFn)
-          if (SHIFTABLE.has(ty)) {
-            const off = Number(bits & 0xFFFFFFFFn)
+        if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX) {
+          const ty = Number((bits >> TAG_SHIFT_BIG) & TAG_MASK_BIG)
+          if (SHIFTABLE.has(ty) &&
+              !(ty === PTR.STRING && ((bits >> AUX_SHIFT_BIG) & SSO_BIT_BIG))) {
+            const off = Number(bits & OFFSET_MASK_BIG)
             if (off >= prefix) {
-              const hi = bits & ~0xFFFFFFFFn
+              const hi = bits & ~OFFSET_MASK_BIG
               const newBits = hi | BigInt(off - prefix)
               child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
             }

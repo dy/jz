@@ -2,7 +2,7 @@
  * Core module — NaN-boxing, bump allocator, property dispatch.
  *
  * Foundation for all heap types. Every module depends on this.
- * NaN-boxing: quiet NaN (0x7FF8) + 51-bit payload [type:4][aux:15][offset:32]
+ * NaN-boxing: see LAYOUT in src/ctx.js for the canonical bit layout.
  *
  * Auto-included by array/object/string modules.
  *
@@ -12,11 +12,12 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, T, repOf, updateRep } from '../src/analyze.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
 
-const NAN_PREFIX = 0x7FF8
+// Pre-shifted NaN prefix as a full i64 mask, for `(i64.const ${NAN_BITS})` use.
+const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
 
 const PTR_BY_VAL = {
   [VAL.ARRAY]: PTR.ARRAY,
@@ -36,13 +37,9 @@ export default (ctx) => {
     __typed_data: ['__ptr_offset', '__ptr_aux'],
     __ptr_offset: [],
     __is_str_key: ['__ptr_type'],
-    __str_len: ['__ptr_type', '__ptr_offset'],
+    __str_len: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __set_len: [],
-    __length: () => {
-      const d = ['__ptr_type', '__ptr_offset', '__str_len', '__len']
-      if (ctx.features.sso) d.push('__ptr_aux')
-      return d
-    },
+    __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
     __typeof: ['__ptr_type', '__is_nullish'],
     __alloc_hdr: ['__alloc'],
   })
@@ -58,7 +55,7 @@ export default (ctx) => {
     ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
     ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string').
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
-      (then (i64.ne (local.get $a) (i64.const 0x7FF8000000000000)))
+      (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
       (else
         ;; Bits differ. Numeric path covers -0/+0 and any normal numeric inequality.
         (local.set $fa (f64.reinterpret_i64 (local.get $a)))
@@ -69,22 +66,16 @@ export default (ctx) => {
             (f64.eq (local.get $fb) (local.get $fb)))
           (then (f64.eq (local.get $fa) (local.get $fb)))
           (else
-            ;; At least one operand is a NaN-box. Heap STRINGs with same content can
-            ;; have different offsets; SSO strings with different bits cannot be equal.
-            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const 47)) (i64.const 0xF))))
-            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const 47)) (i64.const 0xF))))
-            (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.SSO})) (i32.eq (local.get $tb) (i32.const ${PTR.SSO})))
-              (then (return (i32.const 0))))
+            ;; At least one operand is a NaN-box. Both STRING (heap or SSO) → __str_eq
+            ;; handles content compare and SSO fast-fail internally.
+            (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+            (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (if (result i32)
               (i32.and
-                (i32.or
-                  (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-                  (i32.eq (local.get $ta) (i32.const ${PTR.SSO})))
-                (i32.or
-                  (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))
-                  (i32.eq (local.get $tb) (i32.const ${PTR.SSO}))))
-                (then (call $__str_eq (local.get $a) (local.get $b)))
-                (else (i32.const 0))))))))`
+                (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
+                (i32.eq (local.get $tb) (i32.const ${PTR.STRING})))
+              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (else (i32.const 0))))))))`
 
   ctx.core.stdlib['__is_null'] = `(func $__is_null (param $v i64) (result i32)
     (i64.eq (local.get $v) (i64.const ${NULL_NAN})))`
@@ -99,22 +90,19 @@ export default (ctx) => {
       (else
         (i32.and
           (i32.and
-            (i64.ne (local.get $v) (i64.const 0x7FF8000000000000))
+            (i64.ne (local.get $v) (i64.const ${NAN_BITS}))
             (i64.ne (local.get $v) (i64.const ${NULL_NAN})))
           (i32.and
             (i64.ne (local.get $v) (i64.const ${UNDEF_NAN}))
-            (i64.ne (local.get $v) (i64.const 0x7FFA800000000000)))))))`
+            (i64.ne (local.get $v) (i64.const 0x7FFA400000000000)))))))`
 
   ctx.core.stdlib['__is_str_key'] = `(func $__is_str_key (param $v i64) (result i32)
-    (local $f f64) (local $t i32)
+    (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (result i32) (f64.eq (local.get $f) (local.get $f))
       (then (i32.const 0))
       (else
-        (local.set $t (call $__ptr_type (i64.reinterpret_f64 (local.get $f))))
-        (i32.or
-          (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-          (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))))`
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $f))) (i32.const ${PTR.STRING})))))`
 
 
   // Default dynamic-property helpers are harmless stubs. The collection module
@@ -133,22 +121,22 @@ export default (ctx) => {
 
   ctx.core.stdlib['__mkptr'] = `(func $__mkptr (param $type i32) (param $aux i32) (param $offset i32) (result f64)
     (f64.reinterpret_i64 (i64.or
-      (i64.shl (i64.const ${NAN_PREFIX}) (i64.const 48))
+      (i64.const ${NAN_BITS})
       (i64.or
-        (i64.shl (i64.and (i64.extend_i32_u (local.get $type)) (i64.const 0xF)) (i64.const 47))
+        (i64.shl (i64.and (i64.extend_i32_u (local.get $type)) (i64.const ${LAYOUT.TAG_MASK})) (i64.const ${LAYOUT.TAG_SHIFT}))
         (i64.or
-          (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const 0x7FFF)) (i64.const 32))
-          (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const 0xFFFFFFFF)))))))`
+          (i64.shl (i64.and (i64.extend_i32_u (local.get $aux)) (i64.const ${LAYOUT.AUX_MASK})) (i64.const ${LAYOUT.AUX_SHIFT}))
+          (i64.and (i64.extend_i32_u (local.get $offset)) (i64.const ${LAYOUT.OFFSET_MASK})))))))`
 
   ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr i64) (result i32)
     (local $bits i64) (local $off i32)
     (local.set $bits (local.get $ptr))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; Arrays can be reallocated during growth; follow forwarding pointer (cap=-1 sentinel).
     ;; Bounds are checked inside the loop so non-array ptrs skip them entirely, and well-formed
     ;; ARRAY ptrs without forwarding still pay only one bounds check before the cap load.
     (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${PTR.ARRAY}))
       (then
         (block $done
@@ -161,10 +149,10 @@ export default (ctx) => {
     (local.get $off))`
 
   ctx.core.stdlib['__ptr_aux'] = `(func $__ptr_aux (param $ptr i64) (result i32)
-    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const 0x7FFF))))`
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))`
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
-    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 47)) (i64.const 0xF))))`
+    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
 
   // === Bump allocator ===
 
@@ -231,8 +219,8 @@ export default (ctx) => {
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr i64) (result i32)
     (local $bits i64) (local $t i32) (local $off i32) (local $aux i32)
     (local.set $bits (local.get $ptr))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; ARRAY fast path: follow forwarding inline, then load len at off-8.
     (if (result i32)
       (i32.and (i32.eq (local.get $t) (i32.const 1)) (i32.ge_u (local.get $off) (i32.const 8)))
@@ -256,7 +244,7 @@ export default (ctx) => {
           (then
             (if (result i32) (i32.eq (local.get $t) (i32.const 3))
               (then
-                (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
+                (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
                 (if (result i32) (i32.and (local.get $aux) (i32.const 8))
                   (then (i32.shr_u (i32.load (local.get $off))
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
@@ -291,14 +279,16 @@ export default (ctx) => {
           (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))
       (else (i32.const 0))))`
 
-  // String (heap): [-4:len(i32)][chars...]
+  // String length (UTF-8 byte count). Heap: [-4:len(i32)][chars...]; SSO: aux & 7.
   ctx.core.stdlib['__str_len'] = `(func $__str_len (param $ptr i64) (result i32)
-    (local $off i32)
+    (local $off i32) (local $aux i32)
+    (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
+      (then (return (i32.const 0))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
+      (then (return (i32.and (local.get $aux) (i32.const 7)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (if (result i32)
-      (i32.and
-        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.STRING}))
-        (i32.ge_u (local.get $off) (i32.const 4)))
+    (if (result i32) (i32.ge_u (local.get $off) (i32.const 4))
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
 
@@ -307,8 +297,8 @@ export default (ctx) => {
   ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr i64) (param $len i32)
     (local $bits i64) (local $t i32) (local $off i32)
     (local.set $bits (local.get $ptr))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; Only ARRAY (1), TYPED (3), HASH (7), SET (8), MAP (9) carry an 8-byte header.
     ;; Of those, only ARRAY can be forwarded — follow the chain inline.
     (if
@@ -509,8 +499,8 @@ export default (ctx) => {
 
   // Runtime .length dispatch — factory elides branches for types that can't exist in
   // this program (features.* + hash-stdlib presence). ARRAY is always live; STRING and
-  // number are always dispatched. SSO branch elided when features.sso is off. The __len
-  // disjunction collapses to whichever of ARRAY/TYPED/HASH/SET/MAP are reachable.
+  // number are always dispatched. The __len disjunction collapses to whichever of
+  // ARRAY/TYPED/HASH/SET/MAP are reachable. STRING covers both heap and SSO via __str_len.
   ctx.core.stdlib['__length'] = () => {
     const types = [PTR.ARRAY]
     if (ctx.features.typedarray) types.push(PTR.TYPED)
@@ -528,16 +518,8 @@ export default (ctx) => {
                   (else (f64.const nan:${UNDEF_NAN}))))
               (else (f64.const nan:${UNDEF_NAN})))`
     const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (then
-              (if (result f64) (i32.ge_u (local.get $off) (i32.const 4))
-                (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-                (else (f64.const nan:${UNDEF_NAN}))))
+            (then (f64.convert_i32_s (call $__str_len (local.get $v))))
             (else ${lenArm}))`
-    const afterNumber = ctx.features.sso
-      ? `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.SSO}))
-          (then (f64.convert_i32_s (call $__ptr_aux (local.get $v))))
-          (else ${stringArm}))`
-      : stringArm
     return `(func $__length (param $v i64) (result f64)
     (local $f f64) (local $t i32) (local $off i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
@@ -546,7 +528,7 @@ export default (ctx) => {
       (else
         (local.set $t (call $__ptr_type (local.get $v)))
         (local.set $off (call $__ptr_offset (local.get $v)))
-        ${afterNumber})))`
+        ${stringArm})))`
   }
 
   // === Property dispatch (.length, .prop) ===
@@ -679,9 +661,7 @@ export default (ctx) => {
   }
 
   ctx.core.stdlib['__typeof'] = () => {
-    const stringTest = ctx.features.sso
-      ? `(i32.or (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.eq (local.get $t) (i32.const ${PTR.SSO})))`
-      : `(i32.eq (local.get $t) (i32.const ${PTR.STRING}))`
+    const stringTest = `(i32.eq (local.get $t) (i32.const ${PTR.STRING}))`
     const closureArm = ctx.features.closure
       ? `(if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE}))
       (then (return (global.get $__tof_function))))`

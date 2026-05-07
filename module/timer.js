@@ -28,7 +28,7 @@
 
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
@@ -48,8 +48,8 @@ const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (ex
     (i32.const 0)
     ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
-      (i64.shr_u (local.get $clos) (i64.const 32))
-      (i64.const 0x7FFF)))))`
+      (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
+      (i64.const ${LAYOUT.AUX_MASK})))))`
 
 const setupWasi = (ctx) => {
   // Always include init + tick + loop when timer module loads (structural, not per-emitter)

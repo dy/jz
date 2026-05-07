@@ -33,10 +33,10 @@ const _bi64 = (() => {
 })()
 export const i64ToF64 = _bi64.i64ToF64
 export const f64ToI64 = _bi64.f64ToI64
-// Sentinel NaN for "undefined/missing arg" (payload=1, distinct from JS NaN payload=0)
-_u32[1] = 0x7FF80000; _u32[0] = 1; export const UNDEF_NAN = _f64[0]
-// Null NaN: type=0 (ATOM), aux=1, offset=0 — distinct from 0, NaN, and UNDEF_NAN
+// Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
+// Distinct from 0, JS NaN (payload=0), and all pointers.
 _u32[1] = 0x7FF80001; _u32[0] = 0; export const NULL_NAN = _f64[0]
+_u32[1] = 0x7FF80002; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
 
 // Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
@@ -45,8 +45,9 @@ export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN :
 const decode = v => {
   if (v === v) return v  // fast path: non-NaN
   _f64[0] = v
-  if (_u32[1] === 0x7FF80001 && _u32[0] === 0) return null
-  if (_u32[1] === 0x7FF80000 && _u32[0] === 1) return undefined
+  if (_u32[0] !== 0) return v
+  if (_u32[1] === 0x7FF80001) return null
+  if (_u32[1] === 0x7FF80002) return undefined
   return v
 }
 
@@ -188,7 +189,7 @@ export const memory = (src) => {
     if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return ptr(5, str.length, packed)  // SSO
+      return ptr(4, 0x4000 | str.length, packed)  // STRING + SSO_BIT
     }
     const enc = new TextEncoder().encode(str)
     const n = enc.length, raw = alloc(4 + n), m = dv()
@@ -257,8 +258,10 @@ export const memory = (src) => {
     if (Array.isArray(p)) return p.map(v => this.read(v))  // multi-value tuple
     if (p === p) return p  // regular number passthrough (NaN fails ===)
     const t = type(p), a = aux(p), off = offset(p)
-    if (t === 0 && a === 1 && off === 0) return null
-    if (t === 0 && a === 0 && off === 1) return undefined
+    if (t === 0 && off === 0) {
+      if (a === 1) return null
+      if (a === 2) return undefined
+    }
     if (t === 11 && this._extMap) return this._extMap[off]
     if (t === 1) {  // ARRAY
       let m = dv(), aOff = off
@@ -286,14 +289,15 @@ export const memory = (src) => {
       new Uint8Array(out).set(new Uint8Array(mem.buffer, off, byteLen))
       return out
     }
-    if (t === 4) {  // STRING (heap)
+    if (t === 4) {  // STRING (aux bit 0x4000 = SSO inline, else heap)
+      const a2 = aux(p)
+      if (a2 & 0x4000) {
+        const len = a2 & 0x7; let s = ''
+        for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+        return s
+      }
       const len = dv().getInt32(off - 4, true)
       return new TextDecoder().decode(new Uint8Array(mem.buffer, off, len))
-    }
-    if (t === 5) {  // STRING_SSO
-      const len = aux(p); let s = ''
-      for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
-      return s
     }
     if (t === 6) {  // OBJECT
       const m = dv(), sid = aux(p), keys = this.schemas[sid]

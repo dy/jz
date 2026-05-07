@@ -26,7 +26,7 @@
 import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL, exprType } from '../src/analyze.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const addImportOnce = (ctx, mod, name, fn) => {
   if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
@@ -63,12 +63,12 @@ const setupWasi = (ctx) => {
     ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr i64)
-    (local $iov i32) (local $type i32) (local $len i32) (local $off i32) (local $buf i32)
+    (local $iov i32) (local $aux i32) (local $len i32) (local $off i32) (local $buf i32)
     (local.set $iov (call $__alloc (i32.const 12)))
-    (local.set $type (call $__ptr_type (local.get $ptr)))
-    (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
       (then
-        (local.set $len (call $__ptr_aux (local.get $ptr)))
+        (local.set $len (i32.and (local.get $aux) (i32.const 7)))
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $off (i32.const 0))
         (block $done (loop $loop
@@ -113,8 +113,7 @@ const setupWasi = (ctx) => {
     (local.set $type (call $__ptr_type (local.get $val)))
     (if (i32.eqz (local.get $type))
       (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 0)))) (return)))
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
       (then (call $__write_str (local.get $fd) (local.get $val)) (return)))
     (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
@@ -188,7 +187,7 @@ const setupJsHost = (ctx) => {
     ['func', '$__now', ['param', 'i32'], ['result', 'f64']])
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
-  const emptyStr = () => mkPtrIR(PTR.SSO, 0, 0)
+  const emptyStr = () => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
   const asI64Bits = (e) => ['i64.reinterpret_f64', asF64(emit(e))]
 
   const makeConsole = (method, fd) => {

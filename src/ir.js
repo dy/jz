@@ -20,7 +20,7 @@
  * @module ir
  */
 
-import { ctx, err, inc, PTR } from './ctx.js'
+import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal } from './analyze.js'
 
 // === Type helpers ===
@@ -119,11 +119,14 @@ export const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
 
 // === Nullish sentinels ===
 
-/** Null/undefined: one nullish value inside jz. NaN-boxed ATOM (type=0, aux=1, offset=0).
+/** Reserved atoms (PTR.ATOM tag, offset=0).
+ *    aux=1 → null      (NULL_NAN)
+ *    aux=2 → undefined (UNDEF_NAN)
+ *  See module/symbol.js for the broader reserved-atom-id scheme.
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
  *  At the JS boundary, null and undefined preserve their identity for interop. */
-export const NULL_NAN = '0x7FF8000100000000'
-export const UNDEF_NAN = '0x7FF8000000000001'
+export const NULL_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const UNDEF_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 /** WAT-template-ready sentinel expressions for use in stdlib template strings.
  *  `f64.const nan:0xHEX` is 3 bytes shorter than `f64.reinterpret_i64 (i64.const ...)`. */
 export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
@@ -150,15 +153,14 @@ export const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splic
 
 // === Pointer construction ===
 
-const NAN_PREFIX_BITS = 0x7FF8n
 const litI32 = n => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number' ? n[1] : null
 
 /** Pack (type, aux, offset) into the f64 NaN-box bit pattern as a hex string. */
 function packPtrBits(type, aux, offset) {
-  const bits = (NAN_PREFIX_BITS << 48n)
-    | ((BigInt(type) & 0xFn) << 47n)
-    | ((BigInt(aux) & 0x7FFFn) << 32n)
-    | (BigInt(offset >>> 0) & 0xFFFFFFFFn)
+  const bits = LAYOUT.NAN_PREFIX_BITS
+    | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
+    | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
+    | (BigInt(offset >>> 0) & BigInt(LAYOUT.OFFSET_MASK))
   return '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
 }
 
@@ -249,7 +251,7 @@ export function appendStaticSlots(slots, headerBytes = 0) {
   if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
   for (let i = 0; i < slots.length; i++) {
     const bits = slots[i]
-    if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+    if (((bits >> 48n) & 0xFFF8n) === BigInt(LAYOUT.NAN_PREFIX)) {
       ctx.runtime.staticPtrSlots.push(off + i * 8)
     }
   }
@@ -373,7 +375,7 @@ export function truthyIR(e) {
     // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
       const bits = String(e[1][1])
-      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA800000000000'])
+      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA400000000000'])
       return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.
