@@ -48,6 +48,10 @@ test('JSON.parse: true', () => {
   is(run(`export let f = () => JSON.parse("true")`).f(), 1)
 })
 
+test('JSON.parse: null', () => {
+  ok(run(`export let f = () => JSON.parse("null")`).f() === null)
+})
+
 test('JSON.parse: array length', () => {
   is(run(`export let f = () => JSON.parse("[1,2,3]").length`).f(), 3)
 })
