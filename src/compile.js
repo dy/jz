@@ -1335,20 +1335,20 @@ export default function compile(ast, profiler) {
   // Custom section: per-export i64 ABI map. Each entry describes an export
   // whose boundary wrapper carries NaN-boxed pointers via i64 (rather than
   // f64) to dodge V8's NaN canonicalization. Format: { name, p, r } where p
-  // is a bit-packed param mask (LSB = param 0) and r is 1 if result is i64.
-  // host.js wrap() reads this and reinterprets BigInt↔f64 only at the i64
-  // positions; numeric f64 positions stay as Numbers on the JS side.
+  // is an array of i64 param indices and r is 1 if result is i64. host.js
+  // wrap() reinterprets BigInt↔f64 at i64 positions; numeric f64 positions
+  // stay as Numbers on the JS side.
   const i64Exports = []
   for (const f of ctx.func.list) {
     if (!f.exported || !isBoundaryWrapped(f) || !f._exportUsesI64) continue
-    let pmask = 0
-    f._exportI64Sig.params.forEach((b, i) => { if (b) pmask |= (1 << i) })
+    const p = []
+    f._exportI64Sig.params.forEach((b, i) => { if (b) p.push(i) })
     const r = f._exportI64Sig.result ? 1 : 0
-    i64Exports.push({ name: f.name, p: pmask, r })
+    i64Exports.push({ name: f.name, p, r })
     // Aliases (export { foo as bar }) re-export the same wrapper under a
     // different JS-visible name; list each alias too so wrap() finds it.
     for (const [alias, val] of Object.entries(ctx.func.exports)) {
-      if (val === f.name && alias !== f.name) i64Exports.push({ name: alias, p: pmask, r })
+      if (val === f.name && alias !== f.name) i64Exports.push({ name: alias, p, r })
     }
   }
   if (i64Exports.length)

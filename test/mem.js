@@ -20,9 +20,9 @@ function adaptI64(mod, raw) {
     if (typeof fn !== 'function') { out[name] = fn; continue }
     const sig = i64Exp.get(name)
     if (!sig) { out[name] = fn; continue }
-    const { p: pmask, r } = sig
+    const piSet = new Set(sig.p), r = sig.r
     out[name] = (...args) => {
-      const a = pmask ? args.map((x, i) => (pmask & (1 << i)) ? f64ToI64(x) : x) : args
+      const a = piSet.size ? args.map((x, i) => piSet.has(i) ? f64ToI64(x) : x) : args
       const ret = fn(...a)
       return r ? i64ToF64(ret) : ret
     }
