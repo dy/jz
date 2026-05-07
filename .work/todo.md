@@ -9,7 +9,144 @@
 
 * [ ] Options breakdown in readme
 
-##  [ ] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
+## Phase 14: Internal Parser (Future)
+* [ ] Extract minimal jz parser from subscript features
+* [ ] jzify uses jessie, pure jz uses internal parser
+* [ ] True metacircular bootstrap
+
+
+### Build & tooling
+
+* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
+* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
+* [ ] jzify script converting any JZ
+* [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
+* [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
+* [ ] align with Crockford practices
+* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
+
+
+
+### Validation & quality
+
+* [ ] color-space converter (validates multi profile)
+* [ ] digital-filter biquad (validates memory profile)
+* [ ] test262 basics
+* [x] JS-equivalence audit for dynamic property writes:
+  - Dynamic writes to fixed-shape OBJECT fields are slot+sidecar coherent.
+  - Runtime string keys on ARRAY/TYPED receivers now detect canonical indexes
+    (`"0"` hits element 0, `"01"` remains a named property).
+  - Numeric hot paths are guarded by WAT tests so the string-index parser is
+    only emitted on runtime string-capable key paths.
+* [ ] Warn/error on hitting memory limits
+* [ ] Excellent WASM output
+* [ ] wasm2c / w2c2 integration test
+
+### Future
+
+* [ ] metacircularity (jz compiling jz)
+* [ ] Component interface (wit)
+* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] memory64 (>4GB)
+* [ ] relaxed SIMD
+* [ ] WebGPU compute shaders
+
+## Performance — closing the native-language gap
+
+Goal: match C/Zig on `mat4`, `aos`; match Rust on `bitwise`, `poly`, `json`.
+
+**2026-05-07 update — module-const type propagation (1-line fix in
+`exprType` 88e1944) closed most of the gap unexpectedly fast.** Bench
+numbers refreshed in README. Remaining gaps:
+
+| case     | before | now    | target | remaining gap | bottleneck                       |
+|----------|--------|--------|--------|----------------|----------------------------------|
+| biquad   | 6.39ms | 4.48ms | 5.30ms (C) | **already past**       | beats C/Rust/Zig now              |
+| mat4     | 3.96ms | 2.86ms | 2.60ms (C/Zig) | 1.10×       | small — V8 turbofan vs LLVM      |
+| aos      | 1.52ms | 1.09ms | 0.91ms (Zig) | 1.20×         | LICM / shuffle SIMD              |
+| bitwise  | 4.86ms | 3.45ms | 1.30ms (C/Rust) | **2.65×**  | needs wasm SIMD-128 (i32x4)      |
+| poly     | 1.12ms | 0.73ms | 0.63ms (Rust) | 1.16×        | small — needs f64x2 + i32x4 SIMD |
+| tokenizer| 0.10ms | 0.06ms | 0.07ms (Go)  | **already past** | beats native targets         |
+| json     | 0.21ms | 0.13ms | 0.03ms (C) | **4.3×**       | structural — NaN-box per node    |
+
+Most cases are now within ~20% of native. Only **bitwise** (2.6× behind)
+and **json** (4.3× behind) still have meaningful gaps — and the gaps
+are well-characterized: bitwise wants wasm SIMD-128, json wants a
+structural fast-path that drops NaN-boxing inside the parser.
+
+* [ ] **wasm SIMD-128 emission** — only worth doing for bitwise now;
+      mat4/aos/poly are within 10-20% of native, diminishing returns.
+  - Bitwise's inner loop is the textbook lane-local i32 case:
+    pure i32 stride-1 typed-array map with const-shift + const-mul body.
+    Trip count = 65536 (const, divisible by 4), no cross-iter deps.
+  - Implementation as a new optimizer pass operating on emitted WAT IR
+    (after fusedRewrite + hoist passes). Recognizer matches the loop shape;
+    lifter rewrites op-by-op (i32.xor → v128.xor, i32.shl K → i32x4.shl K,
+    i32.mul const → i32x4.mul (i32x4.splat const), i32.load → v128.load,
+    i32.store → v128.store); tail loop emitted only when length not divisible.
+  - Watr already supports the full SIMD-128 opcode set, no encoder work needed.
+  - Estimated win: bitwise 3.45 → ~0.95ms (matches C/Rust 1.30ms). Mat4/poly
+    would only see ~1.5× from f64x2, so ~1.9ms / ~0.5ms — possible but lower
+    leverage than the bitwise case.
+
+* [x] **monomorphic-call specialization** (poly) — already covered by
+      existing `specializeBimorphicTyped` phase in narrow.js; clones
+      `sum(arr)` per concrete elem ctor and rewrites call sites. Poly's
+      remaining ~16% gap to Rust isn't dispatch-related.
+
+* [ ] **mat4 unroll-4 recognizer** — DEFERRED. Mat4 is already at 2.86ms,
+      ~10% behind C/Zig 2.60ms. The remaining gap is V8 turbofan vs LLVM
+      codegen quality, not pattern-recognition; explicit f64x2 SIMD would
+      help but the absolute win is small (~0.3ms).
+
+* [ ] **json arena/raw-u8 fast path** — biggest remaining structural gap.
+      Realistic only if we restructure the parser's value-shape. Out of
+      scope for this performance push; requires a separate design pass.
+
+### Done in this push (commits 88e1944, 986c9f1, 6ad20df)
+
+* [x] exprType: propagate module-level numeric const wasm types (1-line
+      fix in src/analyze.js — 27-40% wins across every benchmark)
+* [x] Source-level inliner expansion: trailing-return shape, expression-
+      position substitution, factory-function guard, skip-into-exports
+      (src/plan.js + src/optimize.js + tests)
+* [x] Refreshed README bench numbers
+
+## Offering
+
+* [ ] Clear, fully transparent and understood codebase
+* [ ] Completed: docs, readme, code, tests, repl
+* [ ] Integrations (floatbeat, color-space, digital-filter)
+* [ ] Benchmarks
+* [ ] Pick ONE use case, make jz undeniable for it
+* [ ] Ship something someone uses
+
+
+## Floatbeat playground
+
+* [ ] Syntax highlighter
+* [ ] Waveform renderer
+* [ ] Database + recipe book
+* [ ] Samples collection
+
+
+## REPL
+
+* [ ] Auto-convert var→let, function→arrow on paste
+* [ ] Auto-import implicit globals
+* [ ] Show produced WAT
+* [ ] Document interop
+
+
+### EdgeJS PR shape
+
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
+  pulling large optional dependencies or network setup.
+
+
+## Done
+
+##  [x] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
   Context: print regression on node 22 (b5333df) was a flaky V8 NaN-payload
   canonicalization at the wasm→JS boundary. Spec-permitted (§ToJSValue);
   V8/SpiderMonkey both occasionally do it. Today's hotfix changes
@@ -124,82 +261,6 @@
   ([src/host.js:249](../src/host.js#L249) — `t === 11`). Today indexed
   via `state.extMap`; with externref params/results, the JS object
   flows through the boundary directly. Separate refactor, complementary.
-
-### Build & tooling
-
-* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
-* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
-* [ ] jzify script converting any JZ
-* [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
-* [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
-* [ ] align with Crockford practices
-* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
-
-
-
-## Phase 14: Internal Parser (Future)
-* [ ] Extract minimal jz parser from subscript features
-* [ ] jzify uses jessie, pure jz uses internal parser
-* [ ] True metacircular bootstrap
-
-
-### Validation & quality
-
-* [ ] color-space converter (validates multi profile)
-* [ ] digital-filter biquad (validates memory profile)
-* [ ] test262 basics
-* [x] JS-equivalence audit for dynamic property writes:
-  - Dynamic writes to fixed-shape OBJECT fields are slot+sidecar coherent.
-  - Runtime string keys on ARRAY/TYPED receivers now detect canonical indexes
-    (`"0"` hits element 0, `"01"` remains a named property).
-  - Numeric hot paths are guarded by WAT tests so the string-index parser is
-    only emitted on runtime string-capable key paths.
-* [ ] Warn/error on hitting memory limits
-* [ ] Excellent WASM output
-* [ ] wasm2c / w2c2 integration test
-
-### Future
-
-* [ ] metacircularity (jz compiling jz)
-* [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
-
-## Offering
-
-* [ ] Clear, fully transparent and understood codebase
-* [ ] Completed: docs, readme, code, tests, repl
-* [ ] Integrations (floatbeat, color-space, digital-filter)
-* [ ] Benchmarks
-* [ ] Pick ONE use case, make jz undeniable for it
-* [ ] Ship something someone uses
-
-
-## Floatbeat playground
-
-* [ ] Syntax highlighter
-* [ ] Waveform renderer
-* [ ] Database + recipe book
-* [ ] Samples collection
-
-
-## REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop
-
-
-### EdgeJS PR shape
-
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
-  pulling large optional dependencies or network setup.
-
-
-## Done
 
 ### JZ-side prep
 
