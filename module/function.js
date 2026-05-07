@@ -13,7 +13,7 @@
 import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
 import { emit, isReassigned } from '../src/emit.js'
 import { T, lookupValType, repOf, findFreeVars } from '../src/analyze.js'
-import { PTR, inc, err } from '../src/ctx.js'
+import { PTR, LAYOUT, inc, err } from '../src/ctx.js'
 
 
 export default (ctx) => {
@@ -140,15 +140,15 @@ export default (ctx) => {
       const arrT = tempI32('sa')
       const lenL = tempI32('sl')
       const setup = [
-        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', asF64(args[0])]],
-        ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${t}`]]],  // placeholder — set below
+        ['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(args[0])]]],
+        ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],  // placeholder — set below
       ]
       // Rebuild setup properly since we need the array ptr before len call
       setup.length = 0
       const arrPtrF64 = temp('sp')
       setup.push(['local.set', `$${arrPtrF64}`, asF64(args[0])])
-      setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['local.get', `$${arrPtrF64}`]]])
-      setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrPtrF64}`]]])
+      setup.push(['local.set', `$${arrT}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrPtrF64}`]]]])
+      setup.push(['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrPtrF64}`]]]])
 
       const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
       const slots = []
@@ -165,10 +165,10 @@ export default (ctx) => {
           ['local.get', `$${t}`],
           ['local.get', `$${lenL}`],
           ...slots,
-          // Inline __ptr_aux for CLOSURE pointer: aux = bits 32..46 holds funcIdx.
+          // Inline __ptr_aux for CLOSURE pointer: aux holds funcIdx.
           ['i32.wrap_i64', ['i64.and',
-            ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', 32]],
-            ['i64.const', 0x7FFF]]]]], 'f64')
+            ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
+            ['i64.const', LAYOUT.AUX_MASK]]]]], 'f64')
     }
 
     // Inline path: emit each arg, pad missing slots with UNDEF
@@ -185,9 +185,9 @@ export default (ctx) => {
         ['local.get', `$${t}`],
         ['i32.const', n],
         ...slots,
-        // Inline __ptr_aux for CLOSURE pointer: aux = bits 32..46 holds funcIdx.
+        // Inline __ptr_aux for CLOSURE pointer: aux holds funcIdx.
         ['i32.wrap_i64', ['i64.and',
-          ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', 32]],
-          ['i64.const', 0x7FFF]]]]], 'f64')
+          ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
+          ['i64.const', LAYOUT.AUX_MASK]]]]], 'f64')
   }
 }

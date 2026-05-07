@@ -4,9 +4,10 @@
  * Type=0 (ATOM): aux=atomId, offset=0.
  *
  * Reserved atom IDs (0-15):
- *   0 = reserved
- *   1 = null/undefined (type=0, aux=1, offset=0 — the nullish NaN sentinel)
- *   2-15 = reserved
+ *   0     = reserved
+ *   1     = null      (NULL_NAN sentinel)
+ *   2     = undefined (UNDEF_NAN sentinel)
+ *   3-15  = reserved
  *
  * User symbols start at ID 16.
  * Symbol('name')     → unique atom per call site (compile-time)

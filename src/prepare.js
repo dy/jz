@@ -51,9 +51,13 @@ const hostReturnValType = spec => {
 
 const addHostImport = (mod, name, alias, spec) => {
   const nParams = typeof spec === 'function' ? spec.length : (spec?.params || 0)
-  const params = Array(nParams).fill(['param', 'f64'])
+  // User-supplied imports carry NaN-boxed values via i64 (not f64) so V8 cannot
+  // canonicalize the NaN payload across the wasm↔JS function boundary —
+  // same hazard as env.print / __ext_*. Call sites wrap args with asI64()
+  // and unwrap the i64 return with f64.reinterpret_i64.
+  const params = Array(nParams).fill(['param', 'i64'])
   if (!ctx.module.imports.some(i => i[3]?.[1] === `$${alias}`)) {
-    ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'f64']]])
+    ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, ['func', `$${alias}`, ...params, ['result', 'i64']]])
   }
   ctx.scope.chain[alias] = alias
   const vt = hostReturnValType(spec)

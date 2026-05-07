@@ -28,11 +28,11 @@ const PINS = {
   callback:  { v8: 'win',  as: 'win'  },
   mat4:      { v8: 'win',  as: 'win'  },
   poly:      { v8: 'win',  as: 'tie'  },
-  biquad:    { v8: 'win',  as: 'todo' },
-  bitwise:   { v8: 'todo', as: 'todo' },
+  biquad:    { v8: 'win',  as: 'win'  },
+  bitwise:   { v8: 'win',  as: 'win'  },
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'win',  as: 'win'  },
-  json:      { v8: 'todo', as: 'na'   },
+  json:      { v8: 'win',  as: 'na'   },
   watr:      { v8: 'win',  as: 'na'   },
 }
 const TOLERANCE = { win: 1.0, tie: 1.05, near: 1.10 }

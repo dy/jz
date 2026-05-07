@@ -104,10 +104,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === -2) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
-    const isStr = ['i32.or',
-      ['i32.eq', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]]
+    const isStr = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]]
     return typed(eq ? ['i32.and', isPtr, isStr]
       : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isStr]], 'i32')
   }
@@ -123,9 +120,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
     const tt = `${T}${ctx.func.uniq++}`; ctx.func.locals.set(tt, 'i32')
     const notStrFn = ['i32.and',
-      ['i32.and',
-        ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
-        ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
+      ['i32.ne', ['local.tee', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]], ['i32.const', PTR.STRING]],
       ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.CLOSURE]]]
     const notNullish = ['i32.eqz', isNullish(['local.get', `$${t}`])]
     const check = ['i32.and', ['i32.and', isPtr, notStrFn], notNullish]
@@ -134,13 +129,13 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === -6) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const isFn = ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.CLOSURE]]
+    const isFn = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.CLOSURE]]
     return typed(eq ? ['i32.and', isPtr, isFn] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isFn]], 'i32')
   }
   if (code >= 0) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
-    const check = ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', code]]
+    const check = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', code]]
     return typed(eq ? ['i32.and', isPtr, check] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', check]], 'i32')
   }
   return null
@@ -199,8 +194,8 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   const ptr = temp('sc'), idxIR = ['i32.const', idx]
   inc('__str_byteLen', '__char_at')
   const charEq = ['if', ['result', 'i32'],
-    ['i32.gt_u', ['call', '$__str_byteLen', ['local.get', `$${ptr}`]], idxIR],
-    ['then', ['i32.eq', ['call', '$__char_at', ['local.get', `$${ptr}`], idxIR], ['i32.const', lit.charCodeAt(0)]]],
+    ['i32.gt_u', ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxIR],
+    ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR], ['i32.const', lit.charCodeAt(0)]]],
     ['else', ['i32.const', 0]]]
 
   if (vt === VAL.STRING) {
@@ -209,15 +204,12 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
       finish(charEq)], 'i32')
   }
 
-  const tag = tempI32('st')
   inc('__ptr_type', '__typed_idx', '__eq')
   const genericEq = ['call', '$__eq',
-    ['call', '$__typed_idx', ['local.get', `$${ptr}`], idxIR],
-    asF64(emit(['str', lit]))]
+    ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR]],
+    asI64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
-    ['i32.or',
-      ['i32.eq', ['local.tee', `$${tag}`, ['call', '$__ptr_type', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
-      ['i32.eq', ['local.get', `$${tag}`], ['i32.const', PTR.SSO]]],
+    ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
     ['then', charEq],
     ['else', genericEq]]
   return typed(['block', ['result', 'i32'],
@@ -733,11 +725,11 @@ export function buildArrayWithSpreads(items) {
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
       if (sec.baseLocal) {
-        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['local.get', `$${sec.local}`]]])
+        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
         ir.push(['local.set', `$${sec.lenLocal}`, ['i32.load', ['i32.sub', ['local.get', `$${sec.baseLocal}`], ['i32.const', 8]]]])
       } else {
         // Cache __len once per spread; reused below for total-len sum and inner copy bound.
-        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['local.get', `$${sec.local}`]]])
+        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
       }
     }
   }
@@ -770,12 +762,10 @@ export function buildArrayWithSpreads(items) {
         ? ['f64.load', ['i32.add', ['local.get', `$${sec.baseLocal}`], ['i32.shl', ['local.get', `$${sidx}`], ['i32.const', 3]]]]
         : ctx.module.modules['string']
           ? ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${sec.local}`]], ['i32.const', PTR.SSO]]],
-            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])],
-            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])]]
-          : (inc('__typed_idx'), ['call', '$__typed_idx', ['local.get', `$${sec.local}`], ['local.get', `$${sidx}`]])
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.STRING]],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])],
+            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])]]
+          : (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])
       ir.push(
         ['local.set', `$${sidx}`, ['i32.const', 0]],
         ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
@@ -1039,7 +1029,7 @@ export const emitter = {
           ['local.set', `$${arrTmp}`, arrExpr],
           ['local.set', `$${idxTmp}`, asI32(typed(idxNode, 'f64'))],
           ['local.set', `$${valTmp}`, valueExpr],
-          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${arrTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
+          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
         ]
         if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
         body.push(['local.get', `$${valTmp}`])
@@ -1049,7 +1039,7 @@ export const emitter = {
         if (ctx.transform.strict)
           err(`strict mode: dynamic property assignment \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
         inc('__dyn_set')
-        return typed(['call', '$__dyn_set', asF64(emit(arr)), keyExpr, valueExpr], 'f64')
+        return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), asI64(keyExpr), asI64(valueExpr)]], 'f64')
       }
       const dispatchKey = (numericIR) => {
         if (ctx.transform.strict)
@@ -1057,8 +1047,8 @@ export const emitter = {
         const keyTmp = temp()
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, keyExpr],
-          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['local.get', `$${keyTmp}`]],
-            ['then', ['call', '$__dyn_set', asF64(emit(arr)), ['local.get', `$${keyTmp}`], valueExpr]],
+          ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
+            ['then', ['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(arr)), ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]], asI64(valueExpr)]]],
             ['else', numericIR(['local.get', `$${keyTmp}`])]]], 'f64')
       }
       // Literal string key on schema-known object → direct payload slot write (skip __dyn_set)
@@ -1095,7 +1085,7 @@ export const emitter = {
         // returns the stored value as f64, used directly as the expr result.
         inc('__typed_set_idx')
         return typed(['call', '$__typed_set_idx',
-          asF64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
+          asI64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
       }
       if (typeof arr === 'string' && ctx.schema.isBoxed?.(arr)) {
         const inner = ctx.schema.emitInner(arr)
@@ -1143,8 +1133,8 @@ export const emitter = {
               ['local.set', `$${idxTmp}`, keyI32],
               ['local.set', `$${t}`, vv],
               ['if', ['result', 'f64'],
-                ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
-                ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+                ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+                ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
                 ['else', ['block', ['result', 'f64'],
                   ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                   ['local.get', `$${t}`]]]]]
@@ -1170,13 +1160,13 @@ export const emitter = {
           ['local.set', `$${idxTmp}`, vi],
           ['local.set', `$${t}`, vv],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.ARRAY]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['else', ['block', ['result', 'f64'],
                 ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                 ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
@@ -1200,14 +1190,14 @@ export const emitter = {
           ['local.set', `$${idxTmp}`, vi],
           ['local.set', `$${t}`, vv],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.ARRAY]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['local.set', `$${ptrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               persist(['local.get', `$${ptrTmp}`]),
               ['local.get', `$${t}`]]],
             ['else', hasTypedSet ? ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.TYPED]],
-              ['then', ['call', '$__typed_set_idx', ['local.get', `$${objTmp}`], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.TYPED]],
+              ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${t}`]]],
               ['else', ['block', ['result', 'f64'],
                 ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${objTmp}`], arrVT), ['i32.shl', ['local.get', `$${idxTmp}`], ['i32.const', 3]]], ['local.get', `$${t}`]],
                 ['local.get', `$${t}`]]]] : ['block', ['result', 'f64'],
@@ -1234,7 +1224,7 @@ export const emitter = {
             ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]], ['local.get', `$${t}`]],
           ]
           if (shadow)
-            stmts.push(['drop', ['call', '$__dyn_set', asF64(va), asF64(emit(['str', prop])), ['local.get', `$${t}`]]])
+            stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
           stmts.push(['local.get', `$${t}`])
           return typed(['block', ['result', 'f64'], ...stmts], 'f64')
         }
@@ -1243,28 +1233,28 @@ export const emitter = {
         const objType = keyValType(obj)
         if (usesDynProps(objType)) {
           inc('__dyn_set')
-          return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }
         if (ctx.func.names.has(obj) && !ctx.func.locals?.has(obj) && !ctx.func.current?.params?.some(p => p.name === obj)) {
           inc('__dyn_set')
-          return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+          return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }
         if (objType == null) ctx.features.external = true
         inc('__hash_set')
-        const setCall = typed(['call', '$__hash_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+        const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
           ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
         return typed(['local.tee', `$${obj}`, setCall], 'f64')
       }
       ctx.features.external = true
       inc('__dyn_set')
-      return typed(['call', '$__dyn_set', asF64(emit(obj)), asF64(emit(['str', prop])), asF64(emit(val))], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
     const void_ = _expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
       inc('__to_num')
-      return writeVar(name, typed(['call', '$__to_num', asF64(emit(name))], 'f64'), void_)
+      return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)
     }
     return writeVar(name, emit(val), void_)
   },
@@ -1361,17 +1351,17 @@ export const emitter = {
         if (keyValType(b[1]) === VAL.STRING) {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
-            asF64(emit(a)),
-            ['call', '$__char_at', asF64(emit(b[1])), asI32(emit(b[2]))],
+            asI64(emit(a)),
+            ['call', '$__char_at', asI64(emit(b[1])), asI32(emit(b[2]))],
           ], 'f64')
         }
       }
       inc('__str_concat_raw')
-      return typed(['call', '$__str_concat_raw', asF64(emit(a)), asF64(emit(b))], 'f64')
+      return typed(['call', '$__str_concat_raw', asI64(emit(a)), asI64(emit(b))], 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       inc('__str_concat')
-      return typed(['call', '$__str_concat', asF64(emit(a)), asF64(emit(b))], 'f64')
+      return typed(['call', '$__str_concat', asI64(emit(a)), asI64(emit(b))], 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
@@ -1382,9 +1372,9 @@ export const emitter = {
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
       inc('__str_concat', '__is_str_key')
-      const checkA = vtA == null ? ['call', '$__is_str_key', ['local.tee', `$${tA}`, asF64(emit(a))]] : null
-      const checkB = vtB == null ? ['call', '$__is_str_key', ['local.tee', `$${tB}`, asF64(emit(b))]] : null
-      const concat = ['call', '$__str_concat', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
+      const checkA = vtA == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, asF64(emit(a))]]] : null
+      const checkB = vtB == null ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, asF64(emit(b))]]] : null
+      const concat = ['call', '$__str_concat', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
       const add    = ['f64.add', ['local.get', `$${tA}`], ['local.get', `$${tB}`]]
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')
@@ -1423,7 +1413,7 @@ export const emitter = {
     if (v.type === 'i32') return asF64(v)
     if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
     inc('__to_num')
-    return typed(['call', '$__to_num', asF64(v)], 'f64')
+    return typed(['call', '$__to_num', asI64(v)], 'f64')
   },
   'u-': a => emitNeg(a),
   '*': (a, b) => {
@@ -1488,7 +1478,7 @@ export const emitter = {
       return typed(['i64.eq', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     }
     inc('__eq')
-    return typed(['call', '$__eq', asF64(va), asF64(vb)], 'i32')
+    return typed(['call', '$__eq', asI64(va), asI64(vb)], 'i32')
   },
   '!=': (a, b) => {
     const charCmp = emitSingleCharIndexCmp(a, b, true)
@@ -1511,7 +1501,7 @@ export const emitter = {
       return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     }
     inc('__eq')
-    return typed(['i32.eqz', ['call', '$__eq', asF64(va), asF64(vb)]], 'i32')
+    return typed(['i32.eqz', ['call', '$__eq', asI64(va), asI64(vb)]], 'i32')
   },
   '<':  cmpOp('lt_s', 'lt', (a, b) => a < b),
   '>':  cmpOp('gt_s', 'gt', (a, b) => a > b),
@@ -1532,7 +1522,7 @@ export const emitter = {
       return isNullish(asF64(v))
     }
     inc('__is_truthy')
-    return typed(['i32.eqz', ['call', '$__is_truthy', asF64(v)]], 'i32')
+    return typed(['i32.eqz', ['call', '$__is_truthy', asI64(v)]], 'i32')
   },
 
   '?:': (a, b, c) => {
@@ -1922,23 +1912,23 @@ export const emitter = {
           ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
           ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
           if (srcIsArr) {
-            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${sa}`]]])
+            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
             ir.push(['local.set', `$${sl}`, ['i32.load', ['i32.sub', ['local.get', `$${srcBase}`], ['i32.const', 8]]]])
           } else {
-            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['local.get', `$${sa}`]]])
+            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
           }
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
             ir.push(['local.set', `$${ol}`,
-              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${o}`]], ['i32.const', 8]]]])
+              ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]], ['i32.const', 8]]]])
           } else {
-            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['local.get', `$${o}`]]])
+            ir.push(['local.set', `$${ol}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
           }
           // Single grow for the full spread (vs per-element grow check in the generic loop).
-          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['local.get', `$${o}`],
+          ir.push(['local.set', `$${o}`, ['call', '$__arr_grow', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
           // base captured AFTER grow (grow may relocate the array).
-          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${o}`]]])
+          ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
           // Tight store loop.
           ir.push(['local.set', `$${si}`, ['i32.const', 0]])
           const loopId = ctx.func.uniq++
@@ -1954,7 +1944,7 @@ export const emitter = {
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$continue${loopId}`]]])
           // Single set_len for the full spread.
-          ir.push(['call', '$__set_len', ['local.get', `$${o}`],
+          ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])
           // Update source variable: grow may have moved the pointer.
           if (ctx.func.boxed?.has(objArg)) {
@@ -1992,7 +1982,7 @@ export const emitter = {
           inc('__len')
           const n = multiCount(spreadExpr)
           ir.push(['local.set', `$${arr}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-          ir.push(['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${arr}`]]])
+          ir.push(['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]])
           ir.push(['local.set', `$${idx}`,
             reverseIter ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0]])
           const loopId = ctx.func.uniq++
@@ -2043,7 +2033,7 @@ export const emitter = {
               const n = multiCount(spreadExpr)
               irG.push(
                 ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-                ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+                ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
                 ['local.set', `$${idxL}`, ['i32.const', 0]])
               const loopId = ctx.func.uniq++
               const loopBody = asF64(methodEmitter(objArg, ['[]', arrL, idxL]))
@@ -2082,7 +2072,7 @@ export const emitter = {
             const n = multiCount(spreadExpr)
             irG.push(
               ['local.set', `$${arrL}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))],
-              ['local.set', `$${lenL}`, ['call', '$__len', ['local.get', `$${arrL}`]]],
+              ['local.set', `$${lenL}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]],
               ['local.set', `$${idxL}`, ['i32.const', 0]])
             const loopId = ctx.func.uniq++
             const loopBody = asF64(methodEmitter(accG, ['[]', arrL, idxL]))
@@ -2143,11 +2133,9 @@ export const emitter = {
         const genEmitter = ctx.core.emit[genKey]
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${t}`, asF64(emit(obj))],
-          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['local.get', `$${t}`]]],
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
           ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.SSO]]],
+            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
             ['then', callMethod(t, strEmitter)],
             ['else', callMethod(t, genEmitter)]]], 'f64')
       }
@@ -2187,7 +2175,7 @@ export const emitter = {
         ctx.func.locals.set(objTmp, 'f64')
         const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
         const arrayIR = buildArrayWithSpreads(combined)
-        const propRead = typed(['call', '$__dyn_get_expr', ['local.get', `$${objTmp}`], asF64(emit(['str', method]))], 'f64')
+        const propRead = typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]], 'f64')
         const propTmp = `${T}mprop${ctx.func.uniq++}`
         ctx.func.locals.set(propTmp, 'f64')
         if (usesDynProps(vt)) {
@@ -2196,7 +2184,7 @@ export const emitter = {
             ['local.set', `$${objTmp}`, asF64(emit(obj))],
             ['local.set', `$${propTmp}`, propRead],
             ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${propTmp}`]], ['i32.const', PTR.CLOSURE]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
               ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
               ['else', undefExpr()]]], 'f64')
         }
@@ -2206,11 +2194,14 @@ export const emitter = {
           ['local.set', `$${objTmp}`, asF64(emit(obj))],
           ['local.set', `$${propTmp}`, propRead],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${propTmp}`]], ['i32.const', PTR.CLOSURE]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
             ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
             ['else', ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${objTmp}`]], ['i32.const', PTR.EXTERNAL]],
-              ['then', ['call', '$__ext_call', ['local.get', `$${objTmp}`], asF64(emit(['str', method])), arrayIR]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]]], ['i32.const', PTR.EXTERNAL]],
+              ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+                ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+                ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+                ['i64.reinterpret_f64', arrayIR]]]],
               ['else', undefExpr()]]]]], 'f64')
       }
 
@@ -2221,7 +2212,10 @@ export const emitter = {
       ctx.features.external = true
       const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
       const arrayIR = buildArrayWithSpreads(combined)
-      return typed(['call', '$__ext_call', asF64(emit(obj)), asF64(emit(['str', method])), arrayIR], 'f64');
+      return typed(['f64.reinterpret_i64', ['call', '$__ext_call',
+        ['i64.reinterpret_f64', asF64(emit(obj))],
+        ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+        ['i64.reinterpret_f64', arrayIR]]], 'f64');
     }
 
     if (ctx.core.emit[callee]) {
@@ -2421,8 +2415,13 @@ export function emit(node, expect) {
     if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {
       ctx.features.external = true
       ctx.scope.globals.set(node, null)
-      ctx.module.imports.push(['import', '"env"', `"${node}"`, ['global', `$${node}`, ['mut', 'f64']]])
-      return typed(['global.get', `$${node}`], 'f64')
+      // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed
+      // external-ref payload across the wasm↔JS global boundary (same hazard
+      // as env.print/setTimeout — see module/console.js header). asF64()
+      // reinterprets to f64 at every read site.
+      ctx.module.imports.push(['import', '"env"', `"${node}"`, ['global', `$${node}`, 'i64']])
+      ctx.scope.globalTypes.set(node, 'i64')
+      return typed(['global.get', `$${node}`], 'i64')
     }
     const t = ctx.func.locals?.get(node) || ctx.func.current?.params.find(p => p.name === node)?.type || 'f64'
     return typed(['local.get', `$${node}`], t)

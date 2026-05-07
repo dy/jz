@@ -7,9 +7,9 @@
  * @module regex
  */
 
-import { typed, asF64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
@@ -23,7 +23,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
     ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
     ['i32.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 4]], ['i32.const', N]],
     ['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]],
-      ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+      ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
         ['local.get', `$${msLocal}`], ['local.get', `$${meLocal}`]]],
   ]
   for (let i = 1; i <= nGroups; i++) {
@@ -31,7 +31,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
       ['if', ['result', 'f64'],
         ['i32.lt_s', ['global.get', `$__re_g${i}_start`], ['i32.const', 0]],
         ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
-        ['else', ['call', '$__str_slice', ['local.get', `$${strLocal}`],
+        ['else', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
           ['global.get', `$__re_g${i}_start`], ['global.get', `$__re_g${i}_end`]]]]])
   }
   stmts.push(mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]))
@@ -654,14 +654,16 @@ export default (ctx) => {
 
   ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
 
-  // SSO → heap normalizer: returns data offset (i32) for direct byte access
-  ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr f64) (result i32)
-    (local $type i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
-    (local.set $type (call $__ptr_type (local.get $ptr)))
-    (if (i32.eq (local.get $type) (i32.const 4))
+  // SSO → heap normalizer: returns data offset (i32) for direct byte access.
+  // Heap STRING: aux bit SSO_BIT is 0 → offset already points at bytes.
+  // SSO STRING:  aux bit SSO_BIT is 1 → bytes are packed in offset; spill to heap.
+  ctx.core.stdlib['__str_to_buf'] = `(func $__str_to_buf (param $ptr i64) (result i32)
+    (local $aux i32) (local $off i32) (local $len i32) (local $buf i32) (local $i i32)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.eqz (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT})))
       (then (return (call $__ptr_offset (local.get $ptr)))))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
-    (local.set $len (call $__ptr_aux (local.get $ptr)))
+    (local.set $len (i32.and (local.get $aux) (i32.const 7)))
     (local.set $buf (call $__alloc (local.get $len)))
     (local.set $i (i32.const 0))
     (block $done (loop $next
@@ -691,7 +693,7 @@ export default (ctx) => {
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
     const searchName = `__regex_search_${id}`
-    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str f64) (result i32 i32)
+    ctx.core.stdlib[searchName] = `(func $${searchName} (param $str i64) (result i32 i32)
       (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
       (local.set $off (call $__str_to_buf (local.get $str)))
       (local.set $len (call $__str_byteLen (local.get $str)))
@@ -735,7 +737,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${mstart}`, ['local.set', `$${mend}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       // search returns (start, end) multi-value; capture both
       ['if', ['result', 'f64'], ['i32.ge_s', ['local.get', `$${mstart}`], ['i32.const', 0]],
         ['then', ['f64.const', 1]],
@@ -751,7 +753,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
         ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
@@ -763,13 +765,13 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string search (indexOf)
       inc('__str_indexof')
-      return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asF64(emit(str)), asF64(emit(search))]], 'f64')
+      return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]]], 'f64')
     }
     const s = temp('ss'), ms = tempI32('ssms'), me = tempI32('ssme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['f64.convert_i32_s', ['local.get', `$${ms}`]]], 'f64')
   }
 
@@ -783,21 +785,22 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(str))],
         ['local.set', `$${q}`, asF64(emit(search))],
-        ['local.set', `$${idx}`, ['call', '$__str_indexof', ['local.get', `$${s}`], ['local.get', `$${q}`]]],
+        ['local.set', `$${idx}`, ['call', '$__str_indexof', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i64.reinterpret_f64', ['local.get', `$${q}`]], ['i32.const', 0]]],
         ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]],
           ['then', ['f64.const', 0]],
           ['else',
             ['call', '$__wrap1',
-              ['call', '$__str_slice', ['local.get', `$${s}`],
-                ['local.get', `$${idx}`],
-                ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['local.get', `$${q}`]]]]]]]], 'f64')
+              ['i64.reinterpret_f64',
+                ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+                  ['local.get', `$${idx}`],
+                  ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
         ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
@@ -817,16 +820,16 @@ export default (ctx) => {
       ['local.set', `$${s}`, asF64(emit(str))],
       ['local.set', `$${r}`, asF64(emit(repl))],
       ['local.set', `$${ms}`, ['local.set', `$${me}`,
-        ['call', `$__regex_search_${id}`, ['local.get', `$${s}`]]]],
+        ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['local.get', `$${s}`]],
         ['else',
           ['call', '$__str_concat',
-            ['call', '$__str_concat',
-              ['call', '$__str_slice', ['local.get', `$${s}`], ['i32.const', 0], ['local.get', `$${ms}`]],
-              ['local.get', `$${r}`]],
-            ['call', '$__str_slice', ['local.get', `$${s}`], ['local.get', `$${me}`],
-              ['call', '$__str_byteLen', ['local.get', `$${s}`]]]]]]], 'f64')
+            ['i64.reinterpret_f64', ['call', '$__str_concat',
+              ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['i32.const', 0], ['local.get', `$${ms}`]]],
+              ['i64.reinterpret_f64', ['local.get', `$${r}`]]]],
+            ['i64.reinterpret_f64', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${me}`],
+              ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]]]]]], 'f64')
   }
 
   // str.split(/re/) → array of substrings
@@ -835,14 +838,14 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string split
       inc('__str_split')
-      return typed(['call', '$__str_split', asF64(emit(str)), asF64(emit(sep))], 'f64')
+      return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep))], 'f64')
     }
 
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
     if (!ctx.core.stdlib[splitName]) {
       inc('__str_to_buf', '__str_slice', '__alloc')
-      ctx.core.stdlib[splitName] = `(func $${splitName} (param $str f64) (result f64)
+      ctx.core.stdlib[splitName] = `(func $${splitName} (param $str i64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
         (local $arrOff i32) (local $count i32) (local $cap i32)
@@ -909,6 +912,6 @@ export default (ctx) => {
       inc(splitName)
     }
 
-    return typed(['call', `$${splitName}`, asF64(emit(str))], 'f64')
+    return typed(['call', `$${splitName}`, asI64(emit(str))], 'f64')
   }
 }

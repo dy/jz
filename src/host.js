@@ -20,10 +20,23 @@ import { wasi } from '../wasi.js'
 
 // NaN-boxing encode/decode — shared 8-byte scratch buffer
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
-// Sentinel NaN for "undefined/missing arg" (payload=1, distinct from JS NaN payload=0)
-_u32[1] = 0x7FF80000; _u32[0] = 1; export const UNDEF_NAN = _f64[0]
-// Null NaN: type=0 (ATOM), aux=1, offset=0 — distinct from 0, NaN, and UNDEF_NAN
+// Cross-typed-array view for i64↔f64 reinterpretation. Used at every wasm↔JS
+// boundary that carries a NaN-boxed pointer as i64 bits — V8 may canonicalize
+// f64 NaN payloads at the boundary, so the carrier is BigInt and reinterpret
+// runs once on each side. Separate buffer so it never aliases _u32/_f64.
+const _bi64 = (() => {
+  const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
+  return {
+    i64ToF64: (big) => { bi[0] = big; return fv[0] },
+    f64ToI64: (f) => { fv[0] = f; return bi[0] },
+  }
+})()
+export const i64ToF64 = _bi64.i64ToF64
+export const f64ToI64 = _bi64.f64ToI64
+// Reserved atoms (type=0, offset=0): aux=1 → null, aux=2 → undefined.
+// Distinct from 0, JS NaN (payload=0), and all pointers.
 _u32[1] = 0x7FF80001; _u32[0] = 0; export const NULL_NAN = _f64[0]
+_u32[1] = 0x7FF80002; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
 
 // Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
@@ -32,8 +45,9 @@ export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN :
 const decode = v => {
   if (v === v) return v  // fast path: non-NaN
   _f64[0] = v
-  if (_u32[1] === 0x7FF80001 && _u32[0] === 0) return null
-  if (_u32[1] === 0x7FF80000 && _u32[0] === 1) return undefined
+  if (_u32[0] !== 0) return v
+  if (_u32[1] === 0x7FF80001) return null
+  if (_u32[1] === 0x7FF80002) return undefined
   return v
 }
 
@@ -175,7 +189,7 @@ export const memory = (src) => {
     if (str.length <= 4 && /^[\x00-\x7f]*$/.test(str)) {
       let packed = 0
       for (let i = 0; i < str.length; i++) packed |= str.charCodeAt(i) << (i * 8)
-      return ptr(5, str.length, packed)  // SSO
+      return ptr(4, 0x4000 | str.length, packed)  // STRING + SSO_BIT
     }
     const enc = new TextEncoder().encode(str)
     const n = enc.length, raw = alloc(4 + n), m = dv()
@@ -244,8 +258,10 @@ export const memory = (src) => {
     if (Array.isArray(p)) return p.map(v => this.read(v))  // multi-value tuple
     if (p === p) return p  // regular number passthrough (NaN fails ===)
     const t = type(p), a = aux(p), off = offset(p)
-    if (t === 0 && a === 1 && off === 0) return null
-    if (t === 0 && a === 0 && off === 1) return undefined
+    if (t === 0 && off === 0) {
+      if (a === 1) return null
+      if (a === 2) return undefined
+    }
     if (t === 11 && this._extMap) return this._extMap[off]
     if (t === 1) {  // ARRAY
       let m = dv(), aOff = off
@@ -273,14 +289,15 @@ export const memory = (src) => {
       new Uint8Array(out).set(new Uint8Array(mem.buffer, off, byteLen))
       return out
     }
-    if (t === 4) {  // STRING (heap)
+    if (t === 4) {  // STRING (aux bit 0x4000 = SSO inline, else heap)
+      const a2 = aux(p)
+      if (a2 & 0x4000) {
+        const len = a2 & 0x7; let s = ''
+        for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
+        return s
+      }
       const len = dv().getInt32(off - 4, true)
       return new TextDecoder().decode(new Uint8Array(mem.buffer, off, len))
-    }
-    if (t === 5) {  // STRING_SSO
-      const len = aux(p); let s = ''
-      for (let i = 0; i < len; i++) s += String.fromCharCode((off >>> (i * 8)) & 0xFF)
-      return s
     }
     if (t === 6) {  // OBJECT
       const m = dv(), sid = aux(p), keys = this.schemas[sid]
@@ -388,6 +405,17 @@ export const wrap = (memSrc, inst) => {
         restFuncs.set(typeof entry === 'string' ? entry : entry.name, typeof entry === 'string' ? 0 : entry.fixed)
     } catch (e) { /* ignore */ }
   }
+  // i64-ABI exports: boundary-wrapped funcs whose NaN-boxed pointer params/
+  // result ride i64 to dodge V8's NaN canonicalization. Map: name → { p, r }
+  // with p = bit mask of i64 params, r = 1 iff result is i64. JS side
+  // reinterprets f64↔BigInt only at those positions (see
+  // synthesizeBoundaryWrappers).
+  const i64Exp = new Map(), EMPTY_SET = new Set()
+  const i64Secs = WebAssembly.Module.customSections(mod, 'jz:i64exp')
+  if (i64Secs.length) {
+    try { for (const e of JSON.parse(new TextDecoder().decode(i64Secs[0]))) i64Exp.set(e.name, { p: new Set(e.p), r: e.r }) }
+    catch { /* ignore */ }
+  }
 
   const mem = memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
@@ -404,32 +432,53 @@ export const wrap = (memSrc, inst) => {
     throw wrapped
   }
   const exports = {}
+  // Per-position carrier swap: f64 stays Number, i64 positions reinterpret to
+  // BigInt before the call and back to Number after. p is a Set of i64 param
+  // indices; r = result is i64. Numeric (f64) positions pass through unchanged.
+  const adaptArgs = (a, p) => p.size === 0 ? a : a.map((x, i) => p.has(i) ? f64ToI64(x) : x)
+  const adaptRet = (ret, r) => r ? i64ToF64(ret) : ret
+
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
   if (!mem) {
-    for (const [name, fn] of Object.entries(realInst.exports))
-      exports[name] = typeof fn === 'function'
-        ? (...args) => { while (args.length < fn.length) args.push(undefined); try { return decode(fn(...args.map(coerce))) } catch (e) { decodeThrown(e) } }
-        : fn
+    for (const [name, fn] of Object.entries(realInst.exports)) {
+      if (typeof fn !== 'function') { exports[name] = fn; continue }
+      const sig = i64Exp.get(name)
+      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
+      exports[name] = (...args) => {
+        while (args.length < fn.length) args.push(undefined)
+        try {
+          const wasmArgs = adaptArgs(args.map(coerce), p)
+          return decode(adaptRet(fn(...wasmArgs), r))
+        } catch (e) { decodeThrown(e) }
+      }
+    }
     return exports
   }
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
+      const sig = i64Exp.get(name)
+      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
       exports[name] = (...args) => {
         const a = args.slice(0, fixed).map(x => mem.wrapVal(x))
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
         try {
-          return mem.read(fn.apply(null, a))
+          const ret = fn.apply(null, adaptArgs(a, p))
+          return mem.read(adaptRet(ret, r))
         } catch (error) {
           decodeThrown(error)
         }
       }
     } else if (typeof fn === 'function') {
+      const sig = i64Exp.get(name)
+      const p = sig?.p || EMPTY_SET, r = sig?.r || 0
       exports[name] = (...args) => {
         while (args.length < fn.length) args.push(undefined)
         try {
-          return mem.read(fn.apply(null, args.map(x => mem.wrapVal(x))))
+          const boxed = args.map(x => mem.wrapVal(x))
+          const ret = fn.apply(null, adaptArgs(boxed, p))
+          return mem.read(adaptRet(ret, r))
         } catch (error) {
           decodeThrown(error)
         }
@@ -444,23 +493,28 @@ export const wrap = (memSrc, inst) => {
 const prepareInterop = (opts) => {
   const state = { extMap: [null], mem: null }
   opts._interp = opts._interp || {}
-  opts._interp.__ext_prop = (objPtr, propPtr) => {
+  // __ext_* receive NaN-boxed pointers across the env boundary as i64 (BigInt
+  // in JS) — see module/collection.js header for rationale. f64 returns are
+  // wrapped back to BigInt so the wasm side reinterprets a non-canonicalized
+  // bit pattern.
+  opts._interp.__ext_prop = (objBig, propBig) => {
+    const objPtr = i64ToF64(objBig), propPtr = i64ToF64(propBig)
     const obj = state.extMap[offset(objPtr)]
     const prop = state.mem.read(propPtr)
-    return state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop])
+    return f64ToI64(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
   }
-  opts._interp.__ext_has = (objPtr, propPtr) => {
-    return (state.mem.read(propPtr) in state.extMap[offset(objPtr)]) ? 1 : 0
+  opts._interp.__ext_has = (objBig, propBig) => {
+    return (state.mem.read(i64ToF64(propBig)) in state.extMap[offset(i64ToF64(objBig))]) ? 1 : 0
   }
-  opts._interp.__ext_set = (objPtr, propPtr, valPtr) => {
-    state.extMap[offset(objPtr)][state.mem.read(propPtr)] = state.mem.read(valPtr)
+  opts._interp.__ext_set = (objBig, propBig, valBig) => {
+    state.extMap[offset(i64ToF64(objBig))][state.mem.read(i64ToF64(propBig))] = state.mem.read(i64ToF64(valBig))
     return 1
   }
-  opts._interp.__ext_call = (objPtr, propPtr, argsPtr) => {
-    const obj = state.extMap[offset(objPtr)]
-    const prop = state.mem.read(propPtr)
-    const args = state.mem.read(argsPtr)
-    return state.mem.wrapVal(obj[prop].apply(obj, args))
+  opts._interp.__ext_call = (objBig, propBig, argsBig) => {
+    const obj = state.extMap[offset(i64ToF64(objBig))]
+    const prop = state.mem.read(i64ToF64(propBig))
+    const args = state.mem.read(i64ToF64(argsBig))
+    return f64ToI64(state.mem.wrapVal(obj[prop].apply(obj, args)))
   }
   return state
 }
@@ -484,10 +538,6 @@ const installDefaultEnvImports = (mod, imports, state) => {
     // env.print's val param is i64 to dodge V8's f64 NaN canonicalization
     // across the wasm→JS boundary (see module/console.js header). Reinterpret
     // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
-    const i64ToF64 = (() => {
-      const ab = new ArrayBuffer(8), bi = new BigInt64Array(ab), fv = new Float64Array(ab)
-      return (big) => { bi[0] = big; return fv[0] }
-    })()
     const write = (valBig, fd, sep) => {
       const v = state.mem.read(i64ToF64(valBig))
       buf[fd] += String(v)
@@ -510,12 +560,14 @@ const installDefaultEnvImports = (mod, imports, state) => {
   // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
   // callbacks back via the exported __invoke_closure trampoline (state.invoke).
   // Each id maps to a cancel thunk so set/clear share state without tagging.
+  // env.setTimeout receives cbPtr as i64 bits (BigInt) — see module/timer.js;
+  // __invoke_closure also takes i64 now, so the BigInt feeds it directly.
   if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
     const cancel = new Map()
     let nextId = 1
-    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbPtr, delayMs, repeat) => {
+    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbBig, delayMs, repeat) => {
       const id = nextId++
-      const fire = () => state.invoke?.(cbPtr)
+      const fire = () => state.invoke?.(cbBig)
       if (repeat) {
         const h = setInterval(fire, delayMs)
         cancel.set(id, () => clearInterval(h))
@@ -538,7 +590,9 @@ const buildImports = (mod, opts, state) => {
   const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
 
-  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz values.
+  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz
+  // values. Args/return ride i64 across the boundary (Step 2c) so V8 cannot
+  // canonicalize the NaN payload — convert BigInt↔f64 via reinterpret bits.
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
     if (!imports[modName]) imports[modName] = {}
     for (const name of Object.getOwnPropertyNames(fns)) {
@@ -546,8 +600,14 @@ const buildImports = (mod, opts, state) => {
       const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
       if (typeof fn === 'function')
         imports[modName][name] = (...args) => {
-          const ret = fn.call(fns, ...args.map(a => state.mem ? state.mem.read(a) : a))
-          return state.mem ? state.mem.wrapVal(ret) : coerce(ret)
+          // i64 carrier: reinterpret BigInt bits → f64 NaN-box. Pure-scalar modules
+          // have no memory so skip mem.read; the f64 IS the JS number for numerics.
+          const decoded = args.map(a => {
+            const f = typeof a === 'bigint' ? i64ToF64(a) : a
+            return state.mem ? state.mem.read(f) : decode(f)
+          })
+          const ret = fn.call(fns, ...decoded)
+          return f64ToI64(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
         }
     }
   }
@@ -560,14 +620,16 @@ const buildImports = (mod, opts, state) => {
     if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory instanceof WebAssembly.Memory ? opts.memory : opts.memory
   }
-  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed external refs
+  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed
+  // external refs. Carrier is i64 so the NaN payload survives V8's boundary
+  // canonicalization — wasm side reinterprets to f64 (see asF64 in src/ir.js).
   for (const imp of WebAssembly.Module.imports(mod)) {
     if (imp.kind === 'global' && imp.module === 'env') {
       const host = globalThis[imp.name]
       if (host !== undefined) {
         if (!imports.env) imports.env = {}
         let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-        imports.env[imp.name] = new WebAssembly.Global({ value: 'f64', mutable: false }, ptr(11, 0, id))
+        imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, f64ToI64(ptr(11, 0, id)))
       }
     }
   }

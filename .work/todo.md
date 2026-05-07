@@ -73,10 +73,38 @@
      [src/host.js wrap()](../src/host.js#L536), user `opts.imports`
      declared with f64 carrying NaN-box. Lock the i64-at-boundary
      invariant before the internal switch.
+     - 1a. [x] `env.setTimeout` cbPtr — i64 import (commit 2d3d3e6).
+     - 1b. [skip] `env.clearTimeout` id — numeric f64, no NaN-box hazard.
+     - 1c. [x] `__ext_prop` / `__ext_has` / `__ext_set` / `__ext_call` —
+       i64 imports + reinterpret pairs at 8 call sites (commit bbc89ce).
+     - 1d. [defer→2] env-globals (`(global $name (mut f64))`) and generic
+       export wrap and user opts.imports all need IR-level globalTypes /
+       export-signature changes that overlap Step 2's internal carrier
+       switch. Tried env-globals as a standalone fix — failed because
+       `readVar()` ([src/ir.js:448](../src/ir.js#L448)) tags
+       `global.get` as f64 by default, mismatching the i64 declaration.
+       Cleaner to absorb into Step 2 below.
   2. Switch carrier of boxed values inside compiled functions: locals,
      globals, slot reads/writes, return values. Update `mkPtrIR`, IR
      helpers, and constant emitters. Run full suite — `wat: true` test
      snapshots will need regen.
+     Sub-steps:
+     - 2a. [x] Add `globalTypes` tracking for host-imported globals (i64).
+       Update `readVar` / `setVar` to honor it with reinterpret on read.
+     - 2b. Switch wasm-export ABI from f64 → i64 for boxed-result paths
+       (synthesizeBoundaryWrappers + direct exports), update host.js
+       wrap() to call with BigInt args + read BigInt return.
+     - 2c. [x] Switch user opts.imports declared sig from f64 → i64;
+       update host wrapper at [src/host.js:565](../src/host.js#L565) to
+       convert. Path: addHostImport emits i64 params/result, compile.js
+       registers them in func.map with the i64 sig, emit's known-callee
+       path coerces args via emitArgForParam → asParamType, which now
+       handles 'i64' (asI64 reinterpret) alongside 'i32'/'f64'. Host
+       wrapper reinterprets BigInt↔f64 bits on each side; pure-scalar
+       modules (no memory) bypass mem.read/wrapVal via decode/coerce.
+     - 2d. Switch internal stdlib boxed-value sigs (`__dyn_get`, etc.)
+       from f64 to i64 module-by-module. Reinterpret at edges that still
+       carry numerics.
   3. Lay out the new bit scheme (type:8 / aux:24 / offset:32). Update
      `type/aux/offset` extractors and analysis facts that hard-code the
      old widths.

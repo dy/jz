@@ -23,10 +23,10 @@
  * @module console
  */
 
-import { typed, asF64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
+import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL, exprType } from '../src/analyze.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const addImportOnce = (ctx, mod, name, fn) => {
   if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
@@ -62,13 +62,13 @@ const setupWasi = (ctx) => {
   const needFdWrite = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_write',
     ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
-  ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr f64)
-    (local $iov i32) (local $type i32) (local $len i32) (local $off i32) (local $buf i32)
+  ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr i64)
+    (local $iov i32) (local $aux i32) (local $len i32) (local $off i32) (local $buf i32)
     (local.set $iov (call $__alloc (i32.const 12)))
-    (local.set $type (call $__ptr_type (local.get $ptr)))
-    (if (i32.eq (local.get $type) (i32.const ${PTR.SSO}))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (if (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
       (then
-        (local.set $len (call $__ptr_aux (local.get $ptr)))
+        (local.set $len (i32.and (local.get $aux) (i32.const 7)))
         (local.set $buf (call $__alloc (local.get $len)))
         (local.set $off (i32.const 0))
         (block $done (loop $loop
@@ -95,31 +95,29 @@ const setupWasi = (ctx) => {
       (i32.add (local.get $iov) (i32.const 8)))))`
 
   ctx.core.stdlib['__write_num'] = `(func $__write_num (param $fd i32) (param $val f64)
-    (call $__write_str (local.get $fd) (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
+    (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
   ctx.core.stdlib['__write_int'] = `(func $__write_int (param $fd i32) (param $val f64)
     (local $buf i32)
     (local.set $buf (call $__alloc (i32.const 12)))
     (call $__write_str (local.get $fd)
-      (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf)))))`
-  ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val f64)
-    (local $type i32)
-    (local $bits i64)
-    (if (f64.eq (local.get $val) (local.get $val))
-      (then (call $__write_num (local.get $fd) (local.get $val)) (return)))
-    (local.set $bits (i64.reinterpret_f64 (local.get $val)))
-    (if (i64.eq (local.get $bits) (i64.const ${NULL_NAN}))
-      (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 5))) (return)))
-    (if (i64.eq (local.get $bits) (i64.const ${UNDEF_NAN}))
-      (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 6))) (return)))
+      (i64.reinterpret_f64 (call $__mkstr (local.get $buf) (call $__itoa (i32.trunc_sat_f64_s (local.get $val)) (local.get $buf))))))`
+  ctx.core.stdlib['__write_val'] = `(func $__write_val (param $fd i32) (param $val i64)
+    (local $type i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $val)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (call $__write_num (local.get $fd) (local.get $f)) (return)))
+    (if (i64.eq (local.get $val) (i64.const ${NULL_NAN}))
+      (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 5)))) (return)))
+    (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN}))
+      (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 6)))) (return)))
     (local.set $type (call $__ptr_type (local.get $val)))
     (if (i32.eqz (local.get $type))
-      (then (call $__write_str (local.get $fd) (call $__static_str (i32.const 0))) (return)))
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
+      (then (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str (i32.const 0)))) (return)))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
       (then (call $__write_str (local.get $fd) (local.get $val)) (return)))
-    (call $__write_str (local.get $fd) (call $__static_str
+    (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
-        (then (i32.const 7)) (else (i32.const 8))))))`
+        (then (i32.const 7)) (else (i32.const 8)))))))`
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
@@ -131,7 +129,7 @@ const setupWasi = (ctx) => {
         const vt = valTypeOf(part)
         if (vt === VAL.STRING) {
           inc('__write_str')
-          ir.push(['call', '$__write_str', ['i32.const', fd], asF64(emit(part))])
+          ir.push(['call', '$__write_str', ['i32.const', fd], asI64(emit(part))])
         } else if (vt === VAL.NUMBER) {
           if (exprType(part, ctx.func.locals) === 'i32') {
             inc('__write_int')
@@ -142,7 +140,7 @@ const setupWasi = (ctx) => {
           }
         } else {
           inc('__write_val')
-          ir.push(['call', '$__write_val', ['i32.const', fd], asF64(emit(part))])
+          ir.push(['call', '$__write_val', ['i32.const', fd], asI64(emit(part))])
         }
       }
       for (let i = 0; i < args.length; i++) {
@@ -189,7 +187,7 @@ const setupJsHost = (ctx) => {
     ['func', '$__now', ['param', 'i32'], ['result', 'f64']])
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
-  const emptyStr = () => mkPtrIR(PTR.SSO, 0, 0)
+  const emptyStr = () => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
   const asI64Bits = (e) => ['i64.reinterpret_f64', asF64(emit(e))]
 
   const makeConsole = (method, fd) => {

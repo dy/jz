@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep } from '../src/analyze.js'
 import { ctx, err, inc, PTR } from '../src/ctx.js'
@@ -65,8 +65,8 @@ export default (ctx) => {
         inc('__dyn_set')
         const body = [['local.set', `$${ptr}`, staticPtr]]
         for (let i = 0; i < schema.length; i++)
-          body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`],
-            emit(['str', String(schema[i])]), asF64(emitted[i])]])
+          body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]],
+            asI64(emit(['str', String(schema[i])])), asI64(emitted[i])]])
         body.push(['local.get', `$${ptr}`])
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
@@ -81,8 +81,8 @@ export default (ctx) => {
     if (shadow) {
       inc('__dyn_set')
       for (let i = 0; i < schema.length; i++)
-        body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-          ['f64.load', slotAddr(t, i)]]])
+        body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
+          ['i64.load', slotAddr(t, i)]]])
     }
     body.push(['local.get', `$${ptr}`])
 
@@ -106,7 +106,7 @@ export default (ctx) => {
     const t = temp('ov'), base = tempI32('vb')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < n; i++)
       body.push(['f64.store', slotAddr(out.local, i), ['f64.load', slotAddr(base, i)]])
     body.push(out.ptr)
@@ -121,7 +121,7 @@ export default (ctx) => {
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
     const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'oa' })
     const body = [['local.set', `$${t}`, va], out.init,
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < n; i++) {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
@@ -156,7 +156,7 @@ export default (ctx) => {
         for (const source of sources) {
           const sSchema = resolveSchema(source)
           body.push(['local.set', `$${s}`, asF64(emit(source))])
-          body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]])
+          body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
           for (let si = 0; si < sSchema.length; si++) {
             const ti = boxedSchema.indexOf(sSchema[si])
             if (ti < 0) continue
@@ -174,12 +174,12 @@ export default (ctx) => {
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     const body = [['local.set', `$${t}`, asF64(emit(target))],
-      ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]
+      ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (const source of sources) {
       const sSchema = resolveSchema(source)
       if (!sSchema) err('Object.assign: source needs known schema')
       body.push(['local.set', `$${s}`, asF64(emit(source))])
-      body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]])
+      body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
@@ -200,18 +200,18 @@ export default (ctx) => {
     const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', va]],
-      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
         ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
         // Load pair (array of 2): pair = ptr_offset(arr[i])
-        ['local.set', `$${pair}`, ['call', '$__ptr_offset',
-          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]],
+        ['local.set', `$${pair}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64',
+          ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]],
         // hash_set(result, pair[0], pair[1])
-        ['local.set', `$${t}`, ['call', '$__hash_set', ['local.get', `$${t}`],
-          ['f64.load', ['local.get', `$${pair}`]],
-          ['f64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]],
+        ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+          ['i64.load', ['local.get', `$${pair}`]],
+          ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]],
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
       ['local.get', `$${t}`]], 'f64')
@@ -233,9 +233,9 @@ export default (ctx) => {
       const dstOff = tempI32('ocdo')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${src}`, asF64(emit(proto))],
-        ['local.set', `$${dst}`, ['call', '$__arr_from', ['local.get', `$${src}`]]],
-        ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['local.get', `$${src}`]]],
-        ['local.set', `$${dstOff}`, ['call', '$__ptr_offset', ['local.get', `$${dst}`]]],
+        ['local.set', `$${dst}`, ['call', '$__arr_from', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
+        ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
+        ['local.set', `$${dstOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${dst}`]]]],
         ['f64.store',
           ['i32.sub', ['local.get', `$${dstOff}`], ['i32.const', 16]],
           ['f64.load', ['i32.sub', ['local.get', `$${srcOff}`], ['i32.const', 16]]]],
@@ -255,11 +255,11 @@ export default (ctx) => {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${value}`, asF64(emit(proto))],
           ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${value}`]], ['i32.const', PTR.ARRAY]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${value}`]]], ['i32.const', PTR.ARRAY]],
             ['then', ['block', ['result', 'f64'],
-              ['local.set', `$${dst2}`, ['call', '$__arr_from', ['local.get', `$${value}`]]],
-              ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['local.get', `$${value}`]]],
-              ['local.set', `$${dstOff2}`, ['call', '$__ptr_offset', ['local.get', `$${dst2}`]]],
+              ['local.set', `$${dst2}`, ['call', '$__arr_from', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
+              ['local.set', `$${srcOff2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${value}`]]]],
+              ['local.set', `$${dstOff2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${dst2}`]]]],
               ['f64.store',
                 ['i32.sub', ['local.get', `$${dstOff2}`], ['i32.const', 16]],
                 ['f64.load', ['i32.sub', ['local.get', `$${srcOff2}`], ['i32.const', 16]]]],
@@ -278,7 +278,7 @@ export default (ctx) => {
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
       ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, n)], ['i32.const', 8]]],
-      ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['local.get', `$${s}`]]],
+      ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
     ]
     // Copy all properties from proto
     for (let i = 0; i < n; i++)
@@ -351,13 +351,13 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
         for (let i = 0; i < schema.length; i++) {
           const slot = slotAddr(t, i)
           body.push(['f64.store', slot,
-            ['call', '$__dyn_get_or', ['local.get', `$${srcF}`],
-              emit(['str', String(schema[i])]),
-              ['f64.load', slot]]])
+            ['f64.reinterpret_i64', ['call', '$__dyn_get_or', ['i64.reinterpret_f64', ['local.get', `$${srcF}`]],
+              asI64(emit(['str', String(schema[i])])),
+              ['i64.load', slot]]]])
         }
         continue
       }
-      body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', asF64(emit(p[1]))]])
+      body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])
         if (ti < 0) continue
@@ -373,8 +373,8 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   if (needsDynShadow(spreadTarget)) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)
-      body.push(['drop', ['call', '$__dyn_set', ['local.get', `$${ptr}`], emit(['str', String(schema[i])]),
-        ['f64.load', slotAddr(t, i)]]])
+      body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
+        ['i64.load', slotAddr(t, i)]]])
   }
   body.push(['local.get', `$${ptr}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -413,10 +413,10 @@ function emitHashKeys(obj) {
   const id = ctx.func.uniq++
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, va],
-    ['local.set', `$${n}`, ['call', '$__len', ['local.get', `$${t}`]]],
+    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
-    ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
-    ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${t}`]]],
+    ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['local.set', `$${o}`, ['i32.const', 0]],
     ['block', `$brk${id}`, ['loop', `$loop${id}`,

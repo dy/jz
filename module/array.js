@@ -8,10 +8,10 @@
  * @module array
  */
 
-import { typed, asF64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, extractParams, updateRep } from '../src/analyze.js'
-import { ctx, inc, err, PTR } from '../src/ctx.js'
+import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { staticPropertyKey } from '../src/key.js'
 import { strHashLiteral } from './collection.js'
 
@@ -196,7 +196,7 @@ const maybeDynMoveIR = () => needsArrayDynMove()
 const headerPropsCopyIR = () => needsArrayDynMove() ? `
     (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
     (if (i32.eq
-          (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+          (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${PTR.HASH}))
       (then (f64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $oldProps))))` : ''
 
@@ -205,14 +205,16 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
       (then
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
         (if (i32.eq
-              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const 47)) (i64.const 0xF)))
+              (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
           (then
             (local.set $root (global.get $__dyn_props))
             (if (f64.eq (local.get $root) (f64.const 0))
               (then (local.set $root (call $__hash_new))))
-            (local.set $root (call $__ihash_set_local (local.get $root)
-              (f64.convert_i32_s (local.get $newOff)) (local.get $oldProps)))
+            (local.set $root (f64.reinterpret_i64 (call $__ihash_set_local
+              (i64.reinterpret_f64 (local.get $root))
+              (i64.reinterpret_f64 (f64.convert_i32_s (local.get $newOff)))
+              (i64.reinterpret_f64 (local.get $oldProps)))))
             (global.set $__dyn_props (local.get $root)))))) ` : ''
 
 export default (ctx) => {
@@ -243,21 +245,20 @@ export default (ctx) => {
     const t = temp('t')
     return typed(['i32.and',
       ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
-      ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${t}`]], ['i32.const', PTR.ARRAY]]], 'i32')
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
   // the redundant double pass through __len then __ptr_offset that both follow forwarding.
-  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $bits i64) (local $off i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
+  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32)
     (if (result f64)
       (i32.ne
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF)))
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
         (i32.const ${PTR.ARRAY}))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
-        (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+        (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
         (block $done
           (loop $follow
             (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -274,9 +275,9 @@ export default (ctx) => {
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (else (f64.const nan:${UNDEF_NAN})))))) `
 
-  ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr f64) (param $i i32) (result f64)
+  ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
-    (local.set $off (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $ptr)) (i64.const 0xFFFFFFFF))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (block $done
       (loop $follow
         (br_if $done (i32.lt_u (local.get $off) (i32.const 8)))
@@ -299,7 +300,7 @@ export default (ctx) => {
   // and features.external are both off, collapses to ARRAY-only f64 indexing.
   ctx.core.stdlib['__typed_idx'] = () => {
     if (!ctx.features.typedarray && !ctx.features.external) {
-      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
@@ -309,13 +310,12 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
-    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $bits.
-    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
-    (local $bits i64) (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $bits (i64.reinterpret_f64 (local.get $ptr)))
-    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 47)) (i64.const 0xF))))
-    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 32)) (i64.const 0x7FFF))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $ptr.
+    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if
       (i32.and
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -350,7 +350,7 @@ export default (ctx) => {
   }
 
   // Array.from(src) — shallow copy of array (memory.copy of f64 elements)
-  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src i64) (result f64)
     (local $len i32) (local $dst i32)
     (local.set $len (call $__len (local.get $src)))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
@@ -391,13 +391,13 @@ export default (ctx) => {
         out.ptr], 'f64')
     }
     inc('__arr_from')
-    return typed(['call', '$__arr_from', asF64(emit(src))], 'f64')
+    return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
   }
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
   // Old storage is left behind as a forwarding header so existing aliases keep
   // seeing the current backing store after growth.
-  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow'] = () => `(func $__arr_grow (param $ptr i64) (param $minCap i32) (result f64)
     (local $t i32) (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
     (local.set $t (call $__ptr_type (local.get $ptr)))
@@ -413,7 +413,7 @@ export default (ctx) => {
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
-      (then (return (local.get $ptr))))
+      (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (local.get $oldCap) (i32.const 1))
@@ -427,13 +427,13 @@ export default (ctx) => {
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
 
-  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr f64) (param $minCap i32) (result f64)
+  ctx.core.stdlib['__arr_grow_known'] = () => `(func $__arr_grow_known (param $ptr i64) (param $minCap i32) (result f64)
     (local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32)
     ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
-      (then (return (local.get $ptr))))
+      (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (local.get $oldCap) (i32.const 1))
@@ -450,21 +450,22 @@ export default (ctx) => {
   // Hot for arr[i] = val (~18M calls in watr self-host). Compute base via __ptr_offset
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
   // forwarding follow. On the rare grow path the base is recomputed after relocation.
-  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr f64) (param $i i32) (param $val f64) (result f64)
-    (local $base i32)
+  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
+    (local $base i32) (local $p f64)
+    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.lt_s (local.get $i) (i32.const 0))
-      (then (return (local.get $ptr))))
+      (then (return (local.get $p))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.ge_u (local.get $i)
                   (i32.load (i32.sub (local.get $base) (i32.const 8))))
       (then
-        (local.set $ptr (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
-        (call $__set_len (local.get $ptr) (i32.add (local.get $i) (i32.const 1)))
-        (local.set $base (call $__ptr_offset (local.get $ptr)))))
+        (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
+        (call $__set_len (i64.reinterpret_f64 (local.get $p)) (i32.add (local.get $i) (i32.const 1)))
+        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
-    (local.get $ptr))`
+    (local.get $p))`
 
   // === Array literal ===
 
@@ -505,31 +506,29 @@ export default (ctx) => {
         const spreadVal = multiCount(e[1]) ? materializeMulti(e[1]) : asF64(emit(e[1]))
         const srcVT = valTypeOf(e[1])
         const spreadItem = srcVT === VAL.ARRAY
-          ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+          ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
           : srcVT === VAL.STRING
-            ? (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+            ? (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
             : ctx.module.modules['string']
               ? ['if', ['result', 'f64'],
-                ['i32.or',
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.STRING]],
-                  ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.SSO]]],
-                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])],
-                ['else', (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])]]
-              : (['call', '$__typed_idx', ['local.get', `$${src}`], ['local.get', `$${si}`]])
+                ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
+                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])],
+                ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])]]
+              : (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
 
         body.push(
           ['local.set', `$${src}`, spreadVal],
-          ['local.set', `$${slen}`, ['call', '$__len', ['local.get', `$${src}`]]],
+          ['local.set', `$${slen}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
           ['local.set', `$${si}`, ['i32.const', 0]],
           ['block', `$brk${id}`, ['loop', `$loop${id}`,
             ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
-            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], spreadItem]],
+            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], spreadItem]],
             ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
             ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
             ['br', `$loop${id}`]]])
       } else {
         body.push(
-          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['local.get', `$${out}`], ['local.get', `$${pos}`], asF64(emit(e))]],
+          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], asF64(emit(e))]],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]])
       }
     }
@@ -569,16 +568,16 @@ export default (ctx) => {
       if (slot >= 0) {
         inc('__ptr_offset')
         return typed(['f64.load',
-          ['i32.add', ['call', '$__ptr_offset', asF64(emit(arr))], ['i32.const', slot * 8]]], 'f64')
+          ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]], ['i32.const', slot * 8]]], 'f64')
       }
     }
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
-      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')
     }
     if (litKey != null && typeof arr !== 'string' && valTypeOf(arr) === VAL.HASH) {
       inc('__hash_get_local_h')
-      return typed(['call', '$__hash_get_local_h', asF64(emit(arr)), asF64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]], 'f64')
+      return typed(['f64.reinterpret_i64', ['call', '$__hash_get_local_h', asI64(emit(arr)), asI64(emit(['str', litKey])), ['i32.const', strHashLiteral(litKey)]]], 'f64')
     }
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
@@ -588,16 +587,16 @@ export default (ctx) => {
     const dynLoad = (objExpr, keyExpr) => {
       if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       inc('__dyn_get')
-      return ['call', '$__dyn_get', objExpr, keyExpr]
+      return ['f64.reinterpret_i64', ['call', '$__dyn_get', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }
-    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, vi])
-    const arrayLoad = (['call', '$__typed_idx', ptrExpr, vi])
+    const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
+    const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       inc('__is_str_key')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, asF64(emit(idx))],
-        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['local.get', `$${keyTmp}`]],
+        ['if', ['result', 'f64'], ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${keyTmp}`]]],
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
           ['else', numericLoad(['local.get', `$${keyTmp}`])]]], 'f64')
     }
@@ -607,9 +606,9 @@ export default (ctx) => {
       if (keyType === VAL.STRING) return typed(dynLoad(asF64(emit(arr)), asF64(emit(idx))), 'f64')
       if (useRuntimeKeyDispatch)
         return emitDynamicKeyDispatch(asF64(emit(arr)), keyExpr =>
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', inner], ['i32.shl', asI32(typed(keyExpr, 'f64')), ['i32.const', 3]]]])
+          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], ['i32.shl', asI32(typed(keyExpr, 'f64')), ['i32.const', 3]]]])
       return typed(
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', inner], ['i32.shl', vi, ['i32.const', 3]]]],
+        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], ['i32.shl', vi, ['i32.const', 3]]]],
         'f64')
     }
     // Known array → direct f64 element load, skip string check
@@ -642,7 +641,7 @@ export default (ctx) => {
         return typed(['f64.load',
           ['i32.add',
             ['local.tee', `$${baseI32}`,
-              ['call', '$__ptr_offset', ptrExpr]],
+              ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
             ['i32.shl', vi, ['i32.const', 3]]]], 'f64')
       }
       const baseTmp = temp()
@@ -655,12 +654,12 @@ export default (ctx) => {
           emitDynamicKeyDispatch(typed(['local.get', `$${baseTmp}`], 'f64'), keyExpr => {
             const keyI32 = asI32(typed(keyExpr, 'f64'))
             inc('__arr_idx')
-            return (['call', '$__arr_idx', ['local.get', `$${baseTmp}`], keyI32])
+            return (['call', '$__arr_idx', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], keyI32])
           })], 'f64')
       inc('__arr_idx_known')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${baseTmp}`, ptrExpr],
-        (['call', '$__arr_idx_known', ['local.get', `$${baseTmp}`], vi])], 'f64')
+        (['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${baseTmp}`]], vi])], 'f64')
     }
     // Known string → single-char SSO string
     if (vt === 'string')
@@ -675,30 +674,26 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch && !keyIsNum)
         return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
           const keyI32 = asI32(typed(keyExpr, 'f64'))
-          return (['call', '$__typed_idx', ptrExpr, keyI32])
+          return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
         })
-      return typed((['call', '$__typed_idx', ptrExpr, vi]), 'f64')
+      return typed((['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
     }
     if (useRuntimeKeyDispatch)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
         if (ctx.module.modules['string']) {
           return ['if', ['result', 'f64'],
-            ['i32.or',
-              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
-              ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
-            ['then', (inc('__str_idx'), ['call', '$__str_idx', ptrExpr, keyI32])],
-            ['else', (['call', '$__typed_idx', ptrExpr, keyI32])]]
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
+            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
+            ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])]]
         }
-        return (['call', '$__typed_idx', ptrExpr, keyI32])
+        return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
       })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
     if (ctx.module.modules['string'])
       return typed(
         ['if', ['result', 'f64'],
-          ['i32.or',
-            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.STRING]],
-            ['i32.eq', ['call', '$__ptr_type', ptrExpr], ['i32.const', PTR.SSO]]],
+          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
           ['then', stringLoad()],
           ['else', arrayLoad]],
         'f64')
@@ -730,7 +725,7 @@ export default (ctx) => {
       // dispatch and prologue entirely; on grow we re-extract offset because the
       // alloc may have relocated the buffer.
       body.push(
-        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
+        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
         ['local.set', `$${len}`,
           ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]],
         ['if',
@@ -738,17 +733,17 @@ export default (ctx) => {
             ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 4]]],
             ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]],
           ['then',
-            ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
+            ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
               ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
-            ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]]]],
+            ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]],
       )
     } else {
       body.push(
-        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${t}`]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
         // Grow if needed: ensure cap >= len + vals.length
-        ['local.set', `$${t}`, ['call', `$${grow}`, ['local.get', `$${t}`],
+        ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
           ['i32.add', ['local.get', `$${len}`], ['i32.const', vals.length]]]],
-        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['local.get', `$${t}`]]],
+        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       )
     }
 
@@ -764,7 +759,7 @@ export default (ctx) => {
     }
 
     // Update length header, update source variable (pointer may have changed from grow), return new length
-    body.push(['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]])
+    body.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]])
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
       if (ctx.func.boxed?.has(arr)) {
@@ -787,24 +782,24 @@ export default (ctx) => {
     // Known ARRAY → inline len (skips __len dispatch tree).
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const rawLen = vt === VAL.ARRAY
-      ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.const', 8]]]
-      : ['call', '$__len', ['local.get', `$${t}`]]
+      ? ['i32.load', ['i32.sub', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]]
+      : ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, va],
       ['local.set', `$${len}`, ['i32.sub', rawLen, ['i32.const', 1]]],
-      ['call', '$__set_len', ['local.get', `$${t}`], ['local.get', `$${len}`]],
+      ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
       ['f64.load',
-        ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${t}`]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
+        ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]]], 'f64')
   }
 
   // .shift() → remove first element, shift remaining left, return removed
-  ctx.core.emit['.shift'] = arrMethod('__arr_shift')
+  ctx.core.emit['.shift'] = (arr) => (inc('__arr_shift'),
+    typed(['call', '$__arr_shift', asI64(emit(arr))], 'f64'))
 
-  ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr f64) (result f64)
-    (local $bits i64) (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
+  ctx.core.stdlib['__arr_shift'] = () => `(func $__arr_shift (param $arr i64) (result f64)
+    (local $rawOff i32) (local $off i32) (local $newOff i32) (local $len i32) (local $cap i32) (local $val f64)
     ${needsArrayDynMove() ? '(local $oldProps f64) (local $root f64)' : ''}
-    (local.set $bits (i64.reinterpret_f64 (local.get $arr)))
-    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $bits) (i64.const 0xFFFFFFFF))))
+    (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
       (then (f64.const 0))
@@ -841,10 +836,10 @@ export default (ctx) => {
     const svt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const lenInit = svt === VAL.ARRAY
       ? ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]]
-      : ['local.set', `$${len}`, ['call', '$__len', va]]
+      : ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]]
     const body = [
       recv.setup,
-      ['local.set', `$${off}`, ['call', '$__ptr_offset', va]],
+      ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       lenInit,
       // clamp start to [0, len]
       ['local.set', `$${s}`, vs],
@@ -883,26 +878,27 @@ export default (ctx) => {
           ['i32.sub', ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]], ['local.get', `$${cnt}`]],
           ['i32.const', 3]]],
       // update length
-      ['call', '$__set_len', va, ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
+      ['call', '$__set_len', ['i64.reinterpret_f64', va], ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
       out.ptr,
     ]
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
   // .unshift(val) → prepend element, shift existing right
-  ctx.core.emit['.unshift'] = arrMethod('__arr_unshift', 1)
+  ctx.core.emit['.unshift'] = (arr, val) => (inc('__arr_unshift'),
+    typed(['call', '$__arr_unshift', asI64(emit(arr)), asF64(emit(val))], 'f64'))
 
-  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr f64) (param $val f64) (result f64)
-    (local $off i32) (local $len i32)
-    (local.set $arr (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
-    (local.set $off (call $__ptr_offset (local.get $arr)))
-    (local.set $len (call $__len (local.get $arr)))
+  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
+    (local $off i32) (local $len i32) (local $a f64)
+    (local.set $a (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
+    (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
+    (local.set $len (call $__len (i64.reinterpret_f64 (local.get $a))))
     (memory.copy
       (i32.add (local.get $off) (i32.const 8))
       (local.get $off)
       (i32.shl (local.get $len) (i32.const 3)))
     (f64.store (local.get $off) (local.get $val))
-    (call $__set_len (local.get $arr) (i32.add (local.get $len) (i32.const 1)))
+    (call $__set_len (i64.reinterpret_f64 (local.get $a)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)
@@ -1037,7 +1033,7 @@ export default (ctx) => {
       inc('__ptr_offset')
       return typed(['block', ['result', 'f64'],
         recv.setup, filterCb.setup, mapCb.setup,
-        ['local.set', `$${base}`, ['call', '$__ptr_offset', recv.value]],
+        ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
         ['local.set', `$${maxLen}`, arrayLenFromPtr(base)],
         out.init, ['local.set', `$${count}`, ['i32.const', 0]],
         ...loop,
@@ -1057,7 +1053,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', recv.value]],
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, arrayLenFromPtr(base)],
       out.init,
       ...loop,
@@ -1083,7 +1079,7 @@ export default (ctx) => {
       inc('__ptr_offset')
       return typed(['block', ['result', 'f64'],
         recv.setup, mapCb.setup, filterCb.setup,
-        ['local.set', `$${base}`, ['call', '$__ptr_offset', recv.value]],
+        ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
         ['local.set', `$${maxLen}`, arrayLenFromPtr(base)],
         out.init, ['local.set', `$${count}`, ['i32.const', 0]],
         ...loop,
@@ -1104,7 +1100,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       recv.setup,
       cb.setup,
-      ['local.set', `$${base}`, ['call', '$__ptr_offset', recv.value]],
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${maxLen}`, arrayLenFromPtr(base)],
       out.init,
       ['local.set', `$${count}`, ['i32.const', 0]],
@@ -1224,7 +1220,7 @@ export default (ctx) => {
     const vt = resolveValType(val, valTypeOf, lookupValType)
     if (vt === VAL.NUMBER) return (item, vv) => ['f64.eq', item, vv]
     inc('__eq')
-    return (item, vv) => ['call', '$__eq', item, vv]
+    return (item, vv) => ['call', '$__eq', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vv]]
   }
 
   ctx.core.emit['.indexOf'] = (arr, val) => {
@@ -1268,7 +1264,7 @@ export default (ctx) => {
       inc('__ptr_offset')
       const t = tempI32('ai'), off = tempI32('ao')
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', asF64(emit(arr))]],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]]],
         ['local.set', `$${t}`, asI32(emit(idx))],
         ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
           ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
@@ -1283,8 +1279,8 @@ export default (ctx) => {
       // Negative index: t += length
       ['if', ['i32.lt_s', ['local.get', `$${t}`], ['i32.const', 0]],
         ['then', ['local.set', `$${t}`, ['i32.add', ['local.get', `$${t}`],
-          ['call', '$__len', ['local.get', `$${a}`]]]]]],
-      ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${a}`]],
+          ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${a}`]]]]]]],
+      ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${a}`]]],
         ['i32.shl', ['local.get', `$${t}`], ['i32.const', 3]]]]], 'f64')
   }
   ctx.core.emit['.at'] = ctx.core.emit['.array:at']
@@ -1302,7 +1298,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })
     return typed(['block', ['result', 'f64'],
       recv.setup,
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', recv.value]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', recv.value]]],
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]],
       ['local.set', `$${s}`, rawStart],
       ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
@@ -1335,14 +1331,14 @@ export default (ctx) => {
     // Calculate total length
     const body = [
       recv.setup,
-      ['local.set', `$${len}`, ['call', '$__len', va]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
     ]
 
     const otherVals = []
     for (const other of others) {
       const vo = asF64(emit(other))
       otherVals.push(vo)
-      body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', vo]]])
+      body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['call', '$__len', ['i64.reinterpret_f64', vo]]]])
     }
 
     body.push(out.init)
@@ -1351,8 +1347,8 @@ export default (ctx) => {
     const srcOff = tempI32('co')
     body.push(
       ['local.set', `$${pos}`, ['i32.const', 0]],
-      ['local.set', `$${len}`, ['call', '$__len', va]],
-      ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', va]]
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
+      ['local.set', `$${srcOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]]
     )
     const id = ctx.func.uniq++
     body.push(
@@ -1367,7 +1363,7 @@ export default (ctx) => {
 
     // Copy each other array
     const offset = tempI32('off')
-    body.push(['local.set', `$${offset}`, ['call', '$__len', va]])
+    body.push(['local.set', `$${offset}`, ['call', '$__len', ['i64.reinterpret_f64', va]]])
 
     const otherOff = tempI32('co2')
     for (let i = 0; i < otherVals.length; i++) {
@@ -1375,8 +1371,8 @@ export default (ctx) => {
       const id2 = ctx.func.uniq++
       body.push(
         ['local.set', `$${pos}`, ['i32.const', 0]],
-        ['local.set', `$${len}`, ['call', '$__len', vo]],
-        ['local.set', `$${otherOff}`, ['call', '$__ptr_offset', vo]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', vo]]],
+        ['local.set', `$${otherOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', vo]]],
         ['block', `$done${id2}`, ['loop', `$loop${id2}`,
           ['br_if', `$done${id2}`, ['i32.ge_s', ['local.get', `$${pos}`], ['local.get', `$${len}`]]],
           ['f64.store',
@@ -1393,7 +1389,7 @@ export default (ctx) => {
   }
 
   // .flat() → flatten one level of nested arrays
-  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src f64) (result f64)
+  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src i64) (result f64)
     (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
     (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
     (local.set $off (call $__ptr_offset (local.get $src)))
@@ -1404,8 +1400,8 @@ export default (ctx) => {
       (br_if $c1 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
-        (then (local.set $total (i32.add (local.get $total) (call $__len (local.get $elem)))))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
+        (then (local.set $total (i32.add (local.get $total) (call $__len (i64.reinterpret_f64 (local.get $elem))))))
         (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl1)))
@@ -1420,10 +1416,10 @@ export default (ctx) => {
       (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (local.get $elem)) (i32.const ${PTR.ARRAY})))
+        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
         (then
-          (local.set $subOff (call $__ptr_offset (local.get $elem)))
-          (local.set $subLen (call $__len (local.get $elem)))
+          (local.set $subOff (call $__ptr_offset (i64.reinterpret_f64 (local.get $elem))))
+          (local.set $subLen (call $__len (i64.reinterpret_f64 (local.get $elem))))
           (local.set $j (i32.const 0))
           (block $s (loop $sl
             (br_if $s (i32.ge_s (local.get $j) (local.get $subLen)))
@@ -1439,15 +1435,17 @@ export default (ctx) => {
       (br $cl2)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.core.emit['.flat'] = arrMethod('__arr_flat')
+  ctx.core.emit['.flat'] = (arr) => (inc('__arr_flat'),
+    typed(['call', '$__arr_flat', asI64(emit(arr))], 'f64'))
 
   // .flatMap(fn) → map then flatten
   ctx.core.emit['.flatMap'] = (arr, fn) => {
     const mapped = ctx.core.emit['.map'](arr, fn)
     inc('__arr_flat')
-    return typed(['call', '$__arr_flat', asF64(mapped)], 'f64')
+    return typed(['call', '$__arr_flat', asI64(mapped)], 'f64')
   }
 
   // .join(sep) → concatenate array elements with separator string
-  ctx.core.emit['.join'] = arrMethod('__str_join', 1)
+  ctx.core.emit['.join'] = (arr, sep) => (inc('__str_join'),
+    typed(['call', '$__str_join', asI64(emit(arr)), asI64(emit(sep))], 'f64'))
 }

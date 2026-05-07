@@ -7,20 +7,38 @@
  * Refactored into focused sub-contexts for better maintainability.
  */
 
-// === NaN-boxing pointer type codes ===
-// SEALED: 4-bit tag (values 0-15). Layout is hardcoded in dispatch funcs
-// (__length/__typeof/__to_str/__ptr_type) and the static-data strip pass
-// ([src/compile.js] SHIFTABLE). No plugin/extension API — internal A/B
-// measurement goes through `ctx.features.*` flags instead (see reset()).
+// === Carrier layout ===
+// i64 carrier holds either:
+//   - raw f64 number bits (any non-NaN-shape pattern), discriminated by
+//     `f64.eq(f, f)` — true for real numbers, false for NaN-shape pointers.
+//   - NaN-shape tagged pointer: [63:51]=NAN_PREFIX | [50:47]=tag | [46:32]=aux | [31:0]=offset.
+//
+// LAYOUT is the single source of truth. WAT templates reference
+// `${LAYOUT.TAG_SHIFT}` etc. so a layout change propagates by re-evaluation.
+// Hot dispatch (__ptr_type/__ptr_aux/__ptr_offset) keeps the inline expansion
+// for codegen size; those sites are commented as LAYOUT-tied.
+export const LAYOUT = {
+  TAG_SHIFT: 47,
+  TAG_MASK: 0xF,           // 4-bit tag (16 type slots)
+  AUX_SHIFT: 32,
+  AUX_MASK: 0x7FFF,        // 15-bit aux (schemaId, elemType, atomId, …)
+  OFFSET_MASK: 0xFFFFFFFF, // 32-bit offset (4GB heap)
+  NAN_PREFIX: 0x7FF8,      // top 13 bits of any NaN-shape pointer
+  NAN_PREFIX_BITS: 0x7FF8000000000000n, // pre-shifted for i64 OR
+  SSO_BIT: 0x4000,         // STRING aux bit 14: 1=inline (≤4 ASCII chars in offset), 0=heap
+}
+
+// === Tagged-pointer type codes ===
+// 4-bit tag (LAYOUT.TAG_MASK = 16 slots).
 // To retire a type, gate emission behind a feature flag and drop its dispatch
-// branches; to add, renumber with care — all hardcoded branches must update.
+// branches; to add, renumber with care — hardcoded branches in module/* must update.
 export const PTR = {
-  ATOM: 0,      // null, undefined, booleans
+  ATOM: 0,      // null, undefined, booleans, symbols (aux=atomId)
   ARRAY: 1,     // heap-allocated arrays
   BUFFER: 2,    // ArrayBuffer: [-8:byteLen][-4:byteCap][bytes]
   TYPED: 3,     // TypedArrays (Float64Array, etc.)
-  STRING: 4,    // heap-allocated strings
-  SSO: 5,       // short string optimization (≤4 ASCII chars inline)
+  STRING: 4,    // strings (heap or inline-SSO; aux bit LAYOUT.SSO_BIT distinguishes)
+  // 5: free
   OBJECT: 6,    // plain objects
   HASH: 7,      // dynamic objects (Map-like)
   SET: 8,       // Set collections

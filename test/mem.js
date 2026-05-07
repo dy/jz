@@ -2,9 +2,32 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { i64ToF64, f64ToI64 } from '../src/host.js'
 
 async function run(code) {
-  return WebAssembly.instantiate(compile(code))
+  const r = await WebAssembly.instantiate(compile(code))
+  return { module: r.module, instance: { exports: adaptI64(r.module, r.instance.exports) } }
+}
+
+// Adapt raw exports back to f64 ABI so legacy tests see NaN-box pointers.
+function adaptI64(mod, raw) {
+  const i64Exp = new Map()
+  const sec = WebAssembly.Module.customSections(mod, 'jz:i64exp')
+  if (sec.length) try { for (const e of JSON.parse(new TextDecoder().decode(sec[0]))) i64Exp.set(e.name, e) } catch {}
+  if (!i64Exp.size) return raw
+  const out = {}
+  for (const [name, fn] of Object.entries(raw)) {
+    if (typeof fn !== 'function') { out[name] = fn; continue }
+    const sig = i64Exp.get(name)
+    if (!sig) { out[name] = fn; continue }
+    const piSet = new Set(sig.p), r = sig.r
+    out[name] = (...args) => {
+      const a = piSet.size ? args.map((x, i) => piSet.has(i) ? f64ToI64(x) : x) : args
+      const ret = fn(...a)
+      return r ? i64ToF64(ret) : ret
+    }
+  }
+  return out
 }
 
 // ============================================

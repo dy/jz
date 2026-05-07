@@ -426,15 +426,15 @@ cc program.c -o program
 
 | | **jz** | [Node](https://nodejs.org/) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) | [Porffor](https://github.com/CanadaHonk/porffor) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [**biquad**](bench/biquad/biquad.js) | **6.44ms**<br>**3.4kB** | 12.30ms<br>3.2kB | 9.04ms<br>1.9kB | 6.48ms<br>767 B | 5.43ms | 9.03ms<br>fma | 5.09ms | 5.33ms | 3.15s | — |
-| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.6kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.13ms | 0.07ms | 0.12ms | 0.12ms | 5.21ms | 0.46ms<br>2.6kB |
-| [**mat4**](bench/mat4/mat4.js) | **4.00ms**<br>**1.7kB** | 11.64ms<br>1.1kB | 9.18ms<br>1.5kB | 7.99ms<br>353 B | 2.62ms | 11.93ms | 2.60ms | 0.80ms | 323.69ms | 87.65ms<br>2.3kB |
-| [**aos**](bench/aos/aos.js) | **1.50ms**<br>**2.3kB** | 1.81ms<br>1.1kB | 1.91ms<br>2.2kB | — | 1.22ms | 0.90ms | 0.99ms | 1.20ms | 2.23ms | — |
-| [**bitwise**](bench/bitwise/bitwise.js) | **4.93ms**<br>**1.2kB** | 5.31ms<br>1005 B | 12.36ms<br>1.5kB | 4.96ms<br>355 B | 1.31ms | 5.24ms | 4.26ms | 1.30ms | 14.89ms | — |
-| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.31ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | 0.60ms | — |
-| [**callback**](bench/callback/callback.js) | **0.01ms**<br>**1.5kB** | 1.03ms<br>828 B | 1.48ms<br>1.9kB | — | 0.09ms | 0.20ms | 0.01ms | 0.08ms | 1.84ms | — |
-| [**json**](bench/json/json.js) | **0.20ms**<br>**2.8kB** | 0.38ms<br>923 B | — | — | 0.02ms | 1.06ms | — | 0.03ms | 1.19ms | — |
-| [**watr**](bench/watr/watr.js) | **1.12ms**<br>**166.7kB** | 1.03ms<br>2.6kB | — | — | — | — | — | — | — | — |
+| [**biquad**](bench/biquad/biquad.js) | **6.39ms**<br>**4.2kB** | 12.17ms<br>3.2kB | 8.91ms<br>1.9kB | 6.45ms<br>8.0kB | 5.33ms | 8.92ms<br>fma | — | 5.29ms | 3.11s | — |
+| [**tokenizer**](bench/tokenizer/tokenizer.js) | **0.10ms**<br>**1.8kB** | 0.18ms<br>1.4kB | 0.08ms<br>1.5kB | — | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.13ms | 0.46ms<br>2.6kB |
+| [**mat4**](bench/mat4/mat4.js) | **4.06ms**<br>**1.8kB** | 11.71ms<br>1.1kB | 9.12ms<br>1.5kB | 7.85ms<br>3.8kB | 2.62ms | 12.77ms | 2.60ms | 0.80ms | 312.02ms | 87.17ms<br>2.3kB |
+| [**aos**](bench/aos/aos.js) | **1.53ms**<br>**2.4kB** | 1.76ms<br>1.1kB | 1.87ms<br>2.2kB | — | 1.20ms | 0.90ms | 0.91ms | 1.21ms | 2.25ms | — |
+| [**bitwise**](bench/bitwise/bitwise.js) | **4.90ms**<br>**1.2kB** | 5.27ms<br>1005 B | 12.05ms<br>1.5kB | 4.88ms<br>3.1kB | 1.31ms | 5.25ms | 4.13ms | 1.30ms | 14.74ms | — |
+| [**poly**](bench/poly/poly.js) | **1.13ms**<br>**1.3kB** | 2.29ms<br>1014 B | 1.14ms<br>1.3kB | — | 0.52ms | 0.80ms | — | 0.52ms | 0.61ms | — |
+| [**callback**](bench/callback/callback.js) | **0.04ms**<br>**1.6kB** | 0.87ms<br>828 B | 1.48ms<br>1.9kB | 0.25ms<br>3.2kB | 0.08ms | 0.20ms | 0.01ms | 0.07ms | 1.79ms | — |
+| [**json**](bench/json/json.js) | **0.20ms**<br>**2.9kB** | 0.38ms<br>923 B | — | — | 0.03ms | 1.02ms | — | 0.03ms | 1.20ms | — |
+| [**watr**](bench/watr/watr.js) | **1.35ms**<br>**166.3kB** | 1.42ms<br>2.6kB | — | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon._
 

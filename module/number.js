@@ -319,15 +319,14 @@ export default (ctx) => {
   }
 
   // parseInt(str, radix) — parse string to integer
-  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str f64) (param $radix i32) (result f64)
+  ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str i64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $result f64) (local $digit i32) (local $seen i32)
+    (local $result f64) (local $digit i32) (local $seen i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $str)))
     ;; If input is a number, just truncate
-    (if (f64.eq (local.get $str) (local.get $str)) (then (return (f64.trunc (local.get $str)))))
-    ;; If NaN-boxed but not a string type (4=heap,5=SSO) → return NaN
-    (if (i32.and
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
-          (i32.ne (call $__ptr_type (local.get $str)) (i32.const 5)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (f64.trunc (local.get $f)))))
+    ;; If NaN-boxed but not a string → return NaN
+    (if (i32.ne (call $__ptr_type (local.get $str)) (i32.const 4))
       (then (return (f64.const nan))))
     (local.set $off (call $__ptr_offset (local.get $str)))
     (local.set $len (call $__str_byteLen (local.get $str)))
@@ -375,19 +374,17 @@ export default (ctx) => {
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
-  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v f64) (result f64)
+  ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $result f64)
-    (if (f64.eq (local.get $v) (local.get $v)) (then (return (local.get $v))))
-    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
-    (if (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
+    (local $result f64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
+    (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (local.set $t (call $__ptr_type (local.get $v)))
-    (if (i32.eqz
-          (i32.or
-            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.const nan))))
     (local.set $len (call $__str_byteLen (local.get $v)))
     ;; Skip leading whitespace.
@@ -501,16 +498,14 @@ export default (ctx) => {
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
-  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v f64) (result f64)
+  ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64)
-    (if (f64.eq (local.get $v) (local.get $v))
-      (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $v))))))
+    (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $f))))))
     (local.set $t (call $__ptr_type (local.get $v)))
-    (if (i32.eqz
-          (i32.or
-            (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (i32.eq (local.get $t) (i32.const ${PTR.SSO}))))
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (local.set $len (call $__str_byteLen (local.get $v)))
     (block $ws (loop $wsl
@@ -557,12 +552,12 @@ export default (ctx) => {
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
-    return typed(['call', '$__parseInt', asF64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
+    return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
   ctx.core.emit['Number.parseFloat'] = (x) => {
     inc('__to_num')
-    return typed(['call', '$__to_num', asF64(emit(x))], 'f64')
+    return typed(['call', '$__to_num', asI64(emit(x))], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 
@@ -570,7 +565,7 @@ export default (ctx) => {
   ctx.core.emit['Boolean'] = (x) => {
     if (x === undefined) return typed(['f64.const', 0], 'f64')
     inc('__is_truthy')
-    const v = asF64(emit(x))
+    const v = asI64(emit(x))
     return typed(['if', ['result', 'f64'], ['call', '$__is_truthy', v], ['then', ['f64.const', 1]], ['else', ['f64.const', 0]]], 'f64')
   }
 
@@ -638,8 +633,7 @@ export default (ctx) => {
     if (vt === VAL.NUMBER)
       return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
     inc('__to_bigint')
-    return typed(['f64.reinterpret_i64',
-      ['i64.reinterpret_f64', ['call', '$__to_bigint', asF64(emit(x))]]], 'f64')
+    return typed(['call', '$__to_bigint', asI64(emit(x))], 'f64')
   }
 
   // BigInt.asIntN(bits, bigint) — truncate to signed N-bit

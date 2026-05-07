@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -165,7 +165,7 @@ function genSimdMap(name, elemType, pattern) {
     : `(local.set $ei (${scalarLoad} ${byteOff}))`
   const scalarStoreExpr = `${scalarLoadSet}\n      (${store} ${dstByteOff} ${scalarOp})`
 
-  return `(func $${name} (param $src f64) (result f64)
+  return `(func $${name} (param $src i64) (result f64)
     (local $len i32) (local $srcOff i32) (local $dstOff i32) (local $dst i32)
     (local $i i32) (local $simdLen i32) (local $byteOff i32)
     (local $v v128)
@@ -217,7 +217,7 @@ export default (ctx) => {
   // __byte_length(ptr) — byte size for BUFFER/TYPED; 0 otherwise.
   // BUFFER and owned TYPED store byteLen at [-8]. TYPED view (aux bit 3) stores byteLen
   // at descriptor[0].
-  ctx.core.stdlib['__byte_length'] = `(func $__byte_length (param $ptr f64) (result i32)
+  ctx.core.stdlib['__byte_length'] = `(func $__byte_length (param $ptr i64) (result i32)
     (local $t i32) (local $off i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (if (result i32)
@@ -239,11 +239,11 @@ export default (ctx) => {
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
   // TYPED view: retag as BUFFER at the parent data offset (descriptor[8]) — reconstructs
   // the root ArrayBuffer so its own header supplies byteLength.
-  ctx.core.stdlib['__to_buffer'] = `(func $__to_buffer (param $ptr f64) (result f64)
+  ctx.core.stdlib['__to_buffer'] = `(func $__to_buffer (param $ptr i64) (result f64)
     (local $t i32) (local $off i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.BUFFER}))
-      (then (local.get $ptr))
+      (then (f64.reinterpret_i64 (local.get $ptr)))
       (else
         (local.set $off (call $__ptr_offset (local.get $ptr)))
         (if (result f64)
@@ -290,7 +290,7 @@ export default (ctx) => {
       // TYPED retagged at the same offset — the byteLen header is shared with the parent.
       // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
-        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', asF64(emit(lenExpr))])
+        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
@@ -310,10 +310,10 @@ export default (ctx) => {
               numAlloc.ptr]],
             // Pointer: array → copy elements; buffer/typed → zero-copy view on same offset
             ['else', ['if', ['result', 'f64'],
-              ['i32.eq', ['call', '$__ptr_type', ['local.get', `$${src}`]], ['i32.const', PTR.ARRAY]],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.ARRAY]],
               ['then', ctx.core.emit[`${name}.from`](src)],
               ['else', mkPtrIR(PTR.TYPED, elemType,
-                ['call', '$__ptr_offset', ['local.get', `$${src}`]])]]]]], 'f64')
+                ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
@@ -346,7 +346,7 @@ export default (ctx) => {
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
     ctx.features.typedarray = true
     const va = asF64(emit(bufExpr))
-    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', va])
+    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
   }
 
   // .buffer — always aliased (zero-copy). BUFFER/DataView: passthrough.
@@ -368,7 +368,7 @@ export default (ctx) => {
       }
     }
     inc('__to_buffer')
-    return typed(['call', '$__to_buffer', asF64(emit(obj))], 'f64')
+    return typed(['call', '$__to_buffer', asI64(emit(obj))], 'f64')
   }
 
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride. View TYPED: descriptor[0].
@@ -376,7 +376,7 @@ export default (ctx) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer' || ctor === 'new.DataView') {
-        return typed(['f64.convert_i32_s', ['call', '$__len', asF64(emit(obj))]], 'f64')
+        return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]]], 'f64')
       }
       if (ctor && ctor.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
@@ -388,12 +388,12 @@ export default (ctx) => {
               ['i32.load', ptrOffsetIR(emit(obj), VAL.TYPED)]], 'f64')
           }
           return typed(['f64.convert_i32_s',
-            ['i32.shl', ['call', '$__len', asF64(emit(obj))], ['i32.const', SHIFT[et]]]], 'f64')
+            ['i32.shl', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]], ['i32.const', SHIFT[et]]]], 'f64')
         }
       }
     }
     inc('__byte_length')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_length', asF64(emit(obj))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__byte_length', asI64(emit(obj))]], 'f64')
   }
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
@@ -412,11 +412,11 @@ export default (ctx) => {
       if (ctor?.startsWith('new.') && ELEM[ctor.slice(4)] != null) return typed(['f64.const', 0], 'f64')
     }
     inc('__byte_offset')
-    return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asF64(emit(obj))]], 'f64')
+    return typed(['f64.convert_i32_s', ['call', '$__byte_offset', asI64(emit(obj))]], 'f64')
   }
 
   // Runtime fallback for .byteOffset when variable view-ness is unknown.
-  ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr f64) (result i32)
+  ctx.core.stdlib['__byte_offset'] = `(func $__byte_offset (param $ptr i64) (result i32)
     (local $off i32)
     (if (result i32)
       (i32.and
@@ -435,7 +435,7 @@ export default (ctx) => {
     if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
     return typed(['f64.convert_i32_s',
-      ['i32.eq', ['call', '$__ptr_type', va], ['i32.const', PTR.TYPED]]], 'f64')
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', va]], ['i32.const', PTR.TYPED]]], 'f64')
   }
 
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
@@ -448,7 +448,7 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.BUFFER, len: ['local.get', `$${bytes}`], stride: 1, tag: 'bsd' })
     const beginWat = beginExpr == null ? ['i32.const', 0] : asI32(emit(beginExpr))
     const endWat = endExpr == null
-      ? ['call', '$__len', ['local.get', `$${src}`]]
+      ? ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
       : asI32(emit(endExpr))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${src}`, asF64(emit(obj))],
@@ -461,7 +461,7 @@ export default (ctx) => {
       out.init,
       ['memory.copy',
         ['local.get', `$${out.local}`],
-        ['i32.add', ['call', '$__ptr_offset', ['local.get', `$${src}`]], ['local.get', `$${beg}`]],
+        ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['local.get', `$${beg}`]],
         ['local.get', `$${bytes}`]],
       out.ptr], 'f64')
   }
@@ -530,8 +530,8 @@ export default (ctx) => {
             ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${srcL}`, asF64(emit(src))],
-        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${srcL}`]]],
-        ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcL}`]]],
+        ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcL}`]]]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -570,7 +570,7 @@ export default (ctx) => {
   // Identical factory in array.js; whichever module loads last wins the registration.
   ctx.core.stdlib['__typed_idx'] = () => {
     if (!ctx.features.typedarray && !ctx.features.external) {
-      return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+      return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $len i32)
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
@@ -580,7 +580,7 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
-    return `(func $__typed_idx (param $ptr f64) (param $i i32) (result f64)
+    return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -617,7 +617,7 @@ export default (ctx) => {
           (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
   }
 
-  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr f64) (param $i i32) (param $v f64) (result f64)
+  ctx.core.stdlib['__typed_set_idx'] = `(func $__typed_set_idx (param $ptr i64) (param $i i32) (param $v f64) (result f64)
     (local $off i32) (local $aux i32) (local $et i32) (local $bits i32)
     (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -660,23 +660,39 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView } = r
-    const objIR = emit(arr), vi = asI32(emit(idx)), vv = asF64(emit(val))
+    const objIR = emit(arr), vi = asI32(emit(idx)), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    if (et === 7) {
+      const vt = temp('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f64.store', off, ['local.get', `$${vt}`]],
+        ['local.get', `$${vt}`]], 'f64') // Float64Array
+    }
+    if (et === 6) {
+      const vt = temp('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
+        ['local.get', `$${vt}`]], 'f64') // Float32Array
+    }
+    // Integer store: when the source is already i32-typed (bitwise ops, |0,
+    // typed-array load, known-i32 var), store it directly — skip the f64
+    // detour that costs a sign branch + i64 trunc + i32 wrap on every write.
+    if (valIR.type === 'i32') {
+      const v32 = tempI32('tw')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${v32}`, valIR],
+        [STORE[et], off, ['local.get', `$${v32}`]],
+        [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], 'f64')
+    }
     const vt = temp('tw')
-    if (et === 7) return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
-      ['f64.store', off, ['local.get', `$${vt}`]],
-      ['local.get', `$${vt}`]], 'f64') // Float64Array
-    if (et === 6) return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
-      ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
-      ['local.get', `$${vt}`]], 'f64') // Float32Array
     const i32val = ['i32.wrap_i64',
       ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
         ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
         ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${vt}`, vv],
+      ['local.set', `$${vt}`, asF64(valIR)],
       [STORE[et], off, i32val],
       ['local.get', `$${vt}`]], 'f64')
   }
@@ -695,7 +711,7 @@ export default (ctx) => {
     const dst = r ? tempI32('tsd') : temp('tsd')
     const srcTmp = temp('tss'), len = tempI32('tsl'), off = tempI32('tso'), i = tempI32('tsi')
     const idx = ['i32.add', ['local.get', `$${off}`], ['local.get', `$${i}`]]
-    const val = typed(['call', '$__typed_idx', ['local.get', `$${srcTmp}`], ['local.get', `$${i}`]], 'f64')
+    const val = typed(['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]], ['local.get', `$${i}`]], 'f64')
     let store
     if (r) {
       const { et } = r
@@ -704,13 +720,13 @@ export default (ctx) => {
         : et === 6 ? ['f32.store', addr, ['f32.demote_f64', val]]
         : [STORE[et], addr, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', val]]
     } else {
-      store = ['drop', ['call', '$__typed_set_idx', ['local.get', `$${dst}`], idx, val]]
+      store = ['drop', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${dst}`]], idx, val]]
     }
     const id = ctx.func.uniq++
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${dst}`, r ? typedDataAddr(emit(arr), r.isView) : asF64(emit(arr))],
       ['local.set', `$${srcTmp}`, srcVal],
-      ['local.set', `$${len}`, ['call', '$__len', ['local.get', `$${srcTmp}`]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${srcTmp}`]]]],
       ['local.set', `$${off}`, offVal],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -742,7 +758,7 @@ export default (ctx) => {
         if (wat) {
           ctx.core.stdlib[funcName] = wat
           inc(funcName, '__typed_data', '__len')
-          return typed(['call', `$${funcName}`, asF64(emit(arr))], 'f64')
+          return typed(['call', `$${funcName}`, asI64(emit(arr))], 'f64')
         }
       }
     }
@@ -772,7 +788,7 @@ export default (ctx) => {
       const id = ctx.func.uniq++
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${ptr}`, typedDataAddr(va, isView)],
-        ['local.set', `$${len}`, ['call', '$__len', asF64(va)]],
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
         dst.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,

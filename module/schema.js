@@ -56,7 +56,7 @@ export function initSchema(ctx) {
   /** Emit code to load the inner value (slot 0) of a boxed variable. */
   ctx.schema.emitInner = (varName) => {
     inc('__ptr_offset')
-    return typed(['f64.load', ['call', '$__ptr_offset', asF64(emit(varName))]], 'f64')
+    return typed(['f64.load', ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(varName))]]], 'f64')
   }
 
   /** Find property index by variable schema or structural subtyping.

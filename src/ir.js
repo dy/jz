@@ -20,7 +20,7 @@
  * @module ir
  */
 
-import { ctx, err, inc, PTR } from './ctx.js'
+import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal } from './analyze.js'
 
 // === Type helpers ===
@@ -52,6 +52,7 @@ export const asF64 = n => {
   if (n == null) err(`compiler internal: expected emitted IR value in ${ctx.func.current?.name || '<module>'}, got empty value`)
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
+  if (n.type === 'i64') return typed(['f64.reinterpret_i64', n], 'f64')
   if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n[1]], 'f64')
   return typed([n.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', n], 'f64')
 }
@@ -74,8 +75,8 @@ export const asI32 = n => {
 export const asPtrOffset = (n, ptrKind) =>
   n.ptrKind === ptrKind ? n : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(n)]], 'i32')
 
-/** Coerce emitted IR to a target WASM param type ('i32' | 'f64'). */
-export const asParamType = (n, t) => t === 'i32' ? asI32(n) : asF64(n)
+/** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
+export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : asF64(n)
 
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
@@ -118,11 +119,14 @@ export const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
 
 // === Nullish sentinels ===
 
-/** Null/undefined: one nullish value inside jz. NaN-boxed ATOM (type=0, aux=1, offset=0).
+/** Reserved atoms (PTR.ATOM tag, offset=0).
+ *    aux=1 → null      (NULL_NAN)
+ *    aux=2 → undefined (UNDEF_NAN)
+ *  See module/symbol.js for the broader reserved-atom-id scheme.
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
  *  At the JS boundary, null and undefined preserve their identity for interop. */
-export const NULL_NAN = '0x7FF8000100000000'
-export const UNDEF_NAN = '0x7FF8000000000001'
+export const NULL_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const UNDEF_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 /** WAT-template-ready sentinel expressions for use in stdlib template strings.
  *  `f64.const nan:0xHEX` is 3 bytes shorter than `f64.reinterpret_i64 (i64.const ...)`. */
 export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
@@ -149,15 +153,14 @@ export const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splic
 
 // === Pointer construction ===
 
-const NAN_PREFIX_BITS = 0x7FF8n
 const litI32 = n => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number' ? n[1] : null
 
 /** Pack (type, aux, offset) into the f64 NaN-box bit pattern as a hex string. */
 function packPtrBits(type, aux, offset) {
-  const bits = (NAN_PREFIX_BITS << 48n)
-    | ((BigInt(type) & 0xFn) << 47n)
-    | ((BigInt(aux) & 0x7FFFn) << 32n)
-    | (BigInt(offset >>> 0) & 0xFFFFFFFFn)
+  const bits = LAYOUT.NAN_PREFIX_BITS
+    | ((BigInt(type) & BigInt(LAYOUT.TAG_MASK)) << BigInt(LAYOUT.TAG_SHIFT))
+    | ((BigInt(aux) & BigInt(LAYOUT.AUX_MASK)) << BigInt(LAYOUT.AUX_SHIFT))
+    | (BigInt(offset >>> 0) & BigInt(LAYOUT.OFFSET_MASK))
   return '0x' + bits.toString(16).toUpperCase().padStart(16, '0')
 }
 
@@ -185,7 +188,7 @@ export function ptrOffsetIR(valIR, valType) {
     return ['i32.wrap_i64', ['i64.reinterpret_f64', valIR]]
   }
   inc('__ptr_offset')
-  return ['call', '$__ptr_offset', valIR]
+  return ['call', '$__ptr_offset', ['i64.reinterpret_f64', valIR]]
 }
 
 /** Map VAL.* → PTR.* when unambiguous. STRING is ambiguous (heap vs SSO). ARRAY maps
@@ -248,7 +251,7 @@ export function appendStaticSlots(slots, headerBytes = 0) {
   if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
   for (let i = 0; i < slots.length; i++) {
     const bits = slots[i]
-    if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX_BITS) {
+    if (((bits >> 48n) & 0xFFF8n) === BigInt(LAYOUT.NAN_PREFIX)) {
       ctx.runtime.staticPtrSlots.push(off + i * 8)
     }
   }
@@ -350,7 +353,7 @@ export function toNumF64(node, v) {
   }
   if (!ctx.core.stdlib['__to_num']) return asF64(v)
   inc('__to_num')
-  return typed(['call', '$__to_num', asF64(v)], 'f64')
+  return typed(['call', '$__to_num', asI64(v)], 'f64')
 }
 
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
@@ -372,7 +375,7 @@ export function truthyIR(e) {
     // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
       const bits = String(e[1][1])
-      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA800000000000'])
+      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA400000000000'])
       return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.
@@ -392,7 +395,7 @@ export function truthyIR(e) {
     }
   }
   inc('__is_truthy')
-  return typed(['call', '$__is_truthy', asF64(e)], 'i32')
+  return typed(['call', '$__is_truthy', asI64(e)], 'i32')
 }
 export const toBoolFromEmitted = truthyIR
 
@@ -546,7 +549,7 @@ export const isNullish = (f64expr) => {
   }
   // Non-trivial expr: fall back to the helper — keeps binary size stable & preserves eval once.
   inc('__is_nullish')
-  return typed(['call', '$__is_nullish', f64expr], 'i32')
+  return typed(['call', '$__is_nullish', ['i64.reinterpret_f64', f64expr]], 'i32')
 }
 
 // === Array layout helpers ===
@@ -587,7 +590,7 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
     inc('__ptr_offset')
     setup.push(
       ['local.set', `$${arr}`, asF64(arrExpr)],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['local.get', `$${arr}`]]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]],
     )
   }
   if (!lenLocal) setup.push(

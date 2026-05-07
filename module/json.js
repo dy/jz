@@ -8,10 +8,10 @@
  * @module json
  */
 
-import { typed, asF64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
+import { typed, asF64, asI64, temp, nullExpr, allocPtr, slotAddr } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
-import { err, inc, PTR } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 function jsonConstString(ctx, expr) {
@@ -36,7 +36,7 @@ export default (ctx) => {
     __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
-    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws'],
+    __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__jp_peek', '__jp_adv', '__jp_ws', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
@@ -62,7 +62,7 @@ export default (ctx) => {
       const body = [obj.init, ['local.set', `$${h}`, obj.ptr]]
       for (const k of keys) {
         body.push(['local.set', `$${h}`,
-          ['call', '$__hash_set_local_h', ['local.get', `$${h}`], asF64(emit(['str', k])), ['i32.const', strHashLiteral(k)], emitJsonConstValue(v[k])]])
+          ['f64.reinterpret_i64', ['call', '$__hash_set_local_h', ['i64.reinterpret_f64', ['local.get', `$${h}`]], asI64(emit(['str', k])), ['i32.const', strHashLiteral(k)], asI64(emitJsonConstValue(v[k]))]]])
       }
       body.push(['local.get', `$${h}`])
       if (keys.length) inc('__hash_set_local_h')
@@ -94,8 +94,8 @@ export default (ctx) => {
     (i32.store8 (i32.add (global.get $__jbuf) (global.get $__jpos)) (local.get $b))
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
 
-  // __jput_str(ptr: f64) — append string chars (without quotes) to buffer
-  ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr f64)
+  // __jput_str(ptr: i64) — append string chars (without quotes) to buffer
+  ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr i64)
     (local $len i32) (local $i i32) (local $ch i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (local.set $i (i32.const 0))
@@ -120,19 +120,20 @@ export default (ctx) => {
 
   // __jput_num(val: f64) — convert number to string, append bytes to buffer
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
-    (call $__jput_str (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0))))`
+    (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
-  // __json_val(val: f64) — stringify any value, append to buffer
-  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val f64)
-    (local $type i32) (local $len i32) (local $i i32) (local $off i32)
+  // __json_val(val: i64) — stringify any value, append to buffer
+  ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val i64)
+    (local $type i32) (local $len i32) (local $i i32) (local $off i32) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $val)))
     ;; Number (not NaN) — but Infinity must be null per JSON spec
-    (if (f64.eq (local.get $val) (local.get $val))
+    (if (f64.eq (local.get $f) (local.get $f))
       (then
-        (if (f64.eq (f64.abs (local.get $val)) (f64.const inf))
+        (if (f64.eq (f64.abs (local.get $f)) (f64.const inf))
           (then
             (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
             (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
-        (call $__jput_num (local.get $val)) (return)))
+        (call $__jput_num (local.get $f)) (return)))
     ;; NaN-boxed pointer
     (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → null
@@ -141,8 +142,7 @@ export default (ctx) => {
         (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
         (call $__jput (i32.const 108)) (call $__jput (i32.const 108)) (return)))
     ;; String
-    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
-                (i32.eq (local.get $type) (i32.const ${PTR.SSO})))
+    (if (i32.eq (local.get $type) (i32.const ${PTR.STRING}))
       (then
         (call $__jput (i32.const 34))
         (call $__jput_str (local.get $val))
@@ -157,7 +157,7 @@ export default (ctx) => {
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (if (local.get $i) (then (call $__jput (i32.const 44))))  ;; ,
-          (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
         (call $__jput (i32.const 93))  ;; ]
@@ -173,9 +173,9 @@ export default (ctx) => {
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`
 
-  // __json_hash(val: f64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
+  // __json_hash(val: i64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
   // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
-  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val f64)
+  ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val i64)
     (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -190,10 +190,10 @@ export default (ctx) => {
             (then (call $__jput (i32.const 44))))
           (local.set $first (i32.const 0))
           (call $__jput (i32.const 34))
-          (call $__jput_str (f64.load (i32.add (local.get $slot) (i32.const 8))))
+          (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
           (call $__jput (i32.const 34))
           (call $__jput (i32.const 58))
-          (call $__json_val (f64.load (i32.add (local.get $slot) (i32.const 16))))))
+          (call $__json_val (i64.load (i32.add (local.get $slot) (i32.const 16))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (call $__jput (i32.const 125)))`
@@ -202,32 +202,32 @@ export default (ctx) => {
   // Schema name table: global $__schema_tbl → array of f64 pointers.
   //   schema_tbl[schemaId * 8] = f64 pointer to jz Array of key name strings.
   // Object props are sequential f64 at ptr_offset, indexed same as schema.
-  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val f64)
+  ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val i64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
     (local $i i32) (local $koff i32)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $sid (call $__ptr_aux (local.get $val)))
     ;; Load keys array from schema table: schema_tbl + sid * 8
     (local.set $keys (call $__ptr_offset
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $nkeys (call $__len
-      (f64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
+      (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
     (call $__jput (i32.const 123))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
       (if (local.get $i) (then (call $__jput (i32.const 44))))
       (call $__jput (i32.const 34))
-      (call $__jput_str (f64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
+      (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
       (call $__jput (i32.const 34))
       (call $__jput (i32.const 58))
-      (call $__json_val (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (call $__jput (i32.const 125)))`
 
-  // __stringify(val: f64) → f64 (NaN-boxed string)
-  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val f64) (result f64)
+  // __stringify(val: i64) → f64 (NaN-boxed string)
+  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (result f64)
     ;; Reset output buffer
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
@@ -296,7 +296,7 @@ export default (ctx) => {
                        (i32.shl (local.get $i) (i32.const 3)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $sl)))
-        (return (call $__mkptr (i32.const ${PTR.SSO}) (local.get $len) (local.get $sso)))))
+        (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $len)) (local.get $sso)))))
     ;; Simple STRING fast path: no escapes, len > 4 — bulk memcpy from parse buffer,
     ;; skip rewind + per-byte escape-decode loop. Hits 5+ char keys without escapes.
     (if (local.get $simple)
@@ -429,7 +429,7 @@ export default (ctx) => {
       (if (i32.eq (call $__jp_peek) (i32.const 58))
         (then (call $__jp_adv (i32.const 1))))
       (call $__jp_ws)
-      (local.set $obj (call $__hash_set_local (local.get $obj) (local.get $key) (call $__jp_val)))
+      (local.set $obj (f64.reinterpret_i64 (call $__hash_set_local (i64.reinterpret_f64 (local.get $obj)) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (call $__jp_val)))))
       (call $__jp_ws)
       (local.set $ch (call $__jp_peek))
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
@@ -464,14 +464,14 @@ export default (ctx) => {
   // past the end so __jp_peek can omit its bounds check. Pad is 8 bytes so any
   // overshoot from speculative peek/adv on malformed input still hits sentinel,
   // not unallocated memory.
-  ctx.core.stdlib['__jp'] = `(func $__jp (param $str f64) (result f64)
+  ctx.core.stdlib['__jp'] = `(func $__jp (param $str i64) (result f64)
     (local $len i32) (local $buf i32) (local $i i32)
     (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
     (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
-    ;; SSO: byte-by-byte via __sso_char; STRING: bulk memcpy from string offset.
-    (if (i32.eq (call $__ptr_type (local.get $str)) (i32.const ${PTR.SSO}))
+    ;; SSO: byte-by-byte via __sso_char; heap STRING: bulk memcpy from string offset.
+    (if (i32.and (call $__ptr_aux (local.get $str)) (i32.const ${LAYOUT.SSO_BIT}))
       (then
         (local.set $i (i32.const 0))
         (block $d (loop $l
@@ -491,7 +491,7 @@ export default (ctx) => {
 
   ctx.core.emit['JSON.stringify'] = (x) => {
     inc('__stringify')
-    return typed(['call', '$__stringify', asF64(emit(x))], 'f64')
+    return typed(['call', '$__stringify', asI64(emit(x))], 'f64')
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
@@ -501,6 +501,6 @@ export default (ctx) => {
       catch { /* fall through to runtime parser for invalid JSON so runtime behavior stays unchanged */ }
     }
     inc('__jp')
-    return typed(['call', '$__jp', asF64(emit(x))], 'f64')
+    return typed(['call', '$__jp', asI64(emit(x))], 'f64')
   }
 }

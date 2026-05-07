@@ -105,12 +105,14 @@ test('nan-box: STRING (type=4)', () => {
   is(t, 4); is(a, 5); is(o, 1024)
 })
 
-test('nan-box: STRING_SSO (type=5)', () => {
+test('nan-box: STRING SSO (aux SSO_BIT)', () => {
+  // SSO is a STRING (type=4) with the SSO_BIT (0x4000) set in aux.
   const { f } = run(`export let f = () => {
     let a = [0]
-    return __ptr_type(__mkptr(5, 0, 0))
+    return [__ptr_type(__mkptr(4, 0x4000 | 3, 0x636261)), __ptr_aux(__mkptr(4, 0x4000 | 3, 0x636261))]
   }`)
-  is(f(), 5)
+  const [t, a] = f()
+  is(t, 4); is(a, 0x4000 | 3)
 })
 
 test('nan-box: OBJECT (type=6)', () => {

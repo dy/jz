@@ -6,7 +6,7 @@
  *   `host: 'js'` (default): emit `env.setTimeout(cb: f64, delay: f64, repeat: i32) -> f64`
  *     and `env.clearTimeout(id: f64) -> f64`. The JS host (src/host.js) drives both
  *     via global setTimeout/setInterval and calls back into wasm through the
- *     exported `__invoke_closure(clos: f64) -> f64` trampoline. No queue, no
+ *     exported `__invoke_closure(clos: i64) -> f64` trampoline. No queue, no
  *     polling — the host's event loop does the scheduling.
  *
  *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
@@ -26,9 +26,9 @@
  * @module timer
  */
 
-import { typed, asF64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { inc, PTR } from '../src/ctx.js'
+import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
@@ -42,14 +42,14 @@ const addImportOnce = (ctx, mod, name, fn) => {
 // in upper 16 bits of the pointer payload; remaining $ftN slots get UNDEF_NAN.
 // Closure is also passed as $__env so captures resolve via env-load.
 // `exported` adds (export "__invoke_closure") so the JS host can call it.
-const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos f64) (result f64)
+const invokeClosureFn = (exported) => `(func $__invoke_closure${exported ? ' (export "__invoke_closure")' : ''} (param $clos i64) (result f64)
   (call_indirect (type \$ftN)
-    (local.get $clos)
+    (f64.reinterpret_i64 (local.get $clos))
     (i32.const 0)
     ${Array.from({length: MAX_CLOSURE_ARITY}, () => `(f64.const nan:${UNDEF_NAN})`).join('\n    ')}
     (i32.wrap_i64 (i64.and
-      (i64.shr_u (i64.reinterpret_f64 (local.get $clos)) (i64.const 32))
-      (i64.const 0x7FFF)))))`
+      (i64.shr_u (local.get $clos) (i64.const ${LAYOUT.AUX_SHIFT}))
+      (i64.const ${LAYOUT.AUX_MASK})))))`
 
 const setupWasi = (ctx) => {
   // Always include init + tick + loop when timer module loads (structural, not per-emitter)
@@ -86,9 +86,9 @@ const setupWasi = (ctx) => {
     (global.set $__timer_queue (call $__alloc (i32.const ${MAX_TIMERS * ENTRY_SIZE})))
     (memory.fill (global.get $__timer_queue) (i32.const 0) (i32.const ${MAX_TIMERS * ENTRY_SIZE})))`
 
-  // __timer_add(closure_ptr: f64, delay_ms: f64, interval: i32) → f64 (timer ID)
+  // __timer_add(closure_ptr: i64, delay_ms: f64, interval: i32) → f64 (timer ID)
   // interval=0 → setTimeout, interval=1 → setInterval
-  ctx.core.stdlib['__timer_add'] = `(func $__timer_add (param $clos f64) (param $delay f64) (param $is_interval i32) (result f64)
+  ctx.core.stdlib['__timer_add'] = `(func $__timer_add (param $clos i64) (param $delay f64) (param $is_interval i32) (result f64)
     (local $id i32)
     (local $slot i32)
     (local $base i32)
@@ -120,7 +120,7 @@ const setupWasi = (ctx) => {
     (i32.store (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))
       (local.get $id))
     ;; closure_ptr @ offset+8
-    (f64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))
+    (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))
       (local.get $clos))
     ;; deadline_ns @ offset+16
     (i64.store (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 16)))
@@ -166,7 +166,7 @@ const setupWasi = (ctx) => {
     (local $slot i32)
     (local $base i32)
     (local $dispatched i32)
-    (local $clos f64)
+    (local $clos i64)
     (local $interval f64)
     (local $id i32)
     (local.set $dispatched (i32.const 0))
@@ -183,7 +183,7 @@ const setupWasi = (ctx) => {
                 (local.get $now))
             (then
               ;; Read closure and interval before potentially clearing
-              (local.set $clos (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))))
+              (local.set $clos (i64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 8)))))
               (local.set $interval (f64.load (i32.add (local.get $base) (i32.add (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})) (i32.const 24)))))
               (local.set $id (i32.load (i32.add (local.get $base) (i32.mul (local.get $slot) (i32.const ${ENTRY_SIZE})))))
               ;; Interval? Reschedule
@@ -242,18 +242,18 @@ const setupWasi = (ctx) => {
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
     inc('__timer_add')
-    const t = temp('tc')
+    const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['local.set', `$${t}`, asI64(emit(closureExpr))],
       ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 0]]], 'f64')
   }
 
   // Emitter: setInterval(closure, delay) → timer_id
   ctx.core.emit['setInterval'] = (closureExpr, delayExpr) => {
     inc('__timer_add')
-    const t = temp('tc')
+    const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(closureExpr))],
+      ['local.set', `$${t}`, asI64(emit(closureExpr))],
       ['call', '$__timer_add', ['local.get', `$${t}`], asF64(emit(delayExpr)), ['i32.const', 1]]], 'f64')
   }
 
@@ -275,8 +275,12 @@ const setupJsHost = (ctx) => {
   // MAX_CLOSURE_ARITY. Set the ABI floor before plan() resolves $ftN width.
   ctx.closure.floor = MAX_CLOSURE_ARITY
 
+  // env.setTimeout's cb param is i64 (NaN-box bits) to dodge V8's f64 NaN
+  // canonicalization at the wasm→JS boundary (same reason as env.print —
+  // see module/console.js header). delay is a real numeric f64 (no NaN-box
+  // hazard), repeat is i32, return is the timer id (numeric int).
   const needSetTimeout = () => addImportOnce(ctx, 'env', 'setTimeout',
-    ['func', '$__set_timeout', ['param', 'f64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
+    ['func', '$__set_timeout', ['param', 'i64'], ['param', 'f64'], ['param', 'i32'], ['result', 'f64']])
   const needClearTimeout = () => addImportOnce(ctx, 'env', 'clearTimeout',
     ['func', '$__clear_timeout', ['param', 'f64'], ['result', 'f64']])
 
@@ -286,7 +290,9 @@ const setupJsHost = (ctx) => {
     needSetTimeout()
     inc('__invoke_closure')
     return typed(['call', '$__set_timeout',
-      asF64(emit(closureExpr)), asF64(emit(delayExpr)), ['i32.const', repeat]], 'f64')
+      ['i64.reinterpret_f64', asF64(emit(closureExpr))],
+      asF64(emit(delayExpr)),
+      ['i32.const', repeat]], 'f64')
   }
   ctx.core.emit['setTimeout'] = (c, d) => emitSet(c, d, 0)
   ctx.core.emit['setInterval'] = (c, d) => emitSet(c, d, 1)
