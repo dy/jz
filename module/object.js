@@ -100,6 +100,30 @@ export default (ctx) => {
     return emitRuntimeKeys(obj)
   }
 
+  // Object.prototype.hasOwnProperty(key) — own-property presence check.
+  // Compile-time fold for literal keys against object literals or variables
+  // with known schemas; runtime path delegates to the `in` operator (same
+  // ptr-type dispatch + __hash_has for HASH, dyn_props probe for OBJECT).
+  ctx.core.emit['.hasOwnProperty'] = (obj, key) => {
+    const litKey = Array.isArray(key) && key[0] === 'str' ? String(key[1]) : null
+    if (litKey != null) {
+      if (Array.isArray(obj) && obj[0] === '{}') {
+        const has = obj.slice(1).some(p => Array.isArray(p) && p[0] === ':' && String(p[1]) === litKey)
+        return typed(['block', ['result', 'f64'],
+          ['drop', asF64(emit(obj))],
+          ['f64.const', has ? 1 : 0]], 'f64')
+      }
+      if (typeof obj === 'string' && ctx.schema.find?.(obj, litKey) >= 0)
+        return typed(['f64.const', 1], 'f64')
+    }
+    return typed(['f64.convert_i32_s', emit(['in', key, obj])], 'f64')
+  }
+  ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.OBJECT}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.ARRAY}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit[`.${VAL.CLOSURE}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+
   ctx.core.emit['Object.values'] = (obj) => {
     const schema = resolveSchema(obj)
     if (!schema) err('Object.values requires object with known schema')
