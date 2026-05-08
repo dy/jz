@@ -1684,7 +1684,11 @@ export const emitter = {
 
   // === Bitwise (i32 for numbers, i64 for BigInt) ===
 
-  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(v), typed(['i32.const', -1], 'i32')], 'i32') },
+  // Per ECMAScript ToInt32, bitwise ops first ToNumber-coerce non-numeric operands.
+  // i32 / lit values are already numeric — the toNumF64 wrap is skipped to keep
+  // the numeric fast path at one wasm instruction. Non-numeric (NaN-boxed string,
+  // unknown type) routes through __to_num so "2026" | 0 === 2026.
+  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(v.type === 'i32' ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32') },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
@@ -1697,7 +1701,9 @@ export const emitter = {
       if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
       if (op === '>>') return emitNum(la >> lb)
     }
-    return typed([`i32.${fn}`, toI32(va), toI32(vb)], 'i32')
+    const ca = va.type === 'i32' || isLit(va) ? va : toNumF64(a, va)
+    const cb = vb.type === 'i32' || isLit(vb) ? vb : toNumF64(b, vb)
+    return typed([`i32.${fn}`, toI32(ca), toI32(cb)], 'i32')
   }])),
   '>>>': (a, b) => {
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a >>> b)
@@ -1706,7 +1712,9 @@ export const emitter = {
     // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
     // signed for negative-high-bit s values, flipping sign and breaking the
     // canonical "uint32 → f64" idiom used in PRNGs and bit-manipulation code.
-    const node = typed(['i32.shr_u', toI32(va), toI32(vb)], 'i32')
+    const ca = va.type === 'i32' || isLit(va) ? va : toNumF64(a, va)
+    const cb = vb.type === 'i32' || isLit(vb) ? vb : toNumF64(b, vb)
+    const node = typed(['i32.shr_u', toI32(ca), toI32(cb)], 'i32')
     node.unsigned = true
     return node
   },
