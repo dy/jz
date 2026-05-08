@@ -153,6 +153,37 @@ test('EdgeJS smoke: scalar module has no imports', () => {
 
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }
 
+test('WASI: command-mode entry returns void', () => {
+  for (const name of ['run', '_start']) {
+    const captured = []
+    const imports = wasi({ write: (fd, text) => captured.push(text) })
+    const wasm = compile(`export let ${name} = () => { console.log("hi"); return 42 }`, { host: 'wasi' })
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+    imports._setMemory(inst.exports.memory)
+    is(inst.exports[name](), undefined, `${name}() should return undefined`)
+    is(captured.join(''), 'hi\n', `${name} body should still execute`)
+  }
+})
+
+test('WASI: parametric run/_start keeps direct export', () => {
+  // Parametric entries can't form a CLI-callable () -> () wrapper, so the
+  // direct f64-returning export survives (caller needs a host that supplies args).
+  const wasm = compile(`export let run = (n) => (n | 0) + 1`, { host: 'wasi' })
+  const imports = wasi()
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+  is(inst.exports.run(7), 8)
+})
+
+test('WASI: non-entry exports keep their f64 return', () => {
+  const wasm = compile(`export let run = () => 1; export let helper = (x) => x * 2`, { host: 'wasi' })
+  const imports = wasi()
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+  is(inst.exports.run(), undefined)
+  is(inst.exports.helper(21), 42)
+})
+
 test('WASI: wasmtime native', () => {
   if (!hasCmd('wasmtime')) return
   const wasm = compile(`export let _start = () => { console.log("jz-wasmtime"); return 0 }`, { host: 'wasi' })

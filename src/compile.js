@@ -1286,6 +1286,26 @@ export default function compile(ast, profiler) {
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
+  // WASI command-mode entries (`run`, `_start`) must export as () -> ();
+  // wasmtime/wasmer reject f64-returning functions under those names.
+  // Parametric entries skip this — a CLI invocation has no way to supply args.
+  if (ctx.transform.host === 'wasi') {
+    const WASI_ENTRIES = new Set(['run', '_start'])
+    for (const func of ctx.func.list) {
+      if (!func.exported || !WASI_ENTRIES.has(func.name)) continue
+      if (func.sig.params.length) continue
+      const inner = isBoundaryWrapped(func) ? `$${func.name}$exp` : `$${func.name}`
+      for (const f of sec.funcs) {
+        if (f[1] === inner || f[1] === `$${func.name}`) {
+          const expIdx = f.findIndex(n => Array.isArray(n) && n[0] === 'export')
+          if (expIdx >= 0) f.splice(expIdx, 1)
+        }
+      }
+      sec.funcs.push(['func', `$${func.name}$wasi`, ['export', `"${func.name}"`],
+        ['drop', ['call', inner]]])
+    }
+  }
+
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
