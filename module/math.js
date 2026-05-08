@@ -281,23 +281,22 @@ export default (ctx) => {
                     (f64.gt (local.get $y) (f64.const 0.0)))
           (then (return (f64.const inf)))
           (else (return (f64.const 0.0))))))
-    ;; x == 0 -> y<0 ? Infinity : 0
-    (if (f64.eq (local.get $x) (f64.const 0.0))
-      (then
-        (if (f64.lt (local.get $y) (f64.const 0.0))
-          (then (return (f64.const inf)))
-          (else (return (f64.const 0.0))))))
     ;; x == 1 -> 1 (after y=±Inf check, so 1**Inf already returned NaN)
     (if (f64.eq (local.get $x) (f64.const 1.0)) (then (return (f64.const 1.0))))
-    ;; y == 1 -> x
+    ;; y == 1 -> x (preserves -0 for (-0)**1)
     (if (f64.eq (local.get $y) (f64.const 1.0)) (then (return (local.get $x))))
-    ;; integer fast path: y integer, |y| <= 100
+    ;; integer fast path: y integer in i32 range. Binary exponentiation is
+    ;; O(log |n|) so the bound only matters for i32.trunc_f64_s safety.
+    ;; Also covers ±Infinity x: abs_x stays Inf through the loop, 1/Inf=0,
+    ;; with neg_base (x<0 && odd y) producing -0 — required for (-Inf)**-odd.
+    ;; Runs before the x==0 fallback so (-0)**oddInt correctly returns ∓0/∓Inf.
     (if (i32.and
           (f64.eq (f64.nearest (local.get $y)) (local.get $y))
-          (f64.le (f64.abs (local.get $y)) (f64.const 100.0)))
+          (f64.lt (f64.abs (local.get $y)) (f64.const 2147483648.0)))
       (then
         (local.set $abs_x (f64.abs (local.get $x)))
-        (local.set $neg_base (i32.and (f64.lt (local.get $x) (f64.const 0.0))
+        ;; copysign(1, x) gives -1 for any x with sign bit set (incl. -0); f64.lt picks that up.
+        (local.set $neg_base (i32.and (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0))
                                       (i32.and (i32.trunc_f64_s (local.get $y)) (i32.const 1))))
         (local.set $n (i32.trunc_f64_s (f64.abs (local.get $y))))
         (local.set $result (f64.const 1.0))
@@ -314,6 +313,12 @@ export default (ctx) => {
         (if (local.get $neg_base)
           (then (local.set $result (f64.neg (local.get $result)))))
         (return (local.get $result))))
+    ;; x == 0 with non-integer y -> y<0 ? Infinity : 0 (sign-of-zero only matters for integer y, handled above)
+    (if (f64.eq (local.get $x) (f64.const 0.0))
+      (then
+        (if (f64.lt (local.get $y) (f64.const 0.0))
+          (then (return (f64.const inf)))
+          (else (return (f64.const 0.0))))))
     ;; x < 0, non-integer finite y -> NaN
     (if (f64.lt (local.get $x) (f64.const 0.0))
       (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))

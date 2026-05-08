@@ -1424,15 +1424,19 @@ export function analyzeIntCertain(body) {
   for (const name of defs.keys()) intCertain.set(name, true)
 
   const isIntExpr = (expr) => {
-    if (typeof expr === 'number') return Number.isInteger(expr)
+    // -0 is integer-valued mathematically but i32 has no signed zero — must stay f64.
+    if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
     if (typeof expr === 'boolean') return true
     if (typeof expr === 'string') return intCertain.get(expr) === true
     if (!Array.isArray(expr)) return false
+    // Statically evaluable to -0 (e.g. -1 * 0, 0 / -1) — i32 would lose the sign.
+    const sv = staticValue(expr)
+    if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return false
     const [op, ...args] = expr
     if (op == null) {
       // `[, value]` / `[null, value]` literal form
       const v = args[0]
-      if (typeof v === 'number') return Number.isInteger(v)
+      if (typeof v === 'number') return Number.isInteger(v) && !Object.is(v, -0)
       if (typeof v === 'boolean') return true
       return false
     }
@@ -1489,7 +1493,7 @@ export function analyzeIntCertain(body) {
 export function exprType(expr, locals) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
-    return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 ? 'i32' : 'f64'
+    return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 && !Object.is(expr, -0) ? 'i32' : 'f64'
   if (typeof expr === 'string') {
     if (locals?.has?.(expr)) return locals.get(expr)
     const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
@@ -1508,6 +1512,10 @@ export function exprType(expr, locals) {
 
   const [op, ...args] = expr
   if (op == null) return exprType(args[0], locals) // literal [, value]
+
+  // Statically evaluable to -0 (e.g. -1 * 0) — i32 would lose the sign.
+  const sv = staticValue(expr)
+  if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 'f64'
 
   // Always f64
   if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === 'str') return 'f64'

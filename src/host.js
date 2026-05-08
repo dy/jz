@@ -182,10 +182,13 @@ export const memory = (src) => {
 
   mem.Array = (data) => {
     const n = data.length, off = hdr(n, n, n * 8)
-    const wrapped = new Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = mem.wrapVal(data[i])
-    const m = dv()
-    for (let i = 0; i < n; i++) m.setFloat64(off + i * 8, wrapped[i], true)
+    // Stage as i64 bits, not as JS Numbers: V8 may transition a JS Array holding
+    // NaN-payload doubles to HOLEY_DOUBLE_ELEMENTS, which canonicalizes the NaN
+    // payload to 0x7FF8000000000000 — destroying the type/offset bits.
+    const wrapped = new BigInt64Array(n)
+    for (let i = 0; i < n; i++) wrapped[i] = f64ToI64(mem.wrapVal(data[i]))
+    const dst = new BigInt64Array(mem.buffer, off, n)
+    for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(1, 0, off)
   }
 
@@ -216,6 +219,10 @@ export const memory = (src) => {
     if (v === null || v === undefined) return coerce(v)
     if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
     if (typeof v === 'string') return this.String(v)
+    // BigInt as a data value crosses the boundary as a decimal-string. wasm-side
+    // numeric parsers accept string form. Direct i64 function args go through this
+    // path too; the call wrappers below detect BigInt before adaptArgs reinterprets.
+    if (typeof v === 'bigint') return this.String(v.toString())
     if (Array.isArray(v)) return this.Array(v)
     if (v instanceof ArrayBuffer) return this.Buffer(v)
     if (v instanceof DataView) return this.Buffer(v.buffer)
@@ -247,14 +254,19 @@ export const memory = (src) => {
       else if (this._extMap) return this.External(obj)
       else throw Error(`No schema for {${key}}`)
     }
-    const schema = schemas[sid], n = schema.length, raw = alloc(n * 8), m = dv()
+    const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
+    // Stage as i64 bits so V8 can't canonicalize NaN-payload pointers across
+    // recursive allocations. See mem.Array for the same pattern.
+    const wrapped = new BigInt64Array(n)
     for (let i = 0; i < n; i++) {
       let v = obj[schema[i]]
       if (v === null || v === undefined) v = coerce(v)
       else if (typeof v === 'string') v = this.String(v)
       else if (Array.isArray(v)) v = this.Array(v)
-      m.setFloat64(raw + i * 8, v, true)
+      wrapped[i] = f64ToI64(v)
     }
+    const dst = new BigInt64Array(mem.buffer, raw, n)
+    for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(6, sid, raw)
   }
 

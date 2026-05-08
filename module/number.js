@@ -25,15 +25,32 @@ export default (ctx) => {
   })
 
 
-  // __pow10(n: i32) → f64 — compute 10^n via loop
+  // __pow10(n: i32) → f64 — compute 10^n via binary decomposition.
+  // Naive iterative `r *= 10` accumulates O(n) ULPs of rounding drift —
+  // 1e308 came out 1 ULP low, breaking parseFloat round-trip at the f64 edge.
+  // Bit-decomposition multiplies at most 9 precomputed powers (10^1 .. 10^256),
+  // so accumulated error stays at O(log n) ULPs.
   ctx.core.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
     (local $r f64)
     (local.set $r (f64.const 1))
-    (block $d (loop $l
-      (br_if $d (i32.le_s (local.get $n) (i32.const 0)))
-      (local.set $r (f64.mul (local.get $r) (f64.const 10)))
-      (local.set $n (i32.sub (local.get $n) (i32.const 1)))
-      (br $l)))
+    (if (i32.and (local.get $n) (i32.const 1))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 10)))))
+    (if (i32.and (local.get $n) (i32.const 2))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 100)))))
+    (if (i32.and (local.get $n) (i32.const 4))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 10000)))))
+    (if (i32.and (local.get $n) (i32.const 8))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e8)))))
+    (if (i32.and (local.get $n) (i32.const 16))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e16)))))
+    (if (i32.and (local.get $n) (i32.const 32))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e32)))))
+    (if (i32.and (local.get $n) (i32.const 64))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e64)))))
+    (if (i32.and (local.get $n) (i32.const 128))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e128)))))
+    (if (i32.and (local.get $n) (i32.const 256))
+      (then (local.set $r (f64.mul (local.get $r) (f64.const 1e256)))))
     (local.get $r))`
 
   // __itoa(val: i32, buf: i32) → i32 (digit count). Writes decimal digits to buf.
@@ -389,6 +406,7 @@ export default (ctx) => {
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
+    (local $wsEnd i32)
     (local $result f64) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
@@ -410,6 +428,7 @@ export default (ctx) => {
       (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
+    (local.set $wsEnd (local.get $i))
     ;; Sign.
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
@@ -475,7 +494,13 @@ export default (ctx) => {
           (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $numLoop)))
-    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    ;; No digits seen: empty/whitespace-only string coerces to 0; non-numeric
+    ;; content (sign-only, "abc", etc.) coerces to NaN.
+    (if (i32.eqz (local.get $seen))
+      (then
+        (if (i32.ge_s (local.get $wsEnd) (local.get $len))
+          (then (return (f64.const 0))))
+        (return (f64.const nan))))
     (if (local.get $round) (then (local.set $result (f64.add (local.get $result) (f64.const 1)))))
     ;; Scientific notation.
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))

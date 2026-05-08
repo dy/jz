@@ -346,11 +346,12 @@ export default (ctx) => {
   // apply — otherwise this would always emit a __is_nullish call even for provable cases.
   const notNullish = v => ['i32.eqz', isNullish(v)]
 
-  // Optional-chain wrapper: eval guard, if non-nullish emit access, else NULL_NAN.
+  // Optional-chain wrapper: eval guard, if non-nullish emit access, else `undefined`.
+  // Per spec, `null?.a` and `undefined?.a` both short-circuit to undefined, not null.
   const emitNullishGuarded = (guard, access) => typed(['if', ['result', 'f64'],
     notNullish(guard),
     ['then', access],
-    ['else', ['f64.const', `nan:${NULL_NAN}`]]], 'f64')
+    ['else', ['f64.const', `nan:${UNDEF_NAN}`]]], 'f64')
 
   // === Shared dispatch helpers ===
 
@@ -690,6 +691,14 @@ export default (ctx) => {
     (local $f f64) (local $t i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (global.get $__tof_number))))
+    ;; Canonical JS NaN (0x7FF8000000000000) overlaps ATOM tag=0 aux=0 offset=0.
+    ;; That bit pattern is the math NaN value, not a tagged pointer — treat as "number".
+    ;; Negative-NaN bit patterns (sign bit set) don't match NAN_PREFIX so are uniquely numeric.
+    (if (i32.or
+          (i64.eq (local.get $v) (i64.const 0x7FF8000000000000))
+          (i64.eq (i64.and (local.get $v) (i64.const 0xFFF0000000000000))
+                  (i64.const 0xFFF0000000000000)))
       (then (return (global.get $__tof_number))))
     (if (call $__is_nullish (local.get $v))
       (then (return (global.get $__tof_undefined))))

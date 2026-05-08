@@ -435,8 +435,26 @@ export function codegen(node, depth = 0) {
   // Statements
   if (op === ';') return a.map(s => codegen(s, depth)).filter(Boolean).join(';\n' + ind) + ';'
   if (op === '{}') {
-    const body = a.map(s => codegen(s, depth + 1)).filter(Boolean).join(';\n' + ind1)
-    return '{\n' + ind1 + body + (body ? ';' : '') + '\n' + ind + '}'
+    // Discriminate object literal / destructuring pattern from block.
+    // Object: `:` key-value, `,` of object-pattern items (id / `:` / `...` / `= default`),
+    //         lone string shorthand. Empty `{}` outputs the same string either way.
+    const body = a[0]
+    const isObjItem = (n) => typeof n === 'string' ||
+      (Array.isArray(n) && (n[0] === ':' || n[0] === '...' || n[0] === 'as' ||
+        (n[0] === '=' && typeof n[1] === 'string')))
+    const isObj = body == null ? false
+      : typeof body === 'string' ? true
+      : Array.isArray(body) && (body[0] === ':' || body[0] === '...' || body[0] === 'as' ||
+          (body[0] === ',' && body.slice(1).every(isObjItem)))
+    if (isObj) {
+      if (typeof body === 'string') return '{ ' + body + ' }'
+      if (body[0] === ',') return '{ ' + body.slice(1).map(x => codegen(x)).join(', ') + ' }'
+      return '{ ' + codegen(body) + ' }'
+    }
+    // Block: body is null, a single statement, or [';', ...stmts]
+    const stmts = body == null ? [] : (Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body])
+    const rendered = stmts.map(s => codegen(s, depth + 1)).filter(Boolean).join(';\n' + ind1)
+    return '{\n' + ind1 + rendered + (rendered ? ';' : '') + '\n' + ind + '}'
   }
 
   // Declarations
@@ -456,17 +474,17 @@ export function codegen(node, depth = 0) {
     if (a.length === 2) { // ['for', head, body] — subscript shape
       const [head, body] = a
       if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in'))
-        return 'for (' + codegen(head[1]) + ' ' + head[0] + ' ' + codegen(head[2]) + ') ' + codegen(body, depth)
+        return 'for (' + codegen(head[1]) + ' ' + head[0] + ' ' + codegen(head[2]) + ') ' + wrapBlock(body, depth)
       // ['let'/'const', ['in'/'of', name, obj]] — subscript wraps var→let around in/of
       if (Array.isArray(head) && (head[0] === 'let' || head[0] === 'const') && Array.isArray(head[1]) && (head[1][0] === 'in' || head[1][0] === 'of'))
-        return 'for (' + head[0] + ' ' + codegen(head[1][1]) + ' ' + head[1][0] + ' ' + codegen(head[1][2]) + ') ' + codegen(body, depth)
+        return 'for (' + head[0] + ' ' + codegen(head[1][1]) + ' ' + head[1][0] + ' ' + codegen(head[1][2]) + ') ' + wrapBlock(body, depth)
       // C-style head [';', init, cond, update] is positional — empty slots are valid,
       // must not flow through the generic `;` joiner (which adds newlines + a trailing `;`).
       if (Array.isArray(head) && head[0] === ';')
-        return 'for (' + (head[1] == null ? '' : codegen(head[1])) + '; ' + (head[2] == null ? '' : codegen(head[2])) + '; ' + (head[3] == null ? '' : codegen(head[3])) + ') ' + codegen(body, depth)
-      return 'for (' + codegen(head) + ') ' + codegen(body, depth)
+        return 'for (' + (head[1] == null ? '' : codegen(head[1])) + '; ' + (head[2] == null ? '' : codegen(head[2])) + '; ' + (head[3] == null ? '' : codegen(head[3])) + ') ' + wrapBlock(body, depth)
+      return 'for (' + codegen(head) + ') ' + wrapBlock(body, depth)
     }
-    return 'for (' + (codegen(a[0]) || '') + '; ' + (codegen(a[1]) || '') + '; ' + (codegen(a[2]) || '') + ') ' + codegen(a[3], depth)
+    return 'for (' + (codegen(a[0]) || '') + '; ' + (codegen(a[1]) || '') + '; ' + (codegen(a[2]) || '') + ') ' + wrapBlock(a[3], depth)
   }
   if (op === 'return') return 'return ' + codegen(a[0])
   if (op === 'throw') return 'throw ' + codegen(a[0])
@@ -500,10 +518,20 @@ export function codegen(node, depth = 0) {
   // Property access
   if (op === '.') return codegen(a[0]) + '.' + a[1]
   if (op === '?.') return codegen(a[0]) + '?.' + a[1]
-  if (op === '[]') return codegen(a[0]) + '[' + codegen(a[1]) + ']'
-
-  // Array/object literals
-  if (op === '[') return '[' + a.map(x => codegen(x)).join(', ') + ']'
+  if (op === '?.[]') return codegen(a[0]) + '?.[' + codegen(a[1]) + ']'
+  if (op === '?.()') return codegen(a[0]) + '?.(' + a.slice(1).map(x => codegen(x)).join(', ') + ')'
+  if (op === '[]') {
+    // Array literal: ['[]', body] (length 2 → a.length 1). body may be null (empty),
+    // a single element, or a [',', ...items] sequence.
+    if (a.length === 1) {
+      if (a[0] == null) return '[]'
+      const body = a[0]
+      if (Array.isArray(body) && body[0] === ',') return '[' + body.slice(1).map(x => codegen(x)).join(', ') + ']'
+      return '[' + codegen(body) + ']'
+    }
+    // Subscript: ['[]', obj, idx]
+    return codegen(a[0]) + '[' + codegen(a[1]) + ']'
+  }
   if (op === ':') return codegen(a[0]) + ': ' + codegen(a[1])
   if (op === 'str') return JSON.stringify(a[0])
   if (op === '//') return '/' + a[0] + '/' + (a[1] || '')
@@ -519,9 +547,10 @@ export function codegen(node, depth = 0) {
   // Spread
   if (op === '...') return '...' + codegen(a[0])
 
-  // Import
+  // Import / export rename
   if (op === 'import') return 'import ' + codegen(a[0])
   if (op === 'from') return codegen(a[0]) + ' from ' + codegen(a[1])
+  if (op === 'as') return codegen(a[0]) + ' as ' + codegen(a[1])
 
   // Unary prefix
   if (a.length === 1) {

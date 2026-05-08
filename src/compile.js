@@ -651,7 +651,8 @@ function emitClosureBody(cb) {
   fn.push(...preboxedLocalInits)
   fn.push(...bodyIR)
   // I: Skip trailing fallback when last statement is return
-  if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(['f64.const', 0])
+  // Implicit fall-through return is `undefined` per JS spec, not 0.
+  if (block && !(bodyIR.at(-1)?.[0] === 'return' || bodyIR.at(-1)?.[0] === 'return_call')) fn.push(undefExpr())
   ctx.schema.vars = prevSchemaVars
   ctx.types.typedElem = prevTypedElems
   return fn

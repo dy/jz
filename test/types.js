@@ -194,13 +194,13 @@ test('?.(): non-null callable returns value', () => {
   is(f(), 42)
 })
 
-test('?.(): null short-circuits to null', () => {
+test('?.(): null short-circuits to undefined', () => {
   const { f } = jz(`export let f = (n) => {
     let g = n > 0 ? () => 42 : null
     return g?.()
   }`).exports
   is(f(1), 42)
-  is(f(0), null)
+  is(f(0), undefined)
 })
 
 test('?.(): with arguments', () => {

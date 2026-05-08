@@ -21,6 +21,7 @@
   },
   "scripts": {
     "test": "node test/index.js",
+    "test:parallel": "TST_PARALLEL=auto node test/index.js",
     "test:safe": "nice -n 15 node scripts/timebox.mjs 3000 node test/index.js",
     "test:segments": "nice -n 15 node scripts/test-segments.mjs 3000 files",
     "test:prefixes": "nice -n 15 node scripts/test-segments.mjs 3000 prefix",
@@ -57,6 +58,6 @@
     "wasm"
   ],
   "devDependencies": {
-    "tst": "^9.2.0"
+    "tst": "^9.4.0"
   }
 }

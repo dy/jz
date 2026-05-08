@@ -711,7 +711,10 @@ export function hoistConstantPool(funcs, addGlobal) {
     for (let i = 0; i < node.length; i++) {
       const c = node[i]
       if (Array.isArray(c) && c[0] === 'f64.const' && (typeof c[1] === 'number' || typeof c[1] === 'string')) {
-        const k = typeof c[1] === 'number' ? `n:${c[1]}` : `s:${c[1]}`
+        // Distinguish -0 from +0 by sign: template literal collapses both to "0".
+        const k = typeof c[1] === 'number'
+          ? (Object.is(c[1], -0) ? 'n:-0' : `n:${c[1]}`)
+          : `s:${c[1]}`
         counts.set(k, (counts.get(k) || 0) + 1)
         sites.push({ parent: node, idx: i, key: k })
       }

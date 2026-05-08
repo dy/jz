@@ -876,10 +876,10 @@ export default (ctx) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
   }
-  ctx.core.emit['.valueOf'] = (val) => {
-    inc('__to_str')
-    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
-  }
+  // Object.prototype.valueOf returns the receiver (per ES2024 20.1.3.7).
+  // Array/Object inherit this; only primitive wrappers (Number/Boolean/String)
+  // override to return the primitive — strings already covered by .string:valueOf.
+  ctx.core.emit['.valueOf'] = (val) => asF64(emit(val))
 
   ctx.core.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')

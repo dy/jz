@@ -289,8 +289,9 @@ export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNa
 /** Check if (a, op, b) is a postfix pattern: [op, name] and [, 1] literal. */
 export const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.isArray(b) && b[0] == null && b[1] === 1
 
-/** Emit a numeric constant with correct i32/f64 typing. */
-export const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+/** Emit a numeric constant with correct i32/f64 typing.
+ *  `-0` is f64-only (i32 has no signed zero) — preserve the sign by emitting f64. */
+export const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 && !Object.is(v, -0)
   ? typed(['i32.const', v], 'i32') : typed(['f64.const', v], 'f64')
 
 // === Temp locals ===

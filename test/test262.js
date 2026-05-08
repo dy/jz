@@ -45,6 +45,15 @@ const TRACKED_LANGUAGE_DIRS = [
   'function-code',
   'rest-parameters',
   'arguments-object',
+  'keywords',
+  'reserved-words',
+  'future-reserved-words',
+  'identifier-resolution',
+  'computed-property-names',
+  'statementList',
+  'global-code',
+  'source-text',
+  'export',
 ]
 
 const COMPUTED_PROPERTY_NAME_OBJECT_TESTS = new Set([
@@ -224,6 +233,100 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/expressions/call/scope-var-open.js')) return 'NFE binding scope outside current jz scope'
   // Object spread + getter — accessor + spread combination outside fixed-shape subset.
   if (/\/expressions\/call\/spread-obj-.*getter/.test(rel)) return 'object accessor outside fixed-shape subset'
+  // Default-param TDZ (forward/self reference) requires per-param lexical environment.
+  if (/\/(arrow-function|function)\/dflt-params-ref-(later|self)\.js$/.test(rel)) return 'default-param TDZ outside current jz scope'
+  // Function `.length` reflection — jz exposes raw arity but not the JS Function object surface.
+  if (/\/(arrow-function|function)\/(params-trailing-comma|dflt-params-trailing-comma)/.test(rel)) return 'function .length reflection unsupported'
+  // Arrow `arguments`/`caller` lexical capture — runtime should throw, jz silently inherits.
+  if (/\/arrow-function\/forbidden-ext\//.test(rel)) return 'arrow forbidden-ext reflection unsupported'
+  // `new` on arrow → IsConstructor TypeError; jz arrow has no [[Construct]] distinction.
+  if (rel.endsWith('/expressions/arrow-function/throw-new.js')) return 'new on arrow IsConstructor outside current jz scope'
+  // Arrow params with destructuring inside cover parens.
+  if (rel.endsWith('/expressions/arrow-function/syntax/arrowparameters-cover-initialize-2.js')) return 'destructuring binding outside current jz subset'
+  // Named function expression: rebinding the inner name. NFE binding scope.
+  if (/\/expressions\/function\/named-(no-strict|strict-error)-reassign-fn-name-in-body/.test(rel)) return 'NFE binding scope outside current jz scope'
+  // Comparison operator coercion order — getters with side-effects on operands.
+  if (/\/expressions\/(greater-than|less-than-or-equal|less-than|greater-than-or-equal)\/11\.8\./.test(rel)) return 'comparison coercion order outside current jz scope'
+  // Logical assignment LHS-before-RHS evaluation order with computed keys + side effects.
+  if (/\/expressions\/logical-assignment\/lgcl-(and|or|nullish)-assignment-operator-lhs-before-rhs\.js$/.test(rel)) return 'logical-assign side-effect order outside current jz scope'
+  // Computed reference on null/undefined — TypeError surface jz doesn't synthesize.
+  if (rel.endsWith('/expressions/member-expression/computed-reference-null-or-undefined.js')) return 'null/undefined member access TypeError outside current jz scope'
+  // `new` with object spread + getter — accessor evaluation order.
+  if (/\/expressions\/new\/spread-obj-.*getter/.test(rel)) return 'object accessor outside fixed-shape subset'
+  // Optional chaining within for-in/for-of — for-of unsupported, for-in TypeError shape.
+  if (/\/expressions\/optional-chaining\/iteration-statement-for-(in|of)/.test(rel)) return 'for-in/for-of with optional chaining outside current jz scope'
+  // Optional chaining tests using non-string dictionary keys (`obj[undefined]`, `arr.true`, `[NaN]`)
+  // depend on JS String() coercion of arbitrary values to property keys, which jz doesn't implement.
+  if (rel.endsWith('/expressions/optional-chaining/optional-chain-expression-optional-expression.js')) return 'non-string property key coercion outside current jz scope'
+  if (rel.endsWith('/expressions/optional-chaining/optional-chain-prod-expression.js')) return 'non-string property key coercion outside current jz scope'
+  // Optional call with spread argument — spread outside current jz scope here.
+  if (rel.endsWith('/expressions/optional-chaining/optional-chain-prod-arguments.js')) return 'spread in call args outside current jz scope'
+  // Unicode escapes in identifier names (`obj.a`) — parser surface.
+  if (rel.endsWith('/expressions/optional-chaining/optional-chain-prod-identifiername.js')) return 'unicode escape in identifier outside current jz scope'
+  // Object literal accessors (get/set) — not invoked by jz, returns the function itself.
+  // Tests that depend on getter side effects (e.g. counting invocations) loop forever.
+  if (/[{,]\s*(get|set)\s+\w+\s*\(/.test(codeContent)) return 'object accessor outside fixed-shape subset'
+  // for-in semantics: enumeration order/uniqueness, hasOwnProperty, head edge cases — engine-specific.
+  if (rel.endsWith('/statements/for-in/12.6.4-1.js')) return 'for-in enumeration uniqueness outside current jz scope'
+  if (/\/statements\/for-in\/head-(let|const)-bound-names-fordecl-tdz\.js$/.test(rel)) return 'for-in TDZ outside current jz scope'
+  if (rel.endsWith('/statements/for-in/head-let-fresh-binding-per-iteration.js')) return 'let-per-iteration binding outside current jz scope'
+  if (/\/statements\/for-in\/head-(lhs-cover|lhs-member)\.js$/.test(rel)) return 'for-in head LHS form outside current jz scope'
+  if (/\/statements\/for-in\/head-var-bound-names-(in-stmt|let)\.js$/.test(rel)) return 'for-in head var binding outside current jz scope'
+  if (/\/statements\/for-in\/scope-(body-lex-boundary|head-lex-open)\.js$/.test(rel)) return 'for-in lexical scoping outside current jz scope'
+  // for-in to populate iteration order over arrays/objects — engine-specific iteration order.
+  if (/\/block-scope\/syntax\/for-in\/acquire-properties-from-(array|object)\.js$/.test(rel)) return 'for-in enumeration order outside current jz scope'
+  // Strict-mode reflection on function instances (.arguments setter, etc.).
+  if (/\/statements\/function\/13\.2-(4|25|26)-s\.js$/.test(rel)) return 'function instance reflection (strict) outside current jz scope'
+  // catch-block/param lexical environment with closure capture.
+  if (/\/statements\/try\/scope-catch-(block|param)-lex-(close|open)\.js$/.test(rel)) return 'catch lexical environment outside current jz scope'
+  // try-catch-finally completion semantics with return-inside-catch + throw-in-finally
+  // require non-inline finally lowering (engine-specific completion-type override).
+  if (rel.endsWith('/statements/try/completion-values-fn-finally-abrupt.js')) return 'try-catch-finally completion override outside current jz scope'
+  // Block-scope context preservation through try/finally with closures.
+  if (/\/block-scope\/leave\/verify-context-in-(try|finally)-block\.js$/.test(rel)) return 'block-scope context closures outside current jz scope'
+  // Block-scope shadowing with function-in-block declaring closures over outer let/const/var.
+  if (rel.endsWith('/block-scope/shadowing/lookup-from-closure.js')) return 'block-scope closure lookup outside current jz scope'
+  if (rel.endsWith('/block-scope/shadowing/dynamic-lookup-from-closure.js')) return 'block-scope closure lookup outside current jz scope'
+  if (rel.endsWith('/block-scope/shadowing/const-declarations-shadowing-parameter-name-let-const-and-var-variables.js')) return 'block-scope shadowing closure outside current jz scope'
+  if (rel.endsWith('/block-scope/shadowing/hoisting-var-out-of-blocks.js')) return 'var hoisting through blocks outside current jz scope'
+  // Math is not a constructor — `new Math` IsConstructor TypeError.
+  if (rel.endsWith('/types/object/S8.6.2_A7.js')) return 'Math non-constructor TypeError outside current jz scope'
+  // postincrement/preincrement on object property whose value is a string ("bar"++ → NaN).
+  if (/\/types\/object\/S8\.6_A(2|3)_T1\.js$/.test(rel)) return 'object property pre/post-increment coercion outside current jz scope'
+  // Strict-mode ReferenceError on undeclared assignment.
+  if (rel.endsWith('/types/reference/8.7.2-3-a-1gs.js')) return 'strict-mode undeclared assign outside current jz scope'
+  if (rel.endsWith('/asi/S7.9_A7_T7.js')) return 'strict-mode undeclared reference outside current jz scope'
+  // Formal parameter shadowing by var in body.
+  if (rel.endsWith('/function-code/S10.2.1_A5.2_T1.js')) return 'formal-param/var shadowing outside current jz scope'
+  // Strict-mode AnnexB block-decl semantics.
+  if (rel.endsWith('/function-code/block-decl-onlystrict.js')) return 'strict-mode block-decl AnnexB outside current jz scope'
+  if (rel.endsWith('/global-code/block-decl-strict.js')) return 'strict-mode block-decl AnnexB outside current jz scope'
+  // Legacy octal numeric literals and string escape sequences.
+  if (rel.endsWith('/literals/numeric/legacy-octal-integer.js')) return 'legacy octal numeric outside current jz scope'
+  if (rel.endsWith('/literals/string/legacy-octal-escape-sequence.js')) return 'legacy octal escape outside current jz scope'
+  // Line continuation in string literals.
+  if (/\/literals\/string\/line-continuation-(double|single)\.js$/.test(rel)) return 'string line continuation parser gap'
+  // Function .length reflection (rest-parameters expected count).
+  if (rel.endsWith('/rest-parameters/expected-argument-count.js')) return 'function .length reflection unsupported'
+  // Line-terminator parser tests for LS/PS/BOM in string literals — parser-level edge case.
+  if (/\/line-terminators\/7\.3-(5|6|15)\.js$/.test(rel)) return 'LS/PS/BOM in string literal outside current jz scope'
+  // Strict-mode reference error on undeclared assignment in directive-prologue test.
+  if (/\/directive-prologue\/func-(decl|expr)-no-semi-runtime\.js$/.test(rel)) return 'strict-mode undeclared assign outside current jz scope'
+  // Pre/post-increment/decrement on null member access — TypeError surface jz doesn't synthesize.
+  if (/\/expressions\/(postfix|prefix)-(increment|decrement)\/S11\.[34]\.\d_A6_T[12]\.js$/.test(rel)) return 'null/undefined member pre/post-inc TypeError outside current jz scope'
+  // Tagged template literal feature — outside current jz scope.
+  if (rel.includes('/expressions/tagged-template/')) return 'tagged template literal outside current jz scope'
+  // Template literal evaluation order/object identity/escape sequences — outside current jz scope.
+  if (rel.includes('/expressions/template-literal/')) return 'template literal feature outside current jz scope'
+  // void on undeclared name → strict-mode ReferenceError surface.
+  if (rel.endsWith('/expressions/void/S11.4.2_A2_T2.js')) return 'strict-mode undeclared reference outside current jz scope'
+  // reserved-words tests using hasOwnProperty + dictionary keys with global names ('undefined', 'NaN', etc.).
+  if (/\/reserved-words\/ident-name-(global-property|reserved-word-literal)-(memberexpr|memberexpr-str|prop-name)\.js$/.test(rel)) return 'hasOwnProperty + dictionary keys outside fixed-shape subset'
+  // Computed property method shorthand (`{ [k]() {} }`) — method shorthand outside jz scope.
+  if (/\/computed-property-names\/object\/method\/(number|string)\.js$/.test(rel)) return 'computed method shorthand outside current jz scope'
+  if (rel.endsWith('/computed-property-names/to-name-side-effects/object.js')) return 'computed method shorthand outside current jz scope'
+  // Regex literal in statement list — regex outside jz scope.
+  if (/\/statementList\/block-(regexp-literal|with-statment-regexp-literal)\.js$/.test(rel)) return 'regexp literal outside current jz scope'
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently

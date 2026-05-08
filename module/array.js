@@ -821,11 +821,11 @@ export default (ctx) => {
     (local.set $rawOff (i32.wrap_i64 (i64.and (local.get $arr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $off (call $__ptr_offset (local.get $arr)))
     (if (result f64) (i32.lt_u (local.get $off) (i32.const 8))
-      (then (f64.const 0))
+      (then (f64.const nan:${UNDEF_NAN}))
       (else
         (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
         (if (result f64) (i32.le_s (local.get $len) (i32.const 0))
-          (then (f64.const 0))
+          (then (f64.const nan:${UNDEF_NAN}))
           (else
             (local.set $val (f64.load (local.get $off)))
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))

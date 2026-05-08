@@ -516,7 +516,7 @@ export function emitDecl(...inits) {
   for (let ii = 0; ii < inits.length; ii++) {
     const i = inits[ii]
     if (typeof i === 'string') {
-      const undef = nullExpr()
+      const undef = undefExpr()
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
         ctx.func.locals.set(cell, 'i32')
@@ -635,7 +635,7 @@ export function emitDecl(...inits) {
     } else {
       coerced = localType === 'f64' ? asF64(val) : asI32(val)
     }
-    if (!(isLit(coerced) && coerced[1] === 0 && !ctx.func.stack.length))
+    if (!(isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length))
       result.push(['local.set', `$${name}`, coerced])
 
     const schemaId = ctx.schema.idOf?.(name)
@@ -1258,6 +1258,9 @@ export const emitter = {
         const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
           ['global.set', `$${obj}`, setCall], ['global.get', `$${obj}`]], 'f64')
+        // Closure-captured (boxed) locals store the value at the cell address — local.tee
+        // would write to the i32 cell pointer, not the f64 value. Route through writeVar.
+        if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
         return typed(['local.tee', `$${obj}`, setCall], 'f64')
       }
       ctx.features.external = true
@@ -1275,10 +1278,14 @@ export const emitter = {
 
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
-    // String concatenation: desugar to name = name + val (+ handler knows about strings)
+    // String concatenation: desugar to name = name + val (+ handler knows about strings).
+    // Also desugar when either side has unknown type — the `+` operator picks runtime
+    // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
+    // silently corrupt string concatenations through unknown-typed values.
     const vt = typeof name === 'string' ? keyValType(name) : null
     const vtB = keyValType(val)
     if (vt === VAL.STRING || vtB === VAL.STRING) return emit(['=', name, ['+', name, val]])
+    if ((vt == null || vtB == null) && ctx.core.stdlib['__str_concat']) return emit(['=', name, ['+', name, val]])
     return compoundAssign(name, val, (a, b) => typed(['f64.add', a, b], 'f64'), (a, b) => typed(['i32.add', a, b], 'i32'))
   },
   ...Object.fromEntries([
@@ -1530,9 +1537,9 @@ export const emitter = {
     // Unboxed pointer offsets: falsy iff zero offset.
     if (v.ptrKind != null) return typed(['i32.eqz', v], 'i32')
     // Known pointer-kinded operand: `!x` is just `x is nullish` (null/undefined).
-    // Pointers are never 0 / NaN / false / empty-string in the boxed form.
+    // Excludes STRING — empty string '' is a valid (non-null) pointer but is falsy.
     const vt = resolveValType(a, valTypeOf, lookupValType)
-    if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT) {
+    if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT && vt !== VAL.STRING) {
       return isNullish(asF64(v))
     }
     inc('__is_truthy')
@@ -2420,11 +2427,7 @@ export function emit(node, expect) {
     const n = node & 0xFFFFFFFFFFFFFFFFn
     return typed(['f64.reinterpret_i64', ['i64.const', '0x' + n.toString(16)]], 'f64')
   }
-  if (typeof node === 'number') {
-    if (Number.isInteger(node) && node >= -2147483648 && node <= 2147483647)
-      return typed(['i32.const', node], 'i32')
-    return typed(['f64.const', node], 'f64')
-  }
+  if (typeof node === 'number') return emitNum(node)
   if (typeof node === 'string') {
     // Variable read: boxed / local / param / global (check before emitter table to avoid name collisions)
     if (ctx.func.boxed?.has(node) || ctx.func.locals?.has(node) || ctx.func.current?.params?.some(p => p.name === node) || isGlobal(node))
