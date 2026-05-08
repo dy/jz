@@ -64,6 +64,22 @@ test('JSON.parse: string length', () => {
   is(run('export let f = () => JSON.parse(\'\"hello\"\').length').f(), 5)
 })
 
+test('JSON.parse: string with escape sequences decodes to correct length', () => {
+  // Escapes in the non-simple path (>4 byte output) must count toward $len so
+  // the alloc fits the decoded body. A raw escape (\") forwards to the same
+  // literal byte; the decoded string is "abc\"def" → 8 bytes.
+  is(run(`export let f = () => JSON.parse('"abc\\\\"def"').length`).f(), 7)
+  // \n and \" mixed; decoded length is 5 ("a\nb\"c" → a, NL, b, ", c).
+  is(run(`export let f = () => JSON.parse('"a\\\\nb\\\\"c"').length`).f(), 5)
+})
+
+test('JSON.parse: object value with escape', () => {
+  // Reproduces the bug surface: object value strings with escapes were
+  // silently corrupting the heap because the second-scan decode wrote past
+  // the under-sized alloc.
+  is(run(`export let f = () => JSON.parse('{"k":"a\\\\"b"}').k.length`).f(), 3)
+})
+
 test('JSON.parse: nested array', () => {
   is(run(`export let f = () => JSON.parse("[[1,2],[3]]")[0][1]`).f(), 2)
 })

@@ -320,7 +320,9 @@ export default (ctx) => {
       (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_s (local.get $ch) (i32.const 0)))
         (then (local.set $simple (i32.const 0))))
       (if (i32.eq (local.get $ch) (i32.const 92))
-        (then ${ADV(2)})
+        (then
+          (local.set $len (i32.add (local.get $len) (i32.const 1)))
+          ${ADV(2)})
         (else
           ;; Pack first 4 bytes into SSO slot (used only when len ≤ 4).
           (if (i32.lt_u (local.get $len) (i32.const 4))
