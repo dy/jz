@@ -812,7 +812,7 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string replace
       inc('__str_replace')
-      return typed(['call', '$__str_replace', asF64(emit(str)), asF64(emit(search)), asF64(emit(repl))], 'f64')
+      return typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64')
     }
     inc('__str_slice', '__str_concat', '__str_byteLen')
     const s = temp('sr'), r = temp('srr'), ms = tempI32('srms'), me = tempI32('srme')

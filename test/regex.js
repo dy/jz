@@ -283,6 +283,22 @@ test('regex: str.replace(regex, str)', () => {
   is(evalStr('"foo bar".replace(/o/, "0")'), 'f0o bar')
 })
 
+test('regex: str.replace(str, str) fallback through __str_replace', () => {
+  // search arg is a non-regex value → resolveRegex returns null and the
+  // .string:replace emitter falls through to __str_replace, which takes
+  // (i64, i64, i64). Args must be passed as i64 string handles, not f64.
+  const wasm = compile(`
+    let s = "hello world", q = "world", r = "there"
+    export let a = () => s.replace(q, r)
+    export let b = () => "abc123def".replace("123", "-")
+  `)
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod)
+  const m = jz.memory({ module: mod, instance: inst })
+  is(m.read(inst.exports.a()), 'hello there')
+  is(m.read(inst.exports.b()), 'abc-def')
+})
+
 test('regex: str.split(regex)', async () => {
   is(await evaluate('"a1b2c3".split(/\\d/).length'), 4)
   is(await evaluate('"one  two   three".split(/\\s+/).length'), 3)
