@@ -26,7 +26,93 @@ export default function jzify(ast) {
   swIdx = 0
   argsIdx = 0
   doIdx = 0
+  // Hoist module-level vars: any `var x` inside nested blocks bubbles up.
+  const names = new Set()
+  ast = hoistVars(ast, names)
+  if (names.size) ast = prependDecls(ast, names)
   return transformScope(ast)
+}
+
+/**
+ * Walk function/script body, replacing `var` declarations with assignments and
+ * collecting names. Does not cross function/arrow boundaries — nested functions
+ * get their own hoist pass when wrapArrowBody processes them.
+ *
+ *   ['var', 'x']                              → null (bare decl, no-op)
+ *   ['var', ['=', x, init]]                   → ['=', x, init]
+ *   ['var', ['=', x, 1], ['=', y, 2]]         → [',', ['=', x, 1], ['=', y, 2]]
+ *   ['var', 'x', 'y']                         → null
+ *   ['in', ['var', x], obj]                   → ['in', x, obj]   (for-in head)
+ */
+function hoistVars(node, names) {
+  if (node == null || !Array.isArray(node)) return node
+  const op = node[0]
+  // Nested function/arrow: hoist within its own scope, prepend let-decl, return new node.
+  if (op === 'function') {
+    const inner = new Set()
+    let body = hoistVars(node[3], inner)
+    if (inner.size) body = prependDecls(body, inner)
+    return ['function', node[1], node[2], body]
+  }
+  if (op === '=>') {
+    const inner = new Set()
+    let body = hoistVars(node[2], inner)
+    if (inner.size) body = prependDecls(body, inner)
+    return ['=>', node[1], body]
+  }
+  if (op === 'in' || op === 'of') {
+    let lhs = node[1]
+    if (Array.isArray(lhs) && lhs[0] === 'var' && typeof lhs[1] === 'string' && lhs.length === 2) {
+      names.add(lhs[1])
+      lhs = lhs[1]
+    } else {
+      lhs = hoistVars(lhs, names)
+    }
+    return [op, lhs, hoistVars(node[2], names)]
+  }
+  if (op === 'var') {
+    const decls = []
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') { names.add(d); continue }
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        names.add(d[1])
+        decls.push(['=', d[1], hoistVars(d[2], names)])
+      }
+    }
+    if (decls.length === 0) return null
+    if (decls.length === 1) return decls[0]
+    return [',', ...decls]
+  }
+  // Filter null returns from `;` sequences (bare-var no-ops). `{}` is left
+  // to recurse normally — it may be either a block or an object literal,
+  // and we don't want to clobber `['{}', null]` (empty object literal).
+  if (op === ';') {
+    const out = [op]
+    for (let i = 1; i < node.length; i++) {
+      const c = hoistVars(node[i], names)
+      if (c != null) out.push(c)
+    }
+    if (out.length === 1) return null
+    if (out.length === 2) return out[1]
+    return out
+  }
+  const out = new Array(node.length)
+  out[0] = op
+  for (let i = 1; i < node.length; i++) out[i] = hoistVars(node[i], names)
+  return out
+}
+
+function prependDecls(body, names) {
+  const decl = ['let', ...names]
+  if (Array.isArray(body) && body[0] === ';') return [';', decl, ...body.slice(1)]
+  if (Array.isArray(body) && body[0] === '{}') {
+    const inner = body[1]
+    if (Array.isArray(inner) && inner[0] === ';') return ['{}', [';', decl, ...inner.slice(1)]]
+    if (inner == null) return ['{}', decl]
+    return ['{}', [';', decl, inner]]
+  }
+  return body == null ? decl : [';', decl, body]
 }
 
 /** Convert a named function declaration to a hoisted const arrow */
@@ -184,19 +270,14 @@ const handlers = {
     return arrow
   },
 
+  // `var` is hoisted away before transform reaches here. If one slips through
+  // (e.g. raw subscript output without going via jzify entry/wrapArrowBody),
+  // fall back to treating it as `let`.
   'var'(...args) {
-    // for-in/for-of: ['var', ['in', 'k', obj]] → ['in', ['let', 'k'], obj]
-    if (args.length === 1 && Array.isArray(args[0]) && (args[0][0] === 'in' || args[0][0] === 'of')) {
-      const [, name, src] = args[0]
-      return [args[0][0], ['let', typeof name === 'string' ? name : transform(name)], transform(src)]
-    }
     return ['let', ...args.map(transform)]
   },
 
   '='(lhs, rhs) {
-    // var assignment: ['=', ['var', name], init] → let
-    if (Array.isArray(lhs) && lhs[0] === 'var')
-      return ['let', ['=', lhs[1], transform(rhs)]]
     // Chained property assignment: a.x = a.y = v → a.y = v; a.x = v
     if (Array.isArray(lhs) && lhs[0] === '.' && Array.isArray(rhs) && rhs[0] === '=') {
       const targets = []
