@@ -455,3 +455,73 @@ test('Object.keys: runtime dispatch — non-HASH receiver returns empty', () => 
   `)
   is(f(42), 0)
 })
+
+// hasOwnProperty: literal and known-schema fold + runtime dispatch.
+// Without an own emit handler the call falls through to __ext_call and the
+// resulting wasm requires JS host imports, defeating the host:'wasi' target.
+
+test('hasOwnProperty: present key on fixed-shape OBJECT folds to true', () => {
+  const { f } = run(`export let f = () => {
+    const x = {a: 1, b: 2}
+    return x.hasOwnProperty('a') ? 1 : 0
+  }`)
+  is(f(), 1)
+})
+
+test('hasOwnProperty: absent key on fixed-shape OBJECT folds to false', () => {
+  const { f } = run(`export let f = () => {
+    const x = {a: 1, b: 2}
+    return x.hasOwnProperty('z') ? 1 : 0
+  }`)
+  is(f(), 0)
+})
+
+test('hasOwnProperty: empty object — no inherited toString', () => {
+  const { f } = run(`export let f = () => ({}).hasOwnProperty('toString') ? 1 : 0`)
+  is(f(), 0)
+})
+
+test('hasOwnProperty: presence not value — undefined-valued slot is true', () => {
+  const { f } = run(`export let f = () => ({a: undefined}).hasOwnProperty('a') ? 1 : 0`)
+  is(f(), 1)
+})
+
+test('hasOwnProperty: HASH receiver via JSON.parse', () => {
+  const { f } = run(`export let f = (s, k) => JSON.parse(s).hasOwnProperty(k) ? 1 : 0`)
+  is(f('{"a":1,"b":2}', 'a'), 1)
+  is(f('{"a":1,"b":2}', 'z'), 0)
+})
+
+test('hasOwnProperty: Array numeric index', () => {
+  const { f } = run(`export let f = () => {
+    const a = [10, 20, 30]
+    return a.hasOwnProperty(0) ? 1 : 0
+  }`)
+  is(f(), 1)
+})
+
+test('hasOwnProperty: Array out-of-range index', () => {
+  const { f } = run(`export let f = () => {
+    const a = [10, 20, 30]
+    return a.hasOwnProperty(99) ? 1 : 0
+  }`)
+  is(f(), 0)
+})
+
+test('hasOwnProperty: closure receiver — no own caller property', () => {
+  // test262 S13.2_A7_T1 shape: invoking on a function should produce false
+  // (jz functions carry no own enumerable properties).
+  const { f } = run(`export let f = () => (() => 1).hasOwnProperty('caller') ? 1 : 0`)
+  is(f(), 0)
+})
+
+test('hasOwnProperty: dynamic key on known-schema OBJECT', () => {
+  const { f } = run(`
+    export let f = (k) => {
+      const x = {a: 1, b: 2}
+      return x.hasOwnProperty(k) ? 1 : 0
+    }
+  `)
+  is(f('a'), 1)
+  is(f('z'), 0)
+})

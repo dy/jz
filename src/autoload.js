@@ -88,6 +88,7 @@ export const GENERIC_METHOD_MODULES = dict({
   toFixed: ['core', 'string', 'number'],
   toPrecision: ['core', 'string', 'number'],
   toExponential: ['core', 'string', 'number'],
+  hasOwnProperty: ['core', 'object', 'string', 'collection'],
 })
 
 export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
