@@ -57,10 +57,14 @@ const setupWasi = (ctx) => {
     __write_num: ['__ftoa', '__write_str'],
     __write_int: ['__itoa', '__mkstr', '__write_str'],
     __write_str: ['__sso_char', '__str_len'],
+    __read_stdin: ['__mkstr'],
   })
 
   const needFdWrite = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_write',
     ['func', '$__fd_write', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
+
+  const needFdRead = () => addImportOnce(ctx, 'wasi_snapshot_preview1', 'fd_read',
+    ['func', '$__fd_read', ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['param', 'i32'], ['result', 'i32']])
 
   ctx.core.stdlib['__write_str'] = `(func $__write_str (param $fd i32) (param $ptr i64)
     (local $iov i32) (local $aux i32) (local $len i32) (local $off i32) (local $buf i32)
@@ -118,6 +122,29 @@ const setupWasi = (ctx) => {
     (call $__write_str (local.get $fd) (i64.reinterpret_f64 (call $__static_str
       (if (result i32) (i32.eq (local.get $type) (i32.const 1))
         (then (i32.const 7)) (else (i32.const 8)))))))`
+
+  ctx.core.stdlib['__read_stdin'] = `(func $__read_stdin (result f64)
+    (local $iov i32) (local $nio i32) (local $buf i32) (local $total i32) (local $n i32)
+    (local.set $iov (call $__alloc (i32.const 8)))
+    (local.set $nio (call $__alloc (i32.const 4)))
+    (local.set $buf (call $__alloc (i32.const 65536)))
+    (local.set $total (i32.const 0))
+    (block $eof (loop $read
+      (i32.store (local.get $iov) (i32.add (local.get $buf) (local.get $total)))
+      (i32.store offset=4 (local.get $iov) (i32.sub (i32.const 65536) (local.get $total)))
+      (drop (call $__fd_read (i32.const 0) (local.get $iov) (i32.const 1) (local.get $nio)))
+      (local.set $n (i32.load (local.get $nio)))
+      (br_if $eof (i32.eqz (local.get $n)))
+      (local.set $total (i32.add (local.get $total) (local.get $n)))
+      (br_if $eof (i32.ge_s (local.get $total) (i32.const 65536)))
+      (br $read)))
+    (call $__mkstr (local.get $buf) (local.get $total)))`
+
+  ctx.core.emit['readStdin'] = () => {
+    needFdRead()
+    inc('__read_stdin')
+    return typed(['call', '$__read_stdin'], 'f64')
+  }
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {

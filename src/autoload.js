@@ -68,6 +68,7 @@ export const CALL_MODULES = dict({
   'Object.create': ['core', 'object'],
   'Date.now': ['core', 'console'],
   'performance.now': ['core', 'console'],
+  'readStdin': ['core', 'console'],
   'String.fromCharCode': ['core', 'string'],
   'String.fromCodePoint': ['core', 'string'],
   'BigInt.asIntN': ['number'],

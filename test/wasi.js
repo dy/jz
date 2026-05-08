@@ -48,6 +48,29 @@ test('host:js top-level console.log decodes after memory attaches', () => {
   is(logged[0], 'boot undefined null', `logged=${JSON.stringify(logged)}`)
 })
 
+test('WASI polyfill: fd_read returns stdin bytes via opts.read', () => {
+  const fixture = '{"a":1}'
+  const encoder = new TextEncoder()
+  const bytes = encoder.encode(fixture)
+  let offset = 0
+  const captured = []
+  const imports = wasi({
+    read: (fd, buf) => {
+      if (offset >= bytes.length) return 0
+      const n = Math.min(buf.length, bytes.length - offset)
+      buf.set(bytes.subarray(offset, offset + n))
+      offset += n
+      return n
+    },
+    write: (fd, text) => captured.push(text),
+  })
+  const wasm = compile(`export let f = () => { console.log(readStdin()); return 1 }`, { host: 'wasi' })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+  is(inst.exports.f(), 1)
+  is(captured.join('').trim(), fixture)
+})
+
 test('WASI polyfill: custom write receives output', () => {
   const captured = []
   const imports = wasi({ write: (fd, text) => captured.push([fd, text]) })

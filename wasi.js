@@ -17,6 +17,7 @@
  * Create WASI import object for WebAssembly instantiation.
  * @param {object} [opts]
  * @param {function} [opts.write] - Custom write: (fd, text) => void
+ * @param {function} [opts.read] - Custom read: (fd, buf: Uint8Array) => bytesRead
  */
 export function wasi(opts = {}) {
   let mem = null
@@ -33,6 +34,18 @@ export function wasi(opts = {}) {
 
   return {
     wasi_snapshot_preview1: {
+      fd_read(fd, iovs, iovs_len, nread) {
+        const dv = new DataView(mem.buffer)
+        let total = 0
+        for (let i = 0; i < iovs_len; i++) {
+          const ptr = dv.getUint32(iovs + i * 8, true)
+          const len = dv.getUint32(iovs + i * 8 + 4, true)
+          const buf = new Uint8Array(mem.buffer, ptr, len)
+          total += opts.read ? (opts.read(fd, buf) || 0) : 0
+        }
+        dv.setUint32(nread, total, true)
+        return 0
+      },
       fd_write(fd, iovs, iovs_len, nwritten) {
         const dv = new DataView(mem.buffer)
         let written = 0
