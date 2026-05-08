@@ -38,6 +38,24 @@ import {
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]
 
+// ES spec: identifier with \uHHHH or \u{...} escape is equivalent to the decoded
+// form. subscript preserves raw spelling in the AST; normalize once before prep.
+const IDESC = /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g
+const decodeIdent = s => s.includes('\\u')
+  ? s.replace(IDESC, (_, b, p) => String.fromCodePoint(parseInt(b || p, 16)))
+  : s
+
+const normalizeIdents = node => {
+  if (!Array.isArray(node)) return
+  // Literal-value wrapper [null, X] / [undefined, X]: X is a value, not an identifier
+  if (node.length === 2 && node[0] == null) return
+  for (let i = 1; i < node.length; i++) {
+    const v = node[i]
+    if (typeof v === 'string') node[i] = decodeIdent(v)
+    else if (Array.isArray(v)) normalizeIdents(v)
+  }
+}
+
 const hostReturnValType = spec => {
   if (!spec || typeof spec === 'function') return null
   const ret = spec.returns ?? spec.return ?? spec.result
@@ -147,6 +165,7 @@ export default function prepare(node) {
   depth = 0
   scopes = []
   includeModule('core')
+  normalizeIdents(node)
   fuseSparseMapReads(node)
   const ast = prep(node)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
@@ -1267,7 +1286,21 @@ const handlers = {
     const items = Array.isArray(inner) && inner[0] === ','
       ? inner.slice(1).filter(p => p != null)
       : [inner]
-    const result = ['{}', ...items.map(prop)]
+    let prepped = items.map(prop)
+    // ES spec: duplicate keys allowed; key takes first-seen position, last-seen value.
+    const lastValue = new Map()
+    for (const p of prepped) if (Array.isArray(p) && p[0] === ':') lastValue.set(p[1], p[2])
+    if (lastValue.size < prepped.filter(p => Array.isArray(p) && p[0] === ':').length) {
+      const seen = new Set()
+      prepped = prepped.filter(p => {
+        if (!Array.isArray(p) || p[0] !== ':') return true
+        if (seen.has(p[1])) return false
+        seen.add(p[1])
+        p[2] = lastValue.get(p[1])
+        return true
+      })
+    }
+    const result = ['{}', ...prepped]
     // Register schema so property access works for function params (duck typing)
     const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
     if (props.length && ctx.schema.register) ctx.schema.register(props)
