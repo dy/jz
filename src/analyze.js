@@ -372,7 +372,15 @@ export function valTypeOf(expr) {
 function jsonConstString(expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
   if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
-  if (typeof expr === 'string') return ctx.scope.constStrs?.get(expr) ?? null
+  if (typeof expr === 'string') {
+    // Prefer shapeStrs (broader: includes effectively-const `let` string literals
+    // at module scope) over constStrs (const-only). Module/json's static-fold
+    // path uses its own constStrs-only resolver to avoid folding `let`-bound
+    // initializers — preserving the user-controlled distinction. Shape
+    // inference is sound either way: an effectively-const literal's value is
+    // invariant, so the parsed shape it produces is too.
+    return ctx.scope.shapeStrs?.get(expr) ?? ctx.scope.constStrs?.get(expr) ?? null
+  }
   return null
 }
 

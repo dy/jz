@@ -210,6 +210,28 @@ export default function prepare(node) {
     includeForTimerRuntime()
   }
 
+  // Invalidate shapeStrs for any module-level binding that's later assigned to.
+  // shapeStrs is "effectively-const string literals at module scope" — used by
+  // analyze.js's jsonConstString to enable shape inference on `let SRC = '{...}'`
+  // patterns (bench convention) without enabling the const-only static fold.
+  // The scan must skip `=` nodes that are children of `let`/`const`/`export` —
+  // those are decl-initializers, not reassignments.
+  if (ctx.scope.shapeStrs?.size) {
+    const writes = new Set()
+    const scan = (n, inDecl) => {
+      if (!Array.isArray(n)) return
+      const [op, lhs] = n
+      if (op === '=' && typeof lhs === 'string' && !inDecl) writes.add(lhs)
+      // Compound assigns desugar to `=`; increments emit as `++`/`--` post-prep.
+      if ((op === '++' || op === '--') && typeof lhs === 'string') writes.add(lhs)
+      const childInDecl = (op === 'let' || op === 'const' || op === 'var' || op === 'export')
+      for (let i = 1; i < n.length; i++) scan(n[i], childInDecl)
+    }
+    scan(ast, false)
+    for (const f of ctx.func.list) if (f.body) scan(f.body, false)
+    for (const name of writes) ctx.scope.shapeStrs.delete(name)
+  }
+
   return ast
 }
 
@@ -637,6 +659,12 @@ function prepDecl(op, ...inits) {
           ctx.scope.consts.delete(declName)
           ctx.scope.constStrs?.delete(declName)
         }
+        // Effectively-const string literals: shape inference for `let SRC = '{...}'`
+        // patterns (bench convention to defeat compile-time JSON.parse fold without
+        // losing schema knowledge). Recorded on init; post-prep scan removes any
+        // entry whose name is later assigned to.
+        if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
+          (ctx.scope.shapeStrs ||= new Map()).set(declName, normed[1])
         recordGlobalValueFact(declName, normed)
       }
       // Track object schemas (after prefix so schema is keyed to final name)
