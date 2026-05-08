@@ -70,6 +70,19 @@ function hoistVars(node, names) {
     }
     return [op, lhs, hoistVars(node[2], names)]
   }
+  // For-head `;` is positional (init; cond; update), not a statement sequence.
+  // Recurse into each slot but never filter nulls — empty slots are valid.
+  if (op === 'for') {
+    const head = node[1]
+    let h2
+    if (Array.isArray(head) && head[0] === ';') {
+      h2 = [';']
+      for (let i = 1; i < head.length; i++) h2.push(hoistVars(head[i], names))
+    } else {
+      h2 = hoistVars(head, names)
+    }
+    return ['for', h2, hoistVars(node[2], names)]
+  }
   if (op === 'var') {
     const decls = []
     for (let i = 1; i < node.length; i++) {
@@ -434,13 +447,17 @@ export function codegen(node, depth = 0) {
   }
   if (op === 'while') return 'while (' + codegen(a[0]) + ') ' + wrapBlock(a[1], depth)
   if (op === 'for') {
-    if (a.length === 2) { // for...of / for...in
+    if (a.length === 2) { // ['for', head, body] — subscript shape
       const [head, body] = a
       if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in'))
         return 'for (' + codegen(head[1]) + ' ' + head[0] + ' ' + codegen(head[2]) + ') ' + codegen(body, depth)
       // ['let'/'const', ['in'/'of', name, obj]] — subscript wraps var→let around in/of
       if (Array.isArray(head) && (head[0] === 'let' || head[0] === 'const') && Array.isArray(head[1]) && (head[1][0] === 'in' || head[1][0] === 'of'))
         return 'for (' + head[0] + ' ' + codegen(head[1][1]) + ' ' + head[1][0] + ' ' + codegen(head[1][2]) + ') ' + codegen(body, depth)
+      // C-style head [';', init, cond, update] is positional — empty slots are valid,
+      // must not flow through the generic `;` joiner (which adds newlines + a trailing `;`).
+      if (Array.isArray(head) && head[0] === ';')
+        return 'for (' + (head[1] == null ? '' : codegen(head[1])) + '; ' + (head[2] == null ? '' : codegen(head[2])) + '; ' + (head[3] == null ? '' : codegen(head[3])) + ') ' + codegen(body, depth)
       return 'for (' + codegen(head) + ') ' + codegen(body, depth)
     }
     return 'for (' + (codegen(a[0]) || '') + '; ' + (codegen(a[1]) || '') + '; ' + (codegen(a[2]) || '') + ') ' + codegen(a[3], depth)
