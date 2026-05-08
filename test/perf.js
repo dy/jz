@@ -124,6 +124,79 @@ test('compile profile reports phase timings', () => {
   ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')
 })
 
+// === JSON shape inference (shapeStrs) ===
+//
+// Bench convention writes `let SRC = '{...}'` to defeat compile-time JSON.parse
+// folding. shapeStrs preserves shape knowledge across that boundary so the walk
+// side gets direct `f64.load offset=N` slot loads instead of falling back to
+// `__dyn_get_*`/`__to_num`/`__is_str_key`.
+
+test('codegen: JSON.parse(let SRC) walk uses slot loads — no __dyn_get/__to_num', () => {
+  const wat = compile(`
+    let SRC = '{"items":[{"id":1,"v":10}],"meta":{"k":7}}'
+    export let walk = () => {
+      let o = JSON.parse(SRC)
+      return o.meta.k + o.items[0].id
+    }
+  `, { wat: true })
+  const fMatch = wat.match(/\(func \$walk[\s\S]*?^  \)$/m)
+  ok(fMatch, 'expected $walk function in WAT')
+  const body = fMatch[0]
+  is((body.match(/__dyn_get/g) || []).length, 0)
+  is((body.match(/__to_num/g) || []).length, 0)
+  is((body.match(/__is_str_key/g) || []).length, 0)
+  ok(/f64\.load offset=\d+/.test(body), 'expected direct slot loads')
+})
+
+test('codegen: shapeStrs invalidates when SRC is reassigned', () => {
+  const wat = compile(`
+    let SRC = '{"items":[{"id":1}],"meta":{"k":7}}'
+    export let setIt = (s) => { SRC = s }
+    export let walk = () => {
+      let o = JSON.parse(SRC)
+      return o.meta.k
+    }
+  `, { wat: true })
+  // After reassignment, walk-side must fall back to dynamic property access.
+  ok((wat.match(/__dyn_get/g) || []).length > 0,
+    'reassigned SRC should not produce slot-load codegen')
+})
+
+test('perf: JSON.parse + walk — WASM faster than JS', () => {
+  const SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}'
+  const src = `
+    let SRC = '${SRC}'
+    export let walk = () => {
+      let o = JSON.parse(SRC)
+      let items = o.items
+      let s = o.meta.bias
+      for (let j = 0; j < items.length; j++) {
+        let it = items[j]
+        s += it.id * o.meta.scale + it.kind + it.value
+      }
+      return s
+    }
+  `
+  const { exports: { walk } } = jz(src)
+  const jsWalk = () => {
+    const o = JSON.parse(SRC)
+    const items = o.items
+    let s = o.meta.bias
+    for (let j = 0; j < items.length; j++) {
+      const it = items[j]
+      s += it.id * o.meta.scale + it.kind + it.value
+    }
+    return s
+  }
+  is(walk(), jsWalk())
+
+  const N = 5000
+  const jsTime = bench(jsWalk, N)
+  const wasmTime = bench(walk, N)
+  console.log(`  json walk x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  ok(wasmTime < jsTime * 1.5, `json walk: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.5`)
+})
+
 test('codegen: .length hoisted out of for-loop', () => {
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
   // Scope to user function $f, then find its outer for-loop body
