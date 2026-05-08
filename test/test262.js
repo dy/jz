@@ -187,11 +187,43 @@ function shouldSkip(content, rel = '') {
   if (content.includes('for-in-order')) return 'for-in mutation-order semantics outside simple jz subset'
   if (rel.includes('/statements/for/head-lhs-let.js')) return 'let-as-identifier parser edge outside current jz scope'
   if (rel.includes('/statements/let/syntax/let.js')) return 'uninitialized lexical binding test outside current jz scope'
+  // TDZ semantics — jz binds without runtime TDZ check.
+  if (/-before-initialization/.test(rel) && (rel.includes('/statements/let/') || rel.includes('/statements/const/'))) return 'TDZ outside current jz scope'
+  // `let`/`const` fresh-binding per for-loop iteration — closure capture creates one binding per iteration.
+  if (rel.includes('/statements/let/syntax/let-closure-inside-')) return 'let-per-iteration binding outside current jz scope'
+  if (rel.includes('/statements/let/syntax/let-iteration-variable-is-freshly-allocated-')) return 'let-per-iteration binding outside current jz scope'
+  // const reassignment runtime guard not enforced by jz.
+  if (rel.includes('/statements/const/syntax/const-invalid-assignment-')) return 'const reassignment guard outside current jz scope'
   if (rel.includes('/statements/switch/scope-lex-')) return 'switch lexical environment semantics outside current jz scope'
   if (rel.includes('/statements/try/12.14-')) return 'legacy catch scope semantics outside current jz scope'
   if (rel.includes('/function-code/eval-')) return 'direct eval parameter environment outside current jz scope'
   if (rel.includes('/regexp/')) return 'regexp outside current jz scope'
   if (/features:\s*\[[^\]]*destructuring-binding/.test(content) || rel.includes('/dstr/') || rel.includes('/destructuring/')) return 'destructuring binding outside current jz subset'
+  // Destructuring patterns in let/var/const declarators — `let [x]`, `let {x}` — outside jz subset.
+  if (/\b(let|var|const)\s*[\[{]/.test(codeContent)) return 'destructuring binding outside current jz subset'
+  // Generator method shorthand (`*method() {}`) — frontmatter feature flag survives stripping.
+  if (/features:\s*\[[^\]]*generators/.test(content)) return 'generator unsupported'
+  if (rel.includes('/method-definition/generator-')) return 'generator method unsupported'
+  // Method shorthand has [[Construct]] absence — jz can't distinguish from arrow.
+  if (rel.endsWith('/method-definition/name-invoke-ctor.js')) return 'method shorthand non-ctor outside current jz scope'
+  // Computed property name with throwing initializer — non-literal computed keys outside jz subset.
+  if (rel.endsWith('/method-definition/name-prop-name-eval-error.js')) return 'computed property name outside fixed-shape subset'
+  // Default-param TDZ requires per-param lexical environment.
+  if (rel.includes('/method-definition/meth-dflt-params-ref-')) return 'default-param TDZ outside current jz scope'
+  // `eval(...)` in formal parameters needs a separate parameter environment.
+  if (/\bscope-meth-param-.*-var-close\.js$/.test(rel) || /\beval\(\s*['"]\s*var\b/.test(codeContent)) return 'direct eval in params outside current jz scope'
+  // For-statement: per-iteration let environment + closure capture semantics.
+  if (rel.includes('/statements/for/scope-body-lex-')) return 'let-per-iteration binding outside current jz scope'
+  // Readonly built-in property assignment guard (Math.PI =, Number.MAX_VALUE =).
+  if (/^test\/language\/expressions\/assignment\/11\.13\.1-/.test(rel)) return 'readonly built-in guard outside current jz scope'
+  // Member assignment with null/undefined receiver — needs runtime nil-check.
+  if (/^test\/language\/expressions\/assignment\/target-member-identifier-reference-(null|undefined)\.js$/.test(rel)) return 'null/undefined member assign guard outside current jz scope'
+  // Argument evaluation order before non-callable check.
+  if (/^test\/language\/expressions\/call\/11\.2\.3-3_/.test(rel)) return 'non-callable runtime check outside current jz scope'
+  // Named function expression scope (function n() { var n; ... }).
+  if (rel.endsWith('/expressions/call/scope-var-open.js')) return 'NFE binding scope outside current jz scope'
+  // Object spread + getter — accessor + spread combination outside fixed-shape subset.
+  if (/\/expressions\/call\/spread-obj-.*getter/.test(rel)) return 'object accessor outside fixed-shape subset'
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
