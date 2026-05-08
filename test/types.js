@@ -86,6 +86,71 @@ test('bitwise: floatbeat t >> 8 & 255', () => {
   is(run('export let f = (t) => t >> 8 & 255').f(0x1234), 0x12)
 })
 
+// === ToInt32 string coercion (ECMA-262 7.1.6) ===
+// Bitwise ops first ToNumber-coerce non-numeric operands; for strings, that
+// parses StringNumericLiteral (decimal, hex, sign, leading whitespace), with
+// invalid strings → NaN → ToInt32(NaN) = 0.
+
+test('bitwise: "2026" | 0 → 2026', () => {
+  is(jz('export let f = () => { let s = "2026"; return s | 0 }').exports.f(), 2026)
+})
+
+test('bitwise: "-42" | 0 → -42', () => {
+  is(jz('export let f = () => { let s = "-42"; return s | 0 }').exports.f(), -42)
+})
+
+test('bitwise: "3.7" | 0 truncates toward zero → 3', () => {
+  is(jz('export let f = () => { let s = "3.7"; return s | 0 }').exports.f(), 3)
+})
+
+test('bitwise: "abc" | 0 → 0 (NaN coerces to 0)', () => {
+  is(jz('export let f = () => { let s = "abc"; return s | 0 }').exports.f(), 0)
+})
+
+test('bitwise: "" | 0 → 0', () => {
+  is(jz('export let f = () => { let s = ""; return s | 0 }').exports.f(), 0)
+})
+
+test('bitwise: numeric literal | 0 fast path still works', () => {
+  is(jz('export let f = () => 3.7 | 0').exports.f(), 3)
+  is(jz('export let f = () => -42 | 0').exports.f(), -42)
+})
+
+test('bitwise: "0xff" | 0 hex string → 255', () => {
+  is(jz('export let f = () => { let s = "0xff"; return s | 0 }').exports.f(), 255)
+})
+
+test('bitwise: ~"2026" → -2027', () => {
+  is(jz('export let f = () => { let s = "2026"; return ~s }').exports.f(), -2027)
+})
+
+test('bitwise: "42" & 0xFF → 42', () => {
+  is(jz('export let f = () => { let s = "42"; return s & 0xFF }').exports.f(), 42)
+})
+
+test('bitwise: "42" >> 1 → 21', () => {
+  is(jz('export let f = () => { let s = "42"; return s >> 1 }').exports.f(), 21)
+})
+
+test('bitwise: "42" << 1 → 84', () => {
+  is(jz('export let f = () => { let s = "42"; return s << 1 }').exports.f(), 84)
+})
+
+test('bitwise: "-1" >>> 0 → 0xFFFFFFFF', () => {
+  is(jz('export let f = () => { let s = "-1"; return s >>> 0 }').exports.f(), 4294967295)
+})
+
+test('bitwise: "42" ^ 0xFF → 213', () => {
+  is(jz('export let f = () => { let s = "42"; return s ^ 0xFF }').exports.f(), 42 ^ 0xFF)
+})
+
+test('bitwise: numeric fast path emits no __to_num call', () => {
+  const wat = jz.compile(`
+    export const main = (n) => (n | 0) + (n & 0xFF) + (n >> 1) + (n << 1) + (n >>> 0)
+  `, { wat: true })
+  is((wat.match(/\$__to_num/g) || []).length, 0, 'numeric-only operands skip __to_num wrapper')
+})
+
 // === Named constants ===
 
 test('constant: true', () => {
