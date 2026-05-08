@@ -355,10 +355,16 @@ const handlers = {
   // Block body: recurse as scope for hoisting
   '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
 
-  // Export: recurse into exported declaration
+  // Export: recurse into exported declaration. Statement-form `export function name`
+  // and `export default function name` must be hoisted as const-arrows — otherwise
+  // the generic `function` handler wraps them in a named-IIFE (correct for *expressions*,
+  // wrong for declarations), producing `export ['()', IIFE]` which has no exportable binding.
   'export'(inner) {
+    if (Array.isArray(inner) && inner[0] === 'function' && inner[1]) {
+      return ['export', hoistFnDecl(inner[1], inner[2], inner[3])]
+    }
     if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
-      const decl = transform(inner[1])
+      const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3])
       return [';', decl, ['export', ['default', inner[1][1]]]]
     }
     return ['export', transform(inner)]
