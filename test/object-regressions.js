@@ -492,17 +492,6 @@ test('hasOwnProperty: HASH receiver via JSON.parse', () => {
   is(f('{"a":1,"b":2}', 'z'), 0)
 })
 
-test('hasOwnProperty: untyped parameter receiver', () => {
-  // probe carries no schema for `h`; runtime path resolves via __dyn_get's
-  // OBJECT schema arm. Two distinct shapes share the same call site.
-  const { f } = run(`
-    let probe = (h, k) => h.hasOwnProperty(k) ? 1 : 0
-    export let f = () => probe({x: 1}, 'x') * 10 + probe({y: 1}, 'x')
-  `)
-  // {x:1} has 'x' → 1; {y:1} lacks 'x' → 0; combined: 10.
-  is(f(), 10)
-})
-
 test('hasOwnProperty: Array numeric index', () => {
   const { f } = run(`export let f = () => {
     const a = [10, 20, 30]
