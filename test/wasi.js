@@ -149,6 +149,49 @@ test('EdgeJS smoke: scalar module has no imports', () => {
   is(inst.exports.f(9), 81)
 })
 
+// === WASI typed-fallback (no JS-host env imports for unknown-type access) ===
+// host:'wasi' values are always JSON-derived — PTR.EXTERNAL never appears, so the
+// EXTERNAL arm of dynamic prop/method dispatch is dead code. Take the typed path
+// directly so the wasm has no unsatisfiable env imports.
+
+function envImports(wasm) {
+  return WebAssembly.Module.imports(new WebAssembly.Module(wasm)).filter(i => i.module === 'env')
+}
+
+test('WASI: prop access on unknown-type receiver — no env imports', () => {
+  const wasm = compile(`export let f = (x) => x.foo`, { host: 'wasi' })
+  is(envImports(wasm).length, 0)
+})
+
+test('WASI: prop assignment on unknown-type receiver — no env imports', () => {
+  const wasm = compile(`export let f = (x, v) => { x.foo = v; return 1 }`, { host: 'wasi' })
+  is(envImports(wasm).length, 0)
+})
+
+test('WASI: method call on unknown-type receiver — no env imports', () => {
+  const wasm = compile(`export let f = (x) => { x.run(); return 1 }`, { host: 'wasi' })
+  is(envImports(wasm).length, 0)
+})
+
+test('WASI: optional-chain prop access on unknown-type receiver — no env imports', () => {
+  const wasm = compile(`export let f = (x) => x?.foo ?? 0`, { host: 'wasi' })
+  is(envImports(wasm).length, 0)
+})
+
+test('WASI: typed-fallback method dispatch returns undefined on non-callable', () => {
+  // Closure-only dispatch: when the resolved property isn't a CLOSURE, return undefined
+  // rather than __ext_call'ing it. JSON-derived shape, so the prop resolves to a number.
+  const wasm = compile(`
+    export let f = () => {
+      const o = JSON.parse('{"x":1}')
+      const r = o.x()
+      return r === undefined ? 1 : 0
+    }
+  `, { host: 'wasi' })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), wasi())
+  is(inst.exports.f(), 1)
+})
+
 // === WASI native runtime tests ===
 
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }
