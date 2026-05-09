@@ -125,10 +125,17 @@ Closes the watr residual gap and any compile/transform/parse use case.
 
 Generalizes the `JSON.parse(SRC)` slot-load trick (already in [src/compile.js](../src/compile.js)) to user code with bimorphic objects.
 
+Current status: a runtime per-site global PIC prototype was rejected — focused
+bimorphic object loop measured slower than base (27.5ms/run vs 16.7ms/run,
+node 25, May 2026). Kept the smaller root fix instead: prepared `?:` now
+propagates same-kind branch value types, so bimorphic object locals use
+OBJECT-typed dynamic slot dispatch (`__dyn_get_expr_t`) instead of unknown
+`__dyn_get_any_t` (18.6ms/run -> 17.3ms/run on the focused loop).
+
 * [ ] Per-call-site cache: `lastSchemaId | slot0 | slot1` in a global word
 * [ ] Fast path: schema match → direct slot load (3 instructions)
 * [ ] Slow path: hash lookup, update cache
-* [ ] Test pin: `poly` perf test 0.81ms → sub-0.5ms
+* [ ] Test pin: focused bimorphic object-shape perf test → sub-0.5ms if a future static/PIC path proves faster
 
 ### Stack-allocated rest-param arrays for fixed-arity sites
 

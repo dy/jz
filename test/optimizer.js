@@ -241,6 +241,22 @@ test('dynamic prop reads reuse receiver type tag', () => {
   ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
 })
 
+test('polymorphic object prop reads use typed object dispatch', () => {
+  const src = `
+    const left = () => ({ x: 11, y: 100 })
+    const right = () => ({ y: 200, x: 22 })
+    export const hx = (w) => { const o = w == 0 ? left() : right(); return o.x }
+    export const hy = (w) => { const o = w == 0 ? left() : right(); return o.y }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(/\(i32\.const 3\)[\s\S]*?\(call \$__dyn_get_expr_t/.test(wat), 'expected OBJECT-typed dynamic slot dispatch')
+  const { hx, hy } = run(src)
+  is(hx(0), 11)
+  is(hx(1), 22)
+  is(hy(0), 100)
+  is(hy(1), 200)
+})
+
 test('small const-count for-loop unrolls', () => {
   const src = `
     export const main = () => {

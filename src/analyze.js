@@ -243,6 +243,10 @@ export function valTypeOf(expr) {
   if (op === '=>') return VAL.CLOSURE
   if (op === '//') return VAL.REGEX
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
+  if (op === '?:') {
+    const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
+    return ta === VAL.OBJECT && tb === VAL.OBJECT ? VAL.OBJECT : null
+  }
   // `[]` op covers both array literals (1 arg) and index access (2 args).
   // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
   // Index access:  `arr[i]` → ['[]', arr, i].
