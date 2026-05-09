@@ -1263,7 +1263,9 @@ export const emitter = {
           inc('__dyn_set')
           return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         }
-        if (objType == null) ctx.features.external = true
+        if (objType == null && ctx.transform.host !== 'wasi') {
+          ctx.features.external = true
+        }
         inc('__hash_set')
         const setCall = typed(['f64.reinterpret_i64', ['call', '$__hash_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
         if (isGlobal(obj)) return typed(['block', ['result', 'f64'],
@@ -1273,7 +1275,7 @@ export const emitter = {
         if (ctx.func.boxed?.has(obj)) return writeVar(obj, setCall, false)
         return typed(['local.tee', `$${obj}`, setCall], 'f64')
       }
-      ctx.features.external = true
+      if (ctx.transform.host !== 'wasi') ctx.features.external = true
       inc('__dyn_set')
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
@@ -2227,6 +2229,17 @@ export const emitter = {
               ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
               ['else', undefExpr()]]], 'f64')
         }
+        // WASI: no PTR.EXTERNAL values; closure-only dispatch is correct.
+        if (ctx.transform.host === 'wasi') {
+          inc('__dyn_get_expr', '__ptr_type')
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${objTmp}`, asF64(emit(obj))],
+            ['local.set', `$${propTmp}`, propRead],
+            ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+              ['else', undefExpr()]]], 'f64')
+        }
         inc('__dyn_get_expr', '__ext_call', '__ptr_type')
         ctx.features.external = true
         return typed(['block', ['result', 'f64'],
@@ -2247,6 +2260,7 @@ export const emitter = {
       // Unknown callee - assume external method
       if (ctx.transform.strict)
         err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
+      if (ctx.transform.host === 'wasi') return undefExpr()
       inc('__ext_call')
       ctx.features.external = true
       const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
