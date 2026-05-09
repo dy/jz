@@ -1072,8 +1072,13 @@ export function analyzeBody(body) {
   // resolve chains (`const a = new TypedArr(); const b = a[0]` → b: NUMBER)
   // and shorthand-bound `{a}` props see a's type. Restored after walk completes.
   const prevOverlay = ctx.func.localValTypesOverlay
+  const prevTypedOverlay = ctx.func.localTypedElemsOverlay
   ctx.func.localValTypesOverlay = valTypes
-  try { walk(body) } finally { ctx.func.localValTypesOverlay = prevOverlay }
+  ctx.func.localTypedElemsOverlay = typedElems
+  try { walk(body) } finally {
+    ctx.func.localValTypesOverlay = prevOverlay
+    ctx.func.localTypedElemsOverlay = prevTypedOverlay
+  }
 
   // Second pass: widen i32 locals compared against f64.
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
@@ -1191,6 +1196,13 @@ export function analyzeValTypes(body) {
   const arrElems = facts.arrElemSchemas
   for (const [name, vt] of facts.arrElemValTypes) {
     if (vt != null) updateRep(name, { arrayElemValType: vt })
+  }
+  // Propagate body-observed array-elem schemas to repByLocal so analyzePtrUnboxable's
+  // `let p = arr[i]` rule (which only consults rep) sees the schema and can unbox `p`
+  // to an i32 offset. Without this, `arr.push({x,y,z})` followed by `arr[i].x` reads
+  // pay an i64.reinterpret/i32.wrap on every slot access (no aliasing → CSE can't fold).
+  for (const [name, sid] of arrElems) {
+    if (sid != null) updateRep(name, { arrayElemSchema: sid })
   }
   // Resolve a name's array-elem-schema, preferring rep.arrayElemSchema (set from
   // paramReps[k].arrayElemSchema at emit start) over local body observations.
@@ -1518,7 +1530,21 @@ export function exprType(expr, locals) {
   if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 'f64'
 
   // Always f64
-  if (op === '/' || op === '**' || op === '[' || op === '[]' || op === '{}' || op === 'str') return 'f64'
+  if (op === '/' || op === '**' || op === '[' || op === '{}' || op === 'str') return 'f64'
+  // arr[i] — typed integer arrays return i32. Only Int8/Uint8/Int16/Uint16/Int32
+  // (every value fits in signed i32). Skip Uint32: 0..2^32-1 overflows signed.
+  // During analyzeBody the in-progress typedElems is in localTypedElemsOverlay;
+  // post-analyze passes read from ctx.types.typedElem.
+  if (op === '[]') {
+    if (typeof args[0] === 'string') {
+      const ctor = ctx.func.localTypedElemsOverlay?.get(args[0]) ?? ctx.types.typedElem?.get(args[0])
+      if (ctor) {
+        const aux = typedElemAux(ctor)
+        if (aux != null && (aux & 7) <= 4) return 'i32'
+      }
+    }
+    return 'f64'
+  }
   // `.length` on a known sized receiver returns i32 directly (__len/__str_byteLen
   // both return i32). Letting it stay i32 lets analyzeLocals keep the counter
   // local i32 too, eliminating the per-iteration `f64.convert_i32_s` widen and

@@ -871,8 +871,18 @@ function compoundAssign(name, val, f64op, i32op) {
   if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
   const void_ = _expect === 'void'
   const va = readVar(name), vb = emit(val)
-  if (i32op && va.type === 'i32' && vb.type === 'i32')
-    return writeVar(name, i32op(va, vb), void_)
+  // Peel f64.convert_i32_s/u when va is i32 — typed-array integer reads wrap their
+  // i32.load in convert_i32_* by default, but the i32 arithmetic path can use the
+  // raw i32 directly (eliminates per-iter widen + saturating-trunc roundtrip on
+  // hot accumulator loops like `let s = 0; for (...) s += i32arr[i]`).
+  let vbi = vb
+  if (i32op && va.type === 'i32' && vb.type !== 'i32' &&
+      Array.isArray(vb) && (vb[0] === 'f64.convert_i32_s' || vb[0] === 'f64.convert_i32_u')) {
+    const inner = vb[1]
+    vbi = Array.isArray(inner) ? typed(inner, 'i32') : inner
+  }
+  if (i32op && va.type === 'i32' && vbi.type === 'i32')
+    return writeVar(name, i32op(va, vbi), void_)
   return writeVar(name, f64op(asF64(va), asF64(vb)), void_)
 }
 

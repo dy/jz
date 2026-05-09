@@ -909,6 +909,7 @@ export function refineDynKeys(programFacts) {
           if (Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string' && init[1].startsWith('new.'))
             ctor = init[1].slice(4)
           if (ctor && TYPED_ARRAY_CTOR.test(ctor)) map.set(d[1], VAL.TYPED)
+          else if (Array.isArray(init) && init[0] === '[') map.set(d[1], VAL.ARRAY)
           else if (typeof init === 'string' && map.has(init)) map.set(d[1], map.get(init))
         }
       }

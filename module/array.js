@@ -1230,6 +1230,42 @@ export default (ctx) => {
       ['local.get', `$${result}`]], 'f64')
   }
 
+  // .reverse() → in-place swap arr[i] ↔ arr[len-1-i], returns the array.
+  ctx.core.emit['.reverse'] = (arr) => {
+    const recv = hoistArrayValue(arr)
+    const arrTmp = temp('rv')
+    const base = tempI32('rb')
+    const len = tempI32('rl')
+    const i = tempI32('ri')
+    const j = tempI32('rj')
+    const tmp = temp('rt')
+    const id = ctx.func.uniq++
+    const exit = `$revexit${id}`, loop = `$revloop${id}`
+
+    inc('__ptr_offset')
+
+    const addr = (idxIR) => ['i32.add', ['local.get', `$${base}`], ['i32.shl', idxIR, ['i32.const', 3]]]
+
+    return typed(['block', ['result', 'f64'],
+      recv.setup,
+      ['local.set', `$${arrTmp}`, recv.value],
+      ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
+      ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
+      ['block', exit,
+        ['loop', loop,
+          ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${j}`]]],
+          ['local.set', `$${tmp}`, ['f64.load', addr(['local.get', `$${i}`])]],
+          ['f64.store', addr(['local.get', `$${i}`]), ['f64.load', addr(['local.get', `$${j}`])]],
+          ['f64.store', addr(['local.get', `$${j}`]), ['local.get', `$${tmp}`]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${j}`], ['i32.const', 1]]],
+          ['br', loop]]],
+      ['local.get', `$${arrTmp}`]
+    ], 'f64')
+  }
+
   // Insertion sort — stable, in-place, O(n²). The comparator is called per
   // shift; positive return → swap. NaN returns become "no swap" via f64.gt's
   // IEEE 754 semantics (NaN compares false), matching the spec's NaN-as-0
