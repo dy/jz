@@ -1603,6 +1603,22 @@ function walkRewrite(node, doInline, counts) {
   }
 
   // Peephole: rebox/unbox round-trips
+  if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'i32.const') {
+      const n = typeof a[1] === 'number' ? a[1] : typeof a[1] === 'string' ? Number(a[1]) : NaN
+      if (Number.isFinite(n)) return ['f64.const', op === 'f64.convert_i32_u' ? n >>> 0 : n]
+    }
+  }
+  if (op === 'f64.mul' && node.length === 3) {
+    const a = node[1], b = node[2]
+    const isTwo = x => Array.isArray(x) && x[0] === 'f64.const' && x[1] === 2
+    const isCheapF64 = x => Array.isArray(x) &&
+      ((x[0] === 'local.get' && typeof x[1] === 'string') ||
+       (x[0] === 'f64.const' && typeof x[1] === 'number'))
+    if (isTwo(a) && isCheapF64(b)) return ['f64.add', b, b]
+    if (isTwo(b) && isCheapF64(a)) return ['f64.add', a, a]
+  }
   if (op === 'i32.trunc_sat_f64_s' && node.length === 2) {
     const a = node[1]
     if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return a[1]
@@ -1826,4 +1842,97 @@ export function sortLocalsByUse(fn, precomputedCounts) {
   const locals = localIdxs.map(i => fn[i])
   locals.sort((a, b) => (counts.get(b[1]) || 0) - (counts.get(a[1]) || 0))
   localIdxs.forEach((i, k) => { fn[i] = locals[k] })
+}
+
+/**
+ * Module-level arena rewind: transitive escape analysis.
+ *
+ * Per-function `applyArenaRewind` in compile.js is limited to a static whitelist
+ * of internal helpers. This pass generalizes by building a call graph and
+ * propagating "arena-safe callee" status via fixed-point iteration.
+ *
+ * A function is an arena-safe callee if:
+ *   - no global.set, call_indirect, call_ref in body
+ *   - all user-function calls are to other arena-safe callees
+ *
+ * A function is arena-rewindable (gets heap save/restore injected) if:
+ *   - single scalar result (f64 or i32)
+ *   - contains allocation ($__alloc / $__alloc_hdr)
+ *   - no global.set, return_call, call_indirect, call_ref
+ *   - all user-function calls are to arena-safe callees
+ *   - does NOT return a pointer (checked via ptrTypes map from compile.js)
+ *
+ * Unlike the per-function pass, this does NOT require 0 params.
+ *
+ * @param {Array[]} fns - Array of func IR nodes (sec.funcs + sec.stdlib + sec.start)
+ * @param {boolean} sharedMemory - Whether memory is shared (affects heap get/set IR)
+ * @param {Map<string, {ptrKind: *}|null>} [ptrTypes] - Map from func name to ptrKind info.
+ *   Functions with ptrKind != null return pointers and cannot be rewound.
+ *   If omitted, no pointer-return check is done (conservative: fewer functions rewound).
+ */
+export function arenaRewindModule(fns) {
+  const BUILTIN_SAFE = new Set([
+    '$__alloc', '$__alloc_hdr', '$__mkptr',
+    '$__ptr_offset', '$__ptr_type', '$__ptr_aux',
+    '$__len', '$__cap', '$__typed_shift', '$__typed_data',
+  ])
+
+  // Phase 1: collect per-function metadata
+  const fnMap = new Map()
+  for (const fn of fns) {
+    if (!Array.isArray(fn) || fn[0] !== 'func') continue
+    const name = fn[1]
+    if (typeof name !== 'string') continue
+
+    let results = [], hasGlobalSet = false, hasReturnCall = false
+    let hasCallIndirect = false, hasCallRef = false, hasAlloc = false
+    const calls = new Set()
+    const bodyStart = findBodyStart(fn)
+
+    for (let i = 2; i < fn.length; i++) {
+      const c = fn[i]
+      if (!Array.isArray(c)) continue
+      if (c[0] === 'result') { results.push(c[1] || c[2]); continue }
+      if (i >= bodyStart) break
+    }
+
+    const scan = node => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'global.set') hasGlobalSet = true
+      else if (op === 'return_call') hasReturnCall = true
+      else if (op === 'call_indirect') hasCallIndirect = true
+      else if (op === 'call_ref') hasCallRef = true
+      else if (op === 'call') {
+        const callee = node[1]
+        if (callee === '$__alloc' || callee === '$__alloc_hdr') hasAlloc = true
+        if (typeof callee === 'string' && !BUILTIN_SAFE.has(callee)) calls.add(callee)
+      }
+      for (let i = 1; i < node.length; i++) scan(node[i])
+    }
+    for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+
+    fnMap.set(name, {
+      fn, results,
+      hasGlobalSet, hasReturnCall, hasCallIndirect, hasCallRef, hasAlloc,
+      calls: [...calls],
+    })
+  }
+
+  // Phase 2: fixed-point transitive safety analysis
+  const safeCallees = new Set(BUILTIN_SAFE)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, info] of fnMap) {
+      if (safeCallees.has(name)) continue
+      if (info.hasGlobalSet || info.hasCallIndirect || info.hasCallRef) continue
+      if (info.calls.every(c => safeCallees.has(c) || !fnMap.has(c))) {
+        safeCallees.add(name)
+        changed = true
+      }
+    }
+  }
+
+  return safeCallees
 }

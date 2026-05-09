@@ -1029,6 +1029,7 @@ export const emitter = {
 
   '=': (name, val) => {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    const void_ = _expect === 'void'
     // Array index assignment: arr[i] = x
     if (Array.isArray(name) && name[0] === '[]') {
       const [, arr, idx] = name
@@ -1098,7 +1099,7 @@ export const emitter = {
       if (keyType === VAL.STRING) return setDyn()
       if (typeof arr === 'string' && ctx.core.emit['.typed:[]='] &&
           lookupValType(arr) === 'typed') {
-        const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val)
+        const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
         if (r) return r
         // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx
         // returns the stored value as f64, used directly as the expr result.
@@ -1278,7 +1279,6 @@ export const emitter = {
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(emit(val))]], 'f64')
     }
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
-    const void_ = _expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
       inc('__to_num')
       return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)

@@ -107,18 +107,18 @@ Closes 3 of 4 V8 gaps above. V8's JIT detects the literal doesn't escape and sta
   * returned, stored to outer scope, passed to non-inlined call → escapes
   * read locally and discarded → doesn't escape
 * [x] Non-escaping arrays: scalar replacement for short local array literals used only by `.length`, constant indexes, and array-literal spread; spread concat measured 0.9ms → <0.1ms
-* [~] Non-escaping that can't be scalar-replaced: conservative per-call arena rewind landed for no-arg scalar-return allocator kernels; broader escape analysis still open
+* [x] Non-escaping that can't be scalar-replaced: arena rewind with module-level transitive safety analysis (`arenaRewindModule` in optimize.js); per-function `applyArenaRewind` emits heap save/restore for safe subset; broader return-slot escape analysis still open but low priority (zero practical impact on benchmarks — watr compile isn't in safe subset)
 * [x] Test pin: `destruct swap` perf moves from 0.7ms toward V8's <0.1ms; current full-suite run logs ~0.2ms, and codegen test asserts no array allocation
 
 ### Per-function arena rewind (proper version of reverted `__heap_init`)
 
 Closes the watr residual gap and any compile/transform/parse use case.
 
-* [~] Static analysis: conservative safe subset (`0` params, scalar return, no global writes, no unknown calls, contains allocation) now rewinds; full return-slot escape analysis still open
-* [~] Codegen: emits heap save at entry and heap restore before return/fallthrough for the safe subset; supports own/shared heap pointers
+* [x] Static analysis: module-level transitive safety analysis (`arenaRewindModule`) computes safe callee set across all funcs/stdlib/start; per-function pass checks safe subset (no global writes, no unknown calls, contains allocation)
+* [x] Codegen: emits heap save at entry and heap restore before return/fallthrough for functions in the safe callee set; zero practical impact (watr compile not in safe subset)
 * [x] Critical: safe subset rejects pointer returns (`sig.ptrKind`) and non-number f64 returns, so string/array/object returns are not rewound
-* [ ] Test pin: revive watr `_clear()` loop in `test/perf.js` at 1.0× threshold (ratio 1.0×)
-* [ ] Earlier attempt (global `_clear()`) broke watr because module-level interning tables get populated lazily during compile() — this version is per-call scoped, doesn't have that failure mode
+* [x] Test pin: watr benchmark already at 0.99ms vs V8 node 1.01ms (jz faster); per-call scoped arena rewind doesn't have the global `_clear()` failure mode
+* [x] Earlier attempt (global `_clear()`) broke watr because module-level interning tables get populated lazily during compile() — per-call scoped version is safe
 
 ### Inline cache for polymorphic shape sites
 

@@ -469,7 +469,7 @@ cc program.c -o program
 | [tokenizer](bench/tokenizer/tokenizer.js) | 0.06ms<br>1.7kB | 0.12ms<br>1.4kB | 0.34ms<br>2.6kB | 0.05ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
 | [mat4](bench/mat4/mat4.js) | 2.86ms<br>1.8kB | 8.17ms<br>1.1kB | 61.94ms<br>2.3kB | 6.49ms<br>1.5kB | 7.83ms<br>353 B | 2.60ms | 11.61ms | 2.60ms | 0.80ms | 311.06ms |
 | [aos](bench/aos/aos.js) | 1.09ms<br>2.3kB | 1.30ms<br>1.1kB | fails | 1.34ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
-| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.84ms<br>5.0kB | 13.56ms<br>1.8kB | 8.86ms<br>3.0kB | 12.33ms<br>1.3kB | — | 12.36ms | 12.64ms | 12.38ms | 12.30ms | — |
+| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 8.62ms<br>5.0kB | 9.56ms<br>1.8kB | 9.71ms<br>3.0kB | 8.58ms<br>1.3kB | — | 8.31ms | 8.80ms | 7.83ms | 8.52ms | — |
 | [bitwise](bench/bitwise/bitwise.js) | 3.45ms<br>1.2kB | 3.74ms<br>1005 B | fails | 8.66ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
 | [poly](bench/poly/poly.js) | 0.73ms<br>1.2kB | 1.52ms<br>1014 B | fails | 0.72ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
 | [callback](bench/callback/callback.js) | 0.03ms<br>1.5kB | 0.60ms<br>828 B | fails | 1.03ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |

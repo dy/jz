@@ -143,6 +143,30 @@ test('peephole: i64/f64/i32 roundtrips fold to direct extension', () => {
   is(JSON.stringify(fn.at(-1)), JSON.stringify(['local.get', '$x']))
 })
 
+test('peephole: i32 constants widen directly to f64 constants', () => {
+  const fn = ['func', '$p',
+    ['result', 'f64'],
+    ['f64.add',
+      ['f64.convert_i32_s', ['i32.const', -2]],
+      ['f64.convert_i32_u', ['i32.const', '-1']]]]
+  optimizeFunc(fn, { fusedRewrite: true })
+  const s = JSON.stringify(fn)
+  is(s.includes('f64.convert_i32_'), false)
+  ok(s.includes('["f64.const",-2]'))
+  ok(s.includes('["f64.const",4294967295]'))
+})
+
+test('peephole: f64 multiply by two uses addition for cheap operands', () => {
+  const fn = ['func', '$p',
+    ['param', '$x', 'f64'],
+    ['result', 'f64'],
+    ['f64.mul', ['f64.const', 2], ['local.get', '$x']]]
+  optimizeFunc(fn, { fusedRewrite: true })
+  const s = JSON.stringify(fn)
+  is(s.includes('f64.mul'), false)
+  ok(s.includes('f64.add'))
+})
+
 test('unknown coercions still use __to_num', () => {
   const wat = jz.compile(`
     export const main = (x) => Number(x) + +x + isNaN(x) + isFinite(x)
@@ -442,6 +466,22 @@ test('sourceInline: disabled by optimize:false', () => {
     }
   `, { wat: true, optimize: false })
   ok(/\(call \$hot\b/.test(wat), 'optimize:false should keep the helper call')
+})
+
+test('typed-array assignment statement does not materialize assigned value', () => {
+  const wat = jz.compile(`
+    export const main = (x) => {
+      const a = new Uint32Array(1)
+      a[0] = x | 0
+      return 1
+    }
+  `, { wat: true, optimize: { watr: false } })
+  const mainBody = wat.slice(wat.indexOf('(func $main'), wat.indexOf('(func $main$exp'))
+  ok(/\(i32\.store/.test(mainBody), 'expected typed-array store')
+  is(/f64\.convert_i32_[su]/.test(mainBody), false)
+  const storeAt = mainBody.indexOf('(i32.store')
+  const storePrefix = mainBody.slice(Math.max(0, storeAt - 120), storeAt)
+  is(/\(block\s+\(result f64\)/.test(storePrefix), false)
 })
 
 test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop', () => {

@@ -656,7 +656,7 @@ export default (ctx) => {
   }
 
   // Type-aware TypedArray write: arr[i] = val
-  ctx.core.emit['.typed:[]='] = (arr, idx, val) => {
+  ctx.core.emit['.typed:[]='] = (arr, idx, val, void_ = false) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView } = r
@@ -664,37 +664,53 @@ export default (ctx) => {
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (et === 7) {
       const vt = temp('tw')
-      return typed(['block', ['result', 'f64'],
+      return typed(void_ ? ['block',
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f64.store', off, ['local.get', `$${vt}`]]]
+        : ['block', ['result', 'f64'],
         ['local.set', `$${vt}`, asF64(valIR)],
         ['f64.store', off, ['local.get', `$${vt}`]],
-        ['local.get', `$${vt}`]], 'f64') // Float64Array
+        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float64Array
     }
     if (et === 6) {
       const vt = temp('tw')
-      return typed(['block', ['result', 'f64'],
+      return typed(void_ ? ['block',
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]]]
+        : ['block', ['result', 'f64'],
         ['local.set', `$${vt}`, asF64(valIR)],
         ['f32.store', off, ['f32.demote_f64', ['local.get', `$${vt}`]]],
-        ['local.get', `$${vt}`]], 'f64') // Float32Array
+        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64') // Float32Array
     }
     // Integer store: when the source is already i32-typed (bitwise ops, |0,
     // typed-array load, known-i32 var), store it directly — skip the f64
     // detour that costs a sign branch + i64 trunc + i32 wrap on every write.
     if (valIR.type === 'i32') {
+      const cheap = Array.isArray(valIR) &&
+        ((valIR[0] === 'local.get' && typeof valIR[1] === 'string') ||
+         (valIR[0] === 'i32.const' && (typeof valIR[1] === 'number' || typeof valIR[1] === 'string')))
+      if (void_ && cheap) return typed([STORE[et], off, valIR], 'void')
       const v32 = tempI32('tw')
-      return typed(['block', ['result', 'f64'],
+      return typed(void_ ? ['block',
+        ['local.set', `$${v32}`, valIR],
+        [STORE[et], off, ['local.get', `$${v32}`]]]
+        : ['block', ['result', 'f64'],
         ['local.set', `$${v32}`, valIR],
         [STORE[et], off, ['local.get', `$${v32}`]],
-        [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], 'f64')
+        [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${v32}`]]], void_ ? 'void' : 'f64')
     }
     const vt = temp('tw')
     const i32val = ['i32.wrap_i64',
       ['if', ['result', 'i64'], ['f64.lt', ['local.get', `$${vt}`], ['f64.const', 0]],
         ['then', ['i64.trunc_sat_f64_s', ['local.get', `$${vt}`]]],
         ['else', ['i64.trunc_sat_f64_u', ['local.get', `$${vt}`]]]]]
-    return typed(['block', ['result', 'f64'],
+    return typed(void_ ? ['block',
+      ['local.set', `$${vt}`, asF64(valIR)],
+      [STORE[et], off, i32val]]
+      : ['block', ['result', 'f64'],
       ['local.set', `$${vt}`, asF64(valIR)],
       [STORE[et], off, i32val],
-      ['local.get', `$${vt}`]], 'f64')
+      ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 
   // TypedArray.prototype.set(source, offset = 0). Copies array-like numeric

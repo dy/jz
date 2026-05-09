@@ -32,7 +32,7 @@ import {
   analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
   analyzeBoxedCaptures, updateRep, inferStringParams,
 } from './analyze.js'
-import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake } from './optimize.js'
+import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, treeshake, arenaRewindModule } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
@@ -168,7 +168,7 @@ const heapSetIR = value => ctx.memory.shared
   ? ['i32.store', ['i32.const', 1020], value]
   : ['global.set', '$__heap', value]
 
-function applyArenaRewind(func, fn) {
+function applyArenaRewind(func, fn, safeCallees) {
   if (ctx.transform.optimize?.arenaRewind === false) return false
   if (func.raw || func.sig.params.length !== 0 || func.sig.results.length !== 1) return false
   if (func.sig.ptrKind != null) return false
@@ -188,7 +188,7 @@ function applyArenaRewind(func, fn) {
     if (op === 'call') {
       const name = node[1]
       if (name === '$__alloc' || name === '$__alloc_hdr') hasAlloc = true
-      if (!ARENA_SAFE_CALLS.has(name)) {
+      if (!(safeCallees ?? ARENA_SAFE_CALLS).has(name)) {
         unsafe = true
         return
       }
@@ -443,8 +443,6 @@ function emitFunc(func, funcFacts, programFacts) {
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
-
-  applyArenaRewind(func, fn)
 
   // Restore schema.vars so param bindings don't leak to next function.
   ctx.schema.vars = schemaVarsPrev
@@ -951,19 +949,21 @@ function dedupClosureBodies(closureFuncs, sec) {
     else { hashToName.set(key, name); keepSet.add(name) }
   }
   if (!redirect.size) return
+  // Remove duplicate declarations BEFORE rewriting references — otherwise redirectRefs
+  // renames the declaration itself and the filter can't find the original name.
+  const kept = sec.funcs.filter(fn => {
+    if (!Array.isArray(fn) || fn[0] !== 'func') return true
+    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
+    return !name || !redirect.has(name)
+  })
   const redirectRefs = node => {
     if (typeof node === 'string') return node[0] === '$' && redirect.has(node.slice(1)) ? `$${redirect.get(node.slice(1))}` : node
     if (!Array.isArray(node)) return node
     for (let i = 0; i < node.length; i++) node[i] = redirectRefs(node[i])
     return node
   }
-  for (const fn of sec.funcs) redirectRefs(fn)
+  for (const fn of kept) redirectRefs(fn)
   ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
-  const kept = sec.funcs.filter(fn => {
-    if (!Array.isArray(fn) || fn[0] !== 'func') return true
-    const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
-    return !name || !redirect.has(name)
-  })
   sec.funcs.length = 0
   sec.funcs.push(...kept)
 }
@@ -1152,6 +1152,19 @@ function optimizeModule(sec) {
     ctx.runtime.strPool = poolRef.pool
   }
   for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s, cfg)
+  if (!cfg || cfg.arenaRewind !== false) {
+    const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
+    // Build name → WAT IR map for user functions
+    const fnByName = new Map()
+    for (const fn of sec.funcs) {
+      if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
+        fnByName.set(fn[1], fn)
+    }
+    for (const func of ctx.func.list) {
+      const fn = fnByName.get(`$${func.name}`)
+      if (fn) applyArenaRewind(func, fn, safeCallees)
+    }
+  }
   if (!cfg || cfg.hoistConstantPool !== false)
     hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
 
