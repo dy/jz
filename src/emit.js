@@ -867,6 +867,16 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     inc('__str_cmp')
     return typed([`i32.${i32op}`, ['call', '$__str_cmp', asI64(va), asI64(vb)], ['i32.const', 0]], 'i32')
   }
+  if (vta === VAL.DATE || vtb === VAL.DATE) {
+    const dateNum = (node, v, vt) => {
+      if (vt !== VAL.DATE) return toNumF64(node, v)
+      const ptr = v.ptrKind === VAL.DATE
+        ? v
+        : ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(v)]]
+      return typed(['f64.load', ptr], 'f64')
+    }
+    return typed([`f64.${f64op}`, dateNum(a, va, vta), dateNum(b, vb, vtb)], 'i32')
+  }
   const ai = intConstValue(a), bi = intConstValue(b)
   if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
   if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')

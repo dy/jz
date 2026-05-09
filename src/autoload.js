@@ -168,7 +168,7 @@ export const includeForRuntimeCtor = name => {
   const kind = runtimeCtorKind(name)
   if (kind === 'typedarray') includeMods('core', 'typedarray')
   else if (kind === 'collection') includeMods('core', 'collection')
-  else if (kind === 'date') includeMods('core', 'date')
+  else if (kind === 'date') includeMods('core', 'console', 'date')
   return kind
 }
 

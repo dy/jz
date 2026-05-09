@@ -347,6 +347,12 @@ export function toNumF64(node, v) {
   if (v.type === 'i32' || isLit(v)) return asF64(v)
   const vt = keyValType(node)
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
+  if (vt === VAL.DATE) {
+    const ptr = v.ptrKind === VAL.DATE
+      ? v
+      : ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(v)]]
+    return typed(['f64.load', ptr], 'f64')
+  }
   // intCertain locals: every reachable def is integer-valued, so the binding
   // never carries a NaN-boxed pointer — skip the __to_num wrapper.
   if (typeof node === 'string' && repOf(node)?.intCertain === true) return asF64(v)

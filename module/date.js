@@ -1,9 +1,10 @@
 /**
  * Date module — deterministic UTC algorithms first.
  *
- * Current scope: Date.UTC(...), Date object construction, UTC getters/setters,
- * toISOString, toUTCString. Local-time methods, parsing, and locale-sensitive
- * formatting are deliberately staged later.
+ * Current scope: Date.UTC(...), Date object construction, timestamp/string
+ * construction, UTC getters/setters, UTC-backed local getters, toISOString,
+ * toUTCString. Timezone-aware local-time methods and locale-sensitive formatting
+ * are deliberately staged later.
  *
  * @module date
  */
@@ -23,6 +24,9 @@ export default (ctx) => {
     __date_make_time: [],
     __date_time_clip: [],
     __date_utc: ['__date_make_day', '__date_make_time', '__date_time_clip'],
+    __date_digit: ['__char_at'],
+    __date_parse_iso_date: ['__str_byteLen', '__char_at', '__date_digit', '__date_make_day', '__date_time_clip'],
+    __date_from_value: ['__ptr_type', '__to_num', '__date_parse_iso_date'],
     __date_day: [],
     __date_time_within_day: ['__date_day'],
     __date_weekday: ['__date_day'],
@@ -148,6 +152,66 @@ export default (ctx) => {
           (call $__date_make_day (local.get $y) (local.get $month) (local.get $date))
           (f64.const ${MS_PER_DAY}))
         (call $__date_make_time (local.get $hours) (local.get $minutes) (local.get $seconds) (local.get $ms)))))`
+
+  ctx.core.stdlib['__date_digit'] = `(func $__date_digit (param $str i64) (param $i i32) (result i32)
+    (local $c i32)
+    (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+    (if (result i32)
+      (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+      (then (i32.sub (local.get $c) (i32.const 48)))
+      (else (i32.const -1))))`
+
+  ctx.core.stdlib['__date_parse_iso_date'] = `(func $__date_parse_iso_date (param $str i64) (result f64)
+    (local $y f64) (local $m f64) (local $d f64)
+    (local $d0 i32) (local $d1 i32) (local $d2 i32) (local $d3 i32)
+    (if (i32.lt_s (call $__str_byteLen (local.get $str)) (i32.const 10))
+      (then (return (f64.const nan))))
+    (if (i32.ne (call $__char_at (local.get $str) (i32.const 4)) (i32.const 45))
+      (then (return (f64.const nan))))
+    (if (i32.ne (call $__char_at (local.get $str) (i32.const 7)) (i32.const 45))
+      (then (return (f64.const nan))))
+
+    (local.set $d0 (call $__date_digit (local.get $str) (i32.const 0)))
+    (local.set $d1 (call $__date_digit (local.get $str) (i32.const 1)))
+    (local.set $d2 (call $__date_digit (local.get $str) (i32.const 2)))
+    (local.set $d3 (call $__date_digit (local.get $str) (i32.const 3)))
+    (if (i32.or (i32.or (i32.lt_s (local.get $d0) (i32.const 0)) (i32.lt_s (local.get $d1) (i32.const 0)))
+        (i32.or (i32.lt_s (local.get $d2) (i32.const 0)) (i32.lt_s (local.get $d3) (i32.const 0))))
+      (then (return (f64.const nan))))
+    (local.set $y (f64.convert_i32_s
+      (i32.add
+        (i32.add (i32.mul (local.get $d0) (i32.const 1000)) (i32.mul (local.get $d1) (i32.const 100)))
+        (i32.add (i32.mul (local.get $d2) (i32.const 10)) (local.get $d3)))))
+
+    (local.set $d0 (call $__date_digit (local.get $str) (i32.const 5)))
+    (local.set $d1 (call $__date_digit (local.get $str) (i32.const 6)))
+    (if (i32.or (i32.lt_s (local.get $d0) (i32.const 0)) (i32.lt_s (local.get $d1) (i32.const 0)))
+      (then (return (f64.const nan))))
+    (local.set $m (f64.convert_i32_s (i32.add (i32.mul (local.get $d0) (i32.const 10)) (local.get $d1))))
+    (if (i32.or (f64.lt (local.get $m) (f64.const 1)) (f64.gt (local.get $m) (f64.const 12)))
+      (then (return (f64.const nan))))
+
+    (local.set $d0 (call $__date_digit (local.get $str) (i32.const 8)))
+    (local.set $d1 (call $__date_digit (local.get $str) (i32.const 9)))
+    (if (i32.or (i32.lt_s (local.get $d0) (i32.const 0)) (i32.lt_s (local.get $d1) (i32.const 0)))
+      (then (return (f64.const nan))))
+    (local.set $d (f64.convert_i32_s (i32.add (i32.mul (local.get $d0) (i32.const 10)) (local.get $d1))))
+    (if (i32.or (f64.lt (local.get $d) (f64.const 1)) (f64.gt (local.get $d) (f64.const 31)))
+      (then (return (f64.const nan))))
+
+    (call $__date_time_clip
+      (f64.mul
+        (call $__date_make_day (local.get $y) (f64.sub (local.get $m) (f64.const 1)) (local.get $d))
+        (f64.const ${MS_PER_DAY}))))`
+
+  ctx.core.stdlib['__date_from_value'] = `(func $__date_from_value (param $v i64) (result f64)
+    (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (call $__date_time_clip (local.get $f)))))
+    (if (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.STRING}))
+      (then (return (call $__date_parse_iso_date (local.get $v)))))
+    (call $__date_time_clip (call $__to_num (local.get $v))))`
 
   // ── Time decomposition (ECMA-262 §21.4.1) ────────────────────────────────
 
@@ -513,13 +577,26 @@ export default (ctx) => {
   // Represented as PTR.OBJECT with a single f64 slot at offset 0 (the time value).
   // No schemaId (aux=0); dynamic property access falls through to undefined.
 
-  ctx.core.emit['new.Date'] = (ms) => {
+  ctx.core.emit['new.Date'] = (ms, month, date, hours, minutes, seconds, millis) => {
     let timeVal
     if (ms === undefined || ms === null) {
-      timeVal = typed(['f64.const', NaN], 'f64')
+      const now = ctx.core.emit['Date.now']
+      if (!now) throw new Error('Date constructor requires Date.now support')
+      timeVal = now()
+    } else if (!missingArg(month)) {
+      inc('__date_utc')
+      timeVal = typed(['call', '$__date_utc',
+        asF64(dateArg(ms, NaN, true)),
+        asF64(dateArg(month, 0)),
+        asF64(dateArg(date, 1)),
+        asF64(dateArg(hours, 0)),
+        asF64(dateArg(minutes, 0)),
+        asF64(dateArg(seconds, 0)),
+        asF64(dateArg(millis, 0)),
+      ], 'f64')
     } else {
-      inc('__date_time_clip')
-      timeVal = typed(['call', '$__date_time_clip', toNumF64(ms, emit(ms))], 'f64')
+      inc('__date_from_value')
+      timeVal = typed(['call', '$__date_from_value', ['i64.reinterpret_f64', asF64(emit(ms))]], 'f64')
     }
     const out = allocPtr({ type: PTR.OBJECT, len: 1, cap: 1, stride: 8, tag: 'date' })
     return typed(['block', ['result', 'f64'],
@@ -584,6 +661,21 @@ export default (ctx) => {
 
   ctx.core.emit['.getUTCMilliseconds'] = dateGetter('__date_ms_from_time')
   ctx.core.emit[`.${VAL.DATE}:getUTCMilliseconds`] = dateGetter('__date_ms_from_time')
+
+  // UTC-backed local getters. Full timezone-aware local time is intentionally
+  // staged separately; these aliases make deterministic/server Date use cases
+  // available without a timezone database.
+  ctx.core.emit['.getFullYear'] = ctx.core.emit['.getUTCFullYear']
+  ctx.core.emit[`.${VAL.DATE}:getFullYear`] = ctx.core.emit[`.${VAL.DATE}:getUTCFullYear`]
+
+  ctx.core.emit['.getMonth'] = ctx.core.emit['.getUTCMonth']
+  ctx.core.emit[`.${VAL.DATE}:getMonth`] = ctx.core.emit[`.${VAL.DATE}:getUTCMonth`]
+
+  ctx.core.emit['.getDate'] = ctx.core.emit['.getUTCDate']
+  ctx.core.emit[`.${VAL.DATE}:getDate`] = ctx.core.emit[`.${VAL.DATE}:getUTCDate`]
+
+  ctx.core.emit['.getDay'] = ctx.core.emit['.getUTCDay']
+  ctx.core.emit[`.${VAL.DATE}:getDay`] = ctx.core.emit[`.${VAL.DATE}:getUTCDay`]
 
   // ── UTC setter emit handlers ──────────────────────────────────────────────
 

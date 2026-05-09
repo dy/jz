@@ -1475,6 +1475,7 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
+    if (name === 'Date' && ctorArgs.length === 1 && ctorArgs[0] == null) ctorArgs = []
     // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
