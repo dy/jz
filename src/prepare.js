@@ -90,6 +90,17 @@ const isImportMeta = node => Array.isArray(node) && node[0] === '.' && node[1] =
 const isImportMetaProp = (node, prop) => Array.isArray(node) && node[0] === '.' && isImportMeta(node[1]) && node[2] === prop
 const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 const flatArgs = args => args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
+
+function stringArrayValues(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '[' || expr.length === 1) return null
+  const out = []
+  for (const item of expr.slice(1)) {
+    if (!Array.isArray(item) || item[0] !== 'str' || typeof item[1] !== 'string') return null
+    out.push(item[1])
+  }
+  return out
+}
 
 function staticString(value) {
   includeForStringValue()
@@ -242,20 +253,26 @@ export default function prepare(node) {
   // patterns (bench convention) without enabling the const-only static fold.
   // The scan must skip `=` nodes that are children of `let`/`const`/`export` —
   // those are decl-initializers, not reassignments.
-  if (ctx.scope.shapeStrs?.size) {
+  if (ctx.scope.shapeStrs?.size || ctx.scope.shapeStrArrays?.size) {
     const writes = new Set()
     const scan = (n, inDecl) => {
       if (!Array.isArray(n)) return
       const [op, lhs] = n
       if (op === '=' && typeof lhs === 'string' && !inDecl) writes.add(lhs)
+      if (op === '=' && Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && !inDecl) writes.add(lhs[1])
       // Compound assigns desugar to `=`; increments emit as `++`/`--` post-prep.
       if ((op === '++' || op === '--') && typeof lhs === 'string') writes.add(lhs)
+      if ((op === '++' || op === '--') && Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string') writes.add(lhs[1])
+      if (op === '()' && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && MUTATING_ARRAY_METHODS.has(lhs[2])) writes.add(lhs[1])
       const childInDecl = (op === 'let' || op === 'const' || op === 'var' || op === 'export')
       for (let i = 1; i < n.length; i++) scan(n[i], childInDecl)
     }
     scan(ast, false)
     for (const f of ctx.func.list) if (f.body) scan(f.body, false)
-    for (const name of writes) ctx.scope.shapeStrs.delete(name)
+    for (const name of writes) {
+      ctx.scope.shapeStrs?.delete(name)
+      ctx.scope.shapeStrArrays?.delete(name)
+    }
   }
 
   return ast
@@ -714,9 +731,12 @@ function prepDecl(op, ...inits) {
           ctx.scope.consts.add(declName)
           if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
             (ctx.scope.constStrs ||= new Map()).set(declName, normed[1])
+          const strs = stringArrayValues(normed)
+          if (strs) (ctx.scope.shapeStrArrays ||= new Map()).set(declName, strs)
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
           ctx.scope.constStrs?.delete(declName)
+          ctx.scope.shapeStrArrays?.delete(declName)
         }
         // Effectively-const string literals: shape inference for `let SRC = '{...}'`
         // patterns (bench convention to defeat compile-time JSON.parse fold without

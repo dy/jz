@@ -21,6 +21,18 @@ function jsonConstString(ctx, expr) {
   return null
 }
 
+function jsonShapeString(ctx, expr) {
+  if (typeof expr === 'string') return ctx.scope.shapeStrs?.get(expr) ?? null
+  return null
+}
+
+function jsonShapeStrings(ctx, expr) {
+  const single = jsonShapeString(ctx, expr)
+  if (single != null) return [single]
+  if (Array.isArray(expr) && expr[0] === '[]' && typeof expr[1] === 'string') return ctx.scope.shapeStrArrays?.get(expr[1]) ?? null
+  return null
+}
+
 function hashCapFor(n) {
   let cap = 8
   const need = Math.max(1, Math.ceil(n * 4 / 3))
@@ -625,6 +637,165 @@ export default (ctx) => {
       (then ${ADV(4)} (return ${NULL_WAT})))
     ${NULL_WAT})`
 
+  function canSpecializeJsonShape(v) {
+    if (v == null) return true
+    if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') return true
+    if (Array.isArray(v)) return v.length > 0 && v.every(x => sameJsonShape(v[0], x)) && canSpecializeJsonShape(v[0])
+    if (typeof v === 'object') return Object.keys(v).every(k => /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/.test(k) && canSpecializeJsonShape(v[k]))
+    return false
+  }
+
+  function sameJsonShape(a, b) {
+    if (a == null || b == null) return a == null && b == null
+    if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length > 0 && b.length > 0 && sameJsonShape(a[0], b[0])
+    if (typeof a !== typeof b) return false
+    if (typeof a !== 'object') return true
+    const ak = Object.keys(a), bk = Object.keys(b)
+    return ak.length === bk.length && ak.every((k, i) => k === bk[i] && sameJsonShape(a[k], b[k]))
+  }
+
+  function emitJsonShapeParser(parsed) {
+    if (!canSpecializeJsonShape(parsed)) return null
+    ctx.runtime.jsonShapeParsers ||= new Map()
+    const sig = JSON.stringify(shapeSignature(parsed))
+    const cached = ctx.runtime.jsonShapeParsers.get(sig)
+    if (cached) return cached
+
+    const name = `__jp_shape_${ctx.runtime.jsonShapeParsers.size}`
+    const locals = new Map([['len', 'i32'], ['buf', 'i32'], ['i', 'i32'], ['ch', 'i32']])
+    let uniq = 0
+    const local = (p, t) => {
+      const n = `${p}${uniq++}`
+      locals.set(n, t)
+      return n
+    }
+    const fail = `(return (call $__jp (local.get $str)))`
+    const expect = (byte) => `(if (i32.ne ${PEEK} (i32.const ${byte})) (then ${fail}))
+    ${ADV(1)}`
+    const expectText = (text) => [...text].map(c => expect(c.charCodeAt(0))).join('\n    ')
+    const parse = (v, out) => {
+      if (v == null) return `${expectText('null')}
+    (local.set $${out} ${NULL_WAT})`
+      if (typeof v === 'boolean') return `${expectText(v ? 'true' : 'false')}
+    (local.set $${out} (f64.const ${v ? 1 : 0}))`
+      if (typeof v === 'number') return `(local.set $${out} (call $__jp_num))`
+      if (typeof v === 'string') return `${expect(34)}
+    (local.set $${out} (call $__jp_str))`
+      if (Array.isArray(v)) return parseArray(v[0], out)
+      return parseObject(v, out)
+    }
+    const parseObject = (v, out) => {
+      const keys = Object.keys(v)
+      const obj = local('obj', 'i32')
+      const val = local('val', 'f64')
+      const sid = ctx.schema.register(keys)
+      let body = `${WS()}
+    ${expect(123)}
+    (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)}) (i32.const 8)))`
+      keys.forEach((k, i) => {
+        body += `
+    ${WS()}
+    ${expect(34)}
+    ${expectText(k)}
+    ${expect(34)}
+    ${WS()}
+    ${expect(58)}
+    ${WS()}
+    ${parse(v[k], val)}
+    (f64.store (i32.add (local.get $${obj}) (i32.const ${i * 8})) (local.get $${val}))
+    ${WS()}
+    ${expect(i === keys.length - 1 ? 125 : 44)}`
+      })
+      if (keys.length === 0) body += `
+    ${WS()}
+    ${expect(125)}`
+      return `${body}
+    (local.set $${out} (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $${obj})))`
+    }
+    const parseArray = (elem, out) => {
+      const ptr = local('arr', 'i32')
+      const len = local('alen', 'i32')
+      const cap = local('acap', 'i32')
+      const val = local('aval', 'f64')
+      const next = local('anew', 'i32')
+      const id = uniq++
+      return `${WS()}
+    ${expect(91)}
+    (local.set $${cap} (i32.const 8))
+    (local.set $${ptr} (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $${cap}) (i32.const 3)))))
+    (local.set $${ptr} (i32.add (local.get $${ptr}) (i32.const 8)))
+    ${WS()}
+    (if (i32.eq ${PEEK} (i32.const 93))
+      (then
+        ${ADV(1)}
+        (i32.store (i32.sub (local.get $${ptr}) (i32.const 8)) (i32.const 0))
+        (i32.store (i32.sub (local.get $${ptr}) (i32.const 4)) (local.get $${cap}))
+        (local.set $${out} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${ptr}))))
+      (else
+        (block $ad${id} (loop $al${id}
+          (if (i32.ge_s (local.get $${len}) (local.get $${cap}))
+            (then
+              (local.set $${cap} (i32.shl (local.get $${cap}) (i32.const 1)))
+              (local.set $${next} (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $${cap}) (i32.const 3)))))
+              (local.set $${next} (i32.add (local.get $${next}) (i32.const 8)))
+              (memory.copy (local.get $${next}) (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3)))
+              (local.set $${ptr} (local.get $${next}))))
+          ${parse(elem, val)}
+          (f64.store (i32.add (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3))) (local.get $${val}))
+          (local.set $${len} (i32.add (local.get $${len}) (i32.const 1)))
+          ${WS()}
+          (local.set $ch ${PEEK})
+          (br_if $ad${id} (i32.eq (local.get $ch) (i32.const 93)))
+          (if (i32.ne (local.get $ch) (i32.const 44)) (then ${fail}))
+          ${ADV(1)}
+          ${WS()}
+          (br $al${id})))
+        ${ADV(1)}
+        (i32.store (i32.sub (local.get $${ptr}) (i32.const 8)) (local.get $${len}))
+        (i32.store (i32.sub (local.get $${ptr}) (i32.const 4)) (local.get $${cap}))
+        (local.set $${out} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${ptr})))))`
+    }
+
+    const out = local('out', 'f64')
+    const body = `${parse(parsed, out)}
+    ${WS()}
+    (if (i32.ne ${PEEK} (i32.const -1)) (then ${fail}))
+    (local.get $${out})`
+    const localDecls = [...locals].map(([n, t]) => `    (local $${n} ${t})`).join('\n')
+    ctx.core.stdlib[name] = `(func $${name} (param $str i64) (result f64)
+${localDecls}
+    (local.set $len (call $__str_byteLen (local.get $str)))
+    (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
+    (i64.store (i32.add (local.get $buf) (local.get $len)) (i64.const -1))
+    (if (i32.and (call $__ptr_aux (local.get $str)) (i32.const ${LAYOUT.SSO_BIT}))
+      (then
+        (local.set $i (i32.const 0))
+        (block $sd (loop $sl
+          (br_if $sd (i32.ge_s (local.get $i) (local.get $len)))
+          (i32.store8 (i32.add (local.get $buf) (local.get $i))
+            (call $__sso_char (local.get $str) (local.get $i)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $sl))))
+      (else
+        (memory.copy (local.get $buf) (call $__ptr_offset (local.get $str)) (local.get $len))))
+    (global.set $__jpstr (local.get $buf))
+    (global.set $__jplen (local.get $len))
+    (global.set $__jppos (i32.const 0))
+    ${body})`
+    ctx.core.stdlibDeps[name] = ['__jp', '__jp_num', '__jp_str', '__str_byteLen', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
+    ctx.runtime.jsonShapeParsers.set(sig, name)
+    return name
+  }
+
+  function shapeSignature(v) {
+    if (v == null) return null
+    if (typeof v === 'number') return 'number'
+    if (typeof v === 'string') return 'string'
+    if (typeof v === 'boolean') return 'boolean'
+    if (Array.isArray(v)) return ['array', shapeSignature(v[0])]
+    return ['object', Object.keys(v).map(k => [k, shapeSignature(v[k])])]
+  }
+
   // Entry point — copies input to a scratch buffer with 0xFF sentinel padding
   // past the end so __jp_peek can omit its bounds check. Pad is 8 bytes so any
   // overshoot from speculative peek/adv on malformed input still hits sentinel,
@@ -664,6 +835,15 @@ export default (ctx) => {
     if (src != null) {
       try { return emitJsonConstValue(JSON.parse(src)) }
       catch { /* fall through to runtime parser for invalid JSON so runtime behavior stays unchanged */ }
+    }
+    const shapeSrcs = jsonShapeStrings(ctx, x)
+    if (shapeSrcs) {
+      try {
+        const parsed = shapeSrcs.map(src => JSON.parse(src))
+        if (!parsed.every(v => sameJsonShape(parsed[0], v))) throw new Error('mixed JSON shapes')
+        const fn = emitJsonShapeParser(parsed[0])
+        if (fn) { inc(fn); return typed(['call', `$${fn}`, asI64(emit(x))], 'f64') }
+      } catch { /* fall through to generic runtime parser */ }
     }
     inc('__jp')
     return typed(['call', '$__jp', asI64(emit(x))], 'f64')

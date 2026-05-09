@@ -388,6 +388,13 @@ function jsonConstString(expr) {
   return null
 }
 
+function jsonShapeStrings(expr) {
+  const single = jsonConstString(expr)
+  if (single != null) return [single]
+  if (Array.isArray(expr) && expr[0] === '[]' && typeof expr[1] === 'string') return ctx.scope.shapeStrArrays?.get(expr[1]) ?? null
+  return null
+}
+
 /** Build a structural shape tree from a parsed JSON value. Each node is
  *  `{ vt, props?, elem? }`. Lets `valTypeOf` propagate VAL kinds through
  *  `.prop` chains and `[i]` reads on bindings sourced from `JSON.parse`
@@ -435,6 +442,16 @@ function shapeUnifies(a, b) {
   return true
 }
 
+function shapeLayoutUnifies(a, b) {
+  if (!shapeUnifies(a, b)) return false
+  if (a.vt === VAL.OBJECT || a.vt === VAL.HASH) {
+    if (a.names?.length !== b.names?.length) return false
+    for (let i = 0; i < a.names.length; i++) if (a.names[i] !== b.names[i]) return false
+  }
+  if (a.vt === VAL.ARRAY && a.elem) return shapeLayoutUnifies(a.elem, b.elem)
+  return true
+}
+
 const _jsonShapeCache = new WeakMap()
 function parseJsonShape(src) {
   if (typeof src !== 'string') return null
@@ -446,6 +463,18 @@ function parseJsonShape(src) {
   return sh
 }
 
+function parseUnifiedJsonShape(srcs) {
+  if (!srcs?.length) return null
+  let out = null
+  for (const src of srcs) {
+    const sh = parseJsonShape(src)
+    if (!sh) return null
+    if (!out) out = sh
+    else if (!shapeLayoutUnifies(out, sh)) return null
+  }
+  return out
+}
+
 /** Resolve the json shape for an expression by walking name → rep.jsonShape and
  *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
 export function shapeOf(expr) {
@@ -453,8 +482,8 @@ export function shapeOf(expr) {
   if (!Array.isArray(expr)) return null
   const [op, ...args] = expr
   if (op === '()' && args[0] === 'JSON.parse') {
-    const src = jsonConstString(args[1])
-    if (src != null) return parseJsonShape(src)
+    const srcs = jsonShapeStrings(args[1])
+    if (srcs) return parseUnifiedJsonShape(srcs)
   }
   if (op === '.' && typeof args[1] === 'string') {
     const parent = shapeOf(args[0])

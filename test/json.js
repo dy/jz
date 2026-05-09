@@ -139,6 +139,53 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
   is(run(src).f(), 12)
 })
 
+test('JSON.parse: stable let source uses shaped runtime parser', () => {
+  const src = `
+    let SRC = '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}'
+    export let f = () => {
+      let o = JSON.parse(SRC)
+      return o.meta.bias + o.items[0].id
+    }
+  `
+  const wat = compile(src, { wat: true })
+  const fMatch = wat.match(/\(func \$f[\s\S]*?^  \)$/m)
+  ok(fMatch, 'expected $f function in WAT')
+  ok(wat.includes('$__jp_shape_'))
+  ok(!/call \$__jp\b/.test(fMatch[0]))
+  is(run(src).f(), 12)
+})
+
+test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
+  const src = `
+    const SOURCES = [
+      '{"items":[{"id":1,"kind":2,"value":10}],"meta":{"scale":7,"bias":11}}',
+      '{"items":[{"id":4,"kind":1,"value":8}],"meta":{"scale":5,"bias":17}}',
+    ]
+    export let f = (i) => {
+      let o = JSON.parse(SOURCES[i & 1])
+      return o.meta.bias + o.items[0].id
+    }
+  `
+  const wat = compile(src, { wat: true })
+  const fMatch = wat.match(/\(func \$f[\s\S]*?^  \)$/m)
+  ok(fMatch, 'expected $f function in WAT')
+  ok(wat.includes('$__jp_shape_'))
+  ok(!/call \$__jp\b/.test(fMatch[0]))
+  is(run(src).f(0), 12)
+  is(run(src).f(1), 21)
+})
+
+test('JSON.parse: mixed-order literal sources stay generic', () => {
+  const src = `
+    const SOURCES = ['{"a":1,"b":2}', '{"b":20,"a":10}']
+    export let f = (i) => JSON.parse(SOURCES[i & 1]).a
+  `
+  const wat = compile(src, { wat: true })
+  ok(!wat.includes('$__jp_shape_'))
+  is(run(src).f(0), 1)
+  is(run(src).f(1), 10)
+})
+
 test('JSON.parse: object multiple keys', () => {
   is(run(`export let f = () => { let o = JSON.parse('{"a":10,"b":20}'); return o.a + o.b }`).f(), 30)
 })

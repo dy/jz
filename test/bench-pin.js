@@ -34,6 +34,7 @@ const PINS = {
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'win',  as: 'win'  },
   json:      { v8: 'win',  as: 'na'   },
+  'json-dynamic': { v8: 'win', as: 'na' },
   watr:      { v8: 'win',  as: 'na'   },
 }
 const TOLERANCE = { win: 1.0, tie: 1.05, near: 1.10 }
@@ -144,7 +145,8 @@ const SIZE_BUDGET = {
   bitwise:   2500,
   tokenizer: 3000,
   aos:       3500,
-  json:     11000,
+  json:     12500,
+  'json-dynamic': 12000,
   watr:    180000,
 }
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {

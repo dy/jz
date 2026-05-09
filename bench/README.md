@@ -31,7 +31,7 @@ npm run bench
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
 node bench/bench.mjs --targets=jz --cases=biquad,mat4,poly,bitwise
 node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
-node bench/bench.mjs --cases=biquad,mat4,tokenizer,json
+node bench/bench.mjs --cases=biquad,mat4,tokenizer,json,json-dynamic
 node bench/bench.mjs biquad
 node bench/bench.mjs mat4 --targets=nat,v8,jz
 ```
@@ -48,11 +48,14 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`callback`](callback/callback.js) | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
 | [`mandelbrot`](mandelbrot/mandelbrot.js) | 256×256 escape-time iteration; dense f64 hot loop with conditional break and i32 counter |
-| [`json`](json/json.js) | `JSON.parse` plus heterogeneous object/array walk; JS-only by design |
+| [`json`](json/json.js) | runtime `JSON.parse` plus heterogeneous object/array walk with a stable inferred JSON shape |
+| [`json-dynamic`](json-dynamic/json-dynamic.js) | runtime `JSON.parse` plus the same walk when one of several same-shape literal sources is selected dynamically |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 
-`json` has no C row because a hand-written C parser would not be the same
-implementation contract as JavaScript `JSON.parse`.
+Native rows for `json` are fixed-format parser references, not semantic
+equivalents of JavaScript `JSON.parse`. `json-dynamic` is JS-only by design;
+it covers runtime selection among same-shape literal sources, while external
+unknown-shape JSON still uses the generic runtime parser.
 
 Native-language rows are intentionally per case. NumPy rows are used only
 where a vectorized array implementation is a meaningful Python convention;

@@ -473,7 +473,8 @@ cc program.c -o program
 | [bitwise](bench/bitwise/bitwise.js) | 0.98ms<br>1.3kB | 3.76ms<br>1005 B | fails | 8.79ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
 | [poly](bench/poly/poly.js) | 0.27ms<br>1.4kB | 1.62ms<br>1014 B | fails | 0.73ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
 | [callback](bench/callback/callback.js) | 0.03ms<br>1.6kB | 0.69ms<br>828 B | fails | 1.04ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
-| [json](bench/json/json.js) | 0.20ms<br>7.7kB | 0.27ms<br>923 B | fails | — | — | 0.02ms | 1.04ms | <0.01ms | 0.03ms | 1.17ms |
+| [json](bench/json/json.js) | 0.24ms<br>11.0kB | 0.37ms<br>1.2kB | fails | — | — | 0.03ms | 1.05ms | <0.01ms | 0.03ms | 1.21ms |
+| [json-dynamic](bench/json-dynamic/json-dynamic.js) | 0.24ms<br>11.3kB | 0.39ms<br>1.2kB | — | — | — | — | — | — | — | — |
 | [watr](bench/watr/watr.js) | 1.04ms<br>169.8kB | 1.05ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._
@@ -488,7 +489,7 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 | Stack rest-param scalarization | Fixed-arity internal calls avoid heap rest arrays. |
 | Scoped arena rewind | Safely rewinds allocations in functions proven not to return or persist heap values. |
 | Host-service import lowering | `host: 'js'` lowers console, clocks, and timers to small `env.*` imports instead of pulling WASI/string formatting into normal JS-host builds. |
-| Static JSON/HASH specialization | Constant `JSON.parse` sources and known HASH property reads avoid the runtime parser and generic dynamic-property dispatcher. |
+| Static and shaped runtime JSON specialization | Constant `JSON.parse` sources fold to fresh slot trees; stable `let` JSON sources use a generated runtime parser for the inferred shape. |
 | Typed-array specialization and address fusion | Monomorphic/bimorphic typed-array paths skip generic index dispatch and fuse repeated address bases/offsets in hot loops. |
 | Integer/value-type narrowing | Keeps bitwise, `Math.imul`, `charCodeAt`, loop counters, and internal narrowed returns on raw i32/f64 paths instead of generic boxed-value helpers. |
 | SIMD lane-local vectorization | Beats V8 on bitwise and keeps scalar feedback loops such as biquad untouched. |
@@ -496,7 +497,7 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 | OBJECT-only ternary type propagation | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
 | Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
 
-`npm run test:bench-pin` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win.
+`npm run test:bench-pin` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
 
 
 ## Alternatives
