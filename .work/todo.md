@@ -52,6 +52,128 @@
 * [ ] relaxed SIMD
 * [ ] WebGPU compute shaders
 
+## Offering
+
+* [ ] Clear, fully transparent and understood codebase
+* [ ] Completed: docs, readme, code, tests, repl
+* [ ] Integrations (floatbeat, color-space, digital-filter)
+* [ ] Benchmarks
+* [ ] Pick ONE use case, make jz undeniable for it
+* [ ] Ship something someone uses
+
+
+## Floatbeat playground
+
+* [ ] Syntax highlighter
+* [ ] Waveform renderer
+* [ ] Database + recipe book
+* [ ] Samples collection
+
+
+## REPL
+
+* [ ] Auto-convert var→let, function→arrow on paste
+* [ ] Auto-import implicit globals
+* [ ] Show produced WAT
+* [ ] Document interop
+
+
+### EdgeJS PR shape
+
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
+  pulling large optional dependencies or network setup.
+
+
+## Performance — closing the V8 gap on spread/destruct + watr
+
+Ranked impact/effort. Reference numbers (Apple Silicon, node 22, May 2026):
+
+| Pattern | jz | V8 | porf | jz/V8 |
+|---|---|---|---|---|
+| `[a,b]=[b,a]` swap (10k×5) | 0.2 ms | <0.1 ms | 96.4 ms | **~0.5×** ◐ |
+| `[...a,x,...b]` concat (1k×5) | <0.1 ms | 0.2 ms | 45.6 ms | **~5.8×** ✓ |
+| `(...nums) => sum` (10k×5) | 0.6 ms | 0.4 ms | 98.7 ms | **0.72×** ◐ |
+| `{...base,k:v}` (1k×5) | 0.3 ms | 0.3 ms | OOM | 1.10× ✓ |
+| watr.compile (24×10) | 1.46 ms | 1.67 ms | fails | 1.14× ✓ |
+
+Items 1, 2, 6 are all variants of escape analysis — implementing it once unlocks all three.
+
+### Escape analysis for short-lived literals (top priority)
+
+Closes 3 of 4 V8 gaps above. V8's JIT detects the literal doesn't escape and stack-allocates / scalar-replaces; jz heap-allocates every time.
+
+* [x] Pattern peephole: `[a,b]=[b,a]` → scalar array-literal destruct lowering in prepare; measured 0.7ms → ~0.2ms (10k×5, node 22, May 2026)
+* [ ] Mark each allocation site `escapes: bool` during prepare:
+  * returned, stored to outer scope, passed to non-inlined call → escapes
+  * read locally and discarded → doesn't escape
+* [x] Non-escaping arrays: scalar replacement for short local array literals used only by `.length`, constant indexes, and array-literal spread; spread concat measured 0.9ms → <0.1ms
+* [ ] Non-escaping that can't be scalar-replaced: stack alloc, OR rewind heap on function exit
+* [x] Test pin: `destruct swap` perf moves from 0.7ms toward V8's <0.1ms; current full-suite run logs ~0.2ms, and codegen test asserts no array allocation
+
+### Per-function arena rewind (proper version of reverted `__heap_init`)
+
+Closes the watr residual gap and any compile/transform/parse use case.
+
+* [ ] Static analysis: function `f` whose return slot doesn't reference heap → safe to rewind
+* [ ] Codegen: `__heap_save = __heap` at entry, `__heap = __heap_save` before return
+* [ ] Critical: detect via return-type slot analysis when return *does* reference heap (string, array, etc.) — must NOT rewind in that case
+* [ ] Test pin: revive watr `_clear()` loop in `test/perf.js` at 1.0× threshold (ratio 1.0×)
+* [ ] Earlier attempt (global `_clear()`) broke watr because module-level interning tables get populated lazily during compile() — this version is per-call scoped, doesn't have that failure mode
+
+### Inline cache for polymorphic shape sites
+
+Generalizes the `JSON.parse(SRC)` slot-load trick (already in [src/compile.js](../src/compile.js)) to user code with bimorphic objects.
+
+* [ ] Per-call-site cache: `lastSchemaId | slot0 | slot1` in a global word
+* [ ] Fast path: schema match → direct slot load (3 instructions)
+* [ ] Slow path: hash lookup, update cache
+* [ ] Test pin: `poly` perf test 0.81ms → sub-0.5ms
+
+### Stack-allocated rest-param arrays for fixed-arity sites
+
+Subset of escape analysis. `sum(1,2,3,4,5)` calling `sum=(...nums)=>` should not heap-alloc `nums`. Porffor [does this for internal funcs](https://github.com/CanadaHonk/porffor/commit/06b984b); generalize to user code.
+
+* [x] If `(...rest)` has no escape (no return, no store), specialize fixed-arity internal calls so rest reads scalarize to params
+* [x] At each call site with N args: rewrite to `fn$restN(arg0..argN)` clone; `rest.length` becomes const, `rest[i]` becomes param select
+* [x] Test pin: `rest sum` perf 2.7ms → ~0.6ms (4.5×), near 0.5ms target
+
+### SIMD auto-vectorization for typed-array reductions
+
+Already have explicit SIMD; auto-vectorize the obvious cases.
+
+* [x] Pattern-detect: simple typed-array reductions with no loop-carried scalar deps other than accumulator
+* [x] Emit `f64x2` / `f32x4` / `i32x4` ops via default optimizer (level 2; can still disable with `optimize: { vectorizeLaneLocal: false }`)
+* [x] Skip when feedback dep present (e.g. biquad cascade y[i] depends on y[i-1])
+* [x] Test pin: `typed sum` perf 4.2ms → ~2.2ms in `test/perf.js` (1.9×; 5.4× faster than JS on latest run)
+
+### Profile-guided specialization
+
+Inspired by porffor's [profile-guided DCE](https://goose.icu/profile-guided-dce/) (DCE itself doesn't help jz — already statically minimal).
+
+* [ ] `jz(src, { profile: true })` instruments every function entry to log argument types
+* [ ] Run program with representative input
+* [ ] Recompile with type-set per function → emit specialized variants + dispatch
+* [ ] Cap N specializations (~4) to avoid code bloat
+
+### Smaller wins (lower priority)
+
+* [ ] Tail-call optimization — emit WASM `return_call` for tail-position calls. Already partially done (block-body); extend to expression bodies via existing `tcoTailRewrite` path
+* [ ] Loop unrolling for small constant trip counts (≤8) — porffor [tried then disabled](https://github.com/CanadaHonk/porffor/commit/986c9f5) due to code-size regression; gate by body size
+* [ ] Constant-fold across closure boundaries — for write-once captures (`let MASK=0xff; arr.map(x=>x&MASK)`)
+* [ ] Peephole: i32↔f64 boundary minimization — fold `f64.convert_i32_s` / `i32.trunc_sat_f64_s` round-trips post-emit
+
+### Out of scope / explicitly skipped
+
+* Wasm GC — porffor's design notes ([porffor-gc](https://goose.icu/porffor-gc/)) correctly identify this as impractical for stateless-shot use case
+* Mark-and-sweep allocator — bump allocator is the right answer; arena rewind above is the targeted version
+* Generational GC — overkill for KB-scale heaps
+* JIT / tier-up — jz is AOT by design
+* Profile-guided DCE — jz already statically minimal (1–8 kB binaries); pullStdlib treeshakes the stdlib, jzify only pulls reachable modules
+
+
+## Done
+
+
 ## Performance — closing the native-language gap
 
 Goal: match C/Zig on `mat4`, `aos`; match Rust on `bitwise`, `poly`, `json`.
@@ -107,39 +229,6 @@ structural fast-path that drops NaN-boxing inside the parser.
       (src/plan.js + src/optimize.js + tests)
 * [x] Refreshed README bench numbers
 
-## Offering
-
-* [ ] Clear, fully transparent and understood codebase
-* [ ] Completed: docs, readme, code, tests, repl
-* [ ] Integrations (floatbeat, color-space, digital-filter)
-* [ ] Benchmarks
-* [ ] Pick ONE use case, make jz undeniable for it
-* [ ] Ship something someone uses
-
-
-## Floatbeat playground
-
-* [ ] Syntax highlighter
-* [ ] Waveform renderer
-* [ ] Database + recipe book
-* [ ] Samples collection
-
-
-## REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop
-
-
-### EdgeJS PR shape
-
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without
-  pulling large optional dependencies or network setup.
-
-
-## Done
 
 ##  [x] **Drop NaN-boxing as the value carrier — switch to i64-tagged.**
   Context: print regression on node 22 (b5333df) was a flaky V8 NaN-payload

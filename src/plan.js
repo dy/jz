@@ -112,6 +112,146 @@ const mutatesAny = (node, names) => scanBody(node, n => {
 
 const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
 
+const intLit = node => {
+  if (typeof node === 'number' && Number.isInteger(node)) return node
+  if (Array.isArray(node) && node[0] == null && Number.isInteger(node[1])) return node[1]
+  return null
+}
+
+const setCallArgs = (node, args) => {
+  node[2] = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+}
+
+const scalarArrayElems = (expr) => {
+  if (!Array.isArray(expr) || expr[0] !== '[') return null
+  const elems = expr.slice(1)
+  if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...') || !isSimpleArg(e))) return null
+  return elems
+}
+
+const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+
+const safeScalarArrayUse = (node, name, parentOp = null) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
+  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  if (op === '[]' && node[1] === name) return intLit(node[2]) != null
+  if (op === '...' && node[1] === name) return parentOp === '['
+  for (let i = 1; i < node.length; i++) {
+    if (!safeScalarArrayUse(node[i], name, op)) return false
+  }
+  return true
+}
+
+const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  if ((op === '.' || op === '?.') && arrays.has(node[1]) && node[2] === 'length') {
+    return [, arrays.get(node[1]).length]
+  }
+  if (op === '[]' && arrays.has(node[1])) {
+    const idx = intLit(node[2])
+    const elems = arrays.get(node[1])
+    return idx != null && idx >= 0 && idx < elems.length ? elems[idx] : [, undefined]
+  }
+  if (op === '[') {
+    const out = ['[']
+    for (let i = 1; i < node.length; i++) {
+      const item = node[i]
+      if (Array.isArray(item) && item[0] === '...' && arrays.has(item[1])) {
+        out.push(...arrays.get(item[1]))
+      } else {
+        out.push(rewriteScalarArrayUses(item, arrays, op))
+      }
+    }
+    return out
+  }
+  return node.map((part, i) => i === 0 ? part : rewriteScalarArrayUses(part, arrays, op))
+}
+
+const scalarizeArrayLiteralSeq = (seq) => {
+  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  let changed = false
+  const stmts = seq.slice(1).map(stmt => {
+    const r = scalarizeArrayLiterals(stmt)
+    changed ||= r.changed
+    return r.node
+  })
+
+  const candidates = new Map()
+  for (let i = 0; i < stmts.length; i++) {
+    const stmt = stmts[i]
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
+    const decl = stmt[1]
+    if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+    const elems = scalarArrayElems(decl[2])
+    if (!elems) continue
+    let ok = true
+    for (let j = 0; j < stmts.length && ok; j++) {
+      if (j === i) continue
+      ok = safeScalarArrayUse(stmts[j], decl[1])
+    }
+    if (!ok) continue
+    candidates.set(decl[1], { index: i, op: stmt[0], elems })
+  }
+  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+
+  const arrays = new Map()
+  for (const [name, c] of candidates) {
+    const temps = c.elems.map((_, k) => `${name}${T}arr${ctx.func.uniq++}_${k}`)
+    arrays.set(name, temps)
+  }
+
+  const out = []
+  for (let i = 0; i < stmts.length; i++) {
+    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
+    if (entry) {
+      const [name, c] = entry
+      const temps = arrays.get(name)
+      if (temps.length) {
+        out.push([c.op, ...temps.map((tmp, k) =>
+          ['=', tmp, rewriteScalarArrayUses(c.elems[k], arrays)])])
+      }
+      changed = true
+      continue
+    }
+    out.push(rewriteScalarArrayUses(stmts[i], arrays))
+  }
+  return { node: [';', ...out], changed: true }
+}
+
+function scalarizeArrayLiterals(node) {
+  if (!Array.isArray(node)) return { node, changed: false }
+  if (node[0] === '=>') return { node, changed: false }
+  if (node[0] === ';') return scalarizeArrayLiteralSeq(node)
+  let changed = false
+  const out = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = scalarizeArrayLiterals(node[i])
+    changed ||= r.changed
+    out.push(r.node)
+  }
+  return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
+const scalarizeFunctionArrayLiterals = () => {
+  let changed = false
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    let guard = 0
+    while (guard++ < 4) {
+      const r = scalarizeArrayLiterals(func.body)
+      if (!r.changed) break
+      func.body = r.node
+      changed = true
+    }
+  }
+  return changed
+}
+
 const cloneWithSubst = (node, subst, rename) => {
   if (typeof node === 'string') {
     if (subst.has(node)) return clonePlain(subst.get(node))
@@ -346,6 +486,98 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   return changed
 }
 
+const restIndexExpr = (idx, restParams) => {
+  const k = intLit(idx)
+  if (k != null) return k >= 0 && k < restParams.length ? restParams[k] : [, undefined]
+
+  let out = [, undefined]
+  for (let i = restParams.length - 1; i >= 0; i--) {
+    out = ['?:', ['==', clonePlain(idx), [, i]], restParams[i], out]
+  }
+  return out
+}
+
+const rewriteRestBody = (node, restName, restParams) => {
+  if (typeof node === 'string') return node === restName ? { ok: false } : { ok: true, node }
+  if (!Array.isArray(node)) return { ok: true, node }
+  if (node[0] === 'str') return { ok: true, node: node.slice() }
+
+  if ((node[0] === '.' || node[0] === '?.') && node[1] === restName) {
+    return node[2] === 'length' ? { ok: true, node: [, restParams.length] } : { ok: false }
+  }
+
+  if (node[0] === '[]' && node[1] === restName) {
+    if (!isSimpleArg(node[2])) return { ok: false }
+    return { ok: true, node: restIndexExpr(node[2], restParams) }
+  }
+
+  const out = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = rewriteRestBody(node[i], restName, restParams)
+    if (!r.ok) return r
+    out.push(r.node)
+  }
+  return { ok: true, node: out }
+}
+
+const specializeFixedRestCalls = (programFacts) => {
+  const sitesByKey = new Map()
+  for (const site of programFacts.callSites) {
+    const func = ctx.func.map.get(site.callee)
+    if (!func?.rest || func.exported || func.raw || !func.body) continue
+    if (programFacts.valueUsed.has(func.name)) continue
+    if (func.defaults && Object.keys(func.defaults).length) continue
+    if (site.argList.some(a => Array.isArray(a) && a[0] === '...')) continue
+
+    const fixedN = func.sig.params.length - 1
+    const restN = Math.max(0, site.argList.length - fixedN)
+    const key = `${func.name}/${restN}`
+    const list = sitesByKey.get(key)
+    if (list) list.push(site); else sitesByKey.set(key, [site])
+  }
+
+  let changed = false
+  for (const [key, sites] of sitesByKey) {
+    const [name, restNText] = key.split('/')
+    const func = ctx.func.map.get(name)
+    const restN = Number(restNText)
+    const fixedParams = func.sig.params.slice(0, -1).map(p => ({ ...p }))
+    const restName = func.rest
+    const restParams = Array.from({ length: restN }, (_, i) => `${restName}${T}r${restN}_${i}`)
+    const rewritten = rewriteRestBody(func.body, restName, restParams)
+    if (!rewritten.ok) continue
+
+    const cloneName = `${name}${T}rest${restN}`
+    if (!ctx.func.map.has(cloneName)) {
+      const restSigParams = restParams.map(name => ({ name, type: 'f64' }))
+      const clone = {
+        ...func,
+        name: cloneName,
+        exported: false,
+        rest: null,
+        sig: {
+          ...func.sig,
+          params: [...fixedParams, ...restSigParams],
+          results: [...func.sig.results],
+        },
+        body: rewritten.node,
+      }
+      delete clone.defaults
+      ctx.func.list.push(clone)
+      ctx.func.names.add(cloneName)
+      ctx.func.map.set(cloneName, clone)
+    }
+
+    const fixedN = func.sig.params.length - 1
+    for (const site of sites) {
+      site.node[1] = cloneName
+      setCallArgs(site.node, site.argList.slice(0, fixedN + restN))
+      changed = true
+    }
+  }
+  return changed
+}
+
 const scanGlobalValueFacts = (root) => {
   if (!root) return
   const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
@@ -432,6 +664,8 @@ export default function plan(ast) {
 
   let programFacts = collectProgramFacts(ast)
   if (inlineHotInternalCalls(programFacts, ast)) programFacts = collectProgramFacts(ast)
+  if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
+  if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn
 

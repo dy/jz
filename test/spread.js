@@ -2,6 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
+import { compile } from '../index.js'
 
 // ============================================
 // SPREAD IN ARRAY LITERALS
@@ -182,6 +183,23 @@ test('spread: chain spreads', () => {
     return d.length
   }`)
   is(f(), 3)
+})
+
+test('spread: short local array literals scalarize through spread and reads', () => {
+  const wat = compile(`export let run = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) {
+      let a = [i, i+1]
+      let b = [i+2, i+3]
+      let c = [...a, 99, ...b]
+      s = s + c[0] + c[2] + c[4]
+    }
+    return s
+  }`, { wat: true })
+  const start = wat.indexOf('(func $run')
+  const end = wat.indexOf('\n  (func', start + 1)
+  const body = wat.slice(start, end)
+  ok(!/__arr|__alloc_hdr|__mkptr|__len|__typed_idx/.test(body), 'hot spread concat should not materialize arrays')
 })
 
 // ============================================

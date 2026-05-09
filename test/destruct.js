@@ -145,6 +145,20 @@ test('destruct assign: ({x: a = v} = obj) alias default', () => {
   is(f(), 6)
 })
 
+test('destruct assign: scalar array literal swap does not allocate array', () => {
+  const wat = compile(`export let f = () => {
+    let a = 1, b = 2
+    ;[a, b] = [b, a]
+    return a * 10 + b
+  }`, { wat: true })
+  ok(!/__arr|__mkptr|__alloc/.test(wat), 'array-literal destruct swap should lower to locals only')
+  is(run(`export let f = () => {
+    let a = 1, b = 2
+    ;[a, b] = [b, a]
+    return a * 10 + b
+  }`).f(), 21)
+})
+
 // ============================================
 // Optional chaining
 // ============================================

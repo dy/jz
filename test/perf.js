@@ -683,6 +683,95 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   ok(wasmTime < jsTime * 1.5, `watr: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.5`)
 })
 
+test('perf: spread + destructure', () => {
+  // Four hot patterns where porffor's recent work targets parity. V8's JIT
+  // detects [a,b]=[b,a] and stack-elides arrays — jz can't match that without
+  // escape analysis, so the pin is "absolute jz time stays bounded" + a logged
+  // ratio for visibility, NOT "jz < V8 * k". Reference numbers (Apple Silicon,
+  // node 22) recorded in /tmp/jz-spread.mjs vs /tmp/porf-spread/all.js show:
+  //   destruct swap (10k×5):  jz 0.6ms,  porf 96.4ms   — jz 160× faster
+  //   spread concat (1k×5):   jz 0.9ms,  porf 45.6ms   — jz 51× faster
+  //   rest sum (10k×5):       jz 2.7ms,  porf 98.7ms   — jz 37× faster
+  //   object spread (1k×5):   jz 0.1ms,  porf OOM      — jz wins by default
+  // Pins are 4× headroom over recorded jz times; tightens future regression
+  // catch without making CI flaky on slow runners.
+  const N = 5
+  const jsBench = (fn, k) => bench(() => fn(k), N)
+
+  // 1) Array destructure swap: [a, b] = [b, a]
+  const swap = jz(`export let run = (n) => {
+    let a = 1, b = 2
+    for (let i = 0; i < n; i++) [a, b] = [b, a]
+    return a + b
+  }`).exports.run
+  const swapJs = (n) => { let a = 1, b = 2; for (let i = 0; i < n; i++) [a, b] = [b, a]; return a + b }
+  is(swap(10000), swapJs(10000), 'destruct swap parity')
+  const swapJsT = jsBench(swapJs, 10000)
+  const swapWT = jsBench(swap, 10000)
+  console.log(`  destruct swap (10k) x${N}: JS ${swapJsT.toFixed(1)}ms, WASM ${swapWT.toFixed(1)}ms, ratio ${(swapJsT / swapWT).toFixed(2)}x`)
+  ok(swapWT < 5, `destruct swap: jz ${swapWT.toFixed(1)}ms should be < 5ms (porf baseline ~96ms)`)
+
+  // 2) Array spread concat: [...a, x, ...b]
+  const concat = jz(`export let run = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) {
+      let a = [i, i+1]
+      let b = [i+2, i+3]
+      let c = [...a, 99, ...b]
+      s = s + c[0] + c[2] + c[4]
+    }
+    return s
+  }`).exports.run
+  const concatJs = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) {
+      const a = [i, i+1], b = [i+2, i+3]
+      const c = [...a, 99, ...b]
+      s = s + c[0] + c[2] + c[4]
+    }
+    return s
+  }
+  is(concat(1000), concatJs(1000), 'spread concat parity')
+  const concatJsT = jsBench(concatJs, 1000)
+  const concatWT = jsBench(concat, 1000)
+  console.log(`  spread concat (1k) x${N}: JS ${concatJsT.toFixed(1)}ms, WASM ${concatWT.toFixed(1)}ms, ratio ${(concatJsT / concatWT).toFixed(2)}x`)
+  ok(concatWT < 5, `spread concat: jz ${concatWT.toFixed(1)}ms should be < 5ms (porf baseline ~46ms)`)
+
+  // 3) Rest param sum: (...nums) => sum
+  const rest = jz(`
+    let sum = (...nums) => { let s = 0; for (let i = 0; i < nums.length; i++) s = s + nums[i]; return s }
+    export let run = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + sum(1, 2, 3, 4, 5); return s }
+  `).exports.run
+  const restSum = (...nums) => { let s = 0; for (let i = 0; i < nums.length; i++) s = s + nums[i]; return s }
+  const restJs = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + restSum(1, 2, 3, 4, 5); return s }
+  is(rest(10000), restJs(10000), 'rest sum parity')
+  const restJsT = jsBench(restJs, 10000)
+  const restWT = jsBench(rest, 10000)
+  console.log(`  rest sum (10k) x${N}: JS ${restJsT.toFixed(1)}ms, WASM ${restWT.toFixed(1)}ms, ratio ${(restJsT / restWT).toFixed(2)}x`)
+  ok(restWT < 12, `rest sum: jz ${restWT.toFixed(1)}ms should be < 12ms (porf baseline ~99ms)`)
+
+  // 4) Object spread: { ...base, k: v }
+  const obj = jz(`
+    let base = { a: 1, b: 2, c: 3 }
+    export let run = (n) => {
+      let s = 0
+      for (let i = 0; i < n; i++) { let o = { ...base, d: i }; s = s + o.a + o.d }
+      return s
+    }
+  `).exports.run
+  const objBase = { a: 1, b: 2, c: 3 }
+  const objJs = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) { const o = { ...objBase, d: i }; s = s + o.a + o.d }
+    return s
+  }
+  is(obj(1000), objJs(1000), 'object spread parity')
+  const objJsT = jsBench(objJs, 1000)
+  const objWT = jsBench(obj, 1000)
+  console.log(`  object spread (1k) x${N}: JS ${objJsT.toFixed(1)}ms, WASM ${objWT.toFixed(1)}ms, ratio ${(objJsT / objWT).toFixed(2)}x`)
+  ok(objWT < 2, `object spread: jz ${objWT.toFixed(1)}ms should be < 2ms (porf OOMs at this size)`)
+})
+
 test('codegen: .length hoisted out of for-loop', () => {
   const wat = compile('export let f = (arr) => { let buf = new Float64Array(arr); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i]; return s }', { wat: true })
   // Scope to user function $f, then find its outer for-loop body
@@ -726,4 +815,4 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 937)
+}`, 1022)

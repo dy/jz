@@ -572,8 +572,8 @@ test('vectorize: multi-stmt reduction body must NOT lift', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
-test('vectorize: opt off by default at level 2 (no SIMD without explicit flag)', () => {
-  // At default optimize:true (level 2), the pass is OFF.
+test('vectorize: default level 2 emits SIMD for obvious lane-local loops', () => {
+  // At default optimize:true (level 2), the stable SIMD pass is enabled.
   const src = `
     export const main = () => {
       const N = 1024
@@ -585,5 +585,5 @@ test('vectorize: opt off by default at level 2 (no SIMD without explicit flag)',
       return h | 0
     }
   `
-  ok(!hasV128(wat(src)), 'expected NO v128 ops at default optimization')
+  ok(hasV128(wat(src)), 'expected v128 ops at default optimization')
 })

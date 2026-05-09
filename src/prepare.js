@@ -543,6 +543,34 @@ export const GLOBALS = {
 const patternItems = (node) => node?.[0] === ',' ? node.slice(1) : [node]
 const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
 
+const simpleArrayPatternItems = (pattern) => {
+  if (!Array.isArray(pattern) || pattern[0] !== '[]' || pattern.length !== 2) return null
+  const items = patternItems(pattern[1])
+  return items.every(item => typeof item === 'string') ? items : null
+}
+
+const arrayLiteralItems = (expr) => {
+  if (!Array.isArray(expr) || expr[0] !== '[]' || expr.length !== 2) return null
+  if (expr[1] == null) return []
+  const items = patternItems(expr[1])
+  return items.every(item => item != null && !(Array.isArray(item) && item[0] === '...')) ? items : null
+}
+
+function scalarArrayDestruct(pattern, rhs) {
+  const targets = simpleArrayPatternItems(pattern)
+  const values = arrayLiteralItems(rhs)
+  if (!targets || !values || targets.length !== values.length) return null
+
+  const decls = []
+  const assigns = []
+  for (let i = 0; i < targets.length; i++) {
+    const tmp = `${T}d${ctx.func.uniq++}`
+    decls.push(['=', tmp, prep(values[i])])
+    assigns.push(['=', targets[i], tmp])
+  }
+  return prep([';', ['let', ...decls], ...assigns])
+}
+
 function pushPatternAssign(target, valueExpr, out, decls = null) {
   if (Array.isArray(target) && target[0] === '=') {
     pushPatternAssign(target[1], ['??', valueExpr, prep(target[2])], out, decls)
@@ -750,6 +778,9 @@ const handlers = {
     // Destructuring assignment: [a, ...r] = expr or ({x: a} = expr)
     // Distinguishing from index assignment: destructuring patterns have exactly one payload node.
     if (isDestructPattern(lhs) && lhs.length === 2) {
+      const scalar = scalarArrayDestruct(lhs, rhs)
+      if (scalar) return scalar
+
       const normed = prep(rhs)
       const tmp = `${T}d${ctx.func.uniq++}`
       const decls = [['=', tmp, normed]]

@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 // ============================================
 // REST PARAMS
@@ -76,6 +76,27 @@ test('rest: variadic product', () => {
   is(f(2, 3), 6)
   is(f(2, 3, 4), 24)
   is(f(1, 2, 3, 4, 5), 120)
+})
+
+test('rest: fixed-arity internal calls specialize rest array away', () => {
+  const wat = compile(`
+    let sum = (...nums) => {
+      let s = 0
+      for (let i = 0; i < nums.length; i++) s = s + nums[i]
+      return s
+    }
+    export let run = () => sum(1, 2, 3, 4, 5)
+  `, { wat: true })
+  ok(/\$sum[^\s)]*rest5/.test(wat), 'expected fixed-arity rest clone')
+  ok(!/\(call \$sum[\s)]/.test(wat), 'original rest-array function should not be called')
+  is(run(`
+    let sum = (...nums) => {
+      let s = 0
+      for (let i = 0; i < nums.length; i++) s = s + nums[i]
+      return s
+    }
+    export let run = () => sum(1, 2, 3, 4, 5)
+  `).run(), 15)
 })
 
 // ============================================
