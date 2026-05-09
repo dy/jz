@@ -478,23 +478,23 @@ cc program.c -o program
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._
 
-### Optimization Status
+### Optimizations
 
-| Optimization | Decision | Reason |
-|---|---|---|
-| Escape scalar replacement | Accepted | Removes short-lived object/array literals before allocation. |
-| Stack rest-param scalarization | Accepted | Fixed-arity internal calls avoid heap rest arrays. |
-| Scoped arena rewind | Accepted | Safe only for functions proven not to return or persist heap values. |
-| SIMD lane-local vectorization | Accepted | Beats V8 on bitwise and keeps scalar feedback loops such as biquad untouched. |
-| Small constant loop unroll | Accepted | Required for biquad and mat4 speed; size cost is pinned. |
-| OBJECT-only ternary type propagation | Accepted | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
-| Benchmark checksum helper inlining | Accepted | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
-| Runtime schema inline cache | Rejected | Correct prototype was slower than base on the focused bimorphic object loop. |
-| Global heap clear/rewind | Rejected | Breaks lazy module intern tables; scoped rewind is the safe form. |
-| Profile-guided DCE | Rejected | jz already treeshakes statically; this adds process without real target wins. |
-| Profile-guided specialization | Deferred | Plausible for multi-shape hot calls, but must prove speed without code bloat. |
-| mat4 unroll-4 recognizer | Deferred | Current gap is small and mainly engine/codegen quality. |
-| JSON raw-u8 parser path | Deferred | Worth a separate design pass; it changes parser value shape. |
+High-impact summary behind the benchmark table, not an exhaustive list.
+
+| Optimization | Effect |
+|---|---|
+| Escape scalar replacement | Removes short-lived object/array literals before allocation. |
+| Stack rest-param scalarization | Fixed-arity internal calls avoid heap rest arrays. |
+| Scoped arena rewind | Safely rewinds allocations in functions proven not to return or persist heap values. |
+| Host-service import lowering | `host: 'js'` lowers console, clocks, and timers to small `env.*` imports instead of pulling WASI/string formatting into normal JS-host builds. |
+| Static JSON/HASH specialization | Constant `JSON.parse` sources and known HASH property reads avoid the runtime parser and generic dynamic-property dispatcher. |
+| Typed-array specialization and address fusion | Monomorphic/bimorphic typed-array paths skip generic index dispatch and fuse repeated address bases/offsets in hot loops. |
+| Integer/value-type narrowing | Keeps bitwise, `Math.imul`, `charCodeAt`, loop counters, and internal narrowed returns on raw i32/f64 paths instead of generic boxed-value helpers. |
+| SIMD lane-local vectorization | Beats V8 on bitwise and keeps scalar feedback loops such as biquad untouched. |
+| Small constant loop unroll | Required for biquad and mat4 speed; size cost is pinned. |
+| OBJECT-only ternary type propagation | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
+| Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
 
 `npm run test:bench-pin` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win.
 

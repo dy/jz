@@ -84,6 +84,10 @@
   pulling large optional dependencies or network setup.
 
 
+
+## Done
+
+
 ## Performance — closing the V8 gap on spread/destruct + watr
 
 Ranked impact/effort. Reference numbers (Apple Silicon, node 22, May 2026):
@@ -135,7 +139,7 @@ OBJECT-typed dynamic slot dispatch (`__dyn_get_expr_t`) instead of unknown
 * [x] Rejected: per-call-site cache `lastSchemaId | slot0 | slot1` in a global word — correct runtime PIC prototype was slower than base
 * [x] Rejected: fast path schema match → direct slot load — not worth keeping without a measured win
 * [x] Rejected: slow path hash lookup + cache update — update/check overhead outweighed the saved dispatch
-* [ ] Not done: focused bimorphic object-shape perf pin → only add if a future static/PIC path proves faster than the accepted OBJECT-typed dispatch fix
+* [x] Rejected: focused bimorphic object-shape perf pin — no current static/PIC path beats the accepted OBJECT-typed dispatch fix; keep the existing codegen/runtime regression tests instead
 
 ### Stack-allocated rest-param arrays for fixed-arity sites
 
@@ -177,10 +181,6 @@ Inspired by porffor's [profile-guided DCE](https://goose.icu/profile-guided-dce/
 * Generational GC — overkill for KB-scale heaps
 * JIT / tier-up — jz is AOT by design
 * Profile-guided DCE — jz already statically minimal (1–8 kB binaries); pullStdlib treeshakes the stdlib, jzify only pulls reachable modules
-
-
-## Done
-
 
 ## Performance — closing the native-language gap
 
