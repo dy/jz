@@ -317,6 +317,25 @@ test('small const-count for-loop keeps outer nested loops compact', () => {
   is(main(), 288)
 })
 
+test('nested small const-count typed-array loops auto-unroll', () => {
+  const wat = jz.compile(`
+    export const main = () => {
+      const a = new Float64Array(16)
+      const b = new Float64Array(16)
+      const out = new Float64Array(16)
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          let s = 0
+          for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+          out[r * 4 + c] = s
+        }
+      }
+      return out[15]
+    }
+  `, { wat: true, optimize: { watr: false } })
+  ok(!/\(loop\b/.test(wat), 'known typed-array nested loops should auto-unroll')
+})
+
 test('nested small const-count for-loop unroll is opt-in', () => {
   const wat = jz.compile(`
     export const main = () => {
@@ -625,7 +644,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(0).treeshake, false)
   is(resolveOptimize(2).watr, true)
   is(resolveOptimize(2).sourceInline, true)
-  is(resolveOptimize(2).nestedSmallConstForUnroll, false)
+  is(resolveOptimize(2).nestedSmallConstForUnroll, 'auto')
   is(resolveOptimize(3).sourceInline, true)
   is(resolveOptimize(3).nestedSmallConstForUnroll, true)
   // level 1 = encoding-compactness only
@@ -640,10 +659,11 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   const o = resolveOptimize({ level: 0, watr: true })
   is(o.watr, true)
   is(o.treeshake, false)
+  is(resolveOptimize({ level: 3, nestedSmallConstForUnroll: 'auto' }).nestedSmallConstForUnroll, 'auto')
   // undefined: default = level 2
   is(resolveOptimize(undefined).watr, true)
   is(resolveOptimize(undefined).sourceInline, true)
-  is(resolveOptimize(undefined).nestedSmallConstForUnroll, false)
+  is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {

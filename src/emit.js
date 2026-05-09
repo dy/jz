@@ -367,6 +367,14 @@ function cloneWithSubst(node, name, value) {
 const MAX_SMALL_FOR_UNROLL = 8
 const MAX_NESTED_FOR_UNROLL = 64
 
+function containsKnownTypedArrayIndex(body) {
+  if (!Array.isArray(body)) return false
+  if (body[0] === '=>') return false
+  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
+  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
+  return false
+}
+
 function smallConstForTripCount(init, cond, step) {
   if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
   const decl = init[1]
@@ -391,7 +399,8 @@ function unrollSmallConstFor(init, cond, step, body) {
   if (end == null) return null
   const name = init[1][1]
   if (containsNestedLoop(body)) {
-    if (!ctx.transform.optimize || ctx.transform.optimize.nestedSmallConstForUnroll !== true) return null
+    const nestedMode = ctx.transform.optimize?.nestedSmallConstForUnroll
+    if (nestedMode !== true && (nestedMode !== 'auto' || !containsKnownTypedArrayIndex(body))) return null
     if (end * nestedSmallLoopBudget(body) > MAX_NESTED_FOR_UNROLL) return null
   }
   if (hasOwnBreakOrContinue(body) || containsNestedClosure(body) || containsDeclOf(body, name)) return null

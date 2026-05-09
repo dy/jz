@@ -76,7 +76,7 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: false }),
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
   3: ALL_ON,
 })
 
@@ -97,7 +97,7 @@ export function resolveOptimize(opt) {
     const baseLevel = typeof opt.level === 'number' ? opt.level : 2
     const base = LEVEL_PRESETS[baseLevel] || ALL_ON
     const out = { ...base }
-    for (const n of PASS_NAMES) if (n in opt) out[n] = !!opt[n]
+    for (const n of PASS_NAMES) if (n in opt) out[n] = n === 'nestedSmallConstForUnroll' && opt[n] === 'auto' ? 'auto' : !!opt[n]
     return out
   }
   return { ...ALL_ON }
