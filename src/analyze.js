@@ -800,7 +800,7 @@ export function analyzeBody(body) {
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
     locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(),
-    arrElemValTypes: new Map(), typedElems: new Map(),
+    arrElemValTypes: new Map(), typedElems: new Map(), escapes: new Map(),
   }
   const hit = _bodyFactsCache.get(body)
   if (hit) return hit
@@ -810,6 +810,7 @@ export function analyzeBody(body) {
   const arrElemSchemas = new Map()
   const arrElemValTypes = new Map()
   const typedElems = new Map()
+  const escapes = new Map() // name → bool: local holds allocation, true if it escapes
 
   const doSchemas = !!ctx.schema?.register
   // Per-walk local schema map for chained `arr.push(name)` resolution.
@@ -1000,6 +1001,34 @@ export function analyzeBody(body) {
       (rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
        (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))
 
+  const markEscape = (name) => { if (escapes.has(name)) escapes.set(name, true) }
+
+  const isStaticIndex = (key) =>
+    typeof key === 'number' || typeof key === 'string' ||
+    (Array.isArray(key) && ((key[0] == null && Number.isInteger(key[1])) || key[0] === 'str')) ||
+    staticPropertyKey(key) != null
+
+  const markEscapeValue = (expr) => {
+    if (typeof expr === 'string') { markEscape(expr); return }
+    if (!Array.isArray(expr)) return
+    const op = expr[0]
+    if (op === 'str') return
+    if (op === ':') { markEscapeValue(expr[2]); return }
+    if ((op === '.' || op === '?.') && typeof expr[1] === 'string' && escapes.has(expr[1])) return
+    if (op === '[]' && typeof expr[1] === 'string' && escapes.has(expr[1])) {
+      if (!isStaticIndex(expr[2])) markEscape(expr[1])
+      markEscapeValue(expr[2])
+      return
+    }
+    for (let i = 1; i < expr.length; i++) markEscapeValue(expr[i])
+  }
+
+  const markEscapeArgs = (args) => {
+    if (args == null) return
+    const list = Array.isArray(args) && args[0] === ',' ? args.slice(1) : [args]
+    for (const a of list) markEscapeValue(Array.isArray(a) && a[0] === '...' ? a[1] : a)
+  }
+
   // === Single walk ===
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -1020,11 +1049,23 @@ export function analyzeBody(body) {
         }
         const name = a[1], rhs = a[2]
         processDecl(name, rhs)
+        if (Array.isArray(rhs) && (rhs[0] === '[' || rhs[0] === '{}')) {
+          escapes.set(name, false)
+        }
+        markEscapeValue(rhs)
         // Walk rhs only — never enter the `=` node so the reassignment-invalidation
         // rule won't misfire on the binding's own initializer.
         walk(rhs)
       }
       return
+    }
+
+    if (op === 'return' && node[1] != null) {
+      markEscapeValue(node[1])
+    }
+
+    if (op === '()' && node.length > 2) {
+      markEscapeArgs(node[2])
     }
 
     // arr.push(...) — observe both schemas and val types in one pass
@@ -1046,6 +1087,8 @@ export function analyzeBody(body) {
     // arrElemSchemas/ValTypes invalidate when rhs isn't array-producing.
     if (op === '=' && typeof node[1] === 'string') {
       const name = node[1], rhs = node[2]
+      markEscape(name)
+      markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
       if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
       const vt = valTypeOf(rhs)
@@ -1063,6 +1106,28 @@ export function analyzeBody(body) {
     }
     if (op === '/=' && typeof node[1] === 'string') {
       if (locals.has(node[1])) locals.set(node[1], 'f64')
+    }
+
+    if (op === 'for' || op === 'for-in' || op === 'for-of') {
+      if (node[1] != null) markEscapeValue(node[1])
+    }
+
+    if (op === '[' || op === '{}') {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (Array.isArray(c) && c[0] === ',') {
+          for (let j = 1; j < c.length; j++) {
+            if (Array.isArray(c[j]) && c[j][0] === '...') markEscapeValue(c[j][1])
+          }
+        } else if (Array.isArray(c) && c[0] === '...') {
+          markEscapeValue(c[1])
+        }
+      }
+    }
+
+    if (op === '[]' && typeof node[1] === 'string' && escapes.has(node[1])) {
+      const key = node[2]
+      if (!isStaticIndex(key)) markEscape(node[1])
     }
 
     for (let i = 1; i < node.length; i++) walk(node[i])
@@ -1124,7 +1189,7 @@ export function analyzeBody(body) {
     recheck(body)
   }
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes }
   _bodyFactsCache.set(body, result)
   return result
 }

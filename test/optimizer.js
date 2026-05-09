@@ -109,6 +109,39 @@ test('arrayElemValType: typed-array .map runtime correctness', () => {
   is(main(), 24)
 })
 
+test('escape analysis: local object property reads scalarize literal', () => {
+  const src = `
+    export const main = (x) => {
+      const obj = { a: x, b: x + 1 }
+      return obj.a + obj["b"]
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$__alloc_hdr\b/.test(wat), 'non-escaping object literal should not allocate')
+  is(run(src).main(4), 9)
+})
+
+test('escape analysis: returned object still heap allocates', () => {
+  const wat = jz.compile(`
+    export const main = (x) => {
+      const obj = { a: x }
+      return obj
+    }
+  `, { wat: true })
+  ok(/\(call \$__alloc_hdr\b/.test(wat), 'returned object must remain materialized')
+})
+
+test('escape analysis: call-passed object still heap allocates', () => {
+  const wat = jz.compile(`
+    const get = (obj) => obj.a
+    export const main = (x) => {
+      const obj = { a: x }
+      return get(obj)
+    }
+  `, { wat: true })
+  ok(/\(call \$__alloc_hdr\b/.test(wat), 'call-passed object must remain materialized')
+})
+
 test('known numeric coercions elide __to_num', () => {
   const wat = jz.compile(`
     export const main = (buf) => {

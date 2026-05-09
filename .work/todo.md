@@ -103,9 +103,10 @@ Items 1, 2, 6 are all variants of escape analysis — implementing it once unloc
 Closes 3 of 4 V8 gaps above. V8's JIT detects the literal doesn't escape and stack-allocates / scalar-replaces; jz heap-allocates every time.
 
 * [x] Pattern peephole: `[a,b]=[b,a]` → scalar array-literal destruct lowering in prepare; measured 0.7ms → ~0.2ms (10k×5, node 22, May 2026)
-* [ ] Mark each allocation site `escapes: bool` during prepare:
+* [x] Mark each allocation site `escapes: bool` during prepare/analyze:
   * returned, stored to outer scope, passed to non-inlined call → escapes
   * read locally and discarded → doesn't escape
+* [x] Non-escaping objects: scalar replacement for short local object literals used only by static property reads (`obj.a`, `obj["a"]`)
 * [x] Non-escaping arrays: scalar replacement for short local array literals used only by `.length`, constant indexes, and array-literal spread; spread concat measured 0.9ms → <0.1ms
 * [x] Non-escaping that can't be scalar-replaced: arena rewind with module-level transitive safety analysis (`arenaRewindModule` in optimize.js); per-function `applyArenaRewind` emits heap save/restore for safe subset; broader return-slot escape analysis still open but low priority (zero practical impact on benchmarks — watr compile isn't in safe subset)
 * [x] Test pin: `destruct swap` perf moves from 0.7ms toward V8's <0.1ms; current full-suite run logs ~0.2ms, and codegen test asserts no array allocation

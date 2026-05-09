@@ -24,8 +24,7 @@
  */
 
 import { ctx } from './ctx.js'
-import { T } from './analyze.js'
-import { VAL, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
+import { T, VAL, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
 import { MAX_CLOSURE_ARITY } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
@@ -129,6 +128,19 @@ const scalarArrayElems = (expr) => {
   return elems
 }
 
+const scalarObjectProps = (expr) => {
+  if (!Array.isArray(expr) || expr[0] !== '{}') return null
+  const props = staticObjectProps(expr.slice(1))
+  if (!props) return null
+  const seen = new Set()
+  for (let i = 0; i < props.names.length; i++) {
+    const name = props.names[i]
+    if (seen.has(name) || !isSimpleArg(props.values[i])) return null
+    seen.add(name)
+  }
+  return props
+}
+
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 const safeScalarArrayUse = (node, name, parentOp = null) => {
@@ -170,6 +182,39 @@ const rewriteScalarArrayUses = (node, arrays, parentOp = null) => {
     return out
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarArrayUses(part, arrays, op))
+}
+
+const safeScalarObjectUse = (node, name, keys) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
+  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if ((op === '.' || op === '?.') && node[1] === name) return keys.has(node[2])
+  if (op === '[]' && node[1] === name) {
+    const key = staticPropertyKey(node[2])
+    return key != null && keys.has(key)
+  }
+  if (op === '...' && node[1] === name) return false
+  for (let i = 1; i < node.length; i++) {
+    if (!safeScalarObjectUse(node[i], name, keys)) return false
+  }
+  return true
+}
+
+const rewriteScalarObjectUses = (node, objects) => {
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  if ((op === '.' || op === '?.') && objects.has(node[1])) {
+    const fields = objects.get(node[1])
+    return fields.get(node[2]) ?? [, undefined]
+  }
+  if (op === '[]' && objects.has(node[1])) {
+    const key = staticPropertyKey(node[2])
+    const fields = objects.get(node[1])
+    return key != null ? (fields.get(key) ?? [, undefined]) : node
+  }
+  return node.map((part, i) => i === 0 ? part : rewriteScalarObjectUses(part, objects))
 }
 
 const scalarizeArrayLiteralSeq = (seq) => {
@@ -223,6 +268,76 @@ const scalarizeArrayLiteralSeq = (seq) => {
   return { node: [';', ...out], changed: true }
 }
 
+const scalarizeObjectLiteralSeq = (seq, escapes) => {
+  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  let changed = false
+  const stmts = seq.slice(1).map(stmt => {
+    const r = scalarizeObjectLiterals(stmt, escapes)
+    changed ||= r.changed
+    return r.node
+  })
+
+  const candidates = new Map()
+  for (let i = 0; i < stmts.length; i++) {
+    const stmt = stmts[i]
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
+    const decl = stmt[1]
+    if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+    if (escapes.get(decl[1]) !== false) continue
+    const props = scalarObjectProps(decl[2])
+    if (!props) continue
+    const keys = new Set(props.names)
+    let ok = true
+    for (let j = 0; j < stmts.length && ok; j++) {
+      if (j === i) continue
+      ok = safeScalarObjectUse(stmts[j], decl[1], keys)
+    }
+    if (!ok) continue
+    candidates.set(decl[1], { index: i, op: stmt[0], props })
+  }
+  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+
+  const objects = new Map()
+  for (const [name, c] of candidates) {
+    const fields = new Map()
+    for (let i = 0; i < c.props.names.length; i++) {
+      fields.set(c.props.names[i], `${name}${T}obj${ctx.func.uniq++}_${i}`)
+    }
+    objects.set(name, fields)
+  }
+
+  const out = []
+  for (let i = 0; i < stmts.length; i++) {
+    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
+    if (entry) {
+      const [, c] = entry
+      const fields = objects.get(entry[0])
+      if (c.props.names.length) {
+        out.push([c.op, ...c.props.names.map((prop, k) =>
+          ['=', fields.get(prop), rewriteScalarObjectUses(c.props.values[k], objects)])])
+      }
+      changed = true
+      continue
+    }
+    out.push(rewriteScalarObjectUses(stmts[i], objects))
+  }
+  return { node: [';', ...out], changed: true }
+}
+
+function scalarizeObjectLiterals(node, escapes) {
+  if (!Array.isArray(node)) return { node, changed: false }
+  if (node[0] === '=>') return { node, changed: false }
+  if (node[0] === ';') return scalarizeObjectLiteralSeq(node, escapes)
+  let changed = false
+  const out = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = scalarizeObjectLiterals(node[i], escapes)
+    changed ||= r.changed
+    out.push(r.node)
+  }
+  return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
 function scalarizeArrayLiterals(node) {
   if (!Array.isArray(node)) return { node, changed: false }
   if (node[0] === '=>') return { node, changed: false }
@@ -244,6 +359,23 @@ const scalarizeFunctionArrayLiterals = () => {
     let guard = 0
     while (guard++ < 4) {
       const r = scalarizeArrayLiterals(func.body)
+      if (!r.changed) break
+      func.body = r.node
+      changed = true
+    }
+  }
+  return changed
+}
+
+const scalarizeFunctionObjectLiterals = () => {
+  let changed = false
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    let guard = 0
+    while (guard++ < 4) {
+      const escapes = new Map(analyzeBody(func.body).escapes)
+      invalidateLocalsCache(func.body)
+      const r = scalarizeObjectLiterals(func.body, escapes)
       if (!r.changed) break
       func.body = r.node
       changed = true
@@ -666,6 +798,7 @@ export default function plan(ast) {
   if (inlineHotInternalCalls(programFacts, ast)) programFacts = collectProgramFacts(ast)
   if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
+  if (scalarizeFunctionObjectLiterals()) programFacts = collectProgramFacts(ast)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn
 
