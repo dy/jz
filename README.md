@@ -57,7 +57,7 @@ asyncInst.exports.f(21) // 42
 ```
 
 <details>
-<summary><strong>Options</strong></summary>
+<summary><strong>Options</strong></summary><br>
 
 Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones:
 
@@ -500,8 +500,10 @@ cc program.c -o program
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._
 
-### Optimizations
+<details>
+<summary><strong>Optimizations</strong></summary>
 
+<br>
 High-impact summary behind the benchmark table, not an exhaustive list.
 
 | Optimization | Effect |
@@ -519,6 +521,8 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 | Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
 
 `npm run test:bench-pin` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
+
+</details>
 
 
 ## Alternatives
