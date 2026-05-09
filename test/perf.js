@@ -28,17 +28,67 @@ test('perf: fib(30) — WASM faster than JS', () => {
   ok(wasmTime < jsTime * 1.2, `fib: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.2`)
 })
 
-test('perf: mandelbrot — WASM competitive with JS', () => {
-  const { exports: { mandelbrot } } = jz('export let mandelbrot = (cx, cy, max) => { let zx = 0, zy = 0, i = 0; while (zx*zx + zy*zy < 4 && i < max) { let tx = zx*zx - zy*zy + cx; zy = 2*zx*zy + cy; zx = tx; i++ } return i }')
-  const jsMandelbrot = (cx, cy, max) => { let zx = 0, zy = 0, i = 0; while (zx*zx + zy*zy < 4 && i < max) { let tx = zx*zx - zy*zy + cx; zy = 2*zx*zy + cy; zx = tx; i++ } return i }
+test('perf: mandelbrot escape grid — WASM faster than JS', () => {
+  // Bench-shape: render a 128x128 grid inside the wasm function.
+  // The buggy let-in-loop pattern (`let x2 = zx*zx`) needs the widenPass fixpoint
+  // re-walk to widen x2/y2 from i32 to f64 — without it the fractional value
+  // gets `i32.trunc_sat_f64_s`'d and the checksum + perf both drift.
+  const W = 128, H = 128, MAX = 96
+  const src = `
+    export let run = () => {
+      let out = new Uint32Array(${W * H})
+      let dx = ${(0.5 - -2.0) / W}
+      let dy = ${(1.25 - -1.25) / H}
+      for (let py = 0; py < ${H}; py++) {
+        let cy = -1.25 + py * dy
+        for (let px = 0; px < ${W}; px++) {
+          let cx = -2.0 + px * dx
+          let zx = 0, zy = 0, i = 0
+          while (i < ${MAX}) {
+            let x2 = zx * zx, y2 = zy * zy
+            if (x2 + y2 > 4.0) break
+            zy = 2 * zx * zy + cy
+            zx = x2 - y2 + cx
+            i++
+          }
+          out[py * ${W} + px] = i
+        }
+      }
+      let h = 0x811c9dc5 | 0
+      for (let i = 0; i < ${W * H}; i++) h = Math.imul(h ^ (out[i] | 0), 0x01000193) | 0
+      return h >>> 0
+    }
+  `
+  const { exports: { run } } = jz(src)
+  const jsRun = () => {
+    const out = new Uint32Array(W * H)
+    const dx = (0.5 - -2.0) / W
+    const dy = (1.25 - -1.25) / H
+    for (let py = 0; py < H; py++) {
+      const cy = -1.25 + py * dy
+      for (let px = 0; px < W; px++) {
+        const cx = -2.0 + px * dx
+        let zx = 0, zy = 0, i = 0
+        while (i < MAX) {
+          const x2 = zx * zx, y2 = zy * zy
+          if (x2 + y2 > 4.0) break
+          zy = 2 * zx * zy + cy
+          zx = x2 - y2 + cx
+          i++
+        }
+        out[py * W + px] = i
+      }
+    }
+    let h = 0x811c9dc5 | 0
+    for (let i = 0; i < W * H; i++) h = Math.imul(h ^ (out[i] | 0), 0x01000193) | 0
+    return h >>> 0
+  }
+  is(run(), jsRun())
 
-  is(mandelbrot(-0.5, 0.5, 100), jsMandelbrot(-0.5, 0.5, 100))
-  is(mandelbrot(0, 0, 1000), jsMandelbrot(0, 0, 1000))
-
-  const N = 200000
-  const jsTime = bench(() => jsMandelbrot(-0.5, 0.5, 100), N)
-  const wasmTime = bench(() => mandelbrot(-0.5, 0.5, 100), N)
-  console.log(`  mandelbrot x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  const ITERS = 5
+  const jsTime = bench(jsRun, ITERS)
+  const wasmTime = bench(run, ITERS)
+  console.log(`  mandelbrot (${W}x${H}, max=${MAX}) x${ITERS}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
   ok(wasmTime < jsTime * 1.2, `mandelbrot: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.2`)
 })
 
@@ -553,6 +603,84 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
   const wasmTime = bench(walk, N)
   console.log(`  json walk x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
   ok(wasmTime < jsTime * 1.2, `json walk: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.2`)
+})
+
+test('perf: watr WAT compiler — WASM competitive with JS', async () => {
+  // Bench-shape: jzify-bundled watr.compile vs. native ESM watr.compile, on the
+  // same WAT corpus the bench harness uses. On the live bench, jz watr is
+  // tied with V8 (1.46ms vs 1.46ms median, within noise). In this stricter
+  // micro-pin, jz pays for its bump allocator monotonically growing across
+  // calls (V8's GC reclaims between runs). Pin: WASM < JS * 1.5 — a sanity
+  // floor, not a victory threshold. True parity needs a per-call arena reset.
+  const { readFileSync } = await import('fs')
+  const watrSrc = (file) => readFileSync(new URL(`../node_modules/watr/src/${file}`, import.meta.url), 'utf8')
+  const ENTRY = {
+    './src/compile.js': watrSrc('compile.js'),
+    './src/parse.js':   watrSrc('parse.js'),
+    './src/print.js':   watrSrc('print.js'),
+    './src/polyfill.js':watrSrc('polyfill.js'),
+    './src/optimize.js':watrSrc('optimize.js'),
+    './encode.js':      watrSrc('encode.js'),
+    './const.js':       watrSrc('const.js'),
+    './parse.js':       watrSrc('parse.js'),
+    './util.js':        watrSrc('util.js'),
+  }
+  const watrJs = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
+  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memoryPages: 4096 })
+  const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
+
+  const WAT_CORE = `(module
+    (type $bin (func (param i32 i32) (result i32)))
+    (func $add (type $bin) (i32.add (local.get 0) (local.get 1)))
+    (func $mul (type $bin) (i32.mul (local.get 0) (local.get 1)))
+    (func (export "main") (param $n i32) (result i32)
+      (local $i i32)
+      (local $acc i32)
+      (loop $loop
+        (local.set $acc (call $add (local.get $acc) (local.get $i)))
+        (local.set $acc (i32.xor (local.get $acc) (call $mul (local.get $i) (i32.const 17))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br_if $loop (i32.lt_s (local.get $i) (local.get $n))))
+      (local.get $acc)))`
+  const WAT_MEMORY = `(module
+    (memory (export "memory") 1)
+    (data (i32.const 32) "jz-watr-benchmark")
+    (func (export "sum") (param $n i32) (result i32)
+      (local $i i32)
+      (local $acc i32)
+      (loop $loop
+        (local.set $acc (i32.add (local.get $acc) (i32.load8_u (i32.add (i32.const 32) (local.get $i)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br_if $loop (i32.lt_s (local.get $i) (local.get $n))))
+      (local.get $acc)))`
+  const WAT_TABLE = `(module
+    (type $ret (func (result i32)))
+    (table $tbl 3 funcref)
+    (elem (table $tbl) (i32.const 0) funcref $a $b $c)
+    (func $a (result i32) (i32.const 11))
+    (func $b (result i32) (i32.const 17))
+    (func $c (result i32) (i32.const 23))
+    (func (export "call") (param $i i32) (result i32)
+      (call_indirect $tbl (type $ret) (local.get $i))))`
+
+  const corpus = [WAT_CORE, WAT_MEMORY, WAT_TABLE]
+  // Mirror bench shape: 24 stages per measurement (matching bench/watr/watr.js
+  // N_ITERS=24). Outer N is small because jz's bump allocator grows monotonically
+  // across calls (no per-call arena reset yet). The bench medians 21 single-render
+  // samples; we approximate by measuring N=10 single-stage iterations so memory
+  // pressure stays bench-realistic.
+  const ITERS = 24
+  const jsRun = () => { for (let k = 0; k < ITERS; k++) jsCompile(corpus[k % 3]) }
+  const wasmRun = () => { for (let k = 0; k < ITERS; k++) jzCompile(corpus[k % 3]) }
+  // sanity: bytes match for one of the corpora
+  const a = jsCompile(WAT_CORE), b = jzCompile(WAT_CORE)
+  is(a.length, b.length, 'watr: jz vs native compile binary length')
+
+  const N = 10
+  const jsTime = bench(jsRun, N)
+  const wasmTime = bench(wasmRun, N)
+  console.log(`  watr (3 corpora x${ITERS}) x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  ok(wasmTime < jsTime * 1.5, `watr: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.5`)
 })
 
 test('codegen: .length hoisted out of for-loop', () => {

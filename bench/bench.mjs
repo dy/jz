@@ -28,6 +28,7 @@ const CASE_NAMES = {
   tokenizer: 'tokenizer scan',
   callback: 'callback map',
   aos: 'AoS to SoA',
+  mandelbrot: 'mandelbrot escape',
   json: 'JSON parse walk',
   watr: 'watr WAT compiler',
 }

@@ -1095,6 +1095,35 @@ export function analyzeBody(body) {
   }
   widenPass(body)
 
+  // Re-resolve let-decl RHS types now that widenPass has widened. A `let x2 =
+  // zx*zx` declared at i32 because zx was i32 at scan time must widen if zx
+  // was later re-typed to f64. Without this, integer-init locals shadowed
+  // by f64-arithmetic RHSs end up with `i32.trunc_sat_f64_s` truncating the
+  // fractional value (e.g. mandelbrot escape: `x2 = zx*zx` losing 3.515 → 3).
+  // Monotonic: only widens i32 → f64. Bound by locals count so no infinite loop.
+  let widened = true
+  while (widened) {
+    widened = false
+    const recheck = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === '=>') return
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const a = node[i]
+          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+            const name = a[1], rhs = a[2]
+            if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64') {
+              locals.set(name, 'f64'); widened = true
+            }
+          }
+        }
+      }
+      for (let i = 1; i < node.length; i++) recheck(node[i])
+    }
+    recheck(body)
+  }
+
   const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
   _bodyFactsCache.set(body, result)
   return result

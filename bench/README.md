@@ -47,6 +47,7 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`tokenizer`](tokenizer/tokenizer.js) | string-heavy scan with `charCodeAt`, branches, and integer token accumulation |
 | [`callback`](callback/callback.js) | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
+| [`mandelbrot`](mandelbrot/mandelbrot.js) | 256×256 escape-time iteration; dense f64 hot loop with conditional break and i32 counter |
 | [`json`](json/json.js) | `JSON.parse` plus heterogeneous object/array walk; JS-only by design |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 
