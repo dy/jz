@@ -657,6 +657,22 @@ export default (ctx) => {
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
   ctx.core.emit['?.()'] = (callee, ...args) => {
+    // Method-reference callee: `recv.m(...)` or `recv?.m(...)` form. Methods are
+    // statically registered emitters and aren't real closure values, so route them
+    // as a direct method call. The outer optional short-circuits when the receiver
+    // is nullish — the method itself is statically known to exist.
+    if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
+      const methodEmit = ctx.core.emit[`.${callee[2]}`]
+      if (methodEmit) {
+        const recv = callee[1]
+        const t = temp()
+        const va = asF64(emit(recv))
+        const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
+        if (vt) updateRep(t, { val: vt })
+        const callResult = methodEmit(t, ...args)
+        return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(callResult))
+      }
+    }
     const t = temp()
     const va = asF64(emit(callee))
     // If nullish → return NULL_NAN, else call via fn.call

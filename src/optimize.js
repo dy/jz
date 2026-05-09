@@ -52,9 +52,12 @@ export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
   'hoistPtrType',
   'hoistInvariantPtrOffset',
+  'hoistInvariantPtrOffsetLoop',
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
   'hoistAddrBase',
   'hoistInvariantCellLoads',
+  'cseScalarLoad',
+  'csePureExpr',
   'sortLocalsByUse',
   'specializeMkptr',
   'specializePtrBase',
@@ -520,6 +523,132 @@ export function hoistInvariantPtrOffset(fn) {
 }
 
 /**
+ * Per-loop hoist of `(call $__ptr_offset (local.get X))` for locals X that are
+ * loop-invariant (no `local.set/local.tee` to X anywhere in the loop body, no
+ * non-safe call inside the loop). Mirrors `hoistInvariantCellLoads`.
+ *
+ * The function-level pass above only handles params (single hoist at func
+ * entry). This pass handles assigned locals that go invariant within a loop
+ * scope — the aos pattern: `let rows = []; for (...) rows.push(...)` — outside
+ * the build loop, `rows` is no longer reassigned, so `__ptr_offset(rows)` is
+ * loop-invariant in the consumer loop.
+ *
+ * Inside-out: inner loops first. After an inner-loop hoist, the outer loop now
+ * contains a `(local.set $__pol (call $__ptr_offset ...))` whose call gets
+ * hoisted again at the outer level, climbing the snap up to the outermost loop
+ * where X is invariant. Cleanup of the chained `local.set` movs is handled by
+ * watr CSE/DCE.
+ */
+export function hoistInvariantPtrOffsetLoop(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  let snapId = 0
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__pol${snapId}`)) snapId++
+  const newLocals = []
+
+  // Refcount across the whole fn to skip shared subtrees (watr CSE may leave them).
+  const refcount = new Map()
+  const countRefs = (node) => {
+    if (!Array.isArray(node)) return
+    const n = (refcount.get(node) || 0) + 1
+    refcount.set(node, n)
+    if (n > 1) return
+    for (let i = 0; i < node.length; i++) countRefs(node[i])
+  }
+  countRefs(fn)
+
+  const processLoop = (loopNode) => {
+    // Recurse into inner loops first (bottom-up).
+    for (let i = 1; i < loopNode.length; i++) {
+      const child = loopNode[i]
+      if (!Array.isArray(child)) continue
+      processNode(child, loopNode, i)
+    }
+
+    // Scan loop body (including nested loops) for writes to any local and for
+    // any non-safe call. Non-safe calls could realloc/move the underlying
+    // array storage and invalidate cached offsets.
+    const writes = new Set()
+    let unsafe = false
+    const scan = (node) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'local.set' || op === 'local.tee') {
+        if (typeof node[1] === 'string') writes.add(node[1])
+        for (let i = 2; i < node.length; i++) scan(node[i])
+        return
+      }
+      if (op === 'call') {
+        if (!SAFE_OFFSET_CALLS.has(node[1])) unsafe = true
+        for (let i = 2; i < node.length; i++) scan(node[i])
+        return
+      }
+      if (op === 'call_ref' || op === 'call_indirect') {
+        unsafe = true
+        for (let i = 1; i < node.length; i++) scan(node[i])
+        return
+      }
+      for (let i = 1; i < node.length; i++) scan(node[i])
+    }
+    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+    if (unsafe) return []
+
+    // Collect call sites for invariant locals. Skip nested loops (already
+    // processed) but recurse through everything else.
+    const sites = new Map()  // localName → [{ parent, idx }]
+    const collect = (node, parent, idx) => {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'loop') return
+      if (op === 'call' && node[1] === '$__ptr_offset' && node.length === 3) {
+        const a = node[2]
+        const inner = (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) ? a[1] : a
+        if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string'
+            && !writes.has(inner[1])
+            && (refcount.get(node) || 0) <= 1
+            && (refcount.get(parent) || 0) <= 1) {
+          let arr = sites.get(inner[1])
+          if (!arr) { arr = []; sites.set(inner[1], arr) }
+          arr.push({ parent, idx })
+        }
+        return
+      }
+      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
+    }
+    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
+
+    const snaps = []
+    for (const [X, arr] of sites) {
+      if (arr.length < 1) continue
+      const snapName = `$__pol${snapId++}`
+      newLocals.push(['local', snapName, 'i32'])
+      snaps.push(['local.set', snapName, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', X]]]])
+      for (const { parent, idx } of arr) {
+        parent[idx] = ['local.get', snapName]
+      }
+    }
+    return snaps
+  }
+
+  const processNode = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'loop') {
+      const snaps = processLoop(node)
+      if (snaps.length) parent.splice(idx, 0, ...snaps)
+      return
+    }
+    for (let i = 0; i < node.length; i++) processNode(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) processNode(fn[i], fn, i)
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
  * Hoist loop-invariant boxed-cell reads out of loops.
  *
  * Boxed-capture cells (`$cell_X`, allocated by the closure-capture pass) are
@@ -674,6 +803,314 @@ export function hoistInvariantCellLoads(fn) {
   for (let i = bodyStart; i < fn.length; i++) {
     processNode(fn[i], fn, i)
   }
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
+ * CSE for `(f64.load offset=K (local.get $X))` over straight-line regions
+ * where $X is an i32-typed local (an unboxed pointer in jz's value model).
+ *
+ * Aos hot path: `let p = rows[i]; xs[i] = p.x + p.y*0.25 + r;
+ *                ys[i] = p.y - p.z*0.5;
+ *                zs[i] = p.z + p.x*0.125`
+ * — emits 6 f64.load on $p (each of x/y/z twice); collapses to 3 unique loads
+ * shared via tee'd snap locals.
+ *
+ * Safety: jz's invariant — distinct unboxed-pointer locals come from distinct
+ * fresh allocations (analyzePtrUnboxable refuses to unbox aliased locals).
+ * So `(f64.store ADDR ...)` with base `(local.get $Y)` for $Y ≠ $X cannot
+ * touch addresses reachable via `$X + K`. Stores to typed-array slots in the
+ * loop body don't invalidate row-pointer reads.
+ *
+ * Region boundaries that flush the table:
+ *   - branch (br/br_if/br_table/return/unreachable)
+ *   - non-pure call
+ *   - loop / if  (control flow)
+ *   - local.set/local.tee on a tracked $X (invalidates that X's entries)
+ *   - store whose address tree references a tracked $X
+ * Blocks are treated as transparent — recurse into children.
+ */
+export function cseScalarLoad(fn) {
+  // DISABLED: the safety claim above relies on `analyzePtrUnboxable` having vetted
+  // every i32 local as a non-aliased fresh-allocation pointer. But this pass scans
+  // *all* i32 locals from `(local … i32)` decls — wasm-native i32 scalars (lengths,
+  // indices), narrow-ABI helper returns, and analyze.js's new arrayElemSchema-driven
+  // unboxes share the same declaration form. The metacircular path (jz-compiled
+  // watr.wasm) trips this: CSE'd loads survive across stores that legitimately
+  // mutate the same memory through a different i32 local, returning stale bytes
+  // (manifests as "memory access out of bounds" once a corrupted offset is
+  // dereferenced). Re-enable once candidacy is restricted to vetted pointers
+  // (e.g. emit-side annotation or rep-derived whitelist).
+  return
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  const i32Locals = new Set()
+  for (let i = 2; i < fn.length; i++) {
+    const c = fn[i]
+    if (Array.isArray(c) && (c[0] === 'local' || c[0] === 'param') && typeof c[1] === 'string' && c[2] === 'i32') {
+      i32Locals.add(c[1])
+    }
+  }
+  if (!i32Locals.size) return
+
+  let snapId = 0
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__cs${snapId}`)) snapId++
+  const newLocals = []
+
+  // CSE table: key `${X}|${K}` → { snapName | null, anchorParent, anchorIdx }
+  const table = new Map()
+
+  const invalidateLocal = (X) => {
+    for (const key of table.keys()) {
+      if (key.startsWith(`${X}|`)) table.delete(key)
+    }
+  }
+
+  // Scan a node's subtree and return the set of i32 locals referenced via local.get.
+  const collectGets = (node, out) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'local.get' && typeof node[1] === 'string' && i32Locals.has(node[1])) {
+      out.add(node[1])
+      return
+    }
+    for (let i = 1; i < node.length; i++) collectGets(node[i], out)
+  }
+
+  // Parse f64.load shape; returns { K, addrIdx } or null.
+  const parseLoad = (node) => {
+    if (!Array.isArray(node) || node[0] !== 'f64.load') return null
+    let K = 0, addrIdx = 1
+    if (typeof node[1] === 'string' && node[1].startsWith('offset=')) {
+      K = parseInt(node[1].slice(7), 10) | 0
+      addrIdx = 2
+    }
+    if (node.length <= addrIdx) return null
+    return { K, addrIdx }
+  }
+
+  const walk = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    // Control-flow boundaries: clear table.
+    if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return' || op === 'unreachable') {
+      // Process args first (a br_if value, br arg, etc. could still benefit from current table)
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'loop' || op === 'if') {
+      // Save table state isn't useful; recurse with cleared table, then clear after.
+      const saved = new Map(table)
+      table.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      // After leaving compound, conservatively assume invalidation.
+      table.clear()
+      // Restore? No — restoring would be unsafe since the compound may have written.
+      saved.clear()
+      return
+    }
+
+    if (op === 'call') {
+      const callee = node[1]
+      // Process args first.
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      if (!SAFE_OFFSET_CALLS.has(callee)) table.clear()
+      return
+    }
+
+    if (op === 'call_ref' || op === 'call_indirect') {
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'local.set' || op === 'local.tee') {
+      // Process value first.
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      const X = node[1]
+      if (typeof X === 'string') invalidateLocal(X)
+      return
+    }
+
+    // Stores: process operands first; if address tree references any tracked X,
+    // invalidate that X's entries.
+    if (op === 'f64.store' || op === 'i32.store' || op === 'i64.store'
+        || op === 'i32.store8' || op === 'i32.store16'
+        || op === 'i64.store8' || op === 'i64.store16' || op === 'i64.store32'
+        || op === 'f32.store') {
+      // Address may be node[1] (raw) or node[2] (when node[1] is offset=/align= attr).
+      let addrIdx = 1
+      if (typeof node[1] === 'string' && (node[1].startsWith('offset=') || node[1].startsWith('align='))) {
+        addrIdx = 2
+      }
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      const dirty = new Set()
+      collectGets(node[addrIdx], dirty)
+      for (const X of dirty) invalidateLocal(X)
+      return
+    }
+
+    // f64.load: try CSE.
+    const lp = parseLoad(node)
+    if (lp) {
+      const addr = node[lp.addrIdx]
+      if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string' && i32Locals.has(addr[1])) {
+        const X = addr[1]
+        const key = `${X}|${lp.K}`
+        const entry = table.get(key)
+        if (entry) {
+          if (!entry.snapName) {
+            const snapName = `$__cs${snapId++}`
+            entry.snapName = snapName
+            newLocals.push(['local', snapName, 'f64'])
+            // Wrap anchor with (local.tee $snap originalLoad).
+            const orig = entry.anchorParent[entry.anchorIdx]
+            entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
+          }
+          parent[idx] = ['local.get', entry.snapName]
+          return
+        } else {
+          table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx })
+          // Don't recurse; (local.get $X) has no children of interest.
+          return
+        }
+      }
+      // Non-CSE'able address; recurse to find inner loads.
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      return
+    }
+
+    // Default: recurse.
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+
+  if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
+}
+
+/**
+ * CSE for pure f64 binary ops on local-only operands.
+ *
+ * Mandelbrot loop: condition computes `(f64.mul $zx $zx)` and `(f64.mul $zy $zy)`;
+ * body recomputes both inside `tx = zx*zx - zy*zy + cx`. Pure ops on locals can't
+ * alias memory — only `local.set/tee X` invalidates entries referencing X. Unlike
+ * `cseScalarLoad`, br_if doesn't need to clear (no memory aliasing concern).
+ *
+ * Targets nodes of shape `(OP A B)` where OP ∈ {f64.mul, f64.add, f64.sub} and
+ * A,B ∈ `(local.get X)` | `(f64.const N)`. Commutative ops (mul, add) sort
+ * operand keys for canonical form.
+ *
+ * Region boundaries:
+ *   - `local.set/tee X` → invalidates entries referencing X
+ *   - `loop`, `if` → recurse with cleared table; clear after (compound may have written)
+ *   - `call`, `call_ref`, `call_indirect` → no clear (calls don't write locals directly;
+ *     the surrounding `local.set/tee` handles that)
+ *   - `br/br_if/br_table/return/unreachable` → NO clear (pure values still valid)
+ */
+export function csePureExpr(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  let snapId = 0
+  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__pe${snapId}`)) snapId++
+  const newLocals = []
+
+  const COMMUTATIVE = new Set(['f64.mul', 'f64.add'])
+  const TARGET_OPS = new Set(['f64.mul', 'f64.add', 'f64.sub'])
+
+  // Encode a leaf operand to a stable string key. Returns null if not pure-leaf.
+  const leafKey = (n) => {
+    if (!Array.isArray(n)) return null
+    if (n[0] === 'local.get' && typeof n[1] === 'string') return `L:${n[1]}`
+    if (n[0] === 'f64.const') return `C:${n[1]}`
+    return null
+  }
+
+  // table: key → { snapName | null, anchorParent, anchorIdx, locals: Set<string> }
+  const table = new Map()
+
+  const invalidateLocal = (X) => {
+    for (const [key, entry] of table) {
+      if (entry.locals.has(X)) table.delete(key)
+    }
+  }
+
+  const walk = (node, parent, idx) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+
+    if (op === 'loop' || op === 'if') {
+      const saved = new Map(table)
+      table.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      saved.clear()
+      return
+    }
+
+    // `then`/`else` branches of an `if` are mutually exclusive at runtime —
+    // a snap tee cached in the `then` branch is unset when the `else` runs.
+    // Isolate per-branch tables so a sibling branch can't reach into another's
+    // CSE entries.
+    if (op === 'then' || op === 'else') {
+      table.clear()
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      table.clear()
+      return
+    }
+
+    if (op === 'call' || op === 'call_ref' || op === 'call_indirect') {
+      // Calls don't write locals; recurse, no clear.
+      for (let i = 1; i < node.length; i++) walk(node[i], node, i)
+      return
+    }
+
+    if (op === 'local.set' || op === 'local.tee') {
+      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
+      const X = node[1]
+      if (typeof X === 'string') invalidateLocal(X)
+      return
+    }
+
+    // Try CSE on (OP A B) where A,B are pure leaves.
+    if (TARGET_OPS.has(op) && node.length === 3) {
+      const ka = leafKey(node[1])
+      const kb = leafKey(node[2])
+      if (ka && kb) {
+        const key = COMMUTATIVE.has(op) && ka > kb ? `${op}|${kb}|${ka}` : `${op}|${ka}|${kb}`
+        const entry = table.get(key)
+        if (entry) {
+          if (!entry.snapName) {
+            const snapName = `$__pe${snapId++}`
+            entry.snapName = snapName
+            newLocals.push(['local', snapName, 'f64'])
+            const orig = entry.anchorParent[entry.anchorIdx]
+            entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
+          }
+          parent[idx] = ['local.get', entry.snapName]
+          return
+        } else {
+          const locals = new Set()
+          if (ka.startsWith('L:')) locals.add(ka.slice(2))
+          if (kb.startsWith('L:')) locals.add(kb.slice(2))
+          table.set(key, { snapName: null, anchorParent: parent, anchorIdx: idx, locals })
+          return
+        }
+      }
+      // Fall through to recurse.
+    }
+
+    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
 
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
@@ -1069,17 +1506,23 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
 export function optimizeFunc(fn, cfg) {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
+      cfg.hoistInvariantPtrOffsetLoop === false &&
       cfg.fusedRewrite === false &&
       cfg.hoistAddrBase === false &&
       cfg.hoistInvariantCellLoads === false &&
+      cfg.cseScalarLoad === false &&
+      cfg.csePureExpr === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) hoistInvariantPtrOffset(fn)
+  if (!cfg || cfg.hoistInvariantPtrOffsetLoop !== false) hoistInvariantPtrOffsetLoop(fn)
   const counts = new Map()
   if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
   if (!cfg || cfg.hoistAddrBase !== false) hoistAddrBase(fn)
   if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
+  if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
+  if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   // Vectorizer runs only in the POST-watr phase (`__phase === 'post'`), where
   // narrow.js + watr have produced the canonical lane-local shape. Running it
   // pre-watr matches a noisier IR and would re-fire post-watr on the residual

@@ -23,8 +23,17 @@ export default (ctx) => {
   // header gate `off >= __heap_start` keeps static-segment objects on the
   // global-hash path (their off-16 belongs to neighboring static slots).
   ctx.core.emit['{}'] = (...rawProps) => {
-    if (rawProps.length === 0)
-      return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1], ['i32.const', 8]])
+    if (rawProps.length === 0) {
+      // Honor the literal target's autobox/merged schema so `let ctx = {}` followed
+      // by `ctx.meta = ...` allocates with the right cap. Otherwise the default
+      // cap=1 alloc overwrites the autobox preamble's wrapper, and subsequent
+      // schema-slot writes to offsets >= 8 land out-of-bounds.
+      const target = takeLiteralTarget()
+      const merged = target ? ctx.schema.resolve(target) : null
+      const schemaId = merged ? ctx.schema.idOf(target) : 0
+      const cap = merged ? Math.max(1, merged.length) : 1
+      return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap], ['i32.const', 8]])
+    }
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
     const props = rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','

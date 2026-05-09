@@ -1370,9 +1370,9 @@ const handlers = {
     } else if (Array.isArray(head) && head[0] === 'in') {
       // for (let k in obj) → unroll at compile time when schema known, else HASH runtime iteration
       const [, decl, src] = head
-      const varName = Array.isArray(decl) && decl[0] === 'let' ? decl[1] : decl
+      const varName = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const') ? decl[1] : decl
       const srcName = typeof src === 'string' ? (ctx.scope.chain[src] || src) : null
-      const sid = typeof srcName === 'string' && ctx.schema.vars.get(srcName)
+      const sid = typeof srcName === 'string' ? ctx.schema.vars.get(srcName) : null
       if (sid != null) {
         // Known schema → compile-time unrolling with string keys
         const keys = ctx.schema.list[sid]
