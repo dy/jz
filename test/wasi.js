@@ -149,6 +149,58 @@ test('EdgeJS smoke: scalar module has no imports', () => {
   is(inst.exports.f(9), 81)
 })
 
+// === WASI guardrails for unsupported host-bound constructs ===
+// _interp[name] and bare host-global refs both push raw env imports into the wasm.
+// The post-compile __ext_* check at index.js doesn't see them (they're not __ext_*),
+// so they slip past and produce wasm that fails to instantiate under wasmtime/wasmer.
+// Reject at compile time with a construct-specific message.
+
+function throwsCompile(code, opts, match) {
+  let error
+  try { compile(code, opts) } catch (e) { error = e }
+  ok(error && error.message.includes(match), `expected "${match}", got "${error?.message}"`)
+}
+
+test('WASI: _interp option throws with construct-specific message', () => {
+  throwsCompile(
+    `export let f = () => myFn(1)`,
+    { host: 'wasi', _interp: { myFn: () => 42 } },
+    `_interp['myFn']`
+  )
+})
+
+test('WASI: _interp does not throw under host:js', () => {
+  // The reject is wasi-only; host:'js' is the existing _interp use case.
+  let error
+  try { compile(`export let f = () => myFn(1)`, { _interp: { myFn: () => 42 } }) }
+  catch (e) { error = e }
+  is(error, undefined)
+})
+
+test('WASI: bare host-global reference throws', () => {
+  throwsCompile(
+    `export let f = () => globalThis`,
+    { host: 'wasi' },
+    'globalThis'
+  )
+})
+
+test('WASI: WebAssembly host-global reference throws', () => {
+  throwsCompile(
+    `export let f = () => WebAssembly`,
+    { host: 'wasi' },
+    'WebAssembly'
+  )
+})
+
+test('WASI: host-global reference does not throw under host:js', () => {
+  // host:'js' continues to auto-import host globals as before.
+  let error
+  try { compile(`export let f = () => globalThis`) }
+  catch (e) { error = e }
+  is(error, undefined)
+})
+
 // === WASI native runtime tests ===
 
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }

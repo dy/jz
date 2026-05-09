@@ -2497,6 +2497,7 @@ export function emit(node, expect) {
     // Auto-import known host globals (WebAssembly, globalThis, etc.)
     const HOST_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
     if (HOST_GLOBALS.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && !isGlobal(node)) {
+      if (ctx.transform.host === 'wasi') err(`host:'wasi': reference to host global \`${node}\` requires an env import. Remove the reference or use host:'js'.`)
       ctx.features.external = true
       ctx.scope.globals.set(node, null)
       // Carrier is i64 (not f64) so V8 can't canonicalize the NaN-boxed

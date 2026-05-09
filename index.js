@@ -151,6 +151,7 @@ jz.compile = (code, opts = {}) => {
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue;
+      if (ctx.transform.host === 'wasi') throw new Error(`host:'wasi' does not support _interp['${name}']: env imports are unavailable in WASI. Implement it natively.`)
       ctx.features.external = true
       const params = Array(fn.length).fill(['param', 'f64'])
       ctx.module.imports.push(['import', '"env"', `"${name}"`, ['func', `$${name}`, ...params, ['result', 'f64']]])
