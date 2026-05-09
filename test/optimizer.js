@@ -109,6 +109,30 @@ test('arrayElemValType: typed-array .map runtime correctness', () => {
   is(main(), 24)
 })
 
+test('vectorizeLaneLocal: preserves stores inside void blocks', () => {
+  const { main } = run(`
+    export const main = () => {
+      const state = new Int32Array(12)
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 12; i++) {
+        s ^= s << 13
+        s ^= s >>> 17
+        s ^= s << 5
+        state[i] = s
+      }
+      for (let i = 0; i < 12; i++) {
+        let x = state[i] | 0
+        x ^= x << 7
+        x ^= x >>> 9
+        x = Math.imul(x, 1103515245) + 12345
+        state[i] = x ^ (x >>> 16)
+      }
+      return state[11] >>> 0
+    }
+  `)
+  is(main(), 2805299282)
+})
+
 test('escape analysis: local object property reads scalarize literal', () => {
   const src = `
     export const main = (x) => {

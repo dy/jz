@@ -772,11 +772,10 @@ function liftStmt(stmt, ctx) {
     // Block may be: ['block', LABEL?, RESULT?, ...stmts]
     let i = 1
     if (typeof stmt[i] === 'string' && stmt[i].startsWith('$')) i++
-    if (isArr(stmt[i]) && stmt[i][0] === 'result') i++
+    const hasResult = isArr(stmt[i]) && stmt[i][0] === 'result'
+    if (hasResult) i++
     const inner = stmt.slice(i)
-    // Last item is the tail expression yielding the block's result. Drop it
-    // from the lifted sequence — its only consumer is the sibling "drop".
-    const stmts = inner.slice(0, inner.length - 1)
+    const stmts = hasResult ? inner.slice(0, inner.length - 1) : inner
     const out = ['__seq__']
     for (const s of stmts) {
       const lifted = liftStmt(s, ctx)
