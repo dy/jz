@@ -1,33 +1,52 @@
-import './errors.js'
-import './math.js'
-import './bytebeat.js'
-import './imports.js'
-import './statements.js'
-import './multi-return.js'
-import './types.js'
-import './pointers.js'
-import './data.js'
-import './destruct.js'
-import './closures.js'
-import './methods.js'
-import './features.js'
-import './feature-gating.js'
-import './strings.js'
-import './symbols.js'
-import './rest-params.js'
-import './spread.js'
-import './number-methods.js'
-import './json.js'
-import './wasi.js'
-import './mem.js'
-import './buffer.js'
-import './regex.js'
-import './simd.js'
-import './cli.js'
-import './object-regressions.js'
-import './external.js'
-import './watr.js'
-import './optimizer.js'
-import './perf.js'
-import './timers.js'
-import './test262-regressions.js'
+const TESTS = [
+  'errors',
+  'math',
+  'bytebeat',
+  'imports',
+  'statements',
+  'multi-return',
+  'types',
+  'pointers',
+  'data',
+  'destruct',
+  'closures',
+  'methods',
+  'features',
+  'feature-gating',
+  'strings',
+  'symbols',
+  'rest-params',
+  'spread',
+  'number-methods',
+  'json',
+  'date',
+  'wasi',
+  'mem',
+  'buffer',
+  'regex',
+  'simd',
+  'cli',
+  'object-regressions',
+  'external',
+  'watr',
+  'optimizer',
+  'perf',
+  'timers',
+  'test262-regressions',
+]
+
+const argFilters = process.argv.slice(2)
+  .filter(arg => !arg.startsWith('-'))
+  .map(arg => arg.replace(/^test\//, '').replace(/\.js$/, ''))
+
+const selected = argFilters.length
+  ? TESTS.filter(name => argFilters.includes(name))
+  : TESTS
+
+if (argFilters.length && selected.length !== argFilters.length) {
+  const known = new Set(TESTS)
+  const missing = argFilters.filter(name => !known.has(name))
+  throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
+}
+
+for (const name of selected) await import(`./${name}.js`)

@@ -148,7 +148,7 @@ const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
 // heap strings) and BIGINT (content compare).
 const REF_EQ_KINDS = new Set([
   VAL.ARRAY, VAL.OBJECT, VAL.SET, VAL.MAP,
-  VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.REGEX,
+  VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.REGEX, VAL.DATE,
 ])
 
 function stringLiteral(node) {

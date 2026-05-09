@@ -547,6 +547,7 @@ export const GLOBALS = {
   Object: 'Object',
   Symbol: 'Symbol',
   JSON: 'JSON',
+  Date: 'Date',
   isNaN: 'number',
   isFinite: 'number',
   parseInt: 'number',

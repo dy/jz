@@ -199,7 +199,7 @@ export function ptrOffsetIR(valIR, valType) {
  *  to PTR.ARRAY but callers that want to skip forwarding must check separately. */
 const VAL_TO_PTR = {
   array: PTR.ARRAY, object: PTR.OBJECT, set: PTR.SET, map: PTR.MAP,
-  closure: PTR.CLOSURE, typed: PTR.TYPED, buffer: PTR.BUFFER,
+  closure: PTR.CLOSURE, typed: PTR.TYPED, buffer: PTR.BUFFER, date: PTR.OBJECT,
 }
 export const valKindToPtr = (vt) => VAL_TO_PTR[vt]
 
@@ -394,7 +394,7 @@ export function truthyIR(e) {
       const name = e[1][0] === '$' ? e[1].slice(1) : e[1]
       const vt = lookupValType(name)
       if (vt === VAL.ARRAY || vt === VAL.OBJECT || vt === VAL.SET || vt === VAL.MAP ||
-          vt === VAL.CLOSURE || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.REGEX) {
+          vt === VAL.CLOSURE || vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.REGEX || vt === VAL.DATE) {
         return typed(['i32.eqz', isNullish(e)], 'i32')
       }
     }

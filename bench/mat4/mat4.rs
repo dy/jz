@@ -40,7 +40,7 @@ fn init(a: &mut [f64; 16], b: &mut [f64; 16]) {
     }
 }
 
-fn multiply_many(a: &mut [f64; 16], b: &[f64; 16], out: &mut [f64; 16], iters: usize) {
+fn multiply_many(a: &mut [f64; 16], b: &mut [f64; 16], out: &mut [f64; 16], iters: usize) {
     for n in 0..iters {
         let nf = black_box(n) as f64;
         for r in 0..4 {
@@ -55,6 +55,8 @@ fn multiply_many(a: &mut [f64; 16], b: &[f64; 16], out: &mut [f64; 16], iters: u
         let t = a[0];
         a[0] = out[15];
         a[5] = t + out[10] * 0.000001;
+        b[0] += out[0] * 0.00000000001;
+        b[5] -= out[5] * 0.00000000001;
     }
 }
 
@@ -64,14 +66,14 @@ fn main() {
     let mut out = [0.0; 16];
     init(&mut a, &mut b);
     for _ in 0..N_WARMUP {
-        multiply_many(&mut a, &b, &mut out, N_ITERS);
+        multiply_many(&mut a, &mut b, &mut out, N_ITERS);
     }
 
     let mut samples = [0.0; N_RUNS];
     for sample in &mut samples {
         init(&mut a, &mut b);
         let t0 = Instant::now();
-        multiply_many(&mut a, &b, &mut out, N_ITERS);
+        multiply_many(&mut a, &mut b, &mut out, N_ITERS);
         *sample = t0.elapsed().as_secs_f64() * 1000.0;
     }
 

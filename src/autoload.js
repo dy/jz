@@ -66,6 +66,7 @@ export const CALL_MODULES = dict({
   'Object.entries': ['core', 'object', 'string'],
   'Object.assign': ['core', 'object'],
   'Object.create': ['core', 'object'],
+  'Date.UTC': ['core', 'date'],
   'Date.now': ['core', 'console'],
   'performance.now': ['core', 'console'],
   'readStdin': ['core', 'console'],
@@ -92,12 +93,12 @@ export const GENERIC_METHOD_MODULES = dict({
   hasOwnProperty: ['core', 'object', 'string', 'collection'],
 })
 
-export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map']
+export const CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','Set','Map','Date']
 export const TYPED_CTORS = ['Float64Array','Float32Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 export const COLLECTION_CTORS = ['Set', 'Map']
 export const TIMER_NAMES = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'])
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
+export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string' }
 
 const MOD_DEPS = {
   number: ['core', 'string'],
@@ -107,6 +108,7 @@ const MOD_DEPS = {
   collection: ['core', 'number'],
   symbol: ['core'],
   json: ['core', 'string', 'number', 'collection'],
+  date: ['core', 'number', 'string'],
   console: ['core', 'string', 'number'],
   regex: ['core', 'string', 'array'],
 }
@@ -160,12 +162,13 @@ export const includeForProperty = prop => {
 }
 
 export const runtimeCtorKind = name =>
-  TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : null
+  TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : name === 'Date' ? 'date' : null
 
 export const includeForRuntimeCtor = name => {
   const kind = runtimeCtorKind(name)
   if (kind === 'typedarray') includeMods('core', 'typedarray')
   else if (kind === 'collection') includeMods('core', 'collection')
+  else if (kind === 'date') includeMods('core', 'date')
   return kind
 }
 

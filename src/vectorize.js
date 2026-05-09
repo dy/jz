@@ -54,6 +54,122 @@ function findBodyStart(fn) {
   return fn.length
 }
 
+const isArr = Array.isArray
+
+const exprEq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const localGetName = n => isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' ? n[1] : null
+const f64Zero = n => isArr(n) && n[0] === 'f64.const' && Number(n[1]) === 0
+
+const matchF64MulLocals = n => {
+  if (!isArr(n) || n[0] !== 'f64.mul') return null
+  const a = localGetName(n[1])
+  const b = localGetName(n[2])
+  return a && b ? [a, b] : null
+}
+
+const matchAccumStep = (n, acc) => {
+  if (!isArr(n) || n[0] !== 'local.set' || n[1] !== acc) return null
+  const e = n[2]
+  if (!isArr(e) || e[0] !== 'f64.add') return null
+  if (localGetName(e[1]) === acc) return matchF64MulLocals(e[2])
+  if (localGetName(e[2]) === acc) return matchF64MulLocals(e[1])
+  return null
+}
+
+const matchDotStore = (n, acc) => {
+  if (!isArr(n) || n[0] !== 'local.set' || typeof n[1] !== 'string') return null
+  const e = n[2]
+  if (localGetName(e) === acc) return { out: n[1], addend: null }
+  if (!isArr(e) || e[0] !== 'f64.add') return null
+  if (localGetName(e[1]) === acc) return { out: n[1], addend: e[2] }
+  if (localGetName(e[2]) === acc) return { out: n[1], addend: e[1] }
+  return null
+}
+
+const matchF64DotSeq = (stmts, i) => {
+  const reset = stmts[i]
+  if (!isArr(reset) || reset[0] !== 'local.set' || typeof reset[1] !== 'string' || !f64Zero(reset[2])) return null
+  const acc = reset[1]
+  const left = [], right = []
+  for (let k = 0; k < 4; k++) {
+    const pair = matchAccumStep(stmts[i + 1 + k], acc)
+    if (!pair) return null
+    left.push(pair[0])
+    right.push(pair[1])
+  }
+  const store = matchDotStore(stmts[i + 5], acc)
+  return store ? { end: i + 6, acc, left, right, ...store } : null
+}
+
+const f64x2Pair = (lo, hi) => ['f64x2.replace_lane', 1, ['f64x2.splat', ['local.get', lo]], ['local.get', hi]]
+
+const dotPairExpr = (a, pairs) => {
+  let expr = ['f64x2.mul', ['f64x2.splat', ['local.get', a[0]]], pairs[0]]
+  for (let i = 1; i < 4; i++) {
+    expr = ['f64x2.add', expr, ['f64x2.mul', ['f64x2.splat', ['local.get', a[i]]], pairs[i]]]
+  }
+  return expr
+}
+
+const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls) => {
+  if (!isArr(node)) return
+  for (let i = 0; i < node.length; i++) {
+    const child = node[i]
+    if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls)
+  }
+  const addendTemps = new Map()
+  const pairTemps = new Map()
+  for (let i = 0; i < node.length;) {
+    const a = matchF64DotSeq(node, i)
+    if (!a) { i++; continue }
+    const b = matchF64DotSeq(node, a.end)
+    if (!b || a.acc !== b.acc || !exprEq(a.left, b.left) || !exprEq(a.addend, b.addend) ||
+        fnLocals.get(a.out) !== 'f64' || fnLocals.get(b.out) !== 'f64') {
+      i++
+      continue
+    }
+    const v = `$__dot2_${freshIdRef.next++}`
+    newLocalDecls.push(['local', v, 'v128'])
+    fnLocals.set(v, 'v128')
+    let prefix = []
+    let addend = a.addend
+    if (addend) {
+      const key = JSON.stringify(addend)
+      let tmp = addendTemps.get(key)
+      if (!tmp) {
+        tmp = `$__dotadd_${freshIdRef.next++}`
+        addendTemps.set(key, tmp)
+        newLocalDecls.push(['local', tmp, 'f64'])
+        fnLocals.set(tmp, 'f64')
+        prefix = [['local.set', tmp, addend]]
+      }
+      addend = ['local.get', tmp]
+    }
+    const pairs = []
+    for (let k = 0; k < 4; k++) {
+      const key = `${a.right[k]}\0${b.right[k]}`
+      let tmp = pairTemps.get(key)
+      if (!tmp) {
+        tmp = `$__dotpair_${freshIdRef.next++}`
+        pairTemps.set(key, tmp)
+        newLocalDecls.push(['local', tmp, 'v128'])
+        fnLocals.set(tmp, 'v128')
+        prefix.push(['local.set', tmp, f64x2Pair(a.right[k], b.right[k])])
+      }
+      pairs.push(['local.get', tmp])
+    }
+    const dot = dotPairExpr(a.left, pairs)
+    const expr = addend ? ['f64x2.add', dot, ['f64x2.splat', addend]] : dot
+    node.splice(i, b.end - i,
+      ...prefix,
+      ['local.set', v, expr],
+      ['local.set', a.out, ['f64x2.extract_lane', 0, ['local.get', v]]],
+      ['local.set', b.out, ['f64x2.extract_lane', 1, ['local.get', v]]],
+    )
+    i += prefix.length + 3
+  }
+}
+
 // ---- Lane type tables ------------------------------------------------------
 
 const LANE_INFO = {
@@ -200,8 +316,6 @@ const REDUCE_OP_LOOKUP = (() => {
 })()
 
 // ---- Recognizer ------------------------------------------------------------
-
-const isArr = Array.isArray
 
 function isLocalGet(node, name) {
   return isArr(node) && node[0] === 'local.get' && (name == null || node[1] === name)
@@ -874,6 +988,8 @@ export function vectorizeLaneLocal(fn) {
 
   const freshIdRef = { next: 0 }
   const newLocalDeclsAll = []
+
+  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
 
   // Walk body recursively. Process inner-most matches first (post-order)
   // so we don't try to vectorize an outer loop whose inner is the lane-local one.

@@ -11,7 +11,7 @@ static void init(double* a, double* b) {
   }
 }
 
-static void multiply_many(double* a, const double* b, double* out, int iters) {
+static void multiply_many(double* a, double* b, double* out, int iters) {
   for (int n = 0; n < iters; n++) {
     for (int r = 0; r < 4; r++) {
       for (int c = 0; c < 4; c++) {
@@ -23,6 +23,8 @@ static void multiply_many(double* a, const double* b, double* out, int iters) {
     double t = a[0];
     a[0] = out[15];
     a[5] = t + out[10] * 0.000001;
+    b[0] += out[0] * 0.00000000001;
+    b[5] -= out[5] * 0.00000000001;
   }
 }
 

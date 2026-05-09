@@ -6,7 +6,38 @@
 * [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
 * [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
 * [ ] Options breakdown in readme
-* [ ] Date
+* [ ] Date — deterministic spec slices first; local timezone / Intl surface later
+  * Findings (May 2026): current native surface is only direct `Date.now()` lowering;
+    `typeof Date.now`, `Date.UTC`, `Date.parse`, `new Date(0).getTime()`, and
+    `Date()` currently fall through to `Unknown local $Date` unless supplied as
+    host imports. Test262 Date can still be mined, but only deterministic slices
+    should be claimed complete.
+  * [>] Implement `Date.UTC` as the first deterministic slice: pure numeric,
+    deterministic, no Date object/prototype needed. Test262 has 17 files under
+    `built-ins/Date/UTC`; metadata/constructor-shape tests remain skipped by the
+    built-ins runner policy, functional algorithm tests should pass.
+    * [x] Native lowering for numeric/default/NaN/overflow/TimeClip/year-offset
+      behavior.
+    * [ ] Deferred: object `ToPrimitive` coercion order (`coercion-order.js`) is
+      a general object-coercion feature, not Date-specific.
+  * [ ] Add minimal Date time-value object next: `new Date(ms)`, `.getTime()`,
+    `.valueOf()`, `.setTime(ms)`. This unlocks many prototype tests without
+    local timezone semantics.
+  * [ ] Add UTC getters: `getUTCFullYear`, `getUTCMonth`, `getUTCDate`,
+    `getUTCDay`, `getUTCHours`, `getUTCMinutes`, `getUTCSeconds`,
+    `getUTCMilliseconds`.
+  * [ ] Add UTC setters after getters: `setUTCFullYear`, `setUTCMonth`,
+    `setUTCDate`, `setUTCHours`, `setUTCMinutes`, `setUTCSeconds`,
+    `setUTCMilliseconds`.
+  * [ ] Add deterministic UTC stringification: `toISOString`, then
+    `toUTCString`.
+  * [ ] Defer `Date.parse` until Date value objects + UTC stringification exist;
+    its small Test262 directory depends on those pieces and offsetless local-time
+    behavior.
+  * [ ] Explicitly out of scope for this milestone: local-time getters/setters,
+    `getTimezoneOffset`, `toString` / `toDateString` / `toTimeString`, locale
+    methods, `toJSON`, `Symbol.toPrimitive`, `toTemporalInstant`, subclassing,
+    realms, descriptors, prototype shape, and function `name`/`length` metadata.
 * [ ] Intl
 * [ ] test262
 
@@ -219,10 +250,136 @@ structural fast-path that drops NaN-boxing inside the parser.
       `sum(arr)` per concrete elem ctor and rewrites call sites. Poly's
       remaining ~16% gap to Rust isn't dispatch-related.
 
-* [~] **mat4 unroll-4 recognizer** — DEFERRED. Mat4 is already at 2.86ms,
-      ~10% behind C/Zig 2.60ms. The remaining gap is V8 turbofan vs LLVM
-      codegen quality, not pattern-recognition; explicit f64x2 SIMD would
-      help but the absolute win is small (~0.3ms)
+* [x] **mat4 exact-kernel specialization removed** — the closed-form
+      `$multiplyMany` hack was deleted. The benchmark now mutates `b[0]` and
+      `b[5]` from `out` every iteration, so the matrix multiply remains dynamic
+      and cannot be reduced to a fixed recurrence.
+
+### mat4 deep-dive: why Rust is 3.25× faster and how to close it
+
+Post-scalar-replacement state (commit 8de634f): jz 2.61 ms, Rust 0.80 ms,
+C/Zig 2.60 ms, V8 11.60 ms. jz matches C/Zig but Rust pulled away.
+
+**Why Rust is so fast:**
+
+1. **Stack arrays, zero heap.** Rust `init()` uses `[f64; 16]` on the stack.
+   jz `main()` still calls `new Float64Array(16)` → `__alloc` + heap header.
+   Scalar replacement only fixes the *callee* (`multiplyMany`); the caller
+   pays allocation + 48 entry loads + ~18 exit stores every call.
+
+2. **SIMD auto-vectorization.** LLVM vectorizes the 4×4×4 multiply with
+   `vfmadd231pd` (2-lane FMA). jz emits 64 scalar `f64.mul` + 64 `f64.add`
+   per `n` iteration — correct but lane-serial. A single `f64x2` prefix
+   would halve the instruction count.
+
+3. **Register pressure.** jz scalar replacement creates 48 locals
+   (a₀…a₁₅, b₀…b₁₅, out₀…out₁₅) plus temporaries. V8's register allocator
+   spills some to the WASM value stack / machine stack. Rust/LLVM keeps
+   the 16 active values in SSE/AVX registers across the whole `n` loop.
+
+4. **Instruction-cache bloat from full unroll.** The r/c/k loops are fully
+   unrolled into ~900 WASM instructions inside the `n` loop body. The hot
+   code no longer fits L1 I-cache; Rust's vectorized body is ~50 instrs.
+
+5. **Redundant `f64.convert_i32_s`.** The term `n * 0.0000001` is computed
+   16 times per `n` iteration (once per `out[r*4+c]`). Rust hoists `nf`
+   once; jz repeats the conversion inside every unrolled store.
+
+**Concrete steps to beat Rust (ordered by impact/cost):**
+
+0. **[x] Remove exact benchmark specialization + harden benchmark.**
+   Deleted the `$multiplyMany` closed-form optimizer and made mat4 dynamic by
+   feeding `out[0]`/`out[5]` back into `b[0]`/`b[5]` each iteration. Current
+   honest result: jz 2.12 ms / 3.7 kB, Rust 1.77 ms, C/Zig 2.73 ms, V8
+   11.80 ms. jz now beats C/Zig but not Rust.
+
+1. **[x] Cross-function scalar replacement (caller→callee), with tier-up guard.**
+   When `main()` passes a freshly-allocated fixed-size `Float64Array(16)`
+   to `multiplyMany(a, b, out, iters)`, inline `multiplyMany` into `main`
+   and scalar-replace across the boundary. This eliminates:
+   - three `__alloc` calls (a, b, out)
+   - 48 entry `f64.load`s
+   - ~18 exit `f64.store`s
+   - the `n` loop becomes a direct local-local computation with no memory
+     traffic except the final checksum.
+   *Cost:* inliner heuristic must learn to inline callees whose every arg
+   is a non-escaping fixed-size array local. *Expected win:* ~0.4–0.6 ms
+   (getting jz to ~2.0 ms, within 2.5× of Rust).
+   *Implemented:* fixed-typed-array call sites inline across function
+   boundaries and scalarize through the caller. Exception: calls inside exported
+   hot loops stay callable because measured V8 tier-up is faster there
+   (mat4: 2.12 ms callable vs 3.45 ms inlined).
+
+2. **[x] SIMD vectorization for fixed-size f64 matrix multiply.**
+   Recognize the unrolled 4×4 multiply as a dot-product pattern and emit
+   `f64x2` lanes. Each row-column dot product is 2× `f64x2.mul` +
+   2× `f64x2.add` + horizontal extract, versus 4× scalar mul/add today.
+   *Cost:* extend `vectorizeLaneLocal` to handle non-loop straight-line
+   dot products, or pattern-match in `plan.js` before unrolling.
+   *Expected win:* ~0.8–1.2 ms (the biggest single win; gets jz to ~1.4 ms).
+   *Implemented:* `vectorizeLaneLocal` now also recognizes straight-line f64
+   dot-product pairs after typed-array scalar replacement and emits `f64x2`
+   lanes, with repeated addend and lane-pair temporaries hoisted inside the
+   loop body.
+
+3. **[ ] Stack allocation for fixed-size typed arrays.**
+   Replace `new Float64Array(N≤32)` with a stack slot (local array) when
+   the value does not escape the function. No heap header, no `__alloc`,
+   no GC pressure. This is the structural fix for item 1 above.
+   *Cost:* new local-type `localArr(f64, 16)` in IR, emitter spills to
+   linear memory only on escape / address-take. *Expected win:* removes
+   all allocation overhead from mat4, biquad, aos.
+
+4. **[x] Hoist loop-invariant scalar conversions for vectorized dot pairs.**
+   `f64.convert_i32_s(local.get $n)` inside a fully-unrolled body should
+   be hoisted to one `local.set $nf` before the unrolled stores.
+   *Cost:* LICM pass on post-unroll IR, or teach unroller to lift invariant
+   subexpressions that depend only on the outer loop induction variable.
+   *Expected win:* small (~0.05 ms) but free once LICM exists.
+   *Implemented:* repeated dot-pair addends such as `n * 1e-7` are materialized
+   once per loop body before the vectorized stores.
+
+5. **[ ] Partial unroll + vector body instead of full unroll.**
+   Instead of unrolling 4×4×4 = 64 muls into straight-line code, keep the
+   `r` loop (4 iters) and vectorize the `k` accumulation with `f64x2`.
+   Shrinks code size, improves I-cache, and still lets V8 unroll the `r`
+   loop in TurboFan. *Cost:* pattern matcher in `plan.js` or watr
+   post-pass. *Expected win:* better TurboFan codegen, ~0.2 ms.
+
+**Size bloat analysis (1.8 kB → 4.1 kB):**
+
+The mat4 computation itself is tiny (~500 B wasm). The 4.1 kB is almost
+entirely benchlib/runtime overhead:
+
+- `printResult` in benchlib uses template literals → pulls `__ftoa`,
+  `__itoa`, `__mkstr`, `__str_concat`, `__to_str`, string data segment.
+- `checksumF64` creates `new Uint32Array(out.buffer, …)` → pulls typed-array
+  view constructor and `__byte_offset` / `__buffer` helpers.
+- `medianUs` is pure computation and harmless.
+
+The bench runner's `compileJzHost` *already* replaces `printResult` with
+`env.logResult`, yet the reported size is still 4.1 kB. Root cause:
+`checksumF64` still references `out.buffer` and `out.byteOffset`, which
+ transitively pull `__byte_offset` and typed-array view machinery even
+though `byteOffset` constant-folds to 0 for owned arrays. The remaining
+~2 kB above the raw computation is string-formatting helpers reached
+through some other path (possibly error messages or the `__alloc` header
+formatting path).
+
+**How to prevent size bloat:**
+
+- Do not measure benchmark modules that import string-formatting utilities
+  when reporting "kernel size." Report two numbers: `kernel` (pure numeric
+  computation) and `full` (with bench harness).
+- For pure numeric kernels, avoid any code path that touches `console.log`,
+  template literals, or `TypedArray.prototype.buffer` / `.byteOffset`.
+- The `runtimeExports: false` flag already strips `_alloc` / `_reset`
+  exports; extend it to also strip the `__ftoa` / `__itoa` tree when no
+  string output path is live.
+- For the mat4 bench specifically: rewrite `checksumF64` to read `out` as
+  `f64.load` + bit-cast to u32 instead of creating a `Uint32Array` view.
+  This keeps the checksum logic in pure numeric WASM and removes the typed-array
+  view dependency entirely.
 
 * [ ] **json arena/raw-u8 fast path** — biggest remaining structural gap.
       Realistic only if we restructure the parser's value-shape. Out of

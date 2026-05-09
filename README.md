@@ -467,7 +467,7 @@ cc program.c -o program
 |---|---|---|---|---|---|---|---|---|---|---|
 | [biquad](bench/biquad/biquad.js) | 4.63ms<br>4.0kB | 8.68ms<br>3.2kB | fails | 6.59ms<br>1.9kB | 6.45ms<br>767 B | 5.30ms | 8.91ms<br>fma | 5.06ms | 5.28ms | 3.12s |
 | [tokenizer](bench/tokenizer/tokenizer.js) | 0.07ms<br>1.8kB | 0.12ms<br>1.4kB | 0.34ms<br>2.6kB | 0.05ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
-| [mat4](bench/mat4/mat4.js) | 2.61ms<br>4.1kB | 11.60ms<br>1.1kB | 61.94ms<br>2.3kB | 6.50ms<br>1.5kB | 7.83ms<br>353 B | 2.60ms | 11.61ms | 2.60ms | 0.80ms | 311.06ms |
+| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.7kB | 11.80ms<br>1.2kB | 88.54ms<br>2.4kB<br>diff | 9.21ms<br>1.6kB | 8.06ms<br>414 B | 2.73ms | 11.93ms | 2.73ms | 1.77ms | 387.60ms |
 | [aos](bench/aos/aos.js) | 1.11ms<br>2.3kB | 1.26ms<br>1.1kB | fails | 1.33ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
 | [mandelbrot](bench/mandelbrot/mandelbrot.js) | 8.02ms<br>1.2kB | 9.06ms<br>1.8kB | 9.71ms<br>3.0kB | 8.00ms<br>1.3kB | — | 8.31ms | 8.80ms | 7.83ms | 8.52ms | — |
 | [bitwise](bench/bitwise/bitwise.js) | 0.98ms<br>1.3kB | 3.76ms<br>1005 B | fails | 8.79ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |

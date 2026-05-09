@@ -276,6 +276,13 @@ const safeScalarTypedArrayUse = (node, name, len) => {
   return true
 }
 
+const mentionsName = (node, name) => {
+  if (typeof node === 'string') return node === name
+  if (!Array.isArray(node) || node[0] === '=>') return false
+  for (let i = 1; i < node.length; i++) if (mentionsName(node[i], name)) return true
+  return false
+}
+
 const rewriteScalarTypedArrayUses = (node, arrays) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
@@ -295,6 +302,12 @@ const rewriteScalarTypedArrayUses = (node, arrays) => {
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarTypedArrayUses(part, arrays))
 }
+
+const scalarTypedArrayStores = (name, entry) =>
+  entry.slots.map((slot, i) => ['=', ['[]', name, [null, i]], slot])
+
+const scalarTypedArrayLoads = (name, entry) =>
+  entry.slots.map((slot, i) => ['=', slot, ['[]', name, [null, i]]])
 
 const collectScalarTypedArrayWrites = (node, name, len, out = new Set()) => {
   if (!Array.isArray(node)) return out
@@ -326,6 +339,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
   })
 
   const candidates = new Map()
+  const mirrored = new Map()
   for (let i = 0; i < stmts.length; i++) {
     const stmt = stmts[i]
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
@@ -333,32 +347,55 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
     const len = fixedScalarTypedArrayLen(decl[2])
     if (len == null) continue
-    let ok = true
-    for (let j = 0; j < stmts.length && ok; j++) {
+    let hasSafeUse = false, hasUnsafeUse = false
+    for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
-      ok = safeScalarTypedArrayUse(stmts[j], decl[1], len)
+      if (!mentionsName(stmts[j], decl[1])) continue
+      const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len)
+      hasSafeUse ||= safe
+      hasUnsafeUse ||= !safe
     }
-    if (!ok) continue
-    candidates.set(decl[1], { index: i, len })
+    if (!hasSafeUse && hasUnsafeUse) continue
+    if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, mirrored: false })
+    else mirrored.set(decl[1], { index: i, len, mirrored: true })
   }
-  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+  if (!candidates.size && !mirrored.size) return { node: changed ? [';', ...stmts] : seq, changed }
 
   const arrays = new Map()
-  for (const [name, c] of candidates) {
+  for (const [name, c] of [...candidates, ...mirrored]) {
     const slots = Array.from({ length: c.len }, (_, k) => `${name}${T}ta${ctx.func.uniq++}_${k}`)
-    arrays.set(name, { len: c.len, slots })
+    arrays.set(name, { len: c.len, slots, mirrored: c.mirrored })
   }
 
   const out = []
   for (let i = 0; i < stmts.length; i++) {
-    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
+    const entry = [...candidates.entries()].find(([, c]) => c.index === i) ||
+      [...mirrored.entries()].find(([, c]) => c.index === i)
     if (entry) {
-      const { slots } = arrays.get(entry[0])
-      if (slots.length) out.push(['let', ...slots.map(slot => ['=', slot, [null, 0]])])
+      const [name] = entry
+      const arr = arrays.get(name)
+      const { slots } = arr
+      if (arr.mirrored) {
+        out.push(stmts[i])
+        if (slots.length) out.push(['let', ...slots.map(slot => ['=', slot, [null, 0]])])
+      } else if (slots.length) {
+        out.push(['let', ...slots.map(slot => ['=', slot, [null, 0]])])
+      }
       changed = true
       continue
     }
-    out.push(rewriteScalarTypedArrayUses(stmts[i], arrays))
+    const unsafe = []
+    for (const [name, arr] of arrays) {
+      if (arr.mirrored && mentionsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len)) unsafe.push([name, arr])
+    }
+    if (unsafe.length) {
+      for (const [name, arr] of unsafe) out.push(...scalarTypedArrayStores(name, arr))
+      out.push(stmts[i])
+      for (const [name, arr] of unsafe) out.push(...scalarTypedArrayLoads(name, arr))
+      changed = true
+    } else {
+      out.push(rewriteScalarTypedArrayUses(stmts[i], arrays))
+    }
   }
   return { node: [';', ...out], changed: true }
 }
@@ -882,18 +919,39 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   const cfg = ctx.transform.optimize
   if (cfg && cfg.sourceInline === false) return false
 
+  const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
 
+  const containsNode = (root, needle, inLoop = false) => {
+    if (root === needle) return inLoop
+    if (!Array.isArray(root) || root[0] === '=>') return false
+    const nextInLoop = inLoop || LOOP_OPS.has(root[0])
+    for (let i = 1; i < root.length; i++) if (containsNode(root[i], needle, nextInLoop)) return true
+    return false
+  }
+
+  const hasFixedTypedArraySites = (func, sites) => {
+    const params = func.sig?.params || []
+    if (!sites?.length) return false
+    return sites.every(site => params.some((p, i) => {
+      const arg = site.argList[i]
+      return typeof arg === 'string' && fixedByFunc.get(site.callerFunc)?.has(arg)
+    }))
+  }
+  const hasFixedTypedArrayHotSites = (func, sites) =>
+    hasFixedTypedArraySites(func, sites) && sites.some(site => site.callerFunc?.body && containsNode(site.callerFunc.body, site.node))
+
   const candidates = new Map()
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || !func.body || func.rest || programFacts.valueUsed.has(func.name)) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     const sites = sitesByCallee.get(func.name)
-    if (!sites || sites.length < 1 || sites.length > 2) continue
+    const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
+    if (!sites || sites.length < 1 || (!fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
@@ -922,7 +980,7 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // loop carries most of the cost. Inlining them into a host that V8 can't
     // tier up (e.g. a once-called wrapper) freezes the kernel in baseline.
     // Keep them as standalone functions so V8 wasm tier-up can warm them.
-    if (loopDepth(func.body, 0) >= 2) continue
+    if (loopDepth(func.body, 0) >= 2 && !fixedTypedArraySite) continue
     // Factory functions that allocate pointers (`new TypedArray`, `new Array`,
     // object/array literals returned) break downstream pointer-ABI specialization
     // when inlined: narrow.js can't trace the post-inline alias chain back to a
@@ -943,17 +1001,29 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   }
 
   let changed = false
+  const exportedCandidates = new Map()
+  for (const [name, func] of candidates) {
+    const sites = sitesByCallee.get(name)
+    if (hasFixedTypedArraySites(func, sites) &&
+        !sites.some(site => site.callerFunc?.exported && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))) {
+      exportedCandidates.set(name, func)
+    }
+  }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
     // Skip exports: they're entry points usually invoked once. Inlining a
     // hot kernel here would put the loop into a function V8's wasm tier-up
     // never warms (kernel stays in baseline). Keeping the kernel as its own
     // callable function lets V8 promote it to TurboFan after a few calls.
-    if (func.exported) continue
-    const r = inlineInStmt(func.body, candidates)
+    // Exception: fixed-size typed-array callees should inline into the exported
+    // caller so scalar replacement can cross the call boundary and remove the
+    // caller's heap arrays.
+    const activeCandidates = func.exported ? exportedCandidates : candidates
+    if (func.exported && !activeCandidates.size) continue
+    const r = inlineInStmt(func.body, activeCandidates)
     let body = r.changed ? r.node : func.body
     let bodyChanged = r.changed
-    if (exprOnlyCandidates.size) {
+    if (!func.exported && exprOnlyCandidates.size) {
       const e = inlineInExpr(body, exprOnlyCandidates)
       if (e.changed) { body = e.node; bodyChanged = true }
     }

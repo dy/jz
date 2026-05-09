@@ -10,7 +10,7 @@
  *     coercion in the body since the param type is known to be NUMBER.
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize.js'
 import { run } from './util.js'
@@ -345,7 +345,7 @@ test('fixed Float64Array locals scalar-replace static slots', () => {
       return a[1] + a.length
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
   ok(!/\$__alloc\b/.test(mainWat), 'local fixed Float64Array should not allocate')
   ok(!/f64\.(?:load|store)\b/.test(mainWat), 'local fixed Float64Array slots should stay in locals')
@@ -373,13 +373,74 @@ test('fixed Float64Array internal params scalar-replace unrolled slots', () => {
       return out[0]
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const useWat = wat.match(/\(func \$use[\s\S]*?^  \)/m)?.[0] || ''
   is((useWat.match(/\(loop\b/g) || []).length, 0)
   is((useWat.match(/f64\.load\b/g) || []).length, 48)
   is((useWat.match(/f64\.store\b/g) || []).length, 16)
   ok(/tap\d+_/.test(useWat), 'expected promoted parameter slots')
   is(run(src).main(), 6)
+})
+
+test('fixed Float64Array callsites scalar-replace across exported caller and SIMD dot pairs', () => {
+  const src = `
+    const multiplyMany = (a, b, out, iters) => {
+      for (let n = 0; n < iters; n++) {
+        for (let r = 0; r < 4; r++) {
+          for (let c = 0; c < 4; c++) {
+            let s = 0
+            for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+            out[r * 4 + c] = s + n * 0.0000001
+          }
+        }
+        const t = a[0]
+        a[0] = out[15]
+        a[5] = t + out[10] * 0.000001
+        b[0] += out[0] * 0.00000000001
+        b[5] -= out[5] * 0.00000000001
+      }
+    }
+    export const main = (iters) => {
+      const a = new Float64Array(16)
+      const b = new Float64Array(16)
+      const out = new Float64Array(16)
+      for (let i = 0; i < 16; i++) {
+        a[i] = (i + 1) * 0.125
+        b[i] = (16 - i) * 0.0625
+      }
+      multiplyMany(a, b, out, iters | 0)
+      return out[0] + out[5] + out[10] + out[15] + a[0] + a[5]
+    }
+  `
+  const refMain = (iters) => {
+    const a = new Float64Array(16), b = new Float64Array(16), out = new Float64Array(16)
+    for (let i = 0; i < 16; i++) { a[i] = (i + 1) * 0.125; b[i] = (16 - i) * 0.0625 }
+    const mm = (iters) => {
+      for (let n = 0; n < iters; n++) {
+        for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+          let s = 0
+          for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+          out[r * 4 + c] = s + n * 0.0000001
+        }
+        const t = a[0]; a[0] = out[15]; a[5] = t + out[10] * 0.000001
+        b[0] += out[0] * 0.00000000001
+        b[5] -= out[5] * 0.00000000001
+      }
+    }
+    mm(iters | 0)
+    return out[0] + out[5] + out[10] + out[15] + a[0] + a[5]
+  }
+  const wat = jz.compile(src, { wat: true })
+  const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
+  ok(!/\(call \$multiplyMany\b/.test(mainWat), 'fixed typed-array callee should inline into exported caller')
+  ok(!/\$__alloc\b/.test(mainWat), 'cross-function scalar replacement should remove fixed typed-array allocations')
+  ok(!/f64\.(?:load|store)\b/.test(mainWat), 'cross-function scalar replacement should keep mat4 arrays in locals')
+  ok(/f64x2\./.test(mainWat), 'straight-line f64 dot pairs should vectorize with f64x2')
+  ok(/\(loop\b/.test(mainWat), 'dynamic mat4 loop must remain, not collapse to a closed form')
+  const { main } = run(src)
+  almost(main(0), refMain(0), 1e-9)
+  almost(main(1), refMain(1), 1e-9)
+  almost(main(5), refMain(5), 1e-9)
 })
 
 test('nested small const-count for-loop unroll is opt-in', () => {
@@ -575,21 +636,21 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
   is(main(), 61)
 })
 
-test('sourceInline: does NOT inline into exported entry — preserves V8 wasm tier-up', () => {
+test('sourceInline: does NOT inline ordinary hot loop into exported entry', () => {
   const src = `
-    const hot = (a, n) => {
-      for (let i = 0; i < n; i++) a[i] = i + 1
+    const hot = (n) => {
+      let s = 0
+      for (let i = 0; i < n; i++) s += i + 1
+      return s
     }
     export const main = () => {
-      const a = new Float64Array(4)
-      hot(a, 4)
-      return a[3] | 0
+      return hot(4) | 0
     }
   `
   const wat = jz.compile(src, { wat: true })
   ok(/\(call \$hot\b/.test(wat), 'expected call kept inside exported entry (skip-into-export rule)')
   const { main } = run(src)
-  is(main(), 4)
+  is(main(), 10)
 })
 
 test('sourceInline: disabled by optimize:false', () => {

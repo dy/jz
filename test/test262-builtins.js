@@ -85,6 +85,10 @@ const TRACKED_BUILTIN_PATHS = [
   'Object/entries',
   'Object/assign',
   'Object/fromEntries',
+  'Date/UTC',
+  'Date/prototype/getTime',
+  'Date/prototype/valueOf',
+  'Date/prototype/setTime',
   'Map/prototype/clear',
   'Map/prototype/delete',
   'Map/prototype/get',
@@ -544,6 +548,20 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/DataView/prototype/setFloat64/to-boolean-littleendian.js',
   'built-ins/RegExp/prototype/exec/u-captured-value.js',
   'built-ins/RegExp/prototype/exec/u-lastindex-adv.js',
+  // Date.prototype functional algorithm tests (skip .prototype chain / this-binding guards)
+  'built-ins/Date/prototype/getTime/this-value-valid-date.js',
+  'built-ins/Date/prototype/getTime/this-value-invalid-date.js',
+  'built-ins/Date/prototype/getTime/this-value-non-date.js',
+  'built-ins/Date/prototype/getTime/this-value-non-object.js',
+  'built-ins/Date/prototype/setTime/arg-to-number.js',
+  'built-ins/Date/prototype/setTime/arg-to-number-err.js',
+  'built-ins/Date/prototype/setTime/new-value-time-clip.js',
+  'built-ins/Date/prototype/setTime/this-value-valid-date.js',
+  'built-ins/Date/prototype/setTime/this-value-invalid-date.js',
+  'built-ins/Date/prototype/setTime/this-value-non-date.js',
+  'built-ins/Date/prototype/setTime/this-value-non-object.js',
+  'built-ins/Date/prototype/valueOf/S9.4_A3_T1.js',
+  'built-ins/Date/prototype/valueOf/S9.4_A3_T2.js',
 ])
 
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
@@ -564,6 +582,10 @@ const NUMBER_CONSTANT_TESTS = new Set([
   'built-ins/Number/isInteger/non-integers.js',
   'built-ins/Number/isNaN/nan.js',
   'built-ins/Number/isNaN/not-nan.js',
+])
+
+const DATE_UNSUPPORTED_TESTS = new Map([
+  ['built-ins/Date/UTC/coercion-order.js', 'object ToPrimitive coercion'],
 ])
 
 function isNumberFunctionalTest(rel) {
@@ -622,6 +644,7 @@ function countJs(dir) {
 }
 
 function shouldSkip(content, rel) {
+  if (DATE_UNSUPPORTED_TESTS.has(rel)) return DATE_UNSUPPORTED_TESTS.get(rel)
   if (isFunctionalTest(rel)) return null
   if (rel.endsWith('/name.js')) return 'function name metadata'
   if (rel.endsWith('/length.js')) return 'function length metadata'

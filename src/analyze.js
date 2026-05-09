@@ -90,7 +90,7 @@ export const VAL = {
   NUMBER: 'number', ARRAY: 'array', STRING: 'string',
   OBJECT: 'object', HASH: 'hash', SET: 'set', MAP: 'map',
   CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
-  BIGINT: 'bigint', BUFFER: 'buffer',
+  BIGINT: 'bigint', BUFFER: 'buffer', DATE: 'date',
 }
 
 /**
@@ -310,6 +310,7 @@ export function valTypeOf(expr) {
     if (typeof callee === 'string') {
       if (callee === 'new.Set') return VAL.SET
       if (callee === 'new.Map') return VAL.MAP
+      if (callee === 'new.Date') return VAL.DATE
       if (callee === 'new.ArrayBuffer') return VAL.BUFFER
       if (callee === 'new.DataView') return VAL.BUFFER
       if (callee.startsWith('new.')) return VAL.TYPED
@@ -1769,7 +1770,7 @@ export function analyzePtrUnboxable(body, locals, boxed) {
   const disqualified = new Set()
   const valOf = name => ctx.func.repByLocal?.get(name)?.val
 
-  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE])
+  const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.DATE])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.
   //   OBJECT  ← `{…}`
@@ -1806,6 +1807,7 @@ export function analyzePtrUnboxable(body, locals, boxed) {
       if (callee.startsWith('new.')) {
         if (kind === VAL.SET) return callee === 'new.Set'
         if (kind === VAL.MAP) return callee === 'new.Map'
+        if (kind === VAL.DATE) return callee === 'new.Date'
         if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer' || callee === 'new.DataView'
         if (kind === VAL.TYPED) return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
       }

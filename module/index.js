@@ -12,4 +12,5 @@ import console from './console.js'
 import json from './json.js'
 import regex from './regex.js'
 import timer from './timer.js'
-export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer }
+import date from './date.js'
+export { math, core, array, object, string, number, fn, typedarray, collection, symbol, console, json, regex, timer, date }

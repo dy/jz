@@ -29,6 +29,8 @@ function multiplyMany(a: Float64Array, b: Float64Array, out: Float64Array, iters
     const t = unchecked(a[0])
     unchecked(a[0] = out[15])
     unchecked(a[5] = t + out[10] * 0.000001)
+    unchecked(b[0] += out[0] * 0.00000000001)
+    unchecked(b[5] -= out[5] * 0.00000000001)
   }
 }
 

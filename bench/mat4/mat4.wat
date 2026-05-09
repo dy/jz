@@ -63,8 +63,9 @@
             (local.set $r (i32.add (local.get $r) (i32.const 1)))
             (br $r_top)))
 
-        ;; swap-like perturbation from JS source:
+        ;; dynamic perturbation from JS source:
         ;;   t = a[0]; a[0] = out[15]; a[5] = t + out[10] * 0.000001;
+        ;;   b[0] += out[0] * 0.00000000001; b[5] -= out[5] * 0.00000000001;
         (local.set $t (f64.load (local.get $a)))
         (f64.store (local.get $a)
           (f64.load (i32.add (local.get $out) (i32.const 120)))) ;; out[15] @ 256+120
@@ -72,6 +73,15 @@
           (i32.add (local.get $a) (i32.const 40))
           (f64.add (local.get $t)
             (f64.mul (f64.load (i32.add (local.get $out) (i32.const 80))) (f64.const 0.000001)))) ;; out[10] @ 256+80
+        (f64.store (local.get $b)
+          (f64.add
+            (f64.load (local.get $b))
+            (f64.mul (f64.load (local.get $out)) (f64.const 0.00000000001))))
+        (f64.store
+          (i32.add (local.get $b) (i32.const 40))
+          (f64.sub
+            (f64.load (i32.add (local.get $b) (i32.const 40)))
+            (f64.mul (f64.load (i32.add (local.get $out) (i32.const 40))) (f64.const 0.00000000001))))
 
         (local.set $n (i32.add (local.get $n) (i32.const 1)))
         (br $n_top))))

@@ -45,7 +45,7 @@ fn init(a: *[16]f64, b: *[16]f64) void {
     }
 }
 
-fn multiplyMany(a: *[16]f64, b: *const [16]f64, out: *[16]f64, iters: usize) void {
+fn multiplyMany(a: *[16]f64, b: *[16]f64, out: *[16]f64, iters: usize) void {
     var n: usize = 0;
     while (n < iters) : (n += 1) {
         var r: usize = 0;
@@ -61,6 +61,8 @@ fn multiplyMany(a: *[16]f64, b: *const [16]f64, out: *[16]f64, iters: usize) voi
         const t = a[0];
         a[0] = out[15];
         a[5] = t + out[10] * 0.000001;
+        b[0] += out[0] * 0.00000000001;
+        b[5] -= out[5] * 0.00000000001;
     }
 }
 

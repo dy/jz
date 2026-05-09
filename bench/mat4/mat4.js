@@ -23,6 +23,8 @@ const multiplyMany = (a, b, out, iters) => {
     const t = a[0]
     a[0] = out[15]
     a[5] = t + out[10] * 0.000001
+    b[0] += out[0] * 0.00000000001
+    b[5] -= out[5] * 0.00000000001
   }
 }
 
