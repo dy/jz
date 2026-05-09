@@ -198,11 +198,22 @@ test('.sort: comparator may mutate outer let', () => {
   }`).f() > 0, true)
 })
 
-test('.sort: bare call without comparator errors with hint', () => {
-  let err = null
-  try { compile(`export let f = () => [3,1,2].sort()`) }
-  catch (e) { err = e.message }
-  ok(err && err.includes('comparator'), `expected comparator-required error, got: ${err}`)
+test('.sort: default string sort (no comparator)', () => {
+  // String return needs runHost (jz wrapper decodes NaN-boxed pointers)
+  is(runHost(`export let f = () => {
+    let a = ['cherry', 'apple', 'banana']
+    a.sort()
+    return a[0] + '|' + a[1] + '|' + a[2]
+  }`).f(), 'apple|banana|cherry')
+})
+
+test('.sort: default string sort on numbers (lexicographic)', () => {
+  // No comparator → toString comparison: '1' < '10' < '2' → [1, 10, 2]
+  is(run(`export let f = () => {
+    let a = [10, 2, 1]
+    a.sort()
+    return a[0] * 100 + a[1] * 10 + a[2]
+  }`).f(), 202)
 })
 
 // === .shift ===
