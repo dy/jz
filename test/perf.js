@@ -585,12 +585,12 @@ test('compile profile reports phase timings', () => {
   ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')
 })
 
-test('compile profileNames emits wasm function name section', () => {
+test('compile profile.names emits wasm function name section', () => {
   const src = 'let helper = (x) => x <= 0 ? 1 : helper(x - 1) + 1; export let add = (a, b) => helper(a) + b'
   const plain = compile(src)
   is(WebAssembly.Module.customSections(new WebAssembly.Module(plain), 'name').length, 0)
 
-  const named = compile(src, { profileNames: true })
+  const named = compile(src, { profile: { names: true } })
   const names = functionNames(named).map(([, name]) => name)
   ok(names.includes('add'), 'exported function name should be present')
   ok(names.includes('helper'), 'internal function name should be present')

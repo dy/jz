@@ -360,6 +360,22 @@ test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
   is(inst.memory.read(inst.instance.exports.f())[0], 1)
 })
 
+test('jz({ memory: pages }): creates owned memory with initial page count', () => {
+  const inst = jz('export let f = () => [1, 2]', { memory: 2 })
+  ok(inst.memory instanceof WebAssembly.Memory, 'has memory')
+  is(inst.memory.buffer.byteLength, 2 * 65536)
+  ok(!WebAssembly.Module.imports(inst.module).some(i => i.module === 'env' && i.name === 'memory'), 'does not import memory')
+  is(inst.memory.read(inst.instance.exports.f())[0], 1)
+})
+
+test('compile({ memory: pages }): emits owned memory with initial page count', () => {
+  const wasm = compile('export let f = () => [1, 2]', { memory: 3 })
+  const mod = new WebAssembly.Module(wasm)
+  ok(!WebAssembly.Module.imports(mod).some(i => i.module === 'env' && i.name === 'memory'), 'does not import memory')
+  const inst = new WebAssembly.Instance(mod)
+  is(inst.exports.memory.buffer.byteLength, 3 * 65536)
+})
+
 test('shared memory: inst.memory is the same object passed in', () => {
   const memory = jz.memory()
   const a = jz('export let f = () => 42', { memory })

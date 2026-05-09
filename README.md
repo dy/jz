@@ -51,9 +51,30 @@ const mod = new WebAssembly.Module(wasm)
 const inst = new WebAssembly.Instance(mod)
 
 // Async WASM startup — jz source compilation is still synchronous
-const asyncInst = compile('export let f = (x) => x * 2')
+const asyncMod = await WebAssembly.compile(wasm)
+const asyncInst = await WebAssembly.instantiate(asyncMod)
 asyncInst.exports.f(21) // 42
 ```
+
+<details>
+<summary><strong>Options</strong></summary>
+
+Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones:
+
+| Option | Use |
+|---|---|
+| `jzify: true` | Accept broader JS patterns such as `var`, `function`, `switch`, `arguments`, `==`, and `undefined` by lowering them to the JZ subset. |
+| `modules: { specifier: source }` | Bundle static ES imports into one WASM module. CLI import resolution does this from files automatically. |
+| `imports: { mod: host }` | Wire host namespaces/functions used by `import { fn } from "mod"`; functions may be plain JS functions or `{ fn, returns }` specs. |
+| `memory` | Pass `memory: N` to create owned memory with `N` initial pages, or pass `memory: jz.memory()` / `WebAssembly.Memory` to share memory across modules. `memoryPages` remains as a legacy alias for the page count. |
+| `host: 'js' \| 'wasi'` | Select runtime-service lowering. Default `js` uses small `env.*` imports auto-wired by `jz()`; `wasi` emits WASI Preview 1 imports for wasmtime/wasmer/deno. |
+| `optimize` | `false`/`0` disables optimization, `1` keeps cheap size passes, `true`/`2` is the default, `3` enables aggressive experimental passes, object form overrides individual passes. |
+| `strict: true` | Reject dynamic fallbacks such as unknown receiver method calls, `obj[k]`, and `for-in` instead of emitting JS-host dynamic dispatch. |
+| `alloc: false` | Omit raw allocator exports like `_alloc`/`_clear` when compiling standalone WASM that never marshals heap values across the host boundary. |
+| `wat: true` | `compile()` returns WAT text instead of a WASM binary. |
+| `profile` | Pass a mutable sink to collect compile-stage timings; set `profile.names = true` to also emit a WASM `name` section for profiler/debugger symbolication. `profileNames` remains as a legacy alias. |
+
+</details>
 
 ## CLI
 
@@ -359,7 +380,7 @@ For finer control, allocate manually: `memory.alloc(bytes)` returns a raw offset
 (func $_clear)                                    ;; rewinds heap pointer to 1024
 ```
 
-`memory.reset()` and `memory.alloc()` are JS-side aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The pointer crossing the WASM boundary is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Call `_clear()` between batches to reclaim. Strip both with `compile(code, { runtimeExports: false })` if you only call functions and never marshal heap values across the boundary.
+`memory.reset()` and `memory.alloc()` are JS-side aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The pointer crossing the WASM boundary is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Call `_clear()` between batches to reclaim. Strip both with `compile(code, { alloc: false })` if you only call functions and never marshal heap values across the boundary.
 
 </details>
 

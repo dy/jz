@@ -663,12 +663,13 @@ const buildImports = (mod, opts, state) => {
   }
 
   installDefaultEnvImports(mod, imports, state)
-  // Shared memory: normalize (auto-wrap raw Memory), pass as import
-  if (opts.memory) {
+  // Shared memory: normalize (auto-wrap raw Memory), pass as import.
+  // Numeric opts.memory is a compile-time page count shorthand, not an import.
+  if (opts.memory instanceof WebAssembly.Memory) {
     // Auto-wrap raw WebAssembly.Memory → enhanced jz.memory
-    if (opts.memory instanceof WebAssembly.Memory && !_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
+    if (!_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
     if (!imports.env) imports.env = {}
-    imports.env.memory = opts.memory instanceof WebAssembly.Memory ? opts.memory : opts.memory
+    imports.env.memory = opts.memory
   }
   // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed
   // external refs. Carrier is i64 so the NaN payload survives V8's boundary
@@ -703,8 +704,8 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
     }, 1)
   }
 
-  // For shared memory, resolve memory from import; for own memory, from export
-  const rawMemory = opts.memory || inst.exports.memory
+  // For shared memory, resolve memory from import; for own memory, from export.
+  const rawMemory = opts.memory instanceof WebAssembly.Memory ? opts.memory : inst.exports.memory
   const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
   const enhanced = memory(memSrc)
   state.mem = enhanced

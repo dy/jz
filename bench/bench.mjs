@@ -162,7 +162,7 @@ const compileJzHost = c => {
       memoryPages: 4096,
       optimize: { smallConstForUnroll: false, ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
     } : (process.env.JZ_SIMD ? { optimize: { vectorizeLaneLocal: true } } : {})),
-    runtimeExports: false,
+    alloc: false,
   })
   writeFileSync(jzHostWasmPath(c), wasm)
 }

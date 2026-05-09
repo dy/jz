@@ -184,14 +184,15 @@ test('features.map ON: new Map pulls map stdlibs', () => {
   ok(hasDef(w, '__map_get'))
 })
 
-test('runtimeExports:false omits allocator helper exports', () => {
-  const w = wat(`export let f = () => {
+test('alloc:false omits allocator helper exports', () => {
+  const src = `export let f = () => {
     let a = [1, 2, 3]
     return a.length
-  }`, { runtimeExports: false })
-  is(/\(export "_alloc"/.test(w), false)
-  is(/\(export "_reset"/.test(w), false)
-  ok(/\(memory/.test(w))
+  }`
+  const w = wat(src, { alloc: false })
+    is(/\(export "_alloc"/.test(w), false)
+    is(/\(export "_clear"/.test(w), false)
+    ok(/\(memory/.test(w))
 })
 
 test('features.closure OFF: no arrows — no closure table', () => {

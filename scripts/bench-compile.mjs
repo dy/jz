@@ -62,7 +62,7 @@ const optionsFor = id => ({
     memoryPages: 4096,
     optimize: { watr: false, smallConstForUnroll: false },
   } : {}),
-  runtimeExports: false,
+  alloc: false,
 })
 
 const runOnce = (id) => {

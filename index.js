@@ -66,7 +66,8 @@ const importsMayReturnExternal = (imports) => {
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
 const compileProfiler = (profile) => {
-  if (!profile) return null
+  if (profile == null) return null
+  if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink; use { profile: { names: true } } to emit a wasm name section')
   profile.entries ||= []
   profile.totals ||= {}
   return {
@@ -161,7 +162,11 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.strict] - Reject dynamic features (obj[k], for-in, unknown
  *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
  *   into output; large size win for static programs.
- * @param {boolean} [opts.runtimeExports=true] - Export runtime allocator helpers
+ * @param {WebAssembly.Memory|number} [opts.memory] - Shared memory import, or
+ *   initial page count for owned memory when a number is passed.
+ * @param {number} [opts.memoryPages] - Legacy alias for owned/imported memory
+ *   initial page count. Prefer `memory: N` for owned memory.
+ * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
  *   (`_alloc`, `_clear`) for JS memory wrapping. Set false for standalone host-run
  *   modules that only call exported wasm functions.
  * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
@@ -173,9 +178,9 @@ jz.memory = enhanceMemory
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
- * @param {boolean} [opts.profileNames] - Emit a standard wasm `name` custom
- *   section for profiler/debugger symbolication. Off by default to keep release
- *   artifacts small.
+ *   Set `profile.names = true` to also emit a standard wasm `name` custom section
+ *   for profiler/debugger symbolication.
+ * @param {boolean} [opts.profileNames] - Legacy alias for `profile.names`.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
  * @returns {Uint8Array|string}
@@ -187,7 +192,8 @@ jz.compile = (code, opts = {}) => {
   reset(emitter, GLOBALS)
   ctx.error.src = code
 
-  if (opts.memory) ctx.memory.shared = true
+  if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
+  else if (opts.memory) ctx.memory.shared = true
   if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) {
@@ -203,7 +209,7 @@ jz.compile = (code, opts = {}) => {
     if (opts.host !== 'js' && opts.host !== 'wasi') err(`Invalid host '${opts.host}'. Expected 'js' or 'wasi'.`)
     ctx.transform.host = opts.host
   }
-  if (opts.runtimeExports === false) ctx.transform.runtimeExports = false
+  if (opts.alloc === false) ctx.transform.alloc = false
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
@@ -252,7 +258,7 @@ jz.compile = (code, opts = {}) => {
   }
   if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
   const wasm = time('watrCompile', () => watrCompile(optimized))
-  return opts.profileNames ? appendFunctionNames(wasm, optimized) : wasm
+  return (opts.profileNames || opts.profile?.names) ? appendFunctionNames(wasm, optimized) : wasm
 }
 
 /**
