@@ -12,6 +12,39 @@ function bench(fn, n) {
   return performance.now() - t
 }
 
+function functionNames(wasm) {
+  const [section] = WebAssembly.Module.customSections(new WebAssembly.Module(wasm), 'name')
+  if (!section) return []
+  const bytes = new Uint8Array(section)
+  let i = 0
+  const readUleb = () => {
+    let n = 0, shift = 0
+    while (true) {
+      const b = bytes[i++]
+      n |= (b & 0x7f) << shift
+      if (!(b & 0x80)) return n >>> 0
+      shift += 7
+    }
+  }
+  const readName = () => {
+    const len = readUleb()
+    const s = new TextDecoder().decode(bytes.subarray(i, i + len))
+    i += len
+    return s
+  }
+  const names = []
+  while (i < bytes.length) {
+    const id = bytes[i++]
+    const end = i + readUleb()
+    if (id === 1) {
+      const count = readUleb()
+      for (let n = 0; n < count; n++) names.push([readUleb(), readName()])
+    }
+    i = end
+  }
+  return names
+}
+
 // === Correctness + codegen quality tests ===
 
 test('perf: fib(30) — WASM faster than JS', () => {
@@ -549,6 +582,17 @@ test('compile profile reports phase timings', () => {
   for (const name of ['parse', 'prepare', 'compile', 'plan', 'watrCompile'])
     ok(typeof profile.totals?.[name] === 'number', `expected ${name} timing`)
   ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')
+})
+
+test('compile profileNames emits wasm function name section', () => {
+  const src = 'let helper = (x) => x <= 0 ? 1 : helper(x - 1) + 1; export let add = (a, b) => helper(a) + b'
+  const plain = compile(src)
+  is(WebAssembly.Module.customSections(new WebAssembly.Module(plain), 'name').length, 0)
+
+  const named = compile(src, { profileNames: true })
+  const names = functionNames(named).map(([, name]) => name)
+  ok(names.includes('add'), 'exported function name should be present')
+  ok(names.includes('helper'), 'internal function name should be present')
 })
 
 // === JSON shape inference (shapeStrs) ===
