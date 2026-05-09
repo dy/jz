@@ -12,7 +12,7 @@
     `Date()` currently fall through to `Unknown local $Date` unless supplied as
     host imports. Test262 Date can still be mined, but only deterministic slices
     should be claimed complete.
-  * [>] Implement `Date.UTC` as the first deterministic slice: pure numeric,
+  * [x] Implement `Date.UTC` as the first deterministic slice: pure numeric,
     deterministic, no Date object/prototype needed. Test262 has 17 files under
     `built-ins/Date/UTC`; metadata/constructor-shape tests remain skipped by the
     built-ins runner policy, functional algorithm tests should pass.
@@ -20,16 +20,16 @@
       behavior.
     * [ ] Deferred: object `ToPrimitive` coercion order (`coercion-order.js`) is
       a general object-coercion feature, not Date-specific.
-  * [ ] Add minimal Date time-value object next: `new Date(ms)`, `.getTime()`,
+  * [x] Add minimal Date time-value object next: `new Date(ms)`, `.getTime()`,
     `.valueOf()`, `.setTime(ms)`. This unlocks many prototype tests without
     local timezone semantics.
-  * [ ] Add UTC getters: `getUTCFullYear`, `getUTCMonth`, `getUTCDate`,
+  * [x] Add UTC getters: `getUTCFullYear`, `getUTCMonth`, `getUTCDate`,
     `getUTCDay`, `getUTCHours`, `getUTCMinutes`, `getUTCSeconds`,
     `getUTCMilliseconds`.
-  * [ ] Add UTC setters after getters: `setUTCFullYear`, `setUTCMonth`,
+  * [x] Add UTC setters after getters: `setUTCFullYear`, `setUTCMonth`,
     `setUTCDate`, `setUTCHours`, `setUTCMinutes`, `setUTCSeconds`,
     `setUTCMilliseconds`.
-  * [ ] Add deterministic UTC stringification: `toISOString`, then
+  * [x] Add deterministic UTC stringification: `toISOString`, then
     `toUTCString`.
   * [ ] Defer `Date.parse` until Date value objects + UTC stringification exist;
     its small Test262 directory depends on those pieces and offsetless local-time
@@ -40,6 +40,7 @@
     realms, descriptors, prototype shape, and function `name`/`length` metadata.
 * [ ] Intl
 * [ ] test262
+* [ ] All AssemblyScript tests.
 
 
 ## Phase 14: Internal Parser (Future)
