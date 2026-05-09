@@ -82,6 +82,63 @@ const compileProfiler = (profile) => {
   }
 }
 
+const uleb = (n) => {
+  const out = []
+  do {
+    let b = n & 0x7f
+    n >>>= 7
+    if (n) b |= 0x80
+    out.push(b)
+  } while (n)
+  return out
+}
+
+const utf8Bytes = (s) => [...new TextEncoder().encode(s)]
+const nameBytes = (s) => {
+  const bytes = utf8Bytes(s)
+  return [...uleb(bytes.length), ...bytes]
+}
+
+const watName = (s) => typeof s === 'string' && s.startsWith('$') ? s.slice(1) : null
+const quotedName = (s) => typeof s === 'string' && /^".*"$/.test(s) ? s.slice(1, -1) : null
+
+const importFuncName = (node) => {
+  if (!Array.isArray(node) || node[0] !== 'import') return null
+  const desc = node[3]
+  if (!Array.isArray(desc) || desc[0] !== 'func') return null
+  return watName(desc[1]) || quotedName(node[2])
+}
+
+const functionNameSection = (module) => {
+  const entries = []
+  let funcIdx = 0
+  for (const node of module) {
+    if (!Array.isArray(node)) continue
+    if (node[0] === 'import') {
+      const name = importFuncName(node)
+      if (name != null) entries.push([funcIdx++, name])
+    } else if (node[0] === 'func') {
+      const name = watName(node[1])
+      if (name != null) entries.push([funcIdx, name])
+      funcIdx++
+    }
+  }
+  if (!entries.length) return null
+  const map = [...uleb(entries.length)]
+  for (const [idx, name] of entries) map.push(...uleb(idx), ...nameBytes(name))
+  const payload = [...nameBytes('name'), 1, ...uleb(map.length), ...map]
+  return Uint8Array.from([0, ...uleb(payload.length), ...payload])
+}
+
+const appendFunctionNames = (wasm, module) => {
+  const section = functionNameSection(module)
+  if (!section) return wasm
+  const out = new Uint8Array(wasm.length + section.length)
+  out.set(wasm)
+  out.set(section, wasm.length)
+  return out
+}
+
 /**
  * jz — JS subset → WASM compiler.
  *
@@ -116,6 +173,9 @@ jz.memory = enhanceMemory
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
  *   `entries` and `totals` for parse / jzify / prepare / compile / plan / watr phases.
+ * @param {boolean} [opts.profileNames] - Emit a standard wasm `name` custom
+ *   section for profiler/debugger symbolication. Off by default to keep release
+ *   artifacts small.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
  * @returns {Uint8Array|string}
@@ -189,9 +249,9 @@ jz.compile = (code, opts = {}) => {
       for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg)
     })
   }
-  return opts.wat
-    ? time('watrPrint', () => watrPrint(optimized))
-    : time('watrCompile', () => watrCompile(optimized))
+  if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
+  const wasm = time('watrCompile', () => watrCompile(optimized))
+  return opts.profileNames ? appendFunctionNames(wasm, optimized) : wasm
 }
 
 /**
