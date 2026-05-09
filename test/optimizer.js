@@ -336,6 +336,52 @@ test('nested small const-count typed-array loops auto-unroll', () => {
   ok(!/\(loop\b/.test(wat), 'known typed-array nested loops should auto-unroll')
 })
 
+test('fixed Float64Array locals scalar-replace static slots', () => {
+  const src = `
+    export const main = () => {
+      const a = new Float64Array(4)
+      a[0] = 1.5
+      a[1] = a[0] + 2.5
+      return a[1] + a.length
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
+  ok(!/\$__alloc\b/.test(mainWat), 'local fixed Float64Array should not allocate')
+  ok(!/f64\.(?:load|store)\b/.test(mainWat), 'local fixed Float64Array slots should stay in locals')
+  is(run(src).main(), 8)
+})
+
+test('fixed Float64Array internal params scalar-replace unrolled slots', () => {
+  const src = `
+    const use = (a, b, out) => {
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 4; c++) {
+          let s = 0
+          for (let k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]
+          out[r * 4 + c] = s
+        }
+      }
+    }
+    export const main = () => {
+      const a = new Float64Array(16)
+      const b = new Float64Array(16)
+      const out = new Float64Array(16)
+      a[0] = 2
+      b[0] = 3
+      use(a, b, out)
+      return out[0]
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const useWat = wat.match(/\(func \$use[\s\S]*?^  \)/m)?.[0] || ''
+  is((useWat.match(/\(loop\b/g) || []).length, 0)
+  is((useWat.match(/f64\.load\b/g) || []).length, 48)
+  is((useWat.match(/f64\.store\b/g) || []).length, 16)
+  ok(/tap\d+_/.test(useWat), 'expected promoted parameter slots')
+  is(run(src).main(), 6)
+})
+
 test('nested small const-count for-loop unroll is opt-in', () => {
   const wat = jz.compile(`
     export const main = () => {

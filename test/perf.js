@@ -548,8 +548,9 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   const src = `
     export let f = () => {
       let a = new Float64Array(4)
-      a[0] = 7
-      return a[0] | 0
+      let i = 0
+      a[i] = 7
+      return a[i] | 0
     }
   `
   const wat = compile(src, { wat: true, optimize: { watr: false } })

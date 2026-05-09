@@ -31,6 +31,10 @@ import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './nar
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
+const SCALAR_TYPED_CTOR = 'new.Float64Array'
+const MAX_SCALAR_TYPED_ARRAY_LEN = 32
+const MAX_SCALAR_TYPED_LOOP_UNROLL = 16
+const MAX_SCALAR_TYPED_NESTED_UNROLL = 128
 
 const isSeq = node => Array.isArray(node) && node[0] === ';'
 const blockStmts = body => {
@@ -117,6 +121,26 @@ const intLit = node => {
   return null
 }
 
+const constIntExpr = (node) => {
+  const lit = intLit(node)
+  if (lit != null) return lit
+  if (typeof node === 'string') return ctx.scope.constInts?.get(node) ?? null
+  if (!Array.isArray(node)) return null
+  const op = node[0]
+  if (op === 'u-') {
+    const v = constIntExpr(node[1])
+    return v == null ? null : -v
+  }
+  if (node.length !== 3) return null
+  const a = constIntExpr(node[1]), b = constIntExpr(node[2])
+  if (a == null || b == null) return null
+  if (op === '+') return a + b
+  if (op === '-') return a - b
+  if (op === '*') return a * b
+  if (op === '<<') return a << b
+  return null
+}
+
 const setCallArgs = (node, args) => {
   node[2] = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
 }
@@ -139,6 +163,14 @@ const scalarObjectProps = (expr) => {
     seen.add(name)
   }
   return props
+}
+
+const fixedScalarTypedArrayLen = (expr) => {
+  if (typedElemCtor(expr) !== SCALAR_TYPED_CTOR) return null
+  const args = callArgs(expr)
+  if (!args || args.length !== 1) return null
+  const len = constIntExpr(args[0])
+  return len != null && len >= 0 && len <= MAX_SCALAR_TYPED_ARRAY_LEN ? len : null
 }
 
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
@@ -215,6 +247,322 @@ const rewriteScalarObjectUses = (node, objects) => {
     return key != null ? (fields.get(key) ?? [, undefined]) : node
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarObjectUses(part, objects))
+}
+
+const typedArraySlotIndex = (node, len) => {
+  const idx = constIntExpr(node)
+  return idx != null && idx >= 0 && idx < len ? idx : null
+}
+
+const safeScalarTypedArrayUse = (node, name, len) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
+  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
+  if ((op === '++' || op === '--') && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name)
+    return typedArraySlotIndex(node[1][2], len) != null
+  if (ASSIGN_TARGET_OPS.has(op)) {
+    if (node[1] === name) return false
+    if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
+      if (typedArraySlotIndex(node[1][2], len) == null) return false
+      for (let i = 2; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len)) return false
+      return true
+    }
+  }
+  if (op === '...' && node[1] === name) return false
+  for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len)) return false
+  return true
+}
+
+const rewriteScalarTypedArrayUses = (node, arrays) => {
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  const slotFor = (idxNode, entry) => {
+    const idx = typedArraySlotIndex(idxNode, entry.len)
+    return idx == null ? null : entry.slots[idx]
+  }
+  if ((op === '.' || op === '?.') && arrays.has(node[1]) && node[2] === 'length') return [null, arrays.get(node[1]).len]
+  if (op === '[]' && arrays.has(node[1])) return slotFor(node[2], arrays.get(node[1])) ?? node
+  if ((op === '++' || op === '--') && Array.isArray(node[1]) && node[1][0] === '[]' && arrays.has(node[1][1])) {
+    const slot = slotFor(node[1][2], arrays.get(node[1][1]))
+    return slot ? [op, slot] : node
+  }
+  if (ASSIGN_TARGET_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' && arrays.has(node[1][1])) {
+    const slot = slotFor(node[1][2], arrays.get(node[1][1]))
+    return slot ? [op, slot, ...node.slice(2).map(part => rewriteScalarTypedArrayUses(part, arrays))] : node
+  }
+  return node.map((part, i) => i === 0 ? part : rewriteScalarTypedArrayUses(part, arrays))
+}
+
+const collectScalarTypedArrayWrites = (node, name, len, out = new Set()) => {
+  if (!Array.isArray(node)) return out
+  const op = node[0]
+  const addSlot = target => {
+    if (Array.isArray(target) && target[0] === '[]' && target[1] === name) {
+      const idx = typedArraySlotIndex(target[2], len)
+      if (idx != null) out.add(idx)
+      return true
+    }
+    return false
+  }
+  if ((op === '++' || op === '--') && addSlot(node[1])) return out
+  if (ASSIGN_TARGET_OPS.has(op) && addSlot(node[1])) {
+    for (let i = 2; i < node.length; i++) collectScalarTypedArrayWrites(node[i], name, len, out)
+    return out
+  }
+  if (op !== '=>') for (let i = 1; i < node.length; i++) collectScalarTypedArrayWrites(node[i], name, len, out)
+  return out
+}
+
+const scalarizeTypedArrayLiteralSeq = (seq) => {
+  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  let changed = false
+  const stmts = seq.slice(1).map(stmt => {
+    const r = scalarizeTypedArrayLiterals(stmt)
+    changed ||= r.changed
+    return r.node
+  })
+
+  const candidates = new Map()
+  for (let i = 0; i < stmts.length; i++) {
+    const stmt = stmts[i]
+    if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
+    const decl = stmt[1]
+    if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
+    const len = fixedScalarTypedArrayLen(decl[2])
+    if (len == null) continue
+    let ok = true
+    for (let j = 0; j < stmts.length && ok; j++) {
+      if (j === i) continue
+      ok = safeScalarTypedArrayUse(stmts[j], decl[1], len)
+    }
+    if (!ok) continue
+    candidates.set(decl[1], { index: i, len })
+  }
+  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+
+  const arrays = new Map()
+  for (const [name, c] of candidates) {
+    const slots = Array.from({ length: c.len }, (_, k) => `${name}${T}ta${ctx.func.uniq++}_${k}`)
+    arrays.set(name, { len: c.len, slots })
+  }
+
+  const out = []
+  for (let i = 0; i < stmts.length; i++) {
+    const entry = [...candidates.entries()].find(([, c]) => c.index === i)
+    if (entry) {
+      const { slots } = arrays.get(entry[0])
+      if (slots.length) out.push(['let', ...slots.map(slot => ['=', slot, [null, 0]])])
+      changed = true
+      continue
+    }
+    out.push(rewriteScalarTypedArrayUses(stmts[i], arrays))
+  }
+  return { node: [';', ...out], changed: true }
+}
+
+function scalarizeTypedArrayLiterals(node) {
+  if (!Array.isArray(node)) return { node, changed: false }
+  if (node[0] === '=>') return { node, changed: false }
+  if (node[0] === ';') return scalarizeTypedArrayLiteralSeq(node)
+  let changed = false
+  const out = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = scalarizeTypedArrayLiterals(node[i])
+    changed ||= r.changed
+    out.push(r.node)
+  }
+  return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
+const stmtList = (body) => {
+  if (!Array.isArray(body)) return body == null ? [] : [body]
+  if (body[0] === '{}') return stmtList(body[1])
+  if (body[0] === ';') return body.slice(1)
+  return [body]
+}
+
+const hasControlTransfer = node => scanBody(node, n => CONTROL_TRANSFER.has(n[0]))
+
+const containsDeclOf = (body, name) => scanBody(body, n => {
+  if (n[0] !== 'let' && n[0] !== 'const') return false
+  for (let i = 1; i < n.length; i++) {
+    const d = n[i]
+    if (d === name) return true
+    if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+  }
+  return false
+})
+
+const isReassigned = (body, name) => scanBody(body, n =>
+  (ASSIGN_OPS.has(n[0]) && n[1] === name) || ((n[0] === '++' || n[0] === '--') && n[1] === name))
+
+const containsTypedArrayAccess = (body, names) => scanBody(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
+
+function smallScalarTypedForTrip(init, cond, step) {
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const decl = init[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const name = decl[1]
+  if (constIntExpr(decl[2]) !== 0) return null
+  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
+  const end = constIntExpr(cond[2])
+  if (end == null || end < 0 || end > MAX_SCALAR_TYPED_LOOP_UNROLL) return null
+  const stepOk = Array.isArray(step) && ((step[0] === '++' && step[1] === name) ||
+    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && constIntExpr(step[2]) === 1))
+  return stepOk ? { name, end } : null
+}
+
+const scalarTypedLoopBudget = (body) => {
+  if (!Array.isArray(body) || body[0] === '=>') return 1
+  if (body[0] === 'for') {
+    const trip = smallScalarTypedForTrip(body[1], body[2], body[3])
+    return trip ? trip.end * scalarTypedLoopBudget(body[4]) : 1
+  }
+  let max = 1
+  for (let i = 1; i < body.length; i++) max = Math.max(max, scalarTypedLoopBudget(body[i]))
+  return max
+}
+
+const unrollTypedArrayLoops = (node, names) => {
+  if (!Array.isArray(node) || node[0] === '=>') return { node, changed: false }
+  if (node[0] === ';') {
+    let changed = false
+    const out = [';']
+    for (const stmt of node.slice(1)) {
+      const r = unrollTypedArrayLoops(stmt, names)
+      changed ||= r.changed
+      if (Array.isArray(r.node) && r.node[0] === ';') out.push(...r.node.slice(1))
+      else out.push(r.node)
+    }
+    return changed ? { node: out, changed: true } : { node, changed: false }
+  }
+  if (node[0] === '{}') {
+    const r = unrollTypedArrayLoops(node[1], names)
+    return r.changed ? { node: ['{}', r.node], changed: true } : { node, changed: false }
+  }
+  if (node[0] === 'for') {
+    const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
+    if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= MAX_SCALAR_TYPED_NESTED_UNROLL &&
+        !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
+      const out = [';']
+      for (let i = 0; i < trip.end; i++) {
+        const cloned = cloneWithSubst(node[4], new Map([[trip.name, [null, i]]]), new Map())
+        const r = unrollTypedArrayLoops(cloned, names)
+        out.push(...stmtList(r.node))
+      }
+      return { node: out, changed: true }
+    }
+  }
+  let changed = false
+  const out = [node[0]]
+  for (let i = 1; i < node.length; i++) {
+    const r = unrollTypedArrayLoops(node[i], names)
+    changed ||= r.changed
+    out.push(r.node)
+  }
+  return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
+const fixedTypedArraysInBody = (body) => {
+  const out = new Map()
+  const walk = node => {
+    if (!Array.isArray(node) || node[0] === '=>') return
+    if (node[0] === 'let' || node[0] === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        const len = fixedScalarTypedArrayLen(d[2])
+        if (len != null) out.set(d[1], { len })
+      }
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return out
+}
+
+const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
+  if (!sites?.length || func.exported || func.raw || !func.body || !Array.isArray(func.body) || func.body[0] !== '{}') return new Map()
+  if (scanBody(func.body, n => n[0] === 'return' || n[0] === 'throw')) return new Map()
+  const params = func.sig?.params || []
+  const cands = new Map()
+  for (let i = 0; i < params.length; i++) {
+    const pname = params[i].name
+    let len = null, ok = true
+    for (const site of sites) {
+      const arg = site.argList[i]
+      const fixed = typeof arg === 'string' ? fixedByFunc.get(site.callerFunc)?.get(arg) : null
+      if (!fixed) { ok = false; break }
+      if (len == null) len = fixed.len
+      else if (len !== fixed.len) { ok = false; break }
+    }
+    if (ok && len != null) cands.set(pname, { len })
+  }
+  if (!cands.size) return cands
+  for (const site of sites) {
+    const seen = new Set()
+    for (let i = 0; i < params.length; i++) {
+      if (!cands.has(params[i].name)) continue
+      const arg = site.argList[i]
+      if (typeof arg !== 'string' || seen.has(arg)) return new Map()
+      seen.add(arg)
+    }
+  }
+  return cands
+}
+
+const scalarizeTypedArrayParams = (func, paramCands) => {
+  for (const [name, c] of [...paramCands]) if (!safeScalarTypedArrayUse(func.body, name, c.len)) paramCands.delete(name)
+  if (!paramCands.size) return { body: func.body, changed: false }
+  const arrays = new Map()
+  for (const [name, c] of paramCands) {
+    arrays.set(name, {
+      len: c.len,
+      slots: Array.from({ length: c.len }, (_, k) => `${name}${T}tap${ctx.func.uniq++}_${k}`),
+    })
+  }
+  const prologue = []
+  const writeback = []
+  for (const [name, { len, slots }] of arrays) {
+    if (slots.length) prologue.push(['let', ...slots.map((slot, i) => ['=', slot, ['[]', name, [null, i]]])])
+    for (const i of collectScalarTypedArrayWrites(func.body, name, len)) writeback.push(['=', ['[]', name, [null, i]], slots[i]])
+  }
+  const rewritten = stmtList(func.body).map(stmt => rewriteScalarTypedArrayUses(stmt, arrays))
+  return { body: ['{}', [';', ...prologue, ...rewritten, ...writeback]], changed: true }
+}
+
+const scalarizeFunctionTypedArrays = (programFacts) => {
+  const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
+  const sitesByCallee = new Map()
+  for (const site of programFacts.callSites) {
+    if (!site.callerFunc) continue
+    const list = sitesByCallee.get(site.callee)
+    if (list) list.push(site); else sitesByCallee.set(site.callee, [site])
+  }
+  let changed = false
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const paramCands = scalarTypedParamCandidates(func, sitesByCallee.get(func.name), fixedByFunc)
+    const names = new Set([...paramCands.keys(), ...fixedByFunc.get(func).keys()])
+    if (names.size) {
+      let guard = 0
+      while (guard++ < 6) {
+        const r = unrollTypedArrayLoops(func.body, names)
+        if (!r.changed) break
+        func.body = r.node
+        changed = true
+      }
+    }
+    const p = scalarizeTypedArrayParams(func, paramCands)
+    if (p.changed) { func.body = p.body; changed = true }
+    const l = scalarizeTypedArrayLiterals(func.body)
+    if (l.changed) { func.body = l.node; changed = true }
+    if (changed) invalidateLocalsCache(func.body)
+  }
+  return changed
 }
 
 const scalarizeArrayLiteralSeq = (seq) => {
@@ -799,6 +1147,7 @@ export default function plan(ast) {
   if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionObjectLiterals()) programFacts = collectProgramFacts(ast)
+  if (scalarizeFunctionTypedArrays(programFacts)) programFacts = collectProgramFacts(ast)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn
 

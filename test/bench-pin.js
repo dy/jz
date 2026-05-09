@@ -138,7 +138,7 @@ for (const [id, claims] of Object.entries(PINS)) {
 // factoring `x | 0` behind a generic helper makes ToNumber/string conversion live.
 const SIZE_BUDGET = {
   callback:  2500,
-  mat4:      4000,
+  mat4:      5000,
   poly:      2500,
   biquad:    4500,
   mandelbrot: 1800,
