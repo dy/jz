@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit, isReassigned } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
@@ -671,7 +671,19 @@ export default (ctx) => {
   // (handles both decimal and hex string parse), then truncate.
   ctx.core.emit['BigInt'] = (x) => {
     const vt = valTypeOf(x)
-    if (vt === VAL.BIGINT) return emit(x)
+    if (vt === VAL.BIGINT) {
+      if (typeof x === 'bigint' || (typeof x === 'string' && !isReassigned(ctx.func.body, x))) return emit(x)
+      inc('__to_bigint', '__ptr_type')
+      const t = temp('bi')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, asF64(emit(x))],
+        ['if', ['result', 'f64'], ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+          ['then', ['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]]]],
+          ['else', ['if', ['result', 'f64'],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.STRING]],
+            ['then', ['call', '$__to_bigint', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+            ['else', ['local.get', `$${t}`]]]]]], 'f64')
+    }
     if (vt === VAL.NUMBER)
       return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
     inc('__to_bigint')

@@ -21,6 +21,9 @@ const ELEM = {
   Float32Array: 6, Float64Array: 7,
   BigInt64Array: 7, BigUint64Array: 7,
 }
+const BIGINT_ELEM_FLAG = 16
+const typedAux = (name, isView = false) => ELEM[name] | (isView ? 8 : 0) |
+  (name === 'BigInt64Array' || name === 'BigUint64Array' ? BIGINT_ELEM_FLAG : 0)
 const STRIDE = [1, 1, 2, 2, 4, 4, 4, 8]
 const SHIFT = [0, 0, 1, 1, 2, 2, 2, 3]
 const LOAD = [
@@ -256,6 +259,7 @@ export default (ctx) => {
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)
   for (const [name, elemType] of Object.entries(ELEM)) {
+    const aux = typedAux(name)
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
       ctx.features.typedarray = true
@@ -281,7 +285,7 @@ export default (ctx) => {
           ['i32.store',
             ['i32.add', ['local.get', `$${dst}`], ['i32.const', 8]],
             ['local.get', `$${parentOff}`]],
-          mkPtrIR(PTR.TYPED, elemType | 8, ['local.get', `$${dst}`])], 'f64')
+          mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])], 'f64')
       }
       // Single arg array-like source: copy elements instead of treating the pointer as a length.
       if (srcType === VAL.ARRAY && ctx.core.emit[`${name}.from`])
@@ -290,7 +294,7 @@ export default (ctx) => {
       // TYPED retagged at the same offset — the byteLen header is shared with the parent.
       // __len(view) = byteLen >> shift computes elemCount for this view's elemType.
       if (srcType === VAL.BUFFER || srcType === VAL.TYPED) {
-        return mkPtrIR(PTR.TYPED, elemType, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
+        return mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
       }
       if (srcType == null && ctx.core.emit[`${name}.from`]) {
         // Runtime dispatch: number → allocate; array → copy elements; buffer/typed → zero-copy view.
@@ -298,7 +302,7 @@ export default (ctx) => {
         const len = tempI32('tl')
         const shift = SHIFT[elemType]
         const numBytes = ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]]
-        const numAlloc = allocPtr({ type: PTR.TYPED, aux: elemType, len: numBytes, stride: 1, tag: 'ta' })
+        const numAlloc = allocPtr({ type: PTR.TYPED, aux, len: numBytes, stride: 1, tag: 'ta' })
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
           ['if', ['result', 'f64'],
@@ -312,13 +316,13 @@ export default (ctx) => {
             ['else', ['if', ['result', 'f64'],
               ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.ARRAY]],
               ['then', ctx.core.emit[`${name}.from`](src)],
-              ['else', mkPtrIR(PTR.TYPED, elemType,
+              ['else', mkPtrIR(PTR.TYPED, aux,
                 ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]])]]]]], 'f64')
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
       const lenL = tempI32('tan')
-      const out = allocPtr({ type: PTR.TYPED, aux: elemType,
+      const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${lenL}`, asI32(emit(lenExpr))],
@@ -346,7 +350,7 @@ export default (ctx) => {
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
     ctx.features.typedarray = true
     const va = asF64(emit(bufExpr))
-    return mkPtrIR(PTR.TYPED, 7, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
+    return mkPtrIR(PTR.TYPED, typedAux('BigInt64Array'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
   }
 
   // .buffer — always aliased (zero-copy). BUFFER/DataView: passthrough.
@@ -509,12 +513,13 @@ export default (ctx) => {
 
   // TypedArray.from(arr) — convert regular array to typed array
   for (const [name, elemType] of Object.entries(ELEM)) {
+    const aux = typedAux(name)
     const stride = STRIDE[elemType], store = STORE[elemType]
     ctx.core.emit[`${name}.from`] = (src) => {
       ctx.features.typedarray = true
       const srcL = temp('tfs')
       const len = tempI32('tfl'), i = tempI32('tfi'), off = tempI32('tfo')
-      const out = allocPtr({ type: PTR.TYPED, aux: elemType,
+      const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
       const id = ctx.func.uniq++
@@ -546,14 +551,14 @@ export default (ctx) => {
   // .length handled by ptr.js's __len (reads from memory header [-8:len])
 
   /** Resolve element type + view-ness for a known TypedArray variable.
-   *  Returns { et, isView } or null. */
+   *  Returns { et, isView, isBigInt } or null. */
   const resolveElem = (arr) => {
     const ctor = typeof arr === 'string' && ctx.types.typedElem?.get(arr)
     if (!ctor) return null
     const isView = ctor.endsWith('.view')
     const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
     const et = ELEM[name]
-    return et == null ? null : { et, isView }
+    return et == null ? null : { et, isView, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array' }
   }
 
   /** Emit the real data byte-address for a typed array IR node.
@@ -601,7 +606,9 @@ export default (ctx) => {
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
               (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-                (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+                (then (if (result f64) (i32.and (local.get $aux) (i32.const ${BIGINT_ELEM_FLAG}))
+                  (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
                 (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
               (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
                 (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
@@ -624,31 +631,35 @@ export default (ctx) => {
     (if (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
     (local.set $et (i32.and (local.get $aux) (i32.const 7)))
-    (if (i32.eq (local.get $et) (i32.const 7))
-      (then (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $v)))
+    (if (i32.and (local.get $aux) (i32.const ${BIGINT_ELEM_FLAG}))
+      (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i64.reinterpret_f64 (local.get $v))))
       (else
-        (if (i32.eq (local.get $et) (i32.const 6))
-          (then (f32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (f32.demote_f64 (local.get $v))))
+        (if (i32.eq (local.get $et) (i32.const 7))
+          (then (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $v)))
           (else
-            (local.set $bits
-              (i32.wrap_i64
-                (if (result i64) (f64.lt (local.get $v) (f64.const 0))
-                  (then (i64.trunc_sat_f64_s (local.get $v)))
-                  (else (i64.trunc_sat_f64_u (local.get $v))))))
-            (if (i32.ge_u (local.get $et) (i32.const 4))
-              (then (i32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (local.get $bits)))
-              (else (if (i32.ge_u (local.get $et) (i32.const 2))
-                (then (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $bits)))
-                (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))
+            (if (i32.eq (local.get $et) (i32.const 6))
+              (then (f32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (f32.demote_f64 (local.get $v))))
+              (else
+                (local.set $bits
+                  (i32.wrap_i64
+                    (if (result i64) (f64.lt (local.get $v) (f64.const 0))
+                      (then (i64.trunc_sat_f64_s (local.get $v)))
+                      (else (i64.trunc_sat_f64_u (local.get $v))))))
+                (if (i32.ge_u (local.get $et) (i32.const 4))
+                  (then (i32.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))) (local.get $bits)))
+                  (else (if (i32.ge_u (local.get $et) (i32.const 2))
+                    (then (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $bits)))
+                    (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))))
     (local.get $v))`
 
   // Type-aware TypedArray read: arr[i]
   ctx.core.emit['.typed:[]'] = (arr, idx) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
-    const { et, isView } = r
+    const { et, isView, isBigInt } = r
     const objIR = emit(arr), vi = asI32(emit(idx))
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    if (isBigInt) return typed(['f64.reinterpret_i64', ['i64.load', off]], 'f64')
     if (et === 7) return typed(['f64.load', off], 'f64') // Float64Array
     if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64') // Float32Array
     // Integer types: load and convert to f64 (unsigned types use unsigned conversion)
@@ -659,9 +670,19 @@ export default (ctx) => {
   ctx.core.emit['.typed:[]='] = (arr, idx, val, void_ = false) => {
     const r = resolveElem(arr)
     if (r == null) return null
-    const { et, isView } = r
+    const { et, isView, isBigInt } = r
     const objIR = emit(arr), vi = asI32(emit(idx)), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
+    if (isBigInt) {
+      const vt = temp('tw')
+      return typed(void_ ? ['block',
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]]
+        : ['block', ['result', 'f64'],
+        ['local.set', `$${vt}`, asF64(valIR)],
+        ['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]],
+        ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
+    }
     if (et === 7) {
       const vt = temp('tw')
       return typed(void_ ? ['block',
@@ -784,7 +805,7 @@ export default (ctx) => {
       const va = emit(arr), vf = emit(fn)
       const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
-      const dst = allocPtr({ type: PTR.TYPED, aux: elemType,
+      const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(elemName),
         len: ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]], stride: 1, tag: 'tmo' })
       const out = dst.local
 

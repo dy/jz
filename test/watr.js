@@ -56,6 +56,9 @@ function sameWasm(name, wat, compile = compiledWatr()) {
 }
 
 const bugCases = [
+  ['memory64 limits', 'BigInt limits encoded as zero', `(module
+    (memory i64 1 1)
+    (func (export "f") (result i64) (memory.size)))`],
   ['reexport func', 'Unknown func 1', `(module
     (export "f0" (func 0))
     (export "f1" (func 1))

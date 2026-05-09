@@ -245,18 +245,17 @@ export function valTypeOf(expr) {
   if (op === '{}' && args[0]?.[0] === ':') return VAL.OBJECT
   if (op === '?:') {
     const ta = valTypeOf(args[1]), tb = valTypeOf(args[2])
-    return ta === VAL.OBJECT && tb === VAL.OBJECT ? VAL.OBJECT : null
+    return ta && ta === tb ? ta : null
   }
   // `[]` op covers both array literals (1 arg) and index access (2 args).
   // Array literal: `[]` → ['[]', null]; `[1,2]` → ['[]', [',', ...]]; `[x]` → ['[]', x].
   // Index access:  `arr[i]` → ['[]', arr, i].
   if (op === '[]') {
     if (args.length < 2) return VAL.ARRAY
-    // Indexed read on a known typed-array receiver yields a number (BigInt64/BigUint64Array
-    // would yield BigInt, but they're rare and we don't track per-elem type here — the
-    // .typed:[] emit path already handles their f64-cast correctly; this only affects
-    // arithmetic-time __to_num elision, where assuming Number is safe-by-construction).
-    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) return VAL.NUMBER
+    // Indexed read on a known typed-array receiver yields Number except for
+    // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
+    if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
+      return typedCtorElemValType(ctx.types.typedElem?.get(args[0])) || VAL.NUMBER
     // Indexed read on a STRING returns a 1-char string (SSO at runtime).
     if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
     if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING
@@ -366,7 +365,7 @@ export function valTypeOf(expr) {
       // slice/concat preserve caller type (string.slice → string, array.slice → array)
       if (method === 'slice' || method === 'concat') {
         const objType = valTypeOf(obj)
-        if (objType) return objType
+        if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType
         return null
       }
     }
@@ -651,7 +650,7 @@ export function typedElemCtor(rhs) {
 const _ELEM_AUX = {
   Int8Array: 0, Uint8Array: 1, Int16Array: 2, Uint16Array: 3,
   Int32Array: 4, Uint32Array: 5, Float32Array: 6, Float64Array: 7,
-  BigInt64Array: 7, BigUint64Array: 7,
+  BigInt64Array: 23, BigUint64Array: 23,
 }
 /** Encode a `typedElemCtor` string ('new.Int32Array' | 'new.Int32Array.view') to the 4-bit
  *  aux value used in PTR.TYPED NaN-boxing. Returns null for unknown ctors (ArrayBuffer/DataView). */
@@ -672,7 +671,7 @@ const _ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array',
 export function ctorFromElemAux(aux) {
   if (aux == null) return null
   const isView = (aux & 8) !== 0
-  const name = _ELEM_NAMES[aux & 7]
+  const name = (aux & 16) !== 0 ? 'BigInt64Array' : _ELEM_NAMES[aux & 7]
   if (!name) return null
   return isView ? `new.${name}.view` : `new.${name}`
 }
@@ -681,6 +680,13 @@ export function ctorFromElemAux(aux) {
  *  different typed-array ctors — caller should drop any cached entry rather
  *  than leave a stale ctor (which would lock the wrong store width). */
 export const MIXED_CTORS = Symbol('MIXED_CTORS')
+
+const typedCtorElemValType = (ctor) => {
+  if (!ctor) return null
+  const isView = ctor.endsWith('.view')
+  const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+  return name === 'BigInt64Array' || name === 'BigUint64Array' ? VAL.BIGINT : VAL.NUMBER
+}
 
 /** A `?:`/`&&`/`||` expression — value depends on a condition, so its ctor
  *  must be derived by walking branches (handled by `ternaryCtorOfRhs`). */
@@ -845,6 +851,7 @@ export function analyzeBody(body) {
   const arrElemValTypes = new Map()
   const typedElems = new Map()
   const escapes = new Map() // name → bool: local holds allocation, true if it escapes
+  const valPoison = new Set()
 
   const doSchemas = !!ctx.schema?.register
   // Per-walk local schema map for chained `arr.push(name)` resolution.
@@ -893,6 +900,21 @@ export function analyzeBody(body) {
   }
 
   const typedPoison = new Set()
+  const trackVal = (name, vt) => {
+    if (valPoison.has(name)) return
+    const prev = valTypes.get(name)
+    if (!vt) {
+      if (prev) valPoison.add(name)
+      valTypes.delete(name)
+      return
+    }
+    if (prev && prev !== vt) {
+      valPoison.add(name)
+      valTypes.delete(name)
+      return
+    }
+    valTypes.set(name, vt)
+  }
   const invalidateTyped = (name) => {
     typedPoison.add(name)
     typedElems.delete(name)
@@ -929,8 +951,7 @@ export function analyzeBody(body) {
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
 
     // val type (valTypes slice)
-    const vt = valTypeOf(rhs)
-    if (vt) valTypes.set(name, vt); else valTypes.delete(name)
+    trackVal(name, valTypeOf(rhs))
 
     // typed-array element ctor (typedElems slice)
     trackTyped(name, rhs)
@@ -1121,15 +1142,16 @@ export function analyzeBody(body) {
     // arrElemSchemas/ValTypes invalidate when rhs isn't array-producing.
     if (op === '=' && typeof node[1] === 'string') {
       const name = node[1], rhs = node[2]
+      walk(rhs)
       markEscape(name)
       markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
       if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
-      const vt = valTypeOf(rhs)
-      if (vt) valTypes.set(name, vt); else valTypes.delete(name)
+      trackVal(name, valTypeOf(rhs))
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
       if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
+      return
     }
 
     // compound-assign widening (locals slice)
@@ -1313,7 +1335,22 @@ export function invalidateValTypesCache(body) {
  * and schema resolution.
  */
 export function analyzeValTypes(body) {
-  const setVal = (name, vt) => updateRep(name, { val: vt || undefined })
+  const valPoison = new Set()
+  const setVal = (name, vt) => {
+    if (valPoison.has(name)) return
+    const prev = ctx.func.repByLocal?.get(name)?.val
+    if (!vt) {
+      if (prev) valPoison.add(name)
+      updateRep(name, { val: undefined })
+      return
+    }
+    if (prev && prev !== vt) {
+      valPoison.add(name)
+      updateRep(name, { val: undefined })
+      return
+    }
+    updateRep(name, { val: vt })
+  }
   const getVal = name => ctx.func.repByLocal?.get(name)?.val
   // Pre-walk: observe Array<schema> facts so `const p = arr[i]` can bind a schemaId
   // on `p`, unlocking schema slot reads + skipping str_key dispatch on `.prop` access.
@@ -1456,11 +1493,13 @@ export function analyzeValTypes(body) {
       }
     }
     if (op === '=' && typeof args[0] === 'string') {
+      walk(args[1])
       const vt = valTypeOf(args[1])
       setVal(args[0], vt)
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
+      return
     }
     // Track property assignments for auto-boxing: x.prop = val
     if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && typeof args[0][1] === 'string') {

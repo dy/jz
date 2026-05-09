@@ -305,7 +305,7 @@ const renameFunc = (func, nextName) => {
 }
 
 /** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
-const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6 }
+const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6, 'bigint': -7 }
 // Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
 function staticTypeofString(x) {
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.

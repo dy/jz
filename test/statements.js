@@ -134,6 +134,15 @@ test('bigint: arithmetic', () => {
   is(run('export let f = () => Number(17n % 10n)').f(), 7)
 })
 
+test('bigint: BigInt64Array reads remain BigInt-typed', () => {
+  is(jz(`export let f = () => {
+    const buf = new ArrayBuffer(8)
+    const arr = new BigInt64Array(buf)
+    arr[0] = BigInt('0x7fffffffffffffff')
+    return arr[0] === BigInt('0x7fffffffffffffff')
+  }`).exports.f(), 1)
+})
+
 test('bigint: bitwise', () => {
   is(run('export let f = () => Number(255n & 0x7Fn)').f(), 127)
   is(run('export let f = () => Number(0n | 5n)').f(), 5)
@@ -155,6 +164,24 @@ test('bigint: BigInt.asIntN', () => {
 
 test('bigint: BigInt.asUintN', () => {
   is(run('export let f = () => Number(BigInt.asUintN(32, -1n))').f(), 4294967295)
+})
+
+test('bigint: typeof recognizes BigInt values', () => {
+  is(jz('export let f = () => typeof BigInt("1") === "bigint"').exports.f(), 1)
+})
+
+test('bigint: same-kind ternary preserves BigInt type', () => {
+  is(jz('export let f = (x) => Number(x ? BigInt("1") : BigInt("2"))').exports.f(1), 1)
+})
+
+test('bigint: typeof guard works through internal function parameter', () => {
+  is(jz('const isBig = n => typeof n === "bigint"; export let f = () => isBig(BigInt("1"))').exports.f(), 1)
+})
+
+test('bigint: compares full unsigned 64-bit bounds', () => {
+  is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), 0)
+  is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), 1)
+  is(jz('export let f = () => -1n < 0n').exports.f(), 1)
 })
 
 // === Number/Error builtins ===

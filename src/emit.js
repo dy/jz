@@ -131,6 +131,17 @@ export function emitTypeofCmp(a, b, cmpOp) {
     const isFn = ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.CLOSURE]]
     return typed(eq ? ['i32.and', isPtr, isFn] : ['i32.or', ['i32.eqz', isPtr], ['i32.eqz', isFn]], 'i32')
   }
+  if (code === -7) {
+    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
+    if (vt) return typed(['i32.const', (vt === VAL.BIGINT) === eq ? 1 : 0], 'i32')
+    const n = ['local.tee', `$${t}`, va]
+    const isBigInt = ['i32.and',
+      ['f64.eq', n, ['local.get', `$${t}`]],
+      ['i32.and',
+        ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
+        ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]]
+    return typed(eq ? isBigInt : ['i32.eqz', isBigInt], 'i32')
+  }
   if (code >= 0) {
     inc('__ptr_type')
     const isPtr = ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
@@ -848,6 +859,10 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // the same i32 sign op as numeric (lt_s/gt_s/le_s/ge_s vs 0).
   const vta = resolveValType(a, valTypeOf, lookupValType)
   const vtb = resolveValType(b, valTypeOf, lookupValType)
+  if (vta === VAL.BIGINT || vtb === VAL.BIGINT) {
+    const op = bigintUnsignedBound(a) || bigintUnsignedBound(b) ? i32op.replace('_s', '_u') : i32op
+    return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
+  }
   if (vta === VAL.STRING && vtb === VAL.STRING) {
     inc('__str_cmp')
     return typed([`i32.${i32op}`, ['call', '$__str_cmp', asI64(va), asI64(vb)], ['i32.const', 0]], 'i32')
@@ -865,6 +880,22 @@ function intConstValue(expr) {
   if (typeof expr === 'string') {
     const v = repOf(expr)?.intConst
     if (v != null) return v
+  }
+  return null
+}
+
+function bigintUnsignedBound(expr) {
+  const n = bigintConstValue(expr)
+  return n != null && n > 0x7fffffffffffffffn && n <= 0xffffffffffffffffn
+}
+
+function bigintConstValue(expr) {
+  if (typeof expr === 'bigint') return expr
+  if (!Array.isArray(expr)) return null
+  if (expr[0] == null && typeof expr[1] === 'bigint') return expr[1]
+  if (expr[0] === 'u-') {
+    const n = bigintConstValue(expr[1])
+    return n == null ? null : -n
   }
   return null
 }
@@ -1923,7 +1954,10 @@ export const emitter = {
         }
       }
 
-      const vt = keyValType(obj)
+      let vt = keyValType(obj)
+      if (typeof obj === 'string' && isReassigned(ctx.func.body, obj)
+        && (method === 'slice' || method === 'concat')
+        && vt !== VAL.STRING && vt !== VAL.ARRAY) vt = null
 
       // Helper to call method with arguments (handles spread expansion)
       const callMethod = (objArg, methodEmitter) => {

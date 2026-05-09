@@ -249,7 +249,7 @@ export default (ctx) => {
                   (then (i32.shr_u (i32.load (local.get $off))
                                    (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
                   (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 8)))
-                                   (call $__typed_shift (local.get $aux))))))
+                                   (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))))
               (else (i32.load (i32.sub (local.get $off) (i32.const 8))))))
           (else (i32.const 0))))))`
 
@@ -275,7 +275,7 @@ export default (ctx) => {
               (then (i32.shr_u (i32.load (local.get $off))
                                (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
               (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 4)))
-                               (call $__typed_shift (local.get $aux))))))
+                               (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))))
           (else (i32.load (i32.sub (local.get $off) (i32.const 4))))))
       (else (i32.const 0))))`
 
@@ -690,6 +690,7 @@ export default (ctx) => {
   // initialized in __start (see compile.js). Comparison patterns (typeof x === 'string') are optimized
   // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
   ctx.core.emit['typeof'] = (a) => {
+    if (valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
     if (!ctx.runtime.typeofStrs) {
       ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object']
       for (const s of ctx.runtime.typeofStrs)
