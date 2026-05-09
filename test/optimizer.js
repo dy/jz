@@ -12,7 +12,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { resolveOptimize, PASS_NAMES } from '../src/optimize.js'
+import { optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize.js'
 import { run } from './util.js'
 
 test('LICM: call inside loop must not hoist cell reads (mutated via closure)', () => {
@@ -118,6 +118,29 @@ test('known numeric coercions elide __to_num', () => {
   `, { wat: true })
   const calls = (wat.match(/\(call \$__to_num/g) || []).length
   is(calls, 0)
+})
+
+test('peephole: i32/f64 signed roundtrips fold post-emit', () => {
+  const fn = ['func', '$p',
+    ['param', '$x', 'i32'],
+    ['result', 'i32'],
+    ['i32.trunc_sat_f64_s', ['f64.convert_i32_s', ['local.get', '$x']]]]
+  optimizeFunc(fn, { fusedRewrite: true })
+  is(JSON.stringify(fn).includes('f64.convert_i32_s'), false)
+  is(JSON.stringify(fn).includes('i32.trunc_sat_f64_s'), false)
+  is(JSON.stringify(fn.at(-1)), JSON.stringify(['local.get', '$x']))
+})
+
+test('peephole: i64/f64/i32 roundtrips fold to direct extension', () => {
+  const fn = ['func', '$p',
+    ['param', '$x', 'i32'],
+    ['result', 'i32'],
+    ['i32.wrap_i64', ['i64.trunc_sat_f64_s', ['f64.convert_i32_u', ['local.get', '$x']]]]]
+  optimizeFunc(fn, { fusedRewrite: true })
+  const s = JSON.stringify(fn)
+  is(s.includes('f64.convert_i32_u'), false)
+  is(s.includes('i64.trunc_sat_f64_s'), false)
+  is(JSON.stringify(fn.at(-1)), JSON.stringify(['local.get', '$x']))
 })
 
 test('unknown coercions still use __to_num', () => {

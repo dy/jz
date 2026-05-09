@@ -67,6 +67,7 @@ export const PASS_NAMES = [
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
+  'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
   'treeshake',
 ]
 
@@ -1602,6 +1603,15 @@ function walkRewrite(node, doInline, counts) {
   }
 
   // Peephole: rebox/unbox round-trips
+  if (op === 'i32.trunc_sat_f64_s' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return a[1]
+  }
+  if (op === 'i64.trunc_sat_f64_s' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return ['i64.extend_i32_s', a[1]]
+    if (Array.isArray(a) && a[0] === 'f64.convert_i32_u' && a.length === 2) return ['i64.extend_i32_u', a[1]]
+  }
   if (op === 'i64.reinterpret_f64' && node.length === 2) {
     const a = node[1]
     if (Array.isArray(a) && a[0] === 'f64.reinterpret_i64' && a.length === 2) return a[1]

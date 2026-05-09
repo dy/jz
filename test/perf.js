@@ -511,6 +511,25 @@ test('codegen: for-loop counter matches .length type — no converts in loop', (
   }
 })
 
+test('codegen: no-arg scalar allocator rewinds heap on return', () => {
+  const src = `
+    export let f = () => {
+      let a = new Float64Array(4)
+      a[0] = 7
+      return a[0] | 0
+    }
+  `
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
+  const body = wat.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
+  ok(/heap_save/.test(body), 'expected heap save local')
+  ok(/global\.set \$__heap/.test(body), 'expected heap restore before return')
+  const { instance } = jz(src, { optimize: { watr: false } })
+  const before = instance.exports._alloc(0)
+  for (let i = 0; i < 20; i++) is(instance.exports.f(), 7)
+  const after = instance.exports._alloc(0)
+  is(after, before, 'heap pointer should be unchanged across rewound scalar calls')
+})
+
 test('codegen: loop counter widens to f64 when compared to f64 param', () => {
   const wat = compile('export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }', { wat: true })
   // When compared against f64 param n, i should be f64 to avoid per-iter convert

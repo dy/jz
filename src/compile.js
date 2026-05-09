@@ -145,6 +145,95 @@ const tcoTailRewrite = (ir, resultType) => {
   return ir
 }
 
+const ARENA_SAFE_CALLS = new Set([
+  '$__alloc', '$__alloc_hdr', '$__mkptr',
+  '$__ptr_offset', '$__ptr_type', '$__ptr_aux',
+  '$__len', '$__cap', '$__typed_shift', '$__typed_data',
+])
+
+const findFuncBodyStart = (fn) => {
+  for (let i = 2; i < fn.length; i++) {
+    const n = fn[i]
+    if (Array.isArray(n) && (n[0] === 'param' || n[0] === 'result' || n[0] === 'local' || n[0] === 'export')) continue
+    return i
+  }
+  return fn.length
+}
+
+const heapGetIR = () => ctx.memory.shared
+  ? ['i32.load', ['i32.const', 1020]]
+  : ['global.get', '$__heap']
+
+const heapSetIR = value => ctx.memory.shared
+  ? ['i32.store', ['i32.const', 1020], value]
+  : ['global.set', '$__heap', value]
+
+function applyArenaRewind(func, fn) {
+  if (ctx.transform.optimize?.arenaRewind === false) return false
+  if (func.raw || func.sig.params.length !== 0 || func.sig.results.length !== 1) return false
+  if (func.sig.ptrKind != null) return false
+  if (func.sig.results[0] === 'f64' && func.valResult !== VAL.NUMBER) return false
+  if (func.sig.results[0] !== 'f64' && func.sig.results[0] !== 'i32') return false
+
+  const bodyStart = findFuncBodyStart(fn)
+  let hasAlloc = false
+  let unsafe = false
+  const scan = node => {
+    if (unsafe || !Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'global.set' || op === 'return_call' || op === 'call_indirect' || op === 'call_ref') {
+      unsafe = true
+      return
+    }
+    if (op === 'call') {
+      const name = node[1]
+      if (name === '$__alloc' || name === '$__alloc_hdr') hasAlloc = true
+      if (!ARENA_SAFE_CALLS.has(name)) {
+        unsafe = true
+        return
+      }
+    }
+    for (let i = 1; i < node.length; i++) scan(node[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  if (unsafe || !hasAlloc) return false
+
+  let id = 0
+  const hasLocal = name => fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === name)
+  while (hasLocal(`$${T}heap_save${id}`) || hasLocal(`$${T}arena_ret${id}`)) id++
+  const save = `$${T}heap_save${id}`
+  const ret = `$${T}arena_ret${id}`
+  const restore = () => heapSetIR(['local.get', save])
+  const resultType = func.sig.results[0]
+
+  const rewriteReturns = node => {
+    if (!Array.isArray(node)) return node
+    if (node[0] === 'return' && node.length > 1) {
+      return ['block',
+        ['result', resultType],
+        ['local.set', ret, node[1]],
+        restore(),
+        ['return', ['local.get', ret]],
+        ['unreachable']]
+    }
+    for (let i = 1; i < node.length; i++) node[i] = rewriteReturns(node[i])
+    return node
+  }
+
+  const endsWithReturn = fn.at(-1)?.[0] === 'return' || fn.at(-1)?.[0] === 'return_call'
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = rewriteReturns(fn[i])
+  const newBodyStart = findFuncBodyStart(fn)
+  fn.splice(newBodyStart, 0,
+    ['local', save, 'i32'],
+    ['local', ret, resultType],
+    ['local.set', save, heapGetIR()])
+  if (!endsWithReturn) {
+    const last = fn.pop()
+    fn.push(['local.set', ret, last], restore(), ['local.get', ret])
+  }
+  return true
+}
+
 // === Module compilation ===
 
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
@@ -354,6 +443,8 @@ function emitFunc(func, funcFacts, programFacts) {
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
+
+  applyArenaRewind(func, fn)
 
   // Restore schema.vars so param bindings don't leak to next function.
   ctx.schema.vars = schemaVarsPrev
