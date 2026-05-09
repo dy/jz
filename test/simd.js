@@ -7,6 +7,12 @@ function run(code) {
   return new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports
 }
 
+const SIMD_OPT = { optimize: { vectorizeLaneLocal: true } }
+const runVec = (code, opts) => jz(code, opts).exports
+const wat = (code, opts) => compile(code, { ...opts, wat: true })
+const hasV128 = (w) =>
+  /v128\.load|v128\.store|i32x4\.|i64x2\.|f32x4\.|f64x2\.|v128\.(and|or|xor)/.test(w)
+
 // === Array.from ===
 
 test('Array.from - shallow copy', () => {
@@ -278,13 +284,306 @@ test('Int16Array.map chained index', () => {
 
 // Verify SIMD generates v128 instructions
 test('SIMD - generates v128 instructions', () => {
-  const wat = compile(`export let main = () => {
+  const w = compile(`export let main = () => {
     let buf = new Float64Array(4)
     buf[0]=1; buf[1]=2; buf[2]=3; buf[3]=4
     let r = buf.map(x => x * 2)
     return r[0]
   }`, { wat: true })
-  ok(wat.includes('v128.load'), 'should contain v128.load')
-  ok(wat.includes('f64x2.mul'), 'should contain f64x2.mul')
-  ok(wat.includes('v128.store'), 'should contain v128.store')
+  ok(w.includes('v128.load'), 'should contain v128.load')
+  ok(w.includes('f64x2.mul'), 'should contain f64x2.mul')
+  ok(w.includes('v128.store'), 'should contain v128.store')
+})
+
+// ============================================================================
+// SIMD-128 lane-local vectorizer (vectorizeLaneLocal pass).
+//
+// Recognizer is a STRUCTURAL property, not a benchmark match. Tests pin:
+//   • Positive: pure-lane bodies lift to v128 ops, checksum stays identical.
+//   • Negative: cross-iter dataflow (reductions, loop-carried scalars,
+//     stencils, varying bound) must NOT lift.
+//   • Tail correctness: lengths that aren't a multiple of LANES still work.
+// ============================================================================
+
+// ---- positive cases ------------------------------------------------------
+
+test('vectorize: bitwise lane-local matches and produces identical checksum', () => {
+  const src = `
+    export const main = () => {
+      const N = 4096
+      const a = new Int32Array(N)
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < N; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; a[i] = s }
+      for (let r = 0; r < 4; r++) {
+        for (let i = 0; i < N; i++) {
+          let x = a[i] | 0
+          x ^= x << 7
+          x ^= x >>> 9
+          x = (x ^ (x * 1103515245 + 12345)) | 0
+          a[i] = x ^ (x >>> 16)
+        }
+      }
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops in SIMD output')
+})
+
+test('vectorize: i32 shift lane-local lifts (a[i] = a[i] << 1)', () => {
+  // Pure-i32 path: bitwise shift narrows cleanly.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = (a[i] << 1) | 0
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
+})
+
+test('vectorize: tail correctness when N is not a multiple of LANES', () => {
+  // N=1023 (i32x4 → 4 lanes; 1023 % 4 = 3 → tail of 3 elems)
+  const src = `
+    export const main = () => {
+      const N = 1023
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 17) | 0
+      for (let i = 0; i < N; i++) a[i] = (a[i] ^ 0x5a5a5a5a) | 0
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
+// ---- negative cases ------------------------------------------------------
+
+test('vectorize: loop-carried scalar (s ^= s << 13) must NOT lift', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < N; i++) { s ^= s << 13; s ^= s >>> 17; a[i] = s }
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  // Hash loop below is a legitimate xor reduction and IS expected to lift —
+  // assert specifically that lift did NOT happen on $s.
+  const w = wat(src, SIMD_OPT)
+  ok(!/\$s__v/.test(w), 'expected no lane-local lift of loop-carried $s')
+})
+
+test('vectorize: reduction (sum += a[i]) must NOT lift', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 7 + 3) | 0
+      let sum = 0 | 0
+      for (let i = 0; i < N; i++) sum = (sum + a[i]) | 0
+      return sum | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  // Reduction loop has NO store; recognizer requires at least one mem op.
+  const w = wat(src, SIMD_OPT)
+  ok(!/\$__simd_loop\d+/.test(w), 'expected no SIMD prefix on reduction')
+})
+
+test('vectorize: stencil (a[i] depends on a[i-1]) must NOT lift', () => {
+  const src = `
+    export const main = () => {
+      const N = 256
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 3 + 1) | 0
+      for (let i = 1; i < N; i++) a[i] = (a[i] + a[i - 1]) | 0
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
+// ---- narrow-lane (i8x16 / i16x8) cases -----------------------------------
+
+test('vectorize: Uint8Array bitwise XOR lifts to i8x16 / v128.xor', () => {
+  const src = `
+    export const main = () => {
+      const N = 256
+      const a = new Uint8Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i + 1) & 0xff
+      for (let i = 0; i < N; i++) a[i] = (a[i] ^ 0x5a) | 0
+      let h = 0; for (let i = 0; i < N; i++) h = (h * 31 + a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.load/.test(w) && /v128\.xor/.test(w), 'expected v128.load + v128.xor')
+})
+
+test('vectorize: Uint8Array shl lifts to i8x16.shl', () => {
+  const src = `
+    export const main = () => {
+      const N = 256
+      const a = new Uint8Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = (a[i] << 2) | 0
+      let h = 0; for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/i8x16\.shl/.test(wat(src, SIMD_OPT)), 'expected i8x16.shl')
+})
+
+test('vectorize: Uint16Array mul lifts to i16x8.mul', () => {
+  const src = `
+    export const main = () => {
+      const N = 512
+      const a = new Uint16Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = Math.imul(a[i], 17) & 0xffff
+      let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/i16x8\.mul/.test(wat(src, SIMD_OPT)), 'expected i16x8.mul')
+})
+
+test('vectorize: Uint8Array right shift must NOT lift (signedness mismatch)', () => {
+  // i32.shr_u on load8_u differs from i8x16.shr_u (lane treats byte as unsigned
+  // regardless; i32 path zero-extends first then shifts in i32 width).
+  // Conservative recognizer drops shr_* for i8/i16.
+  const src = `
+    export const main = () => {
+      const N = 256
+      const a = new Uint8Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = (a[i] >>> 1) | 0
+      let h = 0; for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(!/v128\.load/.test(wat(src, SIMD_OPT)), 'expected no v128.load on u8 shr')
+})
+
+// ---- reduction (horizontal fold) cases -----------------------------------
+
+test('vectorize: i32 xor reduction lifts to v128.xor + lane extracts', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 31) | 0
+      let s = 0
+      for (let i = 0; i < N; i++) s = (s ^ a[i]) | 0
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.xor/.test(w) && /i32x4\.extract_lane/.test(w),
+    'expected v128.xor and lane extracts')
+})
+
+test('vectorize: i32 or / and reductions both lift', () => {
+  const orSrc = `
+    export const main = () => {
+      const a = new Int32Array(1024)
+      for (let i = 0; i < 1024; i++) a[i] = i & 0xff
+      let s = 0
+      for (let i = 0; i < 1024; i++) s = (s | a[i]) | 0
+      return s | 0
+    }
+  `
+  const andSrc = `
+    export const main = () => {
+      const a = new Int32Array(1024)
+      for (let i = 0; i < 1024; i++) a[i] = ~i
+      let s = -1 | 0
+      for (let i = 0; i < 1024; i++) s = (s & a[i]) | 0
+      return s | 0
+    }
+  `
+  is(runVec(orSrc, SIMD_OPT).main(), runVec(orSrc).main())
+  is(runVec(andSrc, SIMD_OPT).main(), runVec(andSrc).main())
+  ok(/v128\.or/.test(wat(orSrc, SIMD_OPT)), 'or reduction → v128.or')
+  ok(/v128\.and/.test(wat(andSrc, SIMD_OPT)), 'and reduction → v128.and')
+})
+
+test('vectorize: f64 sum reduction lifts (associativity tolerated)', () => {
+  // Inputs where reorder of f64 add is exact (small integers stored as doubles
+  // add associatively up to N * max < 2^53).
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/f64x2\.add/.test(wat(src, SIMD_OPT)), 'expected f64x2.add')
+})
+
+test('vectorize: reduction tail correctness when N is not a multiple of LANES', () => {
+  const src = `
+    export const main = () => {
+      const N = 1023
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 7) | 0
+      let s = 0
+      for (let i = 0; i < N; i++) s = (s ^ a[i]) | 0
+      return s | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
+test('vectorize: multi-stmt reduction body must NOT lift', () => {
+  const src = `
+    export const main = () => {
+      const a = new Int32Array(1024)
+      for (let i = 0; i < 1024; i++) a[i] = i
+      let s = 0, t = 0
+      for (let i = 0; i < 1024; i++) { s = (s ^ a[i]) | 0; t = (t + 1) | 0 }
+      return (s ^ t) | 0
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
+test('vectorize: opt off by default at level 2 (no SIMD without explicit flag)', () => {
+  // At default optimize:true (level 2), the pass is OFF.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Int32Array(N)
+      for (let i = 0; i < N; i++) a[i] = i | 0
+      for (let i = 0; i < N; i++) a[i] = (a[i] ^ 0x5a5a5a5a) | 0
+      let h = 0 | 0
+      for (let i = 0; i < N; i++) h = (h ^ a[i]) | 0
+      return h | 0
+    }
+  `
+  ok(!hasV128(wat(src)), 'expected NO v128 ops at default optimization')
 })

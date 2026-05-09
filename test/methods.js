@@ -1,12 +1,15 @@
 // Array methods: map, filter, reduce, forEach, find, indexOf, includes, slice
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 
 function run(code) {
   const wasm = compile(code)
   return new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports
 }
+
+// jz()-based helper for regression tests that need full host wiring.
+const runHost = (code) => jz(code).exports
 
 // === .map ===
 
@@ -340,4 +343,146 @@ test('chain: filter + forEach', () => {
 
 test('chain: filter + reduce', () => {
   is(run(`export let f = () => [1, 2, 3, 4, 5].filter((x) => x > 2).reduce((s, x) => s + x, 0)`).f(), 12)
+})
+
+// ============================================================================
+// Type-aware method-dispatch regressions
+// (parser/prepare crashes, missing-prop sentinels, host-typed-array spread)
+// ============================================================================
+
+test('Regression: compiler crash on toString / native-method property lookup', () => {
+  // Parsing a file with a property named a native method (.toString) previously
+  // crashed src/prepare.js if GENERIC_METHOD_MODULES / STATIC_METHOD_MODULES
+  // implicitly matched Object.prototype.
+  const src = `
+    export let test = () => {
+      let o = { toString: 1 }
+      return o.toString
+    }
+  `
+  let wasm
+  try {
+    wasm = compile(src)
+    ok(wasm instanceof Uint8Array, 'Successfully compiled')
+  } catch (e) {
+    ok(false, `Compiler threw an error: ${e.message}`)
+  }
+})
+
+test('Regression: dynamic property access on function returns undefined', () => {
+  // __hash_get was failing OOB due to missing allocation header on PTR.CLOSURE.
+  const { test } = runHost(`
+    export let test = () => {
+      let f = () => 1
+      return f.prop
+    }
+  `)
+  is(test(), null, 'missing property on function returns NaN / undefined')
+})
+
+test('Regression: dynamic property access on string returns undefined', () => {
+  // __hash_get was failing OOB due to missing capacity header on PTR.SSO/STRING.
+  const { test } = runHost(`export let test = () => "foo".prop`)
+  is(test(), null, 'missing property on string returns NaN / undefined')
+})
+
+test('Regression: dynamic property assignment on string fails gracefully', () => {
+  const { test } = runHost(`
+    export let test = () => { let s = "foo"; s.prop = 42; return s.prop }
+  `)
+  is(test(), 42, 'assigning property to string fails gracefully')
+})
+
+test('Regression: external method returning typed array spreads into array', () => {
+  const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
+  const { exports } = jz(`export let test = (h) => {
+    let out = []
+    out.push(...h.bytes())
+    return [out.length, out[0], out[2]]
+  }`)
+  const result = exports.test(host)
+  is(result[0], 3)
+  is(result[1], 65)
+  is(result[2], 67)
+})
+
+test('Regression: external method returning typed array supports direct indexing', () => {
+  const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
+  const { exports } = jz(`export let test = (h) => {
+    let bytes = h.bytes()
+    return [bytes.length, bytes[0], bytes[2]]
+  }`)
+  const result = exports.test(host)
+  is(result[0], 3)
+  is(result[1], 65)
+  is(result[2], 67)
+})
+
+test('Regression: array literal spread copies external typed array values', () => {
+  const host = { bytes() { return new Uint8Array([65, 66, 67]) } }
+  const { exports } = jz(`export let test = (h) => {
+    let out = [...h.bytes()]
+    return [out.length, out[0], out[2]]
+  }`)
+  const result = exports.test(host)
+  is(result[0], 3)
+  is(result[1], 65)
+  is(result[2], 67)
+})
+
+test('Regression: imported function returning array with props keeps numeric indexing', () => {
+  const { exports } = jz(`
+    import { make } from './m.js'
+    export let test = () => {
+      let out = make()
+      return [out.length, out[0], out[1], out._s]
+    }
+  `, {
+    modules: {
+      './m.js': `
+        export const make = () => {
+          let out = [97, 98]
+          out._s = true
+          out.valueOf = () => 'x'
+          return out
+        }
+      `,
+    },
+  })
+  const result = exports.test()
+  is(result[0], 2)
+  is(result[1], 97)
+  is(result[2], 98)
+  is(result[3], 1)
+})
+
+test('Regression: computed array receiver for indexing evaluates once', () => {
+  const { test } = runHost(`
+    export let test = () => {
+      let count = 0
+      let input = [[1]]
+      let first = input.map(item => {
+        count += 1
+        return item.shift()
+      })[0]
+      return count * 10 + (first == first ? first : 9)
+    }
+  `)
+  is(test(), 11)
+})
+
+test('Regression: ternary only evaluates the live branch', () => {
+  const { test } = runHost(`
+    export let test = () => {
+      let bytes = []
+      let buf = ''
+      let code = null
+      const commit = () => bytes.push(97)
+      code != null ? (commit(), bytes.push(code)) : buf += 'a'
+      return [bytes.length, buf.length]
+    }
+  `)
+  const result = test()
+  is(result[0], 0)
+  is(result[1], 1)
 })

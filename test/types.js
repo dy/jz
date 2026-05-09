@@ -1,8 +1,14 @@
-// Type coercion: i32/f64 by operator, bitwise ops, named constants
+// Type coercion (i32/f64), slot-type tracking, typed-array narrowing,
+// intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
+import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../src/host.js'
+import prepare, { GLOBALS } from '../src/prepare.js'
+import { ctx, reset } from '../src/ctx.js'
+import { emitter } from '../src/emit.js'
+import { analyzeValTypes, analyzeIntCertain, analyzeLocals, repOf, updateRep, VAL } from '../src/analyze.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -21,6 +27,17 @@ function run(code, opts) {
   }
   return wrapped
 }
+
+// jz()-based — needed by slot/typed-narrow tests that use full host wiring.
+const runHost = (code) => jz(code).exports
+const wat = (src) => jz.compile(src, { wat: true })
+const fnBody = (w, name) => {
+  const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
+  const m = w.match(re)
+  return m ? w.slice(m.index, m.index + 4000) : null
+}
+const countCalls = (text, fn) =>
+  (text.match(new RegExp(`call \\$${fn}\\b`, 'g')) || []).length
 
 // === Integer preservation ===
 
@@ -310,4 +327,446 @@ test('default param: second param', () => {
   const { f } = run('export let f = (a, b = 10) => a + b')
   is(f(1, 2), 3)
   is(f(1), 11)   // b missing → NaN → default 10
+})
+
+// ============================================================================
+// Slot-type tracking — collectProgramFacts observes value kind in `{a:e1,…}`
+// literals; ctx.schema.slotVT answers `varName.prop` lookups on the precise
+// (bound-schemaId) path. Payoff: `+`, `===`, method dispatch elide the
+// __is_str_key runtime check on numeric props of known shapes.
+// ============================================================================
+
+test('slot-types: monomorphic NUMBER slots — correctness', () => {
+  const src = `
+    let make = (n) => ({ a: n + 1, b: n * 2 })
+    export let f = (n) => { let o = make(n); return o.a + o.b }
+  `
+  is(runHost(src).f(3), 10)  // (3+1) + (3*2)
+})
+
+test('slot-types: NUMBER on .prop AST — direct add', () => {
+  const src = `
+    let make = () => ({ x: 5, y: 7 })
+    export let f = () => { let a = make(); return a.x + a.y }
+  `
+  is(runHost(src).f(), 12)
+})
+
+test('slot-types: STRING slot value preserved end-to-end', () => {
+  const src = `
+    let make = () => ({ name: "abc", n: 3 })
+    export let f = () => { let o = make(); return o.name }
+  `
+  is(runHost(src).f(), 'abc')
+})
+
+test('slot-types: polymorphic slot — both kinds round-trip via separate exports', () => {
+  // Same schema (single prop "x") observed twice with different VAL kinds.
+  // After the second observation, slot x is null (polymorphic).
+  const src = `
+    let mkN = () => ({ x: 1 })
+    let mkS = () => ({ x: "z" })
+    export let getN = () => { let o = mkN(); return o.x }
+    export let getS = () => { let o = mkS(); return o.x }
+  `
+  const { getN, getS } = runHost(src)
+  is(getN(), 1)
+  is(getS(), 'z')
+})
+
+test('slot-types: polymorphic slot — addition still works on each branch', () => {
+  // `+` is the most str-key-sensitive site. Both branches must produce correct
+  // results when slot kind is null.
+  const src = `
+    let mkN = () => ({ x: 10 })
+    let mkS = () => ({ x: "ab" })
+    export let addN = () => { let o = mkN(); return o.x + 5 }
+    export let addS = () => { let o = mkS(); return o.x + "c" }
+  `
+  const { addN, addS } = runHost(src)
+  is(addN(), 15)
+  is(addS(), 'abc')
+})
+
+test('slot-types: nested object — outer .prop returns OBJECT, inner reads work', () => {
+  const src = `
+    let make = () => ({ inner: { a: 11, b: 22 } })
+    export let f = () => { let o = make(); return o.inner.a + o.inner.b }
+  `
+  is(runHost(src).f(), 33)
+})
+
+test('slot-types: schemaId propagates through narrowed call result', () => {
+  const src = `
+    let make = (n) => ({ x: n, y: n*2, z: n+1 })
+    export let f = (n) => { let o = make(n); return o.x + o.y + o.z }
+  `
+  is(runHost(src).f(4), 4 + 8 + 5)
+})
+
+test('slot-types: heterogeneous slot kinds in same schema all monomorphic', () => {
+  const src = `
+    let make = () => ({ n: 7, s: "hi", b: true })
+    export let getN = () => { let o = make(); return o.n }
+    export let getS = () => { let o = make(); return o.s }
+    export let getB = () => { let o = make(); return o.b }
+  `
+  const { getN, getS, getB } = runHost(src)
+  is(getN(), 7)
+  is(getS(), 'hi')
+  is(getB(), 1)  // booleans surface as 1/0
+})
+
+test('slot-types: unobserved slot (param-typed value) does not crash', () => {
+  // Slot value `n` has unknown VAL kind at observation time. observeSlot skips
+  // on falsy vt so the slot stays undefined; runtime check covers the access.
+  const src = `
+    let make = (n) => ({ x: n })
+    export let f = (n) => { let o = make(n); return o.x + 1 }
+  `
+  is(runHost(src).f(10), 11)
+})
+
+test('slot-types: distinct schemas sharing a prop name — each precise', () => {
+  const src = `
+    let mkA = () => ({ x: 1, y: 2 })
+    let mkB = () => ({ x: 3, z: 4 })
+    export let getA = () => { let o = mkA(); return o.x + o.y }
+    export let getB = () => { let o = mkB(); return o.x + o.z }
+  `
+  const { getA, getB } = runHost(src)
+  is(getA(), 3)
+  is(getB(), 7)
+})
+
+test('slot-types: codegen — __is_str_key elided on monomorphic NUMBER slot +', () => {
+  const src = `
+    let make = (n) => ({ a: n + 1, b: n * 2 })
+    export let f = (n) => { let o = make(n); return o.a + o.b }
+  `
+  const body = fnBody(wat(src), 'f')
+  ok(body, 'export $f present in WAT')
+  is(countCalls(body, '__is_str_key'), 0, 'no __is_str_key in $f body')
+})
+
+test('slot-types: codegen — polymorphic slot keeps runtime str-key check on +', () => {
+  // mkS observes slot x = STRING; mkN observes slot x = NUMBER. Merged → null.
+  // In addS the `+` operator must keep its str-key check.
+  const src = `
+    let mkN = () => ({ x: 10 })
+    let mkS = () => ({ x: "ab" })
+    export let addS = () => { let o = mkS(); return o.x + "c" }
+    export let addN = () => { let o = mkN(); return o.x + 5 }
+  `
+  const sBody = fnBody(wat(src), 'addS')
+  ok(sBody, 'export $addS present in WAT')
+  ok(countCalls(sBody, '__is_str_key') >= 1, '__is_str_key retained in $addS body')
+})
+
+// ============================================================================
+// TYPED narrowing — internal sig narrowing of helpers that always return a
+// typed-array of constant elemType. compile.js narrowSignatures sets
+//   sig.results = ['i32'], sig.ptrKind = VAL.TYPED, sig.ptrAux = elemAux
+// so callers see an i32 offset and skip the f64 NaN-rebox.
+// ============================================================================
+
+test('typed-narrow: Float64Array helper — direct index after narrowed call', () => {
+  const { f } = runHost(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => { let a = mk(); return a[i] }
+  `)
+  is(f(0), 1.5)
+  is(f(1), 2.5)
+  is(f(2), 3.5)
+})
+
+test('typed-narrow: Int32Array helper — distinct elemType preserved', () => {
+  // Int32Array (elemAux=4) must not collide with Float64Array (elemAux=7).
+  const { f } = runHost(`
+    let mk = () => new Int32Array([10, 20, 30])
+    export let f = (i) => { let a = mk(); return a[i] }
+  `)
+  is(f(0), 10)
+  is(f(1), 20)
+  is(f(2), 30)
+})
+
+test('typed-narrow: chain — outer helper forwards inner narrowed result', () => {
+  // Fixpoint: outer narrows only after inner; outer's typedAuxOfReturn reads
+  // inner's f.sig.ptrAux to confirm same elem aux across all returns.
+  const { f } = runHost(`
+    let inner = () => new Float64Array([7.5, 8.5])
+    let outer = () => inner()
+    export let f = (i) => { let a = outer(); return a[i] }
+  `)
+  is(f(0), 7.5)
+  is(f(1), 8.5)
+})
+
+test('typed-narrow: ?: with two same-elemType arms narrows', () => {
+  const { f } = runHost(`
+    let mk = (w) => w == 0 ? new Float64Array([1.5, 2.5]) : new Float64Array([3.5, 4.5])
+    export let f = (w, i) => { let a = mk(w); return a[i] }
+  `)
+  is(f(0, 0), 1.5)
+  is(f(0, 1), 2.5)
+  is(f(1, 0), 3.5)
+  is(f(1, 1), 4.5)
+})
+
+test('typed-narrow: ?: with mixed elemType does NOT narrow (still correct)', () => {
+  // Polymorphic typed-array result — typedAuxOfReturn sees aux mismatch and
+  // bails. Result stays f64 NaN-boxed; runtime kind dispatch resolves both.
+  const { f } = runHost(`
+    let mk = (w) => w == 0 ? new Float64Array([1.5, 2.5]) : new Int32Array([10, 20])
+    export let f = (w, i) => { let a = mk(w); return a[i] }
+  `)
+  is(f(0, 0), 1.5)
+  is(f(0, 1), 2.5)
+  is(f(1, 0), 10)
+  is(f(1, 1), 20)
+})
+
+test('typed-narrow: codegen — narrowed helper return type is i32', () => {
+  const w = wat(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => { let a = mk(); return a[i] }
+  `)
+  const body = fnBody(w, 'mk')
+  ok(body, '$mk present in WAT')
+  ok(/\(result i32\)/.test(body), '$mk returns i32 (narrowed)')
+})
+
+test('typed-narrow: codegen — receiver uses static elem load (no __is_str_key dispatch)', () => {
+  const w = wat(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => { let a = mk(); return a[i] }
+  `)
+  const body = fnBody(w, 'f')
+  ok(body, '$f present in WAT')
+  ok(!/__is_str_key/.test(body), '$f has no __is_str_key dispatch')
+})
+
+test('typed-narrow: owned typed-array byteOffset is constant zero', () => {
+  const w = wat(`
+    export let f = () => {
+      let a = new Float64Array(8)
+      return a.byteOffset
+    }
+  `)
+  ok(!/__byte_offset/.test(w), 'owned typed-array byteOffset should not pull runtime helper')
+  is(runHost(`export let f = () => { let a = new Float64Array(8); return a.byteOffset }`).f(), 0)
+})
+
+test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
+  // Threshold tracks recorded baseline with headroom.
+  const src = `
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => { let a = mk(); return a[i] }
+  `
+  const bytes = jz.compile(src).length
+  ok(bytes <= 850, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>850b)`)
+})
+
+test('typed-narrow: escape via store does not break narrowed helper', () => {
+  // Receiver consumed in a way that requires reboxing to f64 (passed to an
+  // array index store). asF64 path on narrowed-call result must re-pack with
+  // correct elemType aux.
+  const { f } = runHost(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = () => {
+      let a = mk()
+      let arr = [a]
+      return arr[0][1]
+    }
+  `)
+  is(f(), 2.5)
+})
+
+test('typed-narrow: receiver unbox after .map on TYPED', () => {
+  // analyzePtrUnboxable.isFreshInit accepts `arr.map(fn)` shape when arr is in
+  // ctx.types.typedElem (locally TYPED with known elem ctor).
+  const { f } = runHost(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 10)
+      return b[i]
+    }
+  `)
+  is(f(0), 11.5)
+  is(f(1), 12.5)
+  is(f(2), 13.5)
+})
+
+test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
+  const w = wat(`
+    let mk = () => new Float64Array([1.5, 2.5, 3.5])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 10)
+      return b[i]
+    }
+  `)
+  const body = fnBody(w, 'f')
+  ok(body, '$f present')
+  ok(/\(local \$b i32\)/.test(body), '$b unboxed to i32 (.map receiver)')
+  ok(!/__is_str_key/.test(body), '$f has no __is_str_key after .map receiver unbox')
+})
+
+test('typed-narrow: chained .map preserves elem type', () => {
+  // a.map(...).map(...) — first .map's result is locally TYPED with same elem
+  // ctor (propagateTyped strips .view).
+  const { f } = runHost(`
+    let mk = () => new Float64Array([1.0, 2.0, 3.0])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x * 2)
+      let c = b.map(x => x + 1)
+      return c[i]
+    }
+  `)
+  is(f(0), 3)
+  is(f(1), 5)
+  is(f(2), 7)
+})
+
+test('typed-narrow: .map on Int32Array preserves distinct elem aux', () => {
+  // Int32Array elemAux=4, Float64Array elemAux=7. Wrong aux → wrong stride.
+  const { f } = runHost(`
+    let mk = () => new Int32Array([10, 20, 30])
+    export let f = (i) => {
+      let a = mk()
+      let b = a.map(x => x + 100)
+      return b[i]
+    }
+  `)
+  is(f(0), 110)
+  is(f(1), 120)
+  is(f(2), 130)
+})
+
+// ============================================================================
+// intCertain lattice — pure analysis, no codegen impact. Pins the forward-
+// propagation rule against AST inputs.
+// ============================================================================
+
+// Run analyzer against a single user-defined arrow body. Returns a Proxy that
+// yields true for every intCertain-marked local and false otherwise (so tests
+// can assert `is(r.n, false)` without distinguishing "not intCertain" from "no
+// rep entry"). `paramVals` mirrors what narrowSignatures pre-seeds in the real
+// pipeline — needed only for tests that exercise `.length` / receiver-typed.
+function runAnalyze(code, paramVals) {
+  reset(emitter, GLOBALS)
+  prepare(parse(code))
+  const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
+    || ctx.func.list[0]
+  const body = fn.body
+  ctx.func.locals = analyzeLocals(body)
+  if (paramVals) for (const [n, v] of Object.entries(paramVals)) updateRep(n, { val: v })
+  analyzeValTypes(body)
+  analyzeIntCertain(body)
+  return new Proxy({}, { get: (_, name) => repOf(name)?.intCertain === true })
+}
+
+test('intCertain: integer literal init', () => {
+  const r = runAnalyze('let f = () => { let i = 0; let j = 1.5 }')
+  is(r.i, true); is(r.j, false)
+})
+
+test('intCertain: bitwise / comparison results are int', () => {
+  const r = runAnalyze('let f = () => { let x = 5 | 0; let y = 3 & 1; let z = 1 < 2 }')
+  is(r.x, true); is(r.y, true); is(r.z, true)
+})
+
+test('intCertain: closure under +,-,*,% with int operands', () => {
+  const r = runAnalyze('let f = () => { let i = 5; let j = i * 2 + 1; let k = i % 3 }')
+  is(r.i, true); is(r.j, true); is(r.k, true)
+})
+
+test('intCertain: division poisons', () => {
+  const r = runAnalyze('let f = () => { let i = 5; let j = i / 2 }')
+  is(r.i, true); is(r.j, false)
+})
+
+test('intCertain: self-recursive `i = i + 1` stays int (fixpoint)', () => {
+  const r = runAnalyze('let f = () => { let i = 0; i = i + 1 }')
+  is(r.i, true)
+})
+
+test('intCertain: reassignment with non-int RHS poisons', () => {
+  const r = runAnalyze('let f = () => { let i = 0; i = 1.5 }')
+  is(r.i, false)
+})
+
+test('intCertain: poison is sticky across all defs (order-insensitive)', () => {
+  const r = runAnalyze('let f = () => { let i = 0; let j = i + 1; i = 1.5 }')
+  is(r.i, false); is(r.j, false)
+})
+
+test('intCertain: `++` / `--` preserve', () => {
+  const r = runAnalyze('let f = () => { let i = 0; i++; let k = 0; k-- }')
+  is(r.i, true); is(r.k, true)
+})
+
+test('intCertain: compound `+=` / `-=` / `*=` / `%=` preserve', () => {
+  const r = runAnalyze('let f = () => { let a = 0; let b = 0; let c = 0; let d = 0; a += 5; b -= 1; c *= 2; d %= 3 }')
+  is(r.a, true); is(r.b, true); is(r.c, true); is(r.d, true)
+})
+
+test('intCertain: bitwise compounds with non-int init still poison', () => {
+  // Even though bitwise compound result is always int, semantics require ALL
+  // defs are int. Init 1.5 is non-int → poison.
+  const r = runAnalyze('let f = () => { let a = 1.5; let b = 1.5; a &= 7; b <<= 2 }')
+  is(r.a, false); is(r.b, false)
+})
+
+test('intCertain: bitwise compounds with int init stay int', () => {
+  const r = runAnalyze('let f = () => { let a = 1; let b = 1; a &= 7; b <<= 2 }')
+  is(r.a, true); is(r.b, true)
+})
+
+test('intCertain: `/=` / `**=` poison', () => {
+  const r = runAnalyze('let f = () => { let a = 4; let b = 2; a /= 2; b **= 2 }')
+  is(r.a, false); is(r.b, false)
+})
+
+test('intCertain: ?: / && / || conciliate both branches', () => {
+  // z's `c && 1` left-operand `c` is param of unknown val — conservative: not int.
+  const r = runAnalyze('let f = (c) => { let x = c ? 1 : 2; let y = c ? 1 : 1.5; let z = c && 1 }')
+  is(r.x, true); is(r.y, false); is(r.z, false)
+})
+
+test('intCertain: && / || when both operands provably int', () => {
+  const r = runAnalyze('let f = () => { let a = 5; let b = 0 || a; let c = 1 && 2 }')
+  is(r.a, true); is(r.b, true); is(r.c, true)
+})
+
+test('intCertain: Math.{imul, clz32, floor, ceil, round, trunc} are int', () => {
+  const r = runAnalyze('let f = () => { let a = Math.imul(3, 4); let b = Math.floor(1.5); let c = Math.clz32(1); let d = Math.round(2.7) }')
+  is(r.a, true); is(r.b, true); is(r.c, true); is(r.d, true)
+})
+
+test('intCertain: Math.sqrt / Math.sin / Math.cos poison', () => {
+  const r = runAnalyze('let f = () => { let a = Math.sqrt(4); let b = Math.sin(1); let c = Math.cos(2) }')
+  is(r.a, false); is(r.b, false); is(r.c, false)
+})
+
+test('intCertain: .length on TYPED / ARRAY / STRING / BUFFER receiver is int', () => {
+  const r1 = runAnalyze('let f = (arr) => { let n = arr.length }', { arr: VAL.TYPED })
+  is(r1.n, true)
+  const r2 = runAnalyze('let f = (s) => { let n = s.length }', { s: VAL.STRING })
+  is(r2.n, true)
+})
+
+test('intCertain: .length on unknown receiver does not claim int', () => {
+  const r = runAnalyze('let f = (x) => { let n = x.length }')
+  is(r.n, false)
+})
+
+test('intCertain: transitive — j = i + 1 follows i', () => {
+  const r1 = runAnalyze('let f = () => { let i = 5; let j = i + 1; let k = j * 2 }')
+  is(r1.i, true); is(r1.j, true); is(r1.k, true)
+  const r2 = runAnalyze('let f = () => { let i = 5.5; let j = i + 1 }')
+  is(r2.i, false); is(r2.j, false)
 })
