@@ -14,14 +14,14 @@ export let checksumF64 = (out) => {
   const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
   let h = 0x811c9dc5 | 0
   const stride = 256
-  for (let i = 0; i < u.length; i += stride) h = mix(h, u[i])
+  for (let i = 0; i < u.length; i += stride) h = Math.imul(h ^ (u[i] | 0), 0x01000193) | 0
   return h >>> 0
 }
 
 export let checksumU32 = (out) => {
   let h = 0x811c9dc5 | 0
   const stride = 128
-  for (let i = 0; i < out.length; i += stride) h = mix(h, out[i])
+  for (let i = 0; i < out.length; i += stride) h = Math.imul(h ^ (out[i] | 0), 0x01000193) | 0
   return h >>> 0
 }
 

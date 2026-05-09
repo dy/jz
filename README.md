@@ -465,18 +465,38 @@ cc program.c -o program
 
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [biquad](bench/biquad/biquad.js) | 4.48ms<br>4.1kB | 8.94ms<br>3.2kB | fails | 6.37ms<br>1.9kB | 6.45ms<br>767 B | 5.30ms | 8.91ms<br>fma | 5.06ms | 5.28ms | 3.12s |
-| [tokenizer](bench/tokenizer/tokenizer.js) | 0.06ms<br>1.7kB | 0.12ms<br>1.4kB | 0.34ms<br>2.6kB | 0.05ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
-| [mat4](bench/mat4/mat4.js) | 2.86ms<br>1.8kB | 8.17ms<br>1.1kB | 61.94ms<br>2.3kB | 6.49ms<br>1.5kB | 7.83ms<br>353 B | 2.60ms | 11.61ms | 2.60ms | 0.80ms | 311.06ms |
-| [aos](bench/aos/aos.js) | 1.09ms<br>2.3kB | 1.30ms<br>1.1kB | fails | 1.34ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
-| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 8.62ms<br>5.0kB | 9.56ms<br>1.8kB | 9.71ms<br>3.0kB | 8.58ms<br>1.3kB | — | 8.31ms | 8.80ms | 7.83ms | 8.52ms | — |
-| [bitwise](bench/bitwise/bitwise.js) | 3.45ms<br>1.2kB | 3.74ms<br>1005 B | fails | 8.66ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
-| [poly](bench/poly/poly.js) | 0.73ms<br>1.2kB | 1.52ms<br>1014 B | fails | 0.72ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
-| [callback](bench/callback/callback.js) | 0.03ms<br>1.5kB | 0.60ms<br>828 B | fails | 1.03ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
-| [json](bench/json/json.js) | 0.13ms<br>2.9kB | 0.29ms<br>923 B | fails | — | — | 0.02ms | 1.04ms | <0.01ms | 0.03ms | 1.17ms |
-| [watr](bench/watr/watr.js) | 0.98ms<br>166.1kB | 1.43ms<br>2.6kB | fails | — | — | — | — | — | — | — |
+| [biquad](bench/biquad/biquad.js) | 4.63ms<br>4.0kB | 8.68ms<br>3.2kB | fails | 6.59ms<br>1.9kB | 6.45ms<br>767 B | 5.30ms | 8.91ms<br>fma | 5.06ms | 5.28ms | 3.12s |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.07ms<br>1.8kB | 0.12ms<br>1.4kB | 0.34ms<br>2.6kB | 0.05ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
+| [mat4](bench/mat4/mat4.js) | 2.89ms<br>1.8kB | 8.38ms<br>1.1kB | 61.94ms<br>2.3kB | 6.50ms<br>1.5kB | 7.83ms<br>353 B | 2.60ms | 11.61ms | 2.60ms | 0.80ms | 311.06ms |
+| [aos](bench/aos/aos.js) | 1.11ms<br>2.3kB | 1.26ms<br>1.1kB | fails | 1.33ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
+| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 8.02ms<br>1.2kB | 9.06ms<br>1.8kB | 9.71ms<br>3.0kB | 8.00ms<br>1.3kB | — | 8.31ms | 8.80ms | 7.83ms | 8.52ms | — |
+| [bitwise](bench/bitwise/bitwise.js) | 0.98ms<br>1.3kB | 3.76ms<br>1005 B | fails | 8.79ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
+| [poly](bench/poly/poly.js) | 0.27ms<br>1.4kB | 1.62ms<br>1014 B | fails | 0.73ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
+| [callback](bench/callback/callback.js) | 0.03ms<br>1.6kB | 0.69ms<br>828 B | fails | 1.04ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
+| [json](bench/json/json.js) | 0.20ms<br>7.7kB | 0.27ms<br>923 B | fails | — | — | 0.02ms | 1.04ms | <0.01ms | 0.03ms | 1.17ms |
+| [watr](bench/watr/watr.js) | 1.04ms<br>169.8kB | 1.05ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._
+
+### Optimization Status
+
+| Optimization | Decision | Reason |
+|---|---|---|
+| Escape scalar replacement | Accepted | Removes short-lived object/array literals before allocation. |
+| Stack rest-param scalarization | Accepted | Fixed-arity internal calls avoid heap rest arrays. |
+| Scoped arena rewind | Accepted | Safe only for functions proven not to return or persist heap values. |
+| SIMD lane-local vectorization | Accepted | Beats V8 on bitwise and keeps scalar feedback loops such as biquad untouched. |
+| Small constant loop unroll | Accepted | Required for biquad and mat4 speed; size cost is pinned. |
+| OBJECT-only ternary type propagation | Accepted | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
+| Benchmark checksum helper inlining | Accepted | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
+| Runtime schema inline cache | Rejected | Correct prototype was slower than base on the focused bimorphic object loop. |
+| Global heap clear/rewind | Rejected | Breaks lazy module intern tables; scoped rewind is the safe form. |
+| Profile-guided DCE | Rejected | jz already treeshakes statically; this adds process without real target wins. |
+| Profile-guided specialization | Deferred | Plausible for multi-shape hot calls, but must prove speed without code bloat. |
+| mat4 unroll-4 recognizer | Deferred | Current gap is small and mainly engine/codegen quality. |
+| JSON raw-u8 parser path | Deferred | Worth a separate design pass; it changes parser value shape. |
+
+`npm run test:bench-pin` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win.
 
 
 ## Alternatives

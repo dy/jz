@@ -29,6 +29,7 @@ const PINS = {
   mat4:      { v8: 'win',  as: 'win'  },
   poly:      { v8: 'win',  as: 'tie'  },
   biquad:    { v8: 'win',  as: 'win'  },
+  mandelbrot: { v8: 'win',  as: 'tie'  },
   bitwise:   { v8: 'win',  as: 'win'  },
   tokenizer: { v8: 'win',  as: 'diff' },
   aos:       { v8: 'win',  as: 'win'  },
@@ -132,16 +133,17 @@ for (const [id, claims] of Object.entries(PINS)) {
 
 // jz wasm size budgets — regression guard against accidental codegen bloat.
 // Tolerances absorb harmless codegen jitter; tighten/loosen by editing the
-// budget. Sizes encode the snapshot after the console-template-flatten +
-// schema-slot re-observation landing (see commit log for the size-cuts series).
+// budget. Sizes encode the snapshot after the checksum-helper inlining size cut:
+// factoring `x | 0` behind a generic helper makes ToNumber/string conversion live.
 const SIZE_BUDGET = {
-  callback:  4900,
-  mat4:      4200,
-  poly:      3900,
+  callback:  2500,
+  mat4:      2500,
+  poly:      2500,
   biquad:    4500,
-  bitwise:   3900,
-  tokenizer: 4600,
-  aos:       5700,
+  mandelbrot: 1800,
+  bitwise:   2500,
+  tokenizer: 3000,
+  aos:       3500,
   json:     11000,
   watr:    180000,
 }
