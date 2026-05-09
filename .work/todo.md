@@ -157,8 +157,8 @@ Inspired by porffor's [profile-guided DCE](https://goose.icu/profile-guided-dce/
 
 ### Smaller wins (lower priority)
 
-* [ ] Tail-call optimization — emit WASM `return_call` for tail-position calls. Already partially done (block-body); extend to expression bodies via existing `tcoTailRewrite` path
-* [ ] Loop unrolling for small constant trip counts (≤8) — porffor [tried then disabled](https://github.com/CanadaHonk/porffor/commit/986c9f5) due to code-size regression; gate by body size
+* [x] Tail-call optimization — expression-bodied arrows now emit `return_call` through `tcoTailRewrite`; `sum(100000)` no longer overflows
+* [x] Loop unrolling for small constant trip counts (≤8) — guarded `for (let i=0; i<CONST; i++)` unroll is on by default; biquad-focused run measured ~11.3ms → ~6.5ms with code-size guard tests
 * [x] Constant-fold across closure boundaries — integer `const` / write-once `let` captures now fold into closure bodies; closure env slot removed for folded captures; pinned in `test/closures.js`
 * [ ] Peephole: i32↔f64 boundary minimization — partial: literal `toI32(f64.const)` folds to `i32.const`; remaining post-emit convert/trunc round-trips still open
 
