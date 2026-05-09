@@ -445,6 +445,7 @@ function emitClosureBody(cb) {
   // Reset per-function state for closure body
   ctx.func.locals = new Map()
   ctx.func.repByLocal = null
+  if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
     ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])

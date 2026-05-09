@@ -203,6 +203,21 @@ test('closure: captured parameter', () => {
   `).add(0), 105)
 })
 
+test('closure: integer const capture folds into closure body', () => {
+  const src = `
+    export let f = (x) => {
+      const MASK = 255
+      let g = y => y & MASK
+      return g(x)
+    }
+  `
+  is(runHost(src).f(511), 255)
+  const body = wat(src).match(/\(func \$[^\s)]*closure[\s\S]*?^  \)/m)?.[0]
+  ok(body, 'closure body present')
+  ok(!/\$__env|f64\.load|local\.get \$MASK/.test(body), 'const capture should not allocate/load an env slot')
+  ok(/\(i32\.const 255\)/.test(body), 'const capture should become an immediate')
+})
+
 // === Multiple closures from same factory ===
 
 test('closure: multiple instances', () => {

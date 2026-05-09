@@ -92,6 +92,10 @@ export const toI32 = n => {
     const inner = n[1]
     return Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
+  if (Array.isArray(n) && n[0] === 'f64.const' && typeof n[1] === 'number') {
+    const v = n[1]
+    return typed(['i32.const', Number.isFinite(v) ? v | 0 : 0], 'i32')
+  }
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   const isLeaf = Array.isArray(n) && n.length <= 2 &&
     (n[0] === 'f64.const' || n[0] === 'local.get' || n[0] === 'global.get')

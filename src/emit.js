@@ -2448,7 +2448,7 @@ export function emit(node, expect) {
   if (typeof node === 'number') return emitNum(node)
   if (typeof node === 'string') {
     // Variable read: boxed / local / param / global (check before emitter table to avoid name collisions)
-    if (ctx.func.boxed?.has(node) || ctx.func.locals?.has(node) || ctx.func.current?.params?.some(p => p.name === node) || isGlobal(node))
+    if (ctx.func.boxed?.has(node) || ctx.func.locals?.has(node) || ctx.func.current?.params?.some(p => p.name === node) || isGlobal(node) || repOf(node)?.intConst != null)
       return readVar(node)
     // Top-level function used as value → wrap as closure pointer for call_indirect
     if (ctx.func.names.has(node) && !ctx.func.locals?.has(node) && !ctx.func.current?.params?.some(p => p.name === node) && ctx.closure.table) {
