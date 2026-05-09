@@ -498,6 +498,9 @@ export default (ctx) => {
         return emitDynGetExprTyped(va, key, vt)
       }
       if (vt == null) {
+        // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
+        // Skip the external branch and dispatch through the typed HASH/OBJECT path.
+        if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt)
         ctx.features.external = true
         return emitDynGetAnyTyped(va, key, vt)
       }
@@ -619,11 +622,12 @@ export default (ctx) => {
           } else if (objType === VAL.HASH) {
             access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else if (objType == null) {
-            // Unknown receiver — runtime dispatch via __dyn_get_any_t. Unlike
-            // the non-`?.` path, don't enable features.external: `?.` short-
-            // circuits on nullish, so the EXTERNAL arm is dead unless the
-            // caller has externals (then features.external is already on).
-            access = emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
+            // Unknown receiver — in WASI mode use typed dispatch (no PTR.EXTERNAL values).
+            // In JS host mode use __dyn_get_any_t but don't force features.external here
+            // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
+            access = ctx.transform.host === 'wasi'
+              ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
+              : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
             access = ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
