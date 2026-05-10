@@ -329,6 +329,24 @@ const collectScalarTypedArrayWrites = (node, name, len, out = new Set()) => {
   return out
 }
 
+const hasScalarTypedArrayRead = (node, name) => {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  const isTarget = target => Array.isArray(target) && target[0] === '[]' && target[1] === name
+  if ((op === '++' || op === '--') && isTarget(node[1])) return true
+  if (ASSIGN_TARGET_OPS.has(op)) {
+    if (isTarget(node[1])) {
+      if (op !== '=') return true
+      for (let i = 2; i < node.length; i++) if (hasScalarTypedArrayRead(node[i], name)) return true
+      return false
+    }
+  }
+  if (op === '[]' && node[1] === name) return true
+  if (op === '=>') return false
+  for (let i = 1; i < node.length; i++) if (hasScalarTypedArrayRead(node[i], name)) return true
+  return false
+}
+
 const scalarizeTypedArrayLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
   let changed = false
@@ -553,6 +571,7 @@ const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
 
 const scalarizeTypedArrayParams = (func, paramCands) => {
   for (const [name, c] of [...paramCands]) if (!safeScalarTypedArrayUse(func.body, name, c.len)) paramCands.delete(name)
+  for (const [name] of [...paramCands]) if (!hasScalarTypedArrayRead(func.body, name)) paramCands.delete(name)
   if (!paramCands.size) return { body: func.body, changed: false }
   const arrays = new Map()
   for (const [name, c] of paramCands) {
@@ -920,6 +939,7 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   if (cfg && cfg.sourceInline === false) return false
 
   const fixedByFunc = new Map(ctx.func.list.map(func => [func, fixedTypedArraysInBody(func.body)]))
+  const typedByFunc = new Map(ctx.func.list.map(func => [func, analyzeBody(func.body).typedElems]))
   const sitesByCallee = new Map()
   for (const cs of programFacts.callSites) {
     const list = sitesByCallee.get(cs.callee)
@@ -942,8 +962,22 @@ const inlineHotInternalCalls = (programFacts, ast) => {
       return typeof arg === 'string' && fixedByFunc.get(site.callerFunc)?.has(arg)
     }))
   }
-  const hasFixedTypedArrayHotSites = (func, sites) =>
-    hasFixedTypedArraySites(func, sites) && sites.some(site => site.callerFunc?.body && containsNode(site.callerFunc.body, site.node))
+  const hasFullyFixedTypedArraySites = (func, sites) => {
+    const params = func.sig?.params || []
+    if (!sites?.length) return false
+    let sawTypedArg = false
+    for (const site of sites) {
+      const typed = typedByFunc.get(site.callerFunc)
+      const fixed = fixedByFunc.get(site.callerFunc)
+      for (let i = 0; i < params.length; i++) {
+        const arg = site.argList[i]
+        if (typeof arg !== 'string' || !typed?.has(arg)) continue
+        sawTypedArg = true
+        if (!fixed?.has(arg)) return false
+      }
+    }
+    return sawTypedArg
+  }
 
   const candidates = new Map()
   for (const func of ctx.func.list) {
@@ -951,6 +985,7 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     if (func.defaults && Object.keys(func.defaults).length) continue
     const sites = sitesByCallee.get(func.name)
     const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
+    const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
     if (!sites || sites.length < 1 || (!fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
@@ -980,7 +1015,7 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // loop carries most of the cost. Inlining them into a host that V8 can't
     // tier up (e.g. a once-called wrapper) freezes the kernel in baseline.
     // Keep them as standalone functions so V8 wasm tier-up can warm them.
-    if (loopDepth(func.body, 0) >= 2 && !fixedTypedArraySite) continue
+    if (loopDepth(func.body, 0) >= 2 && !fullyFixedTypedArraySite) continue
     // Factory functions that allocate pointers (`new TypedArray`, `new Array`,
     // object/array literals returned) break downstream pointer-ABI specialization
     // when inlined: narrow.js can't trace the post-inline alias chain back to a

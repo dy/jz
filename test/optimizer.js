@@ -376,9 +376,9 @@ test('fixed Float64Array internal params scalar-replace unrolled slots', () => {
   const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const useWat = wat.match(/\(func \$use[\s\S]*?^  \)/m)?.[0] || ''
   is((useWat.match(/\(loop\b/g) || []).length, 0)
-  is((useWat.match(/f64\.load\b/g) || []).length, 48)
+  is((useWat.match(/f64\.load\b/g) || []).length, 32)
   is((useWat.match(/f64\.store\b/g) || []).length, 16)
-  ok(/tap\d+_/.test(useWat), 'expected promoted parameter slots')
+  ok(/tap\d+_/.test(useWat), 'expected promoted input parameter slots')
   is(run(src).main(), 6)
 })
 
@@ -651,6 +651,37 @@ test('sourceInline: does NOT inline ordinary hot loop into exported entry', () =
   ok(/\(call \$hot\b/.test(wat), 'expected call kept inside exported entry (skip-into-export rule)')
   const { main } = run(src)
   is(main(), 10)
+})
+
+test('sourceInline: does NOT inline nested typed-array kernel unless all typed arrays are fixed', () => {
+  const src = `
+    const cascade = (x, state, out, nStages) => {
+      for (let i = 0; i < x.length; i++) {
+        let v = x[i]
+        for (let s = 0; s < nStages; s++) {
+          const y = v + state[s]
+          state[s] = y
+          v = y
+        }
+        out[i] = v
+      }
+    }
+    const runKernel = () => {
+      const x = new Float64Array(64)
+      const state = new Float64Array(4)
+      const out = new Float64Array(64)
+      x[0] = 2
+      state[0] = 1
+      cascade(x, state, out, 4)
+      return out[0] | 0
+    }
+    export const main = () => runKernel()
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  ok(/\(func \$cascade\b/.test(wat), 'nested kernel should stay callable')
+  ok(/\(call \$cascade\b/.test(wat), 'nested kernel call should be preserved')
+  const { main } = run(src)
+  is(main(), 3)
 })
 
 test('sourceInline: disabled by optimize:false', () => {

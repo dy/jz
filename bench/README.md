@@ -132,21 +132,39 @@ JS** (`v8/node`) is the headline number for each row.
 
 | target | median | ×nat | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| Rust (rustc -O `target-cpu=native`) | 5.26 ms | 0.99× | 380.7 kB | ok |
-| native C (clang -O3 -ffp-contract=off) | 5.31 ms | 1.00× | 32.7 kB | ok |
-| **jz → V8 wasm** | **6.37 ms** | **1.20×** | **4.2 kB** | **ok** |
-| hand-WAT → V8 wasm | 6.44 ms | 1.21× | 767 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 8.92 ms | 1.68× | 1.9 kB | ok |
+| Rust (rustc -O `target-cpu=native`) | 5.29 ms | 0.99× | 380.7 kB | ok |
+| native C (clang -O3 -ffp-contract=off) | 5.32 ms | 1.00× | 32.7 kB | ok |
+| **jz → V8 wasm** | **6.43 ms** | **1.21×** | **4.5 kB** | **ok** |
+| hand-WAT → V8 wasm | 6.49 ms | 1.22× | 767 B | ok |
 | Go (gc, FMA-fused on arm64) | 8.93 ms | 1.68× | 1.60 MB | fma |
-| V8 (deno) raw JS | 12.04 ms | 2.27× | 3.2 kB | ok |
-| V8 (node) raw JS | 12.18 ms | 2.29× | 3.2 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.05 ms | 1.70× | 1.9 kB | ok |
+| V8 (node) raw JS | 12.40 ms | 2.33× | 3.2 kB | ok |
 
-**jz now matches the hand-WAT floor and beats AS by 1.40×.** The 1.73×
+**jz now matches the hand-WAT floor and beats AS by 1.41×.** The 1.73×
 gap documented in earlier snapshots is closed: per-stage base hoisting,
 `offset=` immediate fusion, and the typed-array scalar-replacement work
 landed and closed the wasm-codegen gap on dense-f64 loops. jz also beats
-V8's raw-JS execution of the same source by 1.91×, so any path from
+V8's raw-JS execution of the same source by 1.93×, so any path from
 `.js` source through wasm beats the JIT cleanly on this workload.
+
+### mat4 — fixed-size Float64Array multiply
+
+| target | median | ×nat | size | parity |
+| --- | ---: | ---: | ---: | --- |
+| Rust (rustc -O `target-cpu=native`) | 1.80 ms | 0.65× | 380.7 kB | ok |
+| **jz → V8 wasm** | **2.13 ms** | **0.77×** | **3.4 kB** | **ok** |
+| native C (clang -O3 -ffp-contract=off) | 2.76 ms | 1.00× | 32.8 kB | ok |
+| hand-WAT → V8 wasm | 8.12 ms | 2.95× | 414 B | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 9.25 ms | 3.36× | 1.6 kB | ok |
+| V8 (node) raw JS | 11.83 ms | 4.29× | 1.2 kB | ok |
+| Go (gc) | 12.13 ms | 4.40× | 1.60 MB | ok |
+
+**jz is 4.35× faster than AS on mat4, but still larger.** The useful
+size cut here is modest: write-only typed-array output params no longer
+get scalar-load mirrors, trimming the host wasm from 3.7 kB to 3.4 kB
+without slowing the SIMD/scalarized hot path. Disabling that path makes
+the module both larger and slower, so the remaining size gap is a real
+speed/compactness tradeoff rather than dead bloat.
 
 ### bitwise — i32 narrowing chains (`Math.imul`, shifts, FNV-1a)
 
@@ -197,10 +215,13 @@ can produce from the same JS source.
 
 ### Where the gaps live
 
-Reading across the three cases:
+Reading across the four cases:
 
 * **biquad: solved.** jz at the hand-WAT floor, beating AS and V8 raw
   JS. The codegen for dense-f64 typed-array loops is good.
+* **mat4: fast, not tiny.** jz's scalarized/SIMD path beats native C and
+  AS, but emits about 3.4 kB because the fixed 4×4 kernel is expanded into
+  a hot vectorized wasm shape.
 * **bitwise: blocked on NaN-box on the i32 path.** Every i32 op pays
   type-tag overhead. The `i64`-tagged carrier work in `.work/todo.md`
   Step 1–2 is the gating change; estimated 14×→2× landing for this case
