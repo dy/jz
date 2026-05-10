@@ -852,11 +852,25 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     inc('__str_cmp')
     return typed([`i32.${i32op}`, ['call', '$__str_cmp', asI64(va), asI64(vb)], ['i32.const', 0]], 'i32')
   }
+  if (vtb === VAL.NUMBER && needsRelationalToNumber(a, vta))
+    return typed([`f64.${f64op}`, toNumF64(a, va), asF64(vb)], 'i32')
+  if (vta === VAL.NUMBER && needsRelationalToNumber(b, vtb))
+    return typed([`f64.${f64op}`, asF64(va), toNumF64(b, vb)], 'i32')
   const ai = intConstValue(a), bi = intConstValue(b)
   if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
   if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
   return va.type === 'i32' && vb.type === 'i32'
     ? typed([`i32.${i32op}`, va, vb], 'i32') : typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
+}
+
+function needsRelationalToNumber(expr, vt) {
+  if (vt === VAL.STRING) return true
+  if (vt != null) return false
+  return mayReadBoxedValue(expr)
+}
+
+function mayReadBoxedValue(expr) {
+  return Array.isArray(expr) && (expr[0] === '.' || expr[0] === '[]' || expr[0] === '?.' || expr[0] === '?.[]')
 }
 
 function intConstValue(expr) {
