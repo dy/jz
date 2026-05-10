@@ -347,7 +347,6 @@ export default (ctx) => {
       ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
   }
 
-  // parseInt(str, radix) — parse string to integer
   ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str i64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $result f64) (local $digit i32) (local $seen i32) (local $f f64)

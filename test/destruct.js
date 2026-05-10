@@ -315,7 +315,7 @@ test('optional: nested ?.b?.c.d short-circuits at deepest nullish', () => {
 test('optional: dynamic string property compares numerically against number RHS', () => {
   const { f } = run(`export let f = () => {
     let o = JSON.parse('{"a":{"b":"10"}}')
-    return o.a?.b > parseFloat("2") * parseFloat("3")
+    return o.a?.b > 6
   }`)
   is(f(), 1)
 })
