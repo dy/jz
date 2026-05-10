@@ -598,9 +598,16 @@ export default (ctx) => {
     return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
+  const addImportOnce = (ctx, mod, name, fn) => {
+    if (ctx.module.imports.some(i => i[1] === `"${mod}"` && i[2] === `"${name}"`)) return
+    ctx.module.imports.push(['import', `"${mod}"`, `"${name}"`, fn])
+  }
+  const needParseFloat = () => addImportOnce(ctx, 'env', 'parseFloat',
+    ['func', '$__parseFloat', ['param', 'i64'], ['result', 'f64']])
+
   ctx.core.emit['Number.parseFloat'] = (x) => {
-    inc('__to_num')
-    return typed(['call', '$__to_num', asI64(emit(x))], 'f64')
+    needParseFloat()
+    return typed(['call', '$__parseFloat', asI64(emit(x))], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 

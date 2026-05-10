@@ -282,3 +282,78 @@ test('watr metacircular: jz-built watr.wasm produces byte-identical output', asy
     is(diff, -1, `${file}: byte-identical (first diff at ${diff})`)
   }
 })
+
+// ─── jz-compiled watr regression tests ───
+// These exercise the full jz→watr pipeline (parse + print + compile) and
+// reproduce actual bugs that only manifest when watr is compiled by jz.
+
+let topLevelInstance
+
+function compiledWatrInstance() {
+  if (!topLevelInstance) {
+    const inst = jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 })
+    topLevelInstance = inst.exports
+  }
+  return topLevelInstance
+}
+
+function instantiateWat(wat) {
+  const { parse, print, compile } = compiledWatrInstance()
+  const ast = parse(wat)
+  const printed = print(ast)
+  const bin = new Uint8Array(compile(printed))
+  const mod = new WebAssembly.Module(bin)
+  return new WebAssembly.Instance(mod).exports
+}
+
+function f64Value(wat) {
+  const { parse, print, compile } = compiledWatrInstance()
+  const ast = parse(wat)
+  const printed = print(ast)
+  const bin = new Uint8Array(compile(printed))
+  const idx = bin.findIndex((b, i) => b === 0x44 && i > 20)
+  const dv = new DataView(bin.buffer, bin.byteOffset + idx + 1, 8)
+  return dv.getFloat64(0, true)
+}
+
+test('watr-regression: f64.const rounds correctly after f32.const compile', () => {
+  // Prime internal state with first f64
+  f64Value('(module (func (export "f") (result f64) (f64.const +5.3575430359313383891e+300)))')
+  // Compile an f32 — this used to corrupt shared _buf state in jz-compiled encode.js
+  const { parse, print, compile } = compiledWatrInstance()
+  const f32Ast = parse('(module (func (export "f") (result f32) (f32.const 1.5)))')
+  const f32Printed = print(f32Ast)
+  new Uint8Array(compile(f32Printed))
+  // Now compile a different f64 — should get a distinct higher value
+  const val = f64Value('(module (func (export "f") (result f64) (f64.const +5.3575430359313383892e+300)))')
+
+  const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
+  u8.set([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x7e])
+  const expected = new Float64Array(buf)[0]
+  is(val, expected, `got ${val}, expected ${expected}`)
+})
+
+test('watr-regression: f64.const 4.94066e-324 reinterprets to i64.const 1', () => {
+  const exports = instantiateWat(`(module
+    (func (export "f64_dec.min_positive") (result i64)
+      (i64.reinterpret_f64 (f64.const 4.94066e-324))))`)
+  is(exports['f64_dec.min_positive'](), 1n)
+})
+
+test('watr-regression: ref_cast.wast does not throw illegal cast', () => {
+  const wat = `(module
+    (type $t (func))
+    (func (export "ref_cast_null") (param externref) (result externref)
+      (ref.cast (ref null extern) (local.get 0))))`
+  const exports = instantiateWat(wat)
+  is(exports.ref_cast_null(null), null)
+})
+
+test('watr-regression: ref_test_null_data(0) === 1', () => {
+  const wat = `(module
+    (type $t (func (param i32) (result i32)))
+    (func (export "ref_test_null_data") (param $i i32) (result i32)
+      (ref.test (ref null data) (ref.null data))))`
+  const exports = instantiateWat(wat)
+  is(exports.ref_test_null_data(0), 1)
+})
