@@ -125,6 +125,28 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   }
   const init = emit(ast)
 
+  // Module-scope object literals can create closure bodies while `emit(ast)`
+  // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
+  // that affect __start setup, so flush them before deciding which runtime
+  // tables __start must initialize. Restore the start-function context after
+  // compiling closure bodies; emitClosureBody owns ctx.func.* while it runs.
+  const beforeLateClosures = closureFuncs.length
+  const startCtx = {
+    locals: ctx.func.locals,
+    repByLocal: ctx.func.repByLocal,
+    boxed: ctx.func.boxed,
+    stack: ctx.func.stack,
+    current: ctx.func.current,
+    body: ctx.func.body,
+    directClosures: ctx.func.directClosures,
+    preboxed: ctx.func.preboxed,
+    localProps: ctx.func.localProps,
+    uniq: ctx.func.uniq,
+    refinements: ctx.func.refinements,
+  }
+  compilePendingClosures()
+  Object.assign(ctx.func, startCtx)
+
   const boxInit = []
   if (ctx.schema.autoBox) {
     const bt = `${T}box`
@@ -210,10 +232,9 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     sec.start.push(startFn, ['start', '$__start'])
   }
 
-  const beforeLen = closureFuncs.length
   compilePendingClosures()
-  if (closureFuncs.length > beforeLen)
-    sec.funcs.unshift(...closureFuncs.slice(beforeLen))
+  if (closureFuncs.length > beforeLateClosures)
+    sec.funcs.unshift(...closureFuncs.slice(beforeLateClosures))
 }
 
 /**
