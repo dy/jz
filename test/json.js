@@ -333,3 +333,19 @@ test('JSON runtime schemas: late closure parse does not overwrite compile-time s
     '{"results":[{"entry":{"code":"alpha"}}]}'
   )
 })
+
+test('JSON.parse: loose equality coerces numeric strings against numbers', () => {
+  const { f } = run(`export let f = () => {
+    const data = JSON.parse('{"value":"12.5","empty":null}')
+    return [
+      12.5 == data.value,
+      13 != data.value,
+      0 == data.empty,
+    ]
+  }`)
+
+  const result = f()
+  is(result[0], 1)
+  is(result[1], 1)
+  is(result[2], 0)
+})
