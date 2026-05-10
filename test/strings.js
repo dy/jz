@@ -252,6 +252,14 @@ test('string: .toLowerCase', () => {
   is(run(`export let f = () => "HELLO".toLowerCase().length`).f(), 5)
 })
 
+test('string: .toLocaleLowerCase', () => {
+  is(run(`export let f = () => "HELLO".toLocaleLowerCase().length`).f(), 5)
+})
+
+test('string: .toLocaleLowerCase ignores locale args', () => {
+  is(run(`export let f = () => "HELLO".toLocaleLowerCase("tr").length`).f(), 5)
+})
+
 // === .trim ===
 
 test('string: .trim', () => {

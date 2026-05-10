@@ -359,7 +359,7 @@ export function valTypeOf(expr) {
       if (method === 'add' || method === 'delete') return VAL.SET
       if (method === 'set') return VAL.MAP
       // String-returning methods
-      if (['toUpperCase', 'toLowerCase', 'trim', 'trimStart', 'trimEnd',
+      if (['toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'trim', 'trimStart', 'trimEnd',
         'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring'].includes(method)) return VAL.STRING
       if (method === 'split') return VAL.ARRAY
       // slice/concat preserve caller type (string.slice → string, array.slice → array)
@@ -1263,7 +1263,7 @@ export function invalidateLocalsCache(body) {
 // concat) that strings share with arrays/typed-arrays.
 const STRING_ONLY_METHODS = new Set([
   'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
-  'toUpperCase', 'toLowerCase', 'normalize', 'localeCompare',
+  'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'normalize', 'localeCompare',
   'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
   'matchAll', 'match', 'replace', 'replaceAll', 'split',
 ])
