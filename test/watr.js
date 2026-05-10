@@ -316,44 +316,54 @@ function f64Value(wat) {
   return dv.getFloat64(0, true)
 }
 
-test('watr-regression: f64.const rounds correctly after f32.const compile', () => {
-  // Prime internal state with first f64
-  f64Value('(module (func (export "f") (result f64) (f64.const +5.3575430359313383891e+300)))')
-  // Compile an f32 — this used to corrupt shared _buf state in jz-compiled encode.js
-  const { parse, print, compile } = compiledWatrInstance()
-  const f32Ast = parse('(module (func (export "f") (result f32) (f32.const 1.5)))')
-  const f32Printed = print(f32Ast)
-  new Uint8Array(compile(f32Printed))
-  // Now compile a different f64 — should get a distinct higher value
-  const val = f64Value('(module (func (export "f") (result f64) (f64.const +5.3575430359313383892e+300)))')
-
+// ─── Bug 1: f64 hex integer literal > 53 bits loses precision (const.wast) ───
+// f64.parse("+0x2000000000000100000000001") uses parseInt which rounds
+// because the value exceeds Number.MAX_SAFE_INTEGER.
+test('watr-regression: f64.const large hex integer rounds correctly', () => {
+  const val = f64Value('(module (func (export "f") (result f64) (f64.const +0x2000000000000100000000001)))')
+  // Expected: +0x1.0000000000001p+97
   const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
-  u8.set([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x7e])
+  u8.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
   const expected = new Float64Array(buf)[0]
   is(val, expected, `got ${val}, expected ${expected}`)
 })
 
-test('watr-regression: f64.const 4.94066e-324 reinterprets to i64.const 1', () => {
-  const exports = instantiateWat(`(module
-    (func (export "f64_dec.min_positive") (result i64)
-      (i64.reinterpret_f64 (f64.const 4.94066e-324))))`)
-  is(exports['f64_dec.min_positive'](), 1n)
-})
-
-test('watr-regression: ref_cast.wast does not throw illegal cast', () => {
+// ─── Bug 2: ref.cast to nullable anyref throws on null (ref_cast.wast) ───
+// In WASM mode, ref.cast anyref on (ref.null any) incorrectly throws
+// RuntimeError: illegal cast. JS mode (native watr) returns null.
+test('watr-regression: ref_cast_null_any does not throw illegal cast', () => {
   const wat = `(module
-    (type $t (func))
-    (func (export "ref_cast_null") (param externref) (result externref)
-      (ref.cast (ref null extern) (local.get 0))))`
+    (type $st (struct))
+    (table $ta 10 anyref)
+    (func (export "init")
+      (table.set $ta (i32.const 0) (ref.null any)))
+    (func (export "ref_cast_null_any") (param $i i32) (result anyref)
+      (ref.cast anyref (table.get $ta (local.get $i)))))`
   const exports = instantiateWat(wat)
-  is(exports.ref_cast_null(null), null)
+  exports.init()
+  is(exports.ref_cast_null_any(0), null)
 })
 
-test('watr-regression: ref_test_null_data(0) === 1', () => {
+// ─── Bug 3: ref_test_null_data returns wrong sum (ref_test.wast) ───
+// The official test expects 2 = 1 (is_null) + 1 (ref.test nullref).
+// jz-compiled watr returns 1 = 1 + 0, meaning ref.test nullref gives 0.
+test('watr-regression: ref_test_null_data returns 2', () => {
   const wat = `(module
-    (type $t (func (param i32) (result i32)))
+    (type $ft (func))
+    (type $st (struct))
+    (type $at (array i8))
+    (table $ta 10 anyref)
+    (elem declare func $f)
+    (func $f)
+    (func (export "init") (param $x externref)
+      (table.set $ta (i32.const 0) (ref.null any))
+      (table.set $ta (i32.const 1) (ref.null struct))
+      (table.set $ta (i32.const 2) (ref.null none)))
     (func (export "ref_test_null_data") (param $i i32) (result i32)
-      (ref.test (ref null data) (ref.null data))))`
+      (i32.add
+        (ref.is_null (table.get $ta (local.get $i)))
+        (ref.test nullref (table.get $ta (local.get $i))))))`
   const exports = instantiateWat(wat)
-  is(exports.ref_test_null_data(0), 1)
+  exports.init(null)
+  is(exports.ref_test_null_data(0), 2)
 })
