@@ -789,20 +789,26 @@ export default function compile(ast, profiler) {
   // WASI command-mode entries (`run`, `_start`) must export as () -> ();
   // wasmtime/wasmer reject f64-returning functions under those names.
   // Parametric entries skip this — a CLI invocation has no way to supply args.
+  const wasiCommandExports = new Set()
   if (ctx.transform.host === 'wasi') {
     const WASI_ENTRIES = new Set(['run', '_start'])
-    for (const func of ctx.func.list) {
-      if (!func.exported || !WASI_ENTRIES.has(func.name)) continue
+    for (const [exportName, val] of Object.entries(ctx.func.exports)) {
+      if (!WASI_ENTRIES.has(exportName)) continue
+      const targetName = val === true ? exportName : val
+      if (typeof targetName !== 'string') continue
+      const func = ctx.func.list.find(f => f.name === targetName)
+      if (!func) continue
       if (func.sig.params.length) continue
-      const inner = isBoundaryWrapped(func) ? `$${func.name}$exp` : `$${func.name}`
+      const inner = isBoundaryWrapped(func) ? `$${targetName}$exp` : `$${targetName}`
       for (const f of sec.funcs) {
-        if (f[1] === inner || f[1] === `$${func.name}`) {
+        if (f[1] === inner || f[1] === `$${targetName}`) {
           const expIdx = f.findIndex(n => Array.isArray(n) && n[0] === 'export')
           if (expIdx >= 0) f.splice(expIdx, 1)
         }
       }
-      sec.funcs.push(['func', `$${func.name}$wasi`, ['export', `"${func.name}"`],
+      sec.funcs.push(['func', `$${exportName}$wasi`, ['export', `"${exportName}"`],
         ['drop', ['call', inner]]])
+      wasiCommandExports.add(exportName)
     }
   }
 
@@ -890,6 +896,7 @@ export default function compile(ast, profiler) {
 
   // Named export aliases: export { name } or export { source as alias }
   for (const [name, val] of Object.entries(ctx.func.exports)) {
+    if (wasiCommandExports.has(name)) continue
     if (val === true) {
       if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
       continue
