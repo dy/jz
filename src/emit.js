@@ -440,6 +440,26 @@ function isTerminator(body) {
   return false
 }
 
+function canThrow(body, seen = new Set()) {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (op === 'throw') return true
+  if (op === '=>') return false
+  if (op === '()') {
+    const callee = body[1]
+    if (typeof callee === 'string') {
+      const bodyName = ctx.func.directClosures?.get(callee)
+      const f = ctx.func.map?.get(bodyName || callee)
+      if (f?.body && !f.raw && !seen.has(f.name)) {
+        seen.add(f.name)
+        if (canThrow(f.body, seen)) return true
+      }
+    }
+  }
+  for (let i = 1; i < body.length; i++) if (canThrow(body[i], seen)) return true
+  return false
+}
+
 /** Emit pending `finally` cleanups for an abrupt control-flow exit.
  *  Inner cleanups run before outer cleanups. While emitting each cleanup, remove
  *  it from the active stack so `return` inside `finally` does not re-enter it. */
@@ -1013,6 +1033,8 @@ export const emitter = {
   },
 
   'catch': (body, errName, handler) => {
+    if (!canThrow(body)) return emitFlat(body)
+
     ctx.runtime.throws = true
     const id = ctx.func.uniq++
     ctx.func.locals.set(errName, 'f64')
@@ -1031,6 +1053,14 @@ export const emitter = {
   },
 
   'finally': (body, cleanup) => {
+    if (!canThrow(body)) {
+      const parentStack = ctx.func.finallyStack || []
+      const activeStack = parentStack.concat([cleanup])
+      const bodyIR = withFinallyStack(activeStack, () => emitFlat(body))
+      const cleanupIR = isTerminator(body) ? [] : withFinallyStack(parentStack, () => emitFlat(cleanup))
+      return [...bodyIR, ...cleanupIR]
+    }
+
     ctx.runtime.throws = true
     const id = ctx.func.uniq++
     const errLocal = temp('err')
@@ -1060,13 +1090,14 @@ export const emitter = {
 
   'return': expr => {
     const finalizers = emitFinalizers()
+    const finalizerBlock = () => [['block', ...finalizers]]
     if (ctx.func.current?.results.length > 1 && Array.isArray(expr) && expr[0] === '[') {
       const vals = expr.slice(1).map(e => asF64(emit(e)))
       if (finalizers.length === 0) return typed(['return', ...vals], 'void')
       const names = vals.map(() => temp('ret'))
       return [
         ...vals.map((v, i) => ['local.set', `$${names[i]}`, v]),
-        ...finalizers,
+        ...finalizerBlock(),
         typed(['return', ...names.map(n => ['local.get', `$${n}`])], 'void'),
       ]
     }
@@ -1082,7 +1113,7 @@ export const emitter = {
       const name = ty === 'i32' ? tempI32('ret') : ty === 'i64' ? tempI64('ret') : temp('ret')
       return [
         ['local.set', `$${name}`, ir],
-        ...finalizers,
+        ...finalizerBlock(),
         typed(['return', ['local.get', `$${name}`]], 'void'),
       ]
     }

@@ -10,6 +10,28 @@ function run(code, opts) {
   return new WebAssembly.Instance(mod).exports
 }
 
+function hasSection(wasm, code) {
+  const bytes = wasm instanceof Uint8Array ? wasm : new Uint8Array(wasm)
+  let i = 8
+  const readU32 = () => {
+    let value = 0, shift = 0
+    while (i < bytes.length) {
+      const b = bytes[i++]
+      value |= (b & 0x7f) << shift
+      if ((b & 0x80) === 0) return value
+      shift += 7
+    }
+    return value
+  }
+  while (i < bytes.length) {
+    const id = bytes[i++]
+    const size = readU32()
+    if (id === code) return true
+    i += size
+  }
+  return false
+}
+
 // === Block body with let/return ===
 
 test('block: let + return', () => {
@@ -213,6 +235,12 @@ test('try/catch: no throw takes normal path', () => {
   is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(5), 10)
 })
 
+test('try/catch: non-throwing body emits portable wasm', () => {
+  const wasm = compile('export let f = () => { try { return 1 } catch (e) { return 2 } }', { host: 'wasi' })
+  is(hasSection(wasm, 13), false)
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 1)
+})
+
 test('try/catch: thrown string', () => {
   is(run('export let f = () => { try { throw \"err\" } catch (e) { return e.length } }').f(), 3)
 })
@@ -223,6 +251,12 @@ test('try/catch: nested', () => {
 
 test('try/finally: normal completion runs cleanup', () => {
   is(run('export let f = () => { let x = 1; try { x += 2 } finally { x *= 10 }; return x }').f(), 30)
+})
+
+test('try/finally: non-throwing body emits portable wasm', () => {
+  const wasm = compile('export let f = () => { let x = 1; try { x += 2 } finally { x *= 10 }; return x }', { host: 'wasi' })
+  is(hasSection(wasm, 13), false)
+  is(new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports.f(), 30)
 })
 
 test('try/finally: throw runs cleanup before catch', () => {
