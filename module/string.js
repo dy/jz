@@ -959,6 +959,11 @@ export default (ctx) => {
     return typed(['call', '$__str_case', asI64(emit(str)), ['i32.const', 65], ['i32.const', 90], ['i32.const', 32]], 'f64')
   }
 
+  // Locale-specific casing needs ICU/CLDR data. jz intentionally has no
+  // runtime, so this follows the existing ASCII-only lowercase helper and
+  // ignores optional locale arguments.
+  ctx.core.emit['.toLocaleLowerCase'] = ctx.core.emit['.toLowerCase']
+
   // Byte-wise variant of String.prototype.localeCompare. Returns -1/0/1 from
   // an unsigned byte-by-byte compare with shorter-string-sorts-first tiebreak.
   // NOT locale-aware: real localeCompare is ICU-driven (CLDR collation, case
