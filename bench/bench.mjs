@@ -29,8 +29,8 @@ const CASE_NAMES = {
   callback: 'callback map',
   aos: 'AoS to SoA',
   mandelbrot: 'mandelbrot escape',
-  json: 'JSON parse+walk (shaped runtime)',
-  'json-dynamic': 'JSON parse+walk (variant source)',
+  json: 'JSON parse+walk (single literal source)',
+  'json-dynamic': 'JSON parse+walk (runtime variant source)',
   watr: 'watr WAT compiler',
 }
 

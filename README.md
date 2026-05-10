@@ -32,7 +32,7 @@ JZ distills the modern functional core – the "good parts" ([Crockford](https:/
 | Parsing / transforms        | Async / I/O-heavy logic    |
 | WASM utilities              | JavaScript runtime         |
 
-Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo).
+<!-- Inspired by [porffor](https://github.com/CanadaHonk/porffor) and [piezo](https://github.com/dy/piezo). -->
 <!-- Used internally by: web-audio-api, color-space, audiojs -->
 
 

@@ -48,14 +48,19 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`callback`](callback/callback.js) | `Array.map` callback path; exposes closure/call-indirect and array allocation cost |
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
 | [`mandelbrot`](mandelbrot/mandelbrot.js) | 256×256 escape-time iteration; dense f64 hot loop with conditional break and i32 counter |
-| [`json`](json/json.js) | runtime `JSON.parse` plus heterogeneous object/array walk with a stable inferred JSON shape |
+| [`json`](json/json.js) | runtime `JSON.parse` of one module-local source plus heterogeneous object/array walk with a stable inferred JSON shape |
 | [`json-dynamic`](json-dynamic/json-dynamic.js) | runtime `JSON.parse` plus the same walk when one of several same-shape literal sources is selected dynamically |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 
-Native rows for `json` are fixed-format parser references, not semantic
-equivalents of JavaScript `JSON.parse`. `json-dynamic` is JS-only by design;
-it covers runtime selection among same-shape literal sources, while external
-unknown-shape JSON still uses the generic runtime parser.
+Native rows for `json` are fixed-source references, not semantic equivalents
+of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
+compile-time string, and Zig may constant-fold the whole parse+walk under
+ReleaseFast; Go uses `encoding/json` but still unmarshals the same compile-time
+string. The jz row parses a `let` source at runtime so `JSON.parse` is not
+compile-time folded, while the compiler can still specialize the stable literal
+shape. `json-dynamic` is JS-only by design; it covers runtime selection among
+same-shape literal sources, while external unknown-shape JSON still uses the
+generic runtime parser.
 
 Native-language rows are intentionally per case. NumPy rows are used only
 where a vectorized array implementation is a meaningful Python convention;
@@ -166,6 +171,25 @@ without slowing the SIMD/scalarized hot path. Disabling that path makes
 the module both larger and slower, so the remaining size gap is a real
 speed/compactness tradeoff rather than dead bloat.
 
+### json — JSON.parse plus stable-shape object walk
+
+| target | median | ×nat | size | parity |
+| --- | ---: | ---: | ---: | --- |
+| Zig fixed-schema parser (ReleaseFast) | 0.00 ms | 0.00× | 387.1 kB | ok |
+| C fixed-schema parser (clang -O3) | 0.02 ms | 1.00× | 32.8 kB | ok |
+| Rust fixed-schema parser (rustc -O) | 0.03 ms | 1.17× | 380.7 kB | ok |
+| **jz runtime JSON.parse → V8 wasm** | **0.21 ms** | **9.13×** | **11.0 kB** | **ok** |
+| V8 (node) raw JS JSON.parse | 0.37 ms | 16.04× | 1.2 kB | ok |
+| Go encoding/json on static string | 1.05 ms | 45.48× | 1.97 MB | ok |
+
+**The native rows are references, not equivalent parser work.** C/Rust/Zig
+hand-parse the known schema from a compile-time source, and Zig's 0.00 ms row
+is effectively a compiler-optimized fixed-source lower bound. Go is the fairer
+native semantic reference because it uses `encoding/json`, but it still parses a
+compile-time string. The jz row keeps `SRC` as `let`, so `JSON.parse` runs at
+runtime; the compiler only specializes the stable result shape for the object
+walk. The useful headline is jz vs raw V8 on the same JS source: 1.76× faster.
+
 ### bitwise — i32 narrowing chains (`Math.imul`, shifts, FNV-1a)
 
 | target | median | ×nat | size | parity |
@@ -215,13 +239,17 @@ can produce from the same JS source.
 
 ### Where the gaps live
 
-Reading across the four cases:
+Reading across the five cases:
 
 * **biquad: solved.** jz at the hand-WAT floor, beating AS and V8 raw
   JS. The codegen for dense-f64 typed-array loops is good.
 * **mat4: fast, not tiny.** jz's scalarized/SIMD path beats native C and
   AS, but emits about 3.4 kB because the fixed 4×4 kernel is expanded into
   a hot vectorized wasm shape.
+* **json: compare jz to V8 or Go, not fixed-schema C/Rust/Zig.** jz is
+  parsing at runtime and then using stable-shape slot loads; the native
+  hand parsers are static-source lower bounds, not JavaScript `JSON.parse`
+  equivalents.
 * **bitwise: blocked on NaN-box on the i32 path.** Every i32 op pays
   type-tag overhead. The `i64`-tagged carrier work in `.work/todo.md`
   Step 1–2 is the gating change; estimated 14×→2× landing for this case
