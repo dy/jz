@@ -1354,6 +1354,8 @@ export const emitter = {
 
   // Compound assignments: read-modify-write with type coercion
   '+=': (name, val) => {
+    // Complex LHS (obj.prop, arr[i]) → desugar to side-effect-safe `name = name + val`
+    if (typeof name !== 'string') return emit(['=', name, ['+', name, val]])
     // String concatenation: desugar to name = name + val (+ handler knows about strings).
     // Also desugar when either side has unknown type — the `+` operator picks runtime
     // string/numeric dispatch (`__is_str_key`); compoundAssign would force f64.add and
@@ -1366,17 +1368,24 @@ export const emitter = {
   },
   ...Object.fromEntries([
     ['-=', 'sub'], ['*=', 'mul'], ['/=', 'div'],
-  ].map(([op, fn]) => [op, (name, val) => compoundAssign(name, val,
-    (a, b) => typed([`f64.${fn}`, a, b], 'f64'),
-    fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32')
-  )])),
-  '%=': (name, val) => compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32')),
+  ].map(([op, fn]) => [op, (name, val) => {
+    if (typeof name !== 'string') return emit(['=', name, [op.slice(0, -1), name, val]])
+    return compoundAssign(name, val,
+      (a, b) => typed([`f64.${fn}`, a, b], 'f64'),
+      fn === 'div' ? null : (a, b) => typed([`i32.${fn}`, a, b], 'i32')
+    )
+  }])),
+  '%=': (name, val) => {
+    if (typeof name !== 'string') return emit(['=', name, ['%', name, val]])
+    return compoundAssign(name, val, f64rem, (a, b) => typed(['i32.rem_s', a, b], 'i32'))
+  },
 
   // Bitwise compound assignments: i32 normally, i64 when either operand is BigInt
   ...Object.fromEntries([
     ['&=', 'and'], ['|=', 'or'], ['^=', 'xor'],
     ['>>=', 'shr_s'], ['<<=', 'shl'], ['>>>=', 'shr_u'],
   ].map(([op, fn]) => [op, (name, val) => {
+    if (typeof name !== 'string') return emit(['=', name, [op.slice(0, -1), name, val]])
     if (valTypeOf(name) === VAL.BIGINT || valTypeOf(val) === VAL.BIGINT) {
       const void_ = _expect === 'void'
       const result = fromI64([`i64.${fn}`, asI64(readVar(name)), asI64(emit(val))])

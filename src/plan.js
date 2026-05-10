@@ -32,9 +32,9 @@ const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
 const SCALAR_TYPED_CTOR = 'new.Float64Array'
-const MAX_SCALAR_TYPED_ARRAY_LEN = 32
-const MAX_SCALAR_TYPED_LOOP_UNROLL = 16
-const MAX_SCALAR_TYPED_NESTED_UNROLL = 128
+const maxScalarTypedArrayLen = () => ctx.transform.optimize?.scalarTypedArrayLen ?? 32
+const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
+const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
 
 const isSeq = node => Array.isArray(node) && node[0] === ';'
 const blockStmts = body => {
@@ -170,7 +170,7 @@ const fixedScalarTypedArrayLen = (expr) => {
   const args = callArgs(expr)
   if (!args || args.length !== 1) return null
   const len = constIntExpr(args[0])
-  return len != null && len >= 0 && len <= MAX_SCALAR_TYPED_ARRAY_LEN ? len : null
+  return len != null && len >= 0 && len <= maxScalarTypedArrayLen() ? len : null
 }
 
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
@@ -464,7 +464,7 @@ function smallScalarTypedForTrip(init, cond, step) {
   if (constIntExpr(decl[2]) !== 0) return null
   if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
   const end = constIntExpr(cond[2])
-  if (end == null || end < 0 || end > MAX_SCALAR_TYPED_LOOP_UNROLL) return null
+  if (end == null || end < 0 || end > maxScalarTypedLoopUnroll()) return null
   const stepOk = Array.isArray(step) && ((step[0] === '++' && step[1] === name) ||
     (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && constIntExpr(step[2]) === 1))
   return stepOk ? { name, end } : null
@@ -500,7 +500,7 @@ const unrollTypedArrayLoops = (node, names) => {
   }
   if (node[0] === 'for') {
     const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
-    if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= MAX_SCALAR_TYPED_NESTED_UNROLL &&
+    if (trip && containsTypedArrayAccess(node[4], names) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
       for (let i = 0; i < trip.end; i++) {
@@ -554,7 +554,7 @@ const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
       if (len == null) len = fixed.len
       else if (len !== fixed.len) { ok = false; break }
     }
-    if (ok && len != null) cands.set(pname, { len })
+    if (ok && len != null && len <= maxScalarTypedArrayLen()) cands.set(pname, { len })
   }
   if (!cands.size) return cands
   for (const site of sites) {

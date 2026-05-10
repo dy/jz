@@ -39,6 +39,7 @@ Options:
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
   --resolve                 Resolve bare specifiers via Node.js module resolution
+  --imports <file>          JSON file with host import specs (e.g. {"env":{"fn":{"params":2}}})
   `)
 }
 
@@ -99,13 +100,14 @@ async function handleJzify(args) {
 }
 
 async function handleCompile(args) {
-  let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false
+  let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (args[i] === '--wat') wat = true
     else if (args[i] === '--strict') strict = true
     else if (args[i] === '--resolve') resolveNode = true
+    else if (args[i] === '--imports') importsFile = args[++i]
     else if (!inputFile) inputFile = args[i]
   }
 
@@ -168,6 +170,11 @@ async function handleCompile(args) {
     jzify: !strict && !inputFile.endsWith('.jz'),
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(Object.keys(modules).length && { modules }),
+  }
+
+  if (importsFile) {
+    const importsPath = resolve(importsFile)
+    opts.imports = JSON.parse(readFileSync(importsPath, 'utf8'))
   }
 
   const result = compile(code, opts)

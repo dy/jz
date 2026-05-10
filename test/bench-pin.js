@@ -138,9 +138,9 @@ for (const [id, claims] of Object.entries(PINS)) {
 // factoring `x | 0` behind a generic helper makes ToNumber/string conversion live.
 const SIZE_BUDGET = {
   callback:  2500,
-  mat4:      5000,
+  mat4:      3000,
   poly:      2500,
-  biquad:    4500,
+  biquad:    4200,
   mandelbrot: 1800,
   bitwise:   2500,
   tokenizer: 3000,
@@ -157,3 +157,35 @@ for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
       `${id}: jz wasm ${r.jz.sizeBytes} B exceeds budget ${budget} B (+${r.jz.sizeBytes - budget})`)
   })
 }
+
+// Size-optimized compile: verify smallConstForUnroll + scalarTypedArrayLen cuts
+// bench wasm sizes without breaking compilation.
+import { compile } from '../index.js'
+import { readFileSync } from 'node:fs'
+const benchlibHostSource = () => {
+  const src = readFileSync(join(ROOT, 'bench/_lib/benchlib.js'), 'utf8')
+  const out = src.replace(`export let printResult = (medianUs, checksum, samples, stages, runs) => {
+  console.log(\`median_us=\${medianUs} checksum=\${checksum} samples=\${samples} stages=\${stages} runs=\${runs}\`)
+}`, `export let printResult = (medianUs, checksum, samples, stages, runs) => {
+  env.logResult(medianUs, checksum, samples, stages, runs)
+}`)
+  return out
+}
+const sizeCompile = (id) => {
+  const code = readFileSync(join(ROOT, `bench/${id}/${id}.js`), 'utf8')
+  const wasm = compile(code, {
+    modules: { '../_lib/benchlib.js': benchlibHostSource() },
+    imports: { env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } },
+    optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 },
+    alloc: false,
+  })
+  return wasm.length
+}
+test('bench-pin: mat4 size-optimized compile ≤ 2500 B', () => {
+  const bytes = sizeCompile('mat4')
+  ok(bytes <= 2500, `mat4 size-optimized compile: ${bytes} B exceeds 2500 B`)
+})
+test('bench-pin: biquad size-optimized compile ≤ 3000 B', () => {
+  const bytes = sizeCompile('biquad')
+  ok(bytes <= 3000, `biquad size-optimized compile: ${bytes} B exceeds 3000 B`)
+})

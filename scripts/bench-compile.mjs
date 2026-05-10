@@ -57,6 +57,7 @@ const optionsFor = id => ({
     env: { logResult: { params: 5 } },
     performance: { now: { params: 0, returns: 'number' } },
   },
+  optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 },
   ...(id === 'watr' ? {
     jzify: true,
     memory: 4096,

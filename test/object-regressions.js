@@ -525,3 +525,34 @@ test('hasOwnProperty: dynamic key on known-schema OBJECT', () => {
   is(f('a'), 1)
   is(f('z'), 0)
 })
+
+// Regression: compound assignments on array targets crashed with
+// "Unknown local $[],b,,0" because readVar() received an array node.
+// Fix: desugar to name = name OP val when LHS is not a plain string.
+test('Regression: compound assignments on typed-array index targets', () => {
+  const { f } = run(`
+    export let f = () => {
+      const a = new Float64Array(4)
+      a[0] = 1.0
+      a[1] = 2.0
+      a[0] += 10.0
+      a[1] -= 1.0
+      a[0] *= 2.0
+      return a[0] + a[1]
+    }
+  `)
+  is(f(), 23)
+})
+
+test('Regression: bitwise compound assignments on typed-array index targets', () => {
+  const { f } = run(`
+    export let f = () => {
+      const a = new Int32Array(4)
+      a[0] = 5
+      a[0] &= 3
+      a[0] |= 8
+      return a[0]
+    }
+  `)
+  is(f(), 9)
+})

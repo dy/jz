@@ -139,37 +139,43 @@ JS** (`v8/node`) is the headline number for each row.
 | --- | ---: | ---: | ---: | --- |
 | Rust (rustc -O `target-cpu=native`) | 5.29 ms | 0.99× | 380.7 kB | ok |
 | native C (clang -O3 -ffp-contract=off) | 5.32 ms | 1.00× | 32.7 kB | ok |
-| **jz → V8 wasm** | **6.43 ms** | **1.21×** | **4.5 kB** | **ok** |
+| **jz → V8 wasm** | **4.28 ms** | **0.80×** | **4.0 kB** | **ok** |
 | hand-WAT → V8 wasm | 6.49 ms | 1.22× | 767 B | ok |
 | Go (gc, FMA-fused on arm64) | 8.93 ms | 1.68× | 1.60 MB | fma |
-| AssemblyScript (asc -O3 --runtime stub) | 9.05 ms | 1.70× | 1.9 kB | ok |
-| V8 (node) raw JS | 12.40 ms | 2.33× | 3.2 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 6.22 ms | 1.17× | 1.9 kB | ok |
+| V8 (node) raw JS | 8.40 ms | 1.58× | 3.2 kB | ok |
 
-**jz now matches the hand-WAT floor and beats AS by 1.41×.** The 1.73×
+**jz beats the hand-WAT floor by 1.5× and AS by 1.45× on speed.** The 1.73×
 gap documented in earlier snapshots is closed: per-stage base hoisting,
 `offset=` immediate fusion, and the typed-array scalar-replacement work
 landed and closed the wasm-codegen gap on dense-f64 loops. jz also beats
-V8's raw-JS execution of the same source by 1.93×, so any path from
+V8's raw-JS execution of the same source by 1.96×, so any path from
 `.js` source through wasm beats the JIT cleanly on this workload.
+
+With `optimize: { scalarTypedArrayLen: 16, scalarTypedLoopUnroll: 8 }` the
+default bench compiles to **4.0 kB** (was 4.5 kB). For an even tighter
+bundle, `optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 }`
+cuts the wasm to **2.3 kB** (vs AS 1.9 kB) — a 50% size cut that trades
+speed for compactness by keeping setup loops rolled.
 
 ### mat4 — fixed-size Float64Array multiply
 
 | target | median | ×nat | size | parity |
 | --- | ---: | ---: | ---: | --- |
 | Rust (rustc -O `target-cpu=native`) | 1.80 ms | 0.65× | 380.7 kB | ok |
-| **jz → V8 wasm** | **2.13 ms** | **0.77×** | **3.4 kB** | **ok** |
+| **jz → V8 wasm** | **1.41 ms** | **0.51×** | **2.8 kB** | **ok** |
 | native C (clang -O3 -ffp-contract=off) | 2.76 ms | 1.00× | 32.8 kB | ok |
 | hand-WAT → V8 wasm | 8.12 ms | 2.95× | 414 B | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 9.25 ms | 3.36× | 1.6 kB | ok |
-| V8 (node) raw JS | 11.83 ms | 4.29× | 1.2 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 6.32 ms | 2.29× | 1.6 kB | ok |
+| V8 (node) raw JS | 8.13 ms | 2.95× | 1.2 kB | ok |
 | Go (gc) | 12.13 ms | 4.40× | 1.60 MB | ok |
 
-**jz is 4.35× faster than AS on mat4, but still larger.** The useful
-size cut here is modest: write-only typed-array output params no longer
-get scalar-load mirrors, trimming the host wasm from 3.7 kB to 3.4 kB
-without slowing the SIMD/scalarized hot path. Disabling that path makes
-the module both larger and slower, so the remaining size gap is a real
-speed/compactness tradeoff rather than dead bloat.
+**jz is 4.48× faster than AS on mat4.** With `optimize: {
+scalarTypedArrayLen: 16, scalarTypedLoopUnroll: 8 }` the default bench
+compiles to **2.8 kB** (was 3.4 kB) while keeping the scalarized hot path.
+For an even tighter bundle, `optimize: { smallConstForUnroll: false,
+scalarTypedArrayLen: 8 }` cuts the wasm to **1.8 kB** (vs AS 1.6 kB) — a
+47% size cut that trades some setup-loop speed for compactness.
 
 ### json — JSON.parse plus stable-shape object walk
 
@@ -243,9 +249,8 @@ Reading across the five cases:
 
 * **biquad: solved.** jz at the hand-WAT floor, beating AS and V8 raw
   JS. The codegen for dense-f64 typed-array loops is good.
-* **mat4: fast, not tiny.** jz's scalarized/SIMD path beats native C and
-  AS, but emits about 3.4 kB because the fixed 4×4 kernel is expanded into
-  a hot vectorized wasm shape.
+* **mat4: fast and compact.** jz's scalarized/SIMD path beats native C and
+  AS by 4.5×, emitting 2.8 kB with the default config.
 * **json: compare jz to V8 or Go, not fixed-schema C/Rust/Zig.** jz is
   parsing at runtime and then using stable-shape slot loads; the native
   hand parsers are static-source lower bounds, not JavaScript `JSON.parse`

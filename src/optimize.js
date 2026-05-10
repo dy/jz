@@ -98,6 +98,8 @@ export function resolveOptimize(opt) {
     const base = LEVEL_PRESETS[baseLevel] || ALL_ON
     const out = { ...base }
     for (const n of PASS_NAMES) if (n in opt) out[n] = n === 'nestedSmallConstForUnroll' && opt[n] === 'auto' ? 'auto' : !!opt[n]
+    // Preserve non-pass tuning keys (e.g. plan.js thresholds)
+    for (const k of Object.keys(opt)) if (!PASS_NAMES.includes(k)) out[k] = opt[k]
     return out
   }
   return { ...ALL_ON }
