@@ -1,6 +1,6 @@
 {
   "name": "jz",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Modern functional JS compiling to WASM",
   "main": "index.js",
   "type": "module",
