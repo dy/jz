@@ -260,10 +260,30 @@ test('WASI: command-mode entry returns void', () => {
   }
 })
 
+test('WASI: command-mode entry returns void through export alias', () => {
+  for (const name of ['run', '_start']) {
+    const captured = []
+    const imports = wasi({ write: (fd, text) => captured.push(text) })
+    const wasm = compile(`const main = () => { console.log("hi"); return 42 }; export { main as ${name} }`, { host: 'wasi' })
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+    imports._setMemory(inst.exports.memory)
+    is(inst.exports[name](), undefined, `${name} alias should return undefined`)
+    is(captured.join(''), 'hi\n', `${name} alias body should still execute`)
+  }
+})
+
 test('WASI: parametric run/_start keeps direct export', () => {
   // Parametric entries can't form a CLI-callable () -> () wrapper, so the
   // direct f64-returning export survives (caller needs a host that supplies args).
   const wasm = compile(`export let run = (n) => (n | 0) + 1`, { host: 'wasi' })
+  const imports = wasi()
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
+  imports._setMemory(inst.exports.memory)
+  is(inst.exports.run(7), 8)
+})
+
+test('WASI: parametric run alias keeps direct export', () => {
+  const wasm = compile(`const main = (n) => (n | 0) + 1; export { main as run }`, { host: 'wasi' })
   const imports = wasi()
   const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), imports)
   imports._setMemory(inst.exports.memory)
