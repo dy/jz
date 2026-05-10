@@ -50,6 +50,24 @@ test('Date object: TimeClip in constructor', () => {
   same(run('export let f = () => { let d = new Date(-8640000000000001); return d.getTime() }'), NaN)
 })
 
+test('Date object: no-arg constructor uses current time', () => {
+  const before = Date.now()
+  const actual = run('export let f = () => { let d = new Date(); return d.getTime() }')
+  const after = Date.now()
+  ok(actual >= before && actual <= after)
+})
+
+test('Date object: date-only string constructor', () => {
+  same(run('export let f = () => { let d = new Date("2024-06-05"); return d.getTime() }'), Date.UTC(2024, 5, 5))
+  same(run('export let f = () => { let d = new Date("2024-06-05"); return d.getUTCDay() }'), 3)
+  same(run('export let f = () => { let d = new Date("not a date"); return d.getTime() }'), NaN)
+})
+
+test('Date object: multi-arg constructor uses UTC-backed fields', () => {
+  same(run('export let f = () => { let d = new Date(2025, 0, 15, 10, 30); return d.getTime() }'), Date.UTC(2025, 0, 15, 10, 30))
+  same(run('export let f = () => { let d = new Date(70, 0, 1); return d.getTime() }'), Date.UTC(70, 0, 1))
+})
+
 test('Date UTC getters', () => {
   const r = run(`export let f = () => {
     let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123))
@@ -77,6 +95,22 @@ test('Date UTC getters: NaN date', () => {
   ok(Number.isNaN(r[1]))
   ok(Number.isNaN(r[2]))
   ok(Number.isNaN(r[3]))
+})
+
+test('Date local getters: UTC-backed aliases', () => {
+  const r = run(`export let f = () => {
+    let d = new Date(Date.UTC(2025, 0, 15, 10, 30, 45, 123))
+    return [d.getFullYear(), d.getMonth(), d.getDate(), d.getDay()]
+  }`)
+  same(r[0], 2025)
+  same(r[1], 0)
+  same(r[2], 15)
+  same(r[3], 3)
+})
+
+test('Date object: relational comparison uses time value', () => {
+  same(run('export let f = () => { let a = new Date(0); let b = new Date(1); return a < b ? 1 : 0 }'), 1)
+  same(run('export let f = () => { let a = new Date(2); let b = new Date(1); return a > b ? 1 : 0 }'), 1)
 })
 
 test('Date UTC setters: time components', () => {
