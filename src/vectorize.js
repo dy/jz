@@ -1,3 +1,5 @@
+import { findBodyStart } from './ir.js'
+
 /**
  * Lane-local SIMD-128 vectorizer.
  *
@@ -41,18 +43,7 @@
  * `i < BOUND` guard handles the tail.
  */
 
-// Local copy of findBodyStart (mirrors optimize.js): index of first non-decl
-// child in a (func ...) form — past type/param/result/local declarations.
-function findBodyStart(fn) {
-  for (let i = 2; i < fn.length; i++) {
-    const c = fn[i]
-    if (!Array.isArray(c)) continue
-    if (c[0] === 'export' || c[0] === 'import' || c[0] === 'type' ||
-        c[0] === 'param' || c[0] === 'result' || c[0] === 'local') continue
-    return i
-  }
-  return fn.length
-}
+
 
 const isArr = Array.isArray
 

@@ -33,10 +33,26 @@ export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'fo
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   'throw', 'try', 'catch', 'finally', '++', '--', '()'])
 
+/** Assignment operators — shared across analyze, plan, emit. */
+export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+
 /** Distinguish a function block body `{ ... }` from an expression-bodied object literal `({a:1})`.
  *  Both share the `'{}'` op tag; blocks have a non-`':'` first child (object literals start with key:val pairs). */
 export const isBlockBody = (body) =>
   Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+
+/** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
+export function intLiteralValue(expr) {
+  let v = null
+  if (typeof expr === 'number') v = expr
+  else if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number') v = expr[1]
+  else if (Array.isArray(expr) && expr[0] === 'u-' && typeof expr[1] === 'number') v = -expr[1]
+  else if (typeof expr === 'string') v = repOf(expr)?.intConst ?? ctx.scope.constInts?.get(expr) ?? null
+  return v != null && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? v : null
+}
+
+/** Non-negative integer literal — used for string/typed-array index bounds. */
+export const nonNegIntLiteral = (node) => { const n = intLiteralValue(node); return n != null && n >= 0 ? n : null }
 
 /** Collect all `return X` expressions (X != null) from a function body, skipping nested arrow funcs.
  *  Pushes into `out`. Non-returning paths are silently skipped — pair with `alwaysReturns` if total
@@ -1892,8 +1908,6 @@ export function analyzePtrUnboxable(body, locals, boxed) {
     for (const a of args) collect(a)
   }
 
-  const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
-    '<<=', '>>=', '>>>=', '||=', '&&=', '??='])
   const NULL_CMP_OPS = new Set(['==', '!=', '===', '!=='])
 
   function check(node) {
@@ -2034,8 +2048,6 @@ export function findFreeVars(node, bound, free, scope) {
   }
   for (const a of args) findFreeVars(a, bound, free, scope)
 }
-
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 /** Check if any of the given variable names are assigned anywhere in the AST. */
 export function findMutations(node, names, mutated) {

@@ -24,11 +24,10 @@
  */
 
 import { ctx } from './ctx.js'
-import { T, VAL, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
 import { MAX_CLOSURE_ARITY } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
-const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
 const SCALAR_TYPED_CTOR = 'new.Float64Array'

@@ -28,6 +28,7 @@
  */
 
 import { LAYOUT } from './ctx.js'
+import { findBodyStart } from './ir.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
@@ -1118,19 +1119,7 @@ export function csePureExpr(fn) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
-/**
- * Find the index of the first body-content child in a func node.
- * Skips `$name`, (export …), (import …), (type …), (param …), (result …), (local …).
- */
-function findBodyStart(fn) {
-  for (let i = 2; i < fn.length; i++) {
-    const c = fn[i]
-    if (!Array.isArray(c)) continue
-    if (c[0] === 'export' || c[0] === 'import' || c[0] === 'type' || c[0] === 'param' || c[0] === 'result' || c[0] === 'local') continue
-    return i
-  }
-  return fn.length
-}
+
 
 /**
  * Hoist frequently-repeated f64 constants into mutable globals.

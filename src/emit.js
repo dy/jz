@@ -23,7 +23,13 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey } from './analyze.js'
+import { T, VAL, nonNegIntLiteral, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey } from './analyze.js'
+import {
+  isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
+  containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
+  containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
+  MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
+} from './ast.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
@@ -168,11 +174,6 @@ function stringLiteral(node) {
   return null
 }
 
-function nonNegIntLiteral(node) {
-  const n = intLiteralValue(node)
-  return n != null && n >= 0 ? n : null
-}
-
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)
   const rightLit = stringLiteral(b)
@@ -269,142 +270,6 @@ function extractRefinements(cond, out, sense = true) {
   return out
 }
 
-/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
- *  Conservative over-reject: if unsure, treat as written.
- *  `let`/`const` declarations are NOT reassignments — only the initializer expressions
- *  inside them are scanned. (Treating `let g = ...` as a write of `g` would defeat A3.) */
-export function isReassigned(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' || op === '%='
-      || op === '&=' || op === '|=' || op === '^=' || op === '<<=' || op === '>>=' || op === '>>>='
-      || op === '||=' || op === '&&=' || op === '??=') {
-    if (body[1] === name) return true
-  }
-  if ((op === '++' || op === '--') && body[1] === name) return true
-  if (op === 'let' || op === 'const') {
-    // Each decl item is either a bare name (string) or `['=', pattern, init]`.
-    // Only the init expression can contain real reassignments — recurse into it only.
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (Array.isArray(d) && d[0] === '=' && d[2] != null && isReassigned(d[2], name)) return true
-    }
-    return false
-  }
-  for (let i = 1; i < body.length; i++) if (isReassigned(body[i], name)) return true
-  return false
-}
-
-/** Does `body` contain a `continue` that targets THIS loop?
- *  A `continue` inside a nested `for`/`while`/`do` targets the inner loop, so we don't count it. */
-function hasOwnContinue(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do') return false
-  for (let i = 1; i < body.length; i++) if (hasOwnContinue(body[i])) return true
-  return false
-}
-
-function hasOwnBreakOrContinue(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'break' || op === 'continue') return true
-  if (op === 'for' || op === 'while' || op === 'do' || op === '=>') return false
-  for (let i = 1; i < body.length; i++) if (hasOwnBreakOrContinue(body[i])) return true
-  return false
-}
-
-function containsNestedClosure(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return true
-  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
-  return false
-}
-
-function containsNestedLoop(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'for' || op === 'while' || op === 'do') return true
-  if (op === '=>') return false
-  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
-  return false
-}
-
-function nestedSmallLoopBudget(body) {
-  if (!Array.isArray(body)) return 1
-  if (body[0] === '=>') return 1
-  if (body[0] === 'for') {
-    const [, init, cond, step, loopBody] = body
-    const n = smallConstForTripCount(init, cond, step)
-    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
-  }
-  let max = 1
-  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
-  return max
-}
-
-function containsDeclOf(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === '=>') return false
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
-      if (d === name) return true
-      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
-    }
-  }
-  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
-  return false
-}
-
-function intLiteralValue(expr) {
-  let v = null
-  if (typeof expr === 'number') v = expr
-  else if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number') v = expr[1]
-  else if (Array.isArray(expr) && expr[0] === 'u-' && typeof expr[1] === 'number') v = -expr[1]
-  else if (typeof expr === 'string') v = repOf(expr)?.intConst ?? ctx.scope.constInts?.get(expr) ?? null
-  return v != null && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? v : null
-}
-
-function cloneWithSubst(node, name, value) {
-  if (node === name) return [null, value]
-  if (!Array.isArray(node)) return node
-  if (node[0] === '=>') return node
-  return node.map(x => cloneWithSubst(x, name, value))
-}
-
-const MAX_SMALL_FOR_UNROLL = 8
-const MAX_NESTED_FOR_UNROLL = 64
-
-function containsKnownTypedArrayIndex(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return false
-  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
-  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
-  return false
-}
-
-function smallConstForTripCount(init, cond, step) {
-  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
-  const decl = init[1]
-  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
-  const name = decl[1]
-  const start = intLiteralValue(decl[2])
-  if (start !== 0) return null
-
-  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
-  const end = intLiteralValue(cond[2])
-  if (end == null || end < 0 || end > MAX_SMALL_FOR_UNROLL) return null
-
-  const stepOk = Array.isArray(step) && (
-    (step[0] === '++' && step[1] === name) ||
-    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
-  )
-  return stepOk ? end : null
-}
-
 function unrollSmallConstFor(init, cond, step, body) {
   const end = smallConstForTripCount(init, cond, step)
   if (end == null) return null
@@ -420,24 +285,6 @@ function unrollSmallConstFor(init, cond, step, body) {
   const out = []
   for (let i = 0; i < end; i++) out.push(...emitFlat(cloneWithSubst(body, name, i)))
   return out
-}
-
-/** Does `body` always exit the enclosing scope (return / throw / break / continue)?
- *  Used for early-return refinement: after `if (!guard) return`, `guard` holds for the rest. */
-function isTerminator(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
-  // Block body: {} or ; — terminator if it ends with a terminator statement.
-  if (op === '{}' || op === ';') {
-    for (let i = body.length - 1; i >= 1; i--) {
-      const s = body[i]
-      if (s == null) continue
-      return isTerminator(s)
-    }
-    return false
-  }
-  return false
 }
 
 function canThrow(body, seen = new Set()) {
