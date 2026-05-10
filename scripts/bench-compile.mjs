@@ -59,7 +59,7 @@ const optionsFor = id => ({
   },
   ...(id === 'watr' ? {
     jzify: true,
-    memoryPages: 4096,
+    memory: 4096,
     optimize: { watr: false, smallConstForUnroll: false },
   } : {}),
   alloc: false,

@@ -18,7 +18,7 @@ fs.mkdirSync(BUILD_DIR, { recursive: true })
 const bin = jzCompile(watrSrc('src/compile.js'), {
   jzify: true,
   noTailCall: true,        // wasm2c has codegen bugs with `return_call` + multi-value
-  memoryPages: 4096,       // 256MB — absorb bump-heap accumulation across bench iters
+  memory: 4096,       // 256MB — absorb bump-heap accumulation across bench iters
   modules: {
     './encode.js': watrSrc('src/encode.js'),
     './const.js':  watrSrc('src/const.js'),

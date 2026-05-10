@@ -262,7 +262,7 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
   const inst = await jz(watrSrc('compile.js'), {
     jzify: true,
-    memoryPages: 4096,
+    memory: 4096,
     modules: COMPILE_MODULES,
   })
   const jzCompile = inst.exports.default

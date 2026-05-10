@@ -66,7 +66,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `jzify: true` | Accept broader JS patterns such as `var`, `function`, `switch`, `arguments`, `==`, and `undefined` by lowering them to the JZ subset. |
 | `modules: { specifier: source }` | Bundle static ES imports into one WASM module. CLI import resolution does this from files automatically. |
 | `imports: { mod: host }` | Wire host namespaces/functions used by `import { fn } from "mod"`; functions may be plain JS functions or `{ fn, returns }` specs. |
-| `memory` | Pass `memory: N` to create owned memory with `N` initial pages, or pass `memory: jz.memory()` / `WebAssembly.Memory` to share memory across modules. `memoryPages` remains as a legacy alias for the page count. |
+| `memory` | Pass `memory: N` to create owned memory with `N` initial pages, or pass `memory: jz.memory()` / `WebAssembly.Memory` to share memory across modules. |
 | `host: 'js' \| 'wasi'` | Select runtime-service lowering. Default `js` uses small `env.*` imports auto-wired by `jz()`; `wasi` emits WASI Preview 1 imports for wasmtime/wasmer/deno. |
 | `optimize` | `false`/`0` disables optimization, `1` keeps cheap size passes, `true`/`2` is the default, `3` enables aggressive experimental passes, object form overrides individual passes. |
 | `strict: true` | Reject dynamic fallbacks such as unknown receiver method calls, `obj[k]`, and `for-in` instead of emitting JS-host dynamic dispatch. |

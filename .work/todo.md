@@ -1510,7 +1510,7 @@ arrays gets you without unrolling).
 * [x] Template tag — interpolation of numbers, functions, strings, arrays, objects
 * [x] Custom imports — host functions via { imports: { mod: { fn } } }
 * [x] Shared memory — { memory } option, cross-module pointer sharing
-* [x] Memory: configurable pages via { memoryPages: N }, auto-grow in __alloc, trap on grow failure
+* [x] Memory: configurable pages via { memory: N }, auto-grow in __alloc, trap on grow failure
 * [x] Template tag
 * [x] Benchmarks: jz vs JS eval, assemblyscript, bun, porffor, quickjs — compile time + runtime
 * [x] Benchmarks: key use cases (DSP kernel, array processing, math-heavy loop, string ops)

@@ -163,8 +163,6 @@ jz.memory = enhanceMemory
  *   receiver method calls) at compile time. Avoids pulling dynamic-dispatch stdlib
  *   into output; large size win for static programs.
  * @param {WebAssembly.Memory|number} [opts.memory] - Shared memory import, or
- *   initial page count for owned memory when a number is passed.
- * @param {number} [opts.memoryPages] - Legacy alias for owned/imported memory
  *   initial page count. Prefer `memory: N` for owned memory.
  * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
  *   (`_alloc`, `_clear`) for JS memory wrapping. Set false for standalone host-run
@@ -194,7 +192,6 @@ jz.compile = (code, opts = {}) => {
 
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
   else if (opts.memory) ctx.memory.shared = true
-  if (opts.memoryPages) ctx.memory.pages = opts.memoryPages
   if (opts.modules) ctx.module.importSources = opts.modules
   if (opts.imports) {
     ctx.module.hostImports = opts.imports
