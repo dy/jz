@@ -306,3 +306,30 @@ test('JSON.stringify: empty object', () => {
   }`)
   is(f(), '{}')
 })
+
+test('JSON runtime schemas: late closure parse does not overwrite compile-time stringify schemas', () => {
+  const { f } = run(`
+    let Host = {
+      readInput(source) {
+        return JSON.parse(source)
+      },
+      writeOutput(output) {
+        return JSON.stringify(output)
+      },
+    }
+
+    export let f = (source) => {
+      Host.readInput(source)
+      return Host.writeOutput({
+        results: [
+          { entry: { code: "alpha" } },
+        ],
+      })
+    }
+  `)
+
+  is(
+    f('{"source":{"items":[{"first":false,"kind":"sample","owner":"team"}],"meta":{"enabled":true,"count":2}},"options":[{"label":"primary","value":"alpha"}]}'),
+    '{"results":[{"entry":{"code":"alpha"}}]}'
+  )
+})
