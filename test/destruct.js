@@ -312,6 +312,14 @@ test('optional: nested ?.b?.c.d short-circuits at deepest nullish', () => {
   ok(isNaN(f()), 'o?.b?.c.d with null b returns undef NaN')
 })
 
+test('optional: dynamic string property compares numerically against number RHS', () => {
+  const { f } = run(`export let f = () => {
+    let o = JSON.parse('{"a":{"b":"10"}}')
+    return o.a?.b > parseFloat("2") * parseFloat("3")
+  }`)
+  is(f(), 1)
+})
+
 // ============================================
 // typeof
 // ============================================
