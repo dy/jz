@@ -45,6 +45,7 @@ import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
 import { emitter } from './src/emit.js'
 import { optimizeFunc, resolveOptimize } from './src/optimize.js'
+import { detectOptimizeConfig } from './src/auto-config.js'
 import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
@@ -224,6 +225,16 @@ jz.compile = (code, opts = {}) => {
   let parsed = time('parse', () => parse(code))
   if (opts.jzify) parsed = time('jzify', () => jzify(parsed))
   const ast = time('prepare', () => prepare(parsed))
+
+  // Auto-detect optimization tuning from source characteristics when the user
+  // hasn't provided any optimize option.
+  if (opts.optimize == null) {
+    const autoCfg = detectOptimizeConfig(ast, code)
+    if (Object.keys(autoCfg).length) {
+      ctx.transform.optimize = resolveOptimize(autoCfg)
+    }
+  }
+
   const module = time('compile', () => compile(ast, profiler))
 
   // host: 'wasi' — error if the wasm would import any env.__ext_* helper. Those exist

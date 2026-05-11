@@ -59,6 +59,7 @@ export const PASS_NAMES = [
   'hoistInvariantCellLoads',
   'cseScalarLoad',
   'csePureExpr',
+  'deadStoreElim',
   'sortLocalsByUse',
   'specializeMkptr',
   'specializePtrBase',
@@ -1026,14 +1027,23 @@ export function csePureExpr(fn) {
   while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__pe${snapId}`)) snapId++
   const newLocals = []
 
-  const COMMUTATIVE = new Set(['f64.mul', 'f64.add'])
-  const TARGET_OPS = new Set(['f64.mul', 'f64.add', 'f64.sub'])
+  const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
+  const TARGET_OPS = new Set([
+    'f64.mul', 'f64.add', 'f64.sub',
+    'i32.mul', 'i32.add', 'i32.sub', 'i32.shl', 'i32.shr_u', 'i32.shr_s', 'i32.and', 'i32.or', 'i32.xor',
+    'i64.mul', 'i64.add', 'i64.sub', 'i64.shl', 'i64.shr_u', 'i64.shr_s', 'i64.and', 'i64.or', 'i64.xor',
+  ])
+  const OP_TYPE = {
+    'f64.mul': 'f64', 'f64.add': 'f64', 'f64.sub': 'f64',
+    'i32.mul': 'i32', 'i32.add': 'i32', 'i32.sub': 'i32', 'i32.shl': 'i32', 'i32.shr_u': 'i32', 'i32.shr_s': 'i32', 'i32.and': 'i32', 'i32.or': 'i32', 'i32.xor': 'i32',
+    'i64.mul': 'i64', 'i64.add': 'i64', 'i64.sub': 'i64', 'i64.shl': 'i64', 'i64.shr_u': 'i64', 'i64.shr_s': 'i64', 'i64.and': 'i64', 'i64.or': 'i64', 'i64.xor': 'i64',
+  }
 
   // Encode a leaf operand to a stable string key. Returns null if not pure-leaf.
   const leafKey = (n) => {
     if (!Array.isArray(n)) return null
     if (n[0] === 'local.get' && typeof n[1] === 'string') return `L:${n[1]}`
-    if (n[0] === 'f64.const') return `C:${n[1]}`
+    if (n[0] === 'f64.const' || n[0] === 'i32.const' || n[0] === 'i64.const' || n[0] === 'f32.const') return `C:${n[0]}:${n[1]}`
     return null
   }
 
@@ -1094,7 +1104,7 @@ export function csePureExpr(fn) {
           if (!entry.snapName) {
             const snapName = `$__pe${snapId++}`
             entry.snapName = snapName
-            newLocals.push(['local', snapName, 'f64'])
+            newLocals.push(['local', snapName, OP_TYPE[op] || 'f64'])
             const orig = entry.anchorParent[entry.anchorIdx]
             entry.anchorParent[entry.anchorIdx] = ['local.tee', snapName, orig]
           }
@@ -1119,7 +1129,107 @@ export function csePureExpr(fn) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
+/**
+ * Dead-store elimination: remove `local.set` / `local.tee` and `drop` of pure
+ * expressions whose values are never consumed.
+ *
+ * Conservative single-block analysis: tracks last-write per local within each
+ * straight-line sequence. A write is dead if the same local is written again
+ * before any intervening read in the same block. Control-flow boundaries
+ * (block, loop, if) reset the table — we don't eliminate across branches.
+ *
+ * Also removes `drop` of pure expressions (e.g. leftover ptr-type calls).
+ */
+export function deadStoreElim(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
 
+  const dead = []
+
+  const collectGets = (node, out) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'local.get' && typeof node[1] === 'string') { out.add(node[1]); return }
+    for (let i = 1; i < node.length; i++) collectGets(node[i], out)
+  }
+
+  const isPure = (node) => {
+    if (!Array.isArray(node)) return true
+    const op = node[0]
+    if (typeof op === 'string' && MEMOP.test(op)) return false
+    if (op === 'call' || op === 'call_indirect' || op === 'call_ref') return false
+    if (op === 'global.get' || op === 'global.set') return false
+    if (op === 'local.tee') return false
+    if (op === 'memory.size' || op === 'memory.grow') return false
+    for (let i = 1; i < node.length; i++) if (!isPure(node[i])) return false
+    return true
+  }
+
+  const scanBlock = (items, start, end) => {
+    const lastWrite = new Map() // localName → { parent, idx }
+
+    for (let i = start; i < end; i++) {
+      const node = items[i]
+      if (!Array.isArray(node)) continue
+      const op = node[0]
+
+      // Reads invalidate pending dead writes
+      const reads = new Set()
+      collectGets(node, reads)
+      if (op === 'local.tee') reads.delete(node[1])
+      for (const name of reads) lastWrite.delete(name)
+
+      // Drop of pure expr → dead
+      if (op === 'drop' && isPure(node[1])) {
+        dead.push({ parent: items, idx: i, drop: true })
+      }
+
+      // Local write tracking
+      if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
+        const prev = lastWrite.get(node[1])
+        if (prev) dead.push(prev)
+        lastWrite.set(node[1], { parent: items, idx: i })
+      }
+
+      // Recurse into nested blocks with fresh state
+      if (op === 'block' || op === 'loop') {
+        let j = 1
+        while (j < node.length && Array.isArray(node[j]) && node[j][0] === 'result') j++
+        scanBlock(node, j, node.length)
+      } else if (op === 'if') {
+        let j = 1
+        while (j < node.length && Array.isArray(node[j]) && node[j][0] === 'result') j++
+        const condReads = new Set()
+        collectGets(node[j], condReads)
+        for (const name of condReads) lastWrite.delete(name)
+        j++
+        for (; j < node.length; j++) {
+          const c = node[j]
+          if (Array.isArray(c) && (c[0] === 'then' || c[0] === 'else')) scanBlock(c, 1, c.length)
+        }
+      }
+    }
+  }
+
+  scanBlock(fn, bodyStart, fn.length)
+
+  // Remove in reverse order so indices stay valid
+  for (let i = dead.length - 1; i >= 0; i--) {
+    const d = dead[i]
+    if (d.drop) {
+      d.parent.splice(d.idx, 1)
+    } else {
+      const node = d.parent[d.idx]
+      if (node[0] === 'local.tee') {
+        // tee in statement position: replace with just the value (implicitly dropped)
+        d.parent[d.idx] = node[2]
+      } else {
+        // set in statement position: remove entirely
+        d.parent.splice(d.idx, 1)
+      }
+    }
+  }
+}
 
 /**
  * Hoist frequently-repeated f64 constants into mutable globals.
@@ -1461,12 +1571,20 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
   // Sort by freq descending; tie-break by length ascending (pack short hot strings into low-offset range).
   entries.sort((a, b) => (freq.get(b.oldOff) || 0) - (freq.get(a.oldOff) || 0) || a.len - b.len)
 
-  // Rebuild pool; map old → new offsets.
+  // Rebuild pool; map old → new offsets. Deduplicate identical strings — keep the
+  // first (hottest) occurrence as canonical and point duplicates to it.
   const remap = new Map()
+  const canon = new Map() // str content → new offset
   let newPool = ''
   for (const e of entries) {
+    const existing = canon.get(e.str)
+    if (existing !== undefined) {
+      remap.set(e.oldOff, existing)
+      continue
+    }
     newPool += String.fromCharCode(e.len & 0xFF, (e.len >> 8) & 0xFF, (e.len >> 16) & 0xFF, (e.len >> 24) & 0xFF)
     remap.set(e.oldOff, newPool.length)
+    canon.set(e.str, newPool.length)
     newPool += e.str
   }
   strPoolRef.pool = newPool
@@ -1504,6 +1622,7 @@ export function optimizeFunc(fn, cfg) {
       cfg.hoistInvariantCellLoads === false &&
       cfg.cseScalarLoad === false &&
       cfg.csePureExpr === false &&
+      cfg.deadStoreElim === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
@@ -1515,6 +1634,7 @@ export function optimizeFunc(fn, cfg) {
   if (!cfg || cfg.hoistInvariantCellLoads !== false) hoistInvariantCellLoads(fn)
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
+  if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
   // Vectorizer runs only in the POST-watr phase (`__phase === 'post'`), where
   // narrow.js + watr have produced the canonical lane-local shape. Running it
   // pre-watr matches a noisier IR and would re-fire post-watr on the residual
