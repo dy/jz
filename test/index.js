@@ -33,6 +33,7 @@ const TESTS = [
   'perf',
   'timers',
   'test262-regressions',
+  'semantic-invariants',
 ]
 
 const argFilters = process.argv.slice(2)

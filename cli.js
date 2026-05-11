@@ -11,10 +11,14 @@ import { execFileSync } from 'child_process'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from './index.js'
 import jzifyFn, { codegen } from './src/jzify.js'
+import { createRequire } from 'module'
+
+const jzRequire = createRequire(import.meta.url)
+const PKG = jzRequire('./package.json')
 
 function showHelp() {
   console.log(`
-jz - min JS → WASM compiler
+jz v${PKG.version} - min JS → WASM compiler
 
 Usage:
   jz <file.js>              Compile JS to WASM (auto-jzify)
@@ -40,11 +44,17 @@ Options:
   --wat                     Output WAT text instead of binary
   --resolve                 Resolve bare specifiers via Node.js module resolution
   --imports <file>          JSON file with host import specs (e.g. {"env":{"fn":{"params":2}}})
+  --version, -v             Show version number
   `)
 }
 
 async function main() {
   const args = process.argv.slice(2)
+
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(PKG.version)
+    return
+  }
 
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     showHelp()

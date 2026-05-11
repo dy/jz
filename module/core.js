@@ -641,7 +641,15 @@ export default (ctx) => {
         }
       }
     }
-    return emitNullishGuarded(['local.tee', `$${t}`, va], access)
+    // Use local.set + local.get (not local.tee inside guard) because isNullish
+    // inlines the null/undefined check as (i32.or (i64.eq X NULL) (i64.eq X UNDEF)),
+    // which duplicates X — a local.tee(block(call $sideEffect)) would run twice.
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        notNullish(typed(['local.get', `$${t}`], 'f64')),
+        ['then', access],
+        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
   }
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
@@ -656,7 +664,15 @@ export default (ctx) => {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
     }
-    return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(ctx.core.emit['[]'](t, idx)))
+    // Use local.set + local.get (not local.tee inside guard) because isNullish
+    // inlines the null/undefined check as (i32.or (i64.eq X NULL) (i64.eq X UNDEF)),
+    // which duplicates X — a local.tee(block(call $sideEffect)) would run twice.
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        notNullish(typed(['local.get', `$${t}`], 'f64')),
+        ['then', asF64(ctx.core.emit['[]'](t, idx))],
+        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
   }
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
@@ -674,7 +690,14 @@ export default (ctx) => {
         const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
         if (vt) updateRep(t, { val: vt })
         const callResult = methodEmit(t, ...args)
-        return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(callResult))
+        // Use local.set + local.get (not local.tee inside guard) because isNullish
+        // inlines the null/undefined check which duplicates the expression.
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${t}`, va],
+          ['if', ['result', 'f64'],
+            notNullish(typed(['local.get', `$${t}`], 'f64')),
+            ['then', asF64(callResult)],
+            ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
       }
     }
     const t = temp()
@@ -682,7 +705,14 @@ export default (ctx) => {
     // If nullish → return NULL_NAN, else call via fn.call
     if (!ctx.closure.call) err('Optional call requires fn module')
     const callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
-    return emitNullishGuarded(['local.tee', `$${t}`, va], asF64(callResult))
+    // Use local.set + local.get (not local.tee inside guard) because isNullish
+    // inlines the null/undefined check which duplicates the expression.
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        notNullish(typed(['local.get', `$${t}`], 'f64')),
+        ['then', asF64(callResult)],
+        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
   }
 
   // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object

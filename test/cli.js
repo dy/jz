@@ -37,6 +37,17 @@ test('cli: --help shows help', () => {
   ok(out.includes('Usage'), 'shows usage')
 })
 
+test('cli: --version shows version', () => {
+  const out = cli('--version')
+  // Version format: semver like 0.2.1
+  ok(/^\d+\.\d+\.\d+/.test(out.trim()), 'shows semver version')
+})
+
+test('cli: -v shows version', () => {
+  const out = cli('-v')
+  ok(/^\d+\.\d+\.\d+/.test(out.trim()), '-v shows semver version')
+})
+
 test('cli: -e expression', () => {
   const out = cli('-e', '1 + 2')
   is(out.trim(), '3')

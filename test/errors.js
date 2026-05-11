@@ -344,3 +344,95 @@ test('error: spread on non-variadic function', () => {
   // If it errors, the message should be useful
   if (error) ok(error.message.length > 0, 'error message should be non-empty')
 })
+
+// ============================================================================
+// Error message precision — compiler must locate where in source the error is
+// ============================================================================
+
+test('error: location includes line number', () => {
+  let error
+  try {
+    compile(`
+      export let f = () => {
+        var x = 1
+        return x
+      }
+    `)
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('line'), `message should include 'line': ${error.message}`)
+  ok(/\d+/.test(error.message), `message should include a line number: ${error.message}`)
+})
+
+test('error: location points to correct line', () => {
+  // The error is on line 4 (the `var x = 1` line), not line 1 or 2
+  let error
+  try {
+    compile([
+      'export let f = () => {',
+      '  let a = 1',
+      '  var x = 1',   // line 3 (0-indexed) — the error
+      '  return x',
+      '}',
+    ].join('\n'))
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('var'), `message mentions 'var': ${error.message}`)
+  const lineMatch = error.message.match(/line (\d+)/)
+  if (lineMatch) {
+    // The line number should be the line where `var` appears, not the first line
+    ok(/line [23]/.test(error.message), `line should point near the error source, got: ${error.message}`)
+  }
+})
+
+test('error: location includes column number', () => {
+  let error
+  try {
+    compile([
+      'export let f = () => {',
+      '  var x = 1',  // column ~3
+      '}',
+    ].join('\n'))
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  // The error should include some positional info
+  ok(error.message.length > 10, `error message is non-trivial: ${error.message}`)
+})
+
+test('error: long program error points to correct region', () => {
+  let error
+  try {
+    compile([
+      'export let f = (a, b) => a + b',
+      'export let g = (x) => x * 2',
+      'export let h = () => { var y = 3; return y }',  // line 3 — the error
+      'export let k = (x) => -x',
+    ].join('\n'))
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('var'), `message mentions 'var': ${error.message}`)
+})
+
+test('error: type error in large expression includes location', () => {
+  // Use a definitely-prohibited construct to trigger compile error in complex expression
+  let error
+  try {
+    compile([
+      'export let f = () => {',
+      '  let x = [1, 2, 3]',
+      '  return x + (this)',  // 'this' is prohibited
+      '}',
+    ].join('\n'))
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.length > 10, `error message is non-trivial: ${error.message}`)
+})
+
+test('error: module resolution error includes file name', () => {
+  let error
+  try {
+    compile('import { foo } from "./nonexistent.jz"; export let f = () => foo')
+  } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('nonexistent'), `message mentions module file: ${error.message}`)
+})

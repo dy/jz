@@ -5,7 +5,7 @@
 ```sh
 git clone https://github.com/dy/jz.git && cd jz
 npm install
-npm test              # 1140 tests
+npm test              # 1466+ tests
 node bench/bench.mjs  # run benchmarks
 ```
 
@@ -22,7 +22,11 @@ bench/         benchmarks (9 cases, 15+ targets)
 
 Pipeline: `source → parse (subscript/jessie) → jzify (opt-in) → prepare → compile → optimize → watr (WAT→binary)`
 
-All values are f64. Heap types use NaN-boxing (see README). Shared `ctx` object — see `src/ctx.js` for ownership table.
+All values are f64. Heap types use NaN-boxing (see README). Shared `ctx` object — see [`src/ctx.js`](src/ctx.js) for the lifecycle ownership table (which phase owns which subkey, writers, readers).
+
+## State management
+
+The global `ctx` object (defined in `src/ctx.js`) is the single source of compilation state. Each namespace (`ctx.core`, `ctx.module`, `ctx.func`, `ctx.types`, etc.) has a declared lifecycle phase and clear ownership. The docstring at the top of `src/ctx.js` contains the full ownership table — consult it before adding new state to understand which phase should own it.
 
 ## Adding a stdlib method
 

@@ -95,29 +95,6 @@ jz --help
 
 JZ is a strict functional JS subset. Built-in `jzify` transform extends support to legacy patterns.
 
-<!--
-```mermaid
-%%{init: {'flowchart': {'titleTopMargin': 0, 'padding': 0, 'margin': 0}}}%%
-flowchart TB
-    classDef plain fill:none,stroke:none,font-size:14px,font-weight:bold,padding:0px,margin:0px
-
-    subgraph JS[JS — not supported]
-        subgraph JZify[JZ + jzify]
-            subgraph JZ[JZ strict]
-                j1["let/const, arrows, default/rest params, flow, break/continue, try/catch/finally, a[]/a()/a.b, operators, strings, booleans, numbers, std, memory, host"]:::plain
-            end
-            z1["var, function, arguments, switch, new Foo(), ==, !=, instanceof"]:::plain
-        end
-        n1["async/await, Promise, generators, this, class, eval, Function, with, Proxy, Reflect, WeakMap, WeakSet, dynamic import, DOM, fetch, Intl, Node APIs"]:::plain
-    end
-
-    style JZ fill:#ffe0b2,stroke-width:0
-    style JZify fill:#fff9c4,stroke-width:0
-    style JS fill:#ffffff,stroke:#ccc,stroke-width:1px
-    style n1 min-width:720px
-```
--->
-
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ JZify                                                                  │
@@ -150,6 +127,10 @@ Not supported
 
 
 Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
+
+> **⚠️ Object key order matters.** jz objects are fixed-layout schemas (like C structs), not dynamic key bags.  
+> `memory.Object({ x: 3, y: 4 })` expects the same key order as the jz source `{ x, y }`.  
+> `{ y: 4, x: 3 }` with reversed keys will produce wrong values.
 
 ```js
 const { exports, memory } = jz`
