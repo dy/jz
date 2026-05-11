@@ -2,12 +2,10 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { compile } from '../index.js'
-import compile_mem from '../index.js'
+import jz from '../index.js'
 
 function run(code) {
-  const wasm = compile(code)
-  const mod = new WebAssembly.Module(wasm)
-  return new WebAssembly.Instance(mod).exports
+  return jz(code).exports
 }
 
 // ============================================
@@ -136,7 +134,7 @@ test('string: .concat two', () => {
 
 test('template literal: fused concat returns string and skips concat helper', () => {
   const src = 'export let f = (a, b, c) => `a${a}b${b}c${c}d`'
-  const result = compile_mem(src)
+  const result = jz(src)
   is(result.memory.read(result.exports.f(1, 2, 3)), 'a1b2c3d')
   const wat = compile(src, { wat: true })
   const start = wat.indexOf('(func $f')
@@ -207,7 +205,7 @@ test('string: .toString and .valueOf return the receiver', () => {
 })
 
 test('string index: out-of-range returns undefined', () => {
-  ok(Number.isNaN(run(`export let f = () => "hello"[99]`).f()))
+  ok(run(`export let f = () => "hello"[99]`).f() === undefined)
 })
 
 // === .includes ===

@@ -323,16 +323,14 @@ function f64Value(wat) {
 }
 
 // ─── Bug 1: f64 hex integer literal > 53 bits loses precision (const.wast) ───
-// f64.parse("+0x2000000000000100000000001") uses parseInt which rounds
-// because the value exceeds Number.MAX_SAFE_INTEGER.
-// Note: jz's $__parseInt (strict f64 arithmetic) rounds to 2^97, while native
-// JS parseInt (extended precision on x86) rounds to 2^97 + 2^45. Both are
-// within 1 ULP of the exact value. We test jz-compiled watr output.
+// f64.parse accumulates hex integers from LSD→MSD so small contributions are
+// preserved before the final large+small addition. Exact value: 2^97+2^44+1
+// → correctly rounds to 2^97+2^45 (mantissa=1).
 test('watr-regression: f64.const large hex integer rounds correctly', () => {
   const val = f64Value('(module (func (export "f") (result f64) (f64.const +0x2000000000000100000000001)))')
-  // jz-compiled watr rounds to 2^97 (mantissa = 0)
   const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
-  u8.set([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
+  // +0x1.0000000000001p+97 = (1 + 2^-52) * 2^97
+  u8.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
   const expected = new Float64Array(buf)[0]
   is(val, expected, `got ${val}, expected ${expected}`)
 })
