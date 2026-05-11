@@ -105,6 +105,9 @@
 ## Ideas
 
 * [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
+* [ ] jz as a compilation target — not just for humans writing JS, but for DSLs that want WASM output. If you add a simple IR or intermediate format, other tools could emit jz-compatible code and get WASM for free.
+* [ ] The template tag as a build tool — jz\code`` in a Node script replaces a build step. No webpack, no esbuild, no plugin. This is uniquely elegant and under-marketed.
+
 
 ---
 

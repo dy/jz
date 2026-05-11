@@ -341,3 +341,10 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   * Ring arrays (auto-promote on shift/unshift)
   * NaN-boxing pointer kinds (7 types)
   * Compile-time rational simplification
+
+## Audiences
+
+* Web Audio / DSP community — jz -e "bytebeat expression" is a natural demo. The bytebeat test exists already.
+* Edge compute (EdgeJS, CF Workers, Deno) — these communities are actively looking for ways to write WASM without learning Rust or C.
+* Game jams / JS13K — the 1-2 kB WASM output is competitive with hand-optimized JS for size categories.
+* Porffor community — they've already done the education work. jz is a different point in the design space (faster output, stricter subset).
