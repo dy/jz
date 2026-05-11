@@ -23,6 +23,7 @@ export default (ctx) => {
     __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
     __to_bigint: ['__char_at', '__str_byteLen'],
     __parseInt: ['__char_at', '__str_byteLen'],
+    __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
   })
 
 
@@ -592,6 +593,114 @@ export default (ctx) => {
         (then (i64.sub (i64.const 0) (local.get $result)))
         (else (local.get $result)))))`
 
+  ctx.core.stdlib['__parseFloat'] = `(func $__parseFloat (param $v i64) (result f64)
+    (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
+    (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
+    (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
+    (local $result f64) (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    (local.set $t (call $__ptr_type (local.get $v)))
+    ;; parseFloat first applies ToString, then parses the longest decimal prefix.
+    ;; Unlike Number(), empty strings and non-decimal prefixes produce NaN/0
+    ;; according to the consumed prefix rather than whole-string numeric coercion.
+    (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
+      (then
+        (local.set $v (call $__to_str (local.get $v)))
+        (local.set $t (call $__ptr_type (local.get $v)))
+        (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
+          (then (return (f64.const nan))))))
+    (local.set $len (call $__str_byteLen (local.get $v)))
+    ;; Skip leading whitespace.
+    (block $ws (loop $wsl
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $wsl)))
+    ;; Sign.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; Decimal significand. Keep 17 significant decimal digits, track the
+    ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
+    (block $numDone (loop $numLoop
+      (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+      (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
+        (then
+          (local.set $dot (i32.const 1))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $numLoop)))
+      (br_if $numDone
+        (i32.or
+          (i32.lt_s (local.get $c) (i32.const 48))
+          (i32.gt_s (local.get $c) (i32.const 57))))
+      (local.set $seen (i32.const 1))
+      (local.set $c (i32.sub (local.get $c) (i32.const 48)))
+      (if (i32.and (i32.eqz (local.get $sigDigits)) (i32.eqz (local.get $c)))
+        (then
+          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $numLoop)))
+      (if (i32.lt_s (local.get $sigDigits)
+        (if (result i32) (local.get $dot) (then (i32.const 16)) (else (i32.const 17))))
+        (then
+          (local.set $result
+            (f64.add
+              (f64.mul (local.get $result) (f64.const 10))
+              (f64.convert_i32_s (local.get $c))))
+          (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
+          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
+        (else
+          (if (i32.eqz (local.get $dropped))
+            (then (if (i32.ge_s (local.get $c) (i32.const 5)) (then (local.set $round (i32.const 1))))))
+          (local.set $dropped (i32.const 1))
+          (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $numLoop)))
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    (if (local.get $round) (then (local.set $result (f64.add (local.get $result) (f64.const 1)))))
+    ;; Scientific notation.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.or
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (block $expDone (loop $expLoop
+          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $expDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $exp
+            (i32.add
+              (i32.mul (local.get $exp) (i32.const 10))
+              (i32.sub (local.get $c) (i32.const 48))))
+          (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $expLoop)))
+        (if (local.get $expDigits)
+          (then
+            (if (local.get $expNeg)
+              (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
+              (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))))
+    (if (i32.gt_s (local.get $decExp) (i32.const 0))
+      (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
+    (if (i32.lt_s (local.get $decExp) (i32.const 0))
+      (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
+    (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
+
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
     return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
@@ -605,6 +714,10 @@ export default (ctx) => {
     ['func', '$__parseFloat', ['param', 'i64'], ['result', 'f64']])
 
   ctx.core.emit['Number.parseFloat'] = (x) => {
+    if (ctx.transform.host === 'wasi') {
+      inc('__parseFloat')
+      return typed(['call', '$__parseFloat', asI64(emit(x))], 'f64')
+    }
     needParseFloat()
     return typed(['call', '$__parseFloat', asI64(emit(x))], 'f64')
   }
