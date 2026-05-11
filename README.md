@@ -128,8 +128,8 @@ Not supported
 
 Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
 
-> **⚠️ Object key order matters.** jz objects are fixed-layout schemas (like C structs), not dynamic key bags.  
-> `memory.Object({ x: 3, y: 4 })` expects the same key order as the jz source `{ x, y }`.  
+> [!WARNING] jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
+> `memory.Object({ x: 3, y: 4 })` expects the same key order as the jz source `{ x, y }`.
 > `{ y: 4, x: 3 }` with reversed keys will produce wrong values.
 
 ```js
