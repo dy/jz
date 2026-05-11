@@ -761,6 +761,23 @@ function needsRelationalToNumber(expr, vt) {
   return mayReadBoxedValue(expr)
 }
 
+function needsLooseEqualityToNumber(expr, vt) {
+  if (vt === VAL.STRING) return true
+  if (vt != null) return false
+  return mayReadBoxedValue(expr)
+}
+
+function looseNumberEq(numIR, otherNode, otherIR, negate = false) {
+  const t = temp('eq')
+  const other = typed(['local.get', `$${t}`], 'f64')
+  const cmp = ['f64.eq', asF64(numIR), toNumF64(otherNode, other)]
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${t}`, asF64(otherIR)],
+    ['if', ['result', 'i32'], isNullish(other),
+      ['then', ['i32.const', negate ? 1 : 0]],
+      ['else', negate ? ['i32.eqz', cmp] : cmp]]], 'i32')
+}
+
 function mayReadBoxedValue(expr) {
   return Array.isArray(expr) && (expr[0] === '.' || expr[0] === '[]' || expr[0] === '?.' || expr[0] === '?.[]')
 }
@@ -1453,6 +1470,8 @@ export const emitter = {
     // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
     const vta = resolveValType(a, valTypeOf, lookupValType)
     const vtb = resolveValType(b, valTypeOf, lookupValType)
+    if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb)
+    if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va)
     if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
     // Reference-equal pointer kinds (same kind, non-STRING, non-BIGINT): i64 bit equality.
     // JS `==` on objects/arrays/sets/maps/etc. is pure reference equality — no content path.
@@ -1480,6 +1499,8 @@ export const emitter = {
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
     const vta = resolveValType(a, valTypeOf, lookupValType)
     const vtb = resolveValType(b, valTypeOf, lookupValType)
+    if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb, true)
+    if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va, true)
     if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
     if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
       return typed(['i64.ne', ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
