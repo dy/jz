@@ -343,9 +343,11 @@ export default (ctx) => {
     __hash_set_local: ['__str_hash', '__str_eq'],
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: ['__map_hash', '__alloc_hdr', '__mkptr'],
-    __dyn_get_t: ['__ihash_get_local', '__str_hash', '__str_eq', '__is_nullish'],
+    __dyn_get_t: ['__dyn_get_t_h', '__str_hash'],
+    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local'],
+    __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
     __dyn_get_any_t: () => ctx.features.external
@@ -669,9 +671,14 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_get'] = `(func $__dyn_get (param $obj i64) (param $key i64) (result i64)
     (call $__dyn_get_t (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj))))`
 
-  ctx.core.stdlib['__dyn_get_t'] = () => `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+  // Thin wrapper: hash the key once, delegate to the prehashed body. Constant-key
+  // call sites bypass this and call $__dyn_get_t_h directly with strHashLiteral().
+  ctx.core.stdlib['__dyn_get_t'] = `(func $__dyn_get_t (param $obj i64) (param $key i64) (param $type i32) (result i64)
+    (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $type) (call $__str_hash (local.get $key))))`
+
+  ctx.core.stdlib['__dyn_get_t_h'] = () => `(func $__dyn_get_t_h (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32)
-    (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local $poff i32) (local $pcap i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
@@ -744,7 +751,6 @@ export default (ctx) => {
                 (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props))))))))
       (local.set $poff (i32.wrap_i64 (i64.and (local.get $props) (i64.const ${LAYOUT.OFFSET_MASK}))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
-      (local.set $h (call $__str_hash (local.get $key)))
       (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
       (block $hdone (loop $hprobe
         (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
@@ -777,6 +783,19 @@ export default (ctx) => {
       (else
         (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
           (then (call $__hash_get_local (local.get $obj) (local.get $key)))
+          (else (i64.const ${NULL_NAN}))))))`
+
+  // Prehashed variant of __dyn_get_expr_t for constant string keys: the FNV hash
+  // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
+  ctx.core.stdlib['__dyn_get_expr_t_h'] = `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
+    (local $val i64)
+    (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
+    (if (result i64)
+      (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
+      (then (local.get $val))
+      (else
+        (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+          (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
           (else (i64.const ${NULL_NAN}))))))`
 
   // Like __dyn_get_expr but also resolves EXTERNAL host objects via __ext_prop.

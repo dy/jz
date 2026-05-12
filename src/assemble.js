@@ -169,6 +169,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     ctx.core.includes.has('__stringify') ||
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
+    ctx.core.includes.has('__dyn_get_t_h') ||
+    ctx.core.includes.has('__dyn_get_expr_t_h') ||
     ctx.core.includes.has('__dyn_get_any') ||
     ctx.core.includes.has('__dyn_get_any_t') ||
     ctx.core.includes.has('__dyn_get_expr') ||

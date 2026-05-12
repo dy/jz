@@ -413,9 +413,15 @@ export default (ctx) => {
     return ['call', '$__ptr_type', receiver]
   }
 
-  function emitDynGetExprTyped(base, key, vt) {
-    inc('__dyn_get_expr_t')
+  function emitDynGetExprTyped(base, key, vt, prop) {
     const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    // Constant string key: fold the FNV hash at compile time and call the
+    // prehashed body — no __str_hash on every access.
+    if (typeof prop === 'string') {
+      inc('__dyn_get_expr_t_h')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]], 'f64')
+    }
+    inc('__dyn_get_expr_t')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
   }
 
@@ -495,7 +501,7 @@ export default (ctx) => {
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
       if (usesDynProps(vt)) {
-        return emitDynGetExprTyped(va, key, vt)
+        return emitDynGetExprTyped(va, key, vt, prop)
       }
       if (vt === VAL.HASH) {
         return emitHashGetLocalConst(va, key, prop)
@@ -504,12 +510,12 @@ export default (ctx) => {
       // at off-16 (set by __dyn_set). __hash_get assumes HASH bucket layout
       // and would mis-read OBJECT memory.
       if (vt === VAL.OBJECT) {
-        return emitDynGetExprTyped(va, key, vt)
+        return emitDynGetExprTyped(va, key, vt, prop)
       }
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
-        if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt)
+        if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt, prop)
         ctx.features.external = true
         return emitDynGetAnyTyped(va, key, vt)
       }
@@ -628,7 +634,7 @@ export default (ctx) => {
         if (typeof obj === 'string') {
           const objType = lookupValType(obj)
           if (usesDynProps(objType)) {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
           } else if (objType === VAL.HASH) {
             access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else if (objType == null) {
@@ -636,7 +642,7 @@ export default (ctx) => {
             // In JS host mode use __dyn_get_any_t but don't force features.external here
             // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
             access = ctx.transform.host === 'wasi'
-              ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
+              ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
               : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
@@ -646,7 +652,7 @@ export default (ctx) => {
           if (valTypeOf(obj) === VAL.HASH) {
             access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
           } else {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj))
+            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj), prop)
           }
         }
       }
