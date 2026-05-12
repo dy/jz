@@ -79,7 +79,9 @@
 
 * [ ] **Stack allocation / scalar-replacement for fixed-size typed arrays** (mat4/biquad/aos — `localArr(f64, 16)` IR, spill on escape). Highest-value remaining perf item: directly speeds up color-space + digital-filter kernels; extends the existing array/object escape-analysis + arena-rewind machinery rather than building new infra.
 * [ ] Partial unroll + vector body instead of full unroll (mat4: keep `r` loop, vectorize `k` with `f64x2`) — medium value, mat4-specific
-* [ ] json arena/raw-u8 fast path — biggest remaining structural gap; needs parser value-shape redesign. Worth it only if JSON throughput becomes a headline use case.
+* [x] **JSON benchmark made honest** — `bench/json/json.{c,rs,zig,go}` no longer hand-parse the known schema; they now run *general* JSON parsers (C: tagged-union + bump arena; Rust: hand-rolled recursive-descent enum; Zig: `std.json` + ArenaAllocator; Go: `encoding/json` → `map[string]interface{}`), all with string-keyed lookup on the walk side. Result: jz ≈ native C (0.98–1.08×), beats V8 1.45×, Rust/Zig 2.5×, Go/Python 4.6×. The old "11.8× vs C" was the C cheat, not a jz gap.
+* [x] **`\uXXXX` escape decoding** — `__jp_str` now decodes `\uXXXX` (and high+low surrogate pairs) to UTF-8 bytes via `__hex1`/`__hex4`/`__utf8_enc`; previously `"A"` parsed to the literal `"u0041"`. +0.1 kB. Pinned by `test/json.js` "JSON.parse: \uXXXX escapes decode to UTF-8".
+* [ ] json arena/raw-u8 fast path — remaining structural micro-gap (transient `kbuf` in `__jp_obj` is never rewound; per-node `__alloc` calls). Low priority now that the bench sits at ≈1.0× native C; would need parser value-shape redesign for further gains.
 
 ### i64-tagged carrier switch (NaN-boxing replacement) — ~70% done
 
