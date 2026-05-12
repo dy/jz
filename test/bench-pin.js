@@ -134,13 +134,16 @@ for (const [id, claims] of Object.entries(PINS)) {
 
 // jz wasm size budgets — regression guard against accidental codegen bloat.
 // Tolerances absorb harmless codegen jitter; tighten/loosen by editing the
-// budget. Sizes encode the snapshot after the checksum-helper inlining size cut:
-// factoring `x | 0` behind a generic helper makes ToNumber/string conversion live.
+// budget. mat4/biquad sizes are dominated by the deliberately-unrolled +
+// f64x2-vectorized hot kernels (multiplyMany / processCascade) that buy the
+// 0.78×-native-C / 2×-V8 speed results — not bloat. Their budgets sit at the
+// current snapshot + jitter margin; shrinking them means turning down the
+// unroll thresholds, i.e. trading the speed result.
 const SIZE_BUDGET = {
   callback:  2500,
-  mat4:      3000,
+  mat4:      3400,
   poly:      2500,
-  biquad:    4200,
+  biquad:    4550,
   mandelbrot: 1800,
   bitwise:   2500,
   tokenizer: 3000,
