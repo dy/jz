@@ -18,6 +18,14 @@ const TAG_SHIFT = 47n, TAG_MASK = 0xFn, AUX_SHIFT = 32n, AUX_MASK = 0x7FFFn, OFF
 
 const bytes = fs.readFileSync(file)
 let instance
+let memU8 = null
+const memBytes = () => {
+  // Re-snapshot only when memory has grown (buffer object identity changes).
+  const buf = instance.exports.memory.buffer
+  if (!memU8 || memU8.buffer !== buf) memU8 = new Uint8Array(buf)
+  return memU8
+}
+const _dec = new TextDecoder()
 
 // Decode a jz value carried as i64 NaN-box bits to a JS string (for host
 // parseInt/parseFloat). Numbers stringify; non-strings come back as ''.
@@ -33,9 +41,9 @@ const jzStr = (val) => {
     return chars.join('')
   }
   if (offset <= 4) return ''
-  const mem = new Uint8Array(instance.exports.memory.buffer)
+  const mem = memBytes()
   const len = mem[offset - 4] | (mem[offset - 3] << 8) | (mem[offset - 2] << 16) | (mem[offset - 1] << 24)
-  return new TextDecoder().decode(mem.slice(offset, offset + len))
+  return _dec.decode(mem.subarray(offset, offset + len))
 }
 const imports = {
   env: {
