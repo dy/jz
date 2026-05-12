@@ -163,13 +163,14 @@ export const includeForProperty = prop => {
 }
 
 export const runtimeCtorKind = name =>
-  TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : name === 'Date' ? 'date' : null
+  TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : name === 'Date' ? 'date' : name === 'Array' ? 'array' : null
 
 export const includeForRuntimeCtor = name => {
   const kind = runtimeCtorKind(name)
   if (kind === 'typedarray') includeMods('core', 'typedarray')
   else if (kind === 'collection') includeMods('core', 'collection')
   else if (kind === 'date') includeMods('core', 'console', 'date')
+  else if (kind === 'array') includeMods('core', 'array')
   return kind
 }
 

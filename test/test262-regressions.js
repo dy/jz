@@ -93,6 +93,20 @@ test('regression: jzify hoists for-var-in declaration', () => {
   is(exports._run(), 2, 'for (var k in obj) compiles')
 })
 
+test('regression: jzify preserves new Array length constructor', () => {
+  const exports = run(`export let _run = () => {
+    let a = new Array(4)
+    return a.length
+  }`)
+  is(exports._run(), 4, 'new Array(n) allocates expected length')
+
+  const wasm = compile(`export let _run = () => {
+    let a = new Array(4).fill(2)
+    return a.length + a[0]
+  }`, { jzify: true })
+  ok(wasm.byteLength > 0, 'new Array(n).fill(...) compiles through jzify')
+})
+
 test('regression: for-in with let as identifier (test262 identifier-let-allowed)', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`)
   is(exports._run(), 1, 'for-in with let as identifier compiles and runs')
