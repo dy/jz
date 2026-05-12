@@ -224,3 +224,36 @@ test('test262 arguments object: default initializer can reference arguments', ()
   }`)
   is(exports._run(), 70, 'arguments in default params triggers rest-arguments lowering')
 })
+
+test('test262 redeclaration: function declaration followed by var of the same name', () => {
+  // `function f() {} var f;` is legal JS — the `var` is a no-op redeclaration.
+  // jzify lowers `function`→`const` and `var`→`let`; without dedup that emitted two
+  // bindings for one slot and a typed-slot clash in codegen.
+  const exports = run(`export let _run = () => { function f() { return 42 } var f; return f() }`)
+  is(exports._run(), 42, 'var redeclaration after function declaration is dropped')
+})
+
+test('test262 redeclaration: var of a name later (re)declared as a function', () => {
+  const exports = run(`export let _run = () => { var f; function f() { return 9 } return f() }`)
+  is(exports._run(), 9, 'function declaration wins over an earlier bare var')
+})
+
+test('test262 redeclaration: repeated var keeps the first initializer', () => {
+  const exports = run(`export let _run = () => { var x = 3; var x; return x }`)
+  is(exports._run(), 3, 'a bare `var x` after `var x = 3` does not clobber the value')
+})
+
+test('test262 arguments object: `var arguments` is an ordinary local, not the implicit object', () => {
+  const exports = run(`export let _run = () => { var arguments; arguments = 7; return arguments }`)
+  is(exports._run(), 7, '`var arguments` shadows the implicit object — no rest param synthesized')
+})
+
+test('test262 arguments object: `let arguments` initializer is honored', () => {
+  const exports = run(`export let _run = () => { let arguments = 5; return arguments + 1 }`)
+  is(exports._run(), 6, '`let arguments` is a plain lexical binding')
+})
+
+test('test262 arguments object: implicit arguments still works alongside an unrelated function', () => {
+  const exports = run(`export let _run = () => { let g = function(){ return arguments.length }; return g(1,2,3) }`)
+  is(exports._run(), 3, 'a body without an `arguments` declaration keeps the implicit object')
+})

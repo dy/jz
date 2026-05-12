@@ -363,13 +363,10 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/expressions/typeof/string.js')) return 'Date constructor outside current jz scope'
   // try/catch/finally completion-value propagation — engine-specific completion record semantics.
   if (rel.endsWith('/statements/try/completion-values-fn-finally-normal.js')) return 'try-catch-finally completion semantics outside current jz scope'
-  // `arguments` as a declared var / shadowed-by-lexical inside a function whose params reference `arguments`
-  // hit jz's arguments-object lowering edge (duplicate local / arity mismatch) — narrow codegen gap.
-  if (rel.endsWith('/statements/variable/arguments-non-strict.js')) return 'arguments-as-var lowering gap outside current jz scope'
-  if (/\/(expressions|statements)\/function\/arguments-with-arguments-lex\.js$/.test(rel)) return 'arguments-object + lexical-shadow lowering gap outside current jz scope'
-  // `function f(){} var f;` / `var f; function f(){}` at global scope — function/var redeclaration produces a
-  // typed-binding clash in jz's hoisting (f64 var slot vs i32 closure slot). Narrow codegen gap.
-  if (/\/block-scope\/syntax\/redeclaration-global\/allowed-to-redeclare-(function-declaration-with-var|var-with-function-declaration)\.js$/.test(rel)) return 'function/var redeclaration codegen gap outside current jz scope'
+  // `var f = function (x = args = arguments) { let arguments; }` — a param default that
+  // references the implicit `arguments` while the body lexically shadows it. jzify lowers
+  // both, but the rest-param/default interplay still produces invalid codegen here.
+  if (/\/(expressions|statements)\/function\/arguments-with-arguments-lex\.js$/.test(rel)) return 'arguments object + lexical shadow + param default outside current jz scope'
   // Class tests: jzify lowers the desugarable subset only — skip the rest.
   if (isClassTest(rel)) {
     if (rel.includes('/elements/wrapped-in-sc-')) return 'class in single-statement context parser gap'

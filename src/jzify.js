@@ -210,11 +210,33 @@ function transformScope(node) {
     // Hoist functions AFTER imports (imports must be processed first for scope resolution)
     const imports = rest.filter(s => Array.isArray(s) && s[0] === 'import')
     const nonImports = rest.filter(s => !(Array.isArray(s) && s[0] === 'import'))
-    const all = [...imports, ...hoisted, ...nonImports]
+    const all = dedupeRedecls([...imports, ...hoisted, ...nonImports])
     return all.length === 0 ? null : all.length === 1 ? all[0] : [';', ...all]
   }
 
   return transform(node)
+}
+
+/**
+ * Drop redundant re-declarations of the same name within one scope's statement
+ * list. JS allows `function f(){} var f;`, `var x; var x;`, `var x = 1; var x;` —
+ * jzify lowers `function`→`const` and `var`→`let`, which would otherwise emit two
+ * bindings for one slot (and a typed-slot clash in codegen). The first declaration
+ * wins; a later redeclaration keeps only its initializer, as a plain assignment.
+ */
+function dedupeRedecls(stmts) {
+  const nameOf = s => Array.isArray(s) && (s[0] === 'let' || s[0] === 'const' || s[0] === 'var')
+    ? (typeof s[1] === 'string' ? s[1]
+      : Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' ? s[1][1] : null)
+    : null
+  const seen = new Set(), out = []
+  for (const s of stmts) {
+    const n = nameOf(s)
+    if (n == null) { out.push(s); continue }
+    if (seen.has(n)) { if (Array.isArray(s[1]) && s[1][0] === '=') out.push(['=', s[1][1], s[1][2]]); continue }
+    seen.add(n); out.push(s)
+  }
+  return out
 }
 
 /** Wrap function body for arrow conversion */
@@ -245,6 +267,19 @@ function usesArguments(node) {
   if (node[0] === ':') return usesArguments(node[2])
   for (let i = 1; i < node.length; i++) if (usesArguments(node[i])) return true
   return false
+}
+
+// `arguments` is the implicit object only if the function body doesn't declare a
+// local of that name. Scan the body's own statement list (not nested scopes) for
+// `var/let/const arguments` — a regular `function` with `var arguments;` just has
+// an ordinary local, no arguments object.
+function bindsArguments(body) {
+  const isArgDecl = s => Array.isArray(s) && (s[0] === 'var' || s[0] === 'let' || s[0] === 'const') &&
+    s.slice(1).some(d => d === 'arguments' || (Array.isArray(d) && d[0] === '=' && d[1] === 'arguments'))
+  let n = body
+  if (Array.isArray(n) && n[0] === '{}') n = n[1]
+  if (Array.isArray(n) && n[0] === ';') return n.slice(1).some(isArgDecl)
+  return isArgDecl(n)
 }
 
 function renameArguments(node, to) {
@@ -278,8 +313,13 @@ function paramList(params) {
 const isDestructurePat = p => Array.isArray(p) && (p[0] === '[]' || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
 
 function lowerArguments(params, body) {
+  // A function body that declares its own `arguments` local: it's an ordinary
+  // variable, not the implicit object \u2014 rename it out of jz's reserved set,
+  // no rest param synthesized.
+  if (bindsArguments(body)) body = renameArguments(body, `\uE001arg${argsIdx++}`)
   const paramsNeedLowering = paramList(params).some(isDestructurePat)
-  if (!paramsNeedLowering && !usesArguments(params) && !usesArguments(body)) return [params, body]
+  const usesArgsObj = usesArguments(params) || usesArguments(body)
+  if (!paramsNeedLowering && !usesArgsObj) return [params, body]
   const name = `\uE001arg${argsIdx++}`
   const decls = []
   for (const [idx, param] of paramList(params).entries()) {
@@ -293,7 +333,7 @@ function lowerArguments(params, body) {
     }
     decls.push(['=', param, ['[]', name, [null, idx]]])
   }
-  const renamed = renameArguments(body, name)
+  const renamed = usesArgsObj ? renameArguments(body, name) : body
   return [['()', ['...', name]], decls.length ? prependParamDecls(['let', ...decls], renamed) : renamed]
 }
 
