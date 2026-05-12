@@ -883,11 +883,12 @@ export default (ctx) => {
 
   ctx.core.emit['.string:slice'] = (str, start, end) => {
     inc('__str_slice')
-    if (end != null) return typed(['call', '$__str_slice', asI64(emit(str)), asI32(emit(start)), asI32(emit(end))], 'f64')
+    const startIR = start == null ? ['i32.const', 0] : asI32(emit(start))
+    if (end != null) return typed(['call', '$__str_slice', asI64(emit(str)), startIR, asI32(emit(end))], 'f64')
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
+      ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
