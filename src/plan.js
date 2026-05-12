@@ -24,7 +24,7 @@
  */
 
 import { ctx } from './ctx.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, valTypeOf, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, extractParams } from './analyze.js'
 import { MAX_CLOSURE_ARITY } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
@@ -1070,6 +1070,146 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   return changed
 }
 
+// === Inline non-escaping local lambdas ===
+// `const f = (a) => …; … f(x) …` → the lambda body substituted at each call
+// site. A non-escaping lambda's captured free vars are still in lexical scope at
+// the call site, so splicing the body in place preserves capture-by-reference
+// semantics while eliminating the closure object (no env pointer, no NaN-box, no
+// call_indirect). Mirrors inlineHotInternalCalls, scoped to one function body.
+
+// True iff `name` appears textually anywhere in `node` (descending into nested
+// arrows; `.prop` / `:key` positions are literal names, not refs — skipped to
+// match cloneWithSubst's structure).
+const referencesName = (node, name) => {
+  if (typeof node === 'string') return node === name
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === 'str') return false
+  if (op === '.' || op === '?.') return referencesName(node[1], name)
+  if (op === ':') return referencesName(node[2], name)
+  for (let i = 1; i < node.length; i++) if (referencesName(node[i], name)) return true
+  return false
+}
+
+// True iff every textual reference to `name` in `node` is the callee of a
+// `name(...)` call (i.e. the binding never escapes — never read as a value,
+// reassigned, captured by a nested lambda, or shadowed).
+const onlyCalledNotReferenced = (node, name) => {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (op === 'str') return true
+  // A nested lambda touching `name` at all (capture or shadowing param) → bail.
+  if (op === '=>') return !referencesName(node[1], name) && !referencesName(node[2], name)
+  if (op === '()' && node[1] === name) {
+    for (let i = 2; i < node.length; i++) if (!onlyCalledNotReferenced(node[i], name)) return false
+    return true
+  }
+  if (op === '.' || op === '?.') return onlyCalledNotReferenced(node[1], name)
+  if (op === ':') return onlyCalledNotReferenced(node[2], name)
+  for (let i = 1; i < node.length; i++) if (!onlyCalledNotReferenced(node[i], name)) return false
+  return true
+}
+
+const bodyStmtList = body =>
+  Array.isArray(body) && body[0] === '{}' ? blockStmts(body)
+  : Array.isArray(body) && body[0] === ';' ? body.slice(1)
+  : body == null ? [] : [body]
+
+const removeStmts = (body, set) => {
+  if (!Array.isArray(body)) return set.has(body) ? null : body
+  if (body[0] === '{}') return ['{}', removeStmts(body[1], set) ?? [';']]
+  if (body[0] === ';') {
+    const kept = body.slice(1).filter(s => !set.has(s))
+    return kept.length === 0 ? null : kept.length === 1 ? kept[0] : [';', ...kept]
+  }
+  return set.has(body) ? null : body
+}
+
+// Lambda body must be a guaranteed-return shape inlinedBody can splice: ≤1
+// `return` (trailing, if a block), no throw/break/continue, no param mutation,
+// no nested lambda.
+const inlinableLambdaBody = (abody, params) => {
+  if (scanBody(abody, n => n[0] === '=>')) return false
+  if (scanBody(abody, n => n[0] === 'throw' || n[0] === 'break' || n[0] === 'continue')) return false
+  let returns = 0
+  scanBody(abody, n => { if (n[0] === 'return') returns++; return false })
+  if (returns > 1) return false
+  if (returns === 1) {
+    const stmts = blockStmts(abody)
+    if (!stmts || !stmts.length) return false
+    const last = stmts[stmts.length - 1]
+    if (!Array.isArray(last) || last[0] !== 'return') return false
+  }
+  return !mutatesAny(abody, new Set(params))
+}
+
+const inlineLocalLambdasInBody = (getBody, setBody) => {
+  const body = getBody()
+  const stmts = bodyStmtList(body)
+  if (stmts.length < 2) return false
+
+  // Collect `const f = ARROW` (single-decl), all-plain params, inlinable body.
+  const decls = new Map()
+  for (const stmt of stmts) {
+    if (!Array.isArray(stmt) || stmt[0] !== 'const' || stmt.length !== 2) continue
+    const d = stmt[1]
+    if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+    const arrow = d[2]
+    if (!Array.isArray(arrow) || arrow[0] !== '=>') continue
+    const params = extractParams(arrow[1])
+    if (!params.every(p => typeof p === 'string')) continue
+    if (!inlinableLambdaBody(arrow[2], params)) continue
+    decls.set(d[1], { stmt, arrow, params })
+  }
+  if (!decls.size) return false
+
+  // Drop any candidate whose body references another (or its own) candidate —
+  // single-level inlining can't resolve such chains, and a still-referenced
+  // candidate's decl can't be removed.
+  for (let changed = true; changed;) {
+    changed = false
+    for (const [name, info] of decls) {
+      if ([...decls.keys()].some(c => referencesName(info.arrow[2], c))) { decls.delete(name); changed = true }
+    }
+  }
+  // Every other reference to the name must be a `name(...)` call.
+  for (const [name, info] of [...decls]) {
+    if (!stmts.every(s => s === info.stmt || onlyCalledNotReferenced(s, name))) decls.delete(name)
+  }
+  if (!decls.size) return false
+
+  const asFunc = info => ({ sig: { params: info.params.map(name => ({ name })) }, body: info.arrow[2] })
+  const stmtCands = new Map(), exprCands = new Map()
+  for (const [name, info] of decls)
+    (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
+
+  let out = body, didChange = false
+  if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r.changed) { out = r.node; didChange = true } }
+  if (exprCands.size) { const r = inlineInExpr(out, exprCands); if (r.changed) { out = r.node; didChange = true } }
+  if (!didChange) return false
+
+  // Remove decls of candidates that are now fully consumed.
+  const newStmts = bodyStmtList(out)
+  const dead = new Set()
+  for (const [name, info] of decls) {
+    if (!newStmts.some(s => s !== info.stmt && referencesName(s, name))) dead.add(info.stmt)
+  }
+  if (dead.size) out = removeStmts(out, dead) ?? [';']
+
+  setBody(out)
+  return true
+}
+
+const inlineLocalLambdas = () => {
+  let changed = false
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
+  }
+  return changed
+}
+
 const restIndexExpr = (idx, restParams) => {
   const k = intLit(idx)
   if (k != null) return k >= 0 && k < restParams.length ? restParams[k] : [, undefined]
@@ -1248,6 +1388,7 @@ export default function plan(ast) {
 
   let programFacts = collectProgramFacts(ast)
   if (inlineHotInternalCalls(programFacts, ast)) programFacts = collectProgramFacts(ast)
+  if (inlineLocalLambdas()) programFacts = collectProgramFacts(ast)
   if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionObjectLiterals()) programFacts = collectProgramFacts(ast)

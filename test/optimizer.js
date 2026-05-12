@@ -57,10 +57,14 @@ test('LICM: shared IR subtree (slice + slice-loop pattern) must not corrupt outs
 test('LICM: actually fires for invariant cell read in non-call loop', () => {
   // Sanity: when conditions are right (no calls, no shared IR, no writes),
   // LICM should hoist the cell load and emit a $__sc snap local.
+  // `inc` must *escape* (passed to `keep`) so it stays a real closure that
+  // mutates the captured `i` via a heap cell — otherwise inlineLocalLambdas
+  // would splice it away and `i` would just be a plain wasm local.
   const wat = jz.compile(`
+    const keep = (f) => f
     export const main = () => {
       let i = 0
-      const inc = () => i = i + 1
+      const inc = keep(() => i = i + 1)
       let s = 0
       for (let j = 0; j < 10; j++) s = s + i + i
       inc()
