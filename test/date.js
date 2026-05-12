@@ -30,6 +30,12 @@ test('Date.UTC: NaN and TimeClip', () => {
   same(run('export let f = () => Date.UTC(275760, 8, 13, 0, 0, 0, 1)'), NaN)
 })
 
+test('Date.parse: date strings', () => {
+  same(run('export let f = () => Date.parse("2024-01-01T00:00:00Z")'), 1704067200000)
+  same(run('export let f = () => Date.parse("2024-06-05")'), Date.UTC(2024, 5, 5))
+  same(run('export let f = () => Date.parse("not a date")'), NaN)
+})
+
 test('Date object: getTime and valueOf', () => {
   same(run('export let f = () => { let d = new Date(0); return d.getTime() }'), 0)
   same(run('export let f = () => { let d = new Date(12345); return d.getTime() }'), 12345)
