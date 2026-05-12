@@ -173,16 +173,25 @@ export default (ctx) => {
   } else {
     // Own memory: heap offset in a global, auto-grow when needed
     ctx.scope.globals.set('__heap', '(global $__heap (mut i32) (i32.const 1024))')
+    // Bump allocator with geometric growth. Growing one page at a time turns a
+    // long-running embedding (e.g. watr called thousands of times) into O(n²) —
+    // each memory.grow may relocate and copy the whole heap. So when we must
+    // grow, request at least the current size (≥2× total) in one shot; only on
+    // hitting the declared maximum do we fall back to the bare minimum.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-      (local $ptr i32) (local $next i32)
+      (local $ptr i32) (local $next i32) (local $cur i32) (local $need i32)
       (local.set $ptr (global.get $__heap))
       ;; Align next allocation to 8 bytes
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      ;; Grow memory if needed (each page = 65536 bytes)
-      (if (i32.gt_u (local.get $next) (i32.mul (memory.size) (i32.const 65536)))
-        (then (if (i32.eq (memory.grow
-          (i32.shr_u (i32.add (i32.sub (local.get $next) (i32.mul (memory.size) (i32.const 65536))) (i32.const 65535)) (i32.const 16)))
-          (i32.const -1)) (then (unreachable)))))
+      (local.set $cur (i32.shl (memory.size) (i32.const 16)))
+      (if (i32.gt_u (local.get $next) (local.get $cur))
+        (then
+          (local.set $need (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
+          (if (i32.lt_u (local.get $need) (memory.size)) (then (local.set $need (memory.size))))
+          (if (i32.eq (memory.grow (local.get $need)) (i32.const -1))
+            (then (if (i32.eq (memory.grow
+              (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
+              (i32.const -1)) (then (unreachable)))))))
       (global.set $__heap (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear

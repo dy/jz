@@ -874,10 +874,10 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 3235)
+}`, 3410)
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 970)
+}`, 1050)
