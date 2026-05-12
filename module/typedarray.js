@@ -587,8 +587,14 @@ export default (ctx) => {
     }
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
-    (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
+    ;; ARRAY fast path: __ptr_offset already followed any forwarding — read header len + f64.load, no $__len call.
+    (if (i32.and (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY})) (i32.ge_u (local.get $off) (i32.const 8)))
+      (then (return (if (result f64)
+        (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+        (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+        (else (f64.const nan:${UNDEF_NAN}))))))
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
     (if
       (i32.and
         (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))

@@ -324,8 +324,21 @@ export default (ctx) => {
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ;; ARRAY fast path: follow forwarding inline, bounds-check against header len, f64.load — no $__len call.
+    (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.ge_u (local.get $off) (i32.const 8)))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))
+        (return (if (result f64)
+          (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+          (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+          (else (f64.const nan:${UNDEF_NAN}))))))
+    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
     (if
       (i32.and
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
