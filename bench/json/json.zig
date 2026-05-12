@@ -1,3 +1,4 @@
+// json.zig — general JSON parser (std.json.parseFromSlice + ArenaAllocator) for benchmark.
 const std = @import("std");
 const Io = std.Io;
 
@@ -27,52 +28,38 @@ fn medianUs(samples: *[N_RUNS]f64) u64 {
     return @as(u64, @intFromFloat(samples[(samples.len - 1) >> 1] * 1000.0));
 }
 
-fn parseInt(p: *usize) i32 {
-    var v: i32 = 0;
-    var neg = false;
-    if (SRC[p.*] == '-') { neg = true; p.* += 1; }
-    while (p.* < SRC.len and SRC[p.*] >= '0' and SRC[p.*] <= '9') : (p.* += 1) {
-        v = v *% 10 +% @as(i32, SRC[p.*] - '0');
-    }
-    return if (neg) -v else v;
+// Get integer value from a std.json.Value (parsed as integer or float).
+fn getInt(v: std.json.Value) i32 {
+    return switch (v) {
+        .integer => |n| @as(i32, @intCast(@as(i64, @truncate(n)))),
+        .float   => |f| @as(i32, @intFromFloat(f)),
+        else     => 0,
+    };
 }
 
-fn skipTo(p: *usize, ch: u8) void {
-    while (p.* < SRC.len and SRC[p.*] != ch) : (p.* += 1) {}
-}
-
-fn parseAndWalk() u32 {
+fn parseAndWalk(arena: *std.heap.ArenaAllocator) !u32 {
     var h: u32 = 0x811c9dc5;
     var iter: usize = 0;
     while (iter < N_ITERS) : (iter += 1) {
-        var p: usize = 0;
-        var ids: [3]i32 = .{ 0, 0, 0 };
-        var kinds: [3]i32 = .{ 0, 0, 0 };
-        var values: [3]i32 = .{ 0, 0, 0 };
+        // Reset arena each iteration so memory doesn't accumulate.
+        _ = arena.reset(.retain_capacity);
+        const alloc = arena.allocator();
 
-        skipTo(&p, '['); p += 1;
-        var j: usize = 0;
-        while (j < 3) : (j += 1) {
-            skipTo(&p, '{'); p += 1;
-            skipTo(&p, ':'); p += 1;
-            ids[j] = parseInt(&p);
-            skipTo(&p, ':'); p += 1;
-            kinds[j] = parseInt(&p);
-            skipTo(&p, ':'); p += 1;
-            values[j] = parseInt(&p);
-            skipTo(&p, '}'); p += 1;
-        }
+        const result = try std.json.parseFromSlice(std.json.Value, alloc, SRC, .{});
+        const root = result.value;
 
-        skipTo(&p, '{'); p += 1;
-        skipTo(&p, ':'); p += 1;
-        const scale = parseInt(&p);
-        skipTo(&p, ':'); p += 1;
-        const bias = parseInt(&p);
+        // Walk generically: key lookup via object.get (string comparison).
+        const items_val = root.object.get("items") orelse continue;
+        const meta_val  = root.object.get("meta")  orelse continue;
 
-        var s: i32 = bias;
-        j = 0;
-        while (j < 3) : (j += 1) {
-            s +%= ids[j] *% scale +% kinds[j] +% values[j];
+        const scale = getInt(meta_val.object.get("scale") orelse std.json.Value{ .integer = 0 });
+        var s: i32  = getInt(meta_val.object.get("bias")  orelse std.json.Value{ .integer = 0 });
+
+        for (items_val.array.items) |item| {
+            const id    = getInt(item.object.get("id")    orelse std.json.Value{ .integer = 0 });
+            const kind  = getInt(item.object.get("kind")  orelse std.json.Value{ .integer = 0 });
+            const value = getInt(item.object.get("value") orelse std.json.Value{ .integer = 0 });
+            s +%= id *% scale +% kind +% value;
         }
         h = mix(h, @as(u32, @bitCast(s)));
     }
@@ -85,15 +72,18 @@ pub fn main(init_args: std.process.Init) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
     var cs: u32 = 0;
     var i: usize = 0;
-    while (i < N_WARMUP) : (i += 1) cs = parseAndWalk();
+    while (i < N_WARMUP) : (i += 1) cs = try parseAndWalk(&arena);
 
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = nowMs();
-        cs = parseAndWalk();
+        cs = try parseAndWalk(&arena);
         samples[i] = nowMs() - t0;
     }
     try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, N_ITERS, 4, N_RUNS });

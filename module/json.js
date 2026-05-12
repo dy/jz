@@ -50,7 +50,8 @@ export default (ctx) => {
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
-    __jp_str: ['__sso_char', '__char_at', '__str_byteLen'],
+    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__utf8_enc'],
+    __hex4: ['__hex1'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
     __jp_obj: ['__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr'],
@@ -319,8 +320,45 @@ export default (ctx) => {
   // SSO byte packing for ≤4-char ASCII keys, and FNV-1a hash. The hash is
   // stashed in $__jp_keyh so __jp_obj can use the prehashed insert and skip
   // a redundant __str_hash call.
+  // Hex nibble: '0'-'9' / 'a'-'f' / 'A'-'F' → 0..15; anything else → 0 (lenient).
+  ctx.core.stdlib['__hex1'] = `(func $__hex1 (param $c i32) (result i32)
+    (if (i32.le_u (i32.sub (local.get $c) (i32.const 48)) (i32.const 9))
+      (then (return (i32.sub (local.get $c) (i32.const 48)))))
+    (if (i32.le_u (i32.sub (i32.or (local.get $c) (i32.const 0x20)) (i32.const 97)) (i32.const 5))
+      (then (return (i32.sub (i32.or (local.get $c) (i32.const 0x20)) (i32.const 87)))))
+    (i32.const 0))`
+
+  // Read 4 hex bytes at absolute address $p → 16-bit value.
+  ctx.core.stdlib['__hex4'] = `(func $__hex4 (param $p i32) (result i32)
+    (i32.or (i32.or (i32.or
+      (i32.shl (call $__hex1 (i32.load8_u (local.get $p))) (i32.const 12))
+      (i32.shl (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 1)))) (i32.const 8)))
+      (i32.shl (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 2)))) (i32.const 4)))
+      (call $__hex1 (i32.load8_u (i32.add (local.get $p) (i32.const 3))))))`
+
+  // Encode code point $cp as UTF-8 at $off; returns bytes written (1-4).
+  ctx.core.stdlib['__utf8_enc'] = `(func $__utf8_enc (param $off i32) (param $cp i32) (result i32)
+    (if (i32.lt_u (local.get $cp) (i32.const 0x80))
+      (then (i32.store8 (local.get $off) (local.get $cp)) (return (i32.const 1))))
+    (if (i32.lt_u (local.get $cp) (i32.const 0x800))
+      (then
+        (i32.store8 (local.get $off) (i32.or (i32.const 0xC0) (i32.shr_u (local.get $cp) (i32.const 6))))
+        (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
+        (return (i32.const 2))))
+    (if (i32.lt_u (local.get $cp) (i32.const 0x10000))
+      (then
+        (i32.store8 (local.get $off) (i32.or (i32.const 0xE0) (i32.shr_u (local.get $cp) (i32.const 12))))
+        (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))))
+        (i32.store8 (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
+        (return (i32.const 3))))
+    (i32.store8 (local.get $off) (i32.or (i32.const 0xF0) (i32.shr_u (local.get $cp) (i32.const 18))))
+    (i32.store8 (i32.add (local.get $off) (i32.const 1)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 12)) (i32.const 0x3F))))
+    (i32.store8 (i32.add (local.get $off) (i32.const 2)) (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))))
+    (i32.store8 (i32.add (local.get $off) (i32.const 3)) (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))))
+    (i32.const 4))`
+
   ctx.core.stdlib['__jp_str'] = `(func $__jp_str (result f64)
-    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32) (local $h i32)
+    (local $start i32) (local $ch i32) (local $len i32) (local $off i32) (local $i i32) (local $simple i32) (local $sso i32) (local $h i32) (local $cp i32)
     (local.set $start (global.get $__jppos))
     (local.set $simple (i32.const 1))
     (local.set $h (i32.const 0x811c9dc5))
@@ -382,12 +420,32 @@ export default (ctx) => {
           ${ADV(1)}
           (local.set $ch ${PEEK})
           ${ADV(1)}
-          ;; Decode escape: n→10 t→9 r→13 b→8 f→12, else literal
-          (if (i32.eq (local.get $ch) (i32.const 110)) (then (local.set $ch (i32.const 10))))
-          (if (i32.eq (local.get $ch) (i32.const 116)) (then (local.set $ch (i32.const 9))))
-          (if (i32.eq (local.get $ch) (i32.const 114)) (then (local.set $ch (i32.const 13))))
-          (if (i32.eq (local.get $ch) (i32.const 98))  (then (local.set $ch (i32.const 8))))
-          (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))))
+          (if (i32.eq (local.get $ch) (i32.const 117))  ;; \\uXXXX
+            (then
+              (local.set $cp (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
+              ${ADV(4)}
+              ;; High surrogate immediately followed by \\uXXXX low surrogate → combine.
+              (if (i32.and
+                    (i32.eq (i32.and (local.get $cp) (i32.const 0xFC00)) (i32.const 0xD800))
+                    (i32.and (i32.eq ${PEEK} (i32.const 92))
+                             (i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 1)))) (i32.const 117))))
+                (then
+                  ${ADV(2)}
+                  (local.set $i (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
+                  ${ADV(4)}
+                  (local.set $cp (i32.add (i32.const 0x10000)
+                    (i32.or (i32.shl (i32.and (local.get $cp) (i32.const 0x3FF)) (i32.const 10))
+                            (i32.and (local.get $i) (i32.const 0x3FF)))))))
+              (local.set $len (i32.add (local.get $len)
+                (call $__utf8_enc (i32.add (local.get $off) (local.get $len)) (local.get $cp))))
+              (br $l2))
+            (else
+              ;; Decode simple escape: n→10 t→9 r→13 b→8 f→12, else literal char.
+              (if (i32.eq (local.get $ch) (i32.const 110)) (then (local.set $ch (i32.const 10))))
+              (if (i32.eq (local.get $ch) (i32.const 116)) (then (local.set $ch (i32.const 9))))
+              (if (i32.eq (local.get $ch) (i32.const 114)) (then (local.set $ch (i32.const 13))))
+              (if (i32.eq (local.get $ch) (i32.const 98))  (then (local.set $ch (i32.const 8))))
+              (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))))))
         (else ${ADV(1)}))
       (i32.store8 (i32.add (local.get $off) (local.get $len)) (local.get $ch))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))

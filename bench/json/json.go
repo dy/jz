@@ -1,3 +1,4 @@
+// json.go — general JSON parser (encoding/json into map[string]interface{}) for benchmark.
 package main
 
 import (
@@ -29,30 +30,34 @@ func medianUs(samples []float64) int {
 	return int(samples[(len(samples)-1)>>1] * 1000)
 }
 
-type Doc struct {
-	Items []Item `json:"items"`
-	Meta  Meta   `json:"meta"`
-}
-
-type Item struct {
-	ID    int `json:"id"`
-	Kind  int `json:"kind"`
-	Value int `json:"value"`
-}
-
-type Meta struct {
-	Scale int `json:"scale"`
-	Bias  int `json:"bias"`
+// getInt extracts an int32 from a float64 value in the generic map
+// (encoding/json unmarshals all numbers as float64 in interface{} context).
+func getInt(v interface{}) int32 {
+	if f, ok := v.(float64); ok {
+		return int32(int64(f))
+	}
+	return 0
 }
 
 func walk() uint32 {
 	h := uint32(0x811c9dc5)
 	for i := 0; i < nIters; i++ {
-		var d Doc
-		_ = json.Unmarshal([]byte(src), &d)
-		s := d.Meta.Bias
-		for _, it := range d.Items {
-			s += it.ID*d.Meta.Scale + it.Kind + it.Value
+		// Parse into a fully generic value — no schema knowledge.
+		var root map[string]interface{}
+		_ = json.Unmarshal([]byte(src), &root)
+
+		// Walk by string-key access on the generic map.
+		items := root["items"].([]interface{})
+		meta  := root["meta"].(map[string]interface{})
+		scale := getInt(meta["scale"])
+		s     := getInt(meta["bias"])
+
+		for _, elem := range items {
+			it := elem.(map[string]interface{})
+			id    := getInt(it["id"])
+			kind  := getInt(it["kind"])
+			value := getInt(it["value"])
+			s += id*scale + kind + value
 		}
 		h = mix(h, uint32(s))
 	}

@@ -475,7 +475,7 @@ cc program.c -o program
 | [bitwise](bench/bitwise/bitwise.js) | 0.98ms<br>1.3kB | 3.76ms<br>1005 B | fails | 8.79ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
 | [poly](bench/poly/poly.js) | 0.27ms<br>1.4kB | 1.62ms<br>1014 B | fails | 0.73ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
 | [callback](bench/callback/callback.js) | 0.03ms<br>1.6kB | 0.69ms<br>828 B | fails | 1.04ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
-| [json](bench/json/json.js) | 0.24ms<br>11.0kB | 0.37ms<br>1.2kB | fails | — | — | 0.03ms | 1.05ms | <0.01ms | 0.03ms | 1.21ms |
+| [json](bench/json/json.js) | 0.25ms<br>10.9kB | 0.36ms<br>1.2kB | fails | — | — | 0.25ms | 1.16ms | 0.64ms | 0.65ms | 1.20ms |
 | [watr](bench/watr/watr.js) | 1.04ms<br>169.8kB | 1.05ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._

@@ -1,3 +1,4 @@
+// json.rs — general JSON parser for benchmark. No external crates.
 use std::time::Instant;
 
 const SRC: &str = r#"{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}"#;
@@ -22,59 +23,162 @@ fn median_us(samples: &mut [f64]) -> u64 {
     (samples[(samples.len() - 1) >> 1] * 1000.0) as u64
 }
 
-fn parse_int(p: &mut usize) -> i32 {
-    let bytes = SRC.as_bytes();
-    let mut v: i32 = 0;
-    let mut neg = false;
-    if bytes[*p] == b'-' { neg = true; *p += 1; }
-    while *p < bytes.len() && bytes[*p] >= b'0' && bytes[*p] <= b'9' {
-        v = v * 10 + (bytes[*p] - b'0') as i32;
-        *p += 1;
-    }
-    if neg { -v } else { v }
+// ── Value ─────────────────────────────────────────────────────────────────────
+#[allow(dead_code)]
+enum Json {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Arr(Vec<Json>),
+    Obj(Vec<(String, Json)>),
 }
 
-fn skip_to(p: &mut usize, ch: u8) {
-    let bytes = SRC.as_bytes();
-    while *p < bytes.len() && bytes[*p] != ch { *p += 1; }
+impl Json {
+    fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Obj(pairs) => {
+                for (k, v) in pairs {
+                    if k == key { return Some(v); }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn as_i32(&self) -> i32 {
+        match self {
+            Json::Num(n) => *n as i64 as i32,
+            _ => 0,
+        }
+    }
+
+    fn as_arr(&self) -> &[Json] {
+        match self {
+            Json::Arr(v) => v,
+            _ => &[],
+        }
+    }
+}
+
+// ── Parser ────────────────────────────────────────────────────────────────────
+struct Parser<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(s: &'a str) -> Self {
+        Parser { src: s.as_bytes(), pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.src.len() {
+            match self.src[self.pos] {
+                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+
+    fn peek(&self) -> u8 {
+        if self.pos < self.src.len() { self.src[self.pos] } else { 0 }
+    }
+
+    fn parse_string(&mut self) -> String {
+        self.pos += 1; // skip "
+        let start = self.pos;
+        while self.pos < self.src.len() && self.src[self.pos] != b'"' {
+            if self.src[self.pos] == b'\\' { self.pos += 1; }
+            self.pos += 1;
+        }
+        let s = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+        self.pos += 1; // skip closing "
+        s
+    }
+
+    fn parse_number(&mut self) -> f64 {
+        let start = self.pos;
+        if self.peek() == b'-' { self.pos += 1; }
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1; }
+        if self.pos < self.src.len() && self.src[self.pos] == b'.' {
+            self.pos += 1;
+            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1; }
+        }
+        if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E') {
+            self.pos += 1;
+            if self.pos < self.src.len() && (self.src[self.pos] == b'+' || self.src[self.pos] == b'-') { self.pos += 1; }
+            while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() { self.pos += 1; }
+        }
+        std::str::from_utf8(&self.src[start..self.pos]).unwrap().parse().unwrap_or(0.0)
+    }
+
+    fn parse_array(&mut self) -> Json {
+        self.pos += 1; // skip [
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == b']' { self.pos += 1; return Json::Arr(items); }
+        loop {
+            items.push(self.parse_value());
+            self.skip_ws();
+            if self.peek() == b']' { self.pos += 1; break; }
+            self.pos += 1; // skip ','
+            self.skip_ws();
+        }
+        Json::Arr(items)
+    }
+
+    fn parse_object(&mut self) -> Json {
+        self.pos += 1; // skip {
+        let mut pairs = Vec::new();
+        self.skip_ws();
+        if self.peek() == b'}' { self.pos += 1; return Json::Obj(pairs); }
+        loop {
+            self.skip_ws();
+            let key = self.parse_string();
+            self.skip_ws();
+            self.pos += 1; // skip ':'
+            self.skip_ws();
+            let val = self.parse_value();
+            pairs.push((key, val));
+            self.skip_ws();
+            if self.peek() == b'}' { self.pos += 1; break; }
+            self.pos += 1; // skip ','
+            self.skip_ws();
+        }
+        Json::Obj(pairs)
+    }
+
+    fn parse_value(&mut self) -> Json {
+        self.skip_ws();
+        match self.peek() {
+            b'"' => Json::Str(self.parse_string()),
+            b'{' => self.parse_object(),
+            b'[' => self.parse_array(),
+            b'n' => { self.pos += 4; Json::Null }
+            b't' => { self.pos += 4; Json::Bool(true) }
+            b'f' => { self.pos += 5; Json::Bool(false) }
+            _ => Json::Num(self.parse_number()),
+        }
+    }
 }
 
 fn parse_and_walk() -> u32 {
     let mut h = 0x811c_9dc5u32;
     for _ in 0..N_ITERS {
-        let mut p: usize = 0;
-        let mut ids = [0i32; 3];
-        let mut kinds = [0i32; 3];
-        let mut values = [0i32; 3];
-        let mut scale = 0i32;
-        let mut bias = 0i32;
+        let root = Parser::new(SRC).parse_value();
 
-        skip_to(&mut p, b'[');
-        p += 1;
-        for j in 0..3 {
-            skip_to(&mut p, b'{');
-            p += 1;
-            skip_to(&mut p, b':'); p += 1;
-            ids[j] = parse_int(&mut p);
-            skip_to(&mut p, b':'); p += 1;
-            kinds[j] = parse_int(&mut p);
-            skip_to(&mut p, b':'); p += 1;
-            values[j] = parse_int(&mut p);
-            skip_to(&mut p, b'}'); p += 1;
-        }
+        let items = root.get("items").map(|v| v.as_arr()).unwrap_or(&[]);
+        let meta  = root.get("meta");
+        let scale = meta.and_then(|m| m.get("scale")).map(|v| v.as_i32()).unwrap_or(0);
+        let mut s = meta.and_then(|m| m.get("bias")).map(|v| v.as_i32()).unwrap_or(0);
 
-        // parse "meta":{"scale":7,"bias":11}
-        skip_to(&mut p, b'{'); p += 1;
-        // "scale":7
-        skip_to(&mut p, b':'); p += 1;
-        scale = parse_int(&mut p);
-        // "bias":11
-        skip_to(&mut p, b':'); p += 1;
-        bias = parse_int(&mut p);
-
-        let mut s = bias;
-        for j in 0..3 {
-            s += ids[j] * scale + kinds[j] + values[j];
+        for it in items {
+            let id    = it.get("id").map(|v| v.as_i32()).unwrap_or(0);
+            let kind  = it.get("kind").map(|v| v.as_i32()).unwrap_or(0);
+            let value = it.get("value").map(|v| v.as_i32()).unwrap_or(0);
+            s = s.wrapping_add(id.wrapping_mul(scale).wrapping_add(kind).wrapping_add(value));
         }
         h = mix(h, s as u32);
     }
@@ -85,7 +189,7 @@ fn main() {
     let mut cs = 0u32;
     for _ in 0..N_WARMUP { cs = parse_and_walk(); }
 
-    let mut samples = [0.0; N_RUNS];
+    let mut samples = [0.0f64; N_RUNS];
     for sample in &mut samples {
         let t0 = Instant::now();
         cs = parse_and_walk();
