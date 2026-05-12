@@ -724,6 +724,24 @@ test('closure-unbox: o.fn(g) — module-level binding', () => {
   is(f(), 105)
 })
 
+test('trampoline arity: closure ABI widens to a table-resident function arity', () => {
+  // `pick3` (arity 3) is lifted to a top-level function and used only as a
+  // first-class value; the sole indirect call passes 1 arg, so maxCall=1, and
+  // a lifted def's param list is never re-observed by the arity scan (it walks
+  // bodies, not param lists) so maxDef misses it too. The closure ABI width
+  // must be widened by `valueUsed` arities — otherwise the boundary trampoline
+  // forwards `$__a2` against a 2-param trampoline → "Unknown local $__a2" at
+  // assemble time.
+  const { put, run } = runHost(`
+    let pick3 = (a, b, c) => a
+    let store = []
+    export let put = () => { store[0] = pick3 }
+    export let run = (i) => store[i](42)
+  `)
+  put()
+  is(run(0), 42)
+})
+
 test('closure-unbox: trivial closure-call program stays compact (post-watr fusedRewrite)', () => {
   // Pin the post-watrOptimize fusedRewrite pass — without it watr's inliner
   // re-introduces a rebox/unbox roundtrip across the closure-body inline

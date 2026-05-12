@@ -1401,11 +1401,23 @@ const materializeAutoBoxSchemas = (programFacts) => {
 
 const resolveClosureWidth = (programFacts) => {
   if (!ctx.closure.make) return
-  const { hasSpread, hasRest, maxCall, maxDef } = programFacts
+  const { hasSpread, hasRest, maxCall, maxDef, valueUsed } = programFacts
   const floor = ctx.closure.floor ?? 0
+  // A top-level function used as a first-class value gets a boundary trampoline
+  // that forwards $__a0..$__a{arity-1} into it (emit.js). The uniform closure
+  // ABI must therefore be at least as wide as any table-resident function's
+  // fixed arity — maxDef only counts surviving `=>` literals, so lifted/hoisted
+  // function definitions slip past it (their bodies are walked, their param
+  // lists aren't). Without this, e.g. an arity-3 function used only via a
+  // 1-arg indirect call emits `(local.get $__a2)` against a 2-param trampoline.
+  let maxValueArity = 0
+  if (valueUsed) for (const name of valueUsed) {
+    const n = ctx.func.map.get(name)?.sig?.params?.length ?? 0
+    if (n > maxValueArity) maxValueArity = n
+  }
   ctx.closure.width = (hasSpread && hasRest)
     ? MAX_CLOSURE_ARITY
-    : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), floor))
+    : Math.min(MAX_CLOSURE_ARITY, Math.max(maxCall, maxDef + (hasRest ? 1 : 0), maxValueArity, floor))
 }
 
 const canSkipWholeProgramNarrowing = (programFacts) =>

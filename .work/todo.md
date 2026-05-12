@@ -70,11 +70,6 @@
 
 * [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup.
 
-### watr — latent trampoline arity bug
-
-* [ ] Uniform closure-table signature is sized by `ctx.closure.width` (max *call-site* arity), but boundary trampolines for first-class function values reference `$__a${i}` up to the *function's* arity. A function with more params than `width` (e.g. `encode.f32(input, value, idx)`, arity 3, in a program whose closure calls never pass 3 args) emits `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2`. Fix: `width = max(callSiteArities, tableResidentFnArities)`. Not triggered by the watr suite (full build's width is already ≥3).
-
-
 ## Ideas
 
 * [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
@@ -302,6 +297,7 @@
 
 ### Completed perf / cleanup wins
 
+* [x] Trampoline arity bug — uniform closure-table width (`ctx.closure.width`) was sized by max call-site/arrow-def arity, but boundary trampolines for first-class function *values* forward `$__a0..$__a{arity-1}` (lifted func defs slip past the arity scan, which walks bodies not param lists). An arity-3 function used only via a 1-arg indirect call emitted `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2` at assemble time. Fix in `resolveClosureWidth`: also `max` over `programFacts.valueUsed` funcs' `sig.params.length`. + test pin in `test/closures.js`.
 * [x] Lazy `__length` dispatch
 * [x] Specialize `console.log(template literal)` — flatten concat chain to per-part writes
 * [x] Re-observe schema slots after E2 valResult
