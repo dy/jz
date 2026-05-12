@@ -39,37 +39,12 @@ export const PTR = {
   TYPED: 3,     // TypedArrays (Float64Array, etc.)
   STRING: 4,    // strings (heap or inline-SSO; aux bit LAYOUT.SSO_BIT distinguishes)
   // 5: free
-  OBJECT: 6,    // all object-likes — OBJ_KIND header word discriminates STATIC/HASH/DYNAMIC/PROXY
-  // 7: free
+  OBJECT: 6,    // plain objects
+  HASH: 7,      // dynamic objects (Map-like)
   SET: 8,       // Set collections
   MAP: 9,       // Map collections
   CLOSURE: 10,  // first-class functions
   EXTERNAL: 11, // JS host object refs (aux=0, offset→extMap index)
-}
-
-// === Object kind header word ===
-// The first i32 of every heap-allocated object's 24-byte alloc header (at
-// data-ptr - 24) names its *shape strategy*. This unifies plain objects,
-// hash-keyed objects, and (future) accessor/proxy objects under a single
-// PTR.OBJECT tag — dispatch reads the header word instead of branching on
-// distinct pointer tags. Header layout (relative to the returned data ptr D):
-//   D-24: this kind word (i32)   D-20: reserved (i32)
-//   D-16: propsPtr (i64, dyn-prop sidecar hash)   D-8: len (i32)   D-4: cap (i32)
-//
-//   0x0000        STATIC   — fixed-shape; schemaId in NaN-box aux; props as sequential f64 at off+0
-//   0x0001-0x0FFF (reserved — future: overflow schemaId space)
-//   0x1000        HASH     — open-addressed probe table at off+0 (24-byte [hash,key,val] entries)
-//   0x1001        DYNAMIC  — getter/setter accessors (Object.defineProperty)
-//   0x1002        PROXY    — target + handler trap dispatch
-//
-// Non-object heap values (ARRAY/SET/MAP/TYPED/BUFFER) carry kind 0 here and use
-// the propsPtr slot for their dyn-prop sidecar. Static-data-segment objects are
-// headerless (offset < __heap_start) and are STATIC by construction.
-export const OBJ_KIND = {
-  STATIC: 0x0000,
-  HASH: 0x1000,
-  DYNAMIC: 0x1001,
-  PROXY: 0x1002,
 }
 
 // === Global context with nested sub-contexts ===
@@ -270,7 +245,7 @@ export function reset(proto, globals) {
   //       currently forces SSO for ≤4 ASCII chars at string.js:49)
   ctx.features = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site. WIRED.
-    hash: false,      // hash-keyed objects (OBJ_KIND.HASH) + __dyn_* substrate. Organic: any inc(__hash_*/__dyn_*) implies on.
+    hash: false,      // PTR.HASH + __dyn_* substrate. Organic: any inc(__hash_*/__dyn_*) implies on.
     sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
     regex: false,     // RegExp literals + methods. Organic via inc(__regex_*).
     json: false,      // JSON.parse/stringify. Organic via inc(__jp_*/__json_*).

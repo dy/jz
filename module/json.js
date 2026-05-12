@@ -11,7 +11,7 @@
 import { typed, asF64, asI64, temp, tempI32, nullExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
-import { err, inc, PTR, LAYOUT, OBJ_KIND } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
 function jsonConstString(ctx, expr) {
@@ -43,7 +43,7 @@ function hashCapFor(n) {
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num', '__mkstr'],
-    __json_val: ['__ptr_type', '__obj_kind', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
+    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
     __json_hash: ['__ptr_offset', '__jput', '__jput_str', '__json_val'],
     __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
     __jput_num: ['__ftoa'],
@@ -193,15 +193,13 @@ export default (ctx) => {
           (br $l)))
         (call $__jput (i32.const 93))  ;; ]
         (return)))
-    ;; MAP — iterate entries: {"key":val,...}
-    (if (i32.eq (local.get $type) (i32.const ${PTR.MAP}))
+    ;; HASH/MAP — iterate entries: {"key":val,...}
+    (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+                (i32.eq (local.get $type) (i32.const ${PTR.MAP})))
       (then (call $__json_hash (local.get $val)) (return)))
-    ;; OBJECT — HASH-kind iterates entries; STATIC-kind uses schema name table
+    ;; OBJECT — schema-based: iterate props with schema name table
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
-      (then
-        (if (i32.eq (call $__obj_kind (local.get $val)) (i32.const ${OBJ_KIND.HASH}))
-          (then (call $__json_hash (local.get $val)) (return)))
-        (call $__json_obj (local.get $val)) (return)))
+      (then (call $__json_obj (local.get $val)) (return)))
     ;; Unknown type → null
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`

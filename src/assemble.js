@@ -482,7 +482,7 @@ export function optimizeModule(sec) {
 export function stripStaticDataPrefix(sec) {
   if (!ctx.runtime.staticDataLen || ctx.core.includes.has('__static_str')) return
   const prefix = ctx.runtime.staticDataLen
-  const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
+  const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
   const data = ctx.runtime.data || ''
   const buf = new Uint8Array(data.length)
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
