@@ -1,0 +1,26 @@
+name: bench-pin
+# Competitive-regression gate (see CONTRIBUTING.md "Performance & size invariant").
+# Runs on every push and PR: jz must stay at least as fast/small as V8,
+# AssemblyScript and Porffor on the bench corpus, and `wasm-opt -Oz` must not
+# find meaningful slack in jz's own output.
+on: [push, pull_request]
+jobs:
+  bench-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      # Competitor toolchains + binaryen (provides wasm-opt).
+      - run: npm install --no-save assemblyscript@~0.27.0 porffor@~0.61.0 binaryen
+      - name: expose toolchains on PATH
+        run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: versions
+        run: |
+          node --version
+          asc --version || true
+          porf --version || true
+          wasm-opt --version || true
+      - run: npm run test:bench-pin

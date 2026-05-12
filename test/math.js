@@ -69,7 +69,11 @@ test('Math.trunc', async () => {
 test('Math.round', async () => {
   is(await evaluate('Math.round(3.5)'), 4)
   is(await evaluate('Math.round(3.4)'), 3)
-  is(await evaluate('Math.round(-3.5)'), -4)
+  is(await evaluate('Math.round(-3.5)'), -3)   // ties toward +∞, not away from zero
+  is(await evaluate('Math.round(-3.6)'), -4)
+  is(await evaluate('Math.round(0.5)'), 1)     // not roundTiesToEven (would give 0)
+  is(await evaluate('Math.round(2.5)'), 3)
+  is(await evaluate('Math.round(-0.5)'), -0)
   is(await evaluate('Math.round(3)'), 3)
 })
 

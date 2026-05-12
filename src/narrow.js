@@ -192,11 +192,20 @@ function enrichCallerValTypesFromPointerParams(callerCtx) {
 function refreshCallerLocals(callerCtx) {
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
+    // Seed pointer-narrowed params' val-kind so analyzeBody recognises e.g.
+    // `n = arr.length` (arr a TYPED/BUFFER pointer param) as an i32 local — without
+    // this, post-G `refreshCallerLocals` still walks bodies with arr untyped, the
+    // length stays f64, and any callee taking that length never gets an i32 param
+    // (heapsort→siftDown's `end`). analyzeFuncForEmit re-seeds + re-invalidates at
+    // emit time, so this transient repByLocal doesn't leak past narrowing.
+    ctx.func.repByLocal = new Map()
+    for (const p of func.sig.params) if (p.ptrKind != null) ctx.func.repByLocal.set(p.name, { val: p.ptrKind })
     invalidateLocalsCache(func.body)
     const fresh = analyzeLocals(func.body)
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
+  ctx.func.repByLocal = null
 }
 
 function resetParamWasmFacts(paramReps) {
@@ -361,10 +370,24 @@ export default function narrowSignatures(programFacts, ast) {
       },
     },
   ])
+  // Transitive ctor/schema propagation down call chains. A naive single-pass
+  // mergeRule poisons a callee's param on the *first* sweep if the caller's own
+  // param (the very thing that supplies the ctor) hasn't been typed yet — and the
+  // poison is sticky, so later sweeps can't recover. Two-pass was the old patch;
+  // it still loses any chain deeper than `main→f→g→h` (e.g. heapsort's siftDown).
+  // Fix: iterate a *soft* merge — propagate known ctors, treat "can't tell yet"
+  // as skip (no poison) — to a fixpoint, then one *hard* validating sweep that
+  // poisons params whose call sites still can't be proven (genuinely-untyped args).
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap) => {
-    runCallsiteLattice([mergeRule(field, (arg, _k, state) =>
-      inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field))
-    )])
+    const infer = (arg, _k, state) => inferFn(arg, elemsCtxMap.get(state.callerFunc), state.callerParamFacts(field))
+    let changed
+    const bump = (r, v) => { if (v == null || r[field] === null) return; const b = r[field]; mergeParamFact(r, field, v); if (r[field] !== b) changed = true }
+    const soft = {
+      missing(r, k, state) { const def = defaultArg(state, k); if (def != null) bump(r, infer(def, k, state)) },
+      apply(r, arg, k, state) { bump(r, infer(arg, k, state)) },
+    }
+    do { changed = false; runCallsiteLattice([soft]) } while (changed)
+    runCallsiteLattice([mergeRule(field, infer)])
   }
   const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArgArrElemSchema, phase.callerElems('arrElemSchemas'))
   const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArgArrElemValType, phase.callerElems('arrElemValTypes'))

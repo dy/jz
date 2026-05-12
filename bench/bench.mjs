@@ -31,6 +31,7 @@ const CASE_NAMES = {
   mandelbrot: 'mandelbrot escape',
   json: 'JSON parse+walk (single literal source)',
   'json-dynamic': 'JSON parse+walk (runtime variant source)',
+  sort: 'in-place heapsort',
   watr: 'watr WAT compiler',
 }
 

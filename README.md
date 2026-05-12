@@ -22,7 +22,7 @@ JZ distills the modern functional core – the "good parts" ([Crockford](https:/
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
-* **Minimal** — output is close to hand-written WAT.
+* **Minimal** — output is close to hand-written WAT; CI gates it to stay at least as small and fast as AssemblyScript and Porffor on the bench corpus ([CONTRIBUTING](CONTRIBUTING.md#performance--size-invariant)).
 <!-- * **Realtime** — compiles faster than `eval`, useful for live-coding and REPL. -->
 
 | Good for                    | Not for                    |

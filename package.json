@@ -24,6 +24,7 @@
     "test262": "node test/test262.js",
     "test262:builtins": "node test/test262-builtins.js",
     "bench": "node bench/bench.mjs",
+    "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "test:bench-pin": "node test/bench-pin.js"
   },

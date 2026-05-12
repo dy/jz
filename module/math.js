@@ -13,7 +13,7 @@
  * @module math
  */
 
-import { typed, asF64, asI32, temp, arrayLoop } from '../src/ir.js'
+import { typed, asF64, asI32, toI32, temp, arrayLoop } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { inc } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
@@ -76,7 +76,22 @@ export default (ctx) => {
     for (const x of rest) r = typed(['f64.max', r, asF64(emit(x))], 'f64')
     return r
   }
-  ctx.core.emit['math.round'] = a => fInt('f64.nearest', a)
+  // f64.nearest is roundTiesToEven; JS Math.round is roundTiesToward+∞. They agree
+  // everywhere except exact half-integers n+0.5 with n even (nearest→n, JS→n+1).
+  // Detect that one case — `nearest(x) === x - 0.5` — and bump by one. (The −0.5→−0
+  // and 0.49999…94→0 edges already match `f64.nearest`.)
+  ctx.core.emit['math.round'] = a => {
+    if (typeof a === 'string' && repOf(a)?.intCertain === true) return asF64(emit(a))
+    const t = temp('rnd'), n = temp('rnd')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(a))],
+      ['local.set', `$${n}`, ['f64.nearest', ['local.get', `$${t}`]]],
+      ['select',
+        ['f64.add', ['local.get', `$${n}`], ['f64.const', 1]],
+        ['local.get', `$${n}`],
+        ['f64.eq', ['local.get', `$${n}`], ['f64.sub', ['local.get', `$${t}`], ['f64.const', 0.5]]]],
+    ], 'f64')
+  }
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
 
   // Sign
@@ -129,8 +144,10 @@ export default (ctx) => {
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
   // store/return boundaries; consumers staying in i32 (bit chains, i32 locals)
   // skip the convert/trunc round-trip entirely.
-  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', asI32(emit(a))], 'i32')
-  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', asI32(emit(a)), asI32(emit(b))], 'i32')
+  // Operands take ECMAScript ToInt32 (wrapping), not saturation — `Math.imul(x, k)`
+  // with a literal k ≥ 2³¹ must wrap to negative, matching JS, not clamp to INT_MAX.
+  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', toI32(emit(a))], 'i32')
+  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
 
   // Random
   ctx.core.emit['math.random'] = () => (inc('math.random'), typed(['call', '$math.random'], 'f64'))
