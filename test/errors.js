@@ -296,6 +296,14 @@ test('error: const reassignment message names the variable', () => {
   ok(error.message.includes('const'), `message should say 'const': ${error.message}`)
 })
 
+test('error: emitted errors include current AST context', () => {
+  let error
+  try { compile('const x = 1; export let f = () => { x = 2; return x }') } catch (e) { error = e }
+  ok(error, 'should throw')
+  ok(error.message.includes('current AST'), `message should include current AST: ${error.message}`)
+  ok(error.message.includes('["=","x"'), `message should include assignment node: ${error.message}`)
+})
+
 test('error: strict mode dynamic property access message', () => {
   let error
   try { compile('export let f = (k) => { let p = { x: 1 }; p[k] = 2; return p[k] }', { strict: true }) } catch (e) { error = e }

@@ -209,6 +209,7 @@ export function reset(proto, globals) {
   ctx.error = {
     src: '',
     loc: null,
+    node: null,
   }
 
   ctx.transform = {
@@ -259,15 +260,42 @@ export function reset(proto, globals) {
 
 /** Throw with source location context. */
 export function err(msg) {
+  let detail = msg
+
   if (ctx.error.loc != null && ctx.error.src) {
     const before = ctx.error.src.slice(0, ctx.error.loc)
     const line = before.split('\n').length
     const col = ctx.error.loc - before.lastIndexOf('\n')
     const src = ctx.error.src.split('\n')[line - 1]
-    const detail = `${msg}\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`
-    const e = new Error(detail)
-    e.stack = `${e.name}: ${detail}\n${e.stack.split('\n').slice(1).join('\n')}`
-    throw e
+    detail += `\n  at line ${line}:${col}\n  ${src}\n  ${' '.repeat(col - 1)}^`
   }
-  throw new Error(msg)
+
+  if (ctx.func.current?.name) {
+    detail += `\n  in function: ${ctx.func.current.name}`
+  }
+
+  if (ctx.error.node != null) {
+    detail += `\n  current AST: ${formatErrorNode(ctx.error.node)}`
+  }
+
+  const e = new Error(detail)
+  const stackLines = e.stack.split('\n')
+  const firstFrame = stackLines.findIndex(line => line.trimStart().startsWith('at '))
+  const frames = firstFrame >= 0 ? stackLines.slice(firstFrame) : stackLines.slice(1)
+  e.stack = `${e.name}: ${detail}\n${frames.join('\n')}`
+  throw e
+}
+
+function formatErrorNode(node) {
+  const seen = new WeakSet()
+  const json = JSON.stringify(node, (_key, value) => {
+    if (typeof value === 'bigint') return `${value}n`
+    if (typeof value === 'symbol') return value.toString()
+    if (Array.isArray(value)) {
+      if (seen.has(value)) return '[Circular]'
+      seen.add(value)
+    }
+    return value
+  })
+  return json.length > 2000 ? `${json.slice(0, 2000)}...` : json
 }
