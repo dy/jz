@@ -225,8 +225,8 @@ export default (ctx) => {
       '__ptr_offset',
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
-    __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', '__set_len'],
-    __arr_push1: ['__arr_grow_known', '__ptr_offset', '__set_len'],
+    __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
+    __arr_push1: ['__arr_grow_known', '__ptr_offset'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
       ? ['__len']
       : ['__len', '__ptr_offset'],
@@ -472,8 +472,8 @@ export default (ctx) => {
                   (i32.load (i32.sub (local.get $base) (i32.const 8))))
       (then
         (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
-        (call $__set_len (i64.reinterpret_f64 (local.get $p)) (i32.add (local.get $i) (i32.const 1)))
-        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
+        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))
+        (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $i) (i32.const 1)))))
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
@@ -492,7 +492,7 @@ export default (ctx) => {
         (local.set $p (call $__arr_grow_known (local.get $ptr) (i32.add (local.get $len) (i32.const 1))))
         (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
     (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
-    (call $__set_len (i64.reinterpret_f64 (local.get $p)) (i32.add (local.get $len) (i32.const 1)))
+    (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (local.get $p))`
 
   // === Array literal ===
@@ -821,8 +821,10 @@ export default (ctx) => {
       )
     }
 
-    // Update length header, update source variable (pointer may have changed from grow), return new length
-    body.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]])
+    // Update length header (write directly via the offset we already hold —
+    // skips __set_len's tag/forward dispatch), update source variable (pointer
+    // may have changed from grow), return new length
+    body.push(['i32.store', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]], ['local.get', `$${len}`]])
     // Update the source variable if it's a named variable (so arr still points to valid memory)
     if (typeof arr === 'string') {
       if (ctx.func.boxed?.has(arr)) {
@@ -940,8 +942,8 @@ export default (ctx) => {
         ['i32.shl',
           ['i32.sub', ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]], ['local.get', `$${cnt}`]],
           ['i32.const', 3]]],
-      // update length
-      ['call', '$__set_len', ['i64.reinterpret_f64', va], ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
+      // update length (write directly via the offset we already hold)
+      ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
       out.ptr,
     ]
     return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -961,7 +963,7 @@ export default (ctx) => {
       (local.get $off)
       (i32.shl (local.get $len) (i32.const 3)))
     (f64.store (local.get $off) (local.get $val))
-    (call $__set_len (i64.reinterpret_f64 (local.get $a)) (i32.add (local.get $len) (i32.const 1)))
+    (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (f64.convert_i32_s (i32.add (local.get $len) (i32.const 1))))`
 
   // .some(fn) → return 1 if any element passes, else 0 (early exit)
