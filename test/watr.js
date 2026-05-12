@@ -380,3 +380,11 @@ test('watr-regression: ref_test_null_data returns 2', () => {
   is(exports.ref_test_null_data(1), 2)
   is(exports.ref_test_null_data(2), 2)
 })
+
+// ─── Bug 4: v128.const i64x2 encodes as f64 (simd const / simd i64x2) ───
+// jz-compiled watr treats i64x2 lane values as f64 instead of i64,
+// producing wrong bytes for large values like 0xffffffffffffffff.
+test('watr-regression: v128.const i64x2 encodes correctly', () => {
+  sameWasm('v128.const i64x2 max/min', `(module
+    (global v128 (v128.const i64x2 0xffffffffffffffff -9223372036854775808)))`)
+})

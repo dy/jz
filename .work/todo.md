@@ -72,34 +72,36 @@
 
 ### Performance — closing the V8 gap
 
-* [ ] SIMD auto-vectorization for typed-array reductions (auto-vectorize obvious cases; explicit SIMD already exists)
-* [ ] Profile-guided specialization
-  * [ ] `jz(src, { profile: true })` instruments every function entry to log argument types
-  * [ ] Run program with representative input
-  * [ ] Recompile with type-set per function → emit specialized variants + dispatch
-  * [ ] Cap N specializations (~4) to avoid code bloat
+* [x] SIMD auto-vectorization for typed-array reductions — `tryReduceVectorize` in `src/vectorize.js` (add/xor/and/or i32/i64/f32, f64.add; splat→vector loop→horizontal fold→scalar tail)
+* ~~Profile-guided specialization~~ — dropped. Contradicts the AOT/no-runtime pitch, risks code bloat, and whole-program static narrowing (`narrow.js`, bimorphic typed-array cloning) already covers most of it.
 
 ### Performance — closing the native-language gap
 
-* [ ] Stack allocation for fixed-size typed arrays (mat4/biquad/aos — `localArr(f64, 16)` IR, spill on escape)
-* [ ] Partial unroll + vector body instead of full unroll (mat4: keep `r` loop, vectorize `k` with `f64x2`)
-* [ ] json arena/raw-u8 fast path — biggest remaining structural gap; needs parser value-shape redesign
+* [ ] **Stack allocation / scalar-replacement for fixed-size typed arrays** (mat4/biquad/aos — `localArr(f64, 16)` IR, spill on escape). Highest-value remaining perf item: directly speeds up color-space + digital-filter kernels; extends the existing array/object escape-analysis + arena-rewind machinery rather than building new infra.
+* [ ] Partial unroll + vector body instead of full unroll (mat4: keep `r` loop, vectorize `k` with `f64x2`) — medium value, mat4-specific
+* [ ] json arena/raw-u8 fast path — biggest remaining structural gap; needs parser value-shape redesign. Worth it only if JSON throughput becomes a headline use case.
 
-### i64-tagged carrier switch (NaN-boxing replacement)
+### i64-tagged carrier switch (NaN-boxing replacement) — ~70% done
 
-* [ ] Switch wasm-export ABI from f64 → i64 for boxed-result paths (synthesizeBoundaryWrappers + direct exports)
-* [ ] Switch internal stdlib boxed-value sigs (`__dyn_get`, etc.) from f64 to i64 module-by-module
-* [ ] Lay out new bit scheme (type:8 / aux:24 / offset:32); update extractors and analysis facts
-* [ ] Audit and remove obsolete f64-NaN-payload literals from `module/*`
-* [ ] Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags
-* [ ] Rewrite `__same_value_zero` / `__str_eq` to pure `i64.eq`
+* [x] Switch wasm-export ABI from f64 → i64 for boxed-result paths — `synthesizeBoundaryWrappers` (per-param/result `ptrKind` → i64), `jz:i64exp` custom section
+* [x] Switch internal stdlib boxed-value sigs (`__dyn_get`/`__dyn_set`/`__dyn_get_or` etc.) from f64 to i64 — already pure i64 (`module/collection.js`, `module/core.js`)
+* [x] `__str_eq` rewritten to i64 params + `i64.eq` fast path (`module/string.js`)
+  * `__same_value_zero` cannot reduce to pure `i64.eq` — must branch on NaN / ±0 / strings (subtask was mis-specified)
+* [ ] Lay out new bit scheme (type:8 / aux:24 / offset:32) — still `type:4 @bit47, aux:15 @bit32`. Risky carrier refactor; only payoff is headroom (more schemaId bits, more elem tags). Deferred — no user value today.
+* [ ] Audit and remove obsolete f64-NaN-payload literals from `module/*` (only relevant once bit scheme changes)
+* [ ] Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags (depends on bit scheme)
 
 ### Size / watr gap
 
-* [ ] Post-link DCE/inlining or wasm-opt integration for large generated modules
-* [ ] Source/runtime array-view optimization for local queue-style arrays (`normalize()`)
-* [ ] Callback/combinator lowering for `.map/.filter/.reduce/.flatMap` when callback is local and non-escaping
-* [ ] Dynamic object/property-shape specialization for watr context (reduce `__dyn_get` / `__dyn_set` / `__is_str_key` volume)
+* [x] Post-link DCE/inlining — `watrOptimize` (CSE/DCE/inline, opt-in at optimize level 3); module `treeshake()` always runs. No Binaryen needed.
+* [x] Callback/combinator lowering for `.map/.filter/.reduce/.forEach` — callbacks inlined into loops; **6-way chain fusion** (`filter→map`, `map→filter`, `map→reduce`, `filter→reduce`, `map→forEach`, `filter→forEach`) in `module/array.js`. `.flatMap` partial (map step inlined, flatten is a runtime call → fuse the flatten too).
+* [ ] Source/runtime array-view optimization for local queue-style arrays (`normalize()`) — needs source refactor or escape-analysis extension
+* [ ] Dynamic object/property-shape specialization for watr context (reduce `__dyn_get` / `__dyn_set` / `__is_str_key` volume) — only static narrowing exists today (schema-slot access, `__is_str_key` elision); relevant mainly for metacircular-watr size
+
+### watr regression — `v128.const i64x2` (jz-compiled watr)
+
+* [x] **Fixed: dynamic function-property lookup collided no-capture closures.** All no-capture named-function closures carry NaN-box `offset = 0`; the global `__dyn_props` hash keyed by offset, so `i64.parse = …`, `i32.parse = …`, `f64.parse = …`, `f32.parse = …` all overwrote one slot — any *dynamic* `obj[k].parse(...)` returned the last-assigned (`f64.parse`). watr's `v128const` does `arr[j] = encode[t].parse(...)` with dynamic `t`, so i64x2 lanes got parsed by `f64.parse` → f64 bytes. Fix: `__dyn_get_t`/`__dyn_set` now re-key the global hash on `-1 - aux` (function table index, negative — can't alias real heap/data offsets) when type is `PTR.CLOSURE` and offset is 0; env-bearing closures keep their unique env-ptr key. Pinned by `test/watr.js` "watr-regression: v128.const i64x2 encodes correctly".
+* [ ] Latent (separate, not the regression): trampoline arity bug — uniform closure-table signature is sized by `ctx.closure.width` (max *call-site* arity), but the boundary trampolines for first-class function values reference `$__a${i}` up to the *function's* arity. A function with more params than `width` (e.g. `encode.f32(input, value, idx)`, arity 3, in a program whose closure calls never pass 3 args) emits `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2`. Fix: `width = max(callSiteArities, tableResidentFnArities)`. Not triggered by the watr suite (full build's width is already ≥3).
 
 
 ## Ideas

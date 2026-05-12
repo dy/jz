@@ -671,6 +671,12 @@ export default (ctx) => {
     (local $poff i32) (local $pcap i32) (local $h i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
+    ;; global __dyn_props hash on the function table index (negative — can't collide
+    ;; with real heap/data offsets). Closures *with* env keep their unique env ptr.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
+      (then (local.set $off (i32.sub (i32.const -1)
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
@@ -809,6 +815,10 @@ export default (ctx) => {
     (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; CLOSURE with no env (offset 0): key __dyn_props on the function table index — see __dyn_get_t.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
+      (then (local.set $off (i32.sub (i32.const -1)
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))))))
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
         (block $done
