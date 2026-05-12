@@ -678,7 +678,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__dyn_get_t_h'] = () => `(func $__dyn_get_t_h (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32)
-    (local $poff i32) (local $pcap i32) (local $idx i32) (local $slot i32) (local $tries i32)
+    (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
     ${buildObjectSchemaLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; CLOSURE with no env (offset 0): many function refs share offset 0, so key the
@@ -751,13 +751,14 @@ export default (ctx) => {
                 (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props))))))))
       (local.set $poff (i32.wrap_i64 (i64.and (local.get $props) (i64.const ${LAYOUT.OFFSET_MASK}))))
       (local.set $pcap (i32.load (i32.sub (local.get $poff) (i32.const 4))))
-      (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))))
+      (local.set $pend (i32.add (local.get $poff) (i32.mul (local.get $pcap) (i32.const ${MAP_ENTRY}))))
+      (local.set $slot (i32.add (local.get $poff) (i32.mul (i32.and (local.get $h) (i32.sub (local.get $pcap) (i32.const 1))) (i32.const ${MAP_ENTRY}))))
       (block $hdone (loop $hprobe
-        (local.set $slot (i32.add (local.get $poff) (i32.mul (local.get $idx) (i32.const ${MAP_ENTRY}))))
         (br_if $dynDone (i64.eqz (i64.load (local.get $slot))))
         (if (call $__str_eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))
           (then (return (i64.load (i32.add (local.get $slot) (i32.const 16))))))
-        (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $pcap) (i32.const 1))))
+        (local.set $slot (i32.add (local.get $slot) (i32.const ${MAP_ENTRY})))
+        (if (i32.ge_u (local.get $slot) (local.get $pend)) (then (local.set $slot (local.get $poff))))
         (local.set $tries (i32.add (local.get $tries) (i32.const 1)))
         (br_if $hdone (i32.ge_s (local.get $tries) (local.get $pcap)))
         (br $hprobe))))${buildObjectSchemaArm()}
