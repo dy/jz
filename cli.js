@@ -45,7 +45,7 @@ Options:
                             3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
   --host <js|wasi>          Runtime-service lowering (default js)
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
-  --names                   Emit wasm `name` section for profilers/debuggers
+  --names                   Emit wasm name section for profilers/debuggers
   --strict                  Strict jz mode (no auto-transform), reject dynamic fallbacks
   --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file

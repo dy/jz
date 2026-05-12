@@ -82,7 +82,16 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 
 ```sh
 # Compile
-jz program.js # → program.wasm
+jz program.js              # → program.wasm
+jz program.js --wat        # → program.wat
+jz program.js -o out.wasm  # custom output (- for stdout)
+
+# Optimization level: -O0 off, -O1 size-only, -O2 default, -O3 aggressive
+# aliases: -Os/--optimize size, -Ob/balanced, -Of/speed
+jz program.js -O3
+
+# Runtime-service lowering: js (default) or wasi
+jz program.js --host wasi
 
 # Evaluate
 jz -e "1 + 2" # 3
@@ -90,6 +99,8 @@ jz -e "1 + 2" # 3
 # Show help
 jz --help
 ```
+
+Other flags: `--strict` (no auto-`jzify`, reject dynamic fallbacks), `--jzify` (transform JS → jz, no compile), `--no-alloc` (omit `_alloc`/`_clear`), `--names` (emit wasm `name` section), `--resolve` (Node.js bare-specifier resolution), `--imports <file.json>` (host import specs).
 
 ## Language
 
