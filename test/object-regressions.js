@@ -28,6 +28,14 @@ test('Regression: Object.assign extends target with new fields', () => {
   is(f(), 6)
 })
 
+test('Regression: property read does not call method emitter with same name', () => {
+  const { f } = run(`export let f = () => {
+    let item = {}
+    return item.add ?? 7
+  }`)
+  is(f(), 7)
+})
+
 test('Regression: mem.write partial object update preserves omitted fields', async () => {
   const r = await WebAssembly.instantiate(compile(`
     export let make = () => ({x: 1, y: 2, z: 3})
