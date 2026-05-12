@@ -326,8 +326,11 @@ const handlers = {
 
   // new → call (keep TypedArrays)
   'new'(ctor, ...cargs) {
+    if (Array.isArray(ctor) && ctor[0] === '()' && Array.isArray(ctor[1]) && ctor[1][0] === '.') {
+      return ['()', ['.', transform(['new', ctor[1][1]]), ctor[1][2]], ...ctor.slice(2).map(transform)]
+    }
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-    if (typeof name === 'string' && TYPED_ARRAYS.has(name)) return ['new', transform(ctor), ...cargs.map(transform)]
+    if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array')) return ['new', transform(ctor), ...cargs.map(transform)]
     if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
     return ['()', transform(ctor), ...cargs.map(transform)]
   },

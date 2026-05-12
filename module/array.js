@@ -247,6 +247,16 @@ export default (ctx) => {
       ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.ARRAY]]], 'i32')
   }
 
+  ctx.core.emit['new.Array'] = (len) => {
+    const n = tempI32('alen')
+    const nIR = ['local.get', `$${n}`]
+    const out = allocPtr({ type: PTR.ARRAY, len: nIR, cap: nIR, tag: 'newarr' })
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${n}`, len == null ? ['i32.const', 0] : asI32(emit(len))],
+      out.init,
+      out.ptr], 'f64')
+  }
+
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
   // the redundant double pass through __len then __ptr_offset that both follow forwarding.
   ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr i64) (param $i i32) (result f64)
