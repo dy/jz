@@ -10,6 +10,7 @@ const TESTS = [
   'data',
   'destruct',
   'closures',
+  'classes',
   'methods',
   'features',
   'feature-gating',

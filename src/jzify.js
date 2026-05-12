@@ -26,6 +26,7 @@ export default function jzify(ast) {
   swIdx = 0
   argsIdx = 0
   doIdx = 0
+  classIdx = 0
   // Hoist module-level vars: any `var x` inside nested blocks bubbles up.
   const names = new Set()
   ast = hoistVars(ast, names)
@@ -152,6 +153,8 @@ function transformScope(node) {
 
   // Single named function-statement at scope position: hoist as const arrow
   if (op === 'function' && args[0]) return hoistFnDecl(...args)
+  // Single statement-form class declaration: bind the factory (no hoisting — classes are TDZ)
+  if (op === 'class' && args[0]) return ['let', ['=', args[0], lowerClass(...args)]]
 
   // Statement sequence: collect hoisted functions
   if (op === ';') {
@@ -180,6 +183,11 @@ function transformScope(node) {
       // Statement-form named function declaration: hoist directly (skip expression handler)
       if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
         hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
+        continue
+      }
+      // Statement-form class declaration: bind the factory in place (not hoisted — TDZ)
+      if (Array.isArray(stmt) && stmt[0] === 'class' && stmt[1]) {
+        rest.push(['let', ['=', stmt[1], lowerClass(stmt[1], stmt[2], stmt[3])]])
         continue
       }
       const t = transform(stmt)
@@ -302,6 +310,103 @@ function prependParamDecls(decl, body) {
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
 
+// === class lowering ===
+//
+// A class is lowered to a factory arrow. Instance state is a plain object;
+// methods are per-instance arrows capturing it (so `obj.m()` keeps working
+// without a separate `this` argument); `this` is renamed to that object;
+// `new C(a)` is already turned into `C(a)` by the `new` handler.
+//
+//   class Point { x = 0; y; constructor(a,b){ this.x = a; this.y = b }
+//                 dist(){ return Math.hypot(this.x, this.y) } }
+//   →
+//   let Point = (a, b) => {
+//     let selfN = { x: undefined, y: undefined,
+//                         dist: () => Math.hypot(selfN.x, selfN.y) }
+//     selfN.x = 0          // field initializers, in declaration order
+//     selfN.x = a          // then the constructor body
+//     selfN.y = b
+//     return selfN
+//   }
+//
+// Out of scope for now (rejected with a clear message): `extends`/`super`,
+// `static` members, getters/setters, computed/private-via-`#` member names are
+// kept as the literal key string `#name` (jz allows it).
+let classIdx = 0
+
+const classBodyItems = (body) =>
+  body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+
+// Rename `this` → `to`, not crossing into a nested `function`/`class` (those
+// rebind `this`); arrows inherit `this`, so they are crossed. Property *names*
+// (`obj.this`, `{this: …}` value-side only) are left alone.
+function renameThis(node, to) {
+  if (node === 'this') return to
+  if (!Array.isArray(node)) return node
+  if (node[0] === 'function' || node[0] === 'class') return node
+  if (node[0] === '.' || node[0] === '?.') return [node[0], renameThis(node[1], to), node[2]]
+  if (node[0] === ':') return [node[0], node[1], renameThis(node[2], to)]
+  return node.map(n => renameThis(n, to))
+}
+
+function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
+
+function lowerClass(name, heritage, body) {
+  if (heritage != null) jzifyError('`class … extends …` is not supported yet — flatten the hierarchy or compose explicitly')
+  let ctorParams = null, ctorBody = null
+  const methods = [], fields = []
+  for (const it of classBodyItems(body)) {
+    if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
+    if (!Array.isArray(it)) continue
+    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
+      if (typeof it[1] !== 'string') jzifyError('computed class member names are not supported')
+      if (it[1] === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
+      else methods.push([it[1], it[2][1], it[2][2]])
+      continue
+    }
+    if (it[0] === '=') {
+      const lhs = it[1]
+      if (Array.isArray(lhs) && lhs[0] === 'static') jzifyError('`static` class members are not supported yet')
+      if (typeof lhs !== 'string') jzifyError('computed/destructured class fields are not supported')
+      fields.push([lhs, it[2]])
+      continue
+    }
+    if (it[0] === 'get' || it[0] === 'set') jzifyError('class getters/setters are not supported — jz objects have no accessors')
+    if (it[0] === 'static') jzifyError('`static` class members are not supported yet')
+    jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
+  }
+  const self = `self${classIdx++}`
+  const UNDEF = []                                  // jessie's node for `undefined`
+  // A class member body from jessie is a bare statement / `;`-sequence — wrap it
+  // in a `{}` block so the `=>` handler treats it as a function body, not an
+  // expression (an unwrapped `;`-seq arrow body produces malformed IR).
+  const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
+  const usesThis = n => n === 'this' || (Array.isArray(n) && n[0] !== 'function' && n[0] !== 'class' && n.some(usesThis))
+  // Object literal: every declared field (its initializer inline when it doesn't
+  // touch `this`, else `undefined` and assigned below), every method as its
+  // self-capturing arrow. Declaring all fields up front fixes the object shape.
+  const litProps = [], deferred = []
+  for (const [fname, init] of fields) {
+    if (init != null && !usesThis(init)) litProps.push([':', fname, transform(init)])
+    else { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
+  }
+  for (const [mname, mparams, mbody] of methods)
+    litProps.push([':', mname, transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
+  const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
+  const stmts = [['let', ['=', self, lit]]]
+  // `this`-dependent field initializers run, in declaration order, before the ctor.
+  for (const [fname, init] of deferred)
+    stmts.push(['=', ['.', self, fname], transform(renameThis(init, self))])
+  if (ctorBody != null) {
+    let cb = transform(renameThis(ctorBody, self))
+    if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
+    if (Array.isArray(cb) && cb[0] === ';') stmts.push(...cb.slice(1).filter(s => s != null))
+    else if (cb != null) stmts.push(cb)
+  }
+  stmts.push(['return', self])
+  return ['=>', arrowParams(ctorParams ?? ['()', null]), ['{}', [';', ...stmts]]]
+}
+
 const handlers = {
   // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
   '()'(callee, ...rest) {
@@ -332,6 +437,11 @@ const handlers = {
     const [p2, b2] = lowerArguments(params, body)
     return ['=>', p2, transform(b2)]
   },
+
+  // Class in expression position → its factory arrow. (A named class
+  // expression's own inner binding is dropped — rare; statement-form
+  // `class C {}` is handled by transformScope, which keeps the binding.)
+  'class'(name, heritage, body) { return lowerClass(name, heritage, body) },
 
   // `var` is hoisted away before transform reaches here. If one slips through
   // (e.g. raw subscript output without going via jzify entry/wrapArrowBody),
@@ -382,7 +492,9 @@ const handlers = {
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
     if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array')) return ['new', transform(ctor), ...cargs.map(transform)]
     if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
-    return ['()', transform(ctor), ...cargs.map(transform)]
+    // `new C(a)` → `C(a)`; `new C` (no parens) → `C()` — a 2-element `['()', X]`
+    // is grouping parens, so a no-arg call needs the explicit `null` arg slot.
+    return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]
   },
 
   // instanceof → typeof / Array.isArray (jzify allows what strict mode prohibits)
@@ -416,9 +528,16 @@ const handlers = {
     if (Array.isArray(inner) && inner[0] === 'function' && inner[1]) {
       return ['export', hoistFnDecl(inner[1], inner[2], inner[3])]
     }
+    // `export class C {}` → `export let C = factory`; named class keeps its binding.
+    if (Array.isArray(inner) && inner[0] === 'class' && inner[1]) {
+      return ['export', ['let', ['=', inner[1], lowerClass(inner[1], inner[2], inner[3])]]]
+    }
     if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'function' && inner[1][1]) {
       const decl = hoistFnDecl(inner[1][1], inner[1][2], inner[1][3])
       return [';', decl, ['export', ['default', inner[1][1]]]]
+    }
+    if (Array.isArray(inner) && inner[0] === 'default' && Array.isArray(inner[1]) && inner[1][0] === 'class' && inner[1][1]) {
+      return [';', ['let', ['=', inner[1][1], lowerClass(inner[1][1], inner[1][2], inner[1][3])]], ['export', ['default', inner[1][1]]]]
     }
     return ['export', transform(inner)]
   },

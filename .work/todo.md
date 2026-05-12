@@ -238,7 +238,9 @@
 * [x] Fix optional catch binding parser support (`catch { ... }`)
 * [x] Add/enable simple `for-in` coverage
 * [x] Revisit broader `arguments-object` coverage — closed
-* [x] Keep broad unsupported buckets out of scope (`async`, `class`, `this`, generators, iterators, `with`, `super`, dynamic import)
+* [x] Keep broad unsupported buckets out of scope (`async`, generators, iterators, `with`, `super`, dynamic import)
+* [x] `class` lowering via jzify (constructor + instance fields + methods + `new` + `this`, no `extends`/`super`/`static`/accessors/computed names — rejected with clear errors). Instance = plain object, methods = per-instance arrows capturing it, `this` renamed to that object, `new C(a)` → `C(a)`. `test/classes.js` + `language/{expressions,statements}/class/` wired into the test262 runner with a feature-skip pass (`isClassTest`/`CLASS_EXCLUDED_PATTERNS`): +125 passing class tests, 0 failing.
+  * [ ] Known limitation (pre-existing jz core, surfaced more often by classes): `new C().get()` chained directly on a `new`/call expression crashes when the method name is a collection method (`get`/`set`/`has`/`add`/`delete`) — `emit.js` dispatches `.get()` on an untyped receiver to the Map/Set emitter, which then `emit(undefined)`s the missing key arg → "expected emitted IR value, got empty value". Workaround: `let c = new C(); c.get()` (a typed local hits schema dispatch). Real fix: don't pick a collection-method emitter for an untyped receiver when arg count doesn't match / a closure-call path exists.
 
 ### Core infrastructure
 

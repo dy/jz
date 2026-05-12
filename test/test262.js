@@ -148,6 +148,18 @@ const EXCLUDED_PATTERNS = [
   /\bdelete\b/,
 ]
 
+// `class` (and the `this` it implies) is lowered by jzify into plain objects +
+// arrow-captured methods — but only the desugarable subset. For test files under
+// `language/{expressions,statements}/class/` we apply a narrower exclusion list
+// (no blanket `this`/`class` ban) plus a feature-skip pass below.
+const CLASS_EXCLUDED_PATTERNS = [
+  /async/i, /await/, /generator/i, /yield/, /\bsuper\b/, /reflect/i, /proxy/i,
+  /\bnew\b.*\btarget\b/, /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
+  /iterator/i, /\bSymbol\b/, /for[\s-]*of/i, /regexp/i,
+  /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/, /\bdelete\b/,
+]
+const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
+
 // Quick mode: limit tests per subdirectory
 const QUICK = process.argv.includes('--quick')
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
@@ -327,6 +339,24 @@ function shouldSkip(content, rel = '') {
   if (rel.endsWith('/computed-property-names/to-name-side-effects/object.js')) return 'computed method shorthand outside current jz scope'
   // Regex literal in statement list — regex outside jz scope.
   if (/\/statementList\/block-(regexp-literal|with-statment-regexp-literal)\.js$/.test(rel)) return 'regexp literal outside current jz scope'
+  // Class tests: jzify lowers the desugarable subset only — skip the rest.
+  if (isClassTest(rel)) {
+    if (rel.includes('/elements/wrapped-in-sc-')) return 'class in single-statement context parser gap'
+    if (/\bextends\b/.test(codeContent) || /\bextends\b/.test(content)) return 'class extends/super outside jzify subset'
+    if (/\bstatic\b/.test(codeContent)) return 'static class members outside jzify subset'
+    if (/(^|[};{)\s])get\s+[\w$#\[]/.test(codeContent) || /(^|[};{)\s])set\s+[\w$#\[]/.test(codeContent)) return 'class accessors outside fixed-shape subset'
+    if (/(^|\n)\s*(static\s+)?\*?\s*\[[^\]\n]+\]\s*(=|;|\(|$)/m.test(codeContent)) return 'computed class member name outside fixed-shape subset'
+    if (/(^|\n)\s*\*\s*[\w$\[]/m.test(codeContent)) return 'generator method outside jzify subset'
+    if (/#\w+\s*\(/.test(codeContent)) return 'private method outside jzify subset'
+    if (/typeerror|abrupt-completion|init-err|evaluation-error/i.test(rel)) return 'class initializer/name error semantics outside jzify subset'
+    if (/private-field-(access-on-inner|on-nested)|privatefieldget|privatefieldset/i.test(rel)) return 'private field access semantics outside jzify subset'
+    if (/\bnew\.target\b/.test(codeContent)) return 'new.target outside jzify subset'
+    if (/\.name\b/.test(codeContent) || /\.length\b/.test(codeContent)) return 'class function reflection unsupported'
+    if (/__proto__|\bprototype\b/.test(codeContent)) return 'prototype reflection outside jzify subset'
+    if (/Object\.(getPrototypeOf|setPrototypeOf|getOwnPropertyDescriptor|defineProperty|keys|getOwnPropertyNames|create|freeze)/.test(codeContent)) return 'object reflection outside jzify subset'
+    if (CLASS_EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
+    // fall through to the harness/negative-test filters below
+  } else
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
