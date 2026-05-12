@@ -48,6 +48,14 @@ const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHI
  *   2 — default. Stable jz passes (every pass with benchmark proof). watr disabled
  *       by default — adds ~2s compile time for identical runtime performance.
  *   3 — aggressive experimental passes in addition to level 2.
+ *
+ * String aliases (the size↔speed tradeoff lives entirely in the unroll/scalar
+ * knobs, so the aliases just dial those):
+ *   'size'     — level 2 with loop/const unroll + lane vectorization off and tight
+ *                scalar-replacement caps. Smallest wasm; still fully optimized.
+ *   'balanced' — the default (= level 2).
+ *   'speed'    — level 2 with full nested unroll + lane vectorization on (= level 3
+ *                minus the heavy third-party watr pass).
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -81,6 +89,14 @@ const LEVEL_PRESETS = Object.freeze({
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
   2: Object.freeze({ ...ALL_ON, watr: false, nestedSmallConstForUnroll: 'auto' }),
   3: ALL_ON,
+  // Named aliases — dial the size↔speed knobs on top of the level-2 base.
+  balanced: Object.freeze({ ...ALL_ON, watr: false, nestedSmallConstForUnroll: 'auto' }),
+  size: Object.freeze({
+    ...ALL_ON, watr: false,
+    smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
+    scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
+  }),
+  speed: Object.freeze({ ...ALL_ON, watr: false }),
 })
 
 /**
@@ -89,15 +105,17 @@ const LEVEL_PRESETS = Object.freeze({
  *   resolveOptimize(undefined | true)         → level 2 stable defaults
  *   resolveOptimize(false | 0)                → all off
  *   resolveOptimize(1 | 2 | 3)                → preset for that level
+ *   resolveOptimize('size' | 'speed' | 'balanced') → named alias preset
  *   resolveOptimize({ level: 1, watr: true }) → level 1 base, with watr forced on
+ *   resolveOptimize({ level: 'size', vectorizeLaneLocal: true }) → 'size' base, override
  *   resolveOptimize({ hoistAddrBase: false }) → level 2 base, hoistAddrBase off
  */
 export function resolveOptimize(opt) {
   if (opt === false || opt === 0) return { ...ALL_OFF }
   if (opt === true || opt == null) return { ...LEVEL_PRESETS[2] }
-  if (typeof opt === 'number') return { ...(LEVEL_PRESETS[opt] || ALL_ON) }
+  if (typeof opt === 'number' || typeof opt === 'string') return { ...(LEVEL_PRESETS[opt] || LEVEL_PRESETS[2]) }
   if (typeof opt === 'object') {
-    const baseLevel = typeof opt.level === 'number' ? opt.level : 2
+    const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[baseLevel] || ALL_ON
     const out = { ...base }
     for (const n of PASS_NAMES) if (n in opt) out[n] = n === 'nestedSmallConstForUnroll' && opt[n] === 'auto' ? 'auto' : !!opt[n]

@@ -68,7 +68,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `imports: { mod: host }` | Wire host namespaces/functions used by `import { fn } from "mod"`; functions may be plain JS functions or `{ fn, returns }` specs. |
 | `memory` | Pass `memory: N` to create owned memory with `N` initial pages, or pass `memory: jz.memory()` / `WebAssembly.Memory` to share memory across modules. |
 | `host: 'js' \| 'wasi'` | Select runtime-service lowering. Default `js` uses small `env.*` imports auto-wired by `jz()`; `wasi` emits WASI Preview 1 imports for wasmtime/wasmer/deno. |
-| `optimize` | `false`/`0` disables optimization, `1` keeps cheap size passes, `true`/`2` is the default, `3` enables aggressive experimental passes, object form overrides individual passes. |
+| `optimize` | `false`/`0` disables optimization, `1` keeps cheap size passes, `true`/`2` is the default, `3` enables aggressive experimental passes. String aliases `'size'` (unroll/vectorize off, tight scalar caps — smallest wasm), `'balanced'` (= default), `'speed'` (full unroll + SIMD). Object form overrides individual passes/knobs (and accepts `level:` as a number or alias base). |
 | `strict: true` | Reject dynamic fallbacks such as unknown receiver method calls, `obj[k]`, and `for-in` instead of emitting JS-host dynamic dispatch. |
 | `alloc: false` | Omit raw allocator exports like `_alloc`/`_clear` when compiling standalone WASM that never marshals heap values across the host boundary. |
 | `wat: true` | `compile()` returns WAT text instead of a WASM binary. |

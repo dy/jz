@@ -845,6 +845,29 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(resolveOptimize(undefined).watr, false)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
+  // string aliases
+  const balanced = resolveOptimize('balanced')
+  for (const n of PASS_NAMES) is(balanced[n], resolveOptimize(2)[n], `'balanced': ${n} matches level 2`)
+  const size = resolveOptimize('size')
+  is(size.watr, false)
+  is(size.smallConstForUnroll, false)
+  is(size.nestedSmallConstForUnroll, false)
+  is(size.vectorizeLaneLocal, false)
+  is(size.treeshake, true)
+  is(size.scalarTypedArrayLen, 8)
+  is(size.scalarTypedLoopUnroll, 4)
+  const speed = resolveOptimize('speed')
+  is(speed.watr, false)
+  is(speed.vectorizeLaneLocal, true)
+  is(speed.nestedSmallConstForUnroll, true)
+  is(speed.smallConstForUnroll, true)
+  // unknown string falls back to level 2
+  is(resolveOptimize('bogus').sourceInline, true)
+  // object with string level base + override
+  const sizePlusVec = resolveOptimize({ level: 'size', vectorizeLaneLocal: true })
+  is(sizePlusVec.vectorizeLaneLocal, true)
+  is(sizePlusVec.smallConstForUnroll, false)
+  is(sizePlusVec.scalarTypedArrayLen, 8)
 })
 
 test('opts.optimize: false produces correct output (semantics preserved)', () => {
