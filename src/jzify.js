@@ -264,8 +264,14 @@ function paramList(params) {
   return [params]
 }
 
+// Destructuring pattern as a parameter — `[a,b]` / `{a,b}` (optionally with a
+// default). Plain `=` defaults and `...rest` are handled natively by emit, so
+// they don't by themselves force lowering.
+const isDestructurePat = p => Array.isArray(p) && (p[0] === '[]' || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))
+
 function lowerArguments(params, body) {
-  if (!usesArguments(params) && !usesArguments(body)) return [params, body]
+  const paramsNeedLowering = paramList(params).some(isDestructurePat)
+  if (!paramsNeedLowering && !usesArguments(params) && !usesArguments(body)) return [params, body]
   const name = `\uE001arg${argsIdx++}`
   const decls = []
   for (const [idx, param] of paramList(params).entries()) {
@@ -280,7 +286,18 @@ function lowerArguments(params, body) {
     decls.push(['=', param, ['[]', name, [null, idx]]])
   }
   const renamed = renameArguments(body, name)
-  return [['()', ['...', name]], decls.length ? [';', ['let', ...decls], renamed] : renamed]
+  return [['()', ['...', name]], decls.length ? prependParamDecls(['let', ...decls], renamed) : renamed]
+}
+
+function prependParamDecls(decl, body) {
+  if (Array.isArray(body) && body[0] === '{}') {
+    const inner = body[1]
+    if (Array.isArray(inner) && inner[0] === ';') return ['{}', [';', decl, ...inner.slice(1)]]
+    if (inner == null) return ['{}', decl]
+    return ['{}', [';', decl, inner]]
+  }
+  if (Array.isArray(body) && (body[0] === ';' || body[0] === 'return')) return [';', decl, body]
+  return ['{}', [';', decl, ['return', body]]]
 }
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
@@ -309,6 +326,11 @@ const handlers = {
       ]]]], null]
     }
     return arrow
+  },
+
+  '=>'(params, body) {
+    const [p2, b2] = lowerArguments(params, body)
+    return ['=>', p2, transform(b2)]
   },
 
   // `var` is hoisted away before transform reaches here. If one slips through
