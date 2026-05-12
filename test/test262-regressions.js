@@ -114,6 +114,16 @@ test('regression: jzify lowers destructured arrow params with expression object 
   is(exports._run(), 3, 'destructured arrow callback returning object literal compiles')
 })
 
+test('regression: jzify groups conditional array spread', () => {
+  const exports = run(`export let _run = () => {
+    let yes = [1, 2]
+    let no = [3]
+    let out = [...true ? yes : no]
+    return out.length + out[1]
+  }`)
+  is(exports._run(), 4, 'array spread conditional compiles as [...(cond ? a : b)]')
+})
+
 test('regression: for-in with let as identifier (test262 identifier-let-allowed)', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`)
   is(exports._run(), 1, 'for-in with let as identifier compiles and runs')

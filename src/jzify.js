@@ -408,6 +408,19 @@ const handlers = {
   // Block body: recurse as scope for hoisting
   '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
 
+  '[]'(...args) {
+    if (args.length !== 1) return
+    const fix = (node) => {
+      if (Array.isArray(node) && node[0] === '?' && Array.isArray(node[1]) && node[1][0] === '...') {
+        return ['...', ['?', node[1][1], node[2], node[3]]]
+      }
+      return node
+    }
+    const body = args[0]
+    if (Array.isArray(body) && body[0] === ',') return ['[]', [',', ...body.slice(1).map(x => transform(fix(x)))]]
+    return ['[]', transform(fix(body))]
+  },
+
   // Export: recurse into exported declaration. Statement-form `export function name`
   // and `export default function name` must be hoisted as const-arrows — otherwise
   // the generic `function` handler wraps them in a named-IIFE (correct for *expressions*,
