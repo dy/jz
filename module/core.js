@@ -158,15 +158,17 @@ export default (ctx) => {
   //   OBJ_KIND.STATIC  plain/schema object (schemaId in NaN-box aux)
   //   OBJ_KIND.HASH    open-addressed probe table at off+0
   //   OBJ_KIND.DYNAMIC / PROXY  (future)
-  // Canonical "is this object a hash / dynamic / proxy" predicate — call sites
-  // compare against OBJ_KIND.* instead of branching on distinct pointer tags.
-  // Currently derived from the pointer tag; the unified layout reads it from the
-  // off-16 header word so a single PTR.OBJECT tag covers every object strategy.
+  // Canonical "which strategy backs this object" predicate — call sites compare
+  // against OBJ_KIND.* instead of branching on distinct pointer tags. The kind is
+  // a 32-bit word in the alloc header (at data-ptr-24); heap allocations zero it
+  // (STATIC), hash tables stamp it OBJ_KIND.HASH. Static-data-segment objects are
+  // headerless (offset < __heap_start) and are always STATIC by construction.
   ctx.core.stdlib['__obj_kind'] = `(func $__obj_kind (param $ptr i64) (result i32)
-    (select (i32.const ${OBJ_KIND.HASH}) (i32.const ${OBJ_KIND.STATIC})
-      (i32.eq
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-        (i32.const ${PTR.HASH}))))`
+    (local $off i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (if (result i32) (i32.ge_u (local.get $off) (global.get $__heap_start))
+      (then (i32.load (i32.sub (local.get $off) (i32.const 24))))
+      (else (i32.const ${OBJ_KIND.STATIC}))))`
 
   // === Bump allocator ===
 
@@ -335,17 +337,22 @@ export default (ctx) => {
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`
 
   // Alloc header(16) + data(cap*stride). Layout: [propsPtr@-16(f64=0), len@-8, cap@-4],
-  // data starts at returned offset. propsPtr at -16 holds a per-object dynamic-property hash
-  // (NaN-boxed PTR.HASH) for ARRAY/HASH/MAP/SET; 0 means "no dyn props yet". This lets
-  // __dyn_get_t / __dyn_set sidestep the global __dyn_props lookup on the hot path.
-  // Read offsets relative to the returned data ptr stay unchanged (-8 len, -4 cap).
+  // 24-byte header preceding the returned data pointer D:
+  //   D-24: obj-kind word (i32) — 0/STATIC; hash tables stamp OBJ_KIND.HASH
+  //   D-20: reserved (i32)
+  //   D-16: propsPtr (i64) — per-object dynamic-property hash (NaN-boxed PTR.HASH)
+  //         for ARRAY/HASH/MAP/SET; 0 means "no dyn props yet". Lets __dyn_get_t /
+  //         __dyn_set sidestep the global __dyn_props lookup on the hot path.
+  //   D-8: len (i32)   D-4: cap (i32)
+  // Read offsets relative to D stay unchanged (-8 len, -4 cap, -16 propsPtr).
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)
     (local $ptr i32)
-    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
+    (local.set $ptr (call $__alloc (i32.add (i32.const 24) (i32.mul (local.get $cap) (local.get $stride)))))
     (i64.store (local.get $ptr) (i64.const 0))
-    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
-    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
-    (i32.add (local.get $ptr) (i32.const 16)))`
+    (i64.store (i32.add (local.get $ptr) (i32.const 8)) (i64.const 0))
+    (i32.store (i32.add (local.get $ptr) (i32.const 16)) (local.get $len))
+    (i32.store (i32.add (local.get $ptr) (i32.const 20)) (local.get $cap))
+    (i32.add (local.get $ptr) (i32.const 24)))`
 
   // Allocator + exports are deferred: only included when memory is actually needed.
   // Any module using allocPtr/inc('__alloc') pulls these in via ctx.core.stdlibDeps.

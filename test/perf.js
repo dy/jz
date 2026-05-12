@@ -880,4 +880,4 @@ golden('typed-array loop', `export let f = (arr) => {
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 970)
+}`, 1020)

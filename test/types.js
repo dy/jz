@@ -565,7 +565,7 @@ test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
     export let f = (i) => { let a = mk(); return a[i] }
   `
   const bytes = jz.compile(src).length
-  ok(bytes <= 850, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>850b)`)
+  ok(bytes <= 880, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>880b)`)
 })
 
 test('typed-narrow: escape via store does not break narrowed helper', () => {
