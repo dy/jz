@@ -51,18 +51,11 @@ import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './src/host.js'
 
-const importSpecMayReturnExternal = (spec) => {
-  if (typeof spec === 'function') return true
-  return false
-}
-
-const importsMayReturnExternal = (imports) => {
-  if (!imports) return false
-  for (const mod of Object.values(imports))
-    for (const spec of Object.values(mod || {}))
-      if (importSpecMayReturnExternal(spec)) return true
-  return false
-}
+// A host import that's a JS function may hand back any value, including a host
+// object — which arrives in wasm as a PTR.EXTERNAL ref. Constants/typed specs can't.
+const importsMayReturnExternal = (imports) =>
+  !!imports && Object.values(imports).some(mod =>
+    Object.values(mod || {}).some(spec => typeof spec === 'function'))
 
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
@@ -227,8 +220,13 @@ jz.compile = (code, opts = {}) => {
   const ast = time('prepare', () => prepare(parsed))
 
   // Auto-detect optimization tuning from source characteristics when the user
-  // hasn't provided any optimize option.
-  if (opts.optimize == null) {
+  // hasn't provided any optimize option. At the default level its only *live*
+  // output is the typed-array scalarization thresholds (every other override —
+  // watr off, sortStrPool/hoistPtr on — already matches the level-2 preset), so
+  // skip the AST scan entirely unless the program touches typed arrays.
+  // NOTE: if the level-2 default ever flips watr on, drop this guard so the
+  // machine-generated-code heuristic in detectOptimizeConfig can take effect.
+  if (opts.optimize == null && ctx.module.modules.typedarray) {
     const autoCfg = detectOptimizeConfig(ast, code)
     if (Object.keys(autoCfg).length) {
       ctx.transform.optimize = resolveOptimize(autoCfg)

@@ -14,6 +14,25 @@
 
 import { parse as parseWat } from 'watr'
 import { ctx, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
+
+// Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
+// `parseWat` of the same string always yields the same tree. Parsing is the
+// dominant cost when a program pulls heavy stdlib (Math pow/sqrt, JSON, regex):
+// it re-tokenizes ~KB of text every compile. Parse once per distinct resolved
+// string, then hand out a deep clone (downstream passes mutate nodes in place).
+// Module-level on purpose: the cache persists across compile() calls.
+const stdlibParseCache = new Map()  // resolved WAT string → pristine parsed tree
+const cloneTemplate = (node) => {
+  if (!Array.isArray(node)) return node
+  const copy = node.map(cloneTemplate)
+  if (node.loc != null) copy.loc = node.loc
+  return copy
+}
+const parseTemplate = (str) => {
+  let tmpl = stdlibParseCache.get(str)
+  if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
+  return cloneTemplate(tmpl)
+}
 import { T, VAL, analyzeValTypes } from './analyze.js'
 import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from './optimize.js'
 import { emit } from './emit.js'
@@ -384,7 +403,7 @@ export function pullStdlib(sec) {
     if (ctx.memory.shared) sec.imports.push(['import', '"env"', '"memory"', ['memory', pages]])
     else sec.memory.push(['memory', ['export', '"memory"'], pages])
     if (ctx.transform.alloc !== false && ctx.core._allocRawFuncs)
-      sec.funcs.push(...ctx.core._allocRawFuncs.map(s => parseWat(s)))
+      sec.funcs.push(...ctx.core._allocRawFuncs.map(parseTemplate))
   }
 
   const stdlibStr = (name) => {
@@ -394,14 +413,14 @@ export function pullStdlib(sec) {
   ctx.core.extImports ??= new Set()
   for (const name of Object.keys(ctx.core.stdlib)) {
     if (name.startsWith('__ext_') && ctx.core.includes.has(name)) {
-      const parsed = parseWat(stdlibStr(name))
+      const parsed = parseTemplate(stdlibStr(name))
       sec.extStdlib.push(parsed[0] === "module" ? parsed[1] : parsed)
       ctx.core.extImports.add(name)
       ctx.core.includes.delete(name)
     }
   }
   for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
-  sec.stdlib.push(...[...ctx.core.includes].map(n => parseWat(stdlibStr(n))))
+  sec.stdlib.push(...[...ctx.core.includes].map(n => parseTemplate(stdlibStr(n))))
 }
 
 export function syncImports(sec) {

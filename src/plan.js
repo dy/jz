@@ -1433,6 +1433,10 @@ export default function plan(ast) {
   unboxConstTypedGlobals()
 
   let programFacts = collectProgramFacts(ast)
+  // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
+  // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
+  // replacement (`scalarize*`) is *not* gated on `sourceInline`: callers turn it on
+  // independently via `optimize: { sourceInline: false }` to test heap elision alone.
   if (inlineHotInternalCalls(programFacts, ast)) programFacts = collectProgramFacts(ast)
   if (inlineLocalLambdas()) programFacts = collectProgramFacts(ast)
   if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)

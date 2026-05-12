@@ -10,7 +10,8 @@ import { pathToFileURL } from 'url'
 import { execFileSync } from 'child_process'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from './index.js'
-import jzifyFn, { codegen } from './src/jzify.js'
+import jzifyFn from './src/jzify.js'
+import { codegen } from './src/codegen.js'
 import { createRequire } from 'module'
 
 const jzRequire = createRequire(import.meta.url)
