@@ -598,7 +598,8 @@ export default (ctx) => {
 
     // Module-registered property emitter (.size, etc.)
     const propKey = `.${prop}`
-    if (ctx.core.emit[propKey]) return ctx.core.emit[propKey](obj)
+    const propEmitter = ctx.core.emit[propKey]
+    if (propEmitter && propEmitter.length <= 1) return propEmitter(obj)
 
     return emitPropAccess(emit(obj), obj, prop)
   }
