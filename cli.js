@@ -32,13 +32,21 @@ Examples:
   jz program.js --wat              # → program.wat
   jz program.js -o out.wasm        # custom output name
   jz program.js -o -               # write to stdout
+  jz program.js -O3                # aggressive optimization
+  jz program.js -Os                # optimize for size
+  jz program.js --host wasi        # emit WASI Preview 1 imports
   jz --strict program.js           # strict mode
   jz --jzify lib.js                # → lib.jz
   jz -e "1 + 2"
 
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
-  --strict                  Strict jz mode (no auto-transform)
+  -O<n>, --optimize <n>     Optimization level: 0 off, 1 size-only, 2 default,
+                            3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
+  --host <js|wasi>          Runtime-service lowering (default js)
+  --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
+  --names                   Emit wasm `name` section for profilers/debuggers
+  --strict                  Strict jz mode (no auto-transform), reject dynamic fallbacks
   --jzify                   Transform JS to jz (no compilation)
   --eval, -e                Evaluate expression or file
   --wat                     Output WAT text instead of binary
@@ -109,16 +117,31 @@ async function handleJzify(args) {
   }
 }
 
+// -O<n>/-Os/-Ob/-Of and --optimize <val> → value accepted by compile()'s `optimize` opt
+const OPT_ALIAS = { s: 'size', b: 'balanced', f: 'speed' }
+function parseOptimize(v) {
+  if (v == null) return undefined
+  if (/^\d+$/.test(v)) return +v
+  return OPT_ALIAS[v] ?? v
+}
+
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
+  let optimize, host, alloc = true, names = false
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
-    else if (args[i] === '--wat') wat = true
-    else if (args[i] === '--strict') strict = true
-    else if (args[i] === '--resolve') resolveNode = true
-    else if (args[i] === '--imports') importsFile = args[++i]
-    else if (!inputFile) inputFile = args[i]
+    const a = args[i]
+    if (a === '--output' || a === '-o') outputFile = args[++i]
+    else if (a === '--wat') wat = true
+    else if (a === '--strict') strict = true
+    else if (a === '--resolve') resolveNode = true
+    else if (a === '--imports') importsFile = args[++i]
+    else if (a === '--optimize' || a === '-O') optimize = parseOptimize(args[++i])
+    else if (/^-O.+/.test(a)) optimize = parseOptimize(a.slice(2))
+    else if (a === '--host') host = args[++i]
+    else if (a === '--no-alloc') alloc = false
+    else if (a === '--names') names = true
+    else if (!inputFile) inputFile = a
   }
 
   if (!inputFile) throw new Error('No input file specified')
@@ -178,7 +201,12 @@ async function handleCompile(args) {
   const opts = {
     wat,
     jzify: !strict && !inputFile.endsWith('.jz'),
+    strict,
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
+    ...(optimize !== undefined && { optimize }),
+    ...(host && { host }),
+    ...(alloc === false && { alloc: false }),
+    ...(names && { profileNames: true }),
     ...(Object.keys(modules).length && { modules }),
   }
 
