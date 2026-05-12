@@ -680,6 +680,7 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   const watrSrc = (file) => readFileSync(new URL(`../node_modules/watr/src/${file}`, import.meta.url), 'utf8')
   const ENTRY = {
     './src/compile.js': watrSrc('compile.js'),
+    './compile.js':     watrSrc('compile.js'),
     './src/parse.js':   watrSrc('parse.js'),
     './src/print.js':   watrSrc('print.js'),
     './src/polyfill.js':watrSrc('polyfill.js'),
