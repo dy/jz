@@ -66,16 +66,16 @@ const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
 
 // ── Size pins (jz `optimize:'size'` vs AS `-Oz --converge` and Porffor) ─────
 //  win — jz strictly smaller    tie — within 5%    todo — not yet (unasserted)
-// jz currently runs ~14% larger than `asc -Oz` on the kernels (wasm-opt finds
-// ~25-30% slack in jz codegen — that's the worklist). porf bundles a JS runtime,
-// so jz is ~20× smaller there; that pin is a backstop, not an achievement.
+// jz currently runs ~11% larger than `asc -Oz` (geomean) on the kernels; wasm-opt
+// still finds ~25-30% slack — single-use runtime-helper inlining is the next lever.
+// porf bundles a JS runtime, so jz is ~20× smaller there; that pin is a backstop.
 const SIZE = {
   callback:       { as: 'win',  porf: 'win' },
   mat4:           { as: 'todo', porf: 'win' },
   poly:           { as: 'todo', porf: 'win' },
   biquad:         { as: 'todo', porf: 'win' },
-  mandelbrot:     { as: 'todo', porf: 'win' },
-  bitwise:        { as: 'todo', porf: 'win' },
+  mandelbrot:     { as: 'tie',  porf: 'win' },
+  bitwise:        { as: 'tie',  porf: 'win' },
   tokenizer:      { as: 'todo', porf: 'win' },
   aos:            { as: 'todo', porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
@@ -84,7 +84,7 @@ const SIZE = {
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
-const SIZE_GEOMEAN_MAX = { as: 1.25, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.18×)
+const SIZE_GEOMEAN_MAX = { as: 1.15, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.11×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
 // remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
 // with margin — shrink the budget as codegen tightens.
@@ -127,16 +127,19 @@ function parseBenchOutput(text) {
 }
 const runs = parseBenchOutput(speedOut)
 
-// watr median is noisy — average a few extra samples.
+// These cases' medians are noisy run-to-run — take the median of a few extra
+// samples so the gate reflects steady-state, not whichever scheduler hiccup
+// happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
-if (speedCases.includes('watr')) {
-  const s = { v8: [runs.watr?.v8?.medianUs].filter(Boolean), jz: [runs.watr?.jz?.medianUs].filter(Boolean) }
+for (const id of ['watr', 'sort']) {
+  if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
+  const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   for (let i = 1; i < 5; i++) {
-    const x = parseBenchOutput(execFileSync('node', [BENCH, '--cases=watr', '--targets=v8,jz'], { encoding: 'utf8', cwd: ROOT }))
-    if (x.watr?.v8?.medianUs) s.v8.push(x.watr.v8.medianUs)
-    if (x.watr?.jz?.medianUs) s.jz.push(x.watr.jz.medianUs)
+    const x = parseBenchOutput(execFileSync('node', [BENCH, `--cases=${id}`, '--targets=v8,jz'], { encoding: 'utf8', cwd: ROOT }))
+    if (x[id]?.v8?.medianUs) s.v8.push(x[id].v8.medianUs)
+    if (x[id]?.jz?.medianUs) s.jz.push(x[id].jz.medianUs)
   }
-  if (s.v8.length && s.jz.length) { runs.watr.v8.medianUs = median(s.v8); runs.watr.jz.medianUs = median(s.jz) }
+  runs[id].v8.medianUs = median(s.v8); runs[id].jz.medianUs = median(s.jz)
 }
 
 // ── Run the size harness ────────────────────────────────────────────────────

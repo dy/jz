@@ -1925,6 +1925,30 @@ function walkRewrite(node, doInline, counts) {
         for (let i = 1; i < inner.length; i++) out.push(inner[i])
         return out
       }
+      // (i32.wrap_i64 (i64.reinterpret_f64 (call $__mkptr* … offset))) → offset.
+      // A NaN-boxed pointer keeps type/aux in the high bits and the i32 offset in
+      // the low 32, so the round-trip through f64 is pure overhead whenever the
+      // consumer only wants the offset (typical when the pointer feeds an unboxed
+      // i32 local). Covers the generic 3-arg `$__mkptr` and the specialized
+      // single-arg `$__mkptr_T_A_d` trampolines alike — offset is the last arg.
+      const isMkptr = n => Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string'
+        && (n[1] === '$__mkptr' || n[1].startsWith('$__mkptr_'))
+      if (isMkptr(inner)) return inner[inner.length - 1]
+      // …and reach through a `(block (result f64) …stmts (call $__mkptr …))` —
+      // `new TypedArray(n)` lowers to exactly this shape — by retyping the block
+      // to i32 and dropping the box on its tail.
+      if (Array.isArray(inner) && inner[0] === 'block' && isMkptr(inner[inner.length - 1])) {
+        let ri = -1
+        for (let i = 1; i <= 2 && i < inner.length; i++)
+          if (Array.isArray(inner[i]) && inner[i][0] === 'result') { ri = i; break }
+        if (ri >= 0 && inner[ri][1] === 'f64') {
+          const tail = inner[inner.length - 1]
+          const nb = inner.slice()
+          nb[ri] = ['result', 'i32']
+          nb[nb.length - 1] = tail[tail.length - 1]
+          return nb
+        }
+      }
     }
     if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
       const l = a[1], r = a[2]
