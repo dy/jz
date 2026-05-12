@@ -39,12 +39,34 @@ export const PTR = {
   TYPED: 3,     // TypedArrays (Float64Array, etc.)
   STRING: 4,    // strings (heap or inline-SSO; aux bit LAYOUT.SSO_BIT distinguishes)
   // 5: free
-  OBJECT: 6,    // plain objects
-  HASH: 7,      // dynamic objects (Map-like)
+  OBJECT: 6,    // plain objects (all object-likes; OBJ_KIND header word discriminates)
+  HASH: 7,      // [legacy] hash objects — being folded into OBJECT+OBJ_KIND.HASH
   SET: 8,       // Set collections
   MAP: 9,       // Map collections
   CLOSURE: 10,  // first-class functions
   EXTERNAL: 11, // JS host object refs (aux=0, offset→extMap index)
+}
+
+// === Object kind header word ===
+// One 32-bit word at the head of every heap-allocated object (the low half of
+// the 16-byte alloc header, at data-ptr - 16) tells what *shape strategy* an
+// object uses. This unifies plain objects, hash-keyed objects, and (future)
+// accessor/proxy objects under a single PTR.OBJECT tag — dispatch reads the
+// header word instead of branching on distinct pointer tags.
+//
+//   0x0000        STATIC   — fixed-shape; schemaId in NaN-box aux; props as sequential f64 at off+0
+//   0x0001-0x0FFF (reserved — future: overflow schemaId space)
+//   0x1000        HASH     — open-addressed probe table at off+0 (24-byte [hash,key,val] entries)
+//   0x1001        DYNAMIC  — getter/setter accessors (Object.defineProperty)
+//   0x1002        PROXY    — target + handler trap dispatch
+//
+// Non-object heap values (ARRAY/SET/MAP/TYPED/BUFFER) carry kind 0 in this slot;
+// the header's upper half (off-12) holds their dyn-prop sidecar offset.
+export const OBJ_KIND = {
+  STATIC: 0x0000,
+  HASH: 0x1000,
+  DYNAMIC: 0x1001,
+  PROXY: 0x1002,
 }
 
 // === Global context with nested sub-contexts ===

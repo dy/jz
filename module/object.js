@@ -10,7 +10,7 @@
 import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep, shapeOf } from '../src/analyze.js'
-import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { ctx, err, inc, PTR, LAYOUT, OBJ_KIND } from '../src/ctx.js'
 
 
 export default (ctx) => {
@@ -522,7 +522,7 @@ function hashValuesFromTemp(t) {
 // types (ARRAY, nullish, primitives) return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
 function emitRuntimeKeys(obj) {
-  inc('__ptr_type')
+  inc('__ptr_type', '__obj_kind')
   // Ensure the schema table global exists even in programs that never use
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
   // and the watr resolver requires the symbol to be declared.
@@ -534,7 +534,7 @@ function emitRuntimeKeys(obj) {
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
+      ['i32.eq', ['call', '$__obj_kind', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', OBJ_KIND.HASH]],
       ['then', hashKeysFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
         ['i32.and',
@@ -545,7 +545,7 @@ function emitRuntimeKeys(obj) {
 }
 
 function emitRuntimeValues(obj) {
-  inc('__ptr_type')
+  inc('__ptr_type', '__obj_kind')
   if (!ctx.scope.globals.has('__schema_tbl'))
     ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
   const t = temp('rv'), tt = tempI32('rvt')
@@ -554,7 +554,7 @@ function emitRuntimeValues(obj) {
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
+      ['i32.eq', ['call', '$__obj_kind', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', OBJ_KIND.HASH]],
       ['then', hashValuesFromTemp(t)],
       ['else', ['if', ['result', 'f64'],
         ['i32.and',

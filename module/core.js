@@ -12,7 +12,7 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
-import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT, OBJ_KIND } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
 
@@ -153,6 +153,20 @@ export default (ctx) => {
 
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
+
+  // Object kind — which shape strategy backs an object-like pointer.
+  //   OBJ_KIND.STATIC  plain/schema object (schemaId in NaN-box aux)
+  //   OBJ_KIND.HASH    open-addressed probe table at off+0
+  //   OBJ_KIND.DYNAMIC / PROXY  (future)
+  // Canonical "is this object a hash / dynamic / proxy" predicate — call sites
+  // compare against OBJ_KIND.* instead of branching on distinct pointer tags.
+  // Currently derived from the pointer tag; the unified layout reads it from the
+  // off-16 header word so a single PTR.OBJECT tag covers every object strategy.
+  ctx.core.stdlib['__obj_kind'] = `(func $__obj_kind (param $ptr i64) (result i32)
+    (select (i32.const ${OBJ_KIND.HASH}) (i32.const ${OBJ_KIND.STATIC})
+      (i32.eq
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+        (i32.const ${PTR.HASH}))))`
 
   // === Bump allocator ===
 
