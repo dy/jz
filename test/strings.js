@@ -166,6 +166,10 @@ test('string: .slice negative', () => {
   is(run(`export let f = () => "hello".slice(-3).length`).f(), 3)  // "llo"
 })
 
+test('string: .slice no args', () => {
+  is(run(`export let f = () => "hello".slice().length`).f(), 5)
+})
+
 // === .substring ===
 
 test('string: .substring basic', () => {
