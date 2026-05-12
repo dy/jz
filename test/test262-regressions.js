@@ -78,6 +78,13 @@ test('regression: non-ASCII identifier (test262 start-unicode-*)', () => {
   is(exports._run(), 1, 'non-ASCII identifier works correctly')
 })
 
+test('regression: jzify lowers destructured arrow params with expression object body', () => {
+  const exports = run(`export let _run = () =>
+    [[1, 2]].map(([a, b]) => ({ sum: a + b }))[0].sum
+  `)
+  is(exports._run(), 3, 'destructured arrow callback returning object literal compiles')
+})
+
 test('regression: for-in with let as identifier (test262 identifier-let-allowed)', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`)
   is(exports._run(), 1, 'for-in with let as identifier compiles and runs')
