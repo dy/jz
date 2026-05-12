@@ -1744,6 +1744,10 @@ function prepareModule(specifier, source) {
       if (!Array.isArray(node)) return typeof node === 'string' && !skip?.has(node) && moduleExports.has(node) ? moduleExports.get(node) : node
       if (node[0] === 'str' || node[0] == null || node[0] === '`' || node[0] === '//') return node
       if (node[0] === ':') { node[2] = walk(node[2], skip); return node }
+      // Static member access: `obj.prop` — only the receiver is a reference; the
+      // property name is a literal key and must not be renamed even if it collides
+      // with a module-scoped binding (e.g. `IMM.reftype` where `const reftype` exists).
+      if (node[0] === '.' || node[0] === '?.') { node[1] = walk(node[1], skip); return node }
       if (node[0] === '=>') {
         node[2] = walk(node[2], collectParamNames(extractParams(node[1]), new Set(skip)))
         return node

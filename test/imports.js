@@ -213,6 +213,38 @@ test('import: bundled module newline ! after comment', () => {
   is(exports.g(), 42)
 })
 
+test('import: property name colliding with module-scoped binding is not renamed', () => {
+  // Module bundling renames module-scoped bindings with a prefix. A property key
+  // (`obj.reftype`) is a literal, not a reference — it must survive even when a
+  // module-scope `const reftype` exists. Regression: the rename walk descended
+  // into `['.', obj, prop]`'s third slot, mangling the key, so `IMM.reftype`
+  // resolved to a non-existent property.
+  const mod = `
+    const reftype = 99
+    const IMM = { reftype: 42, other: 7 }
+    export let pick = () => IMM.reftype
+    export let viaConst = () => reftype
+  `
+  const { exports } = jz(
+    'import { pick, viaConst } from "./m.jz"; export let a = () => pick(); export let b = () => viaConst()',
+    { modules: { './m.jz': mod } }
+  )
+  is(exports.a(), 42)
+  is(exports.b(), 99)
+})
+
+test('import: method name colliding with module-scoped binding is not renamed', () => {
+  const mod = `
+    const slice = () => 0
+    export let firstOf = arr => arr.slice(0, 1)
+  `
+  const { exports } = jz(
+    'import { firstOf } from "./m.jz"; export let a = () => firstOf([7, 8, 9])[0]',
+    { modules: { './m.jz': mod } }
+  )
+  is(exports.a(), 7)
+})
+
 test('import.meta.url lowers from compile option', () => {
   const result = jz('export let f = () => import.meta.url', { importMetaUrl: 'file:///tmp/jz/main.js' })
   is(result.memory.read(result.exports.f()), 'file:///tmp/jz/main.js')

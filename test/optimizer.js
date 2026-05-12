@@ -780,7 +780,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   }
   is(resolveOptimize(0).watr, false)
   is(resolveOptimize(0).treeshake, false)
-  is(resolveOptimize(2).watr, true)
+  is(resolveOptimize(2).watr, false)
   is(resolveOptimize(2).sourceInline, true)
   is(resolveOptimize(2).nestedSmallConstForUnroll, 'auto')
   is(resolveOptimize(3).sourceInline, true)
@@ -799,7 +799,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(o.treeshake, false)
   is(resolveOptimize({ level: 3, nestedSmallConstForUnroll: 'auto' }).nestedSmallConstForUnroll, 'auto')
   // undefined: default = level 2
-  is(resolveOptimize(undefined).watr, true)
+  is(resolveOptimize(undefined).watr, false)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
 })

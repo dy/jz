@@ -613,6 +613,12 @@ const installDefaultEnvImports = (mod, imports, state) => {
       return parseFloat(s)
     }
   }
+  if (envFns.has('parseInt') && !imports.env.parseInt) {
+    imports.env.parseInt = (valBig, radix) => {
+      const s = state.mem.read(i64ToF64(valBig))
+      return parseInt(s, radix || undefined)
+    }
+  }
   // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we drive
   // callbacks back via the exported __invoke_closure trampoline (state.invoke).
   // Each id maps to a cancel thunk so set/clear share state without tagging.

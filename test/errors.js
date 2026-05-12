@@ -247,7 +247,7 @@ test('strict: unknown-receiver method call errors', () =>
   throwsStrict('export let f = (x) => x.foo(1, 2)', 'strict mode', 'x.foo should error'))
 
 test('strict: accepts pure scalar function', () => {
-  const wasm = compile('export let add = (a, b) => a + b', { strict: true })
+  const wasm = compile('export let add = (a, b) => a + b', { strict: true, optimize: { watr: true } })
   ok(wasm.byteLength === 41, `pure scalar should compile to 41 bytes in strict mode, got ${wasm.byteLength}`)
 })
 

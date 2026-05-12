@@ -148,16 +148,18 @@ const watrModuleSources = () => ({
 
 const compileJzHost = c => {
   const code = readFileSync(c.js, 'utf8')
+  const isWatr = c.id === 'watr'
   const wasm = compile(code, {
+    jzify: isWatr,
     modules: {
       '../_lib/benchlib.js': benchlibHostSource(),
-      ...(c.id === 'watr' ? watrModuleSources() : {}),
+      ...(isWatr ? watrModuleSources() : {}),
     },
     imports: {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
-    optimize: { scalarTypedArrayLen: 16, scalarTypedLoopUnroll: 8, ...(c.id === 'watr' ? { watr: false, smallConstForUnroll: false } : {}), ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
+    optimize: { scalarTypedArrayLen: 16, scalarTypedLoopUnroll: 8, ...(isWatr ? { watr: false, smallConstForUnroll: false } : {}), ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
     alloc: false,
   })
   writeFileSync(jzHostWasmPath(c), wasm)

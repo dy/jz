@@ -260,8 +260,10 @@ jz.compile = (code, opts = {}) => {
   // Only valuable to re-run when watr ran (watr is what re-introduces the boundaries).
   if (cfg.watr) {
     const postCfg = { ...cfg, __phase: 'post' }
+    // Build global name→type map from ctx.scope.globalTypes for promoteGlobals
+    const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
     time('watrReopt', () => {
-      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg)
+      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg, globalTypesMap)
     })
   }
   if (opts.wat) return time('watrPrint', () => watrPrint(optimized))

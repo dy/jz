@@ -850,10 +850,7 @@ export const emitter = {
   ';': (...args) => {
     const out = []
     for (const a of args) {
-      const r = emit(a, 'void')
-      if (r == null) continue
-      out.push(...flat(r))
-      if (r?.type && r.type !== 'void') out.push('drop')
+      out.push(...emitFlat(a))
     }
     return out
   },

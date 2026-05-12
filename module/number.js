@@ -593,7 +593,7 @@ export default (ctx) => {
         (else (local.get $result)))))`
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
-    inc('__parseInt')
+    needParseInt()
     return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
@@ -603,6 +603,8 @@ export default (ctx) => {
   }
   const needParseFloat = () => addImportOnce(ctx, 'env', 'parseFloat',
     ['func', '$__parseFloat', ['param', 'i64'], ['result', 'f64']])
+  const needParseInt = () => addImportOnce(ctx, 'env', 'parseInt',
+    ['func', '$__parseInt', ['param', 'i64'], ['param', 'i32'], ['result', 'f64']])
 
   ctx.core.emit['Number.parseFloat'] = (x) => {
     needParseFloat()

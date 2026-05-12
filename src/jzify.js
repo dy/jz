@@ -148,7 +148,27 @@ function transformScope(node) {
   // Statement sequence: collect hoisted functions
   if (op === ';') {
     const hoisted = [], rest = []
-    for (const stmt of args) {
+    for (let i = 0; i < args.length; i++) {
+      const stmt = args[i]
+      // Workaround for subscript parser ASI bug: multiline named IIFE
+      // `(function name(){...})();` is parsed as two statements when there are
+      // newlines inside the function body. Reconstruct the single-statement IIFE
+      // so the () handler can desugar it correctly.
+      if (Array.isArray(stmt) && stmt[0] === '()' &&
+          Array.isArray(stmt[1]) && stmt[1][0] === 'function' && stmt[1][1] &&
+          i + 1 < args.length && Array.isArray(args[i + 1]) && args[i + 1][0] === '()') {
+        const merged = ['()', ['()', stmt[1]], args[i + 1][1] ?? null]
+        const t = transform(merged)
+        if (t != null) {
+          if (Array.isArray(t) && t[0] === ';') {
+            for (const s of t.slice(1)) { if (s != null) rest.push(s) }
+          } else {
+            rest.push(t)
+          }
+        }
+        i++
+        continue
+      }
       // Statement-form named function declaration: hoist directly (skip expression handler)
       if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
         hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))

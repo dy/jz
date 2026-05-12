@@ -422,7 +422,18 @@ export function optimizeModule(sec) {
     sortStrPoolByFreq([...sec.funcs, ...sec.stdlib, ...sec.start], poolRef, ctx.runtime.strPoolDedup)
     ctx.runtime.strPool = poolRef.pool
   }
-  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s, cfg)
+  // Backfill globalTypes for runtime globals declared only in ctx.scope.globals
+  // (e.g., __schema_tbl, __strBase). Parses the WAT string to infer i32/f64/i64.
+  if (ctx.scope.globals) {
+    for (const [name, wat] of ctx.scope.globals) {
+      if (!wat || ctx.scope.globalTypes.has(name)) continue
+      const m = wat.match(/\(global\s+\$?\S+\s+(?:\(mut\s+)?(i32|i64|f64|f32)/)
+      if (m) ctx.scope.globalTypes.set(name, m[1])
+    }
+  }
+  // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
+  const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
+  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s, cfg, globalTypesMap)
   if (!cfg || cfg.arenaRewind !== false) {
     const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
     const fnByName = new Map()
@@ -438,12 +449,25 @@ export function optimizeModule(sec) {
   if (!cfg || cfg.hoistConstantPool !== false)
     hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
 
+  // Second promoteGlobals pass disabled: promoting hoistConstantPool's __fc*
+  // globals regressed the watr perf micro-pin (WASM compile time increased).
+  // The __fc* globals are typically read 3-4 times; the local setup overhead
+  // in large functions outweighs the per-read savings.  Left as a no-op hook
+  // in case future analysis finds a profitable threshold or function-size gate.
+  // if (!cfg || cfg.promoteGlobals !== false) {
+  //   const globalTypesMap2 = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
+  //   for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) promoteGlobals(s, globalTypesMap2)
+  // }
+
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7
     ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
-    if (ctx.scope.globals.has('__heap_start'))
+    ctx.scope.globalTypes.set('__heap', 'i32')
+    if (ctx.scope.globals.has('__heap_start')) {
       ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
+      ctx.scope.globalTypes.set('__heap_start', 'i32')
+    }
     for (const s of sec.stdlib)
       if (s[0] === 'func' && s[1] === '$__clear')
         for (let i = 2; i < s.length; i++)

@@ -122,6 +122,16 @@ test('parseInt: number passthrough', () => {
   is(run('export let f = () => parseInt(3.14)').f(), 3)
 })
 
+test('parseInt: large hex integer > 53 bits', () => {
+  // parseInt must preserve rounding for hex integers beyond f64 exact range.
+  // 0x2000000000000100000000001 = 2^97 + 2^44 + 1 → rounds to 2^97 + 2^45.
+  const val = run('export let f = () => parseInt("0x2000000000000100000000001")').f()
+  const buf = new ArrayBuffer(8), u8 = new Uint8Array(buf)
+  u8.set([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46])
+  const expected = new Float64Array(buf)[0]
+  is(val, expected, `got ${val}, expected ${expected}`)
+})
+
 // === .concat ===
 
 test('string: .concat single', () => {

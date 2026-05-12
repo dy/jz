@@ -98,7 +98,7 @@ test('JSON.parse: static object dot access uses fixed-slot OBJECT load', () => {
   // const o = JSON.parse(SRC) folds to a fixed-shape OBJECT (schema-tagged,
   // slot-based). o.x reads `f64.load offset=0` from the object payload — no
   // hash dispatch, no runtime parser.
-  const wat = compile(`const SRC = '{"x":42}'; export let f = () => { const o = JSON.parse(SRC); return o.x }`, { wat: true })
+  const wat = compile(`const SRC = '{"x":42}'; export let f = () => { const o = JSON.parse(SRC); return o.x }`, { wat: true, optimize: { watr: true } })
   ok(!wat.includes('$__jp'))
   ok(!wat.includes('$__hash_get'))
   ok(!wat.includes('$__hash_get_local'))
@@ -129,7 +129,7 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
       return o.meta.bias + it.id
     }
   `
-  const wat = compile(src, { wat: true })
+  const wat = compile(src, { wat: true, optimize: { watr: true } })
   ok(!wat.includes('$__jp'))
   ok(!wat.includes('$__hash_get'))
   ok(!wat.includes('$__hash_get_local'))

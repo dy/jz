@@ -45,8 +45,8 @@ const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHI
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
  *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
- *   2 — default. Stable passes (watr CSE/DCE/inline + every jz pass that has
- *       benchmark proof).
+ *   2 — default. Stable jz passes (every pass with benchmark proof). watr disabled
+ *       by default — adds ~2s compile time for identical runtime performance.
  *   3 — aggressive experimental passes in addition to level 2.
  */
 export const PASS_NAMES = [
@@ -60,6 +60,7 @@ export const PASS_NAMES = [
   'cseScalarLoad',
   'csePureExpr',
   'deadStoreElim',
+  'promoteGlobals',          // read-only global.get → local for multi-read globals
   'sortLocalsByUse',
   'specializeMkptr',
   'specializePtrBase',
@@ -78,7 +79,7 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
+  2: Object.freeze({ ...ALL_ON, watr: false, nestedSmallConstForUnroll: 'auto' }),
   3: ALL_ON,
 })
 
@@ -1232,6 +1233,147 @@ export function deadStoreElim(fn) {
 }
 
 /**
+ * Promote read-only globals to locals within each function.
+ *
+ * When a global is only read (never written) within a function and read ≥ 2 times,
+ * load it once at function entry into a fresh local and replace all global.get with local.get.
+ *
+ * This eliminates repeated global.get instructions (5 bytes each with LEB128 idx) in
+ * favour of cheaper local.get (1–2 bytes), and helps V8's TurboFan by reducing the
+ * number of load-from-global operations it must track.
+ *
+ * Only promotes globals that appear read-only in the function body. Globals that are
+ * also written (global.set) are left untouched — the promotion would be unsound if
+ * the global changes between reads.
+ *
+ * @param {Array} fn - Function IR (WAT-as-array)
+ * @param {Map<string,string>} [globalTypes] - Optional: global name → wasm type ('i32'|'f64'|'i64'|'funcref')
+ */
+export function promoteGlobals(fn, globalTypes) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  if (bodyStart < 0) return
+
+  // Collect global.get counts and detect any global.set
+  const getCounts = new Map()  // globalName → count
+  const written = new Set()
+
+  const scan = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'global.get' && typeof node[1] === 'string') {
+      getCounts.set(node[1], (getCounts.get(node[1]) || 0) + 1)
+      return  // don't recurse into the name string
+    }
+    if (op === 'global.set') {
+      if (typeof node[1] === 'string') written.add(node[1])
+      if (node[2]) scan(node[2])
+      return
+    }
+    for (let i = 1; i < node.length; i++) scan(node[i])
+  }
+
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+
+  // Build replacement map: globalName → { localName, type } for globals read ≥ 3 times, not written.
+  // Threshold 3 avoids size regressions in tiny functions where local setup cost dominates.
+  // Find the highest existing $_pg index to avoid duplicate local names on re-runs.
+  let localIdx = 0
+  for (let i = 2; i < bodyStart; i++) {
+    const c = fn[i]
+    if (Array.isArray(c) && c[0] === 'local' && typeof c[1] === 'string') {
+      const m = c[1].match(/^\$_pg(\d+)$/)
+      if (m) localIdx = Math.max(localIdx, parseInt(m[1], 10) + 1)
+    }
+  }
+  const replacements = new Map()
+  for (const [gName, count] of getCounts) {
+    if (count < 3 || written.has(gName)) continue
+    // Determine type: use provided map, or infer from context
+    const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
+    if (!type) continue  // can't determine type, skip
+    const lName = `$_pg${localIdx++}`
+    replacements.set(gName, { lName, type })
+  }
+  if (!replacements.size) return
+
+  // Inject local declarations for promoted globals
+  for (const [, { lName, type }] of replacements) {
+    fn.splice(bodyStart, 0, ['local', lName, type])
+  }
+  // After all splices, bodyStart has shifted
+  const newBodyStart = bodyStart + replacements.size
+
+  // Insert local.set at the very start of the body (after the new locals)
+  let insertIdx = newBodyStart
+  for (const [gName, { lName }] of replacements) {
+    fn.splice(insertIdx, 0, ['local.set', lName, ['global.get', gName]])
+    insertIdx++
+  }
+
+  // Replace all global.get with local.get (only for promoted globals)
+  const replace = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'global.get' && typeof node[1] === 'string') {
+      const info = replacements.get(node[1])
+      if (info) { node[0] = 'local.get'; node[1] = info.lName }
+      return
+    }
+    for (let i = 1; i < node.length; i++) replace(node[i])
+  }
+  for (let i = insertIdx; i < fn.length; i++) replace(fn[i])
+}
+
+/**
+ * Infer a global's type from its first usage context within a function body.
+ * Looks at how the global.get result is consumed:
+ *   - wrapped in i32.wrap_i64 → global is i64 (but jz doesn't use i64 globals)
+ *   - used as arg to i32 ops (i32.add, i32.store, etc.) → i32
+ *   - stored to i32-typed local → i32
+ *   - otherwise → f64 (default for NaN-boxing scheme)
+ */
+function inferTypeFromContext(fn, gName, bodyStart) {
+  let inferred = null
+  const check = (node, parent, idx) => {
+    if (!Array.isArray(node) || inferred) return
+    if (node[0] === 'global.get' && node[1] === gName) {
+      // Check parent context
+      if (Array.isArray(parent)) {
+        const pOp = parent[0]
+        // If parent is an i32 op that takes this as operand, likely i32
+        if (typeof pOp === 'string') {
+          if (pOp.startsWith('i32.') && pOp !== 'i32.wrap_i64' && pOp !== 'i32.trunc_f64') {
+            inferred = 'i32'
+            return
+          }
+          if (pOp === 'i32.store' && idx === 2) { inferred = 'i32'; return }  // addr
+          if (pOp === 'f64.store' && idx === 2) { inferred = 'f64'; return }  // addr can be i32, but value is f64
+          if (pOp === 'i32.eq' || pOp === 'i32.ne' || pOp === 'i32.lt_s' || pOp === 'i32.lt_u' ||
+              pOp === 'i32.gt_s' || pOp === 'i32.gt_u' || pOp === 'i32.le_s' || pOp === 'i32.le_u' ||
+              pOp === 'i32.ge_s' || pOp === 'i32.ge_u') {
+            // Comparison — could be i32, but in jz NaN-boxing scheme most globals are f64
+            // Only if we can confirm from local.set context
+          }
+          if (pOp === 'local.set' && idx === 0) {
+            // Can't determine local type from here easily
+          }
+        }
+      }
+      // Default: f64 (the NaN-boxing carrier)
+      if (!inferred) inferred = 'f64'
+      return
+    }
+    for (let i = 0; i < node.length; i++) {
+      if (Array.isArray(node[i])) check(node[i], node, i)
+      if (inferred) return
+    }
+  }
+  for (let i = bodyStart; i < fn.length && !inferred; i++) check(fn[i], null, i)
+  return inferred
+}
+
+/**
  * Hoist frequently-repeated f64 constants into mutable globals.
  * f64.const is 9 bytes; global.get with idx<128 is 2 bytes — saves 7 B per reuse.
  * Pool entries sorted by usage descending, so hottest get lowest indices (1-byte LEB128).
@@ -1613,7 +1755,7 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  * @param fn  func IR node
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
  */
-export function optimizeFunc(fn, cfg) {
+export function optimizeFunc(fn, cfg, globalTypes) {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantPtrOffsetLoop === false &&
@@ -1623,6 +1765,7 @@ export function optimizeFunc(fn, cfg) {
       cfg.cseScalarLoad === false &&
       cfg.csePureExpr === false &&
       cfg.deadStoreElim === false &&
+      cfg.promoteGlobals === false &&
       cfg.sortLocalsByUse === false &&
       cfg.vectorizeLaneLocal === false) return
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
@@ -1635,11 +1778,13 @@ export function optimizeFunc(fn, cfg) {
   if (!cfg || cfg.cseScalarLoad !== false) cseScalarLoad(fn)
   if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
-  // Vectorizer runs only in the POST-watr phase (`__phase === 'post'`), where
-  // narrow.js + watr have produced the canonical lane-local shape. Running it
-  // pre-watr matches a noisier IR and would re-fire post-watr on the residual
-  // tail — producing nested SIMD blocks. Single-pass via phase gating.
-  if (cfg && cfg.vectorizeLaneLocal === true && cfg.__phase === 'post') vectorizeLaneLocal(fn)
+  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes)
+  // Vectorizer runs in POST-watr when watr is enabled, or in PRE when watr is
+  // disabled (there is no post pass then). This keeps single-pass semantics.
+  if (cfg && cfg.vectorizeLaneLocal === true) {
+    const runVectorizer = cfg.__phase === 'post' || (cfg.__phase !== 'post' && cfg.watr === false)
+    if (runVectorizer) vectorizeLaneLocal(fn)
+  }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
 }
 

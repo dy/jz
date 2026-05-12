@@ -7,7 +7,7 @@ function run(code) {
   return new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports
 }
 
-const SIMD_OPT = { optimize: { vectorizeLaneLocal: true } }
+const SIMD_OPT = { optimize: { vectorizeLaneLocal: true, watr: true } }
 const runVec = (code, opts) => jz(code, opts).exports
 const wat = (code, opts) => compile(code, { ...opts, wat: true })
 const hasV128 = (w) =>

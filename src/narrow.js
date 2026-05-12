@@ -389,7 +389,8 @@ export default function narrowSignatures(programFacts, ast) {
   // Safety:
   //   - exclude ARRAY (forwards on realloc — f64 NaN-box is a stable identity) and
   //     STRING (SSO vs heap dual encoding depends on ptr-type bits we'd drop).
-  //   - exclude CLOSURE/TYPED (aux bits carry schema/element-type, lost with offset).
+  //   - exclude CLOSURE (aux carries funcIdx, needed for call_indirect) and TYPED
+  //     (aux carries element-type, handled separately by applyTypedPointerParamAbi).
   //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
   //   - exclude rest position (array pack/unpack stays f64).
   applyPointerParamAbi(paramReps, valueUsed)
