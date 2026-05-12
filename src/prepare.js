@@ -656,7 +656,10 @@ function expandDestruct(pattern, source, out, decls = null) {
     }
 
     if (Array.isArray(item) && item[0] === ':') {
-      pushPatternAssign(item[2], ['.', source, item[1]], out, decls)
+      const key = item[1]
+      const computedKey = Array.isArray(key) && key[0] === '[]' && key.length === 2 ? key[1] : null
+      if (computedKey) includeForArrayAccess()
+      pushPatternAssign(item[2], computedKey ? ['[]', source, computedKey] : ['.', source, key], out, decls)
       continue
     }
   }
