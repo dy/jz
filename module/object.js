@@ -226,6 +226,10 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
+  ctx.core.emit['Object.defineProperty'] = () => {
+    err('Object.defineProperty descriptor semantics are outside jz scope; jzify only folds static bundler export helpers')
+  }
+
   // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs
   ctx.core.emit['Object.fromEntries'] = (arr) => {
     inc('__hash_new', '__hash_set')

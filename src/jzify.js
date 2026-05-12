@@ -30,7 +30,7 @@ export default function jzify(ast) {
   const names = new Set()
   ast = hoistVars(ast, names)
   if (names.size) ast = prependDecls(ast, names)
-  return transformScope(ast)
+  return foldStaticExportHelpers(transformScope(ast))
 }
 
 /**
@@ -431,6 +431,133 @@ function transform(node) {
   if (op == null) return node
   const h = handlers[op]
   return (h && h(...args)) ?? (h ? [op, ...args.map(transform)] : [op, ...args.map(transform)])
+}
+
+// Esbuild emits a small ESM helper:
+//
+//   var __defProp = Object.defineProperty;
+//   var __export = (target, all) => {
+//     for (var name in all)
+//       __defProp(target, name, { get: all[name], enumerable: true });
+//   };
+//   __export(src_exports, { default: () => value });
+//   use(src_exports.default);
+//
+// Full descriptor/prototype semantics are outside JZ's fixed-shape object model.
+// This pass instead recognizes the static helper pattern and rewrites reads of
+// the synthetic export object to the real binding.
+function foldStaticExportHelpers(ast) {
+  const body = astSeq(ast)
+  if (!body) return ast
+
+  const defPropAliases = new Set()
+  for (const stmt of body) {
+    if (Array.isArray(stmt) && stmt[0] === '=' && typeof stmt[1] === 'string' && isObjectDefineProperty(stmt[2]))
+      defPropAliases.add(stmt[1])
+  }
+  if (!defPropAliases.size) return ast
+
+  const helperNames = new Set()
+  for (const stmt of body) {
+    if (Array.isArray(stmt) && stmt[0] === '=' && typeof stmt[1] === 'string' &&
+        Array.isArray(stmt[2]) && stmt[2][0] === '=>' && containsDefinePropertyCall(stmt[2], defPropAliases))
+      helperNames.add(stmt[1])
+  }
+  if (!helperNames.size) return ast
+
+  const rewrites = new Map()
+  const removable = new Set()
+  for (const stmt of body) {
+    const ex = staticExportCall(stmt, helperNames)
+    if (!ex) continue
+    for (const [key, value] of ex.props) rewrites.set(`${ex.target}.${key}`, value)
+    removable.add(stmt)
+  }
+  if (!rewrites.size) return ast
+
+  const rewritten = body
+    .filter(stmt => !removable.has(stmt) && !isDefPropAliasAssign(stmt, defPropAliases) && !isExportHelperAssign(stmt, helperNames))
+    .map(stmt => replaceStaticExportReads(stmt, rewrites))
+  return rewritten.length === 0 ? null : rewritten.length === 1 ? rewritten[0] : [';', ...rewritten]
+}
+
+function astSeq(ast) {
+  if (!Array.isArray(ast)) return null
+  return ast[0] === ';' ? ast.slice(1).filter(Boolean) : [ast]
+}
+
+function isObjectDefineProperty(node) {
+  return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'defineProperty'
+}
+
+function isDefPropAliasAssign(stmt, aliases) {
+  return Array.isArray(stmt) && stmt[0] === '=' && aliases.has(stmt[1]) && isObjectDefineProperty(stmt[2])
+}
+
+function isExportHelperAssign(stmt, helpers) {
+  return Array.isArray(stmt) && stmt[0] === '=' && helpers.has(stmt[1])
+}
+
+function containsDefinePropertyCall(node, aliases) {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && (aliases.has(node[1]) || isObjectDefineProperty(node[1]))) return true
+  for (let i = 1; i < node.length; i++) if (containsDefinePropertyCall(node[i], aliases)) return true
+  return false
+}
+
+function staticExportCall(stmt, helpers) {
+  if (!Array.isArray(stmt) || stmt[0] !== '()' || !helpers.has(stmt[1])) return null
+  const args = callArgs(stmt.slice(2))
+  if (args.length !== 2 || typeof args[0] !== 'string') return null
+  const props = objectProps(args[1])
+  if (!props) return null
+  const out = []
+  for (const prop of props) {
+    if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return null
+    const value = getterReturnExpr(prop[2])
+    if (!value) return null
+    out.push([prop[1], value])
+  }
+  return { target: args[0], props: out }
+}
+
+function callArgs(args) {
+  if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') return args[0].slice(1)
+  return args.filter(a => a != null)
+}
+
+function objectProps(node) {
+  if (!Array.isArray(node) || node[0] !== '{}') return null
+  const body = node[1]
+  if (body == null) return []
+  if (Array.isArray(body) && body[0] === ',') return body.slice(1)
+  return [body]
+}
+
+function getterReturnExpr(node) {
+  if (!Array.isArray(node) || node[0] !== '=>') return null
+  const params = paramList(node[1])
+  if (params.length !== 0) return null
+  const body = node[2]
+  if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === 'return') return body[1][1]
+  if (Array.isArray(body) && body[0] === 'return') return body[1]
+  return body
+}
+
+function replaceStaticExportReads(node, rewrites) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+  if ((node[0] === '.' || node[0] === '?.') && typeof node[1] === 'string' && typeof node[2] === 'string') {
+    const value = rewrites.get(`${node[1]}.${node[2]}`)
+    if (value) return cloneAst(value)
+  }
+  if (node[0] === ':') return [node[0], node[1], replaceStaticExportReads(node[2], rewrites)]
+  return node.map((part, i) => i === 0 ? part : replaceStaticExportReads(part, rewrites))
+}
+
+function cloneAst(node) {
+  if (node == null || typeof node !== 'object') return node
+  if (!Array.isArray(node)) return node
+  return node.map(cloneAst)
 }
 
 /** Transform switch statement to if/else chain. */

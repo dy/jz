@@ -114,6 +114,22 @@ test('regression: jzify lowers destructured arrow params with expression object 
   is(exports._run(), 3, 'destructured arrow callback returning object literal compiles')
 })
 
+test('regression: jzify folds static esbuild export helper', () => {
+  const exports = run(`
+    var __defProp = Object.defineProperty;
+    var __export = (target, all) => {
+      for (var name in all)
+        __defProp(target, name, { get: all[name], enumerable: true });
+    };
+    var src_exports = {};
+    __export(src_exports, { default: () => mod_default });
+    function impl() { return 42 }
+    var mod_default = impl;
+    export let _run = () => src_exports?.default();
+  `)
+  is(exports._run(), 42, 'static export object reads rewrite to the live local binding')
+})
+
 test('regression: for-in with let as identifier (test262 identifier-let-allowed)', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`)
   is(exports._run(), 1, 'for-in with let as identifier compiles and runs')
