@@ -91,6 +91,15 @@ test('destruct: object in function', () => {
   is(f(), 169)
 })
 
+test('destruct: computed object key', () => {
+  const { f } = run(`export let f = () => {
+    let k = "a"
+    let {[k]: x} = {a: 7}
+    return x
+  }`)
+  is(f(), 7)
+})
+
 test('destruct assign: [...rest] = arr', () => {
   const { f } = run(`export let f = () => {
     let rest
