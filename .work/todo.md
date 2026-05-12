@@ -72,20 +72,7 @@
 
 ### Performance — closing the native-language gap
 
-* [ ] **Stack allocation / scalar-replacement for fixed-size typed arrays** (mat4/biquad/aos — `localArr(f64, 16)` IR, spill on escape). Highest-value remaining perf item: directly speeds up color-space + digital-filter kernels; extends the existing array/object escape-analysis + arena-rewind machinery rather than building new infra.
-* [ ] Partial unroll + vector body instead of full unroll (mat4: keep `r` loop, vectorize `k` with `f64x2`) — medium value, mat4-specific
-* [ ] json arena/raw-u8 fast path — remaining structural micro-gap (transient `kbuf` in `__jp_obj` is never rewound; per-node `__alloc` calls). Low priority now that the bench sits at ≈1.0× native C; would need parser value-shape redesign for further gains.
-
-### i64-tagged carrier switch (NaN-boxing replacement)
-
-* [ ] Lay out new bit scheme (type:8 / aux:24 / offset:32) — still `type:4 @bit47, aux:15 @bit32`. Risky carrier refactor; only payoff is headroom (more schemaId bits, more elem tags). Deferred — no user value today.
-* [ ] Audit and remove obsolete f64-NaN-payload literals from `module/*` (only relevant once bit scheme changes)
-* [ ] Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags (depends on bit scheme)
-
-### Size / watr gap
-
-* [ ] Source/runtime array-view optimization for local queue-style arrays (`normalize()`) — needs source refactor or escape-analysis extension
-* [ ] Dynamic object/property-shape specialization for watr context — partial: constant `.prop`/`?.prop` keys now prehash (`__dyn_get_t` is a thin wrapper over `__dyn_get_t_h(obj,key,type,h)`; sites pass compile-time `strHashLiteral(prop)` → no `__str_hash` per access), `__set_len` calls inlined, `__typed_idx` ARRAY fast path, additive hash-probe walks. Remaining static narrowing only (schema-slot access, `__is_str_key` elision). N-way prop caches & static-segment off-16 props slots analyzed as net-negative — bytes for unmeasurable gain; watr's hot dyn-prop receivers (`ctx`, AST nodes) are heap arrays that already use off-16 header slots.
+* [ ] i64-tagged carrier switch (type:8 / aux:24 / offset:32 instead of NaN-box `type:4@bit47, aux:15@bit32`) — would buy schemaId/elem-tag headroom (lift schemaId 15→24, more elem tags) and let the obsolete f64-NaN-payload literals in `module/*` go; risky carrier refactor, no user value today → deferred.
 
 ### watr — latent trampoline arity bug
 
@@ -171,6 +158,12 @@
 * [x] Cross-function scalar replacement (caller→callee), with tier-up guard
 * [x] SIMD vectorization for fixed-size f64 matrix multiply
 * [x] Hoist loop-invariant scalar conversions for vectorized dot pairs
+* [x] Fixed-size typed-array scalar replacement extended past Float64Array — Int32/Int16/Uint16/Int8/Uint8 views now scalar-replace to wasm locals with correct store-coercion (`|0`, `<<16>>16`, `&0xFFFF`, `<<24>>24`, `&0xFF`); coerced types stay local-only — any escape keeps the heap alloc (mirror/fence can't track alias writes). `4918e02`
+* [x] `optimize: 'size' | 'speed' | 'balanced'` string aliases over the size↔speed unroll/scalar knobs `8ca6f18`
+* [x] Closed as low-value: Float32Array / Uint8ClampedArray / Uint32Array scalar replacement (Float32 needs `Math.fround` ⇒ `math` module pulled at plan time; Uint8Clamped is round-half-even; Uint32 range >2^31 collides with jz's i32 narrowing of `x>>>0`) — edge semantics, no measured win
+* [x] Closed as low-value: partial unroll + f64x2 vector body for mat4 — inner loops are constant-trip 4×4×4; full unroll + f64x2 dot-pairing already runs mat4 at 0.78× native C
+* [x] Closed as low-value: json arena/raw-u8 fast path — bench already ≈1.0× native C; the residual micro-gap (transient `kbuf` in `__jp_obj` never rewound, per-node `__alloc`) needs a parser value-shape redesign for marginal gain
+* [x] Closed as low-value: source/runtime array-view optimization for `normalize()`-style local queue arrays — needs a source refactor or escape-analysis extension (also noted in "Size — closing the AS gap" archive)
 
 ### i64-tagged carrier switch
 
