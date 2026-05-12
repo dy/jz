@@ -70,12 +70,20 @@ function hoistVars(node, names) {
     }
     return [op, lhs, hoistVars(node[2], names)]
   }
+  if (op === '=' && Array.isArray(node[1]) && node[1][0] === 'var' && typeof node[1][1] === 'string' && node[1].length === 2) {
+    names.add(node[1][1])
+    return ['=', node[1][1], hoistVars(node[2], names)]
+  }
   // For-head `;` is positional (init; cond; update), not a statement sequence.
   // Recurse into each slot but never filter nulls — empty slots are valid.
   if (op === 'for') {
     const head = node[1]
     let h2
-    if (Array.isArray(head) && head[0] === ';') {
+    if (Array.isArray(head) && head[0] === 'var' && Array.isArray(head[1]) &&
+        (head[1][0] === 'in' || head[1][0] === 'of') && typeof head[1][1] === 'string') {
+      names.add(head[1][1])
+      h2 = [head[1][0], head[1][1], hoistVars(head[1][2], names)]
+    } else if (Array.isArray(head) && head[0] === ';') {
       h2 = [';']
       for (let i = 1; i < head.length; i++) h2.push(hoistVars(head[i], names))
     } else {

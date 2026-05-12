@@ -78,6 +78,21 @@ test('regression: non-ASCII identifier (test262 start-unicode-*)', () => {
   is(exports._run(), 1, 'non-ASCII identifier works correctly')
 })
 
+test('regression: jzify hoists var initializer assignment', () => {
+  const exports = run(`export let _run = () => { var x = 1; return x }`)
+  is(exports._run(), 1, 'var initializer compiles as assignment to the declared name')
+})
+
+test('regression: jzify hoists for-var-in declaration', () => {
+  const exports = run(`export let _run = () => {
+    let o = { a: 1, b: 2 }
+    let n = 0
+    for (var k in o) n += 1
+    return n
+  }`)
+  is(exports._run(), 2, 'for (var k in obj) compiles')
+})
+
 test('regression: for-in with let as identifier (test262 identifier-let-allowed)', () => {
   const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`)
   is(exports._run(), 1, 'for-in with let as identifier compiles and runs')
