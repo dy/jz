@@ -690,7 +690,20 @@ function prepDecl(op, ...inits) {
       err('destructuring assignment after declaration must be a separate statement')
     }
 
-    if (!Array.isArray(i) || i[0] !== '=') { rest.push(i); continue }
+    if (!Array.isArray(i) || i[0] !== '=') {
+      let declName = i
+      if (depth === 0 && typeof declName === 'string') {
+        if (ctx.module.currentPrefix) {
+          declName = `${ctx.module.currentPrefix}$${declName}`
+          ctx.scope.chain[i] = declName
+        }
+        if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
+        ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
+        ctx.scope.userGlobals.add(declName)
+      }
+      rest.push(declName)
+      continue
+    }
     const [, name, init] = i, normed = prep(init)
 
     if (isDestructPattern(name)) {

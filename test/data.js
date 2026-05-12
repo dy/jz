@@ -668,6 +668,16 @@ test('module-scope: let with expression', () => {
   `).f(), 3)
 })
 
+test('module-scope: jzify hoisted bare var is global', () => {
+  const wasm = compile(`
+    var x
+    x = 3
+    export let f = () => x
+  `, { jzify: true })
+  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
+  is(inst.exports.f(), 3)
+})
+
 test('module-scope: array init', () => {
   is(run(`
     let a = [10, 20, 30]
