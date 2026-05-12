@@ -2419,7 +2419,10 @@ function liftOptionalChain(node) {
  */
 export function emit(node, expect) {
   _expect = expect || null
-  if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
+  if (Array.isArray(node)) {
+    ctx.error.node = node
+    if (node.loc != null) ctx.error.loc = node.loc
+  }
   if (node == null) return null
   if (node === true) return typed(['i32.const', 1], 'i32')
   if (node === false) return typed(['i32.const', 0], 'i32')
