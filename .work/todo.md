@@ -70,10 +70,6 @@
 
 * [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup.
 
-### Performance — closing the native-language gap
-
-* [ ] i64-tagged carrier switch (type:8 / aux:24 / offset:32 instead of NaN-box `type:4@bit47, aux:15@bit32`) — would buy schemaId/elem-tag headroom (lift schemaId 15→24, more elem tags) and let the obsolete f64-NaN-payload literals in `module/*` go; risky carrier refactor, no user value today → deferred.
-
 ### watr — latent trampoline arity bug
 
 * [ ] Uniform closure-table signature is sized by `ctx.closure.width` (max *call-site* arity), but boundary trampolines for first-class function values reference `$__a${i}` up to the *function's* arity. A function with more params than `width` (e.g. `encode.f32(input, value, idx)`, arity 3, in a program whose closure calls never pass 3 args) emits `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2`. Fix: `width = max(callSiteArities, tableResidentFnArities)`. Not triggered by the watr suite (full build's width is already ≥3).
@@ -165,12 +161,13 @@
 * [x] Closed as low-value: json arena/raw-u8 fast path — bench already ≈1.0× native C; the residual micro-gap (transient `kbuf` in `__jp_obj` never rewound, per-node `__alloc`) needs a parser value-shape redesign for marginal gain
 * [x] Closed as low-value: source/runtime array-view optimization for `normalize()`-style local queue arrays — needs a source refactor or escape-analysis extension (also noted in "Size — closing the AS gap" archive)
 
-### i64-tagged carrier switch
+### i64-tagged carrier switch — investigated, closed wontfix
 
-* [x] `env.setTimeout` cbPtr — i64 import
-* [x] `__ext_prop` / `__ext_has` / `__ext_set` / `__ext_call` — i64 imports
-* [x] Add `globalTypes` tracking for host-imported globals (i64)
-* [x] Switch user opts.imports declared sig from f64 → i64
+* [x] Spike + codegen survey (see `.work/i64-spike/` — FINDINGS.md, bench*.mjs, json.wat). Conclusion: switching the internal value carrier from NaN-boxed f64 → i64 buys **no measurable perf or size win**. (1) No bit headroom — raw-f64-bit numbers must keep the NaN-box encoding regardless of storage type, so the 51-bit payload split is unchanged; the "type:8/aux:24/offset:32 = 64 bits" scheme is infeasible (would force boxing doubles, killing numeric perf). (2) jz already has unboxed-i32-offset pointer locals (`repByLocal` carries `ptrKind`/`ptrAux`/`schemaId`; pointer ops are bare `local.get`s) — strictly cheaper than an i64 carrier (32 vs 64 bits). (3) Static `*.reinterpret_*` count is ~45/15 flat across numeric and pointer/string-heavy benches — fixed runtime plumbing, not per-hot-op codegen; existing hoisting/unboxing keeps reinterprets off hot recurrences everywhere. (4) Microbenchmarks: i64-local-with-reinterpret 1.49× slower on a numeric recurrence; json WALK i64/f64 = 1.01×, json PARSE = 0.76×; WASM size ±handful of bytes. The two "surgical" alternatives (LICM on property-access loads; unboxed-pointer return ABI for `__jp_shape_N`) target a gap that doesn't move any benchmark, and LICM-on-loads re-opens the `cseScalarLoad` aliasing bug class. Only real upside is host.js boundary simplification (drop the NaN-canonicalization plumbing) — not worth a multi-day high-risk carrier refactor. Revisit only if a real bottleneck surfaces.
+* [x] (prep landed earlier, kept) `env.setTimeout` cbPtr — i64 import
+* [x] (prep landed earlier, kept) `__ext_prop` / `__ext_has` / `__ext_set` / `__ext_call` — i64 imports
+* [x] (prep landed earlier, kept) Add `globalTypes` tracking for host-imported globals (i64)
+* [x] (prep landed earlier, kept) Switch user opts.imports declared sig from f64 → i64
 
 ### JZ-side prep
 
