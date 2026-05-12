@@ -447,6 +447,45 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   almost(main(5), refMain(5), 1e-9)
 })
 
+test('fixed integer typed-array locals scalar-replace with element coercion', () => {
+  const src = `
+    export const main = () => {
+      const lut = new Int32Array(4)
+      for (let i = 0; i < 4; i++) lut[i] = i * 3.7
+      const tape = new Uint8Array(3)
+      tape[0] = 257
+      tape[1] = -1
+      tape[2] = lut[3] & 7
+      return lut[0] + lut[1] + lut[2] + lut[3] + tape[0] + tape[1] + tape[2]
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
+  ok(!/\$__alloc\b/.test(mainWat), 'local fixed integer typed arrays should not allocate')
+  ok(!/i32\.(?:load|store)\b/.test(mainWat), 'local fixed integer typed-array slots should stay in locals')
+  // Truncation matches JS: Int32Array trunc-toward-zero, Uint8Array & 0xFF.
+  const ref = (() => {
+    const lut = new Int32Array(4); for (let i = 0; i < 4; i++) lut[i] = i * 3.7
+    const tape = new Uint8Array(3); tape[0] = 257; tape[1] = -1; tape[2] = lut[3] & 7
+    return lut[0] + lut[1] + lut[2] + lut[3] + tape[0] + tape[1] + tape[2]
+  })()
+  is(run(src).main(), ref)
+})
+
+test('escaping integer typed array keeps its allocation (no unsound mirror)', () => {
+  const src = `
+    const fill = (a) => { for (let i = 0; i < 4; i++) a[i] = i }
+    export const main = () => {
+      const a = new Int32Array(4)
+      fill(a)
+      return a[0] + a[1] + a[2] + a[3]
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  ok(/\$__alloc_hdr\b/.test(wat), 'escaping integer typed array must stay heap-allocated')
+  is(run(src).main(), 6)
+})
+
 test('nested small const-count for-loop unroll is opt-in', () => {
   const wat = jz.compile(`
     export const main = () => {

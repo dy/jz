@@ -30,7 +30,30 @@ import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './nar
 
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
-const SCALAR_TYPED_CTOR = 'new.Float64Array'
+// Fixed-size typed arrays eligible for scalar replacement, mapped to the element
+// store-coercion kind ('' = none, i.e. Float64Array's f64-identity). Excluded:
+//   Float32Array      — store coercion is `Math.fround`, needs the `math` module pulled at plan time
+//   Uint32Array       — element range [0, 2^32) exceeds what jz keeps as f64 after `x >>> 0` (i32-narrowed)
+//   Uint8ClampedArray — round-half-to-even clamp
+// Coerced (truthy) types are scalarized only when fully local — any escape (passed
+// to a call, `.buffer`/view aliasing, etc.) keeps the real allocation, since the
+// mirror/fence path can't track writes through an alias that outlives the fence.
+const SCALAR_TYPED_COERCE = {
+  'new.Float64Array': '',
+  'new.Int32Array': 'i32',
+  'new.Int16Array': 'i16', 'new.Uint16Array': 'u16',
+  'new.Int8Array': 'i8', 'new.Uint8Array': 'u8',
+}
+// AST for the store coercion a typed-array element does on write (`arr[i] = v`).
+// All expressible with operators jz already lowers post-plan (no module deps).
+const coerceAST = (kind, expr) => {
+  if (kind === 'i32') return ['|', expr, [null, 0]]
+  if (kind === 'i16') return ['>>', ['<<', expr, [null, 16]], [null, 16]]
+  if (kind === 'u16') return ['&', expr, [null, 0xffff]]
+  if (kind === 'i8') return ['>>', ['<<', expr, [null, 24]], [null, 24]]
+  if (kind === 'u8') return ['&', expr, [null, 0xff]]
+  return expr
+}
 const maxScalarTypedArrayLen = () => ctx.transform.optimize?.scalarTypedArrayLen ?? 32
 const maxScalarTypedLoopUnroll = () => ctx.transform.optimize?.scalarTypedLoopUnroll ?? 16
 const maxScalarTypedNestedUnroll = () => ctx.transform.optimize?.scalarTypedNestedUnroll ?? 128
@@ -164,12 +187,14 @@ const scalarObjectProps = (expr) => {
   return props
 }
 
-const fixedScalarTypedArrayLen = (expr) => {
-  if (typedElemCtor(expr) !== SCALAR_TYPED_CTOR) return null
+const fixedScalarTypedArray = (expr) => {
+  const ctor = typedElemCtor(expr)
+  if (ctor == null || !(ctor in SCALAR_TYPED_COERCE)) return null
   const args = callArgs(expr)
   if (!args || args.length !== 1) return null
   const len = constIntExpr(args[0])
-  return len != null && len >= 0 && len <= maxScalarTypedArrayLen() ? len : null
+  return len != null && len >= 0 && len <= maxScalarTypedArrayLen()
+    ? { len, coerce: SCALAR_TYPED_COERCE[ctor] } : null
 }
 
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
@@ -253,7 +278,10 @@ const typedArraySlotIndex = (node, len) => {
   return idx != null && idx >= 0 && idx < len ? idx : null
 }
 
-const safeScalarTypedArrayUse = (node, name, len) => {
+// `coerce` truthy ⇒ the array's element type truncates on store (Int*/Uint* views),
+// so in-place updates (`arr[i]++`, `arr[i] += x`) can't be a plain `slot`-op rewrite —
+// reject them and only scalarize plain `arr[i] = v` writes and `arr[i]` reads.
+const safeScalarTypedArrayUse = (node, name, len, coerce = '') => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
@@ -261,17 +289,18 @@ const safeScalarTypedArrayUse = (node, name, len) => {
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
   if (op === '[]' && node[1] === name) return typedArraySlotIndex(node[2], len) != null
   if ((op === '++' || op === '--') && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name)
-    return typedArraySlotIndex(node[1][2], len) != null
+    return !coerce && typedArraySlotIndex(node[1][2], len) != null
   if (ASSIGN_TARGET_OPS.has(op)) {
     if (node[1] === name) return false
     if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
+      if (coerce && op !== '=') return false
       if (typedArraySlotIndex(node[1][2], len) == null) return false
-      for (let i = 2; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len)) return false
+      for (let i = 2; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
       return true
     }
   }
   if (op === '...' && node[1] === name) return false
-  for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len)) return false
+  for (let i = 1; i < node.length; i++) if (!safeScalarTypedArrayUse(node[i], name, len, coerce)) return false
   return true
 }
 
@@ -296,8 +325,11 @@ const rewriteScalarTypedArrayUses = (node, arrays) => {
     return slot ? [op, slot] : node
   }
   if (ASSIGN_TARGET_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' && arrays.has(node[1][1])) {
-    const slot = slotFor(node[1][2], arrays.get(node[1][1]))
-    return slot ? [op, slot, ...node.slice(2).map(part => rewriteScalarTypedArrayUses(part, arrays))] : node
+    const entry = arrays.get(node[1][1])
+    const slot = slotFor(node[1][2], entry)
+    if (!slot) return node
+    const rhs = node.slice(2).map(part => rewriteScalarTypedArrayUses(part, arrays))
+    return op === '=' && entry.coerce ? ['=', slot, coerceAST(entry.coerce, rhs[0])] : [op, slot, ...rhs]
   }
   return node.map((part, i) => i === 0 ? part : rewriteScalarTypedArrayUses(part, arrays))
 }
@@ -362,26 +394,27 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     if (!Array.isArray(stmt) || (stmt[0] !== 'let' && stmt[0] !== 'const') || stmt.length !== 2) continue
     const decl = stmt[1]
     if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') continue
-    const len = fixedScalarTypedArrayLen(decl[2])
-    if (len == null) continue
+    const fixed = fixedScalarTypedArray(decl[2])
+    if (fixed == null) continue
+    const { len, coerce } = fixed
     let hasSafeUse = false, hasUnsafeUse = false
     for (let j = 0; j < stmts.length; j++) {
       if (j === i) continue
       if (!mentionsName(stmts[j], decl[1])) continue
-      const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len)
+      const safe = safeScalarTypedArrayUse(stmts[j], decl[1], len, coerce)
       hasSafeUse ||= safe
       hasUnsafeUse ||= !safe
     }
-    if (!hasSafeUse && hasUnsafeUse) continue
-    if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, mirrored: false })
-    else mirrored.set(decl[1], { index: i, len, mirrored: true })
+    if (hasUnsafeUse && (!hasSafeUse || coerce)) continue
+    if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, coerce, mirrored: false })
+    else mirrored.set(decl[1], { index: i, len, coerce, mirrored: true })
   }
   if (!candidates.size && !mirrored.size) return { node: changed ? [';', ...stmts] : seq, changed }
 
   const arrays = new Map()
   for (const [name, c] of [...candidates, ...mirrored]) {
     const slots = Array.from({ length: c.len }, (_, k) => `${name}${T}ta${ctx.func.uniq++}_${k}`)
-    arrays.set(name, { len: c.len, slots, mirrored: c.mirrored })
+    arrays.set(name, { len: c.len, slots, mirrored: c.mirrored, coerce: c.coerce })
   }
 
   const out = []
@@ -403,7 +436,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     }
     const unsafe = []
     for (const [name, arr] of arrays) {
-      if (arr.mirrored && mentionsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len)) unsafe.push([name, arr])
+      if (arr.mirrored && mentionsName(stmts[i], name) && !safeScalarTypedArrayUse(stmts[i], name, arr.len, arr.coerce)) unsafe.push([name, arr])
     }
     if (unsafe.length) {
       for (const [name, arr] of unsafe) out.push(...scalarTypedArrayStores(name, arr))
@@ -528,8 +561,8 @@ const fixedTypedArraysInBody = (body) => {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        const len = fixedScalarTypedArrayLen(d[2])
-        if (len != null) out.set(d[1], { len })
+        const fixed = fixedScalarTypedArray(d[2])
+        if (fixed != null) out.set(d[1], fixed)
       }
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
@@ -545,15 +578,15 @@ const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
   const cands = new Map()
   for (let i = 0; i < params.length; i++) {
     const pname = params[i].name
-    let len = null, ok = true
+    let len = null, coerce = null, ok = true
     for (const site of sites) {
       const arg = site.argList[i]
       const fixed = typeof arg === 'string' ? fixedByFunc.get(site.callerFunc)?.get(arg) : null
       if (!fixed) { ok = false; break }
-      if (len == null) len = fixed.len
-      else if (len !== fixed.len) { ok = false; break }
+      if (len == null) { len = fixed.len; coerce = fixed.coerce }
+      else if (len !== fixed.len || coerce !== fixed.coerce) { ok = false; break }
     }
-    if (ok && len != null && len <= maxScalarTypedArrayLen()) cands.set(pname, { len })
+    if (ok && len != null && len <= maxScalarTypedArrayLen()) cands.set(pname, { len, coerce })
   }
   if (!cands.size) return cands
   for (const site of sites) {
@@ -569,13 +602,14 @@ const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
 }
 
 const scalarizeTypedArrayParams = (func, paramCands) => {
-  for (const [name, c] of [...paramCands]) if (!safeScalarTypedArrayUse(func.body, name, c.len)) paramCands.delete(name)
+  for (const [name, c] of [...paramCands]) if (!safeScalarTypedArrayUse(func.body, name, c.len, c.coerce)) paramCands.delete(name)
   for (const [name] of [...paramCands]) if (!hasScalarTypedArrayRead(func.body, name)) paramCands.delete(name)
   if (!paramCands.size) return { body: func.body, changed: false }
   const arrays = new Map()
   for (const [name, c] of paramCands) {
     arrays.set(name, {
       len: c.len,
+      coerce: c.coerce,
       slots: Array.from({ length: c.len }, (_, k) => `${name}${T}tap${ctx.func.uniq++}_${k}`),
     })
   }
