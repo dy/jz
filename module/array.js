@@ -226,6 +226,7 @@ export default (ctx) => {
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
     ],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', '__set_len'],
+    __arr_push1: ['__arr_grow_known', '__ptr_offset', '__set_len'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
       ? ['__len']
       : ['__len', '__ptr_offset'],
@@ -476,6 +477,22 @@ export default (ctx) => {
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
+    (local.get $p))`
+
+  // Out-of-line .push(val) for known-ARRAY receivers — keeps each call site to a
+  // single call + var update instead of ~30 inlined instructions. Returns the
+  // (possibly relocated) array pointer; caller derives the new length if needed.
+  ctx.core.stdlib['__arr_push1'] = `(func $__arr_push1 (param $ptr i64) (param $val f64) (result f64)
+    (local $p f64) (local $base i32) (local $len i32)
+    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
+    (local.set $base (call $__ptr_offset (local.get $ptr)))
+    (local.set $len (i32.load (i32.sub (local.get $base) (i32.const 8))))
+    (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (i32.add (local.get $len) (i32.const 1)))
+      (then
+        (local.set $p (call $__arr_grow_known (local.get $ptr) (i32.add (local.get $len) (i32.const 1))))
+        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
+    (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
+    (call $__set_len (i64.reinterpret_f64 (local.get $p)) (i32.add (local.get $len) (i32.const 1)))
     (local.get $p))`
 
   // === Array literal ===
@@ -735,6 +752,21 @@ export default (ctx) => {
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
   ctx.core.emit['.push'] = (arr, ...vals) => {
+    // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
+    // var update instead of ~30 inlined instructions — the dominant size cost of
+    // push-heavy code (e.g. watr's WASM emitter).
+    if (vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY) {
+      inc('__arr_push1')
+      const box = ctx.func.boxed?.get(arr)
+      const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
+      const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
+      const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
+      const vv = asF64(emit(vals[0]))
+      return typed(['block', ['result', 'f64'],
+        writeVar(['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]),
+        ['f64.convert_i32_s', ['i32.load', ['i32.sub',
+          ['call', '$__ptr_offset', ['i64.reinterpret_f64', readVar]], ['i32.const', 8]]]]], 'f64')
+    }
     const va = asF64(emit(arr))
     const t = temp('pp'), len = tempI32('pl')
 
