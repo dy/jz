@@ -340,7 +340,7 @@ export default (ctx) => {
   // 24-byte header preceding the returned data pointer D:
   //   D-24: obj-kind word (i32) — 0/STATIC; hash tables stamp OBJ_KIND.HASH
   //   D-20: reserved (i32)
-  //   D-16: propsPtr (i64) — per-object dynamic-property hash (NaN-boxed PTR.HASH)
+  //   D-16: propsPtr (i64) — per-object dynamic-property hash (NaN-boxed OBJ_KIND.HASH object)
   //         for ARRAY/HASH/MAP/SET; 0 means "no dyn props yet". Lets __dyn_get_t /
   //         __dyn_set sidestep the global __dyn_props lookup on the hot path.
   //   D-8: len (i32)   D-4: cap (i32)
@@ -540,14 +540,12 @@ export default (ctx) => {
   }
 
   // Runtime .length dispatch — factory elides branches for types that can't exist in
-  // this program (features.* + hash-stdlib presence). ARRAY is always live; STRING and
-  // number are always dispatched. The __len disjunction collapses to whichever of
-  // ARRAY/TYPED/HASH/SET/MAP are reachable. STRING covers both heap and SSO via __str_len.
+  // this program (features.*). ARRAY is always live; STRING and number are always
+  // dispatched. The __len disjunction collapses to whichever of ARRAY/TYPED/SET/MAP
+  // are reachable. STRING covers both heap and SSO via __str_len.
   ctx.core.stdlib['__length'] = () => {
     const types = [PTR.ARRAY]
     if (ctx.features.typedarray) types.push(PTR.TYPED)
-    if (ctx.core.includes.has('__hash_new') || ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
-      types.push(PTR.HASH)
     if (ctx.features.set) types.push(PTR.SET)
     if (ctx.features.map) types.push(PTR.MAP)
     const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`

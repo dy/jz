@@ -186,17 +186,17 @@ const maybeDynMoveIR = () => needsArrayDynMove()
   ? '(call $__dyn_move (local.get $off) (local.get $newOff))'
   : ''
 
-// Per-object propsPtr lives in the 16-byte header at $off-16. On grow we copy it
-// from old to new header (still HASH-tagged → unshifted ARRAY case). On shift we
+// Per-object propsPtr lives in the alloc header at $off-16. On grow we copy it
+// from old to new header (still OBJECT-tagged → unshifted ARRAY case). On shift we
 // migrate it to the global __dyn_props because the forwarding writes overwrite
-// the destination's $newOff-16 slot. The HASH-tag check rejects 0 (no props) and
+// the destination's $newOff-16 slot. The OBJECT-tag check rejects 0 (no props) and
 // forwarding garbage from a prior shift, so chained shift→grow is safe — the
 // global hash takes over and __dyn_move keeps it in sync.
 const headerPropsCopyIR = () => needsArrayDynMove() ? `
     (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-          (i32.const ${PTR.HASH}))
+          (i32.const ${PTR.OBJECT}))
       (then (f64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $oldProps))))` : ''
 
 const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
@@ -205,7 +205,7 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-              (i32.const ${PTR.HASH}))
+              (i32.const ${PTR.OBJECT}))
           (then
             (local.set $root (global.get $__dyn_props))
             (if (f64.eq (local.get $root) (f64.const 0))
