@@ -70,40 +70,26 @@
 
 * [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup.
 
-### Performance — closing the V8 gap
-
-* [x] SIMD auto-vectorization for typed-array reductions — `tryReduceVectorize` in `src/vectorize.js` (add/xor/and/or i32/i64/f32, f64.add; splat→vector loop→horizontal fold→scalar tail)
-* ~~Profile-guided specialization~~ — dropped. Contradicts the AOT/no-runtime pitch, risks code bloat, and whole-program static narrowing (`narrow.js`, bimorphic typed-array cloning) already covers most of it.
-
 ### Performance — closing the native-language gap
 
 * [ ] **Stack allocation / scalar-replacement for fixed-size typed arrays** (mat4/biquad/aos — `localArr(f64, 16)` IR, spill on escape). Highest-value remaining perf item: directly speeds up color-space + digital-filter kernels; extends the existing array/object escape-analysis + arena-rewind machinery rather than building new infra.
 * [ ] Partial unroll + vector body instead of full unroll (mat4: keep `r` loop, vectorize `k` with `f64x2`) — medium value, mat4-specific
-* [x] **JSON benchmark made honest** — `bench/json/json.{c,rs,zig,go}` no longer hand-parse the known schema; they now run *general* JSON parsers (C: tagged-union + bump arena; Rust: hand-rolled recursive-descent enum; Zig: `std.json` + ArenaAllocator; Go: `encoding/json` → `map[string]interface{}`), all with string-keyed lookup on the walk side. Result: jz ≈ native C (0.98–1.08×), beats V8 1.45×, Rust/Zig 2.5×, Go/Python 4.6×. The old "11.8× vs C" was the C cheat, not a jz gap.
-* [x] **`\uXXXX` escape decoding** — `__jp_str` now decodes `\uXXXX` (and high+low surrogate pairs) to UTF-8 bytes via `__hex1`/`__hex4`/`__utf8_enc`; previously `"A"` parsed to the literal `"u0041"`. +0.1 kB. Pinned by `test/json.js` "JSON.parse: \uXXXX escapes decode to UTF-8".
 * [ ] json arena/raw-u8 fast path — remaining structural micro-gap (transient `kbuf` in `__jp_obj` is never rewound; per-node `__alloc` calls). Low priority now that the bench sits at ≈1.0× native C; would need parser value-shape redesign for further gains.
 
-### i64-tagged carrier switch (NaN-boxing replacement) — ~70% done
+### i64-tagged carrier switch (NaN-boxing replacement)
 
-* [x] Switch wasm-export ABI from f64 → i64 for boxed-result paths — `synthesizeBoundaryWrappers` (per-param/result `ptrKind` → i64), `jz:i64exp` custom section
-* [x] Switch internal stdlib boxed-value sigs (`__dyn_get`/`__dyn_set`/`__dyn_get_or` etc.) from f64 to i64 — already pure i64 (`module/collection.js`, `module/core.js`)
-* [x] `__str_eq` rewritten to i64 params + `i64.eq` fast path (`module/string.js`)
-  * `__same_value_zero` cannot reduce to pure `i64.eq` — must branch on NaN / ±0 / strings (subtask was mis-specified)
 * [ ] Lay out new bit scheme (type:8 / aux:24 / offset:32) — still `type:4 @bit47, aux:15 @bit32`. Risky carrier refactor; only payoff is headroom (more schemaId bits, more elem tags). Deferred — no user value today.
 * [ ] Audit and remove obsolete f64-NaN-payload literals from `module/*` (only relevant once bit scheme changes)
 * [ ] Reclaim bits: lift schemaId from 15→24 bits, more elem-type tags (depends on bit scheme)
 
 ### Size / watr gap
 
-* [x] Post-link DCE/inlining — `watrOptimize` (CSE/DCE/inline, opt-in at optimize level 3); module `treeshake()` always runs. No Binaryen needed.
-* [x] Callback/combinator lowering for `.map/.filter/.reduce/.forEach` — callbacks inlined into loops; **6-way chain fusion** (`filter→map`, `map→filter`, `map→reduce`, `filter→reduce`, `map→forEach`, `filter→forEach`) in `module/array.js`. `.flatMap` partial (map step inlined, flatten is a runtime call → fuse the flatten too).
 * [ ] Source/runtime array-view optimization for local queue-style arrays (`normalize()`) — needs source refactor or escape-analysis extension
-* [ ] Dynamic object/property-shape specialization for watr context (reduce `__dyn_get` / `__dyn_set` / `__is_str_key` volume) — only static narrowing exists today (schema-slot access, `__is_str_key` elision); relevant mainly for metacircular-watr size
+* [ ] Dynamic object/property-shape specialization for watr context — partial: constant `.prop`/`?.prop` keys now prehash (`__dyn_get_t` is a thin wrapper over `__dyn_get_t_h(obj,key,type,h)`; sites pass compile-time `strHashLiteral(prop)` → no `__str_hash` per access), `__set_len` calls inlined, `__typed_idx` ARRAY fast path, additive hash-probe walks. Remaining static narrowing only (schema-slot access, `__is_str_key` elision). N-way prop caches & static-segment off-16 props slots analyzed as net-negative — bytes for unmeasurable gain; watr's hot dyn-prop receivers (`ctx`, AST nodes) are heap arrays that already use off-16 header slots.
 
-### watr regression — `v128.const i64x2` (jz-compiled watr)
+### watr — latent trampoline arity bug
 
-* [x] **Fixed: dynamic function-property lookup collided no-capture closures.** All no-capture named-function closures carry NaN-box `offset = 0`; the global `__dyn_props` hash keyed by offset, so `i64.parse = …`, `i32.parse = …`, `f64.parse = …`, `f32.parse = …` all overwrote one slot — any *dynamic* `obj[k].parse(...)` returned the last-assigned (`f64.parse`). watr's `v128const` does `arr[j] = encode[t].parse(...)` with dynamic `t`, so i64x2 lanes got parsed by `f64.parse` → f64 bytes. Fix: `__dyn_get_t`/`__dyn_set` now re-key the global hash on `-1 - aux` (function table index, negative — can't alias real heap/data offsets) when type is `PTR.CLOSURE` and offset is 0; env-bearing closures keep their unique env-ptr key. Pinned by `test/watr.js` "watr-regression: v128.const i64x2 encodes correctly".
-* [ ] Latent (separate, not the regression): trampoline arity bug — uniform closure-table signature is sized by `ctx.closure.width` (max *call-site* arity), but the boundary trampolines for first-class function values reference `$__a${i}` up to the *function's* arity. A function with more params than `width` (e.g. `encode.f32(input, value, idx)`, arity 3, in a program whose closure calls never pass 3 args) emits `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2`. Fix: `width = max(callSiteArities, tableResidentFnArities)`. Not triggered by the watr suite (full build's width is already ≥3).
+* [ ] Uniform closure-table signature is sized by `ctx.closure.width` (max *call-site* arity), but boundary trampolines for first-class function values reference `$__a${i}` up to the *function's* arity. A function with more params than `width` (e.g. `encode.f32(input, value, idx)`, arity 3, in a program whose closure calls never pass 3 args) emits `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2`. Fix: `width = max(callSiteArities, tableResidentFnArities)`. Not triggered by the watr suite (full build's width is already ≥3).
 
 
 ## Ideas
@@ -355,6 +341,19 @@
 * [x] arrayElemValType propagation through .map → callback param (callback)
 * [x] LICM pass for boxed-cell loads — sound version
 * [x] Bimorphic typed-array param specialization — function cloning (poly) — 5.06 → 1.13ms (4.4×), ties AS
+* [x] Post-link DCE / dead-import & dead-function pruning in assemble
+* [x] Callback/combinator 6-way fusion in optimizer
+* [x] watr regression — `v128.const i64x2` lowering fix (`6186dcd`)
+
+### Dynamic-property machinery in jz-compiled watr
+
+* [x] `__set_len` calls inlined to direct header `i32.store`
+* [x] `__typed_idx` ARRAY fast path (skip type re-dispatch on known-ARRAY receivers)
+* [x] Generic hash-probe loop tightening — additive slot walk, drop per-iter `i32.mul` (`c1ce0a0`)
+* [x] Additive probe walk in `__dyn_get_t_h` props loop (`a8b7976`, +12 B)
+* [x] Prehash constant `.prop` / `?.prop` keys — `__dyn_get_t` is a thin wrapper over `__dyn_get_t_h(obj,key,type,h)`; new `__dyn_get_expr_t_h`; sites pass compile-time `strHashLiteral(prop)` → no `__str_hash` per access (`1790cb7`, +0.27% wasm, checksum stable). Also fixed latent `needsSchemaTbl` gap (now keys on `__dyn_get_t_h` / `__dyn_get_expr_t_h`).
+* [x] Rejected: N-way global dyn-get cache — 1-way already hits the dominant "same object, many keys" pattern (`INSTR[op]`); 4-way = ~9 globals + ~250 B for unmeasurable gain
+* [x] Rejected: static-segment off-16 props slot for object/array literals — watr's hot dyn-prop receivers (`ctx`, AST nodes) are heap arrays that already use off-16 header slots; relaxing the `off >= __heap_start` guard is high-risk for no return
 
 ### JSON optimizations
 
@@ -364,6 +363,8 @@
 * [x] Constant-fold `__str_hash` for SSO literals
 * [x] Hoist type-tag check across same-receiver prop reads
 * [x] Specialize constant-key Map lookups (`__map_get_h`)
+* [x] JSON benchmark made honest (no exact-shape specialization)
+* [x] `\uXXXX` escape decoding in `__jp` string scanner
 
 ### Type system / codegen architecture
 
