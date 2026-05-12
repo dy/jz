@@ -1,56 +1,11 @@
-### Product / Validation
+### Ship something real
 
-* [ ] Add source maps or at least function/name-section diagnostics.
-* [ ] Continue metacircular path: minimal parser or jessie fork suitable for jz.
-* [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes: some alternative way to pass data?
-* [ ] Date — deterministic spec slices first; local timezone / Intl surface later
-  * [ ] Deferred: object `ToPrimitive` coercion order (`coercion-order.js`)
-  * [ ] Defer `Date.parse` until Date value objects + UTC stringification exist
-  * [ ] Explicitly out of scope: local-time getters/setters, `getTimezoneOffset`, `toString` / `toDateString` / `toTimeString`, locale methods, `toJSON`, `Symbol.toPrimitive`, `toTemporalInstant`, subclassing, realms, descriptors, prototype shape, and function `name`/`length` metadata.
-* [ ] Intl
-* [ ] test262
-* [ ] All AssemblyScript tests.
-
-### Phase 14: Internal Parser (Future)
-
-* [ ] Extract minimal jz parser from subscript features
-* [ ] jzify uses jessie, pure jz uses internal parser
-* [ ] True metacircular bootstrap
-
-### Build & tooling
-
-* [ ] Metacircularity: subscript parser — needs jz-jessie fork excluding class/async/regex features + refactoring parse.js function-property assignments (~30 lines)
-* [ ] Source maps — blocked on watr upstream; can add WASM name section (function names) independently
-* [ ] jzify script converting any JZ
-* [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
-* [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
-* [ ] align with Crockford practices
-* [ ] swappable watr: likely AST will need to be stringified before compile if adapter is provided?
-
-### Validation & quality
-
-* [ ] color-space converter (validates multi profile)
-* [ ] digital-filter biquad (validates memory profile)
-* [ ] Warn/error on hitting memory limits
-
-### Future
-
-* [ ] metacircularity (jz compiling jz)
-* [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
-
-### Offering
-
-* [ ] Clear, fully transparent and understood codebase
-* [ ] Completed: docs, readme, code, tests, repl
-* [ ] Integrations (floatbeat, color-space, digital-filter)
-* [ ] Benchmarks
 * [ ] Pick ONE use case, make jz undeniable for it
 * [ ] Ship something someone uses
+* [ ] Integrations as validation: color-space converter (multi-profile), digital-filter biquad (memory profile), floatbeat playground
 * [ ] Make compile faster than js eval
+* [ ] Benchmarks
+* [ ] Clear, fully transparent codebase; complete docs / readme / tests / repl
 
 ### Floatbeat playground
 
@@ -58,6 +13,36 @@
 * [ ] Waveform renderer
 * [ ] Database + recipe book
 * [ ] Samples collection
+
+### Language coverage / correctness
+
+* [ ] Date — deterministic spec slices first; local timezone / Intl surface later
+  * [ ] Deferred: object `ToPrimitive` coercion order (`coercion-order.js`)
+  * [ ] Defer `Date.parse` until Date value objects + UTC stringification exist
+  * [ ] Out of scope: local-time getters/setters, `getTimezoneOffset`, `toString` / `toDateString` / `toTimeString`, locale methods, `toJSON`, `Symbol.toPrimitive`, `toTemporalInstant`, subclassing, realms, descriptors, prototype shape, function `name`/`length` metadata
+* [ ] Intl
+* [ ] test262
+* [ ] All AssemblyScript tests
+* [ ] Warn/error on hitting memory limits
+
+### Imports & jzify
+
+* [ ] jzify script converting any JZ
+* [ ] jzify: auto-import stdlib globals (Math.* → `import math from 'math'`, etc.)
+* [ ] jz core: require explicit imports for stdlib (remove auto-import from prepare/compile)
+* [ ] align with Crockford practices
+
+### Diagnostics
+
+* [ ] Source maps (blocked on watr upstream) — meanwhile add WASM name section (function names) independently
+
+### Metacircularity (jz compiling jz)
+
+* [ ] Extract minimal jz parser from subscript features — jz-jessie fork excluding class/async/regex + refactor parse.js function-property assignments (~30 lines)
+* [ ] jzify uses jessie, pure jz uses internal parser
+* [ ] True metacircular bootstrap
+* [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
+* [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes — alternative way to pass data?
 
 ### REPL
 
@@ -68,13 +53,21 @@
 
 ### EdgeJS PR shape
 
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup.
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup
+
+### Future
+
+* [ ] Component interface (wit)
+* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] memory64 (>4GB)
+* [ ] relaxed SIMD
+* [ ] WebGPU compute shaders
 
 ## Ideas
 
 * [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
-* [ ] jz as a compilation target — not just for humans writing JS, but for DSLs that want WASM output. If you add a simple IR or intermediate format, other tools could emit jz-compatible code and get WASM for free.
-* [ ] The template tag as a build tool — jz\code`` in a Node script replaces a build step. No webpack, no esbuild, no plugin. This is uniquely elegant and under-marketed.
+* [ ] jz as a compilation target — DSLs that want WASM output emit jz-compatible code (needs a simple IR / intermediate format) and get WASM for free
+* [ ] The template tag as a build tool — jz\`code\` in a Node script replaces a build step. No webpack, no esbuild, no plugin. Uniquely elegant and under-marketed.
 
 
 ---
