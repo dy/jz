@@ -76,6 +76,11 @@ export default (ctx) => {
     ], 'f64')
   }
 
+  ctx.core.emit['Date.parse'] = (value) => {
+    inc('__date_from_value')
+    return typed(['call', '$__date_from_value', ['i64.reinterpret_f64', asF64(emit(value))]], 'f64')
+  }
+
   // ── Core algorithms ───────────────────────────────────────────────────────
 
   ctx.core.stdlib['__date_days_from_year'] = `(func $__date_days_from_year (param $y f64) (result f64)
