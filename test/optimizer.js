@@ -900,3 +900,19 @@ test('opts.optimize: object override gates per-pass', () => {
   const shaken = jz.compile(src, { optimize: true })
   ok(sized.length >= shaken.length, `treeshake:false (${sized.length}) ≥ treeshake:true (${shaken.length})`)
 })
+
+test('deadStoreElim: dead `local.set` with side-effecting RHS must keep the RHS', () => {
+  // A small-constant warmup loop unrolls into N consecutive `cs = side()` writes
+  // whose results are all overwritten before any read. deadStoreElim must NOT
+  // delete those `local.set`s wholesale — `side()` mutates the array each call.
+  const { main } = run(`
+    const bump = (a) => { a[0] = a[0] + 1; return a[0] | 0 }
+    export const main = () => {
+      const a = new Int32Array(1)
+      let cs = 0
+      for (let i = 0; i < 5; i++) cs = bump(a)
+      return a[0] | 0
+    }
+  `, { optimize: 2 })
+  is(main(), 5)
+})

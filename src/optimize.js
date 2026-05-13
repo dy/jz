@@ -1206,7 +1206,14 @@ export function deadStoreElim(fn) {
       // Local write tracking
       if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
         const prev = lastWrite.get(node[1])
-        if (prev) dead.push(prev)
+        if (prev) {
+          // The store-to-local is dead, but a `local.set` is only *removable*
+          // if its RHS is pure — `local.set $x (call f …)` where `f` mutates
+          // memory must still run. (A `local.tee` is always safe: removal demotes
+          // it to its value expression, so any side effects there are preserved.)
+          const pn = prev.parent[prev.idx]
+          if (pn[0] === 'local.tee' || isPure(pn[2])) dead.push(prev)
+        }
         lastWrite.set(node[1], { parent: items, idx: i })
       }
 
