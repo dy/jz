@@ -93,6 +93,16 @@ test('regression: jzify hoists for-var-in declaration', () => {
   is(exports._run(), 2, 'for (var k in obj) compiles')
 })
 
+test('regression: jzify normalizes for-of declaration with fallback source', () => {
+  const exports = run(`export let _run = () => {
+    let xs = [1, 2]
+    let n = 0
+    for (const x of xs || []) n += x
+    return n
+  }`)
+  is(exports._run(), 3, 'for (const x of xs || []) compiles')
+})
+
 test('regression: jzify preserves new Array length constructor', () => {
   const exports = run(`export let _run = () => {
     let a = new Array(4)

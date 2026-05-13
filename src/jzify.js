@@ -80,7 +80,10 @@ function hoistVars(node, names) {
   if (op === 'for') {
     const head = node[1]
     let h2
-    if (Array.isArray(head) && head[0] === 'var' && Array.isArray(head[1]) &&
+    const normalizedHead = normalizeForDeclHead(head, names)
+    if (normalizedHead) {
+      h2 = normalizedHead
+    } else if (Array.isArray(head) && head[0] === 'var' && Array.isArray(head[1]) &&
         (head[1][0] === 'in' || head[1][0] === 'of') && typeof head[1][1] === 'string') {
       names.add(head[1][1])
       h2 = [head[1][0], head[1][1], hoistVars(head[1][2], names)]
@@ -135,6 +138,27 @@ function prependDecls(body, names) {
     return ['{}', [';', decl, inner]]
   }
   return body == null ? decl : [';', decl, body]
+}
+
+function normalizeForDeclHead(head, names) {
+  if (!Array.isArray(head) || (head[0] !== 'var' && head[0] !== 'let' && head[0] !== 'const') || head.length !== 2) return null
+  const kind = head[0]
+  const expr = head[1]
+  if (!Array.isArray(expr)) return null
+  if (expr.length >= 3 && Array.isArray(expr[1]) &&
+      (expr[1][0] === 'in' || expr[1][0] === 'of') && typeof expr[1][1] === 'string') {
+    const iter = expr[1]
+    return [iter[0], normalizeForDecl(kind, iter[1], names), hoistVars([expr[0], iter[2], ...expr.slice(2)], names)]
+  }
+  return null
+}
+
+function normalizeForDecl(kind, name, names) {
+  if (kind === 'var') {
+    names.add(name)
+    return name
+  }
+  return [kind, name]
 }
 
 /** Convert a named function declaration to a hoisted const arrow */
