@@ -227,6 +227,11 @@ test('Error(): throw surfaces readable message', () => {
   is(error.message, 'test')
 })
 
+test('Error(): module-scope throw declares runtime error globals', () => {
+  const wasm = compile('if (1) throw Error("test"); export let f = () => 1')
+  ok(wasm instanceof Uint8Array)
+})
+
 test('try/catch: catches thrown value', () => {
   is(run('export let f = (x) => { try { if (x < 0) throw -1; return x * 2 } catch (e) { return e + 100 } }').f(-1), 99)
 })

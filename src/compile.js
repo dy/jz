@@ -139,6 +139,17 @@ const tcoTailRewrite = (ir, resultType) => {
   return ir
 }
 
+const ensureThrowRuntime = (sec) => {
+  if (!ctx.runtime.throws) return
+
+  if (!ctx.scope.globals.has('__jz_last_err_bits'))
+    ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
+  if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'tag' && t[1] === '$__jz_err'))
+    sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
+  if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))
+    sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
+}
+
 // === Module compilation ===
 
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
@@ -777,12 +788,6 @@ export default function compile(ast, profiler) {
 
   // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
 
-  if (ctx.runtime.throws) {
-    ctx.scope.globals.set('__jz_last_err_bits', '(global $__jz_last_err_bits (mut i64) (i64.const 0))')
-    sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
-    sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
-  }
-
   if (ctx.closure.table?.length)
     sec.table.push(['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref'])
 
@@ -830,6 +835,8 @@ export default function compile(ast, profiler) {
   stripStaticDataPrefix(sec)
 
   optimizeModule(sec)
+
+  ensureThrowRuntime(sec)
 
   // Populate globals (after __start — const folding may update declarations)
   sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))
