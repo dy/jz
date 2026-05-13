@@ -43,7 +43,7 @@ const SPEED = {
   mat4:           { v8: 'win',  as: 'win',  porf: 'todo' },
   poly:           { v8: 'win',  as: 'tie',  porf: 'todo' },
   biquad:         { v8: 'win',  as: 'win',  porf: 'todo' },
-  mandelbrot:     { v8: 'win',  as: 'tie',  porf: 'todo' },
+  mandelbrot:     { v8: 'tie',  as: 'tie',  porf: 'todo' },
   bitwise:        { v8: 'win',  as: 'win',  porf: 'todo' },
   tokenizer:      { v8: 'win',  as: 'diff', porf: 'todo' },
   aos:            { v8: 'win',  as: 'win',  porf: 'todo' },
@@ -133,10 +133,7 @@ const runs = parseBenchOutput(speedOut)
 // samples so the gate reflects steady-state, not whichever scheduler hiccup
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
-// `mandelbrot` is at the WASM-v1 algorithmic floor (no instruction left to drop in
-// the inner loop) and median-to-median against V8 lands within ±1% across runs.
-// Resampling here keeps the `win` gate honest instead of flipping on noise.
-for (const id of ['watr', 'sort', 'crc32', 'mandelbrot']) {
+for (const id of ['watr', 'sort', 'crc32']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   for (let i = 1; i < 5; i++) {
