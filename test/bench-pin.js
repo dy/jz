@@ -70,7 +70,7 @@ const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
 
 // ── Size pins (jz `optimize:'size'` vs AS `-Oz --converge` and Porffor) ─────
 //  win — jz strictly smaller    tie — within 5%    todo — not yet (unasserted)
-// jz currently runs ~11% larger than `asc -Oz` (geomean) on the kernels; wasm-opt
+// jz currently runs ~9% larger than `asc -Oz` (geomean) on the kernels; wasm-opt
 // still finds ~25-30% slack — single-use runtime-helper inlining is the next lever.
 // porf bundles a JS runtime, so jz is ~20× smaller there; that pin is a backstop.
 const SIZE = {
@@ -89,7 +89,7 @@ const SIZE = {
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
-const SIZE_GEOMEAN_MAX = { as: 1.15, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.11×)
+const SIZE_GEOMEAN_MAX = { as: 1.12, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.09×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
 // remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
 // with margin — shrink the budget as codegen tightens.
