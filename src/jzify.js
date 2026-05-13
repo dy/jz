@@ -31,7 +31,7 @@ export default function jzify(ast) {
   const names = new Set()
   ast = hoistVars(ast, names)
   if (names.size) ast = prependDecls(ast, names)
-  return foldStaticExportHelpers(transformScope(ast))
+  return foldStaticExportHelpers(canonicalizeObjectIdioms(transformScope(ast)))
 }
 
 /**
@@ -742,6 +742,77 @@ function replaceStaticExportReads(node, rewrites) {
   }
   if (node[0] === ':') return [node[0], node[1], replaceStaticExportReads(node[2], rewrites)]
   return node.map((part, i) => i === 0 ? part : replaceStaticExportReads(part, rewrites))
+}
+
+function canonicalizeObjectIdioms(node) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+
+  const out = node.map((part, i) => i === 0 ? part : canonicalizeObjectIdioms(part))
+
+  const hasOwnCall = objectHasOwnPropertyCall(out)
+  if (hasOwnCall) return ['()', ['.', hasOwnCall.obj, 'hasOwnProperty'], hasOwnCall.key]
+
+  if (out[0] === '&&') {
+    const leftCtor = constructorIsObject(out[1])
+    const rightKeys = objectKeysLengthZero(out[2])
+    if (leftCtor && rightKeys && astEqual(leftCtor.obj, rightKeys.obj)) return out[2]
+
+    const leftKeys = objectKeysLengthZero(out[1])
+    const rightCtor = constructorIsObject(out[2])
+    if (leftKeys && rightCtor && astEqual(leftKeys.obj, rightCtor.obj)) return out[1]
+  }
+
+  return out
+}
+
+function objectHasOwnPropertyCall(node) {
+  if (!Array.isArray(node) || node[0] !== '()') return null
+  const callee = node[1]
+  if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'call') return null
+  if (!Array.isArray(callee[1]) || callee[1][0] !== '.' || callee[1][1] !== 'Object' || callee[1][2] !== 'hasOwnProperty') return null
+  const args = callArgs(node.slice(2))
+  if (args.length < 2) return null
+  return { obj: args[0], key: args[1] }
+}
+
+function constructorIsObject(node) {
+  if (!Array.isArray(node) || (node[0] !== '===' && node[0] !== '==')) return null
+  const left = constructorReceiver(node[1])
+  if (left && node[2] === 'Object') return { obj: left }
+  const right = constructorReceiver(node[2])
+  if (right && node[1] === 'Object') return { obj: right }
+  return null
+}
+
+function constructorReceiver(node) {
+  return Array.isArray(node) && node[0] === '.' && node[2] === 'constructor' ? node[1] : null
+}
+
+function objectKeysLengthZero(node) {
+  if (!Array.isArray(node) || (node[0] !== '===' && node[0] !== '==')) return null
+  const left = objectKeysLengthReceiver(node[1])
+  if (left && isZeroLiteral(node[2])) return { obj: left }
+  const right = objectKeysLengthReceiver(node[2])
+  if (right && isZeroLiteral(node[1])) return { obj: right }
+  return null
+}
+
+function objectKeysLengthReceiver(node) {
+  if (!Array.isArray(node) || node[0] !== '.' || node[2] !== 'length') return null
+  const call = node[1]
+  if (!Array.isArray(call) || call[0] !== '()') return null
+  const callee = call[1]
+  if (!Array.isArray(callee) || callee[0] !== '.' || callee[1] !== 'Object' || callee[2] !== 'keys') return null
+  const args = callArgs(call.slice(2))
+  return args.length === 1 ? args[0] : null
+}
+
+function isZeroLiteral(node) {
+  return Array.isArray(node) && node[0] == null && node[1] === 0
+}
+
+function astEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 function cloneAst(node) {
