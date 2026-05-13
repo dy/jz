@@ -502,6 +502,36 @@ test('Object.values: runtime dispatch — non-object receiver returns empty', ()
   is(f(42), 0)
 })
 
+test('Object.entries: runtime dispatch — untyped param holding HASH', () => {
+  const { f } = run(`
+    let entries = (h) => Object.entries(h)
+    export let f = (s) => {
+      let e = entries(JSON.parse(s))
+      return e.length == 1 && e[0][0] == "only" && e[0][1] == 7 ? 1 : 0
+    }
+  `)
+  is(f('{"only":7}'), 1)
+})
+
+test('Object.entries: runtime dispatch — untyped param holding OBJECT', () => {
+  const { f } = run(`
+    let sumEntries = (o) => {
+      let e = Object.entries(o)
+      return e.length == 2 && e[0][0] == "a" && e[0][1] == 1 && e[1][0] == "b" && e[1][1] == 2 ? 1 : 0
+    }
+    export let f = () => sumEntries({a: 1, b: 2})
+  `)
+  is(f(), 1)
+})
+
+test('Object.entries: runtime dispatch — non-object receiver returns empty', () => {
+  const { f } = run(`
+    let inner = (h) => Object.entries(h).length
+    export let f = (n) => inner(n + 0)
+  `)
+  is(f(42), 0)
+})
+
 // hasOwnProperty: literal and known-schema fold + runtime dispatch.
 // Without an own emit handler the call falls through to __ext_call and the
 // resulting wasm requires JS host imports, defeating the host:'wasi' target.
