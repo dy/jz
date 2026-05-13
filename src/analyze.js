@@ -37,9 +37,9 @@ export const STMT_OPS = new Set([';', 'let', 'const', 'return', 'if', 'for', 'fo
 export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
 /** Distinguish a function block body `{ ... }` from an expression-bodied object literal `({a:1})`.
- *  Both share the `'{}'` op tag; blocks have a non-`':'` first child (object literals start with key:val pairs). */
+ *  Both share the `'{}'` op tag; blocks start with statement ops, while object literals start with `:` or `...`. */
 export const isBlockBody = (body) =>
-  Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+  Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))
 
 /** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
 export function intLiteralValue(expr) {

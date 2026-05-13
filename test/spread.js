@@ -152,6 +152,15 @@ test('spread: Object.assign(...objects)', () => {
   is(f(), 6)
 })
 
+test('spread: expression-bodied arrow returns object spread', () => {
+  const { f } = run(`export let f = () => {
+    let rows = [{x: 1}, {x: 2}]
+    let out = rows.map((row) => ({...row, y: row.x + 10}))
+    return out[0].y + out[1].y
+  }`, { jzify: true })
+  is(f(), 23)
+})
+
 // ============================================
 // EDGE CASES
 // ============================================

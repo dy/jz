@@ -31,6 +31,7 @@ import {
   T, VAL, analyzeValTypes, analyzeIntCertain, analyzeLocals,
   analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
   analyzeBoxedCaptures, updateRep, inferStringParams,
+  isBlockBody,
 } from './analyze.js'
 import { optimizeFunc, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
@@ -158,7 +159,7 @@ function analyzeFuncForEmit(func, programFacts) {
   const { name, body, sig } = func
   enterFunc(func)
 
-  const block = Array.isArray(body) && body[0] === '{}' && body[1]?.[0] !== ':'
+  const block = isBlockBody(body)
   ctx.func.boxed = new Map()
   ctx.func.repByLocal = null
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
@@ -485,7 +486,7 @@ function emitClosureBody(cb) {
   }
 
   // Emit body
-  const block = Array.isArray(cb.body) && cb.body[0] === '{}' && cb.body[1]?.[0] !== ':'
+  const block = isBlockBody(cb.body)
   let bodyIR
   if (block) {
     invalidateLocalsCache(cb.body)
