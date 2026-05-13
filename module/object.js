@@ -150,8 +150,9 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Object.entries'] = (obj) => {
+    if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
-    if (!schema) err('Object.entries requires object with known schema')
+    if (!schema) return emitRuntimeEntries(obj)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
@@ -462,6 +463,13 @@ function emitHashValues(obj) {
     hashValuesFromTemp(t)], 'f64')
 }
 
+function emitHashEntries(obj) {
+  const t = temp('he')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    hashEntriesFromTemp(t)], 'f64')
+}
+
 // Inline body of the HASH walk against an already-bound f64 local. Shared by
 // the static-HASH path and the runtime-dispatch path so both produce the same
 // IR shape from the same source — only difference is whether they enter from
@@ -520,6 +528,37 @@ function hashValuesFromTemp(t) {
     out.ptr]
 }
 
+function hashEntriesFromTemp(t) {
+  inc('__ptr_offset', '__cap', '__len', '__alloc_hdr')
+  const off = tempI32('heo'), cap = tempI32('hec'), n = tempI32('hen')
+  const i = tempI32('hei'), o = tempI32('hej'), slot = tempI32('hes'), pair = tempI32('hep')
+  const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hea' })
+  const id = ctx.func.uniq++
+  return ['block', ['result', 'f64'],
+    ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    out.init,
+    ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['local.set', `$${o}`, ['i32.const', 0]],
+    ['block', `$ebrk${id}`, ['loop', `$eloop${id}`,
+      ['br_if', `$ebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
+      ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
+        ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
+      ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
+        ['then',
+          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
+          ['f64.store', ['local.get', `$${pair}`],
+            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
+          ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+            ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
+          elemStore(out.local, o, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
+          ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]],
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$eloop${id}`]]],
+    out.ptr]
+}
+
 // Type-unknown receiver: bind the value, branch on ptr-type. HASH walks the
 // probe table; OBJECT loads the schema's key array (registered statically at
 // compile time or lazily at runtime by JSON.parse via __jp_schema_get); other
@@ -565,6 +604,26 @@ function emitRuntimeValues(obj) {
           ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
           ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
         ['then', objectValuesFromTemp(t)],
+        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
+}
+
+function emitRuntimeEntries(obj) {
+  inc('__ptr_type')
+  if (!ctx.scope.globals.has('__schema_tbl'))
+    ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+  const t = temp('re'), tt = tempI32('ret')
+  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'ree' })
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['if', ['result', 'f64'],
+      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
+      ['then', hashEntriesFromTemp(t)],
+      ['else', ['if', ['result', 'f64'],
+        ['i32.and',
+          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
+          ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
+        ['then', objectEntriesFromTemp(t)],
         ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
 }
 
@@ -622,5 +681,41 @@ function objectValuesFromTemp(t) {
           ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
       ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
       ['br', `$ovloop${id}`]]],
+    mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
+}
+
+function objectEntriesFromTemp(t) {
+  inc('__alloc_hdr', '__ptr_offset')
+  const sid = tempI32('oes'), src = tempI32('oesrc'), n = tempI32('oen')
+  const base = tempI32('oebase'), out = tempI32('oeo'), i = tempI32('oei'), pair = tempI32('oep')
+  const id = ctx.func.uniq++
+  return ['block', ['result', 'f64'],
+    ['local.set', `$${sid}`, ['i32.wrap_i64', ['i64.and',
+      ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
+      ['i64.const', LAYOUT.AUX_MASK]]]],
+    ['local.set', `$${src}`, ['i32.wrap_i64', ['i64.and',
+      ['i64.load', ['i32.add', ['global.get', '$__schema_tbl'], ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 3]]]],
+      ['i64.const', LAYOUT.OFFSET_MASK]]]],
+    ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
+    ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${out}`, ['call', '$__alloc_hdr',
+      ['local.get', `$${n}`], ['local.get', `$${n}`], ['i32.const', 8]]],
+    ['local.set', `$${i}`, ['i32.const', 0]],
+    ['block', `$oebrk${id}`, ['loop', `$oeloop${id}`,
+      ['br_if', `$oebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
+      ['i64.store',
+        ['local.get', `$${pair}`],
+        ['i64.load',
+          ['i32.add', ['local.get', `$${src}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['f64.store',
+        ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
+        ['f64.load',
+          ['i32.add', ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+      ['f64.store',
+        ['i32.add', ['local.get', `$${out}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]],
+        mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])],
+      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+      ['br', `$oeloop${id}`]]],
     mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${out}`])]
 }
