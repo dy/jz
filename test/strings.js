@@ -318,6 +318,17 @@ test('string: .split basic', () => {
   is(f(), 3)
 })
 
+// Empty separator: regression for infinite-loop when plen=0 (advance was
+// `i += plen`, so i never moved). Per JS spec: split into individual chars,
+// and "".split("") → [].
+test('string: .split("") splits into chars', () => {
+  is(run(`export let f = () => "abc".split("").length | 0`).f(), 3)
+  is(run(`export let f = () => "abc".split("")[0].charCodeAt(0) | 0`).f(), 97)
+  is(run(`export let f = () => "abc".split("")[2].charCodeAt(0) | 0`).f(), 99)
+  is(run(`export let f = () => "".split("").length | 0`).f(), 0)
+  is(run(`export let f = () => "x".split("").length | 0`).f(), 1)
+})
+
 // === .padStart ===
 
 test('string: .padStart', () => {

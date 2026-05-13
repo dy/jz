@@ -752,12 +752,27 @@ export default (ctx) => {
       (br $next)))
     (f64.reinterpret_i64 (local.get $result)))`
 
+  // Empty separator: per JS spec, split into individual byte-chars
+  // ("abc".split("") -> ["a","b","c"], "".split("") -> []). Without this
+  // guard the main loop advances by plen=0 and spins forever.
   ctx.core.stdlib['__str_split'] = `(func $__str_split (param $str i64) (param $sep i64) (result f64)
     (local $slen i32) (local $plen i32) (local $count i32)
     (local $i i32) (local $j i32) (local $match i32)
     (local $arr i32) (local $piece_start i32) (local $piece_idx i32)
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (local.set $plen (call $__str_byteLen (local.get $sep)))
+    (if (i32.eqz (local.get $plen)) (then
+      (local.set $arr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $slen) (i32.const 3)))))
+      (i32.store (local.get $arr) (local.get $slen))
+      (i32.store (i32.add (local.get $arr) (i32.const 4)) (local.get $slen))
+      (local.set $arr (i32.add (local.get $arr) (i32.const 8)))
+      (block $de (loop $le
+        (br_if $de (i32.ge_s (local.get $i) (local.get $slen)))
+        (f64.store (i32.add (local.get $arr) (i32.shl (local.get $i) (i32.const 3)))
+          (call $__str_slice (local.get $str) (local.get $i) (i32.add (local.get $i) (i32.const 1))))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $le)))
+      (return (call $__mkptr (i32.const 1) (i32.const 0) (local.get $arr)))))
     (local.set $count (i32.const 1))
     (local.set $i (i32.const 0))
     (block $d1 (loop $l1
