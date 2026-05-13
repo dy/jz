@@ -489,9 +489,8 @@ cc program.c -o program
 | [json](bench/json/json.js) | 0.23ms<br>10.9kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
 | [sort](bench/sort/sort.js) | 8.44ms<br>1.9kB | 9.98ms<br>1.6kB | fails | 10.18ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
 | [crc32](bench/crc32/crc32.js) | 11.96ms<br>1.5kB | 13.35ms<br>1.8kB | 80.76ms<br>3.1kB | 12.04ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
-| [watr](bench/watr/watr.js) | 1.51ms<br>148.1kB | 1.48ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon._
+_Numbers from `node bench/bench.mjs` on Apple Silicon._ `optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff leverage.
 
 <details>
 <summary><strong>Optimizations</strong></summary>
