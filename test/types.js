@@ -314,6 +314,27 @@ test('switch: two cases', () => {
   is(f(99), -1)
 })
 
+test('switch: jzify strips terminal case breaks', () => {
+  const { f } = run(`export let f = (x) => {
+    let y = 0
+    switch (x) {
+      case 1:
+        y = 10
+        break
+      case 2:
+        y = 20
+        break
+      default:
+        y = 30
+        break
+    }
+    return y
+  }`, { jzify: true })
+  is(f(1), 10)
+  is(f(2), 20)
+  is(f(99), 30)
+})
+
 // === Default params ===
 
 test('default param: used when arg missing', () => {
