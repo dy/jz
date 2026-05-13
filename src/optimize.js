@@ -2181,6 +2181,36 @@ export function treeshake(funcSections, allModuleNodes, opts) {
       }
     }
   }
+
+  // Dead-global elimination: after dead funcs are gone, drop `(global $g …)` decls
+  // that nothing references (a `global.get`/`global.set` in a remaining func, a kept
+  // global's init expr, a data/elem offset, or an `(export … (global $g))`). Imported
+  // globals live in `allModuleNodes`, not in `opts.globals`, so they're never touched.
+  // Fixpoint: a kept global's init may reference another global.
+  const globals = removeDead && opts && Array.isArray(opts.globals) ? opts.globals : null
+  if (globals) {
+    const collectGlobalRefs = (node, refd) => {
+      if (!Array.isArray(node)) return
+      if ((node[0] === 'global.get' || node[0] === 'global.set') && typeof node[1] === 'string') refd.add(node[1])
+      else if (node[0] === 'export' && Array.isArray(node[2]) && node[2][0] === 'global' && typeof node[2][1] === 'string') refd.add(node[2][1])
+      for (const c of node) collectGlobalRefs(c, refd)
+    }
+    let changed = true
+    while (changed) {
+      changed = false
+      const refd = new Set()
+      for (const { arr } of funcSections) for (const n of arr) collectGlobalRefs(n, refd)
+      for (const n of allModuleNodes) collectGlobalRefs(n, refd)
+      for (const g of globals) collectGlobalRefs(g, refd)
+      for (let i = globals.length - 1; i >= 0; i--) {
+        const g = globals[i]
+        if (Array.isArray(g) && g[0] === 'global' && typeof g[1] === 'string' && !refd.has(g[1])) {
+          globals.splice(i, 1); changed = true
+        }
+      }
+    }
+  }
+
   return { removed, callCount }
 }
 

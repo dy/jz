@@ -918,7 +918,7 @@ export default function compile(ast, profiler) {
   const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports],
-    { removeDead: !optCfg || optCfg.treeshake !== false }
+    { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals }
   )
 
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.

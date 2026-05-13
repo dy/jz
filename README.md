@@ -478,19 +478,19 @@ cc program.c -o program
 
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [biquad](bench/biquad/biquad.js) | 6.40ms<br>4.3kB | 12.02ms<br>3.2kB | fails | 8.88ms<br>1.9kB | 6.44ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
-| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>2.1kB | 0.20ms<br>2.0kB | 0.41ms<br>3.2kB | 0.08ms<br>1.6kB | 0.10ms<br>344 B | 0.13ms | 0.08ms | 0.14ms | 0.12ms | 5.13ms |
-| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.2kB | 11.90ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.44ms<br>1.6kB | 8.10ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
-| [aos](bench/aos/aos.js) | 1.61ms<br>2.1kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
-| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.24ms<br>1.4kB | 13.53ms<br>1.8kB | 13.47ms<br>3.0kB | 12.23ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
-| [bitwise](bench/bitwise/bitwise.js) | 1.62ms<br>1.5kB | 5.25ms<br>1005 B | fails | 11.97ms<br>1.5kB | 4.95ms<br>355 B | 1.30ms | 5.23ms | 4.16ms | 1.30ms | 14.77ms |
-| [poly](bench/poly/poly.js) | 0.37ms<br>1.5kB | 2.29ms<br>1014 B | fails | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
-| [callback](bench/callback/callback.js) | 0.05ms<br>1.7kB | 0.86ms<br>828 B | fails | 1.48ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
-| [json](bench/json/json.js) | 0.23ms<br>11.0kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
-| [json-dynamic](bench/json-dynamic/json-dynamic.js) | 0.24ms<br>11.3kB | 0.38ms<br>1.2kB | fails | — | — | — | — | — | — | — |
-| [sort](bench/sort/sort.js) | 11.11ms<br>1.9kB | 9.59ms<br>1.5kB | fails | 10.77ms<br>1.8kB | — | — | — | — | — | — |
-| [crc32](bench/crc32/crc32.js) | 11.99ms<br>1.6kB | 13.37ms<br>1.8kB | 80.84ms<br>3.1kB | 12.04ms<br>1.4kB | — | — | — | — | — | — |
-| [watr](bench/watr/watr.js) | 1.51ms<br>148.2kB | 1.48ms<br>2.6kB | fails | — | — | — | — | — | — | — |
+| [biquad](bench/biquad/biquad.js) | 6.40ms<br>4.1kB | 12.02ms<br>3.2kB | fails | 8.88ms<br>1.9kB | 6.44ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>1.9kB | 0.20ms<br>2.0kB | 0.41ms<br>3.2kB | 0.08ms<br>1.6kB | 0.10ms<br>344 B | 0.13ms | 0.08ms | 0.14ms | 0.12ms | 5.13ms |
+| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.0kB | 11.90ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.44ms<br>1.6kB | 8.10ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
+| [aos](bench/aos/aos.js) | 1.61ms<br>2.0kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
+| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.24ms<br>1.2kB | 13.53ms<br>1.8kB | 13.47ms<br>3.0kB | 12.23ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
+| [bitwise](bench/bitwise/bitwise.js) | 1.62ms<br>1.3kB | 5.25ms<br>1005 B | fails | 11.97ms<br>1.5kB | 4.95ms<br>355 B | 1.30ms | 5.23ms | 4.16ms | 1.30ms | 14.77ms |
+| [poly](bench/poly/poly.js) | 0.37ms<br>1.4kB | 2.29ms<br>1014 B | fails | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
+| [callback](bench/callback/callback.js) | 0.05ms<br>1.5kB | 0.86ms<br>828 B | fails | 1.48ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
+| [json](bench/json/json.js) | 0.23ms<br>10.9kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
+| [json-dynamic](bench/json-dynamic/json-dynamic.js) | 0.24ms<br>11.2kB | 0.38ms<br>1.2kB | fails | — | — | — | — | — | — | — |
+| [sort](bench/sort/sort.js) | 11.11ms<br>1.7kB | 9.59ms<br>1.5kB | fails | 10.77ms<br>1.8kB | — | — | — | — | — | — |
+| [crc32](bench/crc32/crc32.js) | 11.99ms<br>1.5kB | 13.37ms<br>1.8kB | 80.84ms<br>3.1kB | 12.04ms<br>1.4kB | — | — | — | — | — | — |
+| [watr](bench/watr/watr.js) | 1.51ms<br>148.1kB | 1.48ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs` on Apple Silicon. Every target runs the same canonical `bench/<case>/<case>.js` (or its language port) — no per-engine variants. `fails` = Porffor's bundled runtime OOBs or it can't compile the case; `diff` = the engine produced a different checksum; `fma` = a fused-multiply-add rounding difference. `porf` 0.61.13._
 

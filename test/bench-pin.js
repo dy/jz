@@ -70,35 +70,37 @@ const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
 
 // ── Size pins (jz `optimize:'size'` vs AS `-Oz --converge` and Porffor) ─────
 //  win — jz strictly smaller    tie — within 5%    todo — not yet (unasserted)
-// jz currently runs ~9% larger than `asc -Oz` (geomean) on the kernels; wasm-opt
-// still finds ~25-30% slack — single-use runtime-helper inlining is the next lever.
+// jz now runs ~1% larger than `asc -Oz` (geomean) on the kernels; only `biquad`,
+// `mat4`, `tokenizer` still trail (~1.1–1.2×). wasm-opt finds ~25-30% slack —
+// single-use runtime-helper inlining + merging `$f$exp` wrappers is the next lever.
 // porf bundles a JS runtime, so jz is ~20× smaller there; that pin is a backstop.
 const SIZE = {
   callback:       { as: 'win',  porf: 'win' },
   mat4:           { as: 'todo', porf: 'win' },
-  poly:           { as: 'todo', porf: 'win' },
+  poly:           { as: 'win',  porf: 'win' },
   biquad:         { as: 'todo', porf: 'win' },
-  mandelbrot:     { as: 'tie',  porf: 'win' },
-  bitwise:        { as: 'tie',  porf: 'win' },
+  mandelbrot:     { as: 'win',  porf: 'win' },
+  bitwise:        { as: 'win',  porf: 'win' },
   tokenizer:      { as: 'todo', porf: 'win' },
-  aos:            { as: 'todo', porf: 'win' },
+  aos:            { as: 'win',  porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
   'json-dynamic': { as: 'na',   porf: 'win' },
-  sort:           { as: 'todo', porf: 'win' },  // jz ~1.10× asc -Oz — generic codegen slack, not sort-specific
-  crc32:          { as: 'todo', porf: 'win' },  // jz ~1.07× asc -Oz — same generic slack
+  sort:           { as: 'win',  porf: 'win' },
+  crc32:          { as: 'win',  porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
 const SIZE_TOL = { win: 1.0, tie: 1.05 }
-const SIZE_GEOMEAN_MAX = { as: 1.12, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.09×)
+const SIZE_GEOMEAN_MAX = { as: 1.05, porf: 0.40 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
 // remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
 // with margin — shrink the budget as codegen tightens.
-const WASMOPT_SLACK_MIN = 0.65
+const WASMOPT_SLACK_MIN = 0.70
 
 // Absolute byte backstop — catches gross codegen bloat independent of competitors.
+// (Sizes here are the default-optimize bench.mjs build, not `optimize:'size'`.)
 const SIZE_BUDGET = {
-  callback: 2500, mat4: 3400, poly: 2500, biquad: 4550, mandelbrot: 1800,
-  bitwise: 2500, tokenizer: 3000, aos: 3500, json: 12500, 'json-dynamic': 12000, sort: 3500, crc32: 2200, watr: 180000,
+  callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
+  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, 'json-dynamic': 12000, sort: 2200, crc32: 1750, watr: 180000,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────
