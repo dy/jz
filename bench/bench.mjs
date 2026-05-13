@@ -30,7 +30,6 @@ const CASE_NAMES = {
   aos: 'AoS to SoA',
   mandelbrot: 'mandelbrot escape',
   json: 'JSON parse+walk (single literal source)',
-  'json-dynamic': 'JSON parse+walk (runtime variant source)',
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
   watr: 'watr WAT compiler',
@@ -286,7 +285,11 @@ const targets = {
     available: c => !!c.zig && has('zig'),
     bin: zigPath,
     run: c => tryRun('zig', c, () => {
-      execFileSync('zig', ['build-exe', c.zig, '-O', 'ReleaseFast', '-femit-bin=' + zigPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      const zigCache = build('zig-cache')
+      const zigGlobalCache = build('zig-global-cache')
+      mkdirSync(zigCache, { recursive: true })
+      mkdirSync(zigGlobalCache, { recursive: true })
+      execFileSync('zig', ['build-exe', c.zig, '-O', 'ReleaseFast', '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, '-femit-bin=' + zigPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [zigPath(c)]),
   },
   python: {

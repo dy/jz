@@ -487,12 +487,11 @@ cc program.c -o program
 | [poly](bench/poly/poly.js) | 0.37ms<br>1.4kB | 2.29ms<br>1014 B | fails | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
 | [callback](bench/callback/callback.js) | 0.05ms<br>1.5kB | 0.86ms<br>828 B | fails | 1.48ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
 | [json](bench/json/json.js) | 0.23ms<br>10.9kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
-| [json-dynamic](bench/json-dynamic/json-dynamic.js) | 0.24ms<br>11.2kB | 0.38ms<br>1.2kB | fails | — | — | — | — | — | — | — |
-| [sort](bench/sort/sort.js) | 11.11ms<br>1.7kB | 9.59ms<br>1.5kB | fails | 10.77ms<br>1.8kB | — | — | — | — | — | — |
-| [crc32](bench/crc32/crc32.js) | 11.99ms<br>1.5kB | 13.37ms<br>1.8kB | 80.84ms<br>3.1kB | 12.04ms<br>1.4kB | — | — | — | — | — | — |
+| [sort](bench/sort/sort.js) | 8.44ms<br>1.9kB | 9.98ms<br>1.6kB | fails | 10.18ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
+| [crc32](bench/crc32/crc32.js) | 11.96ms<br>1.5kB | 13.35ms<br>1.8kB | 80.76ms<br>3.1kB | 12.04ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
 | [watr](bench/watr/watr.js) | 1.51ms<br>148.1kB | 1.48ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon. Every target runs the same canonical `bench/<case>/<case>.js` (or its language port) — no per-engine variants. `fails` = Porffor's bundled runtime OOBs or it can't compile the case; `diff` = the engine produced a different checksum; `fma` = a fused-multiply-add rounding difference. `porf` 0.61.13._
+_Numbers from `node bench/bench.mjs` on Apple Silicon._
 
 <details>
 <summary><strong>Optimizations</strong></summary>

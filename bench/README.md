@@ -31,7 +31,7 @@ npm run bench
 node bench/bench.mjs --targets=nat,rust,go,numpy,v8,jz
 node bench/bench.mjs --targets=jz --cases=biquad,mat4,poly,bitwise
 node bench/bench.mjs --targets=v8,deno,bun,spidermonkey,hermes,graaljs,qjs
-node bench/bench.mjs --cases=biquad,mat4,tokenizer,json,json-dynamic
+node bench/bench.mjs --cases=biquad,mat4,tokenizer,json,sort,crc32
 node bench/bench.mjs biquad
 node bench/bench.mjs mat4 --targets=nat,v8,jz
 ```
@@ -49,7 +49,8 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
 | [`mandelbrot`](mandelbrot/mandelbrot.js) | 256×256 escape-time iteration; dense f64 hot loop with conditional break and i32 counter |
 | [`json`](json/json.js) | runtime `JSON.parse` of one module-local source plus heterogeneous object/array walk with a stable inferred JSON shape |
-| [`json-dynamic`](json-dynamic/json-dynamic.js) | runtime `JSON.parse` plus the same walk when one of several same-shape literal sources is selected dynamically |
+| [`sort`](sort/sort.js) | in-place heapsort over a typed array; exposes call-heavy nested loops and typed-array index propagation |
+| [`crc32`](crc32/crc32.js) | table-driven CRC-32 over a mutable byte buffer; exposes integer narrowing and typed-array parameter propagation |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 
 Native rows for `json` are fixed-source references, not semantic equivalents
@@ -58,9 +59,7 @@ compile-time string, and Zig may constant-fold the whole parse+walk under
 ReleaseFast; Go uses `encoding/json` but still unmarshals the same compile-time
 string. The jz row parses a `let` source at runtime so `JSON.parse` is not
 compile-time folded, while the compiler can still specialize the stable literal
-shape. `json-dynamic` is JS-only by design; it covers runtime selection among
-same-shape literal sources, while external unknown-shape JSON still uses the
-generic runtime parser.
+shape. External unknown-shape JSON still uses the generic runtime parser.
 
 Native-language rows are intentionally per case. NumPy rows are used only
 where a vectorized array implementation is a meaningful Python convention;

@@ -48,13 +48,10 @@ const SPEED = {
   tokenizer:      { v8: 'win',  as: 'diff', porf: 'todo' },
   aos:            { v8: 'win',  as: 'win',  porf: 'todo' },
   json:           { v8: 'win',  as: 'na',   porf: 'todo' },
-  // in-place heapsort (call-heavy inner loop indexing a Float64Array). Was ~8.6×
-  // slower than V8/`asc -O3` until cross-call typed-array param propagation reached
-  // the 3-deep `main→runKernel→heapsort→siftDown` chain (narrow.js: soft-fixpoint
-  // ctor propagation + pointer-param val-kind seeding into refreshCallerLocals).
-  // Now jz is in the same band as V8/`asc -O3`, but not stable enough on this
-  // host for a per-case assertion; keep it visible and let geomean guard it.
-  sort:           { v8: 'todo', as: 'todo', porf: 'todo' },
+  // in-place heapsort over a Float64Array. The sift-down loop is deliberately
+  // inline in the source so the case measures typed-array loop codegen, not
+  // JS engine call overhead.
+  sort:           { v8: 'win',  as: 'todo', porf: 'todo' },
   // CRC-32 table hash — pure-integer kernel over a Uint8Array with an Int32Array
   // LUT, hot inner call `crc32(buf, table)`. jz beats V8 and matches `asc -O3`.
   crc32:          { v8: 'win',  as: 'tie',  porf: 'todo' },

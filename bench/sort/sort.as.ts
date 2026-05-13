@@ -22,24 +22,30 @@ function fill(a: Float64Array): void {
   }
 }
 
-function siftDown(a: Float64Array, root: i32, end: i32): void {
-  let i = root
-  let child = 2 * i + 1
-  while (child < end) {
-    if (child + 1 < end && unchecked(a[child]) < unchecked(a[child + 1])) child++
-    if (unchecked(a[i]) >= unchecked(a[child])) return
-    const t = unchecked(a[i]); unchecked(a[i] = a[child]); unchecked(a[child] = t)
-    i = child
-    child = 2 * i + 1
-  }
-}
-
 function heapsort(a: Float64Array): void {
   const n = a.length
-  for (let i = (n >> 1) - 1; i >= 0; i--) siftDown(a, i, n)
+  for (let root = (n >> 1) - 1; root >= 0; root--) {
+    let i = root
+    let child = 2 * i + 1
+    while (child < n) {
+      if (child + 1 < n && unchecked(a[child]) < unchecked(a[child + 1])) child++
+      if (unchecked(a[i]) >= unchecked(a[child])) break
+      const t = unchecked(a[i]); unchecked(a[i] = a[child]); unchecked(a[child] = t)
+      i = child
+      child = 2 * i + 1
+    }
+  }
   for (let end = n - 1; end > 0; end--) {
     const t = unchecked(a[0]); unchecked(a[0] = a[end]); unchecked(a[end] = t)
-    siftDown(a, 0, end)
+    let i = 0
+    let child = 1
+    while (child < end) {
+      if (child + 1 < end && unchecked(a[child]) < unchecked(a[child + 1])) child++
+      if (unchecked(a[i]) >= unchecked(a[child])) break
+      const u = unchecked(a[i]); unchecked(a[i] = a[child]); unchecked(a[child] = u)
+      i = child
+      child = 2 * i + 1
+    }
   }
 }
 
@@ -47,9 +53,8 @@ function checksumF64(out: Float64Array): u32 {
   // matches benchlib.checksumF64: hash every 256th u32 lane of the buffer.
   const u = Uint32Array.wrap(out.buffer, out.byteOffset, out.length * 2)
   let h: u32 = 0x811c9dc5
-  const stride: i32 = 256
   const n = u.length
-  for (let i = 0; i < n; i += stride) h = (h ^ <u32>unchecked(u[i])) * 0x01000193
+  for (let i = 0; i < n; i += 256) h = (h ^ <u32>unchecked(u[i])) * 0x01000193
   return h
 }
 

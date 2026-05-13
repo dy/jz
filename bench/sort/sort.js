@@ -15,25 +15,30 @@ const fill = (a) => {
   }
 }
 
-// In-place heapsort — no recursion, no scratch buffer (AS-portable, jz-subset clean).
-const siftDown = (a, root, end) => {
-  let i = root
-  let child = 2 * i + 1
-  while (child < end) {
-    if (child + 1 < end && a[child] < a[child + 1]) child++
-    if (a[i] >= a[child]) return
-    const t = a[i]; a[i] = a[child]; a[child] = t
-    i = child
-    child = 2 * i + 1
-  }
-}
-
 const heapsort = (a) => {
   const n = a.length
-  for (let i = (n >> 1) - 1; i >= 0; i--) siftDown(a, i, n)
+  for (let root = (n >> 1) - 1; root >= 0; root--) {
+    let i = root
+    let child = 2 * i + 1
+    while (child < n) {
+      if (child + 1 < n && a[child] < a[child + 1]) child++
+      if (a[i] >= a[child]) break
+      const t = a[i]; a[i] = a[child]; a[child] = t
+      i = child
+      child = 2 * i + 1
+    }
+  }
   for (let end = n - 1; end > 0; end--) {
     const t = a[0]; a[0] = a[end]; a[end] = t
-    siftDown(a, 0, end)
+    let i = 0
+    let child = 1
+    while (child < end) {
+      if (child + 1 < end && a[child] < a[child + 1]) child++
+      if (a[i] >= a[child]) break
+      const u = a[i]; a[i] = a[child]; a[child] = u
+      i = child
+      child = 2 * i + 1
+    }
   }
 }
 
