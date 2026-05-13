@@ -63,7 +63,7 @@ const jzCompileSize = id => {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
-    optimize: isWatr ? { level: 'size', watr: false } : 'size',
+    optimize: 'size',
     alloc: false,
   })
 }
