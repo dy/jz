@@ -133,7 +133,10 @@ const runs = parseBenchOutput(speedOut)
 // samples so the gate reflects steady-state, not whichever scheduler hiccup
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
-for (const id of ['watr', 'sort', 'crc32']) {
+// `mandelbrot` is at the WASM-v1 algorithmic floor (no instruction left to drop in
+// the inner loop) and median-to-median against V8 lands within ±1% across runs.
+// Resampling here keeps the `win` gate honest instead of flipping on noise.
+for (const id of ['watr', 'sort', 'crc32', 'mandelbrot']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   for (let i = 1; i < 5; i++) {
