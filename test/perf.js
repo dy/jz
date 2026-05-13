@@ -691,7 +691,11 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
     './util.js':        watrSrc('util.js'),
   }
   const watrJs = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
-  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memoryPages: 4096 })
+  // optimize: 'speed' — full watr (inlining included) + max scalar unroll. The
+  // default L2 'light' set skips inline/inlineOnce; for this micro-pin we want
+  // the strictest possible wasm output to give the 1.5× threshold the most
+  // headroom against CI-machine variance.
+  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memoryPages: 4096, optimize: 'speed' })
   const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
 
   const WAT_CORE = `(module
