@@ -755,7 +755,8 @@ function stripTerminalSwitchBreak(body) {
   if (body[0] === 'break') return null
   if (body[0] === '{}') {
     const inner = stripTerminalSwitchBreak(body[1])
-    return inner == null ? ['{}'] : ['{}', inner]
+    if (inner == null) return ['{}', [';']]
+    return ['{}', Array.isArray(inner) && inner[0] === ';' ? inner : [';', inner]]
   }
   if (body[0] !== ';') return body
 
