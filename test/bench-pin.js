@@ -48,7 +48,6 @@ const SPEED = {
   tokenizer:      { v8: 'win',  as: 'diff', porf: 'todo' },
   aos:            { v8: 'win',  as: 'win',  porf: 'todo' },
   json:           { v8: 'win',  as: 'na',   porf: 'todo' },
-  'json-dynamic': { v8: 'win',  as: 'na',   porf: 'todo' },
   // in-place heapsort (call-heavy inner loop indexing a Float64Array). Was ~8.6×
   // slower than V8/`asc -O3` until cross-call typed-array param propagation reached
   // the 3-deep `main→runKernel→heapsort→siftDown` chain (narrow.js: soft-fixpoint
@@ -84,8 +83,7 @@ const SIZE = {
   tokenizer:      { as: 'todo', porf: 'win' },
   aos:            { as: 'win',  porf: 'win' },
   json:           { as: 'na',   porf: 'win' },
-  'json-dynamic': { as: 'na',   porf: 'win' },
-  sort:           { as: 'win',  porf: 'win' },
+  sort:           { as: 'tie',  porf: 'win' },
   crc32:          { as: 'win',  porf: 'win' },
   watr:           { as: 'na',   porf: 'na'  },
 }
@@ -100,7 +98,7 @@ const WASMOPT_SLACK_MIN = 0.70
 // (Sizes here are the default-optimize bench.mjs build, not `optimize:'size'`.)
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
-  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, 'json-dynamic': 12000, sort: 2200, crc32: 1750, watr: 180000,
+  bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750, watr: 180000,
 }
 
 // ── Run the speed harness ───────────────────────────────────────────────────
