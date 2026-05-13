@@ -468,7 +468,11 @@ export function optimizeModule(sec) {
     }
   }
   if (!cfg || cfg.hoistConstantPool !== false)
-    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => ctx.scope.globals.set(name, wat))
+    hoistConstantPool([...sec.funcs, ...sec.stdlib, ...sec.start], (name, wat) => {
+      ctx.scope.globals.set(name, wat)
+      const m = wat.match(/\(global\s+\$?\S+\s+(?:\(mut\s+)?(i32|i64|f64|f32)/)
+      if (m) ctx.scope.globalTypes.set(name, m[1])
+    })
 
   // Second promoteGlobals pass disabled: promoting hoistConstantPool's __fc*
   // globals regressed the watr perf micro-pin (WASM compile time increased).
