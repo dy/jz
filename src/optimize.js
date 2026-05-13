@@ -97,7 +97,14 @@ const LEVEL_PRESETS = Object.freeze({
   // (treeshake/dedupe/dedupTypes/coalesce/propagate/packData/fold/peephole/...) still
   // deliver most of watr's size win at essentially zero compile cost.
   2: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
-  3: ALL_ON,
+  // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
+  // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
+  // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
+  // factor as the global __hash_new on first set, avoiding the 2→4→8 grow chain.
+  // Net cost: ~128 B per empty array, ~144 B per per-object hash. Net win on the
+  // watr.compile profile: __arr_grow ~6.7% → ~3%, and lower __ihash_get_local
+  // probe depth from a denser-load global hash.
+  3: Object.freeze({ ...ALL_ON, arrayMinCap: 16, hashSmallInitCap: 8 }),
   // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
   balanced: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
@@ -105,7 +112,8 @@ const LEVEL_PRESETS = Object.freeze({
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
-  speed: ALL_ON,
+  // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning.
+  speed: Object.freeze({ ...ALL_ON, arrayMinCap: 16, hashSmallInitCap: 8 }),
 })
 
 /**

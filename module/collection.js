@@ -573,9 +573,12 @@ export default (ctx) => {
   // Small initial capacity for propsPtr-style hashes (per-object dyn props).
   // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front
   // is wasted memory + probe-loop cache pressure. Grows to 4/8/... on demand.
+  // L3/'speed' opts into a larger initial cap (default 8) to skip 2→4→8 growth
+  // when AST-style nodes carry 3-5 props (watr.compile's profile).
+  const smallCap = Math.max(ctx.transform.optimize?.hashSmallInitCap | 0, 2)
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const 2) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)
@@ -710,6 +713,11 @@ export default (ctx) => {
             (br_if $haveProps (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH})))
+            ;; Fresh array (header propsPtr=0, no shift, no props): skip the
+            ;; global hash probe — there's nothing to find. Shifted arrays read
+            ;; forwarding bytes here (low32=newOff, high32=-1) → non-zero, so
+            ;; this br_if doesn't fire and they fall through to __dyn_props.
+            (br_if $dynDone (i64.eqz (local.get $props)))
             (local.set $props (i64.const 0))))
         ;; OBJECT: heap-allocated (off >= __heap_start) carries propsPtr at
         ;; off-16 from __alloc_hdr. The slot is either 0 (no dyn props yet) or
