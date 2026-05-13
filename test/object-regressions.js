@@ -602,6 +602,28 @@ test('hasOwnProperty: dynamic key on known-schema OBJECT', () => {
   is(f('z'), 0)
 })
 
+test('jzify: Object.hasOwnProperty.call canonicalizes to instance hasOwnProperty', () => {
+  const { f } = jz(`
+    export let f = (k) => {
+      const x = {a: 1, b: 2}
+      return Object.hasOwnProperty.call(x, k) ? 1 : 0
+    }
+  `, { jzify: true }).exports
+  is(f('a'), 1)
+  is(f('z'), 0)
+})
+
+test('jzify: empty Object constructor guard canonicalizes to Object.keys check', () => {
+  const { f } = jz(`
+    export let f = (s) => {
+      const configuration = JSON.parse(s)
+      return configuration.constructor === Object && Object.keys(configuration).length === 0 ? 1 : 0
+    }
+  `, { jzify: true }).exports
+  is(f('{}'), 1)
+  is(f('{"a":1}'), 0)
+})
+
 // Regression: compound assignments on array targets crashed with
 // "Unknown local $[],b,,0" because readVar() received an array node.
 // Fix: desugar to name = name OP val when LHS is not a plain string.
