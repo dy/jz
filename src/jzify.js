@@ -753,6 +753,11 @@ function cloneAst(node) {
 function stripTerminalSwitchBreak(body) {
   if (!Array.isArray(body)) return body
   if (body[0] === 'break') return null
+  if (body[0] === '{}') {
+    const inner = stripTerminalSwitchBreak(body[1])
+    if (inner == null) return ['{}', [';']]
+    return ['{}', Array.isArray(inner) && inner[0] === ';' ? inner : [';', inner]]
+  }
   if (body[0] !== ';') return body
 
   const stmts = body.slice(1)

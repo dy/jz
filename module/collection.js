@@ -11,6 +11,7 @@
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, allocPtr, undefExpr } from '../src/ir.js'
 import { emit, emitFlat } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
+import { hasOwnContinue } from '../src/ast.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
 const SET_ENTRY = 16  // hash + key
@@ -1032,8 +1033,14 @@ export default (ctx) => {
     const ptrI64 = tempI64('hp'), srcOff = tempI32('hso'), srcType = tempI32('hst')
     if (!ctx.func.locals.has(varName)) ctx.func.locals.set(varName, 'f64')
     const id = ctx.func.uniq++
+    const brk = `$brk${id}`, loop = `$loop${id}`, cont = `$cont${id}`
     const va = asF64(emit(src))
-    const bodyFlat = emitFlat(body)
+    const needsCont = hasOwnContinue(body)
+    ctx.func.stack.push({ brk, loop: needsCont ? cont : loop })
+    let bodyFlat
+    try { bodyFlat = emitFlat(body) }
+    finally { ctx.func.stack.pop() }
+    const bodyBlock = needsCont ? [['block', cont, ...bodyFlat]] : bodyFlat
     inc('__ptr_type')
     return [
       // Save source ptr as i64
@@ -1054,16 +1061,16 @@ export default (ctx) => {
           ['local.set', `$${off}`, ['call', '$__ptr_offset', ['local.get', `$${ptrI64}`]]],
           ['local.set', `$${cap}`, ['call', '$__cap', ['local.get', `$${ptrI64}`]]],
           ['local.set', `$${i}`, ['i32.const', 0]],
-          ['block', `$brk${id}`, ['loop', `$loop${id}`,
-            ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
+          ['block', brk, ['loop', loop,
+            ['br_if', brk, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${cap}`]]],
             ['local.set', `$${slot}`, ['i32.add', ['local.get', `$${off}`],
               ['i32.mul', ['local.get', `$${i}`], ['i32.const', MAP_ENTRY]]]],
             ['if', ['i64.ne', ['i64.load', ['local.get', `$${slot}`]], ['i64.const', 0]],
               ['then',
                 ['local.set', `$${varName}`, ['f64.reinterpret_i64', ['i64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]]],
-                ...bodyFlat]],
+                ...bodyBlock]],
             ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-            ['br', `$loop${id}`]]]]]
+            ['br', loop]]]]]
     ]
   }
 }
