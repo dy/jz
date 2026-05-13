@@ -1879,6 +1879,7 @@ export const emitter = {
           const callIR = typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0])
           if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
           if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+          if (func.sig.unsignedResult) callIR.unsigned = true
           return callIR
         }
       }
@@ -2282,6 +2283,7 @@ export const emitter = {
           arrayIR], func.sig.results[0])
         if (func.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
         if (func.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+        if (func.sig.unsignedResult) callIR.unsigned = true
         return callIR
       }
 
@@ -2302,6 +2304,9 @@ export const emitter = {
       const callIR = typed(['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64')
       if (func?.sig.ptrKind != null) callIR.ptrKind = func.sig.ptrKind
       if (func?.sig.ptrAux != null) callIR.ptrAux = func.sig.ptrAux
+      // Unsigned-uint32 result (every tail was `>>>`): consumer's asF64 must use
+      // `f64.convert_i32_u` instead of `_s`, preserving the [0, 2^32) range.
+      if (func?.sig.unsignedResult) callIR.unsigned = true
       return callIR
     }
 

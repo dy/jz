@@ -446,18 +446,22 @@ export default function narrowSignatures(programFacts, ast) {
       if (isBlockBody(body) && hasBareReturn(body)) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
-      // Skip narrowing when any return-tail is `>>>` (unsigned uint32). Narrowing to i32
-      // loses the unsigned interpretation: the wrapper rebox via `f64.convert_i32_s` would
-      // sign-flip values with bit 31 set, breaking the canonical `(x >>> 0)` uint32 idiom.
-      // A future pass could track sig.unsignedResult and emit `f64.convert_i32_u` instead.
-      if (exprs.some(e => Array.isArray(e) && e[0] === '>>>')) continue
+      // Narrow result to i32 when every return-tail types as i32 (incl. bitwise ops, `|0`,
+      // and `>>>`). When ANY tail is `>>>` (unsigned uint32 idiom) we still narrow, but tag
+      // `sig.unsignedResult` so the call-site rebox uses `f64.convert_i32_u` — preserving
+      // the [0, 2^32) range that `(x >>> 0)` carries through hash/CRC finalizers.
+      const anyUnsigned = exprs.some(e => Array.isArray(e) && e[0] === '>>>')
       const savedCurrent = ctx.func.current
       ctx.func.current = func.sig
       const locals = isBlockBody(body) ? analyzeLocals(body) : new Map()
       for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
       const allI32 = exprs.every(e => exprTypeWithCalls(e, locals) === 'i32')
       ctx.func.current = savedCurrent
-      if (allI32) { func.sig.results = ['i32']; changed = true }
+      if (allI32) {
+        func.sig.results = ['i32']
+        if (anyUnsigned) func.sig.unsignedResult = true
+        changed = true
+      }
     }
   }
 

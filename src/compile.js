@@ -376,7 +376,8 @@ function emitFunc(func, funcFacts, programFacts) {
  *
  * Result rebox cases (then reinterpret to i64 at the boundary):
  *   - sig.ptrKind != null  → mkPtrIR(ptrKind, ptrAux ?? 0, callIR)
- *   - sig.results[0] = i32 → f64.convert_i32_s(callIR)
+ *   - sig.results[0] = i32 → f64.convert_i32_s(callIR), or `_u` when
+ *                            sig.unsignedResult (preserves `(x >>> 0)` ∈ [0, 2³²))
  *   - sig.results[0] = f64 → callIR (some params narrowed but result stayed f64)
  */
 function synthesizeBoundaryWrappers() {
@@ -409,7 +410,7 @@ function synthesizeBoundaryWrappers() {
       const ptrType = valKindToPtr(sig.ptrKind)
       body = mkPtrIR(ptrType, sig.ptrAux ?? 0, callIR)
     } else if (sig.results[0] === 'i32') {
-      body = ['f64.convert_i32_s', callIR]
+      body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]
     } else {
       body = callIR
     }
