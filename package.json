@@ -26,7 +26,9 @@
     "bench": "node bench/bench.mjs",
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
-    "test:bench-pin": "node test/bench-pin.js"
+    "test:bench-pin": "node test/bench-pin.js",
+    "test:all": "npm test && npm run test:bench-pin",
+    "prepublishOnly": "npm run test:all"
   },
   "repository": {
     "type": "git",
