@@ -507,12 +507,16 @@ const handlers = {
     const clean = cases.map(c => {
       if (c[0] === 'case' && Array.isArray(c[2]) && c[2][0] === ';') {
         const body = c[2].slice(1).filter(s => typeof s !== 'number')
-        return ['case', c[1], body.length === 1 ? body[0] : [';', ...body]]
+        const stripped = stripTerminalSwitchBreak(body.length === 1 ? body[0] : [';', ...body])
+        return ['case', c[1], stripped]
       }
       if (c[0] === 'default' && Array.isArray(c[1]) && c[1][0] === ';') {
         const body = c[1].slice(1).filter(s => s != null && typeof s !== 'number')
-        return ['default', body.length === 1 ? body[0] : [';', ...body]]
+        const stripped = stripTerminalSwitchBreak(body.length === 1 ? body[0] : [';', ...body])
+        return ['default', stripped]
       }
+      if (c[0] === 'case') return ['case', c[1], stripTerminalSwitchBreak(c[2])]
+      if (c[0] === 'default') return ['default', stripTerminalSwitchBreak(c[1])]
       return c
     })
     return transformSwitch(disc, clean)
@@ -720,6 +724,16 @@ function cloneAst(node) {
   if (node == null || typeof node !== 'object') return node
   if (!Array.isArray(node)) return node
   return node.map(cloneAst)
+}
+
+function stripTerminalSwitchBreak(body) {
+  if (!Array.isArray(body)) return body
+  if (body[0] === 'break') return null
+  if (body[0] !== ';') return body
+
+  const stmts = body.slice(1)
+  if (Array.isArray(stmts.at(-1)) && stmts.at(-1)[0] === 'break') stmts.pop()
+  return stmts.length === 0 ? null : stmts.length === 1 ? stmts[0] : [';', ...stmts]
 }
 
 /** Transform switch statement to if/else chain. */
