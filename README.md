@@ -478,18 +478,21 @@ cc program.c -o program
 
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [biquad](bench/biquad/biquad.js) | 4.63ms<br>4.0kB | 8.68ms<br>3.2kB | fails | 6.59ms<br>1.9kB | 6.45ms<br>767 B | 5.30ms | 8.91ms<br>fma | 5.06ms | 5.28ms | 3.12s |
-| [tokenizer](bench/tokenizer/tokenizer.js) | 0.07ms<br>1.8kB | 0.12ms<br>1.4kB | 0.34ms<br>2.6kB | 0.05ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.12ms | 0.12ms | 5.15ms |
-| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.7kB | 11.80ms<br>1.2kB | 88.54ms<br>2.4kB<br>diff | 9.21ms<br>1.6kB | 8.06ms<br>414 B | 2.73ms | 11.93ms | 2.73ms | 1.77ms | 387.60ms |
-| [aos](bench/aos/aos.js) | 1.11ms<br>2.3kB | 1.26ms<br>1.1kB | fails | 1.33ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.91ms | 0.91ms | 1.20ms | 2.57ms |
-| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 8.02ms<br>1.2kB | 9.06ms<br>1.8kB | 9.71ms<br>3.0kB | 8.00ms<br>1.3kB | — | 8.31ms | 8.80ms | 7.83ms | 8.52ms | — |
-| [bitwise](bench/bitwise/bitwise.js) | 0.98ms<br>1.3kB | 3.76ms<br>1005 B | fails | 8.79ms<br>1.5kB | 4.86ms<br>355 B | 1.30ms | 5.20ms | 4.15ms | 1.30ms | 14.72ms |
-| [poly](bench/poly/poly.js) | 0.27ms<br>1.4kB | 1.62ms<br>1014 B | fails | 0.73ms<br>1.3kB | 0.81ms<br>359 B | 0.57ms | 0.79ms | 0.89ms | 0.63ms | 0.60ms |
-| [callback](bench/callback/callback.js) | 0.03ms<br>1.6kB | 0.69ms<br>828 B | fails | 1.04ms<br>1.9kB | 0.24ms<br>267 B | 0.08ms | 0.23ms | 0.01ms | 0.12ms | 1.78ms |
-| [json](bench/json/json.js) | 0.25ms<br>10.9kB | 0.36ms<br>1.2kB | fails | — | — | 0.25ms | 1.16ms | 0.64ms | 0.65ms | 1.20ms |
-| [watr](bench/watr/watr.js) | 1.04ms<br>169.8kB | 1.05ms<br>2.6kB | fails | — | — | — | — | — | — | — |
+| [biquad](bench/biquad/biquad.js) | 6.40ms<br>4.3kB | 12.02ms<br>3.2kB | fails | 8.88ms<br>1.9kB | 6.44ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>2.0kB | 0.18ms<br>1.4kB | 0.46ms<br>2.6kB | 0.08ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.14ms | 0.14ms | 5.12ms |
+| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.2kB | 11.90ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.44ms<br>1.6kB | 8.10ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
+| [aos](bench/aos/aos.js) | 1.61ms<br>2.1kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
+| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.24ms<br>1.4kB | 13.53ms<br>1.8kB | 13.47ms<br>3.0kB | 12.23ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
+| [bitwise](bench/bitwise/bitwise.js) | 1.62ms<br>1.5kB | 5.25ms<br>1005 B | fails | 11.97ms<br>1.5kB | 4.95ms<br>355 B | 1.30ms | 5.23ms | 4.16ms | 1.30ms | 14.77ms |
+| [poly](bench/poly/poly.js) | 0.37ms<br>1.5kB | 2.29ms<br>1014 B | fails | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
+| [callback](bench/callback/callback.js) | 0.05ms<br>1.7kB | 0.86ms<br>828 B | fails | 1.48ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
+| [json](bench/json/json.js) | 0.23ms<br>11.0kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
+| [json-dynamic](bench/json-dynamic/json-dynamic.js) | 0.24ms<br>11.3kB | 0.38ms<br>1.2kB | fails | — | — | — | — | — | — | — |
+| [sort](bench/sort/sort.js) | 11.11ms<br>1.9kB | 9.59ms<br>1.5kB | fails | 10.77ms<br>1.8kB | — | — | — | — | — | — |
+| [crc32](bench/crc32/crc32.js) | 11.99ms<br>1.6kB | 13.37ms<br>1.8kB | 80.84ms<br>3.1kB | 12.04ms<br>1.4kB | — | — | — | — | — | — |
+| [watr](bench/watr/watr.js) | 1.51ms<br>148.2kB | 1.48ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon. Porffor cells were refreshed with `porf` 0.61.13; `fails` means the latest Porffor compiler/runtime did not complete that benchmark._
+_Numbers from `node bench/bench.mjs` on Apple Silicon. Every target runs the same canonical `bench/<case>/<case>.js` (or its language port) — no per-engine variants. `fails` = Porffor's bundled runtime OOBs or it can't compile the case; `diff` = the engine produced a different checksum; `fma` = a fused-multiply-add rounding difference. `porf` 0.61.13._
 
 <details>
 <summary><strong>Optimizations</strong></summary>

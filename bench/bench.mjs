@@ -32,6 +32,7 @@ const CASE_NAMES = {
   json: 'JSON parse+walk (single literal source)',
   'json-dynamic': 'JSON parse+walk (runtime variant source)',
   sort: 'in-place heapsort',
+  crc32: 'CRC-32 table hash',
   watr: 'watr WAT compiler',
 }
 
