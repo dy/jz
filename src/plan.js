@@ -935,7 +935,12 @@ const inlineInStmt = (stmt, candidates) => {
   }
   if (op === '{}') {
     const r = inlineInStmt(stmt[1], candidates)
-    return r.changed ? { node: ['{}', r.node], changed: true } : { node: stmt, changed: false }
+    if (!r.changed) return { node: stmt, changed: false }
+    // If the child was itself a candidate call (or a let/assign-of-call), it
+    // already returned a `['{}', [';', ...prefix]]` shape. Re-wrapping here
+    // would yield `['{}', ['{}', …]]`, which codegen rejects ("Unknown op: {}").
+    if (Array.isArray(r.node) && r.node[0] === '{}') return { node: r.node, changed: true }
+    return { node: ['{}', r.node], changed: true }
   }
   if (op === 'for') {
     const r = inlineInStmt(stmt[4], candidates)
