@@ -45,17 +45,19 @@ const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHI
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
  *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
- *   2 — default. Stable jz passes (every pass with benchmark proof). watr disabled
- *       by default — adds ~2s compile time for identical runtime performance.
- *   3 — aggressive experimental passes in addition to level 2.
+ *   2 — default. All stable jz passes + watr in 'light' mode (everything except
+ *       `inline` / `inlineOnce`). 'light' delivers most of the size win
+ *       (treeshake / dedupe / dedupTypes / coalesce / propagate / packData / fold /
+ *       peephole / vacuum / mergeBlocks / brif / loopify / …) at essentially zero
+ *       net compile cost — the smaller wasm makes watrCompile downstream faster.
+ *   3 — level 2 + full watr (adds inlining) + aggressive experimental tunings.
  *
  * String aliases (the size↔speed tradeoff lives entirely in the unroll/scalar
- * knobs, so the aliases just dial those):
- *   'size'     — level 2 with loop/const unroll + lane vectorization off and tight
- *                scalar-replacement caps. Smallest wasm; still fully optimized.
+ * knobs; watr is on for all three):
+ *   'size'     — loop/const unroll + lane vectorization off, tight scalar-replacement
+ *                caps. Smallest wasm.
  *   'balanced' — the default (= level 2).
- *   'speed'    — level 2 with full nested unroll + lane vectorization on (= level 3
- *                minus the heavy third-party watr pass).
+ *   'speed'    — full nested unroll + lane vectorization (= level 3).
  */
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
@@ -88,16 +90,22 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  2: Object.freeze({ ...ALL_ON, watr: false, nestedSmallConstForUnroll: 'auto' }),
+  // Default (level 2 / 'balanced'): every stable pass + watr in 'light' mode.
+  // 'light' = all watr passes except inlining (`inline` / `inlineOnce`). Inlining is
+  // skipped at L2 because it breaks regex-split semantics (watr 4.6.4) and reshapes
+  // codegen tests that assert on pre-inline function structure. The remaining passes
+  // (treeshake/dedupe/dedupTypes/coalesce/propagate/packData/fold/peephole/...) still
+  // deliver most of watr's size win at essentially zero compile cost.
+  2: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
   3: ALL_ON,
-  // Named aliases — dial the size↔speed knobs on top of the level-2 base.
-  balanced: Object.freeze({ ...ALL_ON, watr: false, nestedSmallConstForUnroll: 'auto' }),
+  // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
+  balanced: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
-    ...ALL_ON, watr: false,
+    ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
-  speed: Object.freeze({ ...ALL_ON, watr: false }),
+  speed: ALL_ON,
 })
 
 /**
@@ -119,7 +127,16 @@ export function resolveOptimize(opt) {
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[baseLevel] || ALL_ON
     const out = { ...base }
-    for (const n of PASS_NAMES) if (n in opt) out[n] = n === 'nestedSmallConstForUnroll' && opt[n] === 'auto' ? 'auto' : !!opt[n]
+    for (const n of PASS_NAMES) {
+      if (!(n in opt)) continue
+      const v = opt[n]
+      // Preserve sentinel values that downstream resolution depends on:
+      //   nestedSmallConstForUnroll: 'auto' (heuristic at emit time)
+      //   watr: 'light' (curated subset — see index.js watrOpts)
+      if (n === 'nestedSmallConstForUnroll' && v === 'auto') out[n] = 'auto'
+      else if (n === 'watr' && v === 'light') out[n] = 'light'
+      else out[n] = !!v
+    }
     // Preserve non-pass tuning keys (e.g. plan.js thresholds)
     for (const k of Object.keys(opt)) if (!PASS_NAMES.includes(k)) out[k] = opt[k]
     return out
@@ -1873,10 +1890,14 @@ export function optimizeFunc(fn, cfg, globalTypes) {
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes)
-  // Vectorizer runs in POST-watr when watr is enabled, or in PRE when watr is
-  // disabled (there is no post pass then). This keeps single-pass semantics.
+  // Vectorizer runs PRE-watr unless full watr is enabled (`watr: true`). For full watr,
+  // defer to post — full passes (notably `inlineOnce` + the post-inline `propagate`
+  // sweep) reshape the IR so much that pre-watr SIMD patterns get scrambled. Light
+  // watr (or no watr) leaves the lane locals intact for vectorize to pattern-match,
+  // and lets a non-trivial chunk of SIMD survive the propagate+fold pipeline.
   if (cfg && cfg.vectorizeLaneLocal === true) {
-    const runVectorizer = cfg.__phase === 'post' || (cfg.__phase !== 'post' && cfg.watr === false)
+    const fullWatr = cfg.watr === true
+    const runVectorizer = (fullWatr && cfg.__phase === 'post') || (!fullWatr && cfg.__phase !== 'post')
     if (runVectorizer) vectorizeLaneLocal(fn)
   }
   if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)

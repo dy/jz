@@ -823,9 +823,13 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   }
   is(resolveOptimize(0).watr, false)
   is(resolveOptimize(0).treeshake, false)
-  is(resolveOptimize(2).watr, false)
+  // Default (level 2) runs watr in 'light' mode — every pass except `inline` /
+  // `inlineOnce`. Most of the size win, no regex-split / codegen-shape breakage.
+  is(resolveOptimize(2).watr, 'light')
   is(resolveOptimize(2).sourceInline, true)
   is(resolveOptimize(2).nestedSmallConstForUnroll, 'auto')
+  // Level 3 turns watr on fully (adds inlining) plus aggressive nested-unroll.
+  is(resolveOptimize(3).watr, true)
   is(resolveOptimize(3).sourceInline, true)
   is(resolveOptimize(3).nestedSmallConstForUnroll, true)
   // level 1 = encoding-compactness only
@@ -842,22 +846,23 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(o.treeshake, false)
   is(resolveOptimize({ level: 3, nestedSmallConstForUnroll: 'auto' }).nestedSmallConstForUnroll, 'auto')
   // undefined: default = level 2
-  is(resolveOptimize(undefined).watr, false)
+  is(resolveOptimize(undefined).watr, 'light')
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
   // string aliases
   const balanced = resolveOptimize('balanced')
   for (const n of PASS_NAMES) is(balanced[n], resolveOptimize(2)[n], `'balanced': ${n} matches level 2`)
   const size = resolveOptimize('size')
-  is(size.watr, false)
+  is(size.watr, true)
   is(size.smallConstForUnroll, false)
   is(size.nestedSmallConstForUnroll, false)
   is(size.vectorizeLaneLocal, false)
   is(size.treeshake, true)
   is(size.scalarTypedArrayLen, 8)
   is(size.scalarTypedLoopUnroll, 4)
+  // 'speed' = level 3: everything on, including watr.
   const speed = resolveOptimize('speed')
-  is(speed.watr, false)
+  is(speed.watr, true)
   is(speed.vectorizeLaneLocal, true)
   is(speed.nestedSmallConstForUnroll, true)
   is(speed.smallConstForUnroll, true)

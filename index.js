@@ -251,7 +251,26 @@ jz.compile = (code, opts = {}) => {
   }
 
   const cfg = ctx.transform.optimize
-  const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module)) : module
+  // watr's `loopify` collapses the `(block $brk (loop … (br_if $brk !cond) … (br $loop)))`
+  // idiom into `(loop … (if cond …))` — sound, but destroys the exact shape jz's
+  // post-watr vectorizer scans for. Disable loopify when vectorize is going to run.
+  //
+  // watr config:
+  //   true / 'full' → all default passes (includes `inlineOnce` / `inline` / `coalesce`)
+  //   'light'       → everything except inlining + coalesce. Default at level 2.
+  //                   `inlineOnce` reshapes codegen the way slot-type / LICM tests scan for,
+  //                   and miscompiles regex `split(/\s+/)`. `coalesceLocals` on its own (i.e.
+  //                   without the cleanup that follows inlining) breaks `/a.+b/.test("ab")`
+  //                   — likely a stale alias the post-inline propagate sweep normally tidies
+  //                   up at L3. Dropping both still keeps treeshake / dedupe / dedupTypes /
+  //                   propagate / packData / fold / peephole / vacuum / mergeBlocks / brif /
+  //                   loopify / offset / unbranch / identity / strength / globals etc.
+  //   false         → skip watr entirely (level 0/1).
+  let watrOpts
+  if (cfg.watr === 'light') watrOpts = { inline: false, inlineOnce: false, coalesce: false, loopify: !cfg.vectorizeLaneLocal }
+  else if (cfg.vectorizeLaneLocal) watrOpts = { loopify: false }
+  else watrOpts = true
+  const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module, watrOpts)) : module
   // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's
   // `boxPtrIR(g)` rebox). Our fusedRewrite folds these, watr's peephole doesn't.
