@@ -1563,7 +1563,8 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   // Any target not listed here is left untouched. Order matters only for readability.
   const SPECS = {
     '$__mkptr':     { params: ['i32', 'i32', 'i32'], result: 'f64', inline: true },
-    '$__alloc_hdr': { params: ['i32', 'i32', 'i32'], result: 'i32' },
+    '$__alloc_hdr':   { params: ['i32', 'i32'],        result: 'i32' },
+    '$__alloc_hdr_n': { params: ['i32', 'i32', 'i32'], result: 'i32' },
     '$__typed_idx': { params: ['i64', 'i32'],        result: 'f64' },
     '$__str_idx':   { params: ['i64', 'i32'],        result: 'f64' },
   }
@@ -2297,7 +2298,7 @@ export function sortLocalsByUse(fn, precomputedCounts) {
  */
 export function arenaRewindModule(fns) {
   const BUILTIN_SAFE = new Set([
-    '$__alloc', '$__alloc_hdr', '$__mkptr',
+    '$__alloc', '$__alloc_hdr', '$__alloc_hdr_n', '$__mkptr',
     '$__ptr_offset', '$__ptr_type', '$__ptr_aux',
     '$__len', '$__cap', '$__typed_shift', '$__typed_data',
   ])
@@ -2330,7 +2331,7 @@ export function arenaRewindModule(fns) {
       else if (op === 'call_ref') hasCallRef = true
       else if (op === 'call') {
         const callee = node[1]
-        if (callee === '$__alloc' || callee === '$__alloc_hdr') hasAlloc = true
+        if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') hasAlloc = true
         if (typeof callee === 'string' && !BUILTIN_SAFE.has(callee)) calls.add(callee)
       }
       for (let i = 1; i < node.length; i++) scan(node[i])

@@ -536,7 +536,7 @@ export function emitDecl(...inits) {
         ctx.func.locals.set(innerName, 'f64')
         result.push(
           ['local.set', `$${innerName}`, ['local.get', `$${name}`]],
-          ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]],
+          ['local.set', `$${bt}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
           ['f64.store', ['local.get', `$${bt}`], ['local.get', `$${name}`]],
           ...schema.slice(1).map((_, j) =>
             ['f64.store', ['i32.add', ['local.get', `$${bt}`], ['i32.const', (j + 1) * 8]], ['f64.const', 0]]),

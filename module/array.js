@@ -378,7 +378,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_from'] = `(func $__arr_from (param $src i64) (result f64)
     (local $len i32) (local $dst i32)
     (local.set $len (call $__len (local.get $src)))
-    (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len) (i32.const 8)))
+    (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len)))
     (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
@@ -434,7 +434,7 @@ export default (ctx) => {
         (i32.lt_u (local.get $off) (i32.const 8)))
       (then
         (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_s (local.get $minCap) (i32.const 4))))
-        (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap) (i32.const 8)))
+        (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap)))
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
@@ -444,7 +444,7 @@ export default (ctx) => {
       (i32.shl (local.get $oldCap) (i32.const 1))
       (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
+    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
@@ -464,7 +464,7 @@ export default (ctx) => {
       (i32.shl (local.get $oldCap) (i32.const 1))
       (i32.gt_s (local.get $minCap) (i32.shl (local.get $oldCap) (i32.const 1)))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap) (i32.const 8)))
+    (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}

@@ -186,7 +186,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
         (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
-        (local.set $newptr (call $__alloc_hdr (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${entrySize})))
         (local.set $i (i32.const 0))
         (block $rd (loop $rl
           (br_if $rd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -335,14 +335,14 @@ export default (ctx) => {
     __hash_has: () => ctx.features.external
       ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_has']
       : ['__str_hash', '__str_eq', '__ptr_type'],
-    __hash_new: ['__alloc_hdr'],
-    __hash_new_small: ['__alloc_hdr', '__mkptr'],
+    __hash_new: ['__alloc_hdr_n'],
+    __hash_new_small: ['__alloc_hdr_n', '__mkptr'],
     __hash_get_local: ['__str_hash', '__str_eq'],
     __hash_get_local_h: ['__str_eq'],
     __hash_set_local_h: ['__str_eq'],
-    __hash_set_local: ['__str_hash', '__str_eq'],
+    __hash_set_local: ['__str_hash', '__str_eq', '__alloc_hdr_n', '__mkptr'],
     __ihash_get_local: ['__map_hash'],
-    __ihash_set_local: ['__map_hash', '__alloc_hdr', '__mkptr'],
+    __ihash_set_local: ['__map_hash', '__alloc_hdr_n', '__mkptr'],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash'],
     __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
@@ -437,7 +437,7 @@ export default (ctx) => {
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // === Set ===
 
@@ -567,14 +567,14 @@ export default (ctx) => {
 
   ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY}))))`
 
   // Small initial capacity for propsPtr-style hashes (per-object dyn props).
   // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front
   // is wasted memory + probe-loop cache pressure. Grows to 4/8/... on demand.
   ctx.core.stdlib['__hash_new_small'] = `(func $__hash_new_small (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr (i32.const 0) (i32.const 2) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const 2) (i32.const ${MAP_ENTRY}))))`
 
   ctx.core.stdlib['__hash_get_local'] = genLookupStrict('__hash_get_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)

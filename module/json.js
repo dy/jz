@@ -87,12 +87,12 @@ export default (ctx) => {
       const keys = Object.keys(v)
       // Empty object: minimal OBJECT with no slots.
       if (keys.length === 0) {
-        return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1], ['i32.const', 8]])
+        return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1]])
       }
       const schemaId = ctx.schema.register(keys)
       const t = tempI32('jobj')
       const body = [
-        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', keys.length], ['i32.const', 8]]],
+        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', keys.length]]],
       ]
       for (let i = 0; i < keys.length; i++) {
         body.push(['f64.store', slotAddr(t, i), asF64(emitJsonConstValue(v[keys[i]]))])
@@ -582,10 +582,10 @@ export default (ctx) => {
       ;; miss: register new schema.
       (local.set $sid (global.get $__schema_next))
       (global.set $__schema_next (i32.add (local.get $sid) (i32.const 1)))
-      ;; Allocate jz Array of n keys. __alloc_hdr(len, cap, stride) returns base
-      ;; of slot region with len@-8 and cap@-4. The schema dispatch arm reads
+      ;; Allocate jz Array of n keys. __alloc_hdr(len, cap) returns base of
+      ;; slot region with len@-8 and cap@-4. The schema dispatch arm reads
       ;; nkeys from -8, so len must equal cap=n.
-      (local.set $karr (call $__alloc_hdr (local.get $n) (local.get $n) (i32.const 8)))
+      (local.set $karr (call $__alloc_hdr (local.get $n) (local.get $n)))
       (local.set $i (i32.const 0))
       (block $cd (loop $cl
         (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
@@ -623,7 +623,7 @@ export default (ctx) => {
       (then ${ADV(1)}
         (local.set $sid (call $__jp_schema_get (local.get $kbuf) (i32.const 0) (local.get $hh)))
         (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid)
-          (call $__alloc_hdr (i32.const 0) (i32.const 1) (i32.const 8))))))
+          (call $__alloc_hdr (i32.const 0) (i32.const 1))))))
     (block $d (loop $l
       ${WS()}
       (if (i32.eq ${PEEK} (i32.const 34))
@@ -661,7 +661,7 @@ export default (ctx) => {
     (local.set $sid (call $__jp_schema_get (local.get $kbuf) (local.get $kn) (local.get $hh)))
     ;; Allocate OBJECT slot region: kn × 8 bytes, with header (size at -8,
     ;; cap at -4) matching the static-fold path's emitJsonConstValue layout.
-    (local.set $obj (call $__alloc_hdr (i32.const 0) (local.get $kn) (i32.const 8)))
+    (local.set $obj (call $__alloc_hdr (i32.const 0) (local.get $kn)))
     ;; Copy values into OBJECT slots.
     (local.set $i (i32.const 0))
     (block $vd (loop $vl
@@ -749,7 +749,7 @@ export default (ctx) => {
       const sid = ctx.schema.register(keys)
       let body = `${WS()}
     ${expect(123)}
-    (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)}) (i32.const 8)))`
+    (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)})))`
       keys.forEach((k, i) => {
         body += `
     ${WS()}

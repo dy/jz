@@ -612,7 +612,7 @@ function emitClosureBody(cb) {
       ['then', ['local.set', `$${restLen}`, ['i32.const', restSlots]]]])
     fn.push(['local.set', `$${restOff}`,
       ['call', '$__alloc_hdr',
-        ['local.get', `$${restLen}`], ['local.get', `$${restLen}`], ['i32.const', 8]]])
+        ['local.get', `$${restLen}`], ['local.get', `$${restLen}`]]])
     for (let i = 0; i < restSlots; i++) {
       fn.push(['if', ['i32.gt_s', ['local.get', `$${restLen}`], ['i32.const', i]],
         ['then', ['f64.store',

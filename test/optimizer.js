@@ -482,7 +482,7 @@ test('escaping integer typed array keeps its allocation (no unsound mirror)', ()
     }
   `
   const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
-  ok(/\$__alloc_hdr\b/.test(wat), 'escaping integer typed array must stay heap-allocated')
+  ok(/\$__alloc_hdr_n\b/.test(wat), 'escaping integer typed array must stay heap-allocated')
   is(run(src).main(), 6)
 })
 

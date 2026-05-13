@@ -42,6 +42,7 @@ export default (ctx) => {
     __length: ['__ptr_type', '__ptr_offset', '__str_len', '__len'],
     __typeof: ['__ptr_type', '__is_nullish'],
     __alloc_hdr: ['__alloc'],
+    __alloc_hdr_n: ['__alloc'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -334,7 +335,21 @@ export default (ctx) => {
   // (NaN-boxed PTR.HASH) for ARRAY/HASH/MAP/SET; 0 means "no dyn props yet". This lets
   // __dyn_get_t / __dyn_set sidestep the global __dyn_props lookup on the hot path.
   // Read offsets relative to the returned data ptr stay unchanged (-8 len, -4 cap).
-  ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (param $stride i32) (result i32)
+  // Default stride=8 (f64 NaN-boxed slot) — used by every Array/HASH/OBJECT alloc.
+  // Specialized over a generic (len, cap, stride) helper to drop a fat (i32.const 8)
+  // immediate at every call site (~20+) plus a param/local.get pair in the body.
+  // Non-8 strides (Set: 16, Map/HASH probe: 24, TypedArray raw: 1) use __alloc_hdr_n.
+  ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))
+    (i64.store (local.get $ptr) (i64.const 0))
+    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $len))
+    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (local.get $cap))
+    (i32.add (local.get $ptr) (i32.const 16)))`
+
+  // Generic header allocator for non-8 strides: Set (16), Map probe (24), TypedArray raw (1).
+  // Same 16-byte header layout as __alloc_hdr; per-entry stride is passed dynamically.
+  ctx.core.stdlib['__alloc_hdr_n'] = `(func $__alloc_hdr_n (param $len i32) (param $cap i32) (param $stride i32) (result i32)
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
     (i64.store (local.get $ptr) (i64.const 0))

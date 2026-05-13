@@ -391,7 +391,8 @@ export function truthyIR(e) {
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.
     if (e[0] === 'call' && typeof e[1] === 'string' &&
-        (e[1].startsWith('$__mkptr') || e[1] === '$__alloc' || e[1].startsWith('$__alloc_hdr'))) {
+        (e[1].startsWith('$__mkptr') || e[1] === '$__alloc' ||
+         e[1] === '$__alloc_hdr' || e[1].startsWith('$__alloc_hdr_'))) {
       return typed(['i32.const', 1], 'i32')
     }
     // Pointer-typed local reads: value is never a plain number — truthy iff not nullish.
@@ -647,11 +648,17 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal) {
  *    ptr   — f64 IR expression: __mkptr(type, aux, local).
  *  Caller emits init, fills via local, then uses ptr (or local for further work). */
 export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
-  inc('__alloc_hdr')
+  // stride=8 (f64 slots — Array/HASH/OBJECT) hits the specialized __alloc_hdr which
+  // hardcodes the multiply. Everything else (Set:16, Map probe:24, raw bytes:1) goes
+  // through the generic __alloc_hdr_n(len, cap, stride).
   const local = tempI32(tag)
   const irOf = v => typeof v === 'number' ? ['i32.const', v] : v
-  const init = ['local.set', `$${local}`,
-    ['call', '$__alloc_hdr', irOf(len), irOf(cap == null ? len : cap), ['i32.const', stride]]]
+  const args = [irOf(len), irOf(cap == null ? len : cap)]
+  let helper
+  if (stride === 8) helper = '__alloc_hdr'
+  else { helper = '__alloc_hdr_n'; args.push(['i32.const', stride]) }
+  inc(helper)
+  const init = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
   const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }
 }

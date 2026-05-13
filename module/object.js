@@ -32,7 +32,7 @@ export default (ctx) => {
       const merged = target ? ctx.schema.resolve(target) : null
       const schemaId = merged ? ctx.schema.idOf(target) : 0
       const cap = merged ? Math.max(1, merged.length) : 1
-      return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap], ['i32.const', 8]])
+      return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap]])
     }
 
     // Flatten comma-grouped props: [',', p1, p2] → [p1, p2]
@@ -82,7 +82,7 @@ export default (ctx) => {
     }
 
     const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
     ]
     for (let i = 0; i < values.length; i++)
       body.push(['f64.store', slotAddr(t, i), asF64(emit(values[i]))])
@@ -161,7 +161,7 @@ export default (ctx) => {
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < n; i++) {
       body.push(
-        ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
+        ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
         ['f64.store', slotAddr(pair, 0), emit(['str', schema[i]])],
         ['f64.store', slotAddr(pair, 1), ['f64.load', slotAddr(base, i)]],
         ['f64.store', slotAddr(out.local, i), mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])])
@@ -186,7 +186,7 @@ export default (ctx) => {
         updateRep(target, { schemaId })
         const t = tempI32('bx'), s = temp('bs')
         const body = [
-          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, boxedSchema.length)], ['i32.const', 8]]],
+          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, boxedSchema.length)]]],
           ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
         ]
         const sBase = tempI32('sb')
@@ -318,7 +318,7 @@ export default (ctx) => {
     const srcBase = tempI32('cb')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, n)], ['i32.const', 8]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, n)]]],
       ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
     ]
     // Copy all properties from proto
@@ -379,7 +379,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   const ptr = temp('objp')
   const src = tempI32('osp')
 
-  const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)], ['i32.const', 8]]]]
+  const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]]]
 
   // Process props in order — later props override earlier (JS semantics)
   let srcF
@@ -547,7 +547,7 @@ function hashEntriesFromTemp(t) {
         ['i32.mul', ['local.get', `$${i}`], ['i32.const', 24]]]],
       ['if', ['f64.ne', ['f64.load', ['local.get', `$${slot}`]], ['f64.const', 0]],
         ['then',
-          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
+          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
           ['f64.store', ['local.get', `$${pair}`],
             ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
           ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
@@ -643,7 +643,7 @@ function objectKeysFromTemp(t) {
       ['i64.const', LAYOUT.OFFSET_MASK]]]],
     ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`], ['i32.const', 8]]],
+      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$kbrk${id}`, ['loop', `$kloop${id}`,
       ['br_if', `$kbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -671,7 +671,7 @@ function objectValuesFromTemp(t) {
     ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`], ['i32.const', 8]]],
+      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$ovbrk${id}`, ['loop', `$ovloop${id}`,
       ['br_if', `$ovbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
@@ -699,11 +699,11 @@ function objectEntriesFromTemp(t) {
     ['local.set', `$${n}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],
     ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${out}`, ['call', '$__alloc_hdr',
-      ['local.get', `$${n}`], ['local.get', `$${n}`], ['i32.const', 8]]],
+      ['local.get', `$${n}`], ['local.get', `$${n}`]]],
     ['local.set', `$${i}`, ['i32.const', 0]],
     ['block', `$oebrk${id}`, ['loop', `$oeloop${id}`,
       ['br_if', `$oebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
-      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2], ['i32.const', 8]]],
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
       ['i64.store',
         ['local.get', `$${pair}`],
         ['i64.load',
