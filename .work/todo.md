@@ -7,6 +7,21 @@
 * [ ] Benchmarks
 * [ ] Clear, fully transparent codebase; complete docs / readme / tests / repl
 
+### Competitive size/speed gate — jz wasm ≤ AssemblyScript / Porffor
+
+Infra landed (`scripts/bench-size.mjs`, rewritten `test/bench-pin.js` with per-case `win`/`tie`/`todo` claims + geomean ceilings + `wasm-opt -Oz` slack assertion, `.github/workflows/bench.yml` runs it on every push/PR, `test/differential.js` fuzz wired into `npm test`, `bench/sort/` added, CONTRIBUTING "Performance & size invariant"). Ratchet rule: when a `todo` is beaten, promote it to `win`/`tie` in the same PR; tighten geomean ceilings and `WASMOPT_SLACK_MIN` as codegen improves.
+
+Gaps the gate currently surfaces (each is a `todo` in `test/bench-pin.js`):
+
+* [x] **`sort` (in-place heapsort): jz ~8.6× slower than V8/`asc -O3`** — FIXED. Root cause: cross-call typed-array param propagation didn't reach the 3-deep `main→runKernel→heapsort→siftDown` chain — `siftDown.a` stayed an untyped NaN-boxed f64 ⇒ `a[child]` → runtime `__typed_idx`/`__typed_set_idx` calls + `child` an f64 index with `i32.trunc_sat` per access. Two fixes in `narrow.js`: (1) `runArrElemFixpoint` now iterates a *soft* ctor merge to a fixpoint (don't sticky-poison a callee on the first sweep when the caller's own param isn't typed yet), then one hard validating sweep; (2) `refreshCallerLocals` seeds pointer-narrowed params' val-kind into a transient `repByLocal` so `n = arr.length` is recognised as i32 and propagates to `siftDown`'s `end` param. Result: `siftDown` now emits direct `f64.load/store` + i32 indices; jz beats `asc -O3` and runs at V8 parity. `bench-pin.js` sort: v8 `near`, as `tie`. Size still ~1.10× `asc -Oz` (generic codegen slack, item below).
+* [ ] **jz wasm vs `asc -Oz` on the kernels** — geomean **1.01×** after `dropDeadZeroInit` + dead-global-elimination landed (was 1.11×). `aos`/`bitwise`/`crc32`/`mandelbrot`/`poly`/`sort`/`callback` now win; only `biquad` 1.11×, `mat4` 1.18×, `tokenizer` 1.20× still trail. `SIZE_GEOMEAN_MAX.as` ratcheted 1.25→1.12→1.05; `WASMOPT_SLACK_MIN` 0.65→0.70. Next lever for the last 3: single-use runtime-helper inlining (wasm-opt collapses ~6 helper funcs per kernel — `__mkptr`, `__alloc_hdr`, `mix`, `__char_at`, `__str_byteLen`, `printResult`), and merging the `$f$exp` i32→f64 export wrapper into `$f`. Also: trim dead data-segment prefixes (`NaNInfinity-Infinity…[Object]` ftoa/itoa table survives in kernels that don't stringify numbers).
+* [ ] **`wasm-opt -Oz` removes ~20–30% of jz's own output** on small modules (`slack` column ~0.72–0.86× post dead-global; json/watr ~0.90×). Each byte wasm-opt strips is a jz codegen-size bug. Done so far: `dropDeadZeroInit` (redundant `local.set $x (zero)`), dead-global elimination in `treeshake`. Remaining: single-use helper inlining (the big one — 6 funcs/kernel), `$f$exp` wrapper merge. Target `WASMOPT_SLACK_MIN` 0.95+.
+* [x] **`valid jz = valid JS` break — `Math.round`** — FIXED (`module/math.js`): `f64.nearest` (ties-to-even) replaced with ties-toward-+∞ — emit `nearest(x)`, bump by one iff `nearest(x) === x - 0.5` (the only disagreeing case; −0.5→−0 and 0.49999…94→0 already match). Repro folded into `test/differential.js` (`rounding`, `round half-integers`); stale `Math.round(-3.5)` assertion in `test/math.js` corrected (was `-4`, JS gives `-3`).
+* [x] **`valid jz = valid JS` break — `Math.imul`/`Math.clz32` operand coercion** — FIXED (`module/math.js`): operands now go through `toI32` (ECMAScript ToInt32, wrapping, +∞/NaN→0) instead of `asI32` (saturating) — `Math.imul(x, 2654435761)` wraps to negative like JS instead of clamping to INT_MAX. Repro folded into `test/differential.js` (`imul big literal`).
+* [ ] Porffor speed: per-case porf claims are all `todo` — porf currently fails at runtime on most bench cases (memory OOB / `ReferenceError`); only the aggregate `geomean jz/porf ≤ 1.10×` gate is active. Revisit promoting individual cases to `win` when porf can run them (or when jz adds cases porf handles).
+* [ ] Widen the corpus toward real jz target workloads as the application takes shape — add the app's hot modules as bench cases (`.js` + `.as.ts`), wire into `SPEED`/`SIZE`/`SIZE_BUDGET`. The corpus *is* the guarantee.
+* [ ] Add sort line in readme bench table
+
 ### Floatbeat playground
 
 * [ ] Syntax highlighter
