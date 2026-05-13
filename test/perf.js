@@ -695,7 +695,10 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   // default L2 'light' set skips inline/inlineOnce; for this micro-pin we want
   // the strictest possible wasm output to give the 1.5× threshold the most
   // headroom against CI-machine variance.
-  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memoryPages: 4096, optimize: 'speed' })
+  // memory: 4096 — pre-allocate 256MB so the bench loop's bump-allocator growth
+  // never triggers memory.grow during measurement (prior `memoryPages` key was
+  // a silent no-op; jz reads `memory` for the page count shorthand).
+  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' })
   const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
 
   const WAT_CORE = `(module
@@ -733,11 +736,11 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
       (call_indirect $tbl (type $ret) (local.get $i))))`
 
   const corpus = [WAT_CORE, WAT_MEMORY, WAT_TABLE]
-  // Mirror bench shape: 24 stages per measurement (matching bench/watr/watr.js
-  // N_ITERS=24). Outer N is small because jz's bump allocator grows monotonically
-  // across calls (no per-call arena reset yet). The bench medians 21 single-render
-  // samples; we approximate by measuring N=10 single-stage iterations so memory
-  // pressure stays bench-realistic.
+  // The jzified watr.compile is a ~440kB wasm function — V8 needs hundreds of
+  // calls before TurboFan tiers up. Bench shape: warm aggressively (1200 wasm
+  // calls), then take median of 30 single-iter samples instead of total-time.
+  // Median is robust to GC/scheduler spikes; total-time at N=10 swings 0.65×–
+  // 0.98× ratio between runs (probed locally) — too tight against a 1.5× pin.
   const ITERS = 24
   const jsRun = () => { for (let k = 0; k < ITERS; k++) jsCompile(corpus[k % 3]) }
   const wasmRun = () => { for (let k = 0; k < ITERS; k++) jzCompile(corpus[k % 3]) }
@@ -745,11 +748,22 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   const a = jsCompile(WAT_CORE), b = jzCompile(WAT_CORE)
   is(a.length, b.length, 'watr: jz vs native compile binary length')
 
-  const N = 10
-  const jsTime = bench(jsRun, N)
-  const wasmTime = bench(wasmRun, N)
-  console.log(`  watr (3 corpora x${ITERS}) x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
-  ok(wasmTime < jsTime * 1.5, `watr: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.5`)
+  // Warmup ~1200 wasm calls so TurboFan is tiered up before measurement.
+  for (let i = 0; i < 50; i++) { jsRun(); wasmRun() }
+
+  // Median of single-iter samples. N=30 keeps total runtime bounded while
+  // damping outliers from GC pauses / OS scheduling jitter.
+  const sample = (fn, n) => {
+    const xs = new Array(n)
+    for (let i = 0; i < n; i++) { const t = performance.now(); fn(); xs[i] = performance.now() - t }
+    xs.sort((a, b) => a - b)
+    return xs[n >> 1]
+  }
+  const N = 30
+  const jsTime = sample(jsRun, N)
+  const wasmTime = sample(wasmRun, N)
+  console.log(`  watr (3 corpora x${ITERS}) median of ${N}: JS ${jsTime.toFixed(2)}ms, WASM ${wasmTime.toFixed(2)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  ok(wasmTime < jsTime * 1.5, `watr: WASM ${wasmTime.toFixed(2)}ms should be < JS ${jsTime.toFixed(2)}ms * 1.5`)
 })
 
 test('perf: spread + destructure', () => {
