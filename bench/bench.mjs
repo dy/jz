@@ -160,13 +160,10 @@ const compileJzHost = c => {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
     },
-    // watr is the large real-program case and benefits from L3 (full watr
-    // inlining + arrayMinCap/hashSmallInitCap to skip __arr_grow / __hash grow
-    // cycles in the AST hot loop). Other kernels keep the scalar-replacement
-    // tuning that's already proven on bench-pin.
-    optimize: isWatr
-      ? { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) }
-      : { scalarTypedArrayLen: 16, scalarTypedLoopUnroll: 8, ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
+    // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
+    // tuning. If any pass at this level produces wrong checksums or crashes,
+    // that's an optimizer bug to be fixed, not a reason to back off.
+    optimize: { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) },
     alloc: false,
   })
   writeFileSync(jzHostWasmPath(c), wasm)
