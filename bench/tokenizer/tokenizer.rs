@@ -70,16 +70,18 @@ fn scan(src: &[u8]) -> u32 {
 fn main() {
     let src = BASE.repeat(N_REPEAT);
     let bytes = src.as_bytes();
+    // Each run scans a slightly shorter prefix so `scan` gets a different input
+    // every call — it can't be hoisted out of the timing loop (matches the .js).
     let mut cs = 0u32;
-    for _ in 0..N_WARMUP {
-        cs = scan(bytes);
+    for i in 0..N_WARMUP {
+        cs = scan(&bytes[..bytes.len() - (i & 7)]);
     }
 
     let mut samples = [0.0; N_RUNS];
-    for sample in &mut samples {
+    for i in 0..N_RUNS {
         let t0 = Instant::now();
-        cs = scan(bytes);
-        *sample = t0.elapsed().as_secs_f64() * 1000.0;
+        cs = scan(&bytes[..bytes.len() - (i & 7)]);
+        samples[i] = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
     let us = median_us(&mut samples);

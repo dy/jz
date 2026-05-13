@@ -63,13 +63,15 @@ export function main(): void {
   const src = new Uint8Array(len)
   buildSrc(src)
 
+  // Each run scans a slightly shorter prefix so `scan` gets a different input
+  // every call — it can't be hoisted out of the timing loop (matches the .js).
   let cs: u32 = 0
-  for (let i = 0; i < N_WARMUP; i++) cs = scan(src, len)
+  for (let i = 0; i < N_WARMUP; i++) cs = scan(src, len - (i & 7))
 
   const samples = new Float64Array(N_RUNS)
   for (let i = 0; i < N_RUNS; i++) {
     const t0 = perfNow()
-    cs = scan(src, len)
+    cs = scan(src, len - (i & 7))
     unchecked(samples[i] = perfNow() - t0)
   }
 

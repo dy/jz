@@ -32,13 +32,15 @@ const srcBytes = enc.encode(BASE.repeat(N_REPEAT))
 new Uint8Array(memory.buffer).set(srcBytes, SRC_PTR)
 const len = srcBytes.length
 
+// Each run scans a slightly shorter prefix so scan() gets a different input
+// every call — it can't be hoisted out of the timing loop (matches the .js).
 let cs = 0
-for (let i = 0; i < N_WARMUP; i++) cs = scan(SRC_PTR, len) >>> 0
+for (let i = 0; i < N_WARMUP; i++) cs = scan(SRC_PTR, len - (i & 7)) >>> 0
 
 const samples = new Float64Array(N_RUNS)
 for (let i = 0; i < N_RUNS; i++) {
   const t0 = performance.now()
-  cs = scan(SRC_PTR, len) >>> 0
+  cs = scan(SRC_PTR, len - (i & 7)) >>> 0
   samples[i] = performance.now() - t0
 }
 

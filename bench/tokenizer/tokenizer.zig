@@ -83,14 +83,16 @@ pub fn main(init: std.process.Init) !void {
     var i: usize = 0;
     while (i < N_REPEAT) : (i += 1) @memcpy(src[i * BASE.len .. (i + 1) * BASE.len], BASE);
 
+    // Each run scans a slightly shorter prefix so `scan` gets a different input
+    // every call — it can't be hoisted out of the timing loop (matches the .js).
     var cs: u32 = 0;
     i = 0;
-    while (i < N_WARMUP) : (i += 1) cs = scan(src);
+    while (i < N_WARMUP) : (i += 1) cs = scan(src[0 .. src.len - (i & 7)]);
     var samples = [_]f64{0} ** N_RUNS;
     i = 0;
     while (i < N_RUNS) : (i += 1) {
         const t0 = nowMs();
-        cs = scan(src);
+        cs = scan(src[0 .. src.len - (i & 7)]);
         samples[i] = nowMs() - t0;
     }
     try stdout.print("median_us={d} checksum={d} samples={d} stages={d} runs={d}\n", .{ medianUs(&samples), cs, len, 5, N_RUNS });

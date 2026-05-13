@@ -62,14 +62,16 @@ def scan(src):
 
 def main():
     src = make_source()
+    # Each run scans a slightly shorter prefix so `scan` gets a different input
+    # every call — it can't be hoisted out of the timing loop (matches the .js).
     cs = 0
-    for _ in range(N_WARMUP):
-        cs = scan(src)
+    for i in range(N_WARMUP):
+        cs = scan(src[: len(src) - (i & 7)])
 
     samples = []
-    for _ in range(N_RUNS):
+    for i in range(N_RUNS):
         t0 = perf_counter()
-        cs = scan(src)
+        cs = scan(src[: len(src) - (i & 7)])
         samples.append((perf_counter() - t0) * 1000)
 
     print(f"median_us={median_us(samples)} checksum={cs} samples={len(src)} stages=5 runs={N_RUNS}")

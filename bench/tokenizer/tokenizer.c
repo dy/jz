@@ -47,11 +47,13 @@ int main(void) {
   int len = 0;
   char* src = make_source(&len);
   double samples[N_RUNS];
+  /* Each run scans a slightly shorter prefix so `scan` gets a different input
+     every call — it can't be hoisted out of the timing loop (matches the .js). */
   uint32_t cs = 0;
-  for (int i = 0; i < N_WARMUP; i++) cs = scan(src, len);
+  for (int i = 0; i < N_WARMUP; i++) cs = scan(src, len - (i & 7));
   for (int i = 0; i < N_RUNS; i++) {
     double t0 = now_ms();
-    cs = scan(src, len);
+    cs = scan(src, len - (i & 7));
     samples[i] = now_ms() - t0;
   }
   print_result(median_us(samples, N_RUNS), cs, len, 5, N_RUNS);

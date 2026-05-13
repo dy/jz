@@ -74,14 +74,16 @@ func scan(src string) uint32 {
 
 func main() {
 	src := strings.Repeat(base, nRepeat)
+	// Each run scans a slightly shorter prefix so `scan` gets a different input
+	// every call — it can't be hoisted out of the timing loop (matches the .js).
 	cs := uint32(0)
 	for i := 0; i < nWarmup; i++ {
-		cs = scan(src)
+		cs = scan(src[:len(src)-(i&7)])
 	}
 	samples := make([]float64, nRuns)
 	for i := 0; i < nRuns; i++ {
 		t0 := time.Now()
-		cs = scan(src)
+		cs = scan(src[:len(src)-(i&7)])
 		samples[i] = float64(time.Since(t0).Nanoseconds()) / 1e6
 	}
 	fmt.Printf("median_us=%d checksum=%d samples=%d stages=%d runs=%d\n",

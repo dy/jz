@@ -479,7 +479,7 @@ cc program.c -o program
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | [biquad](bench/biquad/biquad.js) | 6.40ms<br>4.3kB | 12.02ms<br>3.2kB | fails | 8.88ms<br>1.9kB | 6.44ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
-| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>2.0kB | 0.18ms<br>1.4kB | 0.46ms<br>2.6kB | 0.08ms<br>1.5kB | 0.08ms<br>344 B | 0.14ms | 0.07ms | 0.14ms | 0.14ms | 5.12ms |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>2.1kB | 0.20ms<br>2.0kB | 0.41ms<br>3.2kB | 0.08ms<br>1.6kB | 0.10ms<br>344 B | 0.13ms | 0.08ms | 0.14ms | 0.12ms | 5.13ms |
 | [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.2kB | 11.90ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.44ms<br>1.6kB | 8.10ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
 | [aos](bench/aos/aos.js) | 1.61ms<br>2.1kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
 | [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.24ms<br>1.4kB | 13.53ms<br>1.8kB | 13.47ms<br>3.0kB | 12.23ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
