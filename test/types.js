@@ -186,6 +186,10 @@ test('constant: NaN', () => {
   ok(isNaN(run('export let f = () => NaN').f()))
 })
 
+test('constant: Number.NaN', () => {
+  ok(isNaN(run('export let f = () => Number.NaN').f()))
+})
+
 test('constant: Infinity', () => {
   is(run('export let f = () => Infinity').f(), Infinity)
 })

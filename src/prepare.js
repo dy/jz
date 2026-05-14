@@ -1363,6 +1363,7 @@ const handlers = {
 
   // Property access - resolve namespaces or object/array properties
   '.'(obj, prop) {
+    prop = typeof prop === 'string' ? prop : staticPropertyKey(prop)
     if (prop === 'caller' || prop === 'callee') err('`.caller` and `.callee` are prohibited: deprecated stack introspection')
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     const mod = ctx.scope.chain[obj]
