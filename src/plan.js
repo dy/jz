@@ -1024,7 +1024,9 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     const sites = sitesByCallee.get(func.name)
     const fixedTypedArraySite = hasFixedTypedArraySites(func, sites)
     const fullyFixedTypedArraySite = hasFullyFixedTypedArraySites(func, sites)
-    if (!sites || sites.length < 1 || (!fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
+    const hasLoop = scanBody(func.body, n => LOOP_OPS.has(n[0]))
+    const isTinyLeaf = !hasLoop && nodeSize(func.body) <= 15
+    if (!sites || sites.length < 1 || (!isTinyLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > 8) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
@@ -1043,9 +1045,8 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // The leaf branch catches helpers like `isAlpha(c) => (c>=65 && c<=90) || …`
     // that get hammered from a hot caller's loop — replacing the call with its
     // body saves the per-iteration call+reinterpret overhead (tokenizer hot path).
-    const hasLoop = scanBody(func.body, n => LOOP_OPS.has(n[0]))
     if (!hasLoop) {
-      if (scanBody(func.body, n => n[0] === '()')) continue
+      if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.func.names.has(n[1]))) continue
       if (nodeSize(func.body) > 30) continue
     }
     if (scanBody(func.body, n => n[0] === '()' && n[1] === func.name)) continue

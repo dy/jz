@@ -1212,12 +1212,10 @@ export function analyzeBody(body) {
   const prevTypedOverlay = ctx.func.localTypedElemsOverlay
   ctx.func.localValTypesOverlay = valTypes
   ctx.func.localTypedElemsOverlay = typedElems
-  try { walk(body) } finally {
-    ctx.func.localValTypesOverlay = prevOverlay
-    ctx.func.localTypedElemsOverlay = prevTypedOverlay
-  }
+  try {
+    walk(body)
 
-  // Second pass: widen i32 locals compared against f64.
+    // Second pass: widen i32 locals compared against f64.
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
   function widenPass(node) {
     if (!Array.isArray(node)) return
@@ -1259,6 +1257,10 @@ export function analyzeBody(body) {
       for (let i = 1; i < node.length; i++) recheck(node[i])
     }
     recheck(body)
+  }
+} finally {
+    ctx.func.localValTypesOverlay = prevOverlay
+    ctx.func.localTypedElemsOverlay = prevTypedOverlay
   }
 
   const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes }
