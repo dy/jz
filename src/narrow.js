@@ -8,7 +8,7 @@
  */
 
 import { ctx } from './ctx.js'
-import { isLiteralStr } from './ir.js'
+import { isLiteralStr, I32_MIN, I32_MAX } from './ir.js'
 import {
   VAL,
   analyzeBody,
@@ -216,6 +216,210 @@ function resetParamWasmFacts(paramReps) {
   for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
 }
 
+/**
+ * Phase E: numeric result narrowing.
+ *
+ * For every narrowable func whose body returns only i32-typed expressions,
+ * narrow sig.results[0] to 'i32'. `(x >>> 0)` tails flip sig.unsignedResult so
+ * the call-site rebox uses f64.convert_i32_u and preserves [0, 2^32) range.
+ *
+ * Fixpoint: a call to another narrowed func contributes i32; iterate until
+ * stable so chains of i32-only helpers all narrow together. exprType already
+ * consults ctx.func.map for narrowed user-function results plus the
+ * Math.imul/Math.clz32/charCodeAt stdlib subset.
+ *
+ * Safe for exports — boundary wrapper restores the f64 JS ABI. `return;`
+ * (bare) is preserved as f64; multi-value / raw / value-used are skipped by
+ * the narrowable filter.
+ */
+function narrowI32Results(funcs) {
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of funcs) {
+      if (func.sig.results[0] === 'i32') continue
+      const body = func.body
+      if (isBlockBody(body) && hasBareReturn(body)) continue
+      const exprs = returnExprs(body)
+      if (!exprs.length) continue
+      const anyUnsigned = exprs.some(e => Array.isArray(e) && e[0] === '>>>')
+      const savedCurrent = ctx.func.current
+      ctx.func.current = func.sig
+      const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
+      for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
+      const allI32 = exprs.every(e => exprType(e, locals) === 'i32')
+      ctx.func.current = savedCurrent
+      if (allI32) {
+        func.sig.results = ['i32']
+        if (anyUnsigned) func.sig.unsignedResult = true
+        changed = true
+      }
+    }
+  }
+}
+
+/**
+ * Phase E2: VAL-kind result inference.
+ *
+ * When every return-tail resolves to the same VAL.* kind, record it on
+ * func.valResult so call-site valTypeOf inherits it (enables static dispatch
+ * on .length / [i] / .prop through the call chain). Fixpoint propagates
+ * through helper chains. Exports are safe — same boundary-wrapper guarantee
+ * as numeric narrowing.
+ */
+function narrowValResults(funcs) {
+  const valTypeOfWithCalls = (expr, localValTypes) => {
+    if (expr == null) return null
+    if (typeof expr === 'string') return localValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
+    if (!Array.isArray(expr)) return valTypeOf(expr)
+    const [op, ...args] = expr
+    if (op === '()' && typeof args[0] === 'string') {
+      const f = ctx.func.map.get(args[0])
+      if (f?.valResult) return f.valResult
+    }
+    if (op === '?:') {
+      const a = valTypeOfWithCalls(args[1], localValTypes), b = valTypeOfWithCalls(args[2], localValTypes)
+      return a && a === b ? a : null
+    }
+    if (op === '&&' || op === '||') {
+      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
+      return a && a === b ? a : null
+    }
+    return valTypeOf(expr)
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of funcs) {
+      if (func.valResult) continue
+      const body = func.body
+      const isBlock = isBlockBody(body)
+      if (isBlock && hasBareReturn(body)) continue
+      const exprs = returnExprs(body)
+      if (!exprs.length) continue
+      const localValTypes = isBlock ? analyzeBody(body).valTypes : new Map()
+      const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+      if (!vt0) continue
+      const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
+      if (allSame) { func.valResult = vt0; changed = true }
+    }
+  }
+}
+
+const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
+
+// Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so a return
+// like `let a = new Float64Array(...); return a` resolves to a constant aux.
+function localElemAuxMap(body) {
+  const m = new Map()
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === '=>') return
+    if ((op === 'let' || op === 'const') && n.length > 1) {
+      for (let i = 1; i < n.length; i++) {
+        const a = n[i]
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+          const aux = typedElemAux(typedElemCtor(a[2]))
+          if (aux != null) m.set(a[1], aux)
+        }
+      }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
+  return m
+}
+
+function typedAuxOfReturn(expr, localElemMap) {
+  if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
+  if (!Array.isArray(expr)) return null
+  const [op, ...args] = expr
+  if (op === '()' && typeof args[0] === 'string') {
+    if (args[0].startsWith('new.')) {
+      const ctor = typedElemCtor(expr)
+      return ctor != null ? typedElemAux(ctor) : null
+    }
+    const f = ctx.func.map.get(args[0])
+    if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
+    return null
+  }
+  if (op === '?:') {
+    const a = typedAuxOfReturn(args[1], localElemMap)
+    const b = typedAuxOfReturn(args[2], localElemMap)
+    return a != null && a === b ? a : null
+  }
+  if (op === '&&' || op === '||') {
+    const a = typedAuxOfReturn(args[0], localElemMap)
+    const b = typedAuxOfReturn(args[1], localElemMap)
+    return a != null && a === b ? a : null
+  }
+  return null
+}
+
+/**
+ * Phase E3: pointer result narrowing.
+ *
+ * For narrowable funcs whose valResult is a non-ambiguous pointer kind with a
+ * constant aux, narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
+ * Eliminates the f64.reinterpret_i64+i64.or rebox at every return and the
+ * matching unbox dance at every call site that uses the value as a pointer.
+ *
+ * Aux strategy:
+ *   - SET/MAP/BUFFER: aux always 0 — no per-callsite preservation needed.
+ *   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
+ *     schema (literal, schemaId-bound param, module-bound var, or call to another
+ *     OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
+ *     localReps.schemaId, restoring property-slot dispatch through the call boundary.
+ *   - TYPED: aux is elem-type; require all return tails to agree on a single aux.
+ *
+ * Skipped: ARRAY forwards on realloc, STRING dual-encoded SSO/heap, CLOSURE
+ * (aux carries funcIdx for call_indirect). Body must guarantee-return so the
+ * fallthrough fallback can't produce a wrong-typed undef.
+ *
+ * Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so
+ * outer's call to inner contributes a known schema-id.
+ */
+function narrowPointerResults(funcs, paramReps) {
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const func of funcs) {
+      if (!func.valResult) continue
+      if (func.sig.results[0] !== 'f64') continue
+      const isBlock = isBlockBody(func.body)
+      if (isBlock && !alwaysReturns(func.body)) continue
+      if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
+        func.sig.results = ['i32']
+        func.sig.ptrKind = func.valResult
+        changed = true
+        continue
+      }
+      const exprs = returnExprs(func.body)
+      if (!exprs.length) continue
+      if (func.valResult === VAL.OBJECT) {
+        const paramSchemasMap = paramFactsOf(paramReps, func, 'schemaId')
+        const sid0 = inferSchemaId(exprs[0], paramSchemasMap)
+        if (sid0 == null) continue
+        if (!exprs.every(e => inferSchemaId(e, paramSchemasMap) === sid0)) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.OBJECT
+        func.sig.ptrAux = sid0
+        changed = true
+      } else if (func.valResult === VAL.TYPED) {
+        const localMap = isBlock ? localElemAuxMap(func.body) : null
+        const aux0 = typedAuxOfReturn(exprs[0], localMap)
+        if (aux0 == null) continue
+        if (!exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)) continue
+        func.sig.results = ['i32']
+        func.sig.ptrKind = VAL.TYPED
+        func.sig.ptrAux = aux0
+        changed = true
+      }
+    }
+  }
+}
+
 function createPhaseState() {
   const callerCtx = buildCallerCtx()
   const elemCtx = new Map()
@@ -279,7 +483,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
   // Inference helpers (inferValType/inferSchemaId/inferArr*/inferTypedCtor)
-  // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
+  // live in infer.js — pure AST→fact resolvers shared across fixpoint phases.
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
   const phase = createPhaseState()
@@ -290,7 +494,7 @@ export default function narrowSignatures(programFacts, ast) {
     else if (Array.isArray(arg) && arg[0] == null && typeof arg[1] === 'number') raw = arg[1]
     else if (Array.isArray(arg) && arg[0] === 'u-' && typeof arg[1] === 'number') raw = -arg[1]
     else if (typeof arg === 'string' && ctx.scope.constInts?.has(arg)) raw = ctx.scope.constInts.get(arg)
-    return (raw != null && Number.isInteger(raw) && raw >= -2147483648 && raw <= 2147483647) ? raw : null
+    return (raw != null && Number.isInteger(raw) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
   }
 
   const runCallsiteLattice = (rules) => {
@@ -422,97 +626,12 @@ export default function narrowSignatures(programFacts, ast) {
   //   - exclude rest position (array pack/unpack stays f64).
   applyPointerParamAbi(paramReps, valueUsed)
 
-  // E: Result-type monomorphization — narrow sig.results[0] to 'i32' when body only
-  // produces i32 values. Fixpoint: a call to another narrowed func now contributes i32;
-  // iterate until stable so chains of i32-only helpers all narrow together.
-  // Safety: skip exported (JS boundary preserves number semantics), value-used (closure
-  // trampolines assume f64 result), raw WAT, multi-value. `undefined` return = skip.
-  // exprType already consults ctx.func.map for narrowed user-function results
-  // (analyze.js exprType `()` branch), plus the Math.imul/Math.clz32/charCodeAt
-  // stdlib subset and primitive-op rules. Earlier we had a local shim here that
-  // shadowed exprType's stdlib rules with `return 'f64'` for any non-user call;
-  // unifying through exprType lets a single rule (math.imul → i32) flow through
-  // to mix-style helpers (`(h, x) => Math.imul(h ^ (x|0), C)`) and unblocks the
-  // E-phase result narrowing on every call site that consumes them.
-  const exprTypeWithCalls = exprType
-  // Body-driven: safe for exports — the result type is determined by what the body
-  // computes, not by what JS callers might pass. JS-visible f64 ABI is restored at
-  // the boundary via a synthesized wrapper (see synthesizeBoundaryWrappers below).
-  // Shared pool for E (numeric), E2 (valType) and E3 (ptr) narrowing — same predicate.
+  // E + E2: body-driven result-type inference. Pool of narrowable funcs is shared
+  // across the i32/VAL/pointer passes — same predicate (non-raw, non-value-used,
+  // single-result).
   const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const func of funcsWithNarrowableResult) {
-      if (func.sig.results[0] === 'i32') continue
-      const body = func.body
-      // Bare `return;` produces undef (f64) — narrowing to i32 would lose that.
-      if (isBlockBody(body) && hasBareReturn(body)) continue
-      const exprs = returnExprs(body)
-      if (!exprs.length) continue
-      // Narrow result to i32 when every return-tail types as i32 (incl. bitwise ops, `|0`,
-      // and `>>>`). When ANY tail is `>>>` (unsigned uint32 idiom) we still narrow, but tag
-      // `sig.unsignedResult` so the call-site rebox uses `f64.convert_i32_u` — preserving
-      // the [0, 2^32) range that `(x >>> 0)` carries through hash/CRC finalizers.
-      const anyUnsigned = exprs.some(e => Array.isArray(e) && e[0] === '>>>')
-      const savedCurrent = ctx.func.current
-      ctx.func.current = func.sig
-      const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
-      for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
-      const allI32 = exprs.every(e => exprTypeWithCalls(e, locals) === 'i32')
-      ctx.func.current = savedCurrent
-      if (allI32) {
-        func.sig.results = ['i32']
-        if (anyUnsigned) func.sig.unsignedResult = true
-        changed = true
-      }
-    }
-  }
-
-  // E2: VAL-type result inference — if a function always returns the same VAL kind,
-  // record it so callers inherit that type (enables static dispatch on .length, .[],
-  // .prop through a call chain). Fixpoint propagates through helper chains.
-  // Safety: skip exported (host sees raw f64), value-used (indirect call signature).
-  // Shim so calls to already-typed funcs contribute their result type.
-  const valTypeOfWithCalls = (expr, localValTypes) => {
-    if (expr == null) return null
-    if (typeof expr === 'string') return localValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-    if (!Array.isArray(expr)) return valTypeOf(expr)
-    const [op, ...args] = expr
-    if (op === '()' && typeof args[0] === 'string') {
-      const f = ctx.func.map.get(args[0])
-      if (f?.valResult) return f.valResult
-    }
-    if (op === '?:') {
-      const a = valTypeOfWithCalls(args[1], localValTypes), b = valTypeOfWithCalls(args[2], localValTypes)
-      return a && a === b ? a : null
-    }
-    if (op === '&&' || op === '||') {
-      const a = valTypeOfWithCalls(args[0], localValTypes), b = valTypeOfWithCalls(args[1], localValTypes)
-      return a && a === b ? a : null
-    }
-    return valTypeOf(expr)
-  }
-  // Body-driven valResult inference: same safety analysis as numeric narrowing
-  // above — exports OK because boundary wrapper restores f64 ABI for JS callers.
-  changed = true
-  while (changed) {
-    changed = false
-    for (const func of funcsWithNarrowableResult) {
-      if (func.valResult) continue
-      const body = func.body
-      const isBlock = isBlockBody(body)
-      if (isBlock && hasBareReturn(body)) continue
-      const exprs = returnExprs(body)
-      if (!exprs.length) continue
-      const localValTypes = isBlock ? analyzeBody(body).valTypes : new Map()
-      // Params of this function contribute no known VAL type yet (paramReps may help later).
-      const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
-      if (!vt0) continue
-      const allSame = exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
-      if (allSame) { func.valResult = vt0; changed = true }
-    }
-  }
+  narrowI32Results(funcsWithNarrowableResult)
+  narrowValResults(funcsWithNarrowableResult)
 
   // Now that E2 set `valResult` on funcs, narrow per-func `arrayElemSchema` for
   // VAL.ARRAY-returning funcs (via push observations + call chains). Then re-run the
@@ -546,112 +665,9 @@ export default function narrowSignatures(programFacts, ast) {
   // through helper chains: `init()→main→runKernel`.
   runArrValTypeFixpoint()
   runArrValTypeFixpoint()
-  // E3: Result-type pointer narrowing — when valResult is a non-ambiguous pointer kind
-  // with constant aux, narrow sig.results[0] from f64 to i32 and tag sig.ptrKind/.ptrAux.
-  // Eliminates the f64.reinterpret_i64+i64.or rebox at every return and the
-  // i32.wrap_i64+i64.reinterpret_f64 unbox at every callsite that uses the value as a
-  // pointer (load .[], .length, .prop slot dispatch).
-  //   - SET/MAP/BUFFER: aux always 0 — no per-callsite aux preservation needed.
-  //   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
-  //     schema (literal `{a,b,c}`, schemaId-bound param, module-bound var, or call to
-  //     another OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
-  //     localReps.schemaId, restoring property-slot dispatch through the call boundary.
-  // Safety: ARRAY forwards on realloc (no narrowing). STRING dual-encoded SSO/heap.
-  // CLOSURE/TYPED also carry meaningful aux — TYPED narrowing is a follow-up. Body must
-  // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
-  // offset 0 of the narrowed kind, not undefined.
-  const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
-  // Schema-id resolution at return sites uses `inferSchemaId` (src/infer.js) —
-  // the same helper feeds call-site `schemaId` narrowing. By G-phase, the
-  // recursive ?:/&&/|| and call-result branches are fully effective; at the
-  // earlier D-phase call site they're a no-op (valResult not yet seeded).
-  // Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so
-  // a return like `let a = new Float64Array(...); return a` resolves to a constant
-  // aux. Result calls + ?: are handled inline in typedAuxOfReturn.
-  const localElemAuxMap = (body) => {
-    const m = new Map()
-    const walk = (n) => {
-      if (!Array.isArray(n)) return
-      const op = n[0]
-      if (op === '=>') return
-      if ((op === 'let' || op === 'const') && n.length > 1) {
-        for (let i = 1; i < n.length; i++) {
-          const a = n[i]
-          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
-            const aux = typedElemAux(typedElemCtor(a[2]))
-            if (aux != null) m.set(a[1], aux)
-          }
-        }
-      }
-      for (let i = 1; i < n.length; i++) walk(n[i])
-    }
-    walk(body)
-    return m
-  }
-  const typedAuxOfReturn = (expr, localElemMap) => {
-    if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
-    if (!Array.isArray(expr)) return null
-    const [op, ...args] = expr
-    if (op === '()' && typeof args[0] === 'string') {
-      if (args[0].startsWith('new.')) {
-        const ctor = typedElemCtor(expr)
-        return ctor != null ? typedElemAux(ctor) : null
-      }
-      const f = ctx.func.map.get(args[0])
-      if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
-      return null
-    }
-    if (op === '?:') {
-      const a = typedAuxOfReturn(args[1], localElemMap)
-      const b = typedAuxOfReturn(args[2], localElemMap)
-      return a != null && a === b ? a : null
-    }
-    if (op === '&&' || op === '||') {
-      const a = typedAuxOfReturn(args[0], localElemMap)
-      const b = typedAuxOfReturn(args[1], localElemMap)
-      return a != null && a === b ? a : null
-    }
-    return null
-  }
-  // Fixpoint: a chain `outer → inner → {a,b}` needs inner to narrow first so outer's
-  // call to inner contributes a known schema-id.
-  let narrowChanged = true
-  while (narrowChanged) {
-    narrowChanged = false
-    for (const func of funcsWithNarrowableResult) {
-      if (!func.valResult) continue
-      if (func.sig.results[0] !== 'f64') continue
-      const isBlock = isBlockBody(func.body)
-      if (isBlock && !alwaysReturns(func.body)) continue
-      if (PTR_RESULT_KINDS_NOAUX.has(func.valResult)) {
-        func.sig.results = ['i32']
-        func.sig.ptrKind = func.valResult
-        narrowChanged = true
-        continue
-      }
-      const exprs = returnExprs(func.body)
-      if (!exprs.length) continue
-      if (func.valResult === VAL.OBJECT) {
-        const paramSchemasMap = paramFactsOf(paramReps, func, 'schemaId')
-        const sid0 = inferSchemaId(exprs[0], paramSchemasMap)
-        if (sid0 == null) continue
-        if (!exprs.every(e => inferSchemaId(e, paramSchemasMap) === sid0)) continue
-        func.sig.results = ['i32']
-        func.sig.ptrKind = VAL.OBJECT
-        func.sig.ptrAux = sid0
-        narrowChanged = true
-      } else if (func.valResult === VAL.TYPED) {
-        const localMap = isBlock ? localElemAuxMap(func.body) : null
-        const aux0 = typedAuxOfReturn(exprs[0], localMap)
-        if (aux0 == null) continue
-        if (!exprs.every(e => typedAuxOfReturn(e, localMap) === aux0)) continue
-        func.sig.results = ['i32']
-        func.sig.ptrKind = VAL.TYPED
-        func.sig.ptrAux = aux0
-        narrowChanged = true
-      }
-    }
-  }
+  // E3: pointer-kind result narrowing — once valResult is set, lift the wasm
+  // return type to i32 + ptrKind/ptrAux when aux is statically resolvable.
+  narrowPointerResults(funcsWithNarrowableResult, paramReps)
 
   // F: Cross-call typed-array element ctor propagation. Runs AFTER E3 so that
   // calls to user functions returning a TYPED-narrowed pointer (with constant

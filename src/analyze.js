@@ -13,17 +13,17 @@
  *   - analyzeBody:         single unified walk — body-keyed cache, returns
  *                          { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
  *   - analyzeValTypes:     ctx-mutating pass — writes types + tracks regex/typed + localProps
- *   - analyzeDynKeys:      cross-function scan for `obj[runtimeKey]` → sets ctx.types.dynKeyVars
- *   - boxedCaptures:detect mutably-captured vars → ctx.func.boxed cells
+ *   - boxedCaptures:       detect mutably-captured vars → ctx.func.boxed cells
  *   - extractParams/classifyParam/collectParamNames: arrow param AST normalization helpers
  *
- * Ordering: analyzeDynKeys runs once per compile; others run per function during compile().
+ * Ordering: all passes run per function during compile(). plan.js owns the
+ * cross-function dynKey scan via programFacts (results land in ctx.types.dynKeyVars).
  *
  * @module analyze
  */
 
 import { ctx, err } from './ctx.js'
-import { isLiteralStr, isFuncRef } from './ir.js'
+import { isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32 } from './ir.js'
 
 export const T = '\uE000'
 
@@ -47,7 +47,7 @@ export function intLiteralValue(expr) {
   else if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number') v = expr[1]
   else if (Array.isArray(expr) && expr[0] === 'u-' && typeof expr[1] === 'number') v = -expr[1]
   else if (typeof expr === 'string') v = repOf(expr)?.intConst ?? ctx.scope.constInts?.get(expr) ?? null
-  return v != null && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 ? v : null
+  return v != null && Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX ? v : null
 }
 
 /** Non-negative integer literal — used for string/typed-array index bounds. */
@@ -56,7 +56,7 @@ export const nonNegIntLiteral = (node) => { const n = intLiteralValue(node); ret
 /** Collect all `return X` expressions (X != null) from a function body, skipping nested arrow funcs.
  *  Pushes into `out`. Non-returning paths are silently skipped — pair with `alwaysReturns` if total
  *  coverage matters, or with `hasBareReturn` to detect `return;` (undef result). */
-export const collectReturnExprs = (node, out) => {
+const collectReturnExprs = (node, out) => {
   if (!Array.isArray(node)) return
   const [op, ...args] = node
   if (op === '=>') return
@@ -571,7 +571,7 @@ export function ctorFromElemAux(aux) {
 /** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
  *  different typed-array ctors — caller should drop any cached entry rather
  *  than leave a stale ctor (which would lock the wrong store width). */
-export const MIXED_CTORS = Symbol('MIXED_CTORS')
+const MIXED_CTORS = Symbol('MIXED_CTORS')
 
 const typedCtorElemValType = (ctor) => {
   if (!ctor) return null
@@ -588,7 +588,7 @@ const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&&' || e
  *  - a single ctor string when every branch resolves to the same ctor,
  *  - MIXED_CTORS when branches resolve to different ctors,
  *  - null when no branch resolves (caller's behavior unchanged). */
-export function ternaryCtorOfRhs(rhs) {
+function ternaryCtorOfRhs(rhs) {
   if (!Array.isArray(rhs)) return null
   const op = rhs[0]
   const lo = op === '?:' ? 2 : (op === '&&' || op === '||') ? 1 : 0
@@ -903,10 +903,10 @@ export function analyzeBody(body) {
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
-        // analyzeLocals: bare-name decl
+        // analyzeBody: bare-name decl
         if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
         if (!Array.isArray(a) || a[0] !== '=') continue
-        // analyzeLocals: destructuring decl — set destructured names to f64, walk rhs only
+        // analyzeBody: destructuring decl — set destructured names to f64, walk rhs only
         if (typeof a[1] !== 'string') {
           for (const n of collectParamNames([a[1]])) if (!locals.has(n)) locals.set(n, 'f64')
           walk(a[2])
@@ -1424,7 +1424,7 @@ export function analyzeIntCertain(body) {
 export function exprType(expr, locals) {
   if (expr == null) return 'f64'
   if (typeof expr === 'number')
-    return Number.isInteger(expr) && expr >= -2147483648 && expr <= 2147483647 && !Object.is(expr, -0) ? 'i32' : 'f64'
+    return isI32(expr) ? 'i32' : 'f64'
   if (typeof expr === 'string') {
     if (locals?.has?.(expr)) return locals.get(expr)
     const paramType = ctx.func.current?.params?.find(p => p.name === expr)?.type
@@ -1465,7 +1465,7 @@ export function exprType(expr, locals) {
     return 'f64'
   }
   // `.length` on a known sized receiver returns i32 directly (__len/__str_byteLen
-  // both return i32). Letting it stay i32 lets analyzeLocals keep the counter
+  // both return i32). Letting it stay i32 lets analyzeBody keep the counter
   // local i32 too, eliminating the per-iteration `f64.convert_i32_s` widen and
   // the matching `i32.trunc_sat_f64_s` truncs at every `arr[i]` / `i*k` site.
   // Only safe when receiver type is statically known to expose an integer length.
@@ -1512,7 +1512,7 @@ export function exprType(expr, locals) {
     // skipping the f64.convert_i32_u widen at every char read.
     if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'charCodeAt') return 'i32'
     // User-function call: consult the callee's narrowed result type. By the time
-    // analyzeLocals runs in emitFunc, narrowSignatures has set sig.results[0]='i32'
+    // analyzeBody runs in emitFunc, narrowSignatures has set sig.results[0]='i32'
     // on every body-i32-only func. Propagating this lets `let h = userFn(...)`
     // (mix in callback bench: i32-FNV) keep h as an i32 local instead of widening
     // to f64 and round-tripping i32↔f64 every iteration.
@@ -1524,7 +1524,7 @@ export function exprType(expr, locals) {
   return 'f64'
 }
 
-// `analyzeLocals` was inlined to `analyzeBody(body).locals` at its three real
+// `analyzeBody` was inlined to `analyzeBody(body).locals` at its three real
 // call sites in src/compile.js and src/narrow.js — the one-line facade existed
 // only as a historical surface and obscured the unified-walk relationship.
 
@@ -1793,60 +1793,6 @@ export function findMutations(node, names, mutated) {
   if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
     mutated.add(args[0])
   for (const a of args) findMutations(a, names, mutated)
-}
-
-/**
- * Pre-scan AST for variables that need a `__dyn_props` shadow sidecar.
- *
- * The shadow exists so `obj[runtimeKey]` can read a value via `__dyn_get`,
- * and `obj.prop = v` keeps the sidecar in sync. Most object literals are only
- * accessed via `.prop` or `obj['lit']`, both of which resolve through the
- * schema directly and bypass the shadow. Allocating + populating the sidecar
- * for those literals is pure waste.
- *
- * Populates:
- *  - ctx.types.dynKeyVars: Set<string> — names accessed via runtime key
- *  - ctx.types.anyDynKey: boolean — any dynamic key access exists in program
- *    (used for escaping literals where no target var is known)
- */
-export function analyzeDynKeys(...roots) {
-  const dynVars = new Set()
-  let anyDyn = false
-
-  function walk(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '[]') {
-      const [obj, idx] = args
-      if (!isLiteralStr(idx)) {
-        anyDyn = true
-        if (typeof obj === 'string') dynVars.add(obj)
-      }
-    }
-    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '[]') {
-      const [, obj, idx] = args[0]
-      if (!isLiteralStr(idx)) {
-        anyDyn = true
-        if (typeof obj === 'string') dynVars.add(obj)
-      }
-    }
-    // Runtime for-in (compile-time unroll didn't fire) → walks via shadow
-    if (op === 'for-in') {
-      anyDyn = true
-      if (typeof args[1] === 'string') dynVars.add(args[1])
-    }
-    for (const a of args) walk(a)
-  }
-  for (const r of roots) walk(r)
-  if (ctx.func.list) for (const f of ctx.func.list) if (f.body) walk(f.body)
-  const initFacts = ctx.module.initFacts
-  if (initFacts?.anyDyn) {
-    anyDyn = true
-    for (const v of initFacts.dynVars) dynVars.add(v)
-  }
-
-  ctx.types.dynKeyVars = dynVars
-  ctx.types.anyDynKey = anyDyn
 }
 
 /**

@@ -167,6 +167,13 @@ export function reset(proto, globals, abi) {
     uniq: 0,
     inTry: false,
     localProps: null,
+    // Pass-scoped overlays installed by analyzeBody/observeSlots. While set,
+    // `lookupValType`/`typedElemCtor` consult the in-progress fact maps before
+    // falling back to global state — lets shorthand `{x}` / typed-array writes
+    // observe locals that haven't been promoted to ctx.types yet. Saved/restored
+    // by the pass owners so re-entrant analyzeBody calls don't clobber each other.
+    localValTypesOverlay: null,
+    localTypedElemsOverlay: null,
   }
 
   ctx.types = {

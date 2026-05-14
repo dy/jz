@@ -45,7 +45,7 @@
 
 import { ctx } from './ctx.js'
 import {
-  VAL, collectParamNames, valTypeOf, lookupValType, repOf, repOfGlobal,
+  VAL, collectParamNames, valTypeOf,
   updateRep, analyzeValTypes, analyzeIntCertain,
   staticObjectProps, typedElemCtor, ctorFromElemAux,
 } from './analyze.js'
@@ -394,16 +394,6 @@ export const inferLocals = (body, candidates) => {
   analyzeValTypes(body)
   analyzeIntCertain(body)
 }
-
-// === Convenience readers ===================================================
-// Hot-path lookups for already-typed bindings. Pass-populated reps shadow
-// globals; ambiguous names return null.
-
-/** Value type of a binding — `VAL.*` or null. */
-export const infer = lookupValType
-
-/** Full fused fact record (`ValueRep`) — locals shadow globals. */
-export const facts = (name) => repOf(name) ?? repOfGlobal(name)
 
 // === Module-global value-fact recording ===================================
 //
