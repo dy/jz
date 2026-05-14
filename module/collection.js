@@ -357,6 +357,8 @@ export default (ctx) => {
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
+    __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
+    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish'],
   })
 
   inc('__ptr_offset', '__cap')
@@ -604,6 +606,9 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_get_local_h'] = genLookupStrictPrehashed('__hash_get_local_h', MAP_ENTRY, strEq, PTR.HASH)
   ctx.core.stdlib['__hash_set_local_h'] = genUpsertStrictPrehashed('__hash_set_local_h', MAP_ENTRY, strEq, PTR.HASH)
   ctx.core.stdlib['__hash_set_local'] = genUpsertGrow('__hash_set_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true)
+  // Tombstones an entry in a HASH (string keys). Returns 1 if found+deleted, 0 otherwise.
+  // Used as the bucket-level primitive for __dyn_del.
+  ctx.core.stdlib['__hash_del_local'] = genDelete('__hash_del_local', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH)
   // Outer __dyn_props hash: keyed by object offset (i32 as f64 bits), value is per-object props hash.
   // Uses bit-hash + i64.eq — no string allocation for the unique integer key.
   ctx.core.stdlib['__ihash_get_local'] = genLookupStrict('__ihash_get_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH)
@@ -954,6 +959,91 @@ export default (ctx) => {
           (then (global.set $__dyn_get_cache_props (f64.reinterpret_i64 (local.get $props)))))))
     (local.get $val))`
 
+  // Tag-dispatched delete (mirrors __dyn_set's dispatch). Returns 1 if a slot was
+  // found+tombstoned, 0 otherwise. Header types (ARRAY non-shifted, OBJECT heap-only,
+  // TYPED/HASH/SET/MAP) carry propsPtr at off-16; others fall back to the global
+  // __dyn_props hash keyed by offset.
+  // Schema-aware delete arm: when the receiver is an OBJECT with a known schema and
+  // the key matches a static slot, overwrite that slot with UNDEF_NAN so subsequent
+  // reads see "absent" (matches `delete obj.a; obj.a → undefined`). Without this,
+  // the shadow-store delete alone would leave the structural slot intact and a later
+  // ctx[k] read would re-surface the original value.
+  const buildObjectSchemaDelArm = () => (ctx.schema.list.length > 0 || ctx.core.includes.has('__jp_obj')) ? `
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                 (i32.ne (global.get $__schema_tbl) (i32.const 0)))
+      (then
+        (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u
+          (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+        (local.set $kbits
+          (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))))
+        (local.set $koff (i32.wrap_i64 (i64.and (local.get $kbits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (local.set $nkeys (i32.load (i32.sub (local.get $koff) (i32.const 8))))
+        (local.set $idx (i32.const 0))
+        (block $schemaDelDone (loop $schemaDelLoop
+          (br_if $schemaDelDone (i32.ge_s (local.get $idx) (local.get $nkeys)))
+          (if (call $__str_eq
+                (i64.load (i32.add (local.get $koff) (i32.shl (local.get $idx) (i32.const 3))))
+                (local.get $key))
+            (then
+              (i64.store (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+              (local.set $hit (i32.const 1))
+              (br $schemaDelDone)))
+          (local.set $idx (i32.add (local.get $idx) (i32.const 1)))
+          (br $schemaDelLoop)))))` : ''
+
+  ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
+    (local $root i64) (local $props i64) (local $oldProps i64)
+    (local $off i32) (local $type i32) (local $hit i32) ${buildObjectSchemaSetLocals()}
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ${buildObjectSchemaDelArm()}
+    ;; CLOSURE with no env: rekey to function table index (parallels __dyn_set / __dyn_get_t_h).
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (i32.eqz (local.get $off)))
+      (then (local.set $off (i32.sub (i32.const -1)
+        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))))))
+    ;; ARRAY: follow forwarding chain to landed base.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+      (then
+        (block $done
+          (loop $follow
+            (br_if $done (i32.lt_u (local.get $off) (i32.const 16)))
+            (br_if $done (i32.gt_u (local.get $off) (i32.shl (memory.size) (i32.const 16))))
+            (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
+            (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+            (br $follow)))))
+    ;; ARRAY landed propsPtr (HASH-tagged means real sidecar; else fall through to global).
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
+                 (i32.ge_u (local.get $off) (i32.const 16)))
+      (then
+        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (if (i32.eq
+              (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+              (i32.const ${PTR.HASH}))
+          (then (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))))
+    ;; OBJECT heap: propsPtr directly at off-16.
+    (if (i32.and (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
+                 (i32.ge_u (local.get $off) (global.get $__heap_start)))
+      (then
+        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
+        (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
+    ;; Other header types (TYPED/HASH/SET/MAP).
+    (if (i32.and (i32.ge_u (local.get $off) (i32.const 16))
+          (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+            (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
+              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
+                      (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))
+      (then
+        (local.set $oldProps (i64.load (i32.sub (local.get $off) (i32.const 16))))
+        (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
+        (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
+    ;; Fallback: global __dyn_props keyed by offset.
+    (local.set $root (i64.reinterpret_f64 (global.get $__dyn_props)))
+    (if (i64.eqz (local.get $root)) (then (return (local.get $hit))))
+    (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
+    (if (call $__is_nullish (local.get $props)) (then (return (local.get $hit))))
+    (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))`
+
   ctx.core.stdlib['__dyn_move'] = `(func $__dyn_move (param $oldOff i32) (param $newOff i32)
     (local $props i64) (local $root i64)
     (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return)))
@@ -966,6 +1056,15 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_set'] = () => genUpsertGrow('__hash_set', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external)
   ctx.core.stdlib['__hash_get'] = () => genLookup('__hash_get', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, true, ctx.features.external)
   ctx.core.stdlib['__hash_has'] = () => genLookup('__hash_has', MAP_ENTRY, '$__str_hash', strEq, PTR.HASH, false, ctx.features.external)
+
+  // === `delete obj[k]`: lift from prepare for computed-key removal ===
+  // Static-key `delete obj.x` / `delete obj["x"]` is rejected in prepare (fixed schema);
+  // only the runtime-dispatched form reaches here. JS returns `true` on success — we
+  // surface the actual found/not-found bit as i32 (`true`/`false` ↔ 1/0 in jz NaN-box).
+  ctx.core.emit['delete'] = (obj, key) => {
+    inc('__dyn_del')
+    return typed(['call', '$__dyn_del', asI64(emit(obj)), asI64(emit(key))], 'i32')
+  }
 
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {

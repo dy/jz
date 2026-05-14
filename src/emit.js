@@ -2276,7 +2276,7 @@ export const emitter = {
         ['i64.reinterpret_f64', arrayIR]]], 'f64');
     }
 
-    if (ctx.core.emit[callee]) {
+    if (typeof callee === 'string' && ctx.core.emit[callee]) {
       // Pass spread args through to emitter (e.g. Math.max(...arr))
       if (parsed.hasSpread) {
         const allArgs = []

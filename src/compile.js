@@ -948,7 +948,7 @@ export default function compile(ast, profiler) {
   const optCfg = ctx.transform.optimize
   const { callCount } = treeshake(
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
-    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports],
+    [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
     { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals }
   )
 
