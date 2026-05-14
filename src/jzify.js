@@ -781,10 +781,16 @@ function objectHasOwnPropertyCall(node) {
   if (!Array.isArray(node) || node[0] !== '()') return null
   const callee = node[1]
   if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'call') return null
-  if (!Array.isArray(callee[1]) || callee[1][0] !== '.' || callee[1][1] !== 'Object' || callee[1][2] !== 'hasOwnProperty') return null
+  if (!isObjectHasOwnPropertyRef(callee[1])) return null
   const args = callArgs(node.slice(2))
   if (args.length < 2) return null
   return { obj: args[0], key: args[1] }
+}
+
+function isObjectHasOwnPropertyRef(node) {
+  if (!Array.isArray(node) || node[0] !== '.' || node[2] !== 'hasOwnProperty') return false
+  if (node[1] === 'Object') return true
+  return Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Object' && node[1][2] === 'prototype'
 }
 
 function constructorIsObject(node) {
