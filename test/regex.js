@@ -43,6 +43,11 @@ test('regex: repetition {n,m}', () => {
   is(parseRegex('a{2,}?'), ['{}?', 'a', 2, Infinity])
 })
 
+test('regex: left brace literals', () => {
+  is(parseRegex('a{'), ['seq', 'a', '{'])
+  is(parseRegex('a{b'), ['seq', 'a', '{', 'b'])
+})
+
 test('regex: character classes', () => {
   is(parseRegex('[abc]'), ['[]', 'a', 'b', 'c'])
   is(parseRegex('[a-z]'), ['[]', ['-', 'a', 'z']])
@@ -241,6 +246,12 @@ test('regex: quantifiers', async () => {
   is(await evaluate('/ab+c/.test("ac")'), 0)
   is(await evaluate('/ab+c/.test("abc")'), 1)
   is(await evaluate('/ab?c/.test("ac")'), 1)
+})
+
+test('regex: left brace literal test()', async () => {
+  is(await evaluate('/a{/.test("a{")'), 1)
+  is(await evaluate('/a{b/.test("a{b")'), 1)
+  is(await evaluate('/a{2}/.test("aa")'), 1)
 })
 
 test('regex: character classes', async () => {

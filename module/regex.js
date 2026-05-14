@@ -85,7 +85,7 @@ const parseQuantified = () => {
     if (c === STAR) { skip(); node = ['*', node] }
     else if (c === PLUS) { skip(); node = ['+', node] }
     else if (c === QUEST) { skip(); node = ['?', node] }
-    else if (c === LBRACE) { node = parseRepeat(node) }
+    else if (c === LBRACE && isRepeatStart()) { node = parseRepeat(node) }
     else break
     if (cur() === QUEST) { skip(); node[0] += '?' }
   }
@@ -98,6 +98,17 @@ const parseRepeat = node => {
   if (cur() === 44) { skip(); max = cur() === RBRACE ? Infinity : parseNum() }
   cur() === RBRACE || perr('Expected }'); skip()
   return ['{}', node, min, max]
+}
+
+const isRepeatStart = () => {
+  let i = idx + 1
+  if (src.charCodeAt(i) < 48 || src.charCodeAt(i) > 57) return false
+  while (src.charCodeAt(i) >= 48 && src.charCodeAt(i) <= 57) i++
+  if (src.charCodeAt(i) === RBRACE) return true
+  if (src.charCodeAt(i) !== 44) return false
+  i++
+  while (src.charCodeAt(i) >= 48 && src.charCodeAt(i) <= 57) i++
+  return src.charCodeAt(i) === RBRACE
 }
 
 const parseNum = () => {
