@@ -356,6 +356,24 @@ test('switch: jzify strips terminal breaks inside braced cases', () => {
   is(f(2), 30)
 })
 
+test('switch: jzify lowers nested case breaks', () => {
+  const { f } = run(`export let f = (x) => {
+    let y = 0
+    switch (x) {
+      case 1:
+        if (y === 0) {
+          break
+        }
+        y = 10
+      default:
+        y = 20
+    }
+    return y
+  }`, { jzify: true })
+  is(f(1), 0)
+  is(f(2), 20)
+})
+
 // === Default params ===
 
 test('default param: used when arg missing', () => {
