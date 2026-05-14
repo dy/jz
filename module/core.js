@@ -9,7 +9,7 @@
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep } from '../src/analyze.js'
@@ -20,15 +20,6 @@ import { strHashLiteral } from './collection.js'
 
 // Pre-shifted NaN prefix as a full i64 mask, for `(i64.const ${NAN_BITS})` use.
 const NAN_BITS = '0x' + LAYOUT.NAN_PREFIX_BITS.toString(16).toUpperCase().padStart(16, '0')
-
-const PTR_BY_VAL = {
-  [VAL.ARRAY]: PTR.ARRAY,
-  [VAL.OBJECT]: PTR.OBJECT,
-  [VAL.TYPED]: PTR.TYPED,
-  [VAL.SET]: PTR.SET,
-  [VAL.MAP]: PTR.MAP,
-  [VAL.CLOSURE]: PTR.CLOSURE,
-}
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
@@ -438,7 +429,7 @@ export default (ctx) => {
   }
 
   function emitTypeTag(receiver, vt) {
-    const p = PTR_BY_VAL[vt]
+    const p = valKindToPtr(vt)
     if (p != null) return ['i32.const', p]
     inc('__ptr_type')
     return ['call', '$__ptr_type', receiver]

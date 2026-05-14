@@ -23,6 +23,18 @@
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal } from './analyze.js'
 
+// === Numeric range ===
+
+/** Signed-32-bit range. Used everywhere a number value must round-trip through
+ *  wasm `i32` (literal constants, default-arg folding, exprType inference). */
+export const I32_MIN = -2147483648
+export const I32_MAX = 2147483647
+
+/** True when `v` is a finite integer that fits in i32 *and* isn't -0 (which i32
+ *  cannot represent). Callers that don't care about -0 can compare against
+ *  I32_MIN/I32_MAX directly. */
+export const isI32 = (v) => Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX && !Object.is(v, -0)
+
 // === Type helpers ===
 
 /** Tag a WASM node with its result type. */
@@ -295,7 +307,7 @@ export const isPostfix = (a, op, b) => Array.isArray(a) && a[0] === op && Array.
 
 /** Emit a numeric constant with correct i32/f64 typing.
  *  `-0` is f64-only (i32 has no signed zero) — preserve the sign by emitting f64. */
-export const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147483647 && !Object.is(v, -0)
+export const emitNum = v => isI32(v)
   ? typed(['i32.const', v], 'i32') : typed(['f64.const', v], 'f64')
 
 // === Temp locals ===

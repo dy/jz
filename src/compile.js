@@ -48,6 +48,7 @@ import {
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   valKindToPtr, findBodyStart, tcoTailRewrite,
+  I32_MIN, I32_MAX,
 } from './ir.js'
 import plan from './plan.js'
 import {
@@ -105,7 +106,7 @@ const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])
 const repView = (rep) => {
   if (!rep) return null
   const out = {}
-  for (const k of ['val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'arrayElemSchema', 'arrayElemValType', 'typedCtor', 'jsonShape']) {
+  for (const k of ['val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString', 'arrayElemSchema', 'arrayElemValType', 'typedCtor', 'jsonShape', 'wasm']) {
     if (rep[k] != null) out[k] = rep[k]
   }
   return Object.keys(out).length ? out : null
@@ -732,7 +733,7 @@ export default function compile(ast, profiler) {
         if (!ctx.scope.globals.has(name) || !ctx.scope.consts?.has(name)) continue
         const v = evalConst(init)
         if (v == null || !isFinite(v)) continue
-        const isInt = Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+        const isInt = Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX
         ctx.scope.globals.set(name, isInt
           ? `(global $${name} i32 (i32.const ${v}))`
           : `(global $${name} f64 (f64.const ${v}))`)
