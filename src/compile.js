@@ -483,6 +483,11 @@ function emitClosureBody(cb) {
   ctx.func.preboxed = new Set()
   ctx.func.stack = []
   ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
+  // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a
+  // statement list directly — wrap into a block body so the multi-stmt path
+  // runs (otherwise emit returns an untyped list and asF64 wraps it with
+  // `f64.convert_i32_s`, yielding invalid WAT).
+  if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
   ctx.func.body = cb.body
   // Seed direct-call dispatch for captured const-bound closures (A3 across capture boundary).
   // closure.make snapshotted the parent's directClosures for each capture; here we restore
