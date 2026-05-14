@@ -613,6 +613,17 @@ test('jzify: Object.hasOwnProperty.call canonicalizes to instance hasOwnProperty
   is(f('z'), 0)
 })
 
+test('jzify: Object.prototype.hasOwnProperty.call canonicalizes to instance hasOwnProperty', () => {
+  const { f } = jz(`
+    export let f = (k) => {
+      const x = {a: 1, b: 2}
+      return Object.prototype.hasOwnProperty.call(x, k) ? 1 : 0
+    }
+  `, { jzify: true }).exports
+  is(f('a'), 1)
+  is(f('z'), 0)
+})
+
 test('jzify: empty Object constructor guard canonicalizes to Object.keys check', () => {
   const { f } = jz(`
     export let f = (s) => {
