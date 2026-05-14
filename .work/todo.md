@@ -42,6 +42,7 @@
 * [ ] jzify uses jessie, pure jz uses internal parser
 * [ ] True metacircular bootstrap
 * [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
+
 * [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes — alternative way to pass data?
 
 ### REPL
@@ -73,6 +74,17 @@
 ---
 
 ## Archive
+
+### Jessie compilation blockers (see [.work/jessie-wasm.md](jessie-wasm.md))
+
+* [x] #1 spread in `?.()` — `fn?.(...args)`
+* [x] #2 Error subclasses (`SyntaxError`/`TypeError`/`RangeError`/`ReferenceError`/`URIError`/`EvalError`)
+* [x] #5 CLI bare side-effect imports `import './x.js'`
+* [x] #6 `new RegExp("lit")` literal pattern + clean error for dynamic
+* [x] #7 `Object.create` stdlib include — `array` module wasn't pulled in for `__arr_from`
+* [~] ~~#3 `Object.defineProperty(obj, k, {get, set})` — needs accessor-property design~~
+* [x] ~~#4 `delete obj[k]` on dynamic-keyed objects — touches static-shape model (eval-only; parse-only jessie no longer needs it)~~
+* [x] #8 computed object property keys `{[k]: v}` — lowered in prepare to `((t) => (t[k1]=v1, …, t))({static_only})`, side-effects preserved; numeric→string key coercion still gappy on read (separate follow-up)
 
 ### Product / Validation
 
