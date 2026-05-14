@@ -395,8 +395,8 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       const sSchema = resolveSchema(p[1])
       if (!sSchema) {
         // Unknown-schema source (e.g. parameter). Override each slot via runtime
-        // __dyn_get_or using existing value as fallback. Requires collection module.
-        if (!ctx.module.modules.collection) err('Object spread: source needs known schema')
+        // __dyn_get_or using existing value as fallback.
+        includeModule('collection')
         inc('__dyn_get_or')
         srcF ??= temp('ospf')
         body.push(['local.set', `$${srcF}`, asF64(emit(p[1]))])
