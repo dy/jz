@@ -848,9 +848,9 @@ export default function compile(ast, profiler) {
 
   stripStaticDataPrefix(sec)
 
-  optimizeModule(sec)
-
   ensureThrowRuntime(sec)
+
+  optimizeModule(sec)
 
   // Populate globals (after __start — const folding may update declarations)
   sec.globals.push(...[...ctx.scope.globals.values()].filter(g => g).map(g => parseWat(g)))

@@ -228,6 +228,9 @@ test('Error(): throw surfaces readable message', () => {
 })
 
 test('Error(): module-scope throw declares runtime error globals', () => {
+  const wat = compile('if (1) throw Error("test"); export let f = () => 1', { wat: true })
+  ok(wat.includes('(global $__jz_last_err_bits'), 'last error global should be declared')
+  ok(wat.includes('(export "__jz_last_err_bits"'), 'last error global should be exported')
   const wasm = compile('if (1) throw Error("test"); export let f = () => 1')
   ok(wasm instanceof Uint8Array)
 })
