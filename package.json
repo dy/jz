@@ -6,7 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./index.js",
-    "./wasi": "./wasi.js"
+    "./wasi": "./wasi.js",
+    "./interop": "./interop/nanbox.js",
+    "./interop/nanbox": "./interop/nanbox.js"
   },
   "files": [
     "index.js",
@@ -14,6 +16,7 @@
     "wasi.js",
     "src",
     "module",
+    "interop",
     "README.md"
   ],
   "bin": {

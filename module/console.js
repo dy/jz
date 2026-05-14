@@ -2,7 +2,7 @@
  * Console + clocks module — two host-mode lowerings.
  *
  * `host: 'js'` (default): emit `env.print(val: i64, fd: i32, sep: i32)` and
- *   `env.now(clock: i32) -> f64`. The JS host (src/host.js) wires both
+ *   `env.now(clock: i32) -> f64`. The JS host (interop/nanbox.js) wires both
  *   automatically — `print` reads the NaN-boxed value via `mem.read`, so
  *   stringification happens host-side (no __ftoa / __write_str / __write_val
  *   stdlib in the binary). `sep`: 10=newline, 32=space, 0=no separator.

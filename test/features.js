@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { i64ToF64, f64ToI64 } from '../src/host.js'
+import { i64ToF64, f64ToI64 } from '../interop/nanbox.js'
 
 const interp = { __ext_prop:()=>0n, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0n }
 function run(code) {

@@ -33,7 +33,9 @@
  * Feature flags (ctx.features.*) gate conditional stdlib branches for dead-code elimination.
  * Capability hooks (ctx.schema.register, ctx.closure.make) are installed by capability modules.
  *
- * Interop host layer (memory marshaling, wrap, instantiate) lives in src/host.js.
+ * Interop host layer (memory marshaling, wrap, instantiate) lives in
+ * interop/nanbox.js — also exported as the standalone `jz/interop` subpath
+ * for hosts that want to run prebuilt jz wasm without pulling the compiler.
  *
  * @module jz
  */
@@ -49,7 +51,7 @@ import { detectOptimizeConfig } from './src/auto-config.js'
 import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
-} from './src/host.js'
+} from './interop/nanbox.js'
 
 // A host import that's a JS function may hand back any value, including a host
 // object — which arrives in wasm as a PTR.EXTERNAL ref. Constants/typed specs can't.
@@ -374,7 +376,8 @@ export default function jz(code, ...args) {
     }
     if (hoisted.length) src = hoisted.join('; ') + '; ' + src
     const hasInterp = Object.keys(interp).length
-    const result = instantiateRuntime(jz.compile, src, { _interp: hasInterp ? interp : null })
+    const tplOpts = { _interp: hasInterp ? interp : null }
+    const result = instantiateRuntime(jz.compile(src, tplOpts), tplOpts)
     // Patch data getters: allocate values in WASM memory, update closure refs
     for (const [, { val, ref }] of Object.entries(data)) {
       if (typeof val === 'string') ref.ptr = result.memory.String(val)
@@ -385,7 +388,8 @@ export default function jz(code, ...args) {
   }
 
   // String call: jz('code', opts?) — compile + instantiate + wrap
-  return instantiateRuntime(jz.compile, code, args[0] || {})
+  const callOpts = args[0] || {}
+  return instantiateRuntime(jz.compile(code, callOpts), callOpts)
 }
 
 export { jz }

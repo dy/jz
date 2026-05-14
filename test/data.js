@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64, f64ToI64 } from '../src/host.js'
+import { i64ToF64, f64ToI64 } from '../interop/nanbox.js'
 
 function run(code) {
   const wasm = compile(code)

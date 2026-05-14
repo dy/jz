@@ -4,7 +4,7 @@
  * Two host-mode lowerings:
  *
  *   `host: 'js'` (default): emit `env.setTimeout(cb: f64, delay: f64, repeat: i32) -> f64`
- *     and `env.clearTimeout(id: f64) -> f64`. The JS host (src/host.js) drives both
+ *     and `env.clearTimeout(id: f64) -> f64`. The JS host (interop/nanbox.js) drives both
  *     via global setTimeout/setInterval and calls back into wasm through the
  *     exported `__invoke_closure(clos: i64) -> f64` trampoline. No queue, no
  *     polling — the host's event loop does the scheduling.

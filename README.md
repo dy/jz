@@ -268,6 +268,32 @@ const { exports } = jz(mainSrc, { modules: {
 </details>
 
 <details>
+<summary><strong>How do I run a produced <code>.wasm</code> without pulling jz?</strong></summary>
+
+<br>
+
+Ship the `.wasm` and the small host-side bridge that knows the value encoding. jz publishes the bridge under the `jz/interop` subpath — it has no dependency on the compiler, parser, or watr (only `wasi.js`), so bundlers tree-shake the compiler out entirely.
+
+```sh
+jz program.js -o program.wasm    # compile once, anywhere
+```
+
+```js
+// In production: no compiler shipped, just the wasm + the interop bridge.
+import { instantiate } from 'jz/interop'
+import wasmBytes from './program.wasm'   // bundler-specific; or fetch(...)
+
+const { exports, memory } = instantiate(wasmBytes)
+exports.greet(memory.String('hello'))    // marshal works the same as compile-time
+```
+
+`instantiate(wasm, opts?)` accepts `Uint8Array`, `ArrayBuffer`, or a pre-built `WebAssembly.Module`. The returned `{ exports, memory, instance, module }` is identical to what the `jz(src)` template tag returns — same `memory.String/Array/Object/...` constructors, same `memory.read(ptr)` decoder, same handling of `imports` / shared `memory` / WASI.
+
+The bridge is named after the value ABI: today's jz wasm uses **NaN-boxed `f64`** values with bump-allocated heap blobs, so the path is `jz/interop/nanbox` (and `jz/interop` is an alias for the default ABI). Future ABIs — flat C-style, wasm GC, component model — will live as sibling subpaths (`jz/interop/flat`, `jz/interop/gc`, …); the compiler will pick per-build via an `--abi=<name>` flag and the wasm will declare its ABI through a `_jz_abi` export so `jz/interop` can auto-select.
+
+</details>
+
+<details>
 <summary><strong>How do I pass values from the host to jz?</strong></summary>
 
 <br>

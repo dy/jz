@@ -29,6 +29,7 @@ const TESTS = [
   'cli',
   'object-regressions',
   'jessie-regressions',
+  'interop',
   'external',
   'watr',
   'optimizer',

@@ -1,19 +1,23 @@
 /**
- * Interop runtime — JS ↔ WASM value marshaling.
+ * Interop: NaN-box ABI — the v1 jz host↔wasm boundary.
  *
- * NaN-boxing encoder/decoder, bump allocation, schema transport, host-object
- * handling. This is the *package* runtime that runs after compilation — it is
- * kept separate from the *compiler core* (index.js jz.compile) so the minimal
- * "pure scalar" story remains clean.
+ * Importable standalone as `jz/interop/nanbox` (or `jz/interop`) without
+ * pulling the compiler, parser, or watr — use this to run prebuilt jz wasm
+ * from a host that doesn't need to compile. Sole dependency: `../wasi.js`.
+ *
+ * Marshals NaN-boxed `f64` values across the boundary: bump-allocated heap
+ * blobs (strings, arrays, typed arrays, objects), schema transport for
+ * fixed-shape objects, host-object externrefs.
  *
  * Exports:
  *   UNDEF_NAN, NULL_NAN, coerce          — null/undefined sentinels
+ *   i64ToF64, f64ToI64                    — bit-cast across the i64 boundary
  *   ptr / offset / type / aux             — NaN-boxed pointer codec
- *   memory(src)                           — enhance a WebAssembly.Memory
- *   wrap(memSrc, inst?)                   — adapt WASM exports to JS calling convention
- *   instantiate(compile, code, opts?)     — compile + instantiate + wrap
+ *   memory(src)                           — enhance a WebAssembly.Memory with read/write/String/Array/…
+ *   wrap(memSrc, inst?)                   — adapt raw wasm exports to JS calling convention
+ *   instantiate(wasm, opts?)              — instantiate prebuilt wasm bytes + wrap
  *
- * @module runtime
+ * @module jz/interop/nanbox
  */
 
 import { wasi } from '../wasi.js'
@@ -726,14 +730,21 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 }
 
 /**
- * Compile, instantiate, and wrap exports (with WASI + rest-param support).
- * `compile` is the jz.compile function (injected to avoid importing the compiler core).
+ * Instantiate prebuilt jz wasm and wrap exports (WASI imports, rest-params,
+ * host-object externrefs, default env.print/now wiring, optional shared memory).
+ *
+ * Compile-and-instantiate is the caller's job — pass already-compiled bytes:
+ *   import { instantiate } from 'jz/interop'
+ *   const { exports, memory } = await instantiate(wasmBytes)
+ *
+ * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm  prebuilt wasm
+ * @param {object} [opts]  host options: imports, memory, _interp, host-shape flags
+ * @returns {{ exports, memory, instance, module }}
  */
-export const instantiate = (compile, code, opts = {}) => {
+export const instantiate = (wasm, opts = {}) => {
   const state = prepareInterop(opts)
-  const wasm = compile(code, opts)
   opts.extMap = state.extMap
-  const mod = new WebAssembly.Module(wasm)
+  const mod = wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)
