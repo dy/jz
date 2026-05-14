@@ -603,6 +603,20 @@ test('array: push beyond capacity triggers grow', () => {
   is(f(), 111)  // 5+6+100 — no heap corruption
 })
 
+test('array: grow links dynamic move helper after hash helpers', () => {
+  const { f } = run(`export let f = () => {
+    let obj = Object.fromEntries([["x", 3]])
+    let values = []
+    values.push({ a: 1 })
+    values.push({ a: 2 })
+    values.push({ a: 3 })
+    values.push({ a: 4 })
+    values.push({ a: 5 })
+    return values.length + obj.x
+  }`)
+  is(f(), 8)
+})
+
 test('array: push many beyond initial cap', () => {
   const { f } = run(`export let f = () => {
     let a = []
