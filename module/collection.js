@@ -467,6 +467,26 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
   }
 
+  // x instanceof Map / Set — typed-pointer predicates emitted by jzify. NaN-check
+  // first (non-pointer numbers must report false), then compare __ptr_type tag.
+  // Mirrors module/array.js's Array.isArray inline form. Result is i32 (boolean).
+  ctx.core.emit['__is_map'] = (x) => {
+    inc('__ptr_type')
+    const v = asF64(emit(x))
+    const t = temp('imap')
+    return typed(['i32.and',
+      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.MAP]]], 'i32')
+  }
+  ctx.core.emit['__is_set'] = (x) => {
+    inc('__ptr_type')
+    const v = asF64(emit(x))
+    const t = temp('iset')
+    return typed(['i32.and',
+      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.SET]]], 'i32')
+  }
+
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)
   ctx.core.stdlib['__set_has'] = () => genLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEq, PTR.SET, false, ctx.features.external)

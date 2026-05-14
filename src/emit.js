@@ -2,7 +2,7 @@
  * AST → WASM IR emission.
  *
  * # Stage contract
- *   IN:  prepared AST node + ctx state (func.locals, func.repByLocal, types.typedElem, etc.)
+ *   IN:  prepared AST node + ctx state (func.locals, func.localReps, types.typedElem, etc.)
  *   OUT: IR node (array) with `.type` ('i32' | 'f64' | 'void'). For statements, a flat
  *        list of WASM instructions (no type tag).
  *   NO-MUTATE: emit does not rewrite the AST. Side effects go to ctx.runtime.*,
@@ -263,15 +263,27 @@ function extractRefinements(cond, out, sense = true) {
     }
     return out
   }
-  // Array.isArray(x) — only refines under positive sense.
-  // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array', 'isArray'] pair.
+  // Type-predicate calls under positive sense — refine by the asserted VAL.
+  // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array',
+  // 'isArray'] pair; __is_map / __is_set / __is_typed come from jzify's
+  // instanceof lowering as a bare string callee.
   if (op === '()' && sense && typeof cond[2] === 'string') {
     const callee = cond[1]
-    const isArr = callee === 'Array.isArray'
-      || (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
-    if (isArr) { mergeRefinement(out, cond[2], { val: VAL.ARRAY }); return out }
+    const val = predicateRefinement(callee)
+    if (val != null) { mergeRefinement(out, cond[2], { val }); return out }
   }
   return out
+}
+
+/** Map a call-callee shape to the VAL kind it asserts under positive sense, or null. */
+function predicateRefinement(callee) {
+  if (callee === 'Array.isArray') return VAL.ARRAY
+  if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
+    return VAL.ARRAY
+  if (callee === '__is_map') return VAL.MAP
+  if (callee === '__is_set') return VAL.SET
+  if (callee === '__is_typed') return VAL.TYPED
+  return null
 }
 
 /** Merge a refinement fact into the per-name slot. Later facts override; non-overlapping
@@ -616,9 +628,9 @@ export function buildArrayWithSpreads(items) {
       ctx.func.locals.set(sec.local, 'f64')
       sec.lenLocal = `${T}spl${ctx.func.uniq++}`
       ctx.func.locals.set(sec.lenLocal, 'i32')
-      sec.vt = valTypeOf(sec.expr)
+      sec.val = valTypeOf(sec.expr)
       // ARRAY-known source: hoist data base and inline len/load (skip per-iter dispatch).
-      if (sec.vt === VAL.ARRAY && !multiCount(sec.expr)) {
+      if (sec.val === VAL.ARRAY && !multiCount(sec.expr)) {
         sec.baseLocal = `${T}spb${ctx.func.uniq++}`
         ctx.func.locals.set(sec.baseLocal, 'i32')
       }

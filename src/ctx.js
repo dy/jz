@@ -149,7 +149,7 @@ export function reset(proto, globals, abi) {
     globalTypes: new Map(),
     globalValTypes: null,
     globalTypedElem: null,
-    repByGlobal: null, // Map<name, ValueRep> — module-level pointer reps (TYPED const globals stored as raw i32 offset, etc.)
+    globalReps: null, // Map<name, ValueRep> — module-level pointer reps (TYPED const globals stored as raw i32 offset, etc.)
     consts: null,
   }
 
@@ -160,7 +160,7 @@ export function reset(proto, globals, abi) {
     exports: {},
     current: null,
     locals: new Map(),
-    repByLocal: null,
+    localReps: null,
     refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true} inside a type-guarded branch
     boxed: new Map(),
     stack: [],
@@ -234,7 +234,14 @@ export function reset(proto, globals, abi) {
                         // instantiation time. 'wasi': error at compile time if any `__ext_*` import
                         // would be emitted, since wasmtime/wasmer hosts have no JS runtime to satisfy
                         // them and silent fallback would corrupt output.
+    inspect: false,     // when true, compile() additionally populates ctx.inspect with the inferred
+                        // per-function signatures, locals, and JSON shapes — readable by editor
+                        // hosts for inlay hints / hover types without re-running the analyzer.
   }
+
+  // Inspection sink. Populated by compile() only when transform.inspect is true.
+  // Shape: { abi, functions: { [name]: { exported, params, results, ptrKind?, locals, callerReps } }, schemas }.
+  ctx.inspect = null
 
   // Feature flags: capabilities the compiled module may exercise at runtime.
   // Set true by producer sites (import points, auto-imports, dynamic call sites).

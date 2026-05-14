@@ -602,7 +602,7 @@ test('MAX_CLOSURE_ARITY exported value', () => {
 })
 
 // ============================================================================
-// CLOSURE local unboxing (analyzePtrUnboxable VAL.CLOSURE branch)
+// CLOSURE local unboxing (unboxablePtrs VAL.CLOSURE branch)
 //
 // `let g = (x) => …` with non-reassigned `g` is stored as i32 envPtr instead of
 // the full f64 NaN-box. ptrAux=funcIdx is preserved on the rep so reboxing for
@@ -660,7 +660,7 @@ test('closure-unbox: multiple unboxed closures with distinct funcIdx', () => {
 })
 
 test('closure-unbox: reassignment disqualifies', () => {
-  // analyzePtrUnboxable disqualifies any name with > 0 bare `=` assignments.
+  // unboxablePtrs disqualifies any name with > 0 bare `=` assignments.
   const { f } = runHost(`export let f = (n) => {
     let g = (x) => x + n
     g = (x) => x - n

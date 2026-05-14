@@ -276,6 +276,38 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32
   'Int16Array','Uint16Array','Int8Array','Uint8Array',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
 
+/** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape
+ *  already pins down its runtime type. Returns true/false or null (unknown).
+ *  Matches the lhs forms a user might plausibly write: literal arrays, object
+ *  literals, string/number literals, and `new C(...)` whose ctor name is known.
+ *  Stays conservative — anything else returns null and falls back to the runtime
+ *  predicate so behavior is never silently changed. */
+function staticInstanceofFold(val, ctor) {
+  if (typeof ctor !== 'string' || !Array.isArray(val)) return null
+  // Unwrap grouping parens: `(expr)` parses as `['()', expr]`
+  if (val[0] === '()' && val.length === 2) return staticInstanceofFold(val[1], ctor)
+  // Array literal: `[1,2,3]` → `['[]', [',', …]]` (or `['[]']` for empty array)
+  if (val[0] === '[]' && val.length <= 2) return ctor === 'Array' || ctor === 'Object'
+  // Object literal: `{a:1}` → `['{}', [':', …], …]`
+  if (val[0] === '{}') return ctor === 'Object'
+  // Regex literal: `/x/` → `['//', …]`
+  if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
+  // `new C(...)` — `['new', ['()', 'C', args]]` or `['new', 'C']`
+  if (val[0] === 'new') {
+    const inner = val[1]
+    const cname = typeof inner === 'string' ? inner
+      : (Array.isArray(inner) && inner[0] === '()' && typeof inner[1] === 'string') ? inner[1]
+      : null
+    if (cname) return cname === ctor || (cname !== 'Object' && ctor === 'Object')
+  }
+  // Bare primitive: `[null, v]` where v is a primitive — never an instance per JS spec.
+  if (val[0] == null && val.length === 2) {
+    const v = val[1]
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || v == null) return false
+  }
+  return null
+}
+
 // `arguments` lowering: regular `function` has implicit `arguments`; arrow doesn't.
 // jzify converts function → arrow, so any `arguments` use must be rewritten to a rest param.
 // Arrow functions inherit `arguments` from enclosing function — don't stop at '=>'.
@@ -565,13 +597,26 @@ const handlers = {
     return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]
   },
 
-  // instanceof → typeof / Array.isArray (jzify allows what strict mode prohibits)
+  // instanceof → typeof / Array.isArray / __is_* helpers. jzify lets us preserve
+  // constructor identity that strict-mode `instanceof` discards — Map, Set, and
+  // TypedArrays get dedicated typed predicates (__is_map / __is_set / __is_typed)
+  // that both compile to a runtime __ptr_type check and feed extractRefinements
+  // for downstream method-dispatch elision (e.g. `if (x instanceof Map) x.has(k)`
+  // resolves to __map_has, not the default __set_has fallback). Date / RegExp /
+  // Object stay on the weak typeof-object lowering — they share PTR.OBJECT and
+  // the JS runtime offers no cheaper discrimination.
   'instanceof'(val, ctor) {
     const t = transform(val)
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
+    // Static fold: literal shape of LHS already discriminates against the constructor.
+    const fold = staticInstanceofFold(val, name)
+    if (fold != null) return [null, fold]
     if (name === 'Array') return ['()', ['.', 'Array', 'isArray'], t]
-    if (name === 'Object') return ['===', ['typeof', t], [null, 'object']]
-    if (typeof name === 'string' && TYPED_ARRAYS.has(name)) return ['===', ['typeof', t], [null, 'object']]
+    if (name === 'Map') return ['()', '__is_map', t]
+    if (name === 'Set') return ['()', '__is_set', t]
+    if (typeof name === 'string' && TYPED_ARRAYS.has(name) && name !== 'ArrayBuffer' && name !== 'DataView')
+      return ['()', '__is_typed', t]
+    // Object / ArrayBuffer / DataView / RegExp / Date / unknown: weak typeof-object check.
     return ['===', ['typeof', t], [null, 'object']]
   },
 

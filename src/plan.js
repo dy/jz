@@ -9,7 +9,7 @@
  *
  * # Pipeline (top-level `plan(ast)`)
  *   1. unboxConstTypedGlobals — finalize global storage. (Global value facts
- *      themselves are seeded by prepare via `infer.recordGlobalValueFact`.)
+ *      themselves are seeded by prepare via `infer.recordGlobalRep`.)
  *   2. collectProgramFacts — sweep arrow bodies for typed-elem usage, key sets,
  *      loop depth, control-transfer shapes; rerun if hot inlining changes the AST.
  *   3. materializeAutoBoxSchemas / resolveClosureWidth — settle layout decisions.
@@ -1344,7 +1344,7 @@ const specializeFixedRestCalls = (programFacts) => {
 }
 
 // `scanGlobalValueFacts` was deleted — prepare's depth-0 catch (calling
-// `recordGlobalValueFact` from src/infer.js) is the authoritative pass and a
+// `recordGlobalRep` from src/infer.js) is the authoritative pass and a
 // strict superset of what this top-level walker observed.
 
 const unboxConstTypedGlobals = () => {

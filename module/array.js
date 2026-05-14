@@ -158,7 +158,7 @@ function callbackArgReps(arr) {
     const vt = lookupValType(arr)
     if (vt === VAL.TYPED) itemRep = { val: VAL.NUMBER }
     else if (vt === VAL.ARRAY) {
-      const elemVt = ctx.func.repByLocal?.get(arr)?.arrayElemValType
+      const elemVt = ctx.func.localReps?.get(arr)?.arrayElemValType
       if (elemVt) itemRep = { val: elemVt }
     }
   } else {
@@ -703,7 +703,7 @@ export default (ctx) => {
       // NaN-boxed pointer for OBJECT/STRING; downstream typed() handles both).
       // Fast path fires on schemaId (Array<{x,y,z}> shapes) OR plain elem-val
       // (Array<NUMBER> from `.map(x => x*k)` etc.).
-      const rep = typeof arr === 'string' ? ctx.func.repByLocal?.get(arr) : null
+      const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
       const hasElemFact = rep?.arrayElemSchema != null
       if (hasElemFact && keyIsNum) {
         inc('__ptr_offset')

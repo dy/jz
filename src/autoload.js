@@ -85,6 +85,10 @@ export const CALL_MODULES = dict({
   'Int8Array.from': ['core', 'typedarray', 'array'],
   'Uint8Array.from': ['core', 'typedarray', 'array'],
   'ArrayBuffer.isView': ['core', 'typedarray'],
+  // instanceof Map / Set / TypedArray predicates (synthesized by jzify).
+  '__is_map': ['core', 'collection'],
+  '__is_set': ['core', 'collection'],
+  '__is_typed': ['core', 'typedarray'],
 })
 
 export const GENERIC_METHOD_MODULES = dict({

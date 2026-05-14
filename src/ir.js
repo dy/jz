@@ -428,7 +428,7 @@ export function needsDynShadow(target) {
   if (!ctx.module.modules.collection) return false
   // Functions/CLOSURE always need dynamic props so cross-module property
   // access (fn.parse, i32.parse aliases) sees the same value as schema slots.
-  const vt = typeof target === 'string' ? (ctx.func.repByLocal?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
+  const vt = typeof target === 'string' ? (ctx.func.localReps?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
   if (vt === 'closure' || usesDynProps(vt)) return true
   const dyn = ctx.types?.dynKeyVars
   if (target == null) return ctx.types?.anyDynKey ?? false
@@ -531,7 +531,7 @@ export function writeVar(name, valIR, void_) {
 
 /** Check if f64 expr is nullish (NULL_NAN or UNDEF_NAN). Returns i32.
  *  Peepholes: fold known NaN-boxed sentinel literals; elide on numeric literals;
- *  unboxed pointer locals are proven non-null by analyzePtrUnboxable.
+ *  unboxed pointer locals are proven non-null by unboxablePtrs.
  *  Inlines directly: (i32.or (i64.eq bits NULL_NAN) (i64.eq bits UNDEF_NAN))
  *  rather than calling $__is_nullish — saves WASM call dispatch in V8 JIT. */
 export const isNullish = (f64expr) => {

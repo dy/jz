@@ -3,7 +3,7 @@
  *
  * Each inference aspect must change emitted WAT in a way that proves the
  * fact reached the consumer. Pure "fact set / fact read" coverage on
- * `ctx.func.repByLocal` doesn't count — the user only observes the WAT.
+ * `ctx.func.localReps` doesn't count — the user only observes the WAT.
  *
  * Aspects covered (src/infer.js evidence ladder):
  *   • notStringEvidence   — write-shape disproves STRING → drops __length poly
@@ -11,10 +11,10 @@
  *   • methodEvidence ARR  — ARRAY inducer (.push) → drops STRING/TYPED branches
  *   • extractRefinements  — flow `typeof x === 'string'` → return; → notString
  *
- * Call-site facts (inferArg* family):
- *   • inferArgType        — paramReps val agreement folds polymorphic dispatch
- *   • inferArgType        — sticky-null on disagree forces __length poly
- *   • inferArgArrElemSchema — array-elem schema flows through paramReps
+ * Call-site facts (infer* family):
+ *   • inferValType        — paramReps val agreement folds polymorphic dispatch
+ *   • inferValType        — sticky-null on disagree forces __length poly
+ *   • inferArrElemSchema — array-elem schema flows through paramReps
  *   • intConst            — unanimous int literal at every call site folds
  *
  * Layout: pair positive + negative for each aspect when the negative case
@@ -152,7 +152,7 @@ test('paramReps val: caller disagreement forces __length poly', () => {
 
 test('intConst: unanimous int-literal arg folds local.get to i32 const', () => {
   // Every caller passes k=7 → narrow.js D-phase sets paramReps[scale][1]
-  // .intConst=7. compile.js seeds repByLocal.intConst; emitLocalGet sees it
+  // .intConst=7. compile.js seeds localReps.intConst; emitLocalGet sees it
   // and emits the literal instead of a local read.
   const wat = jz.compile(`
     const scale = (x, k) => x * k
@@ -191,10 +191,10 @@ test('intConst: body write to param clears intConst (validateIntConstParams)', (
   ok(/local\.get \$k/.test(body[0]), 'body-write should keep local.get $k')
 })
 
-test('inferArgArrElemSchema: consistent caller schemas → direct slot load', () => {
+test('inferArrElemSchema: consistent caller schemas → direct slot load', () => {
   // initRows builds an array of `{x,y}` objects via .push. narrowReturnArrayElems
   // sets initRows.arrayElemSchema; runArrFixpoint propagates to runKernel's param
-  // via inferArgArrElemSchema. The callee's `rows[i].x` becomes a direct
+  // via inferArrElemSchema. The callee's `rows[i].x` becomes a direct
   // `f64.load offset=K` over a ptr-unboxed local (no __dyn_get_*, no __is_str_key).
   const wat = jz.compile(`
     const initRows = () => {
@@ -218,8 +218,8 @@ test('inferArgArrElemSchema: consistent caller schemas → direct slot load', ()
   ok(/f64\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
-test('inferArgTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
-  // Caller passes new Float64Array(...) → inferArgTypedCtor resolves the elem
+test('inferTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
+  // Caller passes new Float64Array(...) → inferTypedCtor resolves the elem
   // ctor → paramReps[sumArr][0].typedCtor → compile.js seeds val=TYPED + the
   // elem ctor → ptrUnboxable narrows param to i32 + len becomes a direct
   // typed-header read + the loop vectorizes to f64x2 SIMD.
@@ -237,7 +237,7 @@ test('inferArgTypedCtor: Float64Array arg unlocks SIMD vectorization', () => {
   is(count(wat, /\$__length\b/g), 0, 'no polymorphic length')
 })
 
-test('inferArgTypedCtor: typed + array caller disagreement keeps runtime dispatch', () => {
+test('inferTypedCtor: typed + array caller disagreement keeps runtime dispatch', () => {
   // Float64Array + plain array → typedCtor sticky-null → no SIMD, runtime
   // dispatch on every element access.
   const wat = jz.compile(`
@@ -252,9 +252,9 @@ test('inferArgTypedCtor: typed + array caller disagreement keeps runtime dispatc
   ok(!/v128\.load\b/.test(wat), 'disagreement should block SIMD')
 })
 
-test('analyzeBoxedCaptures: mutated capture allocates a heap cell', () => {
+test('boxedCaptures: mutated capture allocates a heap cell', () => {
   // `let n = 0; const inc = () => { n = n + 1; ... }` — the closure mutates
-  // the outer var. analyzeBoxedCaptures marks n boxed → cell allocated on
+  // the outer var. boxedCaptures marks n boxed → cell allocated on
   // heap, captured by the closure, read/written via the cell pointer.
   // Force escape via `keep(...)` so inlineLocalLambdas doesn't splice the
   // closure away (which would leave n as a plain wasm local).
@@ -267,14 +267,14 @@ test('analyzeBoxedCaptures: mutated capture allocates a heap cell', () => {
       return inc() | 0
     }
   `, { wat: true })
-  // The cell local is named `cell_<name>` by analyzeBoxedCaptures.
+  // The cell local is named `cell_<name>` by boxedCaptures.
   // ($ is non-word in JS regex, so \b after \$cell_n doesn't match — use cell_n.)
   ok(/cell_n\b/.test(wat), 'expected $cell_n local for boxed capture')
 })
 
-test('recordGlobalValueFact: module-level Float64Array enables SIMD in consumers', () => {
+test('recordGlobalRep: module-level Float64Array enables SIMD in consumers', () => {
   // Module-level `const buf = new Float64Array(...)` is recorded by
-  // recordGlobalValueFact into ctx.scope.globalTypedElem. Any function
+  // recordGlobalRep into ctx.scope.globalTypedElem. Any function
   // reading `buf[i]` / `buf.length` picks up the typed-element ctor without
   // call-site inference, enabling the same SIMD + direct-length paths as
   // the param-flow case.
@@ -290,7 +290,7 @@ test('recordGlobalValueFact: module-level Float64Array enables SIMD in consumers
   is(count(wat, /\$__length\b/g), 0, 'no poly length over typed global')
 })
 
-test('inferArgArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
+test('inferArrElemSchema: caller disagreement keeps polymorphic dispatch', () => {
   // initA pushes `{x,y}`, initB pushes `{a,b}` — disagreeing schemas at the
   // lattice → paramReps[runKernel][0].arrayElemSchema sticky-nulls → callee
   // falls back to polymorphic dispatch.
@@ -306,6 +306,68 @@ test('inferArgArrElemSchema: caller disagreement keeps polymorphic dispatch', ()
     export const m2 = () => runKernel(initB()) | 0
   `, { wat: true })
   ok(count(wat, /\$__dyn_get_/g) > 0, 'disagreement should keep __dyn_get fallback')
+})
+
+// ──────────────────────────────────────────────────────────────── instanceof B1
+
+test('extractRefinements: instanceof Map → __map_has dispatch (not default __set_has)', () => {
+  // Without refinement the .has fallback picks __set_has by default. With B1's
+  // VAL.MAP refinement the post-condition scope dispatches to .map:has.
+  const wat = jz.compile(`
+    export const probe = (x, k) => {
+      if (x instanceof Map) return x.has(k) ? 1 : 0
+      return -1
+    }
+  `, { wat: true, jzify: true })
+  const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
+  ok(/\$__map_has\b/.test(probe), 'expected __map_has dispatch under instanceof Map refinement')
+  ok(!/\$__set_has\b/.test(probe), 'should not fall back to default __set_has')
+})
+
+test('extractRefinements: instanceof Set → __set_has dispatch (no Map path)', () => {
+  const wat = jz.compile(`
+    export const probe = (x, v) => {
+      if (x instanceof Set) return x.has(v) ? 1 : 0
+      return -1
+    }
+  `, { wat: true, jzify: true })
+  const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
+  ok(/\$__set_has\b/.test(probe), 'expected __set_has under instanceof Set refinement')
+  ok(!/\$__map_has\b/.test(probe), 'should not also pull __map_has path')
+})
+
+test('extractRefinements: instanceof Float64Array → __typed_idx dispatch', () => {
+  // Refinement to VAL.TYPED routes `x[i]` through the typed-array index helper.
+  const wat = jz.compile(`
+    export const probe = (x, i) => {
+      if (x instanceof Float64Array) return x[i]
+      return 0
+    }
+  `, { wat: true, jzify: true })
+  const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
+  ok(/\$__typed_idx\b/.test(probe), 'expected __typed_idx dispatch under TYPED refinement')
+  ok(!/\$__arr_idx\b/.test(probe), 'should not fall back to __arr_idx')
+})
+
+test('staticInstanceofFold: [..] instanceof Array folds to constant true at jzify', () => {
+  // No runtime check — dead-code elim collapses the whole branch.
+  const wat = jz.compile(`
+    export const probe = () => ([1,2,3] instanceof Array) ? 1 : 0
+  `, { wat: true, jzify: true })
+  const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
+  ok(!/\$__ptr_type\b/.test(probe), 'static fold should leave no runtime predicate')
+  ok(!/\$__is_/.test(probe), 'should not emit __is_* helper call')
+})
+
+test('staticInstanceofFold: primitive literal instanceof X folds to false', () => {
+  // Per JS spec, primitives are never instances. jzify folds at AST time.
+  const wat = jz.compile(`
+    export const probe = () => ('hello' instanceof Map) ? 1 : 0
+  `, { wat: true, jzify: true })
+  const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
+  ok(!/\$__is_map\b/.test(probe), 'static fold should skip the runtime predicate')
+  // Result must be 0 (the false branch).
+  ok(/f64\.const 0/.test(probe))
 })
 
 // ──────────────────────────────────────────────────────────────── runtime sanity

@@ -12,7 +12,7 @@ import { isLiteralStr } from './ir.js'
 import {
   VAL,
   analyzeBody,
-  callerParamFactMap,
+  paramFactsOf,
   exprType, findMutations, hasBareReturn,
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
@@ -20,8 +20,8 @@ import {
 } from './analyze.js'
 import {
   clearStickyNull, ensureParamRep, mergeParamFact,
-  inferArgArrElemSchema, inferArgArrElemValType,
-  inferSchemaId, inferArgType, inferArgTypedCtor,
+  inferArrElemSchema, inferArrElemValType,
+  inferSchemaId, inferValType, inferTypedCtor,
 } from './infer.js'
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
@@ -201,15 +201,15 @@ function refreshCallerLocals(callerCtx) {
     // this, post-G `refreshCallerLocals` still walks bodies with arr untyped, the
     // length stays f64, and any callee taking that length never gets an i32 param
     // (heapsort→siftDown's `end`). analyzeFuncForEmit re-seeds + re-invalidates at
-    // emit time, so this transient repByLocal doesn't leak past narrowing.
-    ctx.func.repByLocal = new Map()
-    for (const p of func.sig.params) if (p.ptrKind != null) ctx.func.repByLocal.set(p.name, { val: p.ptrKind })
+    // emit time, so this transient localReps doesn't leak past narrowing.
+    ctx.func.localReps = new Map()
+    for (const p of func.sig.params) if (p.ptrKind != null) ctx.func.localReps.set(p.name, { val: p.ptrKind })
     invalidateLocalsCache(func.body)
     const fresh = analyzeBody(func.body).locals
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
-  ctx.func.repByLocal = null
+  ctx.func.localReps = null
 }
 
 function resetParamWasmFacts(paramReps) {
@@ -273,12 +273,12 @@ export default function narrowSignatures(programFacts, ast) {
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
   // For non-exported internal functions, if all call sites agree on a param's type,
-  // seed the param's val rep (ctx.func.repByLocal) during per-function compilation.
+  // seed the param's val rep (ctx.func.localReps) during per-function compilation.
   // Also infer i32/f64 WASM type — when all call sites pass i32 for a param, specialize
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
-  // Inference helpers (inferArgType/inferSchemaId/inferArgArr*/inferArgTypedCtor)
+  // Inference helpers (inferValType/inferSchemaId/inferArr*/inferTypedCtor)
   // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
@@ -307,7 +307,7 @@ export default function narrowSignatures(programFacts, ast) {
         callerLocals: ctxEntry.callerLocals,
         callerValTypes: ctxEntry.callerValTypes,
         callerParamFacts(key) {
-          if (!paramFacts.has(key)) paramFacts.set(key, callerParamFactMap(paramReps, callerFunc, key))
+          if (!paramFacts.has(key)) paramFacts.set(key, paramFactsOf(paramReps, callerFunc, key))
           return paramFacts.get(key)
         },
       }
@@ -321,13 +321,13 @@ export default function narrowSignatures(programFacts, ast) {
   }
 
   const poison = field => r => { r[field] = null }
-  // Default-aware val inference. Adds two fallbacks beyond inferArgType's
+  // Default-aware val inference. Adds two fallbacks beyond inferValType's
   // body-local `callerValTypes` lookup so a hot recursive helper like
   // `uleb(n, buffer = []) { ... return uleb(n, buffer) }` resolves the
   // recursive `buffer` arg to VAL.ARRAY (via callerParamFacts on iter 2,
   // or via the caller's own default expression on iter 1).
   const inferValAtSite = (arg, state) => {
-    const v = inferArgType(arg, state.callerValTypes)
+    const v = inferValType(arg, state.callerValTypes)
     if (v != null) return v
     if (typeof arg !== 'string') return null
     const fromParam = state.callerParamFacts('val')?.get(arg)
@@ -393,8 +393,8 @@ export default function narrowSignatures(programFacts, ast) {
     do { changed = false; runCallsiteLattice([soft]) } while (changed)
     runCallsiteLattice([mergeRule(field, infer)])
   }
-  const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArgArrElemSchema, phase.callerElems('arrElemSchemas'))
-  const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArgArrElemValType, phase.callerElems('arrElemValTypes'))
+  const runArrFixpoint = () => runArrElemFixpoint('arrayElemSchema', inferArrElemSchema, phase.callerElems('arrElemSchemas'))
+  const runArrValTypeFixpoint = () => runArrElemFixpoint('arrayElemValType', inferArrElemValType, phase.callerElems('arrElemValTypes'))
   runFixpoint()
   runFixpoint()
 
@@ -555,7 +555,7 @@ export default function narrowSignatures(programFacts, ast) {
   //   - OBJECT: aux is schema-id; narrow only when all return exprs share a constant
   //     schema (literal `{a,b,c}`, schemaId-bound param, module-bound var, or call to
   //     another OBJECT-narrowed func). Caller picks aux up via callIR.ptrAux → readVar →
-  //     repByLocal.schemaId, restoring property-slot dispatch through the call boundary.
+  //     localReps.schemaId, restoring property-slot dispatch through the call boundary.
   // Safety: ARRAY forwards on realloc (no narrowing). STRING dual-encoded SSO/heap.
   // CLOSURE/TYPED also carry meaningful aux — TYPED narrowing is a follow-up. Body must
   // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
@@ -632,7 +632,7 @@ export default function narrowSignatures(programFacts, ast) {
       const exprs = returnExprs(func.body)
       if (!exprs.length) continue
       if (func.valResult === VAL.OBJECT) {
-        const paramSchemasMap = callerParamFactMap(paramReps, func, 'schemaId')
+        const paramSchemasMap = paramFactsOf(paramReps, func, 'schemaId')
         const sid0 = inferSchemaId(exprs[0], paramSchemasMap)
         if (sid0 == null) continue
         if (!exprs.every(e => inferSchemaId(e, paramSchemasMap) === sid0)) continue
@@ -660,7 +660,7 @@ export default function narrowSignatures(programFacts, ast) {
   // for their own params and `arr[i]` reads emit a direct `f64.load` instead of
   // the runtime `__is_str_key + __typed_idx` dispatch — closes the largest
   // chunk of the JS→wasm gap on f64-heavy hot loops.
-  // (Helper `inferArgTypedCtor` lives in src/infer.js — the call-site mirror
+  // (Helper `inferTypedCtor` lives in src/infer.js — the call-site mirror
   //  of body-walk evidence — and is reused by the bimorphic-typed
   //  specialization pass below; `ctorFromElemAux` stays in analyze.js next
   //  to its encode/decode partner.)
@@ -674,7 +674,7 @@ export default function narrowSignatures(programFacts, ast) {
   // its own callees (e.g. if `outer(buf)` calls `inner(buf)` and we learn `buf`
   // for outer, the second pass picks it up for inner). Reuses runArrElemFixpoint
   // (same shape — field/inferFn/elemsCtxMap parameterization).
-  const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferArgTypedCtor, callerTypedCtx)
+  const runTypedFixpoint = () => runArrElemFixpoint('typedCtor', inferTypedCtor, callerTypedCtx)
   runTypedFixpoint()
   runTypedFixpoint()
 
@@ -691,7 +691,7 @@ export default function narrowSignatures(programFacts, ast) {
   // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
   // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
   // → both VAL.TYPED, different ctors). Without this, callerValTypes carries no entry
-  // for caller's params, so inferArgType returns null and paramReps[callee][k].val is
+  // for caller's params, so inferValType returns null and paramReps[callee][k].val is
   // sticky null. With ptrKind enriching callerValTypes, sum's arr gets val=TYPED in
   // its rep, letting array.js skip __is_str_key + __str_idx dispatch on `arr[i]`.
   enrichCallerValTypesFromPointerParams(callerCtx)
@@ -766,7 +766,7 @@ export function specializeBimorphicTyped(programFacts) {
   // (so transitive `sum(arr)` inside a func that took `arr` from above resolves).
   const callerTypedParamsCtx = new Map()
   for (const func of ctx.func.list) {
-    const m = callerParamFactMap(paramReps, func, 'typedCtor') || null
+    const m = paramFactsOf(paramReps, func, 'typedCtor') || null
     let acc = m
     if (func.sig?.params) for (const p of func.sig.params) {
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
@@ -811,7 +811,7 @@ export function specializeBimorphicTyped(programFacts) {
       const combo = []
       for (const k of bimorphic) {
         if (k >= site.argList.length) { abort = true; break }
-        const c = inferArgTypedCtor(site.argList[k], callerTypedElems, callerTypedParams)
+        const c = inferTypedCtor(site.argList[k], callerTypedElems, callerTypedParams)
         if (c == null || typedElemAux(c) == null) { abort = true; break }
         combo.push(c)
       }
