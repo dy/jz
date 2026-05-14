@@ -20,7 +20,7 @@
  * @module jz/interop/nanbox
  */
 
-import { wasi } from '../wasi.js'
+import { linkWasi, envFuncNames, makeJsAllocator, customSection, sectionReader, attachTimers } from './_shared.js'
 
 // NaN-boxing encode/decode — shared 8-byte scratch buffer
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
@@ -115,28 +115,12 @@ export const memory = (src) => {
 
   const dv = () => new DataView(mem.buffer)
 
-  // JS-side bump allocator (heap ptr at byte 1020, same convention as WASM)
-  const jsAlloc = (bytes) => {
-    let d = dv(), p = d.getInt32(1020, true)
-    const aligned = (p + 7) & ~7  // 8-byte align
-    const next = aligned + bytes
-    if (next > mem.buffer.byteLength) {
-      mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
-      d = dv()  // buffer was detached by grow
-    }
-    d.setInt32(1020, next, true)
-    return aligned
-  }
-
-  // Use WASM allocator if available, else JS-side bump
+  // Allocator scaffold (heap-ptr at byte 1020, 8-byte aligned bump fallback) is
+  // ABI-agnostic memory-layout policy — same for nanbox/flat/gc. Wasm `_alloc`
+  // takes over when the module exports it; `_clear`/jsReset rewinds.
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem)
   let alloc = wasmExports?._alloc || jsAlloc
-  // JS-side reset: rewind the bump pointer at byte 1020. Only used when no WASM
-  // _clear is present (otherwise the WASM global / shared slot is authoritative).
-  const jsReset = () => dv().setInt32(1020, 1024, true)
-
-  // Initialize heap pointer if not yet set
-  const initDv = dv()
-  if (initDv.getInt32(1020, true) < 1024) initDv.setInt32(1020, 1024, true)
+  initHeapPtr()
 
   // Write header (len + cap), return data offset
   const hdr = (len, cap, bytes) => {
@@ -147,26 +131,25 @@ export const memory = (src) => {
     return raw + 8
   }
 
-  // Read schemas from module custom section, merge into memory.schemas
+  // Read schemas from module custom section, merge into memory.schemas. Schema
+  // entries are { type, payload } where type=0 means null (computed/missing
+  // key), type=1 means nested [null, name] (synthetic shape), else a UTF-8
+  // length-prefixed property name. Section format is varint-prefixed list.
   let schemas = mem.schemas || []
-  if (mod) {
-    const secs = WebAssembly.Module.customSections(mod, 'jz:schema')
-    if (secs.length) {
-      const b = new Uint8Array(secs[0]), td = new TextDecoder()
-      let i = 0
-      const varint = () => { let r = 0, s = 0; while (1) { const x = b[i++]; r |= (x & 0x7F) << s; if (!(x & 0x80)) return r; s += 7 } }
-      const dec = () => {
-        const t = b[i++]
-        if (t === 0) return null
-        if (t === 1) return [null, dec()]
-        const n = varint(), s = td.decode(b.subarray(i, i + n)); i += n; return s
-      }
-      const nS = varint(), newSchemas = []
-      for (let j = 0; j < nS; j++) { const k = varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
-      for (const s of newSchemas) {
-        const key = s.join(',')
-        if (!schemas.some(existing => existing.join(',') === key)) schemas.push(s)
-      }
+  const schemaBytes = mod && customSection(mod, 'jz:schema')
+  if (schemaBytes) {
+    const r = sectionReader(schemaBytes)
+    const dec = () => {
+      const t = r.u8()
+      if (t === 0) return null
+      if (t === 1) return [null, dec()]
+      return r.str(r.varint())
+    }
+    const nS = r.varint(), newSchemas = []
+    for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
+    for (const s of newSchemas) {
+      const key = s.join(',')
+      if (!schemas.some(existing => existing.join(',') === key)) schemas.push(s)
     }
   }
 
@@ -418,10 +401,11 @@ export const wrap = (memSrc, inst) => {
   const restFuncs = new Map()
   const mod = inst ? memSrc : memSrc.module || memSrc
   const realInst = inst || memSrc.instance || memSrc
-  const restSecs = WebAssembly.Module.customSections(mod, 'jz:rest')
-  if (restSecs.length) {
+  const td = new TextDecoder()
+  const restBytes = customSection(mod, 'jz:rest')
+  if (restBytes) {
     try {
-      for (const entry of JSON.parse(new TextDecoder().decode(restSecs[0])))
+      for (const entry of JSON.parse(td.decode(restBytes)))
         restFuncs.set(typeof entry === 'string' ? entry : entry.name, typeof entry === 'string' ? 0 : entry.fixed)
     } catch (e) { /* ignore */ }
   }
@@ -431,9 +415,9 @@ export const wrap = (memSrc, inst) => {
   // reinterprets f64↔BigInt only at those positions (see
   // synthesizeBoundaryWrappers).
   const i64Exp = new Map(), EMPTY_SET = new Set()
-  const i64Secs = WebAssembly.Module.customSections(mod, 'jz:i64exp')
-  if (i64Secs.length) {
-    try { for (const e of JSON.parse(new TextDecoder().decode(i64Secs[0]))) i64Exp.set(e.name, { p: new Set(e.p), r: e.r }) }
+  const i64Bytes = customSection(mod, 'jz:i64exp')
+  if (i64Bytes) {
+    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p), r: e.r }) }
     catch { /* ignore */ }
   }
 
@@ -577,8 +561,7 @@ const prepareInterop = (opts) => {
 // imports them (host: 'js' mode lowering in module/console.js). Caller-provided
 // opts.imports.env entries take precedence.
 const installDefaultEnvImports = (mod, imports, state) => {
-  const envFns = new Set(WebAssembly.Module.imports(mod)
-    .filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
+  const envFns = envFuncNames(mod)
   if (!envFns.size) return
   if (!imports.env) imports.env = {}
   if (envFns.has('print') && !imports.env.print) {
@@ -652,8 +635,8 @@ const installDefaultEnvImports = (mod, imports, state) => {
 }
 
 const buildImports = (mod, opts, state) => {
-  const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
-  const imports = needsWasi ? wasi(opts) : {}
+  const { needsWasi, wasiImports } = linkWasi(mod, opts)
+  const imports = wasiImports || {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
 
   // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz
@@ -709,16 +692,8 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // Trampoline used by env.setTimeout/clearTimeout to fire scheduled closures.
   state.invoke = inst.exports.__invoke_closure || null
 
-  // Drive WASM timer queue via JS scheduling (non-blocking)
-  if (inst.exports.__timer_tick) {
-    const tick = inst.exports.__timer_tick
-    let hadTimers = false
-    const id = setInterval(() => {
-      const remaining = tick()
-      if (remaining > 0) hadTimers = true
-      if (hadTimers && remaining <= 0) clearInterval(id)
-    }, 1)
-  }
+  // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
+  attachTimers(inst)
 
   // For shared memory, resolve memory from import; for own memory, from export.
   const rawMemory = opts.memory instanceof WebAssembly.Memory ? opts.memory : inst.exports.memory

@@ -52,6 +52,7 @@ import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './interop/nanbox.js'
+import { PRESETS, DEFAULT_PRESET, presetName } from './abi/index.js'
 
 // A host import that's a JS function may hand back any value, including a host
 // object — which arrives in wasm as a PTR.EXTERNAL ref. Constants/typed specs can't.
@@ -136,6 +137,28 @@ const appendFunctionNames = (wasm, module) => {
   return out
 }
 
+// `jz:abi` custom section carrying just the preset name as UTF-8 bytes.
+// `jz/interop` sniffs this on instantiate to dispatch to the matching driver.
+// Emitted only when the resolved preset *differs* from the default (`nanbox`):
+// otherwise the absence of the section is itself a signal — the host falls
+// back to the default. Keeps default-output bytes at exact parity with
+// pre-ABI-machinery output.
+const abiSection = (name) => {
+  const payload = [...nameBytes('jz:abi'), ...utf8Bytes(name)]
+  return Uint8Array.from([0, ...uleb(payload.length), ...payload])
+}
+
+const appendAbiSection = (wasm, abi) => {
+  if (abi === PRESETS[DEFAULT_PRESET]) return wasm
+  const name = presetName(abi)
+  if (!name) return wasm   // defensive: preset not in table → skip (no recorded discriminant)
+  const section = abiSection(name)
+  const out = new Uint8Array(wasm.length + section.length)
+  out.set(wasm)
+  out.set(section, wasm.length)
+  return out
+}
+
 /**
  * jz — JS subset → WASM compiler.
  *
@@ -177,6 +200,9 @@ jz.memory = enhanceMemory
  * @param {boolean} [opts.profileNames] - Legacy alias for `profile.names`.
  * @param {string} [opts.importMetaUrl] - Module URL used to lower `import.meta.url`
  *   and static `import.meta.resolve("...")` expressions.
+ * @param {string} [opts.abi] - ABI preset name (default `'nanbox'`). Picks a
+ *   tested combination of per-type reps. Recorded in a `jz:abi` custom section
+ *   (only when non-default) so `jz/interop` can sniff and dispatch.
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
@@ -197,7 +223,7 @@ const jzCompileInner = (code, opts = {}) => {
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
-  reset(emitter, GLOBALS)
+  reset(emitter, GLOBALS, opts.abi)
   ctx.error.src = code
 
   if (typeof opts.memory === 'number') ctx.memory.pages = opts.memory
@@ -302,7 +328,9 @@ const jzCompileInner = (code, opts = {}) => {
   try {
     if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
     const wasm = time('watrCompile', () => watrCompile(optimized))
-    return (opts.profileNames || opts.profile?.names) ? appendFunctionNames(wasm, optimized) : wasm
+    let bytes = appendAbiSection(wasm, ctx.abi)
+    if (opts.profileNames || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
+    return bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
     // That's always a jz codegen leak — we emitted IR that references something never

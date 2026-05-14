@@ -43,7 +43,149 @@
 * [ ] True metacircular bootstrap
 * [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
 
-* [ ] Running wasm files without pulling jz dependency for wrapping nan-boxes — alternative way to pass data?
+
+### Interop (host ↔ wasm boundary)
+
+Goal: run jz-compiled `.wasm` from any host without pulling the compiler. The marshalling shim lives at `jz/interop/<abi>`; the abi is a value-representation choice the wasm declares, not part of the host. (Named `interop` not `host` because the variant axis is the ABI — `jz/interop/gc` reads cleanly; `jz/host/gc` reads as "GC is part of the host", which it isn't.)
+
+Compiler emits a `jz:abi` custom section carrying the per-type rep map; top-level `jz/interop` reads it on instantiate and assembles the matching per-type marshallers from a registry. Single import path, any ABI configuration:
+
+```js
+import { instantiate } from 'jz/interop'
+const { exports, memory } = await instantiate(wasmBytes)
+```
+
+**Module-level ABI, no mixing.** One module = one rep map = one set of marshallers. A program needing both a hot-kernel config and a dynamic-shape config compiles two `.wasm` files and shares linear memory through `opts.memory`. Rationale: per-export marshalling matrices double both glue and test surface, undermine the size win of stricter reps (a flat export living next to a nanbox export re-pulls the nanbox decoder), and force combinatorial gating in tests. Single rep map per module keeps the boundary as one decision, kept honest by `jz:abi`.
+
+#### Architecture — per-type rep registry
+
+`opts.abi` is **a preset name string**. Each preset is a tested per-type rep map — a small focused file per (type, rep) pair, combined into named bundles. Free-form maps were considered and rejected: presets are the unit of testing, and ad-hoc mixes have no driver. The dispatch table that already exists implicitly in jz codegen (different IR per inferred type) becomes reified by the per-type axis.
+
+**Config shape:**
+
+```js
+// abi/index.js — preset values are rep modules, not name strings.
+// Identity comparison (abi === PRESETS[DEFAULT_PRESET]) decides whether to
+// emit the jz:abi discriminant section.
+import numberNanboxF64 from './number/nanbox-f64.js'
+import stringJsstring  from './string/jsstring.js'
+
+export const PRESETS = {
+  nanbox:            { number: numberNanboxF64 },
+  'nanbox+jsstring': { number: numberNanboxF64, string: stringJsstring },
+  // flat, gc, component — land as their reps land
+}
+
+jz.compile(src, { abi: 'nanbox' })            // default — no section emitted
+jz.compile(src, { abi: 'nanbox+jsstring' })   // section records preset name
+jz.compile(src, { abi: 'bogus' })             // throws with available list
+```
+
+**Compiler-side rep registry (`abi/<type>/<rep>.js`):**
+
+```js
+// abi/string/jsstring.js — minimum hooks today; ops table filled as
+// module/*.js sites route through ctx.abi.<type>.ops.<op> (Step 5).
+export default {
+  slotTypes: ['externref'],                  // wasm slot(s); read by sig synth
+  imports:   ['length', 'charCodeAt', ...],  // 'wasm:js-string' names referenced by ops
+  ops: {                                     // per-op codegen the registry dispatches through
+    // length:     (s) => ['call', '$jsstring_length', s],
+    // charCodeAt: (s, i) => ['call', '$jsstring_charCodeAt', s, i],
+  },
+  peephole: (node) => node|null,             // rep-specific folds (optional;
+                                             //   nanbox-f64 has one, jsstring doesn't need any)
+}
+```
+
+No `type` / `name` discriminant fields — the PRESETS table is the single source of rep identity (reps are referenced by object identity, not lookup). Operator emitters in `module/*.js` will call `ctx.abi.string.ops.length(s)` and the rep decides; compound containers (`array`, `object`) ask the rep for the cell/field shape of each element type.
+
+**Host-side: per-preset driver, not per-(type, rep).**
+
+Different axis from the compiler side. A driver knows how to instantiate wasm under one whole ABI bundle — wasi linking, env defaults, allocator wiring, marshallers for every type it ships. Today that's `interop/nanbox.js`. The shared scaffolding (custom-section reader, `prepareInterop` / `buildImports` / `finishInstantiation`, `_setMemory`, `__timer_tick`, `__invoke_closure`) lives in `interop/_shared.js`, ABI-agnostic. The umbrella `interop/index.js` sniffs the `jz:abi` section, decodes the preset name as UTF-8 bytes, and dispatches to the right entry in its `DRIVERS` table.
+
+Per-type host marshallers (`interop/<type>/<rep>.js`) were drafted and removed as premature — they only earn their keep when a second driver shows duplicated marshalling code. Until then, drivers stay flat.
+
+**Why per-type on the compiler side:**
+
+1. Subsumes flags like `jsStrings` as config values (`string: 'jsstring'`) instead of orthogonal toggles layered on top of an ABI's "main" choice.
+2. Reifies the dispatch table that already exists implicitly in jz emit — nanbox-tagged-f64 vs typed-array vs known-string each take different paths today; per-type makes the table a registry lookup.
+3. Each rep variant is a small focused file (~50-150 lines). Adding one doesn't touch the others.
+4. Compound types derive: `array<T>`'s cell layout follows from T's slot rep — we don't configure cell encoding independently, the array's `cellOf(T, abi)` reads the chosen primitive rep.
+
+**Validation:**
+
+Presets are the validated unit; free-form combos were dropped to keep the test matrix bounded. Unknown preset names throw at compile time with the available list. Combinatorial-explosion concerns (e.g., `wasm-gc array of nanbox-tagged-f64 numbers`) become impossible by construction — they're only reachable if someone adds the combo to PRESETS, at which point it must come with a driver and a test.
+
+#### Optimizer stays ABI-agnostic
+
+Today `src/optimize.js` has exactly one nanbox-specific pass: the rebox/unbox peephole (`i64.reinterpret_f64 (f64.reinterpret_i64 x)` → `x`) re-run after watr inlining. **Move that into the relevant rep's `peephole` hook** (`abi/number/nanbox-f64.js`). After that move every other pass — CSE, DCE, inline, vectorize, hoist, fold, treeshake, propagate, LICM, dedupe, packData, brif, loopify, offset-fusion, strength, identity — operates on watr-typed IR and is rep-blind. The narrowing fixpoint (`src/narrow.js`) already produces typed-value IR; reps intercept only at op-emit and function boundary.
+
+Audit targets that may have nanbox assumptions to surface and route through the registry:
+- `module/*.js` ad-hoc `boxPtrIR` / `i64.reinterpret_f64` emits → call `ctx.abi.<type>.box/unbox` or `ctx.abi.<type>.ops.<op>`
+- `src/ir.js` layout constants (`PTR.STRING`, `PTR.ARRAY`, tag bits, offset bits) → owned by `abi/object/schema-linear.js` and `abi/string/nanbox-sso.js`, not core
+- `src/compile.js` import/export sig synthesis → call `ctx.abi.<type>.slotTypes` per arg/result
+- `interop/nanbox.js` wasi/env/allocator glue → carve into `interop/_shared.js` ✓ (step 1)
+
+#### Test contract — `JZ_ABI` env flag, per-test ABI gate
+
+```js
+// test/util.js
+const ABI = process.env.JZ_ABI || 'nanbox'
+export const run = (code, opts = {}) => jz(code, { abi: ABI, ...opts })
+export const supportsAbi = (...abis) => abis.includes(ABI)
+```
+
+Rules:
+- Every test calls `run()`, never `jz()` directly. (Mostly true today — fix stragglers as part of the refactor.)
+- No test imports `jz/interop/nanbox` directly. Use the umbrella `jz/interop` which sniffs `_jz_abi`. `test/interop.js` already pins this.
+- ABI-specific tests gate explicitly: `if (!supportsAbi('nanbox')) return` at the top of the test body.
+- Per-file declaration: each test file optionally exports `supportedAbis = ['nanbox', 'flat']` (default = all). Runner reads it and emits one line per file: `# flat: skipped N tests`. No silent skips.
+- CI matrix: `JZ_ABI=nanbox npm test && JZ_ABI=flat npm test`. Same `package.json`, two runs.
+- Honest framing: skipping ≠ working. A test file that runs under `flat` only proves its static subset works — flat-specific tests (e.g. cross-ABI calling convention conformance) are additive, not gated reuse.
+
+#### Refactor sequencing — architecture first, variants second
+
+Each step is shippable on its own. Stop after 3 and the codebase is structurally cleaner even with only the nanbox preset.
+
+* [x] **Step 1: carve `interop/_shared.js`** out of `interop/nanbox.js` (wasi linking, env defaults, allocator wiring, custom-section reader, `prepareInterop`/`buildImports`/`finishInstantiation` scaffold). `interop/nanbox.js` keeps only marshalling + nanbox codec. Tests green.
+* [x] **Step 2 (scaffold): rep registry shape on compiler side** — `abi/number/nanbox-f64.js` shipped. Rebox/unbox + NaN-box-layout-aware folds (`wrap_i64(reinterpret_f64(f64.load/_mkptr/block))`, `wrap_i64(or HIGH_ONLY (extend X))`) migrated out of `src/optimize.js` into the rep's `peephole` hook; the optimizer calls `ctx.abi.number.peephole(node)`. Pure-WASM folds (`wrap_i64(extend(x))`, `trunc_sat(convert(x))`, etc.) stay in optimize.js as ABI-agnostic. `ctx.abi` resolved in `reset()` via `abi/index.js`. Tests green (1598).
+  * **Deferred** to Step 5 mass-routing (gated on a 2nd rep having codegen-divergent ops): routing the ~1000 `module/*.js` ad-hoc encoding sites through `ctx.abi.<type>.ops.<op>` while only one rep exists is mechanical work with no observable behavior change, no validation that the abstraction is right, and high regression surface. Each call site can only be honestly classified as "per-rep" vs "rep-agnostic" when a second rep disagrees with the first. Same for `PTR.*` layout constants: they're shared by every nanbox-emitting site today; pulling them into one rep file is a lie until non-nanbox reps need different ones.
+* [x] **Step 3: `opts.abi` plumbing + `jz:abi` section + host-side registry skeleton** — `opts.abi` accepts a preset name string (free-form map dropped — preset is the unit of testing). `resolveAbi` validates and throws on unknown preset. `jz:abi` custom section emitted only when the resolved preset differs from the default (no metadata tax on default outputs; bytes-identical to pre-ABI emission). Section payload is the preset name as UTF-8 bytes (no JSON). CLI `--abi=<preset>` flag added. `test/util.js` updated with `ABI`/`run(code, opts)`/`compileSrc`/`supportsAbi`; reads `JZ_ABI` env, errors clearly on garbage.
+* [x] **Step 4: `interop/index.js` umbrella** — sniffs `jz:abi` section via `customSection` helper, decodes the preset name, dispatches to the matching driver in `DRIVERS`. Falls back to `nanbox` for legacy/default-preset wasm (no section). Unknown preset name → clear error. Re-exports nanbox-codec helpers verbatim (`memory`, `wrap`, `ptr`, `offset`, `type`, `aux`, `i64ToF64`, `f64ToI64`, `coerce`, `NULL_NAN`, `UNDEF_NAN`); `instantiate` is the dispatching wrapper. `package.json` exports map repointed `./interop` → `./interop/index.js`. 1598 tests pass at default preset *and* under `JZ_ABI=nanbox+jsstring` (proves the dispatch path is real — section emitted, sniffed, driver picked end-to-end).
+* [x] **Simplification pass** (after Steps 2–4 landed): collapsed `abi/registry.js` + `abi/presets.js` → single `abi/index.js`. PRESETS values are rep modules directly (no name-string indirection / no `REPS` table). Dropped `name`/`type` fields from rep modules — preset table is the single source of rep identity. Deleted `interop/registry.js` + `interop/` (premature surface — host-side rep mirrors land when a rep actually needs boundary marshalling). Section payload is preset name bytes, not JSON. `opts.abi` accepts preset-name strings only. Net delete ~140 lines.
+* [x] **Second rep scaffold (`string: 'jsstring'`)** — `abi/string/jsstring.js` shipped as architectural scaffold; declares `slotTypes: ['externref']`, `imports: [...]` (the `wasm:js-string` names), and an empty `ops` hook table. Wired into PRESETS as `'nanbox+jsstring': { number: nanboxF64, string: jsstring }`. Host driver in `interop/index.js` aliased to `nanbox` until codegen actually diverges. End-to-end verified: `compile(code, { abi: 'nanbox+jsstring' })` writes the preset name into `jz:abi`; `interop.instantiate` sniffs and picks the right driver. Today the wasm output for both presets is identical apart from the section — observable divergence comes when string codegen routes through `ctx.abi.string.ops.<op>`.
+* [ ] **Step 5 mass-routing (gated on jsstring ops actually emitting different wasm)** — route `module/string.js` (`.length`, `[i]`, `+`, `charCodeAt`, …), `module/property.js` string-prop dispatch, and any other string-typed call sites through `ctx.abi.string.ops`. Populate `jsstring.ops.*` to emit `call $jsstring_<op>` referencing the engine builtins. Wire `wasm:js-string` imports + externref slot type into the signature synthesizer. Host driver for `nanbox+jsstring` then needs to actually marshal externrefs (not nanbox tags) for string params/returns.
+
+#### Open policy questions (decide before step 5)
+
+These don't block the architectural refactor but block first non-nanbox emission:
+
+1. **Type-discovery on polymorphic exports.** jz's narrowing today is for codegen, not stable export ABIs. Options: (a) hard-error on exports whose params can't be flat-represented, (b) declared annotation (JSDoc `/** @type {string} */` or per-export pragma), (c) silently downgrade to nanbox for that module if any export is polymorphic. Reject (c) — silently violates "module-level ABI."
+2. **Null/undefined.** No flat `f64` slot can carry them without sentinels (which is partly nanbox). Either refuse nullable scalar params/returns, or introduce explicit `option<T>` (future). Cleanest now: refuse + clear error.
+3. **Compound-value lifetime.** Flat strings allocated by `__alloc` for a host call — when freed? jz today bump-allocates with `_clear` reset; fine for short-lived, leaks long-running. Each ABI carries a memory policy. Make this a hook (`abi.lifetime: 'arena' | 'caller-frees' | 'gc'`) before flat lands.
+4. **Object identity.** Nanbox objects round-trip with stable identity via extMap. Flat objects copy across the boundary, lose identity. Documented limitation per-ABI, not a bug.
+
+#### Immediate focus — nanbox gains; rep machinery is the door, not the destination
+
+The transition to a second preset is worth doing **for architecture**, not as a competitive moat. jz's unique position is "JS-shaped source in, small wasm out" — adding flat puts jz in AssemblyScript's territory where AS has years of head start. The same 40× size delta a flat probe shows is largely available **without** a second preset by improving narrowing: most "nanbox output is big" complaints are dynamic-fallback emit that narrows away when inference reaches the relevant param.
+
+Two concrete nanbox-gain workstreams run alongside the architectural refactor (steps 1–4):
+
+* [ ] **Narrowing investigation** — pick 5 real jz programs whose output is bigger than it should be, chase the dynamic-fallback sites, quantify post-narrowing size. Targets: `(a, b) => a + b` should not pull `__str_concat` when neither side ever sees a string; `xs[i]` should not pull `__dyn_get`/`__str_idx`/`__typed_idx` when `xs` is provably typed-array. If narrowing delivers 5–20× on real programs at nanbox shape, the flat-preset case weakens to "I need to call jz from Rust" — a real but narrow user.
+* [~] **JS String Builtins rep (`string: 'jsstring'`)** — scaffold landed (`abi/string/jsstring.js`; preset `nanbox+jsstring` in `abi/index.js`; dispatch path verified end-to-end). Remaining: populate `jsstring.ops.*` to emit `call $jsstring_<op>` against `wasm:js-string` imports (`length`/`charCodeAt`/`concat`/`fromCharCode`/...); route `module/string.js` through `ctx.abi.string`; declare `externref` slot type in signature synthesis; teach the `nanbox+jsstring` host driver to marshal externrefs for string params/returns. Highest-leverage nanbox gain — unique competitive corner (JS-shaped source + native JS strings), no equivalent in AssemblyScript. Engine support: V8 17+, Safari 18.4+, Firefox behind flag.
+
+#### Presets — what gets shipped
+
+Each preset is a tested per-type rep map. Reps are reusable building blocks; presets are the supported combinations.
+
+* [x] **`nanbox`** — baseline. All types use nanbox encoding (tagged f64 numbers, SSO+heap strings, tagged-linear arrays, schema-linear objects). Existing repr extracted as no-compiler subpath (commit `dc54fb0`).
+* [~] **`nanbox+jsstring`** — `nanbox` preset with `string: 'jsstring'`. Preset entry + section emit/sniff/dispatch all live; codegen still nanbox-shaped until the JS String Builtins routing above lands.
+* [ ] **`flat`** — `{ number: 'f64', int: 'i32', string: 'utf8-ptrlen', array: 'flat-linear', object: 'schema-linear' }`. C-ABI shape for non-JS hosts (Rust/Go/C). Multi-value returns for compound results (wasm 2.0). **Deferred behind narrowing investigation** — if narrowing closes the size gap at nanbox shape, flat reduces to a non-JS-host story, which is real but narrow.
+* [ ] **`gc`** — `{ number: 'f64', int: 'i32', string: 'stringref', array: 'wasm-array', object: 'wasm-struct' }`. Real GC (today jz has none — long-lived programs leak), engine-managed values, zero linear-memory blobs for refs. Drops MVP-engine support.
+* [ ] **`component`** — WIT-defined interface; bindings tool generates host stubs. The interop shim disappears for the user (jco / wit-bindgen emits typed JS). Requires component-aware host. Compiler emits a `.wit` alongside the `.wasm`.
+
+Layout discoverability: rep-specific layout constants (e.g. nanbox tag bits, SSO encoding, schema struct offsets) live inside each rep's compiler-side module; the host-side mirror inlines matching constants. If a layout ever needs to evolve without breaking shipped wasm, the `jz:abi` section can carry a version per rep and the host mirror checks compatibility at instantiate.
 
 ### REPL
 

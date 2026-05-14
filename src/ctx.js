@@ -7,6 +7,8 @@
  * Refactored into focused sub-contexts for better maintainability.
  */
 
+import { resolve as resolveAbi } from '../abi/index.js'
+
 // === Carrier layout ===
 // i64 carrier holds either:
 //   - raw f64 number bits (any non-NaN-shape pattern), discriminated by
@@ -84,6 +86,10 @@ export const ctx = {
   memory: {},     // module memory config (pages, shared)
   error: {},      // source location carried through emit for err() messages
   transform: {},  // compile-time options (jzify, etc.)
+  abi: {},        // per-type rep lookup (see abi/index.js). { number: rep, string: rep, ... }
+                  // Set by reset() from opts.abi (default preset 'nanbox'). Read by codegen
+                  // sites that delegate rep-specific behavior — today just the optimizer's
+                  // peephole hook; expanding as more reps land.
 }
 
 /** Create a child scope via shallow flat copy (metacircular-safe: no prototype chain).
@@ -108,8 +114,10 @@ export function resolveIncludes() {
   }
 }
 
-/** Reset all compilation state. Called once per jz() invocation. */
-export function reset(proto, globals) {
+/** Reset all compilation state. Called once per jz() invocation.
+ *  `abi` is an optional preset name or rep map (defaults to 'nanbox'); compile entry
+ *  passes the user-supplied `opts.abi` through after validation. */
+export function reset(proto, globals, abi) {
   ctx.core = {
     emit: derive(proto),
     stdlib: {},
@@ -243,6 +251,8 @@ export function reset(proto, globals) {
   //   (b) a capability needs an opt-in A/B switch against the default path
   //       (SSO is the planned first user — default string-literal emission
   //       currently forces SSO for ≤4 ASCII chars at string.js:49)
+  ctx.abi = resolveAbi(abi)
+
   ctx.features = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site. WIRED.
     hash: false,      // PTR.HASH + __dyn_* substrate. Organic: any inc(__hash_*/__dyn_*) implies on.
