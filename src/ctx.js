@@ -97,13 +97,18 @@ export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
  *  Each module co-locates its own deps with its stdlib registrations at init time. */
 export function resolveIncludes() {
   const graph = ctx.core.stdlibDeps
-  const queue = [...ctx.core.includes]
-  while (queue.length) {
-    const name = queue.pop()
-    const entry = graph[name]
-    const deps = typeof entry === 'function' ? entry() : entry
-    if (deps) for (const dep of deps) {
-      if (!ctx.core.includes.has(dep)) { ctx.core.includes.add(dep); queue.push(dep) }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const name of [...ctx.core.includes]) {
+      const entry = graph[name]
+      const deps = typeof entry === 'function' ? entry() : entry
+      if (deps) for (const dep of deps) {
+        if (!ctx.core.includes.has(dep)) {
+          ctx.core.includes.add(dep)
+          changed = true
+        }
+      }
     }
   }
 }
