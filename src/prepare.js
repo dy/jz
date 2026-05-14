@@ -657,7 +657,18 @@ const handlers = {
   'class': () => err('class not supported: use object literals'),
   'yield': () => err('generators not supported: use loops'),
   'debugger': () => null,
-  'delete': () => err('delete not supported: object shape is fixed'),
+  // Static-key delete (.x, ["x"], [literal]) would change the fixed schema → reject.
+  // Computed-key delete (obj[expr]) — including jessie's `delete ctx[k]` — lowers
+  // to runtime __dyn_del against the per-object shadow property store.
+  'delete'(target) {
+    const t = prep(target)
+    if (Array.isArray(t) && t[0] === '[]' && t.length === 3) {
+      const key = t[2]
+      const isLiteralKey = Array.isArray(key) && key[0] == null && key.length === 2
+      if (!isLiteralKey) return ['delete', t[1], key]
+    }
+    err('delete not supported: object shape is fixed')
+  },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
