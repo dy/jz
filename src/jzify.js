@@ -752,6 +752,9 @@ function canonicalizeObjectIdioms(node) {
   const hasOwnCall = objectHasOwnPropertyCall(out)
   if (hasOwnCall) return ['()', ['.', hasOwnCall.obj, 'hasOwnProperty'], hasOwnCall.key]
 
+  const mapString = arrayMapStringCallback(out)
+  if (mapString) return mapString
+
   if (out[0] === '&&') {
     const leftCtor = constructorIsObject(out[1])
     const rightKeys = objectKeysLengthZero(out[2])
@@ -763,6 +766,15 @@ function canonicalizeObjectIdioms(node) {
   }
 
   return out
+}
+
+function arrayMapStringCallback(node) {
+  if (!Array.isArray(node) || node[0] !== '()') return null
+  const callee = node[1]
+  if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'map') return null
+  const args = callArgs(node.slice(2))
+  if (args.length !== 1 || args[0] !== 'String') return null
+  return ['()', callee, ['=>', 'value', ['()', 'String', 'value']]]
 }
 
 function objectHasOwnPropertyCall(node) {
