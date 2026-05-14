@@ -161,6 +161,14 @@ test('spread: expression-bodied arrow returns object spread', () => {
   is(f(), 23)
 })
 
+test('spread: object spread from unknown-schema parameter', () => {
+  const { f } = run(`export let f = (row) => {
+    let out = {...row, ok: 10}
+    return out.ok
+  }`, { jzify: true })
+  is(f({x: 1}), 10)
+})
+
 // ============================================
 // EDGE CASES
 // ============================================
