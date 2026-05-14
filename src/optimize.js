@@ -27,7 +27,7 @@
  * @module optimize
  */
 
-import { LAYOUT } from './ctx.js'
+import { LAYOUT, ctx } from './ctx.js'
 import { findBodyStart } from './ir.js'
 import { vectorizeLaneLocal } from './vectorize.js'
 
@@ -2008,70 +2008,18 @@ function walkRewrite(node, doInline, counts) {
     if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return ['i64.extend_i32_s', a[1]]
     if (Array.isArray(a) && a[0] === 'f64.convert_i32_u' && a.length === 2) return ['i64.extend_i32_u', a[1]]
   }
-  if (op === 'i64.reinterpret_f64' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'f64.reinterpret_i64' && a.length === 2) return a[1]
-  }
-  if (op === 'f64.reinterpret_i64' && node.length === 2) {
-    const a = node[1]
-    if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) return a[1]
+  // Rep-specific folds (NaN-box layout-aware reinterpret/wrap simplifications under
+  // the nanbox preset). See abi/number/<rep>.js — each rep owns the rules that
+  // depend on its own carrier layout. The universal `i32.wrap_i64 (i64.extend_i32_*)`
+  // fold below stays here because it's pure WASM bit-pattern, ABI-agnostic.
+  if (op === 'i64.reinterpret_f64' || op === 'f64.reinterpret_i64' || op === 'i32.wrap_i64') {
+    const repFold = ctx.abi?.number?.peephole(node)
+    if (repFold != null) return repFold
   }
   if (op === 'i32.wrap_i64' && node.length === 2) {
     const a = node[1]
     if (Array.isArray(a) && (a[0] === 'i64.extend_i32_u' || a[0] === 'i64.extend_i32_s') && a.length === 2)
       return a[1]
-    // (i32.wrap_i64 (i64.reinterpret_f64 (f64.load ADDR ?offset))) → (i32.load ADDR ?offset).
-    // Wasm is little-endian; the low 32 bits of the f64 at ADDR are exactly
-    // i32.load(ADDR). Saves two ops on every NaN-box pointer extraction from
-    // an array slot or struct field.
-    if (Array.isArray(a) && a[0] === 'i64.reinterpret_f64' && a.length === 2) {
-      const inner = a[1]
-      if (Array.isArray(inner) && inner[0] === 'f64.load') {
-        const out = ['i32.load']
-        for (let i = 1; i < inner.length; i++) out.push(inner[i])
-        return out
-      }
-      // (i32.wrap_i64 (i64.reinterpret_f64 (call $__mkptr* … offset))) → offset.
-      // A NaN-boxed pointer keeps type/aux in the high bits and the i32 offset in
-      // the low 32, so the round-trip through f64 is pure overhead whenever the
-      // consumer only wants the offset (typical when the pointer feeds an unboxed
-      // i32 local). Covers the generic 3-arg `$__mkptr` and the specialized
-      // single-arg `$__mkptr_T_A_d` trampolines alike — offset is the last arg.
-      const isMkptr = n => Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string'
-        && (n[1] === '$__mkptr' || n[1].startsWith('$__mkptr_'))
-      if (isMkptr(inner)) return inner[inner.length - 1]
-      // …and reach through a `(block (result f64) …stmts (call $__mkptr …))` —
-      // `new TypedArray(n)` lowers to exactly this shape — by retyping the block
-      // to i32 and dropping the box on its tail.
-      if (Array.isArray(inner) && inner[0] === 'block' && isMkptr(inner[inner.length - 1])) {
-        let ri = -1
-        for (let i = 1; i <= 2 && i < inner.length; i++)
-          if (Array.isArray(inner[i]) && inner[i][0] === 'result') { ri = i; break }
-        if (ri >= 0 && inner[ri][1] === 'f64') {
-          const tail = inner[inner.length - 1]
-          const nb = inner.slice()
-          nb[ri] = ['result', 'i32']
-          nb[nb.length - 1] = tail[tail.length - 1]
-          return nb
-        }
-      }
-    }
-    if (Array.isArray(a) && a[0] === 'i64.or' && a.length === 3) {
-      const l = a[1], r = a[2]
-      const isHighOnly = (n) => {
-        if (!Array.isArray(n) || n[0] !== 'i64.const') return false
-        const v = n[1]
-        let bi
-        if (typeof v === 'number') bi = BigInt(v)
-        else if (typeof v === 'string') {
-          try { bi = v.startsWith('-') ? -BigInt(v.slice(1)) : BigInt(v) } catch { return false }
-        } else return false
-        return (bi & 0xFFFFFFFFn) === 0n
-      }
-      const isExtend = (n) => Array.isArray(n) && (n[0] === 'i64.extend_i32_u' || n[0] === 'i64.extend_i32_s') && n.length === 2
-      if (isHighOnly(l) && isExtend(r)) return r[1]
-      if (isHighOnly(r) && isExtend(l)) return l[1]
-    }
   }
 
   // shl-distribute-over-add: (i32.shl (i32.add x (i32.const K)) (i32.const S))

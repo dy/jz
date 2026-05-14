@@ -7,7 +7,7 @@
   "exports": {
     ".": "./index.js",
     "./wasi": "./wasi.js",
-    "./interop": "./interop/nanbox.js",
+    "./interop": "./interop/index.js",
     "./interop/nanbox": "./interop/nanbox.js"
   },
   "files": [
@@ -15,6 +15,7 @@
     "cli.js",
     "wasi.js",
     "src",
+    "abi",
     "module",
     "interop",
     "README.md"
