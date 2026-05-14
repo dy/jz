@@ -848,24 +848,63 @@ function stripTerminalSwitchBreak(body) {
   return stmts.length === 0 ? null : stmts.length === 1 ? stmts[0] : [';', ...stmts]
 }
 
+const SWITCH_BREAK_BOUNDARIES = new Set(['for', 'for-in', 'for-of', 'while', 'do', 'switch', '=>', 'function', 'class'])
+
+function hasOwnSwitchBreak(node) {
+  if (!Array.isArray(node)) return false
+  if (node[0] === 'break') return true
+  if (SWITCH_BREAK_BOUNDARIES.has(node[0])) return false
+  for (let i = 1; i < node.length; i++) if (hasOwnSwitchBreak(node[i])) return true
+  return false
+}
+
+function rewriteSwitchBreaks(node, flag) {
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  if (op === 'break') return ['=', flag, [null, true]]
+  if (SWITCH_BREAK_BOUNDARIES.has(op)) return node
+
+  if (op === ';') {
+    const out = []
+    const stmts = node.slice(1)
+    for (let i = 0; i < stmts.length; i++) {
+      const stmt = stmts[i]
+      out.push(rewriteSwitchBreaks(stmt, flag))
+      if (hasOwnSwitchBreak(stmt) && i < stmts.length - 1) {
+        const tail = rewriteSwitchBreaks([';', ...stmts.slice(i + 1)], flag)
+        out.push(['if', ['!', flag], tail])
+        break
+      }
+    }
+    return out.length === 0 ? null : out.length === 1 ? out[0] : [';', ...out]
+  }
+
+  return node.map((part, i) => i === 0 ? part : rewriteSwitchBreaks(part, flag))
+}
+
 /** Transform switch statement to if/else chain. */
 let swIdx = 0
 function transformSwitch(discriminant, cases) {
   const disc = transform(discriminant)
   const tmp = `\uE000sw${swIdx++}`
+  const needsBreakFlag = cases.some(c => hasOwnSwitchBreak(c[0] === 'case' ? c[2] : c[1]))
+  const brk = needsBreakFlag ? `\uE000swbrk${swIdx++}` : null
 
   // Collect case/default
   const stmts = [['let', ['=', tmp, disc]]]
+  if (brk) stmts.push(['let', ['=', brk, [null, false]]])
   let chain = null
 
   for (let i = cases.length - 1; i >= 0; i--) {
     const c = cases[i]
     if (c[0] === 'default') {
-      chain = transform(c[1])
+      const body = transform(c[1])
+      chain = brk ? rewriteSwitchBreaks(body, brk) : body
     } else if (c[0] === 'case') {
       const cond = ['===', tmp, transform(c[1])]
       const body = transform(c[2])
-      chain = chain != null ? ['if', cond, body, chain] : ['if', cond, body]
+      const lowered = brk ? rewriteSwitchBreaks(body, brk) : body
+      chain = chain != null ? ['if', cond, lowered, chain] : ['if', cond, lowered]
     }
   }
   if (chain) stmts.push(chain)
