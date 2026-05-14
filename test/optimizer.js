@@ -578,8 +578,11 @@ test('known array numeric index skips generic array tag dispatch', () => {
     }
   `, { wat: true, optimize: { watr: false } })
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/\(call \$__arr_idx_known\b/.test(mainBody), 'known ARRAY numeric index should use monomorphic helper')
-  ok(!/\(call \$__arr_idx\b/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
+  // Either plain `call` or TCO'd `return_call` is fine — both invoke the
+  // monomorphic helper. tcoTailRewrite may promote tail-position calls
+  // inside the `if` arm to `return_call`.
+  ok(/\((?:return_)?call \$__arr_idx_known\b/.test(mainBody), 'known ARRAY numeric index should use monomorphic helper')
+  ok(!/\((?:return_)?call \$__arr_idx\b(?!_known)/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
   const { main } = run(`
     export const main = (a) => {
       if (Array.isArray(a)) return a[0]

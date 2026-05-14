@@ -42,7 +42,7 @@ import {
   boxedAddr, readVar, writeVar, isNullish,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
-  reconstructArgsWithSpreads,
+  reconstructArgsWithSpreads, tcoTailRewrite,
 } from './ir.js'
 import { typeofPredicate } from './infer.js'
 
@@ -983,19 +983,20 @@ export const emitter = {
     const rt = ctx.func.current?.results[0] || 'f64'
     const pk = ctx.func.current?.ptrKind
     const ir = pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)
-    if (!ctx.func.inTry && !ctx.transform.noTailCall &&
-        Array.isArray(ir) && ir[0] === 'call' && typeof ir[1] === 'string')
-      return typed(['return_call', ...ir.slice(1)], 'void')
+    const ty = pk != null ? 'i32' : rt
+    const tcoed = tcoTailRewrite(ir, ty)
+    if (Array.isArray(tcoed) && tcoed[0] === 'return_call' && finalizers.length === 0) {
+      return typed(tcoed, 'void')
+    }
     if (finalizers.length > 0) {
-      const ty = pk != null ? 'i32' : rt
       const name = ty === 'i32' ? tempI32('ret') : ty === 'i64' ? tempI64('ret') : temp('ret')
       return [
-        ['local.set', `$${name}`, ir],
+        ['local.set', `$${name}`, tcoed],
         ...finalizerBlock(),
         typed(['return', ['local.get', `$${name}`]], 'void'),
       ]
     }
-    return typed(['return', ir], 'void')
+    return typed(['return', tcoed], 'void')
   },
 
   // === Assignment ===
