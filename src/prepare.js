@@ -24,7 +24,8 @@
 
 import { parse } from 'subscript/feature/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, VAL, valTypeOf, typedElemCtor, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
+import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
+import { recordGlobalValueFact } from './infer.js'
 import { isFuncRef } from './ir.js'
 import { fuseSparseMapReads } from './fuse.js'
 import {
@@ -117,17 +118,6 @@ function resolveImportMeta(spec) {
   const base = importMetaUrl()
   try { return new URL(spec, base).href }
   catch { err(`Cannot resolve import.meta specifier '${spec}' from '${base}'`) }
-}
-
-function recordGlobalValueFact(name, expr) {
-  if (typeof name !== 'string') return
-  const vt = valTypeOf(expr)
-  if (vt) {
-    ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
-    if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
-  }
-  const ctor = typedElemCtor(expr)
-  if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
 }
 
 function recordModuleInitFacts(root) {

@@ -28,11 +28,13 @@
 import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
 import {
-  T, VAL, analyzeValTypes, analyzeIntCertain, analyzeLocals,
+  T, VAL, analyzeBody,
   analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
-  analyzeBoxedCaptures, updateRep, inferStringParams,
+  analyzeBoxedCaptures, updateRep,
   isBlockBody,
 } from './analyze.js'
+import { inferLocals } from './infer.js'
+import { isExported, exportNamesOf } from './exports.js'
 import { optimizeFunc, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
 import {
@@ -77,7 +79,7 @@ const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : f
  * fractional Number gets the same truncation it would get from `arr[n]`).
  */
 const isBoundaryWrapped = (func) => {
-  if (!func.exported || func.raw || func.sig.results.length !== 1) return false
+  if (!isExported(func) || func.raw || func.sig.results.length !== 1) return false
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
 }
@@ -191,27 +193,22 @@ function analyzeFuncForEmit(func, programFacts) {
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
     }
   }
-  // Drop any earlier-cached analyzeLocals for this body — narrowSignatures called
-  // it before our pre-seed, when params still had no inferred VAL.TYPED, so the
-  // cached widths reflect the pre-narrow state. Re-walk now with reps in place.
+  // Drop any earlier-cached analyzeBody.locals slice for this body —
+  // narrowSignatures called it before our pre-seed, when params still had no
+  // inferred VAL.TYPED, so the cached widths reflect the pre-narrow state.
+  // Re-walk now with reps in place.
   invalidateLocalsCache(body)
-  ctx.func.locals = block ? analyzeLocals(body) : new Map()
-  // Usage-based VAL.STRING inference for params not already typed by paramReps.
-  // Descends into nested closures so a param used as STRING only inside an inner
-  // arrow (e.g. parseLevel's `str` capture in watr) still gets seeded — the
-  // closure capture path then propagates VAL.STRING via captureValTypes.
+  ctx.func.locals = block ? analyzeBody(body).locals : new Map()
+  // Usage-based shape inference (STRING / ARRAY) for params not already typed
+  // by paramReps. Descends into nested closures so a param used in a definite
+  // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
+  // still gets seeded — the closure capture path then propagates the VAL via
+  // captureValTypes.
   if (block) {
     const candidates = sig.params
       .filter(p => !ctx.func.repByLocal?.get(p.name)?.val)
       .map(p => p.name)
-    if (candidates.length) {
-      const inferred = inferStringParams(body, candidates)
-      for (const [n, vt] of inferred) updateRep(n, { val: vt })
-    }
-  }
-  if (block) {
-    analyzeValTypes(body)
-    analyzeIntCertain(body)
+    inferLocals(body, candidates)
     analyzeBoxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,
@@ -298,7 +295,13 @@ function emitFunc(func, funcFacts, programFacts) {
   }
 
   const fn = ['func', `$${name}`]
-  // Boundary-wrapped exports defer the export attribute to a synthesized
+  // Inline `(export ...)` attribute only for the syntactic inline-export
+  // form (`export function foo`, snapshot in `func.exported` at defFunc
+  // time). Re-exports (`function foo; export { foo }`) and aliases (`export
+  // { foo as bar }`) flow through sec.customs below — emitting an inline
+  // attribute under the internal symbol would collide with the customs
+  // entry on the same name, or leak the internal symbol publicly.
+  // Boundary-wrapped exports also defer the attribute to the synthesized
   // wrapper ($${name}$exp) that reboxes the narrowed result back to f64.
   if (exported && !isBoundaryWrapped(func)) fn.push(['export', `"${name}"`])
   fn.push(...sig.params.map(p => ['param', `$${p.name}`, p.type]))
@@ -402,7 +405,15 @@ function synthesizeBoundaryWrappers() {
     // so callers seeing the raw export get a plain Number for numerics.
     const paramI64 = sig.params.map(p => p.ptrKind != null)
     const resultI64 = sig.ptrKind != null
-    const wrapNode = ['func', `$${name}$exp`, ['export', `"${name}"`]]
+    // Inline `(export ...)` attribute only when the func decl carried the
+    // inline-export keyword (`export function foo`). For re-exports
+    // (`function foo; export { foo as bar }`) the `name` is the *internal*
+    // symbol; sec.customs holds the JS-visible export pointing at this
+    // wrapper. Emitting an inline attribute here under the internal name
+    // would leak the symbol publicly and collide with the customs entry.
+    const wrapNode = func.exported
+      ? ['func', `$${name}$exp`, ['export', `"${name}"`]]
+      : ['func', `$${name}$exp`]
     sig.params.forEach((p, i) => wrapNode.push(['param', `$${p.name}`, paramI64[i] ? 'i64' : 'f64']))
     wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
     const args = sig.params.map((p, i) => {
@@ -502,18 +513,10 @@ function emitClosureBody(cb) {
   let bodyIR
   if (block) {
     invalidateLocalsCache(cb.body)
-    for (const [k, v] of analyzeLocals(cb.body)) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
-    // Usage-based STRING inference for closure params not seeded by captureValTypes.
+    for (const [k, v] of analyzeBody(cb.body).locals) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+    // Usage-based shape inference for closure params not seeded by captureValTypes.
     // (Captures already have their parent's val type via cb.valTypes above.)
-    {
-      const candidates = cb.params.filter(p => !ctx.func.repByLocal?.get(p)?.val)
-      if (candidates.length) {
-        const inferred = inferStringParams(cb.body, candidates)
-        for (const [n, vt] of inferred) updateRep(n, { val: vt })
-      }
-    }
-    analyzeValTypes(cb.body)
-    analyzeIntCertain(cb.body)
+    inferLocals(cb.body, cb.params.filter(p => !ctx.func.repByLocal?.get(p)?.val))
     // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
     analyzeBoxedCaptures(cb.body)
     for (const name of ctx.func.boxed.keys()) {
@@ -875,9 +878,19 @@ export default function compile(ast, profiler) {
     sec.customs.push(['@custom', '"jz:schema"', bytes])
   }
 
-  // Custom section: rest params for exported functions (JS-side wrapping)
-  const restParamFuncs = ctx.func.list.filter(f => f.exported && f.rest)
-    .map(f => ({ name: f.name, fixed: f.sig.params.length - 1 }))
+  // Custom section: rest params for exported functions (JS-side wrapping).
+  // Entry per JS-visible export name (not per internal func name) — host's
+  // interop/nanbox.js wrap() keys by export name. Aliased re-export
+  // (`function foo (...rest); export { foo as bar }`) needs `bar` in the
+  // list; otherwise JS pads the missing args with UNDEF_NAN and the
+  // VAL.ARRAY narrow path reads i32 at `__ptr_offset(UNDEF_NAN) - 8`, hitting
+  // OOB instead of the polymorphic length-check fallback's tag-aware return-0.
+  const restParamFuncs = []
+  for (const f of ctx.func.list) {
+    if (!isExported(f) || !f.rest) continue
+    const fixed = f.sig.params.length - 1
+    for (const exportName of exportNamesOf(f.name)) restParamFuncs.push({ name: exportName, fixed })
+  }
   if (restParamFuncs.length)
     sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
@@ -889,16 +902,14 @@ export default function compile(ast, profiler) {
   // stay as Numbers on the JS side.
   const i64Exports = []
   for (const f of ctx.func.list) {
-    if (!f.exported || !isBoundaryWrapped(f) || !f._exportUsesI64) continue
+    if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportUsesI64) continue
     const p = []
     f._exportI64Sig.params.forEach((b, i) => { if (b) p.push(i) })
     const r = f._exportI64Sig.result ? 1 : 0
-    i64Exports.push({ name: f.name, p, r })
-    // Aliases (export { foo as bar }) re-export the same wrapper under a
-    // different JS-visible name; list each alias too so wrap() finds it.
-    for (const [alias, val] of Object.entries(ctx.func.exports)) {
-      if (val === f.name && alias !== f.name) i64Exports.push({ name: alias, p, r })
-    }
+    // One entry per JS-visible export name (inline + non-aliased + aliased
+    // re-exports). `exportNamesOf` yields every name that resolves to f —
+    // wrap() looks up by export name, not by internal symbol.
+    for (const exportName of exportNamesOf(f.name)) i64Exports.push({ name: exportName, p, r })
   }
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])

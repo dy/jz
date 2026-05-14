@@ -7,7 +7,7 @@
  * Refactored into focused sub-contexts for better maintainability.
  */
 
-import { resolve as resolveAbi } from '../abi/index.js'
+import { resolve as resolveAbi } from './abi/index.js'
 
 // === Carrier layout ===
 // i64 carrier holds either:
@@ -161,7 +161,7 @@ export function reset(proto, globals, abi) {
     current: null,
     locals: new Map(),
     repByLocal: null,
-    refinements: new Map(),  // flow-sensitive: name → VAL.* inside a type-guarded branch
+    refinements: new Map(),  // flow-sensitive: name → {val?: VAL.*, notString?: true} inside a type-guarded branch
     boxed: new Map(),
     stack: [],
     uniq: 0,

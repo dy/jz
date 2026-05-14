@@ -1061,10 +1061,8 @@ export default (ctx) => {
   // representable as i32). Returning i32 directly lets `let c = s.charCodeAt(i)`
   // stay on the i32 ABI: chained comparisons (`c >= 48 && c <= 57`), bit-ops, and
   // `c - 48` arithmetic skip the per-iteration f64 widen + i32 trunc round-trip.
-  ctx.core.emit['.charCodeAt'] = (str, idx) => {
-    inc('__char_at')
-    return typed(['call', '$__char_at', asI64(emit(str)), asI32(emit(idx))], 'i32')
-  }
+  ctx.core.emit['.charCodeAt'] = (str, idx) =>
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx), 'i32')
 
   // String.fromCharCode(code) → 1-char SSO string
   ctx.core.emit['String'] = (value) => {

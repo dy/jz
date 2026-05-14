@@ -182,33 +182,21 @@ Template interpolation handles most of this automatically — strings, arrays, n
 jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
 ```
 
-<!--
-### How does everything fit in f64?
+</details>
 
-All values are IEEE 754 f64 (at WASM boundary). Integers up to 2^53 are exact. Heap types use [NaN-boxing](https://nachtimwald.com/2019/11/06/nan-boxing/): quiet NaN (`0x7FF8`) + 51-bit payload `[type:4][aux:15][offset:32]`.
+<details>
+<summary><strong>Isn't implicit inference evil?</strong></summary>
 
-| Type | Code | Payload | Example |
-|------|------|---------|---------|
-| Number | — | regular f64 | `3.14`, `42`, `NaN` |
-| Null | 0 | reserved pattern | `null` (distinct from `0` and `NaN`) |
-| Array | 1 | aux=length, offset=heap | `[1, 2, 3]` |
-| ArrayBuffer | 2 | offset=heap | `new ArrayBuffer(16)` |
-| TypedArray | 3 | aux=elemType, offset=heap | `new Float64Array(n)` |
-| String | 4 | offset=heap | `"hello world"` (>4 chars) |
-| SSO String | 5 | aux=packed chars | `"hi"` (<=4 ASCII chars, zero alloc) |
-| Object | 6 | aux=schemaId, offset=heap | `{x: 1, y: 2}` |
-| Hash | 7 | offset=heap | dynamic string-keyed objects |
-| Set | 8 | offset=heap | `new Set()` |
-| Map | 9 | offset=heap | `new Map()` |
-| Closure | 10 | aux=funcIdx, offset=env | `x => x + captured` |
-| External | 11 | offset=hostMap index | JS host object references |
+<br>
 
-**Why NaN-boxing?** used by LuaJIT, JavaScriptCore, SpiderMonkey. The alternatives — tagged unions (OCaml, Haskell), pointer tagging (V8 Smis), or separate type+value pairs — all require branching at call boundaries or multi-word passing. NaN-boxing fits any value in one 64-bit word: one calling convention, one memory layout, one comparison instruction.
+The "explicit > implicit" reflex assumes inference is hidden, fragile, or coercive. jz inference is none of those — the rules are mechanical (name, literals, operators, member access, `typeof`, assignment flow, JSDoc), the chosen types are visible in `--wat` output, and ambiguous cases fall back to NaN-boxed f64: a safe default, never a wrong type.
 
-**The f64 tradeoff**: f64 arithmetic is ~1.2x slower than i32 for pure integer work on most architectures. jz mitigates this — `analyzeLocals` preserves i32 for loop counters, bitwise ops, and comparisons, so the penalty only applies to mixed-type parameters. The gain: zero interop cost at the JS↔WASM boundary (f64 is WASM's native JS-compatible type), no marshaling, no boxing/unboxing. For jz's target workloads (DSP, typed arrays, math), f64 is the natural type anyway.
+Type annotations (eg. TypeScript) do two different jobs in one syntax:
 
-**NaN preservation**: IEEE 754 defines 2^52 − 1 distinct NaN bit patterns. WASM preserves NaN payload bits through arithmetic (spec requires `nondeterministic_nan`), and JS engines canonicalize only on certain operations (`Math.fround`, structured clone). jz uses quiet NaNs (`0x7FF8` prefix) which survive all standard paths. The 51 payload bits encode type (4), aux metadata (15), and heap offset (32) — enough for 4GB addressable memory and 12 type codes.
--->
+1. **Hints to the compiler** about storage (`let x: number = 5`). That's compiler internals leakage into syntax — inference reads operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignments the way a human reader does. The annotation duplicates what's already in the code.
+2. **Contracts at module boundaries** (`function f(id: UserId): User | null`). Legitimate — but a *documentation* concern, not a *language* concern.
+
+jz keeps the split clean: inference handles storage, JSDoc handles contracts. **Valid jz = valid JS** — no parallel type system to learn. Annotations don't make code faster; they sharpen what the compiler can already infer.
 
 </details>
 

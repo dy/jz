@@ -195,6 +195,43 @@ test('re-export: multi-level chain', () => {
   is(exports.f(14), 42)
 })
 
+// === Aliased re-export ABI ===
+// `function/const foo; export { foo as bar }` reaches the WASM boundary
+// only via sec.customs (`f.exported=false` for the source func — the
+// snapshot at defFunc is taken before the `export { … }` statement runs).
+// Regression: until the isExported/exportNamesOf split, the rest-param
+// custom section + boundary wrapper both keyed on `f.exported`, so
+// aliased re-exports skipped rest-pack (NaN args) and skipped boundary
+// wrap (narrowed pointer/string params received raw f64 from JS).
+
+test('aliased re-export: rest params packed under alias name', () => {
+  const { exports } = jz(`let f = (a, ...rest) => a + rest.length; export { f as g }`)
+  is(exports.g(10), 10)
+  is(exports.g(10, 1, 2, 3), 13)
+})
+
+test('aliased re-export: array param survives boundary', () => {
+  const { exports } = jz(`let f = (xs) => xs[0] + xs[1]; export { f as add }`)
+  is(exports.add([3, 4]), 7)
+})
+
+test('aliased re-export: string param survives boundary', () => {
+  const { exports } = jz(`let f = (s) => s.length; export { f as slen }`)
+  is(exports.slen('hello'), 5)
+})
+
+test('aliased re-export: typeof-narrowed body survives boundary', () => {
+  const { exports } = jz(`
+    let visit = (n) => {
+      if (typeof n === 'string') return n.length
+      return n[0]
+    }
+    export { visit as v }
+  `)
+  is(exports.v('hi'), 2)
+  is(exports.v([42]), 42)
+})
+
 test('import: bundled module newline ! after comment', () => {
   const mod = `
     export let f = () => {

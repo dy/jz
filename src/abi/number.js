@@ -1,35 +1,34 @@
 /**
- * abi/number/nanbox-f64 — number rep: f64 carrier with NaN-boxed pointers.
+ * src/abi/number — number carriers.
  *
- * The baseline jz value representation. Numbers ride directly in their f64 bit
- * pattern; non-numeric values (strings, arrays, objects, …) share the f64 slot
- * via NaN-box tagging (top 13 bits = 0x7FF8, type/aux in the 13-bit slot below,
- * 32-bit offset in the low bits). The full carrier layout is documented in
- * `src/ctx.js` (`LAYOUT`) and `src/ir.js`.
+ * One file holds every strategy the compiler may pick for a number-typed
+ * binding. Carriers are named exports; the narrower tags each site with the
+ * chosen carrier, and codegen reads `ctx.abi.number[<carrier>]` (today only
+ * the default carrier is reached — per-site picking arrives with the flat-
+ * number specialization workstream).
  *
- * For now this rep owns one thing: the **peephole folds that depend on the
- * NaN-box layout**. Pure-WASM bit-pattern equivalences (`wrap(extend(x))→x`,
- * `trunc(convert(x))→x`, `f64.mul x 2 → f64.add x x`, …) remain in
- * `src/optimize.js` because they're correct under any ABI that uses those
- * instructions. The folds *here* assume the low 32 bits of a NaN-boxed f64
- * are the pointer offset — a contract this rep defines.
+ * Carriers:
+ *   - `nanboxF64`  default. f64 carrier with NaN-boxed pointers. Owns the
+ *                  NaN-box-layout peephole folds — pure-WASM equivalences
+ *                  (`wrap(extend x)→x`, `trunc(convert x)→x`, …) stay in
+ *                  `src/optimize.js`; the folds here assume the low 32 bits
+ *                  of a NaN-boxed f64 are the pointer offset.
+ *   - `flatI32`    (planned) bare i32 slot when narrowing proves integer.
+ *   - `flatF64`    (planned) bare f64 slot when narrowing proves no tag traffic.
  *
- * Future expansion (gated on a second rep landing — see `.work/todo.md`):
- *   - `box(ir, ctx)` / `unbox(slotIR, ctx)` — typed-IR ↔ wasm-slot bridges
- *   - `slotTypes: ['f64']` — wasm slot types for compiler signature synthesis
- *   - `ops: { … }` — per-op codegen the registry dispatches through
- *   - `compatibleAs: { arrayCell, objectField, … }` — compound-container compat
+ * No `name`/`type` discriminant field — carriers are referenced by object
+ * identity from the default-bundle in `src/abi/index.js`.
  *
- * The rep object is referenced by **identity** from `abi/index.js` PRESETS
- * — there's no `name`/`type` discriminant field. The preset table is the
- * single source of truth for what a rep "is."
- *
- * @module abi/number/nanbox-f64
+ * @module src/abi/number
  */
 
-export default {
+// ── nanboxF64 ─────────────────────────────────────────────────────────────
+
+export const nanboxF64 = {
+  slotTypes: ['f64'],
+
   /**
-   * Rep-specific peephole rules — folds that depend on the NaN-box layout.
+   * Carrier-specific peephole rules — folds that depend on the NaN-box layout.
    * Called by the optimizer's fused-rewrite walk after generic folds; returns
    * a replacement node or `null` to leave the node unchanged.
    *
@@ -112,7 +111,7 @@ export default {
   },
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────
+// ── helpers (carrier-local; cycle-safe — no src/* import) ─────────────────
 
 const isMkptr = (n) => Array.isArray(n) && n[0] === 'call' && typeof n[1] === 'string'
   && (n[1] === '$__mkptr' || n[1].startsWith('$__mkptr_'))
@@ -130,3 +129,8 @@ const isHighOnly = (n) => {
   } else return false
   return (bi & 0xFFFFFFFFn) === 0n
 }
+
+// Default carrier — picked when narrower has no stronger evidence. Reached
+// via `ctx.abi.number` (which the default-bundle in `src/abi/index.js` binds
+// to this export).
+export default nanboxF64

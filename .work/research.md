@@ -330,6 +330,97 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
   Modules register on ctx: `ctx.emit[name]` (emitters), `ctx.stdlib[name]` (WAT),
   `ctx.includes` (lazy inclusion). Core stays minimal, capabilities grow through modules.
 
+## [ ] Representation -> per-site, inferred (not a user ABI knob)
+
+  The compiler picks the carrier for each value the way a human reader infers
+  type from JS: from name, operators, member access, `typeof`, assignments,
+  JSDoc, optional declarations. Default cast is nanbox; analysis specializes
+  to flat/i32/SSO/externref/packed/etc. per site. No `opts.abi`.
+
+  Only the **boundary protocol** (how exports cross JS↔wasm) is a user
+  concern, and that's `opts.host` (`'js'` | `'wasi'` | `'gc'`, autodetect).
+
+  | | Pro | Con |
+  |---|---|---|
+  | Per-site inference | Hot path goes fast without ceremony; same binary mixes flat + nanbox where each fits; user writes plain JS | Wins only as strong as the analysis; bail-to-nanbox sites silently lose perf |
+  | Nanbox as default cast | Polymorphism free, JS numbers passthrough, uniform slot, simplest codegen | 3–5 instr overhead on pointer ops, 8B per slot regardless of value |
+  | Vs shipping `flat` preset | No transient API; analysis grows under one binary | Tempting shortcut — papers over weak analysis with user opt-in that can't be removed later |
+
+  ### Type evidence (in increasing strength)
+
+  - **Name**: `i`, `n`, `len`, `count`, `idx` → integer; `s`, `str`, `name` →
+    string; `is*`, `has*` → bool. Lowest-confidence; suggestive only.
+  - **Literals**: `[1,2,3]` → int array; `"abc"` → SSO string.
+  - **Operators**: `x | 0`, `x >>> 0` → i32; `+x` → f64; `"" + x` → string;
+    `x & mask` → i32.
+  - **Member access**: `.length` → string/array/typed; `.charCodeAt` →
+    string; `.byteLength` → buffer; `.then` → promise.
+  - **`typeof` / `instanceof` guards**: narrow refinement in then-branch.
+  - **Assignment flow**: if every reaching def is i32, local is i32.
+  - **JSDoc** when present (`@type {number}`).
+  - **Optional declarations** (future): explicit annotations sharpen
+    inference but are never required.
+
+  Anything a human reading the code would conclude, the compiler should
+  conclude. Anything ambiguous falls back to nanbox.
+
+  ### Already adaptive
+
+  Typed-element arrays, `intCertain`/`intConst`/`intRange`, object schemas,
+  val-type propagation, jzify `typeof`-narrowing, SSO at literal time.
+
+  ### Next wins (same direction, deeper)
+
+  SSO flow through concat results when inputs prove short. Schema field
+  packing (`{x:i32,y:i32}` → 8B not 16B). Closure capture narrowing.
+  Cross-call propagation through monomorphic-ish sites. Specialization
+  on observed arg types when the export's callers are in-module.
+
+  ### Implications
+
+  Per-type rep modules survive as **internal** codegen modules: `abi/` →
+  `src/repr/`, dispatch per call site via analysis. `opts.abi` drops;
+  `opts.host` takes its place. jsstring becomes per-site externref
+  specialization for `host: 'js'`, not a preset.
+
+## [ ] Inference -> collect before compile
+
+All shape/flow facts are produced by **analysis passes that run before
+emit**, never by ad-hoc inference inside the emit path. The emit phase
+**reads** facts (`repOf`, `lookupValType`, `lookupNotString`,
+`paramReps[k]`, `f.valResult`, etc.) but never derives them.
+
+Why this matters:
+
+- **Proofs.** Every dispatch-elision (`__length` → `__len`,
+  `__to_num` → `asF64`, `__ptr_type` → branch fold, polymorphic
+  `[]` → direct typed read) has a *named upstream fact* and a *named
+  upstream pass*. When a regression appears, the chain is:
+  `wat shows __length` ← `notString missing on param k` ←
+  `notStringEvidence didn't fire` ← `body shape didn't match`. Every
+  link is a deterministic AST walk over fully-prepared source.
+
+- **Editor-hint consumability.** The same facts are emitted as custom
+  WASM sections (`runtime.rests`, `runtime.i64`, etc.) for the JS
+  boundary wrapper to read. Nothing prevents an editor host from
+  consuming `ctx.func.repByLocal`, `ctx.func.paramReps`, and the per-
+  function `f.valResult` / `f.arrayElemValType` to:
+  - render param shapes as inlay hints (`(x: STRING, k: i32)`),
+  - flag "this branch is suboptimal" when a call site forces a
+    `paramReps[k]` field to sticky-null (the lattice already records
+    *which* site disagreed — see narrow.js' D-phase),
+  - surface `notString` / `intConst` / `arrayElemSchema` as
+    optimization badges next to the source location.
+
+- **Auditability.** "Why did this function specialize?" is answered by
+  one record (`f.sig`, `f.valResult`, the rep map). "Why did this
+  branch *not* specialize?" is answered by the absence of a fact at a
+  known location, never by tracing the emit walk.
+
+The phase chronology in `src/infer.js` (above the paramReps lattice
+primitives, ~line 84) is the canonical reference for *what's valid
+when*. Read it before adding a new consumer.
+
 ## [ ] Stdlib sources
 
   * [Metallic](https://github.com/jdh8/metallic), [Piezo](https://github.com/dy/piezo/blob/main/src/stdlib.js), [AS musl](https://github.com/AssemblyScript/musl/tree/master)

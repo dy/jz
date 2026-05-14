@@ -122,13 +122,17 @@ export const memory = (src) => {
   let alloc = wasmExports?._alloc || jsAlloc
   initHeapPtr()
 
-  // Write header (len + cap), return data offset
+  // Write 16-byte header matching WASM `__alloc_hdr`:
+  // [propsPtr@+0(i64=0), len@+8, cap@+12], return data offset (raw+16).
+  // Read paths (ARRAY at off-8/-4, BUFFER at off-8) and the propsPtr slot at
+  // off-16 then work uniformly on JS- and WASM-allocated values.
   const hdr = (len, cap, bytes) => {
-    const raw = alloc(8 + bytes)
+    const raw = alloc(16 + bytes)
     const m = dv()
-    m.setInt32(raw, len, true)
-    m.setInt32(raw + 4, cap, true)
-    return raw + 8
+    m.setBigInt64(raw, 0n, true)
+    m.setInt32(raw + 8, len, true)
+    m.setInt32(raw + 12, cap, true)
+    return raw + 16
   }
 
   // Read schemas from module custom section, merge into memory.schemas. Schema

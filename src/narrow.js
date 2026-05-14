@@ -11,14 +11,18 @@ import { ctx } from './ctx.js'
 import { isLiteralStr } from './ir.js'
 import {
   VAL,
-  analyzeBody, analyzeLocals,
-  callerParamFactMap, clearStickyNull, ensureParamRep, mergeParamFact,
-  exprType, findMutations, hasBareReturn, inferArgArrElemSchema,
-  inferArgArrElemValType, inferArgSchema, inferArgType, inferArgTypedCtor,
+  analyzeBody,
+  callerParamFactMap,
+  exprType, findMutations, hasBareReturn,
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
   typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
 } from './analyze.js'
+import {
+  clearStickyNull, ensureParamRep, mergeParamFact,
+  inferArgArrElemSchema, inferArgArrElemValType,
+  inferSchemaId, inferArgType, inferArgTypedCtor,
+} from './infer.js'
 
 const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 
@@ -201,7 +205,7 @@ function refreshCallerLocals(callerCtx) {
     ctx.func.repByLocal = new Map()
     for (const p of func.sig.params) if (p.ptrKind != null) ctx.func.repByLocal.set(p.name, { val: p.ptrKind })
     invalidateLocalsCache(func.body)
-    const fresh = analyzeLocals(func.body)
+    const fresh = analyzeBody(func.body).locals
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
@@ -274,7 +278,7 @@ export default function narrowSignatures(programFacts, ast) {
   // sig.params[k].type to i32 (no default, no rest, not exported, not value-used).
   // Also propagate schema ID — when all call sites pass objects with the same schema,
   // bind the callee's param to that schema so `p.x` becomes a direct slot load.
-  // Inference helpers (inferArgType/inferArgSchema/inferArgArr*/inferArgTypedCtor)
+  // Inference helpers (inferArgType/inferSchemaId/inferArgArr*/inferArgTypedCtor)
   // live in analyze.js — pure AST→fact resolvers shared across fixpoint phases.
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for both locals and valTypes.
@@ -361,7 +365,7 @@ export default function narrowSignatures(programFacts, ast) {
         else if (r.wasm !== wt) r.wasm = null
       },
     },
-    mergeRule('schemaId', (arg, _k, state) => inferArgSchema(arg, state.callerParamFacts('schemaId'))),
+    mergeRule('schemaId', (arg, _k, state) => inferSchemaId(arg, state.callerParamFacts('schemaId'))),
     {
       missing: poison('intConst'),
       apply(r, arg, k, state) {
@@ -453,7 +457,7 @@ export default function narrowSignatures(programFacts, ast) {
       const anyUnsigned = exprs.some(e => Array.isArray(e) && e[0] === '>>>')
       const savedCurrent = ctx.func.current
       ctx.func.current = func.sig
-      const locals = isBlockBody(body) ? analyzeLocals(body) : new Map()
+      const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
       for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
       const allI32 = exprs.every(e => exprTypeWithCalls(e, locals) === 'i32')
       ctx.func.current = savedCurrent
@@ -557,39 +561,10 @@ export default function narrowSignatures(programFacts, ast) {
   // be a guaranteed-return form — fallthrough fallback i32.const 0 would be a valid
   // offset 0 of the narrowed kind, not undefined.
   const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
-  // Schema-id inference for a return expression. Returns id (number), or null if unknown
-  // / not constant. Mirrors inferArgSchema but extends with calls to already-narrowed
-  // OBJECT-result funcs (fixpoint propagation through helper chains).
-  const schemaIdOfReturn = (expr, paramSchemasMap) => {
-    if (typeof expr === 'string') {
-      if (paramSchemasMap?.has(expr)) return paramSchemasMap.get(expr)
-      if (ctx.schema.vars.has(expr)) return ctx.schema.vars.get(expr)
-      return null
-    }
-    if (!Array.isArray(expr)) return null
-    const [op, ...args] = expr
-    if (op === '{}') {
-      // Object literal: bail to null on block body, dynamic key, or spread.
-      const parsed = staticObjectProps(args)
-      return parsed ? ctx.schema.register(parsed.names) : null
-    }
-    if (op === '()' && typeof args[0] === 'string') {
-      const f = ctx.func.map.get(args[0])
-      if (f?.valResult === VAL.OBJECT && f.sig.ptrAux != null) return f.sig.ptrAux
-      return null
-    }
-    if (op === '?:') {
-      const a = schemaIdOfReturn(args[1], paramSchemasMap)
-      const b = schemaIdOfReturn(args[2], paramSchemasMap)
-      return a != null && a === b ? a : null
-    }
-    if (op === '&&' || op === '||') {
-      const a = schemaIdOfReturn(args[0], paramSchemasMap)
-      const b = schemaIdOfReturn(args[1], paramSchemasMap)
-      return a != null && a === b ? a : null
-    }
-    return null
-  }
+  // Schema-id resolution at return sites uses `inferSchemaId` (src/infer.js) —
+  // the same helper feeds call-site `schemaId` narrowing. By G-phase, the
+  // recursive ?:/&&/|| and call-result branches are fully effective; at the
+  // earlier D-phase call site they're a no-op (valResult not yet seeded).
   // Per-body local elemAux map: scans `let/const x = new TypedArray(...)` decls so
   // a return like `let a = new Float64Array(...); return a` resolves to a constant
   // aux. Result calls + ?: are handled inline in typedAuxOfReturn.
@@ -658,9 +633,9 @@ export default function narrowSignatures(programFacts, ast) {
       if (!exprs.length) continue
       if (func.valResult === VAL.OBJECT) {
         const paramSchemasMap = callerParamFactMap(paramReps, func, 'schemaId')
-        const sid0 = schemaIdOfReturn(exprs[0], paramSchemasMap)
+        const sid0 = inferSchemaId(exprs[0], paramSchemasMap)
         if (sid0 == null) continue
-        if (!exprs.every(e => schemaIdOfReturn(e, paramSchemasMap) === sid0)) continue
+        if (!exprs.every(e => inferSchemaId(e, paramSchemasMap) === sid0)) continue
         func.sig.results = ['i32']
         func.sig.ptrKind = VAL.OBJECT
         func.sig.ptrAux = sid0
@@ -685,8 +660,10 @@ export default function narrowSignatures(programFacts, ast) {
   // for their own params and `arr[i]` reads emit a direct `f64.load` instead of
   // the runtime `__is_str_key + __typed_idx` dispatch — closes the largest
   // chunk of the JS→wasm gap on f64-heavy hot loops.
-  // (Helpers `inferArgTypedCtor`/`ctorFromElemAux` live in analyze.js so the
-  //  bimorphic-typed specialization pass below can reuse them.)
+  // (Helper `inferArgTypedCtor` lives in src/infer.js — the call-site mirror
+  //  of body-walk evidence — and is reused by the bimorphic-typed
+  //  specialization pass below; `ctorFromElemAux` stays in analyze.js next
+  //  to its encode/decode partner.)
   // Per-caller typed-elem map, recomputed now that E3 has tagged helper sigs.
   // Cache invalidation: analyzeBody.typedElems reads `ctx.func.map.get(...).sig.ptrKind`
   // for `let x = mkInput(...)` decls; entries cached during the initial walk

@@ -184,6 +184,9 @@ export default (ctx) => {
         const boxedSchema = ['__inner__', ...allProps]
         const schemaId = ctx.schema.register(boxedSchema)
         ctx.schema.vars.set(target, schemaId)
+        // Emit-time rep mutation: Object.assign's target gains a freshly-registered
+        // boxed-schema binding here; downstream `.prop` reads in the same emit pass
+        // depend on schemaId being live on the rep, not just in ctx.schema.vars.
         updateRep(target, { schemaId })
         const t = tempI32('bx'), s = temp('bs')
         const body = [
