@@ -2505,7 +2505,15 @@ export function emit(node, expect) {
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} (call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc (i32.const ${n * 8 + 8}))) (i32.store (local.get $${arr}) (i32.const ${n})) (i32.store (i32.add (local.get $${arr}) (i32.const 4)) (i32.const ${n})) (local.set $${arr} (i32.add (local.get $${arr}) (i32.const 8))) ${stores} (call $__mkptr (i32.const 1) (i32.const 0) (local.get $${arr})))`
           inc(trampolineName, '__alloc', '__mkptr')
         } else {
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (call $${node} ${fwd}))`
+          // Convert i32/i64 results back to f64 — uniform closure ABI returns f64.
+          const resType = func?.sig.results[0]
+          const callExpr = `(call $${node} ${fwd})`
+          const wrapped = resType === 'i32'
+            ? (func.sig.unsignedResult ? `(f64.convert_i32_u ${callExpr})` : `(f64.convert_i32_s ${callExpr})`)
+            : resType === 'i64'
+              ? `(f64.reinterpret_i64 ${callExpr})`
+              : callExpr
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) ${wrapped})`
           inc(trampolineName)
         }
       }
