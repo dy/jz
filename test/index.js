@@ -28,6 +28,7 @@ const TESTS = [
   'simd',
   'cli',
   'object-regressions',
+  'jessie-regressions',
   'external',
   'watr',
   'optimizer',

@@ -558,7 +558,7 @@ const handlers = {
       return ['()', ['.', transform(['new', ctor[1][1]]), ctor[1][2]], ...ctor.slice(2).map(transform)]
     }
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-    if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array')) return ['new', transform(ctor), ...cargs.map(transform)]
+    if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp')) return ['new', transform(ctor), ...cargs.map(transform)]
     if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
     // `new C(a)` → `C(a)`; `new C` (no parens) → `C()` — a 2-element `['()', X]`
     // is grouping parens, so a no-arg call needs the explicit `null` arg slot.

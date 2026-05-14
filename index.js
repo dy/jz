@@ -178,6 +178,20 @@ jz.memory = enhanceMemory
  * @returns {Uint8Array|string}
  */
 jz.compile = (code, opts = {}) => {
+  try {
+    return jzCompileInner(code, opts)
+  } catch (e) {
+    // Any uncaught native exception (TypeError, ReferenceError, etc.) is a jz
+    // codegen leak — surface it as an internal compile error with the source
+    // location we were standing on. err()-thrown errors already pass through.
+    if (e?.name === 'TypeError' || e?.name === 'ReferenceError' || e?.name === 'RangeError') {
+      err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node ? '; the AST node above shows the trigger' : ''}). This is a jz bug — please report.`)
+    }
+    throw e
+  }
+}
+
+const jzCompileInner = (code, opts = {}) => {
   const profiler = compileProfiler(opts.profile)
   const time = (name, fn) => profiler ? profiler.time(name, fn) : fn()
 
@@ -283,9 +297,25 @@ jz.compile = (code, opts = {}) => {
       for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg, globalTypesMap)
     })
   }
-  if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
-  const wasm = time('watrCompile', () => watrCompile(optimized))
-  return (opts.profileNames || opts.profile?.names) ? appendFunctionNames(wasm, optimized) : wasm
+  try {
+    if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
+    const wasm = time('watrCompile', () => watrCompile(optimized))
+    return (opts.profileNames || opts.profile?.names) ? appendFunctionNames(wasm, optimized) : wasm
+  } catch (e) {
+    // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
+    // That's always a jz codegen leak — we emitted IR that references something never
+    // declared (typically: a built-in / stdlib we don't implement). Rewrite to a clean
+    // user-facing message instead of leaking watr internals.
+    const m = /Unknown (local|func|global|table|memory|type) \$?(\S+)/.exec(e?.message || '')
+    if (m) {
+      const [, kind, name] = m
+      const friendly = kind === 'func' ? `'${name}' is not a known function or built-in`
+        : kind === 'global' ? `'${name}' is not a known global or imported binding`
+        : `'${name}' is not in scope`
+      err(`${friendly} — jz emitted a reference it cannot resolve (likely an unsupported built-in or missing import).`)
+    }
+    throw e
+  }
 }
 
 /**

@@ -13,7 +13,7 @@
  */
 
 import { parse as parseWat } from 'watr'
-import { ctx, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
+import { ctx, inc, resolveIncludes, err, PTR, LAYOUT } from './ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
 // `parseWat` of the same string always yields the same tree. Parsing is the
@@ -419,7 +419,7 @@ export function pullStdlib(sec) {
       ctx.core.includes.delete(name)
     }
   }
-  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) console.error("MISSING stdlib:", n)
+  for (const n of ctx.core.includes) if (!ctx.core.stdlib[n]) err(`internal: stdlib '${n}' was requested but never registered (this is a jz bug — feature pulled in something it can't deliver)`)
   sec.stdlib.push(...[...ctx.core.includes].map(n => parseTemplate(stdlibStr(n))))
 }
 

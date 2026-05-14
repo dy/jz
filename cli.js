@@ -166,8 +166,11 @@ async function handleCompile(args) {
     } catch {}
   }
 
-  // Recursively resolve relative imports from entry file and all discovered modules
-  const importRe = /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g
+  // Recursively resolve relative imports from entry file and all discovered modules.
+  // Supports both `import x from 'spec'` and bare side-effect `import 'spec'`.
+  // `import` must be anchored to start-of-line (statement position) so that
+  // mentions inside block/line comments and string literals are ignored.
+  const importRe = /^\s*import\s+(?:[^'"]+?\s+from\s+)?['"]([^'"]+)['"]/gm
   const resolveBareModule = (specifier, fromDir) => execFileSync(
     process.execPath,
     ['--input-type=module', '-e', 'process.stdout.write(import.meta.resolve(process.argv[1]))', specifier],
@@ -190,12 +193,20 @@ async function handleCompile(args) {
     if (resolveNode) {
       try {
         const resolved = resolveBareModule(specifier, fromDir)
-        if (resolved.startsWith('file:')) modules[specifier] = readFileSync(new URL(resolved), 'utf8')
+        if (resolved.startsWith('file:')) {
+          const full = new URL(resolved)
+          const src = readFileSync(full, 'utf8')
+          modules[specifier] = src
+          // Recursively resolve the bare-resolved module's own imports
+          let m; importRe.lastIndex = 0
+          while ((m = importRe.exec(src)) !== null) resolveModule(m[1], dirname(full.pathname))
+        }
       } catch {}
     }
   }
   let m; importRe.lastIndex = 0
   while ((m = importRe.exec(code)) !== null) resolveModule(m[1], dir)
+  if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
   // .jz = strict (no auto-transform), .js = auto-jzify
   // --strict forces strict for any extension

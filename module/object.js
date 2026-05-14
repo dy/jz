@@ -11,6 +11,7 @@ import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, 
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep, shapeOf } from '../src/analyze.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { includeModule } from '../src/autoload.js'
 
 
 export default (ctx) => {
@@ -267,6 +268,7 @@ export default (ctx) => {
       // Header propsPtr lives at $off-16 (current ARRAY layout). We alias src's hash
       // by copying the slot; __dyn_move covers the shifted-array case where props
       // were migrated to the global __dyn_props.
+      includeModule('array')
       inc('__arr_from', '__dyn_move', '__ptr_offset')
       const src = temp('ocs')
       const dst = temp('ocd')
@@ -289,6 +291,7 @@ export default (ctx) => {
     if (!schema) {
       if (protoType == null) {
         const value = temp('ocr')
+        includeModule('array')
         inc('__arr_from', '__dyn_move', '__ptr_offset')
         const dst2 = temp('ocd')
         const srcOff2 = tempI32('ocso')

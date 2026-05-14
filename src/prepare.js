@@ -406,6 +406,18 @@ export const GLOBALS = {
   parseInt: 'number',
   parseFloat: 'number',
   Error: 'Error',
+  // Error subclasses: distinct names in JS, but jz doesn't carry typed error
+  // info — `throw` accepts any value and stringification goes through the
+  // host. Treat them all as Error-shaped passthrough constructors so user
+  // code that throws specific subclasses (`throw new SyntaxError(msg)`) compiles
+  // identically. If we ever model `instanceof SyntaxError`, this is where to
+  // distinguish them; until then the surfaced message is what matters.
+  TypeError: 'Error',
+  SyntaxError: 'Error',
+  RangeError: 'Error',
+  ReferenceError: 'Error',
+  URIError: 'Error',
+  EvalError: 'Error',
   BigInt: 'BigInt',
   TextEncoder: 'TextEncoder',
   TextDecoder: 'TextDecoder',
@@ -747,6 +759,9 @@ const handlers = {
 
   // Import
   'import'(fromNode) {
+    // Bare side-effect: `import './sub.js'` → AST is ['import', [null, 'path']]
+    if (Array.isArray(fromNode) && fromNode[0] == null && typeof fromNode[1] === 'string')
+      return handlers['from'](null, fromNode)
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
       return err('Dynamic import() not supported')
     return handlers['from'](fromNode[1], fromNode[2])
@@ -1204,6 +1219,40 @@ const handlers = {
 
     includeForObjectLiteral()
     if (inner == null) return ['{}']
+    // Drop trailing-comma artifacts: subscript represents `{a:1, b,}` as
+    // `[",", [":","a",1], "b", null]` — the trailing `null` would prep to a
+    // literal-0 entry, leaving the literal carrying a phantom slot and
+    // shifting any subsequent slot-position resolution.
+    const items = Array.isArray(inner) && inner[0] === ','
+      ? inner.slice(1).filter(p => p != null)
+      : [inner]
+
+    // Computed keys: `{[k]: v}` where `k` isn't compile-time foldable. jz's
+    // object layout is slot-based (fixed schema at the literal site), so a
+    // truly-dynamic key can't slot in. Lower to the existing dict path:
+    //   {a:1, [k]:v, b:2}  →  ((__t) => (__t[k]=v, __t))({a:1, b:2})
+    // Static-but-non-string keys still fold via `staticPropertyKey` below.
+    const isComputed = p => Array.isArray(p) && p[0] === ':'
+      && typeof p[1] !== 'string' && staticPropertyKey(p[1]) == null
+    if (items.some(isComputed)) {
+      const staticItems = items.filter(p => !isComputed(p))
+      const computedItems = items.filter(isComputed)
+      const tmp = `${T}o${ctx.func.uniq++}`
+      // Body: comma sequence of dict-sets, terminated with the tmp itself.
+      // Computed key shape from parser is `[':', ['[]', keyExpr], valExpr]` —
+      // unwrap the `['[]', keyExpr]` to grab keyExpr directly.
+      const assigns = computedItems.map(p => {
+        const keyExpr = Array.isArray(p[1]) && p[1][0] === '[]' ? p[1][1] : p[1]
+        return ['=', ['[]', tmp, keyExpr], p[2]]
+      })
+      const body = [',', ...assigns, tmp]
+      const arrow = ['=>', ['()', tmp], body]
+      const arg = staticItems.length === 1 ? ['{}', staticItems[0]]
+        : staticItems.length ? ['{}', [',', ...staticItems]]
+        : ['{}']
+      return prep(['()', arrow, arg])
+    }
+
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
     const prop = p => {
       if (typeof p === 'string') return [':', p, prep(p)]
@@ -1214,13 +1263,6 @@ const handlers = {
       }
       return prep(p)
     }
-    // Drop trailing-comma artifacts: subscript represents `{a:1, b,}` as
-    // `[",", [":","a",1], "b", null]` — the trailing `null` would prep to a
-    // literal-0 entry, leaving the literal carrying a phantom slot and
-    // shifting any subsequent slot-position resolution.
-    const items = Array.isArray(inner) && inner[0] === ','
-      ? inner.slice(1).filter(p => p != null)
-      : [inner]
     let prepped = items.map(prop)
     // ES spec: duplicate keys allowed; key takes first-seen position, last-seen value.
     const lastValue = new Map()
@@ -1342,6 +1384,16 @@ const handlers = {
 
   // new - auto-import modules, resolve constructors
   'new'(ctor, ...args) {
+    // Parser quirk: `new X(a).m(b)` parses as ['new',['()',['.',['()','X',a],'m'],b]]
+    // instead of the spec-correct ['()',['.',['new',['()','X',a]],'m'],b].
+    // Push `new` down past the trailing method-call chain so the constructor
+    // form is recognized correctly.
+    if (Array.isArray(ctor) && ctor[0] === '()' && Array.isArray(ctor[1]) && ctor[1][0] === '.') {
+      const [, dot, ...methodArgs] = ctor
+      const [, innerCall, methodName] = dot
+      const newExpr = ['new', innerCall, ...args]
+      return prep(['()', ['.', newExpr, methodName], ...methodArgs])
+    }
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
     if (name === 'Date' && ctorArgs.length === 1 && ctorArgs[0] == null) ctorArgs = []
@@ -1356,6 +1408,20 @@ const handlers = {
         if (spec == null) err('`new URL(relative, import.meta.url)` supports only string literal relatives')
         return staticString(resolveImportMeta(spec))
       }
+    }
+
+    // `new RegExp("pattern", "flags?")` with string-literal pattern → compile
+    // like a regex literal `/pattern/flags`. Dynamic pattern is not supported
+    // (would require a runtime regex interpreter). Reported as build blocker #6.
+    if (name === 'RegExp') {
+      const literalArgs = ctorArgs.filter(a => a != null)
+      const pattern = stringValue(literalArgs[0])
+      if (pattern == null)
+        err('new RegExp() requires a string-literal pattern; dynamic regex construction is not supported')
+      const flags = literalArgs.length > 1 ? stringValue(literalArgs[1]) : ''
+      if (flags == null)
+        err('new RegExp() flags must be a string literal')
+      return prep(['//', pattern, flags || undefined])
     }
 
     // Wrap multi-arg ctor arg lists back into a single comma-group — the '()' op

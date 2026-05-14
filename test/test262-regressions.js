@@ -195,18 +195,17 @@ test('test262 computed property names: static keys map to fixed-shape object slo
   is(exports._run(), 1, 'static computed keys resolve as fixed object properties')
 })
 
-test('test262 computed property names: dynamic keys stay unsupported for fixed-shape objects', () => {
-  let err
-  try { compile(`export let _run = () => { let x = 1; let o = { [x = 2]: 3 }; return o[2] }`, { jzify: true }) }
-  catch (e) { err = e }
-  ok(err?.message.includes('computed property name not supported'), `dynamic computed key should be explicit: ${err?.message?.slice(0, 80)}`)
+test('test262 computed property names: dynamic computed key lowers to dict-side store', () => {
+  // `{ [x = "kk"]: 3 }` mutates x to "kk" and stores 3 under that key; `o["kk"]` reads it back.
+  const exports = run(`export let _run = () => { let x = "a"; let o = { [x = "kk"]: 3 }; return o["kk"] }`)
+  is(exports._run(), 3, 'dynamic computed key reads back via o[key]')
 })
 
-test('test262 computed property names: effectful coercion is not folded as a static key', () => {
-  let err
-  try { compile(`export let _run = () => { let x = 0; let o = { [String(1, x = 1)]: 2 }; return x + o[1] }`, { jzify: true }) }
-  catch (e) { err = e }
-  ok(err?.message.includes('computed property name not supported'), `effectful computed key should not be folded away: ${err?.message?.slice(0, 80)}`)
+test('test262 computed property names: effectful coercion runs and key stores under coerced value', () => {
+  // `{ [(x = 1, "k")]: 2 }` — `x = 1` side effect runs as part of the comma expr;
+  // the comma value "k" is the resolved key. `x + o["k"]` reads both back.
+  const exports = run(`export let _run = () => { let x = 0; let o = { [(x = 1, "k")]: 2 }; return x + o["k"] }`)
+  is(exports._run(), 3, 'side effects in computed key run; coerced key reads back')
 })
 
 test('test262 arguments object: jzify supports no-formal trailing-comma cases', () => {

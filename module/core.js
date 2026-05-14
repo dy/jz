@@ -10,7 +10,8 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit, buildArrayWithSpreads } from '../src/emit.js'
+import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
@@ -735,7 +736,24 @@ export default (ctx) => {
     const va = asF64(emit(callee))
     // If nullish → return NULL_NAN, else call via fn.call
     if (!ctx.closure.call) err('Optional call requires fn module')
-    const callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
+    // Spread args: mirror the regular `()` emitter — reconstruct the args array
+    // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without
+    // this, the raw `['...', expr]` node falls through to the bare spread emitter
+    // and errors as "Spread (...) can only be used in function/method calls".
+    let callResult
+    const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
+    if (hasSpread) {
+      const normal = [], spreads = []
+      for (const a of args) {
+        if (Array.isArray(a) && a[0] === '...') spreads.push({ pos: normal.length, expr: a[1] })
+        else normal.push(a)
+      }
+      const combined = reconstructArgsWithSpreads(normal, spreads)
+      const arrayIR = buildArrayWithSpreads(combined)
+      callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true)
+    } else {
+      callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
+    }
     // Use local.set + local.get (not local.tee inside guard) because isNullish
     // inlines the null/undefined check which duplicates the expression.
     return typed(['block', ['result', 'f64'],
@@ -802,6 +820,18 @@ export default (ctx) => {
   ctx.core.emit['__ptr_aux'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64')
   ctx.core.emit['__ptr_offset'] = (p) => typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64')
 
-  // Error(msg) — passthrough (throw handles any value)
-  ctx.core.emit['Error'] = (msg) => asF64(emit(msg))
+  // Error(msg) — passthrough (throw handles any value). Subclasses share the
+  // same shape: jz doesn't model typed-error dispatch, so SyntaxError/TypeError/
+  // RangeError/ReferenceError/URIError/EvalError all lower to the message
+  // expression. `instanceof SyntaxError` returning correct results would need
+  // proper class machinery; until then, code that throws specific subclasses
+  // compiles and the user-visible message is preserved.
+  const passthroughError = (msg) => asF64(emit(msg))
+  ctx.core.emit['Error'] = passthroughError
+  ctx.core.emit['SyntaxError'] = passthroughError
+  ctx.core.emit['TypeError'] = passthroughError
+  ctx.core.emit['RangeError'] = passthroughError
+  ctx.core.emit['ReferenceError'] = passthroughError
+  ctx.core.emit['URIError'] = passthroughError
+  ctx.core.emit['EvalError'] = passthroughError
 }
