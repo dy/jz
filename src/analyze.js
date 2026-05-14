@@ -13,7 +13,6 @@
  *   - analyzeBody:         single unified walk — body-keyed cache, returns
  *                          { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems }
  *   - analyzeValTypes:     ctx-mutating pass — writes types + tracks regex/typed + localProps
- *   - analyzeLocals:       thin clone-and-extend facade over analyzeBody().locals
  *   - analyzeDynKeys:      cross-function scan for `obj[runtimeKey]` → sets ctx.types.dynKeyVars
  *   - analyzeBoxedCaptures:detect mutably-captured vars → ctx.func.boxed cells
  *   - extractParams/classifyParam/collectParamNames: arrow param AST normalization helpers
@@ -144,32 +143,28 @@ export const VAL = {
  *                             (or `f64.const N`), letting the WAT optimizer fold guards,
  *                             unroll fixed-bound loops, and treeshake the read entirely.
  *                             Cleared if the param is written inside the body.
+ *   notString:        bool   — write-shape evidence proves the binding isn't a primitive
+ *                             string. Gates STRING-vs-typed dispatch elision at `.length`
+ *                             and `xs[i]` reads. Body-walk source: `notStringEvidence` in
+ *                             src/infer.js. Flow-scoped overlay: see `lookupNotString`.
  *
- * Future (S2 stage 4 follow-ups): boxed, intLikely, nullable.
+ * Out-of-band tracking (not rep fields):
+ *   - boxed captures: `ctx.func.boxed: Map<name, cellName>` — set by analyzeBoxedCaptures
+ *     for mutably-captured locals. Parallel to rep because the cell-based storage is a
+ *     storage decision, not a value-shape fact.
+ *   - flow-sensitive refinements: `ctx.func.refinements: Map<name, {val?, notString?}>` —
+ *     set by emitBody's post-terminator narrowing for the duration of a syntactic suffix.
  */
 
 // === ParamReps lattice helpers (cross-call fixpoint) ===
 // programFacts.paramReps: Map<funcName, Map<paramIdx, ValueRep>>. Per-field lattice:
 // undefined unobserved, null sticky-poison (cross-site disagreement), value = consensus.
 
-/** Per-call-site fact merge into a param's ValueRep field, with sticky-null poison
- *  on disagreement. undefined→observed (set); same value→stay; conflict→null (sticky).
- *  null is "no consensus" — readers treat it as missing. */
-export const mergeParamFact = (rep, key, observed) => {
-  if (rep[key] === null) return                        // sticky poison
-  if (observed == null) { rep[key] = null; return }    // unknown → poison
-  if (rep[key] === undefined) rep[key] = observed
-  else if (rep[key] !== observed) rep[key] = null
-}
-
-/** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */
-export const ensureParamRep = (paramReps, funcName, k) => {
-  let m = paramReps.get(funcName)
-  if (!m) { m = new Map(); paramReps.set(funcName, m) }
-  let r = m.get(k)
-  if (!r) { r = {}; m.set(k, r) }
-  return r
-}
+// Lattice primitives for `paramReps` (`mergeParamFact`, `ensureParamRep`,
+// `clearStickyNull`) live in src/infer.js with the call-site evidence
+// extractors that produce facts for them. `callerParamFactMap` (next) stays
+// here because `narrowReturnArrayElems` below consumes it; moving it would
+// invert the analyze.js↔infer.js import direction.
 
 /** Build `paramName → fact` lookup for a caller's already-narrowed param facts.
  *  Used to flow caller's param info into its callees during the cross-call
@@ -187,15 +182,6 @@ export const callerParamFactMap = (paramReps, callerFunc, key) => {
     }
   }
   return out
-}
-
-/** Reset sticky-null on a single field across all params program-wide.
- *  Used between fixpoint phases when newly-narrowed facts unblock previously-
- *  poisoned observations (e.g. valResult set after first pass). */
-export const clearStickyNull = (paramReps, key) => {
-  for (const m of paramReps.values()) for (const r of m.values()) {
-    if (r[key] === null) r[key] = undefined
-  }
 }
 
 /** Get the rep for a local name, or undefined if not tracked. */
@@ -231,10 +217,19 @@ export const updateGlobalRep = (name, fields) => {
  *  available — lets `const x = new Float64Array(); const y = x[0]` resolve y as NUMBER. */
 export const lookupValType = name => {
   const r = ctx.func.refinements
-  if (r && r.size) { const v = r.get(name); if (v) return v }
+  if (r && r.size) { const v = r.get(name)?.val; if (v) return v }
   const ov = ctx.func.localValTypesOverlay
   if (ov) { const v = ov.get(name); if (v) return v }
   return ctx.func.repByLocal?.get(name)?.val || ctx.scope.globalValTypes?.get(name) || null
+}
+
+/** Resolve `notString` for a binding, overlaying flow-sensitive refinements
+ *  on top of the function-global rep proof. Mirrors `lookupValType`'s precedence:
+ *  refinement first (scope-local), then rep (whole-function). */
+export const lookupNotString = name => {
+  const r = ctx.func.refinements
+  if (r && r.size && r.get(name)?.notString) return true
+  return ctx.func.repByLocal?.get(name)?.notString === true
 }
 
 /** Infer value type of an AST expression (without emitting). */
@@ -722,90 +717,9 @@ export function ternaryCtorOfRhs(rhs) {
   return a && b ? (a === b ? a : MIXED_CTORS) : (a || b || null)
 }
 
-// === Cross-call argument inference helpers (used by narrowSignatures fixpoint) ===
-// Each `inferArg*(expr, ...callerCtx)` resolves an argument expression to a single
-// fact (val/schemaId/elem*/typedCtor) using caller-local observations and program
-// facts, returning null when the fact can't be determined at this call site.
-
-/** Infer arg val type using caller's body-local valTypes and module globals. */
-export function inferArgType(expr, callerValTypes) {
-  if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-  return valTypeOf(expr)
-}
-
-/** Infer arg schemaId. Sources: caller's per-param schemaId map, module-level
- *  ctx.schema.vars binding, or a static-key object literal. */
-export function inferArgSchema(expr, callerSchemas) {
-  if (typeof expr === 'string') {
-    if (callerSchemas?.has(expr)) return callerSchemas.get(expr)
-    const id = ctx.schema.vars.get(expr)
-    return id != null ? id : null
-  }
-  if (Array.isArray(expr) && expr[0] === '{}') {
-    const parsed = staticObjectProps(expr.slice(1))
-    return parsed ? ctx.schema.register(parsed.names) : null
-  }
-  return null
-}
-
-/** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
- *  per-param arr-elem (transitive), or a call to an arr-narrowed user fn. */
-export function inferArgArrElemSchema(expr, callerArrElems, callerArrParams) {
-  if (typeof expr === 'string') {
-    if (callerArrElems?.has(expr)) {
-      const v = callerArrElems.get(expr)
-      if (v != null) return v
-    }
-    if (callerArrParams?.has(expr)) {
-      const v = callerArrParams.get(expr)
-      if (v != null) return v
-    }
-    return null
-  }
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
-    if (f?.arrayElemSchema != null) return f.arrayElemSchema
-  }
-  return null
-}
-
-/** Infer arg arr-elem-VAL. Mirrors inferArgArrElemSchema but tracks VAL.* element kind. */
-export function inferArgArrElemValType(expr, callerArrElemVals, callerArrValParams) {
-  if (typeof expr === 'string') {
-    if (callerArrElemVals?.has(expr)) {
-      const v = callerArrElemVals.get(expr)
-      if (v != null) return v
-    }
-    if (callerArrValParams?.has(expr)) {
-      const v = callerArrValParams.get(expr)
-      if (v != null) return v
-    }
-    return null
-  }
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
-    if (f?.arrayElemValType != null) return f.arrayElemValType
-  }
-  return null
-}
-
-/** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
- *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
- *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
-export function inferArgTypedCtor(expr, callerTypedElems, callerTypedParams) {
-  if (typeof expr === 'string') {
-    if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
-    if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)
-    return null
-  }
-  const ctor = typedElemCtor(expr)
-  if (ctor) return ctor
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.func.map?.get(expr[1])
-    if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
-  }
-  return null
-}
+// Cross-call argument inference helpers (`inferArg*`) live in src/infer.js —
+// they're the call-site mirror of the body-walk evidence sources and pair
+// naturally with that registry. Consumed by src/narrow.js' signature fixpoint.
 
 // Per-body memoization: analyzeBody is a pure function of `body` plus a small
 // set of ctx fields (func.locals, func.repByLocal, func.map[*][field]). compile.js
@@ -847,9 +761,8 @@ const _bodyFactsCache = new WeakMap()
 
 /**
  * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
- * Callers that need to extend (e.g. add params to locals) must clone explicitly.
- * `analyzeLocals` is the canonical clone-then-extend facade; everywhere else
- * reads slices via `analyzeBody(body).<slice>`.
+ * Callers that need to extend (e.g. add params to locals) must clone explicitly
+ * before mutating. Slice reads via `analyzeBody(body).<slice>`.
  */
 export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
@@ -1047,7 +960,7 @@ export function analyzeBody(body) {
           const refs = ctx.func.refinements
           const hadParam = refs?.has(paramName)
           const prev = hadParam ? refs.get(paramName) : undefined
-          if (refs && recvVt) refs.set(paramName, recvVt)
+          if (refs && recvVt) refs.set(paramName, { val: recvVt })
           let bodyVt = null
           try { bodyVt = valTypeOf(exprBody) }
           finally {
@@ -1274,69 +1187,6 @@ export function analyzeBody(body) {
  *  Same hook as `invalidateValTypesCache` — split names preserve caller intent. */
 export function invalidateLocalsCache(body) {
   if (body && typeof body === 'object') _bodyFactsCache.delete(body)
-}
-
-// String-only methods: presence of `name.method(...)` is definite evidence that
-// `name` is VAL.STRING. Excludes ambiguous methods (length, slice, indexOf, [],
-// concat) that strings share with arrays/typed-arrays.
-const STRING_ONLY_METHODS = new Set([
-  'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
-  'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'normalize', 'localeCompare',
-  'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
-  'matchAll', 'match', 'replace', 'replaceAll', 'split',
-])
-// Array-only methods: presence rules out STRING.
-const ARRAY_ONLY_METHODS = new Set([
-  'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',
-  'flat', 'flatMap', 'copyWithin',
-])
-
-/** Infer VAL.STRING for `names` from method-call evidence in `body`.
- *  Descends into nested closures (captured names retain shape) but respects
- *  shadowing: a param of a nested `=>` removes that name from the inference
- *  scope inside that closure. Returns Map<name, VAL.STRING> for names that
- *  have at least one string-only method call and no array-only conflicts. */
-export function inferStringParams(body, names) {
-  if (!names || names.length === 0) return new Map()
-  const evidence = new Map() // name → 'string' | 'conflict'
-  function walk(node, scope) {
-    if (!Array.isArray(node) || scope.size === 0) return
-    const op = node[0]
-    if (op === '=>') {
-      const shadowed = collectParamNames([node[1]])
-      let inner = scope
-      for (const s of shadowed) {
-        if (inner.has(s)) {
-          if (inner === scope) inner = new Set(scope)
-          inner.delete(s)
-        }
-      }
-      walk(node[2], inner)
-      return
-    }
-    // `name.method` — observe positive/negative evidence
-    if (op === '.' && typeof node[1] === 'string' && scope.has(node[1])) {
-      const m = node[2]
-      if (typeof m === 'string') {
-        if (STRING_ONLY_METHODS.has(m)) {
-          if (evidence.get(node[1]) !== 'conflict') evidence.set(node[1], 'string')
-        } else if (ARRAY_ONLY_METHODS.has(m)) {
-          evidence.set(node[1], 'conflict')
-        }
-      }
-    }
-    // Reassignment to an unambiguously non-string RHS poisons the inference
-    if (op === '=' && typeof node[1] === 'string' && scope.has(node[1])) {
-      const rhs = node[2]
-      const vt = valTypeOf(rhs)
-      if (vt && vt !== VAL.STRING) evidence.set(node[1], 'conflict')
-    }
-    for (let i = 1; i < node.length; i++) walk(node[i], scope)
-  }
-  walk(body, new Set(names))
-  const out = new Map()
-  for (const [n, ev] of evidence) if (ev === 'string') out.set(n, VAL.STRING)
-  return out
 }
 
 /** Drop the cached analyzeBody entry. Used after E2-phase valResult narrowing
@@ -1570,8 +1420,11 @@ const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'
  *     `&= |= ^= <<= >>= >>>=` (always int by op result type);
  *     `/=` `**=` poison.
  *
- * Writes `intCertain: true` on `ctx.func.repByLocal[name]`. No emit impact —
- * codegen extensions consume this in follow-up passes.
+ * Writes `intCertain: true` on `ctx.func.repByLocal[name]`. Consumers:
+ *   • `toNumF64` (src/ir.js) — skips the `__to_num` wrapper since an intCertain
+ *     local never carries a NaN-boxed pointer.
+ *   • `Math.floor/ceil/trunc/round` (module/math.js) — short-circuits to the
+ *     identity, eliding the wasm rounding op on an already-integer operand.
  */
 export function analyzeIntCertain(body) {
   // Pass 1: collect every defining RHS per binding name. Compound assignments
@@ -1790,15 +1643,9 @@ export function exprType(expr, locals) {
   return 'f64'
 }
 
-/**
- * Analyze all local declarations and assignments to determine types.
- * A local is i32 if ALL assignments produce i32. Any f64 widens to f64.
- *
- * Thin slice of `analyzeBody` (single unified walk).
- */
-export function analyzeLocals(body) {
-  return analyzeBody(body).locals
-}
+// `analyzeLocals` was inlined to `analyzeBody(body).locals` at its three real
+// call sites in src/compile.js and src/narrow.js — the one-line facade existed
+// only as a historical surface and obscured the unified-walk relationship.
 
 /**
  * Identify locals that can be stored as an unboxed i32 pointer offset instead of

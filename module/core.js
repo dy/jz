@@ -12,8 +12,8 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, lookupValType, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
-import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
+import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
 
@@ -384,18 +384,32 @@ export default (ctx) => {
    *  ARRAY/SET/MAP share a single layout: length is i32 at offset-8. We inline that load
    *  directly instead of calling __len which re-dispatches on type. ptrOffsetIR handles
    *  ARRAY forwarding (non-ARRAY skips the forwarding loop). TYPED has a variable-width
-   *  layout depending on the aux typed-element shift, so it still routes through __len. */
-  function emitLengthAccess(va, vt) {
+   *  layout depending on the aux typed-element shift, so it still routes through __len.
+   *  `notString` (from rep.notString — write-shape evidence rules out primitive string)
+   *  routes the otherwise-unknown case through __len directly, eliding the STRING arm
+   *  of __length. __len returns 0 on tags it doesn't recognize, matching JS's
+   *  `undefined` semantics on non-pointer .length (the binding writes through xs[i]
+   *  / xs.length, so reaching .length with a non-pointer is unreachable in practice). */
+  function emitLengthAccess(va, vt, notString = false) {
     if (vt === VAL.ARRAY || vt === VAL.SET || vt === VAL.MAP) {
       const off = ptrOffsetIR(va, vt)
       return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', off, ['i32.const', 8]]]], 'f64')
     }
     if (vt === VAL.TYPED)
       return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
-    // Known string → byteLen (handles SSO + heap)
+    // Known string → byteLen via the active string rep. Pass the slot
+    // carrier (f64 under nanbox-sso) — the rep op handles internal
+    // reinterpret/wrap. The `?.` call site passes a bare `['local.get', $t]`
+    // without a `.type` tag, so coerce defensively to f64.
     if (vt === VAL.STRING) {
-      inc('__str_byteLen')
-      return typed(['f64.convert_i32_s', ['call', '$__str_byteLen', ['i64.reinterpret_f64', va]]], 'f64')
+      const f64Va = va?.type === 'f64' ? va : typed(va, 'f64')
+      return typed(['f64.convert_i32_s', ctx.abi.string.ops.byteLen(f64Va, ctx)], 'f64')
+    }
+    // Unknown but proven not-string → __len directly (skips the STRING arm of __length).
+    if (notString) {
+      inc('__len')
+      ctx.features.typedarray = true
+      return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
     }
     // Unknown → runtime dispatch via stdlib. Set/Map dispatch arms are pulled
     // only when user code actually constructs Set/Map (collection.js sets the
@@ -623,8 +637,10 @@ export default (ctx) => {
       if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
         return typed(['f64.const', Buffer.byteLength(obj[1], 'utf8')], 'f64')
       }
-      const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
-      return emitLengthAccess(asF64(emit(obj)), vt)
+      const rep = typeof obj === 'string' ? repOf(obj) : null
+      const vt = rep ? rep.val : valTypeOf(obj)
+      const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
+      return emitLengthAccess(asF64(emit(obj)), vt, notString)
     }
 
     // Module-registered property emitter (.size, etc.)
@@ -639,10 +655,12 @@ export default (ctx) => {
   ctx.core.emit['?.'] = (obj, prop) => {
     const t = temp()
     const va = asF64(emit(obj))
-    const vt = typeof obj === 'string' ? repOf(obj)?.val : valTypeOf(obj)
+    const rep = typeof obj === 'string' ? repOf(obj) : null
+    const vt = rep ? rep.val : valTypeOf(obj)
     let access
     if (prop === 'length') {
-      access = emitLengthAccess(['local.get', `$${t}`], vt)
+      const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
+      access = emitLengthAccess(['local.get', `$${t}`], vt, notString)
     } else {
       const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
       if (propIdx >= 0) access = emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
@@ -689,7 +707,9 @@ export default (ctx) => {
   ctx.core.emit['?.[]'] = (arr, idx) => {
     const t = temp()
     const va = asF64(emit(arr))
+    // Emit-time rep seed on fresh `?.[]` hoist-temp (lifecycle: analysis-vs-emit).
     // Propagate source type to temp so [] dispatch (string, typed, etc.) works
+    // when the inner `ctx.core.emit['[]'](t, idx)` re-enters dispatch.
     const srcType = typeof arr === 'string' ? repOf(arr)?.val : null
     if (srcType) updateRep(t, { val: srcType })
     if (typeof arr === 'string' && ctx.types.typedElem?.has(arr)) {
@@ -719,6 +739,7 @@ export default (ctx) => {
         const recv = callee[1]
         const t = temp()
         const va = asF64(emit(recv))
+        // Emit-time rep seed on fresh `?.()` recv-temp so methodEmit's dispatch fast-paths fire.
         const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
         if (vt) updateRep(t, { val: vt })
         const callResult = methodEmit(t, ...args)

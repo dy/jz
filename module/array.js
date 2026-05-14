@@ -10,7 +10,7 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
-import { valTypeOf, lookupValType, VAL, extractParams, updateRep, staticPropertyKey } from '../src/analyze.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey } from '../src/analyze.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
@@ -115,6 +115,8 @@ function makeCallback(fn, argReps) {
               : typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
             stmts.push(['local.set', `$${fresh}`, ae])
           }
+          // Emit-time rep seeding for inliner-fresh param locals (lifecycle:
+          // analysis already finished; these `inl_i` names didn't exist then).
           // Apply argReps hints (caller knows recv elem val type) to inlined-param
           // reps so emit(subst) sees `inl_i.val=NUMBER` and elides __to_num/__is_str_key.
           if (argReps) {
@@ -596,6 +598,8 @@ export default (ctx) => {
     if (typeof arr !== 'string' && !(Array.isArray(arr) && arr[0] === 'local.get')) {
       const vtArr = valTypeOf(arr)
       const h = temp('ai')
+      // Emit-time rep seed on fresh hoist-temp `h` so the recursive emit
+      // below (`ctx.core.emit['[]'](h, idx)`) takes the typed-arr fast path.
       if (vtArr) updateRep(h, { val: vtArr })
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
@@ -748,10 +752,18 @@ export default (ctx) => {
         })
       return typed((['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
     }
+    // Pure-write narrowing: an `xs[i] = v` / `xs.length = n` site in this
+    // body, with no offsetting string-shape evidence (typeof string check,
+    // STRING_ONLY method call, string-literal assignment), proves `arr` isn't
+    // a primitive string. Skip the runtime `__ptr_type==STRING` gate —
+    // `__typed_idx` already handles both ARRAY and TYPED tags internally.
+    // Discharge analysis lives in src/infer.js (notStringEvidence source); flow-sensitive
+    // notString refinements (from `if (typeof x === 'string') return ...`) overlay via lookup.
+    const notString = typeof arr === 'string' && lookupNotString(arr)
     if (useRuntimeKeyDispatch)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
-        if (ctx.module.modules['string']) {
+        if (ctx.module.modules['string'] && !notString) {
           return ['if', ['result', 'f64'],
             ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
@@ -760,7 +772,7 @@ export default (ctx) => {
         return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
       })
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
-    if (ctx.module.modules['string'])
+    if (ctx.module.modules['string'] && !notString)
       return typed(
         ['if', ['result', 'f64'],
           ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ptrExpr]], ['i32.const', PTR.STRING]],

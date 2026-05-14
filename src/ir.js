@@ -301,8 +301,8 @@ export const emitNum = v => Number.isInteger(v) && v >= -2147483648 && v <= 2147
 // === Temp locals ===
 
 /** Allocate a temp local, returns name without $. Optional tag aids WAT readability.
- *  Skips names already registered (by analyzeLocals from prepare-generated names)
- *  to avoid collisions that would silently override the pre-analyzed type. */
+ *  Skips names already registered (by analyzeBody().locals from prepare-generated
+ *  names) to avoid collisions that would silently override the pre-analyzed type. */
 export function temp(tag = '') {
   let name
   do { name = `${T}${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))

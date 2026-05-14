@@ -15,7 +15,6 @@
     "cli.js",
     "wasi.js",
     "src",
-    "abi",
     "module",
     "interop",
     "README.md"

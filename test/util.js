@@ -2,7 +2,7 @@
 // a different rep map. Tests that don't care just call `run(code)`; tests that
 // do gate with `supportsAbi('nanbox')`.
 import jz, { compile } from '../index.js'
-import { PRESETS } from '../abi/index.js'
+import { PRESETS } from '../src/abi/index.js'
 
 export const ABI = process.env.JZ_ABI || 'nanbox'
 

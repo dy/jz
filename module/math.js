@@ -25,9 +25,8 @@ export default (ctx) => {
   // floor/ceil/trunc/round are no-ops on integer-valued operands. When the
   // arg is a local whose every def is integer-valued (intCertain lattice),
   // skip the wasm op and just hand back the operand cast to f64.
-  const fInt = (op, a) => typeof a === 'string' && repOf(a)?.intCertain === true
-    ? asF64(emit(a))
-    : f(op, a)
+  const isIntCertain = a => typeof a === 'string' && repOf(a)?.intCertain === true
+  const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
   const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
   const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))
 
@@ -81,7 +80,7 @@ export default (ctx) => {
   // Detect that one case — `nearest(x) === x - 0.5` — and bump by one. (The −0.5→−0
   // and 0.49999…94→0 edges already match `f64.nearest`.)
   ctx.core.emit['math.round'] = a => {
-    if (typeof a === 'string' && repOf(a)?.intCertain === true) return asF64(emit(a))
+    if (isIntCertain(a)) return asF64(emit(a))
     const t = temp('rnd'), n = temp('rnd')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(a))],

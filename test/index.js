@@ -33,6 +33,7 @@ const TESTS = [
   'external',
   'watr',
   'optimizer',
+  'inference',
   'perf',
   'timers',
   'test262-regressions',

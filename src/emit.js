@@ -44,6 +44,7 @@ import {
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads,
 } from './ir.js'
+import { typeofPredicate } from './infer.js'
 
 // Current emission "expect" mode ('void' or null); set by emit(), read by compound-assignment emitters
 // to decide whether to emit a value-returning or side-effect-only form.
@@ -235,7 +236,7 @@ const TYPEOF_CODE_TO_VAL = { [-1]: VAL.NUMBER, [-2]: VAL.STRING, [-6]: VAL.CLOSU
 
 /** Extract refinements from a boolean condition AST.
  *  `sense`: true = refine for then-branch, false = refine for else-branch (i.e. cond inverted).
- *  Returns a Map<name, VAL>. Walks && / || / ! accordingly. */
+ *  Returns a Map<name, {val?: VAL, notString?: true}>. Walks && / || / ! accordingly. */
 function extractRefinements(cond, out, sense = true) {
   if (!Array.isArray(cond)) return out
   const op = cond[0]
@@ -247,15 +248,18 @@ function extractRefinements(cond, out, sense = true) {
   if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
   // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
   if ((op === '==' || op === '===' || op === '!=' || op === '!==')) {
-    const eq = (op === '==' || op === '===')
-    const wantPositive = eq ? sense : !sense
-    if (!wantPositive) return out
-    const a = cond[1], b = cond[2]
-    const pair = Array.isArray(a) && a[0] === 'typeof' ? [a[1], b]
-      : Array.isArray(b) && b[0] === 'typeof' ? [b[1], a] : null
-    if (pair && typeof pair[0] === 'string' && Array.isArray(pair[1]) && pair[1][0] == null) {
-      const val = TYPEOF_CODE_TO_VAL[pair[1][1]]
-      if (val) out.set(pair[0], val)
+    const tp = typeofPredicate(cond)
+    if (tp) {
+      const wantPositive = tp.eq ? sense : !sense
+      if (wantPositive) {
+        const val = TYPEOF_CODE_TO_VAL[tp.code]
+        if (val) mergeRefinement(out, tp.name, { val })
+      } else if (tp.code === 'string' || tp.code === -2) {
+        // Negative branch of typeof-string guard (e.g. post `if (typeof x === 'string') return`)
+        // proves the binding is not a primitive string in the suffix scope — feeds B4's
+        // length / subscript dispatch elision the same way write-shape evidence does.
+        mergeRefinement(out, tp.name, { notString: true })
+      }
     }
     return out
   }
@@ -265,9 +269,16 @@ function extractRefinements(cond, out, sense = true) {
     const callee = cond[1]
     const isArr = callee === 'Array.isArray'
       || (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
-    if (isArr) { out.set(cond[2], VAL.ARRAY); return out }
+    if (isArr) { mergeRefinement(out, cond[2], { val: VAL.ARRAY }); return out }
   }
   return out
+}
+
+/** Merge a refinement fact into the per-name slot. Later facts override; non-overlapping
+ *  fields union. Keeps the call-side simple (always assign through this). */
+function mergeRefinement(out, name, fact) {
+  const cur = out.get(name)
+  out.set(name, cur ? { ...cur, ...fact } : fact)
 }
 
 function unrollSmallConstFor(init, cond, step, body) {
@@ -492,10 +503,12 @@ export function emitDecl(...inits) {
     }
     const localType = ctx.func.locals.get(name) || 'f64'
     let ptrKind = repOf(name)?.ptrKind
+    // Emit-time rep mutation (lifecycle: analysis → emit transition).
     // Inherit ptrKind from a pointer-ABI RHS: destructure temps (`__d0 = v`) and other
     // fresh let-bindings whose init is already an unboxed pointer. Without this, readVar
     // returns an untyped i32 local.get and later `asF64` emits a numeric convert instead
-    // of a ptr-rebox. Safe because emitDecl runs once per let/const binding.
+    // of a ptr-rebox. Safe because emitDecl runs once per let/const binding — no prior
+    // emit-time read could have observed the unset rep.
     if (ptrKind == null && val.ptrKind != null && localType === 'i32' && !ctx.func.boxed?.has(name)) {
       updateRep(name, { ptrKind: val.ptrKind })
       ptrKind = val.ptrKind
@@ -515,6 +528,7 @@ export function emitDecl(...inits) {
       // Unboxed pointer local — extract i32 offset from NaN-boxed f64 via reinterpret, not numeric trunc.
       // CLOSURE init carries funcIdx in val.closureFuncIdx; persist it on the rep so a later
       // asF64 (escape: store, return, indirect-call rebox) reconstructs the correct table slot.
+      // Emit-time mutation — analyzeValTypes never sees closureFuncIdx.
       if (ptrKind === VAL.CLOSURE && val.closureFuncIdx != null && repOf(name)?.ptrAux == null)
         updateRep(name, { ptrAux: val.closureFuncIdx })
       coerced = val.ptrKind === ptrKind ? val
@@ -698,13 +712,17 @@ export function emitBody(node) {
     // Skip names that are reassigned later — refinement would be unsound past the assignment.
     if (Array.isArray(s) && s[0] === 'if' && s[3] == null && isTerminator(s[2])) {
       const refs = extractRefinements(s[1], new Map(), false)
-      for (const [name, val] of refs) {
+      for (const [name, fact] of refs) {
         let reassigned = false
         for (let j = i + 1; j < stmts.length; j++)
           if (isReassigned(stmts[j], name)) { reassigned = true; break }
         if (reassigned) continue
-        accumulated.push([name, ctx.func.refinements.get(name)])
-        ctx.func.refinements.set(name, val)
+        const cur = ctx.func.refinements.get(name)
+        accumulated.push([name, cur])
+        // Merge so sibling early-returns layering on the same name compose
+        // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
+        // leaves both `notString: true` and would-be array exclusion stacked).
+        ctx.func.refinements.set(name, cur ? { ...cur, ...fact } : fact)
       }
     }
   }
@@ -731,8 +749,7 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
   }
   if (vta === VAL.STRING && vtb === VAL.STRING) {
-    inc('__str_cmp')
-    return typed([`i32.${i32op}`, ['call', '$__str_cmp', asI64(va), asI64(vb)], ['i32.const', 0]], 'i32')
+    return typed([`i32.${i32op}`, ctx.abi.string.ops.cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
   }
   if (vta === VAL.DATE || vtb === VAL.DATE) {
     const dateNum = (node, v, vt) => {
@@ -1350,16 +1367,14 @@ export const emitter = {
           inc('__str_append_byte', '__char_at')
           return typed(['call', '$__str_append_byte',
             asI64(emit(a)),
-            ['call', '$__char_at', asI64(emit(b[1])), asI32(emit(b[2]))],
+            ctx.abi.string.ops.charCodeAt(asF64(emit(b[1])), asI32(emit(b[2])), ctx),
           ], 'f64')
         }
       }
-      inc('__str_concat_raw')
-      return typed(['call', '$__str_concat_raw', asI64(emit(a)), asI64(emit(b))], 'f64')
+      return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx), 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
-      inc('__str_concat')
-      return typed(['call', '$__str_concat', asI64(emit(a)), asI64(emit(b))], 'f64')
+      return typed(ctx.abi.string.ops.concat(asF64(emit(a)), asF64(emit(b)), ctx), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
@@ -1978,6 +1993,9 @@ export const emitter = {
           const acc = `${T}acc${ctx.func.uniq++}`, arr = `${T}sp${ctx.func.uniq++}`, len = `${T}splen${ctx.func.uniq++}`, idx = `${T}spidx${ctx.func.uniq++}`
           ctx.func.locals.set(acc, 'f64'); ctx.func.locals.set(arr, 'f64')
           ctx.func.locals.set(len, 'i32'); ctx.func.locals.set(idx, 'i32')
+          // Emit-time rep seeding for a fresh spread-staging local (no prior reader).
+          // Without this, the loop body's `[]` read on `arr` falls back to polymorphic
+          // dispatch — VAL.* on the rep elides STRING gate for ARRAY/TYPED spreads.
           const spreadVT = valTypeOf(spreadExpr)
           if (spreadVT) updateRep(arr, { val: spreadVT })
 
@@ -2042,6 +2060,7 @@ export const emitter = {
               const spreadExpr = item[1]
               const arrL = `${T}sp${ctx.func.uniq++}`, lenL = `${T}splen${ctx.func.uniq++}`, idxL = `${T}spidx${ctx.func.uniq++}`
               ctx.func.locals.set(arrL, 'f64'); ctx.func.locals.set(lenL, 'i32'); ctx.func.locals.set(idxL, 'i32')
+              // Emit-time rep seeding for fresh spread-staging local (see arr-spread comment above).
               const spreadVT = valTypeOf(spreadExpr)
               if (spreadVT) updateRep(arrL, { val: spreadVT })
               const n = multiCount(spreadExpr)

@@ -52,7 +52,7 @@ import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
 } from './interop/nanbox.js'
-import { PRESETS, DEFAULT_PRESET, presetName } from './abi/index.js'
+import { PRESETS, DEFAULT_PRESET, presetName } from './src/abi/index.js'
 
 // A host import that's a JS function may hand back any value, including a host
 // object — which arrives in wasm as a PTR.EXTERNAL ref. Constants/typed specs can't.

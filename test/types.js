@@ -8,7 +8,7 @@ import { UNDEF_NAN, NULL_NAN } from '../interop/nanbox.js'
 import prepare, { GLOBALS } from '../src/prepare.js'
 import { ctx, reset } from '../src/ctx.js'
 import { emitter } from '../src/emit.js'
-import { analyzeValTypes, analyzeIntCertain, analyzeLocals, repOf, updateRep, VAL } from '../src/analyze.js'
+import { analyzeValTypes, analyzeIntCertain, analyzeBody, repOf, updateRep, VAL } from '../src/analyze.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 
@@ -700,7 +700,7 @@ function runAnalyze(code, paramVals) {
   const fn = ctx.func.list.find(f => !f.raw && !f.exported && f.body && Array.isArray(f.body))
     || ctx.func.list[0]
   const body = fn.body
-  ctx.func.locals = analyzeLocals(body)
+  ctx.func.locals = analyzeBody(body).locals
   if (paramVals) for (const [n, v] of Object.entries(paramVals)) updateRep(n, { val: v })
   analyzeValTypes(body)
   analyzeIntCertain(body)
