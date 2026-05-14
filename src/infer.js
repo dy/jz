@@ -83,7 +83,7 @@ export function typeofPredicate(node) {
 // === paramReps lattice primitives ==========================================
 //
 // `paramReps: Map<funcName, Map<paramIdx, ValueRep>>` is the cross-call fact
-// lattice. Evidence sources (body-walk and call-site `inferArg*`) produce
+// lattice. Evidence sources (body-walk and call-site `infer*`) produce
 // raw observations; these primitives apply them with sticky-null poison
 // semantics: undefined → observe (set); equal → stay; disagreement → null
 // (sticky). null is "no consensus" — readers treat it as missing.
@@ -136,7 +136,7 @@ export function typeofPredicate(node) {
 //
 //  10. per-function compile (emit start) ─ each func reads its
 //                     paramReps[name][k] and folds the consensus facts
-//                     into ctx.func.repByLocal via updateRep. Locals and
+//                     into ctx.func.localReps via updateRep. Locals and
 //                     params then share one ValueRep store for the
 //                     remainder of emit.
 
@@ -373,7 +373,7 @@ registerEvidence('notString', notStringEvidence)
 //   • Registry sources (above) seed undecided params with `{ val: VAL.* }`
 //     evidence merged across all registered fact-returners.
 //   • Body-wide ctx-mutating passes (`analyzeValTypes`, `analyzeIntCertain`)
-//     walk the AST and write directly to `ctx.func.repByLocal` — they also
+//     walk the AST and write directly to `ctx.func.localReps` — they also
 //     populate `ctx.types.typedElem`, `ctx.schema.vars`, regex tracking, etc.
 //     and stay in analyze.js where their helpers live.
 //
@@ -385,7 +385,7 @@ registerEvidence('notString', notStringEvidence)
 /** Run the full per-function inference pipeline against `body`.
  *  `candidates` is the param-name set eligible for shape seeding (skip names
  *  already typed by an upstream source such as `paramReps`). Side-effects
- *  only — facts flow into `ctx.func.repByLocal` via `updateRep`. */
+ *  only — facts flow into `ctx.func.localReps` via `updateRep`. */
 export const inferLocals = (body, candidates) => {
   if (candidates && candidates.length) {
     const inferred = inferParams(body, candidates)
@@ -414,7 +414,7 @@ export const facts = (name) => repOf(name) ?? repOfGlobal(name)
 // (the unique authoritative pass). plan.js used to re-walk the top-level
 // statement list with the same logic; that duplicate was deleted once tests
 // confirmed prepare's depth-0 catch is a strict superset.
-export function recordGlobalValueFact(name, expr) {
+export function recordGlobalRep(name, expr) {
   if (typeof name !== 'string') return
   const vt = valTypeOf(expr)
   if (vt) {
@@ -427,7 +427,7 @@ export function recordGlobalValueFact(name, expr) {
 
 // === Call-site argument inference =========================================
 //
-// Each `inferArg*(expr, ...callerCtx)` resolves an argument expression to a
+// Each `infer*(expr, ...callerCtx)` resolves an argument expression to a
 // single fact (val / schemaId / elem-schema / elem-VAL / typedCtor) using the
 // caller's body-local observations plus module-level program facts. Returns
 // null when the fact can't be pinned down at this call site.
@@ -438,7 +438,7 @@ export function recordGlobalValueFact(name, expr) {
 // Both feed the same `paramReps` lattice via narrow.js' signature fixpoint.
 
 /** Infer arg val type using caller's body-local valTypes and module globals. */
-export function inferArgType(expr, callerValTypes) {
+export function inferValType(expr, callerValTypes) {
   if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
   return valTypeOf(expr)
 }
@@ -486,7 +486,7 @@ export function inferSchemaId(expr, lookupMap) {
 
 /** Infer arg arr-elem-schema. Sources: caller's body-local arr-elem map, caller's
  *  per-param arr-elem (transitive), or a call to an arr-narrowed user fn. */
-export function inferArgArrElemSchema(expr, callerArrElems, callerArrParams) {
+export function inferArrElemSchema(expr, callerArrElems, callerArrParams) {
   if (typeof expr === 'string') {
     if (callerArrElems?.has(expr)) {
       const v = callerArrElems.get(expr)
@@ -505,8 +505,8 @@ export function inferArgArrElemSchema(expr, callerArrElems, callerArrParams) {
   return null
 }
 
-/** Infer arg arr-elem-VAL. Mirrors inferArgArrElemSchema but tracks VAL.* element kind. */
-export function inferArgArrElemValType(expr, callerArrElemVals, callerArrValParams) {
+/** Infer arg arr-elem-VAL. Mirrors inferArrElemSchema but tracks VAL.* element kind. */
+export function inferArrElemValType(expr, callerArrElemVals, callerArrValParams) {
   if (typeof expr === 'string') {
     if (callerArrElemVals?.has(expr)) {
       const v = callerArrElemVals.get(expr)
@@ -528,7 +528,7 @@ export function inferArgArrElemValType(expr, callerArrElemVals, callerArrValPara
 /** Infer typed-array ctor (`new.Float64Array` etc.) of an arg expression at a call site.
  *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
-export function inferArgTypedCtor(expr, callerTypedElems, callerTypedParams) {
+export function inferTypedCtor(expr, callerTypedElems, callerTypedParams) {
   if (typeof expr === 'string') {
     if (callerTypedElems?.has(expr)) return callerTypedElems.get(expr)
     if (callerTypedParams?.has(expr)) return callerTypedParams.get(expr)

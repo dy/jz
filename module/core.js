@@ -12,7 +12,8 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep } from '../src/analyze.js'
+import { shapeOf } from '../src/shape.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -521,7 +522,7 @@ export default (ctx) => {
     // ctx.schema.find(null, prop) when multiple registered schemas share a key.
     if (schemaIdx < 0 && typeof obj !== 'string') {
       const sh = shapeOf(obj)
-      if ((sh?.vt === VAL.OBJECT || sh?.vt === VAL.HASH) && sh.names) {
+      if ((sh?.val === VAL.OBJECT || sh?.val === VAL.HASH) && sh.names) {
         const i = sh.names.indexOf(prop)
         if (i >= 0) schemaIdx = i
       }

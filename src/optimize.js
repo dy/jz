@@ -868,7 +868,7 @@ export function hoistInvariantCellLoads(fn) {
  * shared via tee'd snap locals.
  *
  * Safety: jz's invariant — distinct unboxed-pointer locals come from distinct
- * fresh allocations (analyzePtrUnboxable refuses to unbox aliased locals).
+ * fresh allocations (unboxablePtrs refuses to unbox aliased locals).
  * So `(f64.store ADDR ...)` with base `(local.get $Y)` for $Y ≠ $X cannot
  * touch addresses reachable via `$X + K`. Stores to typed-array slots in the
  * loop body don't invalidate row-pointer reads.
@@ -882,7 +882,7 @@ export function hoistInvariantCellLoads(fn) {
  * Blocks are treated as transparent — recurse into children.
  */
 export function cseScalarLoad(fn) {
-  // DISABLED: the safety claim above relies on `analyzePtrUnboxable` having vetted
+  // DISABLED: the safety claim above relies on `unboxablePtrs` having vetted
   // every i32 local as a non-aliased fresh-allocation pointer. But this pass scans
   // *all* i32 locals from `(local … i32)` decls — wasm-native i32 scalars (lengths,
   // indices), narrow-ABI helper returns, and analyze.js's new arrayElemSchema-driven

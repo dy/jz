@@ -442,6 +442,19 @@ export default (ctx) => {
       ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', va]], ['i32.const', PTR.TYPED]]], 'f64')
   }
 
+  // x instanceof Float64Array | Int32Array | … — typed-pointer predicate emitted
+  // by jzify. NaN-check first, then __ptr_type === PTR.TYPED. Aux-byte ctor
+  // discrimination (Float64 vs Int32) lives downstream in typedElem analysis —
+  // this predicate only asserts "is some TypedArray". Result i32 (boolean).
+  ctx.core.emit['__is_typed'] = (x) => {
+    if (x === undefined) return typed(['i32.const', 0], 'i32')
+    const v = asF64(emit(x))
+    const t = temp('ityp')
+    return typed(['i32.and',
+      ['f64.ne', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+      ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', PTR.TYPED]]], 'i32')
+  }
+
   // buf.slice(begin?, end?) on a BUFFER → fresh BUFFER with the byte range copied.
   // Only dispatches statically when obj is a tracked ArrayBuffer/DataView variable.
   ctx.core.emit['.buf:slice'] = (obj, beginExpr, endExpr) => {

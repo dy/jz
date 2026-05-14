@@ -128,7 +128,7 @@ function applyArenaRewind(func, fn, safeCallees) {
 
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   ctx.func.locals = new Map()
-  ctx.func.repByLocal = null
+  ctx.func.localReps = null
   ctx.func.boxed = new Map()
   ctx.func.stack = []
   ctx.func.current = { params: [], results: [] }
@@ -152,7 +152,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const beforeLateClosures = closureFuncs.length
   const startCtx = {
     locals: ctx.func.locals,
-    repByLocal: ctx.func.repByLocal,
+    localReps: ctx.func.localReps,
     boxed: ctx.func.boxed,
     stack: ctx.func.stack,
     current: ctx.func.current,

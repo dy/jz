@@ -25,7 +25,7 @@
 import { parse } from 'subscript/feature/jessie'
 import { ctx, err, derive } from './ctx.js'
 import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
-import { recordGlobalValueFact } from './infer.js'
+import { recordGlobalRep } from './infer.js'
 import { isFuncRef } from './ir.js'
 import { fuseSparseMapReads } from './fuse.js'
 import {
@@ -240,7 +240,7 @@ export default function prepare(node) {
 
   // Invalidate shapeStrs for any module-level binding that's later assigned to.
   // shapeStrs is "effectively-const string literals at module scope" — used by
-  // analyze.js's jsonConstString to enable shape inference on `let SRC = '{...}'`
+  // shape.js's jsonConstString to enable shape inference on `let SRC = '{...}'`
   // patterns (bench convention) without enabling the const-only static fold.
   // The scan must skip `=` nodes that are children of `let`/`const`/`export` —
   // those are decl-initializers, not reassignments.
@@ -616,7 +616,7 @@ function prepDecl(op, ...inits) {
         // entry whose name is later assigned to.
         if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
           (ctx.scope.shapeStrs ||= new Map()).set(declName, normed[1])
-        recordGlobalValueFact(declName, normed)
+        recordGlobalRep(declName, normed)
       }
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {

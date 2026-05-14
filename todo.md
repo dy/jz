@@ -154,19 +154,18 @@ Status keys: `[ ]` open · `[~]` in progress · `[x]` done · `[/]` cancelled (w
 
 ## Architectural — deeper refactors
 
-- [/] **B1. `instanceof` refinement in extractRefinements** — *deferred (needs IR support)*
-  Status: extractRefinements has no `instanceof` op to branch on. jzify
-  ([src/jzify.js:569-575](src/jzify.js#L569)) lowers `x instanceof Map/Set/Date/RegExp`
-  to the weak `typeof t === 'object'` check, discarding the constructor
-  identity before IR. Refinement to VAL.MAP/SET would require either:
-  (a) preserving instanceof as a new IR op + emit handler that produces
-  `__ptr_type(x) === PTR.MAP/SET`, then extending extractRefinements; or
-  (b) adding `__is_map`/`__is_set` builtins that jzify recognizes.
-  PTR.DATE / PTR.REGEX don't exist in the enum so Date/RegExp can't pin
-  down even with the IR-op approach. Deferred until a real user need
-  shows up — currently the only refinable case (`instanceof Array`)
-  already routes through `Array.isArray` at jzify, picked up by the
-  existing extractRefinements branch.
+- [x] **B1. `instanceof` refinement in extractRefinements** — *done*
+  Outcome: chose (b) — jzify emits `__is_map` / `__is_set` / `__is_typed`
+  builtins that lower in module/collection.js + module/typedarray.js to
+  `__ptr_type === PTR.MAP/SET/TYPED` checks. A new `staticInstanceofFold`
+  helper collapses trivially-known cases at jzify time (`[..] instanceof
+  Array → true`, primitive literal → false, ctor-name match on `new C()`,
+  etc.). extractRefinements (src/emit.js) recognizes the three new callees
+  via `predicateRefinement`, refining to VAL.MAP/SET/TYPED so downstream
+  `.has` / `[i]` dispatch lowers directly. `instanceof Array` keeps
+  routing through `Array.isArray` (unchanged). PTR.DATE / PTR.REGEX don't
+  exist so Date/RegExp stay on weak `typeof === 'object'`. 5 new tests in
+  test/inference.js' `// ─── instanceof B1` block; 1626/1626 green.
 
 - [x] **B2. `Array.isArray` post-terminator narrowing** — *already working*
   Outcome: probe confirms `if (!Array.isArray(node)) return; node.length`
@@ -181,18 +180,18 @@ Status keys: `[ ]` open · `[~]` in progress · `[x]` done · `[/]` cancelled (w
   shared post-terminator path.
   Verify: 1598/1598 jz + 580/580 watr green (no change).
 
-- [/] **A3. Move JSON-shape inference into infer.js** — *deferred (would invert import direction)*
-  Status: `valTypeOf` (analyze.js:293) calls `shapeOf` for `JSON.parse` chain
-  propagation; infer.js already imports `valTypeOf` from analyze.js. Moving
-  `shapeOf` to infer.js would create a circular import. The viable options
-  are: (a) extract `shapeOf` + `staticPropertyKey` + `staticObjectProps`
-  to a third `static.js` module both analyze.js and infer.js import from,
-  or (b) half-move (staticObjectProps only — used by infer.js'
-  inferSchemaId — keeping shapeOf in analyze.js). Neither delivers enough
-  user value to justify the churn given the principle "minimal canonical
-  software." Co-locating JSON-shape with analyze.js' valTypeOf is
-  defensible — it's shape-aware static evaluation, not param-fact
-  narrowing. Deferred until a concrete need surfaces.
+- [x] **A3. Move JSON-shape inference out of analyze.js** — *done*
+  Outcome: chose (a) — created src/shape.js holding `shapeOf` +
+  `jsonConstString` and private helpers (`shapeOfJsonValue`,
+  `shapeUnifies`, `shapeLayoutUnifies`, `parseJsonShape`,
+  `parseUnifiedJsonShape`). analyze.js, module/object.js, and module/core.js
+  now import directly from src/shape.js — no re-export through analyze.js.
+  Module doc explains the placement: "analyze owns body-walk + valTypeOf,
+  infer owns binding-shape; both needed shapeOf, so we lift the shared
+  concept here." Field name on shape nodes unified from `.vt` to `.val` to
+  match `rep.val` in localReps entries. `staticObjectProps` /
+  `staticPropertyKey` stay in analyze.js (no consumer needed the move).
+  1626/1626 green.
 
 - [x] **C4. Factor `schemaIdOfReturn` / `inferArgSchema` shared core**
   Outcome: single `inferSchemaId(expr, lookupMap)` in src/infer.js. Strict
@@ -281,13 +280,14 @@ Status keys: `[ ]` open · `[~]` in progress · `[x]` done · `[/]` cancelled (w
   Outcome: `research/inference.md` written. Three principles:
   (1) Collect before compile — every dispatch-elision must trace back to a
   named upstream fact + pass, both for auditability and so editor hosts can
-  consume `ctx.func.repByLocal` / `paramReps` for inlay hints + "suboptimal
-  branch" badges. (2) Every inference aspect needs an actionable WAT test
+  consume `ctx.func.localReps` / `paramReps` for inlay hints + "suboptimal
+  branch" badges. *(Editor seam landed: `opts.inspect: true` returns
+  `{ wasm|wat, inspect: { abi, functions, schemas } }` — see index.js.)* (2) Every inference aspect needs an actionable WAT test
   — fact-set/fact-read unit tests don't count, the user only observes the
   emit. (3) Conceptual cohesion over scatter — infer.js owns "what shape is
   this binding"; analyze.js owns "what's the canonical AST shape of X";
   exports.js owns boundary-ABI gates. Two intentional non-moves named
-  (analyzeValTypes/IntCertain, callerParamFactMap).
+  (analyzeValTypes/IntCertain, paramFactsOf).
 
 - [x] **Add actionable inference tests — `test/inference.js`**
   Outcome: 18 new WAT-observable tests covering the previously-untested
@@ -317,9 +317,30 @@ Status keys: `[ ]` open · `[~]` in progress · `[x]` done · `[/]` cancelled (w
   test/index.js updated to include `inference`.
   Verify: 1620/1620 jz (18 new) + 580/580 watr green.
 
+## Post-consolidation wins (separate commit)
+
+- [x] **Lift `inferLocals` from block-only gate**
+  Outcome: `inferLocals(body, candidates)` now runs on every function body —
+  block- and expression-bodied alike. Previously gated behind `if (block)`
+  in src/compile.js (paired with `analyzeBoxedCaptures` / `analyzePtrUnboxable`,
+  which truly need a block). Closes the expression-bodied-arrow gap:
+  `(s) => s.charCodeAt(0) + s.length` now drops `__length` (probe:
+  `__length=0 __str_byteLen=4`, was `__length=1`).
+  Verify: 1621/1621 jz + 580/580 watr green.
+
+- [x] **Consolidate `tcoTailRewrite` into ir.js**
+  Outcome: moved deep-walker from compile.js to src/ir.js as a named
+  export; emit.js's explicit-return handler now invokes it instead of doing
+  a shallow `[call, $X, …]` toplevel check. Loosened the closure/import
+  bailout: trust the type-coercion invariant (asParamType / asPtrOffset
+  already wraps mismatched calls before they reach tail position).
+  Probe: `(n, p) => p ? a(n) : b(n)` now emits `return_call` on both arms
+  (was: one arm `return`, other `call`).
+  Verify: 1621/1621 jz + 580/580 watr green.
+
 ## Tracking
 
-- Run `npm test` (jz: 1620/1620 current) + `cd ../watr && npm test`
+- Run `npm test` (jz: 1621/1621 current) + `cd ../watr && npm test`
   (should be 580/580) after every item.
 - Update this file as items complete: flip `[ ]` to `[x]` with a one-line
   outcome note.

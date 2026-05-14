@@ -203,7 +203,12 @@ jz.memory = enhanceMemory
  * @param {string} [opts.abi] - ABI preset name (default `'nanbox'`). Picks a
  *   tested combination of per-type reps. Recorded in a `jz:abi` custom section
  *   (only when non-default) so `jz/interop` can sniff and dispatch.
- * @returns {Uint8Array|string}
+ * @param {boolean} [opts.inspect] - When true, return `{ wasm, inspect }`
+ *   (or `{ wat, inspect }` with `opts.wat`) instead of the bare output.
+ *   `inspect` carries per-function inferred shapes (params, locals, JSON shapes,
+ *   cross-call paramReps) for editor hosts to drive inlay hints / hover types
+ *   without re-running the analyzer. Pays a small serialization cost; off by default.
+ * @returns {Uint8Array|string|{wasm: Uint8Array, inspect: object}|{wat: string, inspect: object}}
  */
 jz.compile = (code, opts = {}) => {
   try {
@@ -243,6 +248,7 @@ const jzCompileInner = (code, opts = {}) => {
     ctx.transform.host = opts.host
   }
   if (opts.alloc === false) ctx.transform.alloc = false
+  if (opts.inspect) ctx.transform.inspect = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   ctx.transform.optimize = resolveOptimize(opts.optimize)
@@ -326,11 +332,14 @@ const jzCompileInner = (code, opts = {}) => {
     })
   }
   try {
-    if (opts.wat) return time('watrPrint', () => watrPrint(optimized))
+    if (opts.wat) {
+      const wat = time('watrPrint', () => watrPrint(optimized))
+      return opts.inspect ? { wat, inspect: ctx.inspect } : wat
+    }
     const wasm = time('watrCompile', () => watrCompile(optimized))
     let bytes = appendAbiSection(wasm, ctx.abi)
     if (opts.profileNames || opts.profile?.names) bytes = appendFunctionNames(bytes, optimized)
-    return bytes
+    return opts.inspect ? { wasm: bytes, inspect: ctx.inspect } : bytes
   } catch (e) {
     // watr surfaces dangling identifiers as "Unknown local|func|global|table|memory $X".
     // That's always a jz codegen leak — we emitted IR that references something never
@@ -417,7 +426,14 @@ export default function jz(code, ...args) {
 
   // String call: jz('code', opts?) — compile + instantiate + wrap
   const callOpts = args[0] || {}
-  return instantiateRuntime(jz.compile(code, callOpts), callOpts)
+  const out = jz.compile(code, callOpts)
+  // inspect:true returns { wasm, inspect } from jz.compile — unwrap the bytes for
+  // instantiation and surface inspect on the runtime result alongside exports/memory.
+  if (callOpts.inspect && out && typeof out === 'object' && 'wasm' in out) {
+    const result = instantiateRuntime(out.wasm, callOpts)
+    return Object.assign(result, { inspect: out.inspect })
+  }
+  return instantiateRuntime(out, callOpts)
 }
 
 export { jz }

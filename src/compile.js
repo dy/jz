@@ -29,8 +29,8 @@ import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
 import {
   T, VAL, analyzeBody,
-  analyzePtrUnboxable, typedElemAux, invalidateLocalsCache,
-  analyzeBoxedCaptures, updateRep,
+  unboxablePtrs, typedElemAux, invalidateLocalsCache,
+  boxedCaptures, updateRep,
   isBlockBody,
 } from './analyze.js'
 import { inferLocals } from './infer.js'
@@ -54,6 +54,7 @@ import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix,
 } from './assemble.js'
+import { presetName } from './abi/index.js'
 
 const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : fn()
 
@@ -65,7 +66,7 @@ const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : f
 // buildArrayWithSpreads) moved to src/emit.js.
 
 // AST-analysis primitives (staticObjectProps, paramReps lattice helpers,
-// inferArg* cross-call inference, collectProgramFacts) moved to src/analyze.js.
+// infer* cross-call inference, collectProgramFacts) moved to src/analyze.js.
 
 /**
  * Boundary-wrap predicate: exports whose body-driven result OR any param narrowed
@@ -99,6 +100,56 @@ const ensureThrowRuntime = (sec) => {
 
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
 
+/** Serialize a ValueRep entry into a plain object for inspect output.
+ *  Omits undefined fields so consumers can JSON-stringify without noise. */
+const repView = (rep) => {
+  if (!rep) return null
+  const out = {}
+  for (const k of ['val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'arrayElemSchema', 'arrayElemValType', 'typedCtor', 'jsonShape']) {
+    if (rep[k] != null) out[k] = rep[k]
+  }
+  return Object.keys(out).length ? out : null
+}
+
+/** Capture a function's inferred shape into ctx.inspect.functions. Called after
+ *  analyzeFuncForEmit when transform.inspect is set — reads from funcFacts +
+ *  programFacts.paramReps, never from the live ctx.func.* (which churns per emit). */
+function captureFuncInspect(func, facts, programFacts) {
+  if (!ctx.inspect || func.raw) return
+  const { name, sig } = func
+  const reps = facts?.localReps
+  const paramNames = new Set(sig.params.map(p => p.name))
+  const params = sig.params.map(p => ({
+    name: p.name, type: p.type,
+    ...(p.ptrKind != null ? { ptrKind: p.ptrKind } : {}),
+    ...(p.ptrAux != null ? { ptrAux: p.ptrAux } : {}),
+    ...(repView(reps?.get(p.name)) || {}),
+  }))
+  const locals = {}
+  if (facts?.locals) {
+    for (const [lname, ltype] of facts.locals) {
+      if (paramNames.has(lname)) continue
+      const v = repView(reps?.get(lname))
+      locals[lname] = v ? { type: ltype, ...v } : { type: ltype }
+    }
+  }
+  const callerReps = {}
+  const cr = programFacts.paramReps?.get(name)
+  if (cr) for (const [idx, r] of cr) {
+    const v = repView(r)
+    if (v) callerReps[idx] = v
+  }
+  ctx.inspect.functions[name] = {
+    exported: isExported(func),
+    params,
+    results: sig.results.slice(),
+    ...(sig.ptrKind != null ? { resultPtrKind: sig.ptrKind } : {}),
+    ...(sig.ptrAux != null ? { resultPtrAux: sig.ptrAux } : {}),
+    locals,
+    ...(Object.keys(callerReps).length ? { callerReps } : {}),
+  }
+}
+
 function enterFunc(func) {
   ctx.func.stack = []
   ctx.func.uniq = 0
@@ -117,7 +168,7 @@ function analyzeFuncForEmit(func, programFacts) {
 
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
-  ctx.func.repByLocal = null
+  ctx.func.localReps = null
   ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
 
   const _reps = paramReps.get(name)
@@ -130,7 +181,7 @@ function analyzeFuncForEmit(func, programFacts) {
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
         updateRep(pname, { val: VAL.TYPED })
       }
-      if (r.val && !ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.val && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.arrayElemSchema != null) updateRep(pname, { arrayElemSchema: r.arrayElemSchema })
       if (r.arrayElemValType != null) updateRep(pname, { arrayElemValType: r.arrayElemValType })
       if (r.intConst != null) updateRep(pname, { intConst: r.intConst })
@@ -151,21 +202,21 @@ function analyzeFuncForEmit(func, programFacts) {
   // `inferLocals` is body-shape-agnostic — it walks any AST node, so we run it
   // for expression-bodied arrows too (`(s) => s.charCodeAt(0) + s.length` gets
   // `s: VAL.STRING` via methodEvidence the same way the block-bodied variant
-  // does). Only `analyzeBoxedCaptures` / `analyzePtrUnboxable` stay gated:
+  // does). Only `boxedCaptures` / `unboxablePtrs` stay gated:
   // both need `ctx.func.locals` populated, which only block bodies produce.
   const candidates = sig.params
-    .filter(p => !ctx.func.repByLocal?.get(p.name)?.val)
+    .filter(p => !ctx.func.localReps?.get(p.name)?.val)
     .map(p => p.name)
   inferLocals(body, candidates)
   if (block) {
-    analyzeBoxedCaptures(body)
+    boxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,
     // the use site can't pick the right i32.store{8,16}/i32.store width and
     // the rebox path can't reconstruct the NaN-box. Heterogeneous decls (two
     // `let arr = ...` with different ctors, or a multi-ctor ternary) leave
     // typedElem unset; skip unbox so reads/writes go through `__typed_set_idx`.
-    const unbox = analyzePtrUnboxable(body, ctx.func.locals, ctx.func.boxed)
+    const unbox = unboxablePtrs(body, ctx.func.locals, ctx.func.boxed)
     if (unbox.size > 0) {
       for (const [n, kind] of unbox) {
         const fields = { ptrKind: kind }
@@ -180,7 +231,7 @@ function analyzeFuncForEmit(func, programFacts) {
     }
   }
   // Pointer-ABI params (from narrowing loop above): params already have type='i32' and
-  // ptrKind set. Register them in ctx.func.repByLocal so readVar tags local.gets correctly.
+  // ptrKind set. Register them in ctx.func.localReps so readVar tags local.gets correctly.
   // Boxed capture still works: the boxed-init path (below) uses a ptrKind-tagged local.get
   // so asF64 reboxes to NaN-form before f64.store to the cell.
   for (const p of sig.params) {
@@ -195,7 +246,7 @@ function analyzeFuncForEmit(func, programFacts) {
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
-    repByLocal: cloneRepMap(ctx.func.repByLocal),
+    localReps: cloneRepMap(ctx.func.localReps),
   }
 }
 
@@ -219,7 +270,7 @@ function emitFunc(func, funcFacts, programFacts) {
   const block = funcFacts.block
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
-  ctx.func.repByLocal = cloneRepMap(funcFacts.repByLocal)
+  ctx.func.localReps = cloneRepMap(funcFacts.localReps)
   ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
@@ -230,11 +281,11 @@ function emitFunc(func, funcFacts, programFacts) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
       const pname = sig.params[k].name
-      if (r.val && !ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: r.val })
+      if (r.val && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       if (r.typedCtor) {
         if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
         if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
-        if (!ctx.func.repByLocal?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
+        if (!ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
       }
       if (r.schemaId != null && !exported && !ctx.schema.vars.has(pname)) {
         ctx.schema.vars.set(pname, r.schemaId)
@@ -401,7 +452,7 @@ function synthesizeBoundaryWrappers() {
  * so any closure can be invoked via call_indirect on $ftN. This function
  * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
- * Mutates ctx.func.* per-body state (locals, boxed, repByLocal) and
+ * Mutates ctx.func.* per-body state (locals, boxed, localReps) and
  * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
  * leaks don't poison the next body). Returns the WAT IR for the func node.
  */
@@ -410,7 +461,7 @@ function emitClosureBody(cb) {
   const prevTypedElems = ctx.types.typedElem
   // Reset per-function state for closure body
   ctx.func.locals = new Map()
-  ctx.func.repByLocal = null
+  ctx.func.localReps = null
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
@@ -465,13 +516,13 @@ function emitClosureBody(cb) {
     for (const [k, v] of analyzeBody(cb.body).locals) if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
     // Usage-based shape inference for closure params not seeded by captureValTypes.
     // (Captures already have their parent's val type via cb.valTypes above.)
-    inferLocals(cb.body, cb.params.filter(p => !ctx.func.repByLocal?.get(p)?.val))
+    inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
     // Detect captures from deeper nested arrows that mutate this body's locals/params/captures
-    analyzeBoxedCaptures(cb.body)
+    boxedCaptures(cb.body)
     for (const name of ctx.func.boxed.keys()) {
       if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64') ctx.func.locals.set(name, 'i32')
     }
-    const unbox = analyzePtrUnboxable(cb.body, ctx.func.locals, ctx.func.boxed)
+    const unbox = unboxablePtrs(cb.body, ctx.func.locals, ctx.func.boxed)
     for (const [name, kind] of unbox) {
       if (cb.params.includes(name) || cb.captures.includes(name)) continue
       const fields = { ptrKind: kind }
@@ -695,8 +746,18 @@ export default function compile(ast, profiler) {
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast))
 
+  // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
+  // Initialized here (post-plan) so paramReps and schema.list are stable, populated
+  // per-function below as funcFacts settle. Bytes themselves are unchanged.
+  if (ctx.transform.inspect) ctx.inspect = { abi: presetName(ctx.abi), functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
+
   const funcFacts = new Map()
-  for (const func of ctx.func.list) if (!func.raw) funcFacts.set(func, analyzeFuncForEmit(func, programFacts))
+  for (const func of ctx.func.list) {
+    if (func.raw) continue
+    const facts = analyzeFuncForEmit(func, programFacts)
+    funcFacts.set(func, facts)
+    captureFuncInspect(func, facts, programFacts)
+  }
   const funcs = ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts))
   funcs.push(...synthesizeBoundaryWrappers())
 
