@@ -624,6 +624,13 @@ test('jzify: empty Object constructor guard canonicalizes to Object.keys check',
   is(f('{"a":1}'), 0)
 })
 
+test('jzify: map(String) canonicalizes to inline String callback', () => {
+  const { f } = jz(`
+    export let f = () => [1, 2].map(String).join(",")
+  `, { jzify: true }).exports
+  is(f(), '1,2')
+})
+
 // Regression: compound assignments on array targets crashed with
 // "Unknown local $[],b,,0" because readVar() received an array node.
 // Fix: desugar to name = name OP val when LHS is not a plain string.
