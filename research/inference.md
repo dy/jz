@@ -74,13 +74,13 @@ Pure "fact set, fact read" unit tests on `ctx.func.repByLocal` are
 fine *in addition* to a WAT test, but never as a replacement: the
 emit-time consumer is the only thing the user observes.
 
-Note one residual limitation: `inferLocals` only runs on block-bodied
-functions ([src/compile.js:207](src/compile.js#L207) `if (block)`
-gate). Expression-bodied arrows (`(s) => s.charCodeAt(0) + s.length`)
-skip the pre-emit evidence pass; the rep stays cold and emit falls
-back to polymorphic dispatch. The `test/inference.js` cases use block
-bodies where this gate matters. Lifting the gate is on the inference
-backlog.
+`inferLocals` runs on every function — block- and expression-bodied
+alike. The earlier `if (block)` gate at `analyzeFuncForEmit` only
+wraps `analyzeBoxedCaptures` + `analyzePtrUnboxable` now, because
+those two genuinely need `ctx.func.locals` populated (which only block
+bodies produce). Expression arrows like `(s) => s.charCodeAt(0)`
+narrow `s` to `VAL.STRING` exactly the same way the block-bodied
+equivalent does.
 
 ## 3. Consolidation over scatter
 

@@ -7,14 +7,23 @@
  *
  * ## Evidence ladder (strongest first, registration order = precedence)
  *
- *   1. Literal use         — `let x = 0`, `let s = ''`, `let xs = []`.    [pending]
- *   2. Operator use        — `x | 0` forces i32; `s.charCodeAt` → STRING. [partial: method source]
- *   3. Member access       — `.push`/`.pop` → ARRAY; `.charCodeAt` → STR. [done: method source]
- *   4. `typeof` guard      — `typeof x === 'number'` narrows true branch. [pending]
- *   5. Assignment flow     — `x = y` propagates y's evidence to x.        [pending]
- *   6. Comparison shape    — `x === null` proves nullable.                [pending]
+ *   1. Literal use         — `let x = 0`, `let s = ''`, `let xs = []`.    [done: analyzeValTypes]
+ *   2. Operator use        — `s.charCodeAt(...)` → STRING.                 [done: method source]
+ *   3. Member access       — `.push` / `.pop` → ARRAY; index/length-write
+ *                            → notString.                                 [done: method + notString sources]
+ *   4. `typeof` guard      — `typeof x === 'string'` flow-refines.         [done: extractRefinements + B3]
+ *   5. Assignment flow     — `x = y` propagates y's evidence to x.        [done: analyzeValTypes]
+ *   6. Comparison shape    — `x === null` proves nullable.                [out of scope: no nullable rep field, see C2]
  *   7. JSDoc `@type`       — explicit hint; advisory, not enforced.       [in prepare]
  *   8. Name heuristic      — last resort (e.g. `count`/`n`/`i` integer).  [out of scope]
+ *
+ * Rungs 1/5 live in `analyzeValTypes` rather than as registry sources because
+ * they share the canonical body-walk machinery (regex tracking, typed-elem
+ * tracking, JSON-shape, arr-elem schema, ternary unification) and lifting
+ * them would duplicate that walker. Rung 4 lives in `extractRefinements`
+ * because flow-scoped narrowing is per-branch, not param-wide — adding it as
+ * a registry source would over-narrow params whose other branch handles a
+ * non-string (callers correctly stay polymorphic in that case).
  *
  * Ambiguous bindings stay nanbox-tagged f64. Default is never wrong, only
  * sometimes wider than necessary.

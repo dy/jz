@@ -47,7 +47,7 @@ import {
   isGlobal, isConst, boxedAddr, readVar, writeVar, isNullish, isUndef,
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
-  valKindToPtr, findBodyStart,
+  valKindToPtr, findBodyStart, tcoTailRewrite,
 } from './ir.js'
 import plan from './plan.js'
 import {
@@ -82,63 +82,6 @@ const isBoundaryWrapped = (func) => {
   if (!isExported(func) || func.raw || func.sig.results.length !== 1) return false
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
-}
-
-/**
- * Tail-call rewrite: walks tail positions of an emitted IR tree and replaces
- * direct `(call $name args...)` ops with `(return_call $name args...)`.
- *
- * Tail positions, recursively from the IR root:
- *   - the root itself (function's terminal value-producing expression)
- *   - both arms of `(if (result T) cond (then ...) (else ...))`
- *   - last instruction of `(block (result T) ...)`
- *
- * Only fires when caller and callee result types match — if they didn't match,
- * `asParamType`/`asPtrOffset` would have wrapped the call in a conversion op,
- * pushing the `call` away from the tail position. We don't recurse into
- * arithmetic / select / loop ops: their results aren't standalone-tail control
- * transfers.
- *
- * Mirrors the existing `'return'` op handler in emit.js (which already does
- * TCO when the return statement is explicit). This pass closes the gap for
- * expression-bodied arrows like `(n, acc) => n <= 0 ? acc : sum(n-1, acc+n)`
- * — the AST has no `return` keyword so the emit-time handler never fires.
- */
-const tcoTailRewrite = (ir, resultType) => {
-  if (ctx.transform.noTailCall || ctx.func.inTry) return ir
-  if (!Array.isArray(ir)) return ir
-  const op = ir[0]
-  if (op === 'call' && typeof ir[1] === 'string') {
-    // IR call name is `$name`; func.map keys are bare `name`.
-    const calleeName = ir[1].startsWith('$') ? ir[1].slice(1) : ir[1]
-    const callee = ctx.func.map.get(calleeName)
-    if (!callee || callee.raw) return ir
-    const calleeRT = callee.sig?.results?.[0] ?? 'f64'
-    if (calleeRT !== resultType) return ir
-    return typed(['return_call', ...ir.slice(1)], resultType)
-  }
-  if (op === 'if' && Array.isArray(ir[1]) && ir[1][0] === 'result') {
-    let changed = false
-    const newIr = ir.slice()
-    for (let i = 3; i < newIr.length; i++) {
-      const arm = newIr[i]
-      if (Array.isArray(arm) && (arm[0] === 'then' || arm[0] === 'else') && arm.length > 1) {
-        const last = arm[arm.length - 1]
-        const rewritten = tcoTailRewrite(last, resultType)
-        if (rewritten !== last) {
-          newIr[i] = [...arm.slice(0, -1), rewritten]
-          changed = true
-        }
-      }
-    }
-    return changed ? typed(newIr, ir.type) : ir
-  }
-  if (op === 'block' && ir.length > 1) {
-    const last = ir[ir.length - 1]
-    const rewritten = tcoTailRewrite(last, resultType)
-    if (rewritten !== last) return typed([...ir.slice(0, -1), rewritten], ir.type)
-  }
-  return ir
 }
 
 const ensureThrowRuntime = (sec) => {
@@ -204,11 +147,17 @@ function analyzeFuncForEmit(func, programFacts) {
   // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
   // still gets seeded — the closure capture path then propagates the VAL via
   // captureValTypes.
+  //
+  // `inferLocals` is body-shape-agnostic — it walks any AST node, so we run it
+  // for expression-bodied arrows too (`(s) => s.charCodeAt(0) + s.length` gets
+  // `s: VAL.STRING` via methodEvidence the same way the block-bodied variant
+  // does). Only `analyzeBoxedCaptures` / `analyzePtrUnboxable` stay gated:
+  // both need `ctx.func.locals` populated, which only block bodies produce.
+  const candidates = sig.params
+    .filter(p => !ctx.func.repByLocal?.get(p.name)?.val)
+    .map(p => p.name)
+  inferLocals(body, candidates)
   if (block) {
-    const candidates = sig.params
-      .filter(p => !ctx.func.repByLocal?.get(p.name)?.val)
-      .map(p => p.name)
-    inferLocals(body, candidates)
     analyzeBoxedCaptures(body)
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,

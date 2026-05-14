@@ -72,15 +72,25 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
 test('methodEvidence STRING: charCodeAt induces STRING (no __length poly)', () => {
   // `.charCodeAt` is a STRING_ONLY method → method source emits {val: STRING}.
   // STRING-typed receiver routes .length through __str_byteLen, never __length.
-  // Body must be a block: inferLocals only runs on block-bodied funcs
-  // (compile.js:207 `if (block)` gate). Expression-bodied arrows skip the
-  // pre-emit evidence pass — the rep stays cold, vt is null at .length, and
-  // emit defaults to polymorphic __length. This is a real limitation, not a
-  // test artefact; tracked as a residual gap in the evidence ladder.
   const wat = jz.compile(`
     export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }
   `, { wat: true })
   is(count(wat, /\$__length\b/g), 0)
+  ok(/\$__str_byteLen\b/.test(wat) || /\$__str_len\b/.test(wat),
+    'expected STRING-specific length op')
+})
+
+test('methodEvidence STRING: expression-bodied arrow narrows too', () => {
+  // Regression for the `inferLocals` block-only gate. Before the lift,
+  // `analyzeFuncForEmit` ran inferLocals only when `isBlockBody(body)` —
+  // an expression-bodied arrow like `(s) => s.charCodeAt(0) + s.length`
+  // skipped the pre-emit evidence pass and emit defaulted to polymorphic
+  // __length. Now inferLocals walks any AST, so the expression body
+  // narrows `s: VAL.STRING` the same as its block-bodied equivalent.
+  const wat = jz.compile(`
+    export const hd = (s) => s.charCodeAt(0) + s.length
+  `, { wat: true })
+  is(count(wat, /\$__length\b/g), 0, 'expr-body should not fall back to polymorphic __length')
   ok(/\$__str_byteLen\b/.test(wat) || /\$__str_len\b/.test(wat),
     'expected STRING-specific length op')
 })

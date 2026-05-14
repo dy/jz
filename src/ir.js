@@ -708,6 +708,76 @@ export function findBodyStart(fn) {
   return fn.length
 }
 
+/**
+ * Tail-call rewrite: walks tail positions of an emitted IR tree and replaces
+ * direct `(call $name args...)` ops with `(return_call $name args...)`.
+ *
+ * Tail positions, recursively from the IR root:
+ *   - the root itself (function's terminal value-producing expression, or the
+ *     emitted value of an explicit `return X`)
+ *   - both arms of `(if (result T) cond (then ...) (else ...))`
+ *   - last instruction of `(block (result T) ...)`
+ *
+ * Only fires when caller and callee result types match — if they didn't match,
+ * `asParamType`/`asPtrOffset` would have wrapped the call in a conversion op,
+ * pushing the `call` away from the tail position. We don't recurse into
+ * arithmetic / select / loop ops: their results aren't standalone-tail control
+ * transfers.
+ *
+ * Two callers:
+ *   - `compile.js` runs it on the function's final value-producing IR to TCO
+ *     expression-bodied arrows like `(n, acc) => n <= 0 ? acc : sum(n-1, acc+n)`
+ *     where the AST has no `return` keyword.
+ *   - `emit.js` `'return'` op handler runs it on the emitted return expression
+ *     so explicit `return cond ? f(x) : g(x)` also gets deep tail rewriting.
+ *
+ * Returns the input unchanged when no transform applies.
+ */
+export const tcoTailRewrite = (ir, resultType) => {
+  if (ctx.transform.noTailCall || ctx.func.inTry) return ir
+  if (!Array.isArray(ir)) return ir
+  const op = ir[0]
+  if (op === 'call' && typeof ir[1] === 'string') {
+    // IR call name is `$name`; func.map keys are bare `name`.
+    const calleeName = ir[1].startsWith('$') ? ir[1].slice(1) : ir[1]
+    const callee = ctx.func.map.get(calleeName)
+    // If this is a known user func, verify result-type match. Otherwise
+    // (closures, imports, runtime helpers — not in `ctx.func.map`) trust the
+    // tail-position invariant: emit.js' asParamType/asPtrOffset already wrapped
+    // any mismatched call in a conversion op, so a bare `(call $X …)` at the
+    // tail of the function/if/block has by construction the same result type
+    // as the caller.
+    if (callee) {
+      if (callee.raw) return ir
+      const calleeRT = callee.sig?.results?.[0] ?? 'f64'
+      if (calleeRT !== resultType) return ir
+    }
+    return typed(['return_call', ...ir.slice(1)], resultType)
+  }
+  if (op === 'if' && Array.isArray(ir[1]) && ir[1][0] === 'result') {
+    let changed = false
+    const newIr = ir.slice()
+    for (let i = 3; i < newIr.length; i++) {
+      const arm = newIr[i]
+      if (Array.isArray(arm) && (arm[0] === 'then' || arm[0] === 'else') && arm.length > 1) {
+        const last = arm[arm.length - 1]
+        const rewritten = tcoTailRewrite(last, resultType)
+        if (rewritten !== last) {
+          newIr[i] = [...arm.slice(0, -1), rewritten]
+          changed = true
+        }
+      }
+    }
+    return changed ? typed(newIr, ir.type) : ir
+  }
+  if (op === 'block' && ir.length > 1) {
+    const last = ir[ir.length - 1]
+    const rewritten = tcoTailRewrite(last, resultType)
+    if (rewritten !== last) return typed([...ir.slice(0, -1), rewritten], ir.type)
+  }
+  return ir
+}
+
 export function reconstructArgsWithSpreads(normal, spreads) {
   const combined = []
   let normalIdx = 0
