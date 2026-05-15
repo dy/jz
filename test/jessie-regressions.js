@@ -5,13 +5,17 @@
 //   #1  spread in optional call `fn?.(...args)`
 //   #2  built-in Error subclasses (SyntaxError, TypeError, …)
 //   #4  `delete obj[k]` on computed keys (runtime shadow-store + schema clear)
-//   #5  bare side-effect imports `import './x.js'`
+//   #5  bare side-effect imports `import './x.js'` + nested-module prefix
+//        stacking (parent re-mangling a sub-module's prefixed func to
+//        `parent$sub$name`)
 //   #6  `new RegExp(literal)` and clean error for dynamic
 //   #7  `Object.create` includes the `array` stdlib module
 //   #8  computed object keys `{[k]: v}` — see test262-regressions.js
 //        (test262-shaped repro lives there; this file only tracks the jessie path)
 //   #A  IIFE arrow whose body produces a sparse-array literal
 //   #B  `throw` inside an unused/uncalled function declaration
+//   #C  plan.js inliner discarding an expression-bodied arrow's value when the
+//        whole body is a single candidate call (`() => candidate()`)
 //   error-wrap  watr's "Unknown ..." identifier errors translated to jz wording
 
 import test from 'tst'
@@ -85,6 +89,23 @@ test('#5 import: bare side-effect (no `from`) compiles', () => {
     { modules: { './sub.js': 'export const x = 1' } }
   )
   is(exports.f(), 1)
+})
+
+// Nested imports must not stack prefixes. When module A imports module B and
+// both have specifiers without `__`, the older "sub-import" heuristic
+// (`func.name.includes('__') && includes('$')`) misclassified B's already-
+// prefixed funcs as A-owned and re-mangled them to `A$B$name`. Resulting WAT
+// referenced names that didn't exist. Funcs are now tagged with their owning
+// module's prefix instead.
+test('#5 nested module imports do not stack prefixes', () => {
+  const { exports } = jz(
+    `import './a.js'; import { f } from './a.js'; export let g = () => f()`,
+    { modules: {
+      './a.js': `import { x } from './b.js'; export let f = () => x()`,
+      './b.js': `export let x = () => 42`,
+    } }
+  )
+  is(exports.g(), 42)
 })
 
 test('#5 import: bare side-effect runs module init', () => {
@@ -218,6 +239,39 @@ test('#4 delete: literal-key form still rejected (fixed schema)', () => {
   catch (e) { err = e }
   ok(err && /object shape is fixed/.test(err.message),
     `static delete should remain prohibited; got: ${err?.message?.slice(0, 80)}`)
+})
+
+// ── #C  inliner on expression-bodied arrow ─────────────────────────────────
+// plan.js's `inlineHotInternalCalls` walks every non-exported function body
+// and passes it to `inlineInStmt`. For a block-bodied function that's right
+// — statement-position calls discard their return value. For an *expression*-
+// bodied arrow (`func.body = ['()', 'candidate']`, no `{}` block), the same
+// path silently dropped the value: the body became `['{}', [';']]` (empty
+// block), and any caller relying on the result observed `0`/`undefined`. The
+// jessie tokenizer surfaces this through closure-factory wrappers like
+// `let mk = () => makeToken(...)` that the wider parser then invokes.
+//
+// Fix: dispatch on body shape — if `func.body[0] !== '{}'`, route through
+// `inlineInExpr` so the inlined value replaces the call expression.
+// Repro must keep the candidate non-exported and the wrapper non-exported, so
+// the inliner's `func.exported` skip doesn't mask the bug.
+
+test('#C inliner preserves return value of an expr-bodied arrow whose entire body is a candidate call', () => {
+  const { entry } = jz(`
+    let leaf = () => 42
+    let mid = () => leaf()
+    export let entry = () => mid()
+  `).exports
+  is(entry(), 42)
+})
+
+test('#C inliner: expr-bodied arrow with arg-forwarding candidate', () => {
+  const { entry } = jz(`
+    let twice = (n) => n * 2
+    let wrap = (n) => twice(n)
+    export let entry = (n) => wrap(n)
+  `).exports
+  is(entry(21), 42)
 })
 
 // ── error-wrap  watr "Unknown ..." errors translated to jz wording ──────────

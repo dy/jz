@@ -929,6 +929,28 @@ export default (ctx) => {
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
+  // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
+  // __str_substring clamps end to byteLen and start/end to [0, byteLen], so negative
+  // values are floored to 0 (matches v8 for length<0 → empty; for start<0 spec wants
+  // max(0, len+start), which we don't implement — rare in practice).
+  ctx.core.emit['.substr'] = (str, start, length) => {
+    inc('__str_substring')
+    if (length != null) {
+      const s = tempI32('substrS')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asI32(emit(start))],
+        ['call', '$__str_substring', asI64(emit(str)),
+          ['local.get', `$${s}`],
+          ['i32.add', ['local.get', `$${s}`], asI32(emit(length))]]
+      ], 'f64')
+    }
+    const t = temp('t')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(str))],
+      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI32(emit(start)),
+        ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+  }
+
   // Factory for simple str→call patterns: [emitKey, stdlibName, argCoercions, i32Result?]
   const coerce = { f: asF64, i: asI32 }
   const strMethod = (name, args, i32Result) => (str, ...params) => {
