@@ -243,32 +243,50 @@ export default (ctx) => {
   ctx.core.stdlib['math.expm1'] = `(func $math.expm1 (param $x f64) (result f64)
     (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))`
 
+  // log(x) via bit-level frexp + sqrt(2)-centered split + atanh series.
+  //   x = m * 2^k   with bits-extracted k (no loop)
+  //   if m >= sqrt(2): m /= 2, k += 1     so m ∈ [sqrt(2)/2, sqrt(2)) ≈ [0.707, 1.414)
+  //   s = (m-1)/(m+1)                     |s| ≤ 0.172
+  //   log(x) = k·ln(2) + 2s·(1 + s²/3 + s⁴/5 + ... + s¹⁶/17)
+  // With 9 polynomial terms and |s|≤0.172, truncation error ≈ 2|s|·z⁹/19 ≈ 4e-17,
+  // close to f64 ulp. The whole routine is branchless after edge cases.
+  // Edge cases: NaN→NaN, ≤0 distinguishes 0→-Inf, <0→NaN; +Inf passes through.
   ctx.core.stdlib['math.log'] = `(func $math.log (param $x f64) (result f64)
-    (local $k i32) (local $y f64) (local $s f64) (local $z f64)
+    (local $bits i64) (local $k i32) (local $m f64) (local $s f64) (local $z f64)
     (if (f64.ne (local.get $x) (local.get $x))
       (then (return (local.get $x))))
     (if (f64.le (local.get $x) (f64.const 0.0))
-      (then (return (f64.const 0.0))))
-    (if (f64.eq (local.get $x) (f64.const 1.0))
-      (then (return (f64.const 0.0))))
+      (then
+        (if (f64.eq (local.get $x) (f64.const 0.0))
+          (then (return (f64.const -inf))))
+        (return (f64.const nan))))
     (if (f64.eq (local.get $x) (f64.const inf))
       (then (return (local.get $x))))
     (local.set $k (i32.const 0))
-    (local.set $y (local.get $x))
-    (block $done_up
-      (loop $scale_up
-        (br_if $done_up (f64.lt (local.get $y) (f64.const 2.0)))
-        (local.set $y (f64.mul (local.get $y) (f64.const 0.5)))
-        (local.set $k (i32.add (local.get $k) (i32.const 1)))
-        (br $scale_up)))
-    (block $done_down
-      (loop $scale_down
-        (br_if $done_down (f64.ge (local.get $y) (f64.const 1.0)))
-        (local.set $y (f64.mul (local.get $y) (f64.const 2.0)))
-        (local.set $k (i32.sub (local.get $k) (i32.const 1)))
-        (br $scale_down)))
-    (local.set $s (f64.div (f64.sub (local.get $y) (f64.const 1.0)) (f64.add (local.get $y) (f64.const 1.0))))
+    ;; Normalize denormals (exponent=0): scale by 2^54 and remember the shift,
+    ;; so the bit-extracted exponent below is meaningful for every finite x > 0.
+    (if (f64.lt (local.get $x) (f64.const 0x1p-1022))
+      (then
+        (local.set $x (f64.mul (local.get $x) (f64.const 0x1p54)))
+        (local.set $k (i32.const -54))))
+    ;; frexp via bit twiddling: k = ((bits >> 52) & 0x7ff) - 1023, then force exp=1023 so m ∈ [1,2).
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $k (i32.add (local.get $k) (i32.sub
+                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7ff)))
+                    (i32.const 1023))))
+    (local.set $m (f64.reinterpret_i64
+                    (i64.or
+                      (i64.and (local.get $bits) (i64.const 0x000fffffffffffff))
+                      (i64.const 0x3ff0000000000000))))
+    ;; Center on sqrt(2) to shrink |s| from 1/3 down to ~0.172.
+    (if (f64.ge (local.get $m) (f64.const 1.4142135623730951))
+      (then
+        (local.set $m (f64.mul (local.get $m) (f64.const 0.5)))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))))
+    (local.set $s (f64.div (f64.sub (local.get $m) (f64.const 1.0))
+                           (f64.add (local.get $m) (f64.const 1.0))))
     (local.set $z (f64.mul (local.get $s) (local.get $s)))
+    ;; Horner: 1 + z/3 + z²/5 + z³/7 + z⁴/9 + z⁵/11 + z⁶/13 + z⁷/15 + z⁸/17
     (f64.add
       (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))
       (f64.mul (f64.const 2.0) (f64.mul (local.get $s) (f64.add (f64.const 1.0)
@@ -276,7 +294,10 @@ export default (ctx) => {
           (f64.mul (local.get $z) (f64.add (f64.const 0.2)
             (f64.mul (local.get $z) (f64.add (f64.const 0.14285714285714285)
               (f64.mul (local.get $z) (f64.add (f64.const 0.1111111111111111)
-                (f64.mul (local.get $z) (f64.const 0.09090909090909091)))))))))))))))`
+                (f64.mul (local.get $z) (f64.add (f64.const 0.09090909090909091)
+                  (f64.mul (local.get $z) (f64.add (f64.const 0.07692307692307693)
+                    (f64.mul (local.get $z) (f64.add (f64.const 0.06666666666666667)
+                      (f64.mul (local.get $z) (f64.const 0.058823529411764705)))))))))))))))))))))`
 
   ctx.core.stdlib['math.log2'] = `(func $math.log2 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`
@@ -284,8 +305,17 @@ export default (ctx) => {
   ctx.core.stdlib['math.log10'] = `(func $math.log10 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN10})))`
 
+  // log1p(x) via Kahan's compensated trick: with u = 1+x, log(u) loses bits when x is
+  // small (because u rounds to ~1), but the ratio x/(u-1) is exactly the missing factor.
+  // For u==1 (x below ulp), result is just x; preserves -0 from x=-0 path.
   ctx.core.stdlib['math.log1p'] = `(func $math.log1p (param $x f64) (result f64)
-    (call $math.log (f64.add (f64.const 1.0) (local.get $x))))`
+    (local $u f64)
+    (local.set $u (f64.add (f64.const 1.0) (local.get $x)))
+    (if (f64.eq (local.get $u) (f64.const 1.0))
+      (then (return (local.get $x))))
+    (f64.div
+      (f64.mul (call $math.log (local.get $u)) (local.get $x))
+      (f64.sub (local.get $u) (f64.const 1.0))))`
 
   ctx.core.stdlib['math.pow'] = `(func $math.pow (param $x f64) (param $y f64) (result f64)
     (local $result f64) (local $n i32) (local $neg_base i32) (local $abs_x f64)
