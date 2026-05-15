@@ -837,18 +837,19 @@ const scalarizeFunctionArrayLiterals = () => {
 // recognizes that form. Float literals (`[1, 2.5]`) and out-of-range ints
 // (`0x80000000` on the +ve side, etc.) disqualify the array as a whole.
 
-// Methods we promote across. The bar is strict: only methods that (a) have a
-// real `.typed:*` emitter in module/typedarray.js, and (b) don't return a
-// receiver-shaped value that could flow into other methods. `.set` returns
-// undefined, so chained dispatch can't reintroduce ARRAY assumptions. `.map`
-// has a `.typed:map` emitter but returns a TYPED carrier; subsequent
-// `.filter`/`.slice`/etc. fall through to ARRAY-shaped emitters in
-// module/array.js (8-byte slots vs TYPED's 4-byte i32 slots) and corrupt
-// data. Re-enable `.map` when `.typed:filter`/`.typed:slice`/… land, or
-// when we add result-flow taint tracking. Everything else (.indexOf,
-// .forEach, .reduce, .find, .every, .join, …) lacks a typed emitter and
-// is unsafe on the same grounds.
-const _TYPED_SAFE_METHODS = new Set(['set'])
+// Methods we promote across. The bar: every entry must have a real `.typed:*`
+// emitter in module/typedarray.js. Receiver-flow into chained methods is also
+// typed-aware now — `.typed:map`/`.typed:filter`/`.typed:slice` all return
+// TYPED carriers, and downstream `.filter`/`.slice`/`.map`/etc. on those
+// re-dispatch via emit.js:2211's `.typed:<m>` lookup (VAL.TYPED ⇒ typed
+// emitter). Methods missing here (.join, .sort, .reverse, .subarray, .fill,
+// .toString, .copyWithin, …) lack a typed emitter — disqualify the candidate.
+const _TYPED_SAFE_METHODS = new Set([
+  'set',
+  'map', 'filter', 'slice',
+  'forEach', 'reduce',
+  'indexOf', 'includes', 'find', 'findIndex', 'some', 'every',
+])
 
 // `.length` is TYPED-aware via core.js:__len (shifts the byte header by
 // __typed_shift on TAG=3). `.byteLength`/`.byteOffset`/`.buffer` are
