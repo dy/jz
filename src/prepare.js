@@ -1108,6 +1108,10 @@ const handlers = {
 
     if (typeof callee === 'string') {
       if (PROHIBITED[callee]) err(PROHIBITED[callee])
+      if (callee === 'Array') {
+        const callArgs = flatArgs(args).filter(a => a != null)
+        if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
+      }
       if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
 
       if (includeForNamedCall(callee)) {
