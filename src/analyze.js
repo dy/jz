@@ -1806,6 +1806,17 @@ export function findFreeVars(node, bound, free, scope) {
     findFreeVars(args[1], innerBound, free, scope)
     return
   }
+  if (op === 'catch') {
+    // ['catch', tryBody, errName, handler] — errName is a binding occurrence,
+    // not a reference, and is in scope only inside the handler. Recursing into
+    // it as a plain string would mis-capture an outer var of the same name.
+    findFreeVars(args[0], bound, free, scope)
+    const errName = args[1]
+    const handlerBound = typeof errName === 'string' && errName
+      ? new Set(bound).add(errName) : bound
+    findFreeVars(args[2], handlerBound, free, scope)
+    return
+  }
   if (op === 'let' || op === 'const') {
     collectParamNames(args, bound)
     if (scope) collectParamNames(args, scope)

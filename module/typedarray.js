@@ -566,6 +566,27 @@ export default (ctx) => {
       (f64.ne (local.get $v) (local.get $v))))`
   const canonNaN = (vIR) => { inc('__canon_nan'); return typed(['call', '$__canon_nan', vIR], 'f64') }
 
+  // ToIndex for DataView byte offsets (spec 25.1.2.x getViewValue/setViewValue):
+  // ToIntegerOrInfinity then reject negatives and >2^53-1 with a RangeError. The
+  // throw rides jz's $__jz_err tag so a user `try/catch` (or assert.throws) sees it.
+  // trunc_sat keeps a huge-but-passing index from trapping the conversion — the
+  // subsequent memory access fails the same way an oversized index always has.
+  ctx.core.stdlib['__dv_index'] = `(func $__dv_index (param $idx f64) (result i32)
+    (if (f64.ne (local.get $idx) (local.get $idx)) (then (local.set $idx (f64.const 0))))
+    (local.set $idx (f64.trunc (local.get $idx)))
+    (if (i32.or
+          (f64.lt (local.get $idx) (f64.const 0))
+          (f64.gt (local.get $idx) (f64.const 9007199254740991)))
+      (then (throw $__jz_err (f64.const 0))))
+    (i32.trunc_sat_f64_s (local.get $idx)))`
+
+  // ToIndex the DV byte offset, throwing RangeError on a negative/oversized value.
+  const dvIndex = (offNode) => {
+    ctx.runtime.throws = true
+    inc('__dv_index')
+    return typed(['call', '$__dv_index', asF64(emit(offNode))], 'i32')
+  }
+
   // DataView set methods: extract i32 offset from f64 ptr, optionally byte-swap, store.
   // 8-bit ops ignore the LE arg entirely (single byte — no swap possible).
   const DV_SET = {
@@ -578,7 +599,7 @@ export default (ctx) => {
   for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
     ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
       const dvOff = ptrOffsetIR(emit(dv), VAL.BUFFER)
-      const addr = ['i32.add', dvOff, asI32(emit(off))]
+      const addr = ['i32.add', dvOff, dvIndex(off)]
       // Coerce value into the wasm value type the store op consumes.
       let v
       if (valType === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
@@ -614,7 +635,7 @@ export default (ctx) => {
       return ['block',
         ['local.set', `$${aT}`, addr],
         ['local.set', `$${vLoc}`, v],
-        ['local.set', `$${leT}`, asI32(emit(leNode))],
+        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
         ['if',
           ['local.get', `$${leT}`],
           ['then', [storeOp, ['local.get', `$${aT}`], typed(['local.get', `$${vLoc}`], valType)]],
@@ -638,7 +659,7 @@ export default (ctx) => {
   }
   for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
     ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
-      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), asI32(emit(off))]
+      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndex(off)]
 
       // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
       // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
@@ -682,7 +703,7 @@ export default (ctx) => {
       const leT = tempI32('dvgle')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${aT}`, addr],
-        ['local.set', `$${leT}`, asI32(emit(leNode))],
+        ['local.set', `$${leT}`, truthyIR(emit(leNode))],
         ['if', ['result', 'f64'],
           ['local.get', `$${leT}`],
           ['then', asF64(toF64(typed([loadOp, ['local.get', `$${aT}`]], resultType)))],

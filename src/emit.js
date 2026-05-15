@@ -342,13 +342,17 @@ function canThrow(body, seen = new Set()) {
   if (op === '=>') return false
   if (op === '()') {
     const callee = body[1]
-    if (typeof callee === 'string') {
-      const bodyName = ctx.func.directClosures?.get(callee)
-      const f = ctx.func.map?.get(bodyName || callee)
-      if (f?.body && !f.raw && !seen.has(f.name)) {
-        seen.add(f.name)
-        if (canThrow(f.body, seen)) return true
-      }
+    // A call can throw unless we can see the whole callee and prove it can't:
+    // only direct calls into a resolvable, non-raw function body are traceable.
+    // Indirect/method/builtin calls (callee not a plain name, or a name we can't
+    // resolve) are conservatively throwing — a user `try` must wrap them.
+    if (typeof callee !== 'string') return true
+    const bodyName = ctx.func.directClosures?.get(callee)
+    const f = ctx.func.map?.get(bodyName || callee)
+    if (!f?.body || f.raw) return true
+    if (!seen.has(f.name)) {
+      seen.add(f.name)
+      if (canThrow(f.body, seen)) return true
     }
   }
   for (let i = 1; i < body.length; i++) if (canThrow(body[i], seen)) return true
