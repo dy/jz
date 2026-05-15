@@ -1095,7 +1095,16 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // caller's heap arrays.
     const activeCandidates = func.exported ? exportedCandidates : candidates
     if (func.exported && !activeCandidates.size) continue
-    const r = inlineInStmt(func.body, activeCandidates)
+    // Expression-bodied arrows (`() => expr`) have func.body as the return
+    // value itself — never a `{}` block. inlineInStmt treats its argument as a
+    // statement (discards the return value of any top-level candidate call),
+    // which would turn `() => x()` into an empty block and lose the result.
+    // Route those through inlineInExpr so the call is replaced by the inlined
+    // value expression instead.
+    const isExprBody = !Array.isArray(func.body) || func.body[0] !== '{}'
+    const r = isExprBody
+      ? inlineInExpr(func.body, activeCandidates)
+      : inlineInStmt(func.body, activeCandidates)
     let body = r.changed ? r.node : func.body
     let bodyChanged = r.changed
     if (!func.exported && exprOnlyCandidates.size) {

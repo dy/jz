@@ -1593,7 +1593,7 @@ function prepareModule(specifier, source) {
     const mangled = `${prefix}$${localName}`
     moduleExports.set(exportName, mangled)
     const func = ctx.func.list.find(f => f.name === localName)
-    if (func) renameFunc(func, mangled)
+    if (func) { renameFunc(func, mangled); func._modulePrefix = prefix }
     if (ctx.scope.globals.has(localName)) {
       const wat = ctx.scope.globals.get(localName).replace(`$${localName}`, `$${mangled}`)
       ctx.scope.globals.delete(localName)
@@ -1655,15 +1655,17 @@ function prepareModule(specifier, source) {
   }
 
   // Rename ALL non-exported functions created during this module's prep
-  // (fn property assignments like f32.parse, internal helpers like cleanInt)
+  // (fn property assignments like f32.parse, internal helpers like cleanInt).
+  // Funcs added by nested prepareModule calls are tagged with `_modulePrefix`
+  // by their own pass; skip those so prefixes don't stack (`a$b$name`).
   for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
     const func = ctx.func.list[i]
     if (func.raw || func.name.startsWith(prefix + '$')) continue
-    // Skip functions from sub-imports (already prefixed with another module's prefix)
-    if (func.name.includes('__') && func.name.includes('$')) continue
+    if (func._modulePrefix && func._modulePrefix !== prefix) continue
     const mangled = `${prefix}$${func.name}`
     moduleExports.set(func.name, mangled)
     renameFunc(func, mangled)
+    func._modulePrefix = prefix
   }
 
   // Add mangled non-exported globals to moduleExports for walk renaming
@@ -1695,6 +1697,8 @@ function prepareModule(specifier, source) {
     for (let i = savedFuncCount; i < ctx.func.list.length; i++) {
       const func = ctx.func.list[i]
       if (!func.body) continue
+      // Sub-module funcs already had their own walk; parent's rename map doesn't apply.
+      if (func._modulePrefix && func._modulePrefix !== prefix) continue
       const funcParams = new Set(func.sig?.params?.map(p => p.name) || [])
       walk(func.body, funcParams)
       if (func.defaults) for (const [k, v] of Object.entries(func.defaults)) func.defaults[k] = walk(v, funcParams)
