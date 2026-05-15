@@ -7,7 +7,7 @@ import (
 
 const (
 	n       = 4096
-	nIters  = 128
+	nIters  = 64
 	nRuns   = 21
 	nWarmup = 5
 )
@@ -35,7 +35,7 @@ func runKernel(a []float64, scale float64) uint32 {
 		for k := range a {
 			b[k] = a[k]*scale + iLocal
 		}
-		for j := 0; j < len(a); j += 64 {
+		for j := 0; j < len(a); j++ {
 			h = mix(h, uint32(int32(b[j])))
 		}
 	}
@@ -60,5 +60,5 @@ func main() {
 		samples[i] = float64(time.Since(t0).Nanoseconds()) / 1e6
 	}
 	fmt.Printf("median_us=%d checksum=%d samples=%d stages=%d runs=%d\n",
-		medianUs(samples), cs, n*nIters, 1, nRuns)
+		medianUs(samples), cs, n*nIters, 2, nRuns)
 }

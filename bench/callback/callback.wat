@@ -33,10 +33,13 @@
   ;;
   ;; Per outer iter i:
   ;;   for j in 0..n:  b[j] = a[j] * scale + i
-  ;;   for j = 0; j < n; j += 64: h = imul(h ^ b[j], 0x01000193)
+  ;;   for j in 0..n:  h = imul(h ^ b[j], 0x01000193)
   ;;
   ;; mix(h, x) = imul(h ^ (x|0), 0x01000193) — FNV-1a multiplier.
   ;; h is left as i32 throughout; the JS driver applies `>>> 0` for u32 print.
+  ;; The dense fold (j++ rather than j += 64) keeps every closure output
+  ;; observed, removing the dead-store-elimination free lunch that an earlier
+  ;; sparse-stride version handed to compilers willing to fuse map+consumer.
   (func (export "kernel")
     (param $a i32) (param $b i32) (param $n i32)
     (param $iters i32) (param $scale i32)
@@ -63,7 +66,7 @@
                 (local.get $i)))
             (local.set $j (i32.add (local.get $j) (i32.const 1)))
             (br $mloop)))
-        ;; fold stride-64
+        ;; dense fold: read every output, mix into h
         (local.set $j (i32.const 0))
         (block $fexit
           (loop $floop
@@ -74,7 +77,7 @@
               (i32.mul
                 (i32.xor (local.get $h) (i32.load (local.get $bAddr)))
                 (i32.const 0x01000193)))
-            (local.set $j (i32.add (local.get $j) (i32.const 64)))
+            (local.set $j (i32.add (local.get $j) (i32.const 1)))
             (br $floop)))
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
         (br $iloop)))

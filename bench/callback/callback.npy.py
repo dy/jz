@@ -2,7 +2,7 @@ from time import perf_counter
 import numpy as np
 
 N = 4096
-N_ITERS = 128
+N_ITERS = 64
 N_RUNS = 21
 N_WARMUP = 5
 
@@ -31,7 +31,7 @@ def run_kernel(a):
     h = 0x811C9DC5
     for i in range(N_ITERS):
         b = a * 2.0 + float(i)
-        for j in range(0, N, 64):
+        for j in range(N):
             h = mix(h, int(b[j]))
     return h
 
@@ -49,7 +49,7 @@ def main():
         cs = run_kernel(a)
         samples.append((perf_counter() - t0) * 1000)
 
-    print(f"median_us={median_us(samples)} checksum={cs} samples={N * N_ITERS} stages=1 runs={N_RUNS}")
+    print(f"median_us={median_us(samples)} checksum={cs} samples={N * N_ITERS} stages=2 runs={N_RUNS}")
 
 
 if __name__ == "__main__":
