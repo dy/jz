@@ -348,6 +348,17 @@ export default (ctx) => {
       ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]], 'i32')
   }
 
+  // Number.isSafeInteger(x): integer AND |x| ≤ 2^53 − 1.
+  ctx.core.emit['Number.isSafeInteger'] = (x) => {
+    const v = asF64(emit(x))
+    const t = temp('t')
+    return typed(['i32.and',
+      ['i32.and',
+        ['f64.eq', ['local.tee', `$${t}`, v], ['local.get', `$${t}`]],
+        ['f64.eq', ['local.get', `$${t}`], ['f64.trunc', ['local.get', `$${t}`]]]],
+      ['f64.le', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 9007199254740991]]], 'i32')
+  }
+
   ctx.core.stdlib['__parseInt'] = `(func $__parseInt (param $str i64) (param $radix i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $result f64) (local $digit i32) (local $seen i32) (local $f f64)

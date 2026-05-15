@@ -13,15 +13,16 @@
  * @module math
  */
 
-import { typed, asF64, asI32, toI32, temp, arrayLoop } from '../src/ir.js'
+import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { inc } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
 
 export default (ctx) => {
-  // Helpers: all math ops take f64 and return f64
-  const f = (op, a) => typed([op, asF64(emit(a))], 'f64')
-  const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')
+  // Helpers: all math ops take f64 and return f64. Args go through ToNumber
+  // (toNumF64) — ECMA Math methods coerce each argument, so null→0, undefined→NaN.
+  const f = (op, a) => typed([op, toNumF64(a, emit(a))], 'f64')
+  const f2 = (op, a, b) => typed([op, toNumF64(a, emit(a)), toNumF64(b, emit(b))], 'f64')
   // floor/ceil/trunc/round are no-ops on integer-valued operands. When the
   // arg is a local whose every def is integer-valued (intCertain lattice),
   // skip the wasm op and just hand back the operand cast to f64. Same elision
@@ -35,7 +36,12 @@ export default (ctx) => {
     return false
   }
   const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
-  const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
+  // ECMA Math methods perform ToNumber on each argument. toNumF64 short-circuits
+  // for known-number nodes, and routes everything else through __to_num so null→0,
+  // undefined→NaN, and strings get parsed. Without this, raw NaN-boxed pointers
+  // (null/undefined/strings) would propagate through math.log etc. and surface
+  // as the original null/undefined sentinel after decode.
+  const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64'))
   const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))
 
   // Constants
@@ -70,17 +76,17 @@ export default (ctx) => {
     if (a === undefined) return typed(['f64.const', Infinity], 'f64')
     // Spread: Math.min(...arr) — iterate array to find min
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.min', a[1], Infinity)
-    if (b === undefined) return typed(['f64.min', asF64(emit(a)), ['f64.const', Infinity]], 'f64')
+    if (b === undefined) return typed(['f64.min', toNumF64(a, emit(a)), ['f64.const', Infinity]], 'f64')
     let r = f2('f64.min', a, b)
-    for (const x of rest) r = typed(['f64.min', r, asF64(emit(x))], 'f64')
+    for (const x of rest) r = typed(['f64.min', r, toNumF64(x, emit(x))], 'f64')
     return r
   }
   ctx.core.emit['math.max'] = (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', -Infinity], 'f64')
     if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.max', a[1], -Infinity)
-    if (b === undefined) return typed(['f64.max', asF64(emit(a)), ['f64.const', -Infinity]], 'f64')
+    if (b === undefined) return typed(['f64.max', toNumF64(a, emit(a)), ['f64.const', -Infinity]], 'f64')
     let r = f2('f64.max', a, b)
-    for (const x of rest) r = typed(['f64.max', r, asF64(emit(x))], 'f64')
+    for (const x of rest) r = typed(['f64.max', r, toNumF64(x, emit(x))], 'f64')
     return r
   }
   // f64.nearest is roundTiesToEven; JS Math.round is roundTiesToward+∞. They agree
@@ -91,7 +97,7 @@ export default (ctx) => {
     if (isIntCertain(a)) return asF64(emit(a))
     const t = temp('rnd'), n = temp('rnd')
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(a))],
+      ['local.set', `$${t}`, toNumF64(a, emit(a))],
       ['local.set', `$${n}`, ['f64.nearest', ['local.get', `$${t}`]]],
       ['select',
         ['f64.add', ['local.get', `$${n}`], ['f64.const', 1]],
@@ -99,15 +105,15 @@ export default (ctx) => {
         ['f64.eq', ['local.get', `$${n}`], ['f64.sub', ['local.get', `$${t}`], ['f64.const', 0.5]]]],
     ], 'f64')
   }
-  ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', asF64(emit(a))]], 'f64')
+  ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
 
   // Sign
   ctx.core.emit['math.sign'] = a => call('math.sign', a)
 
   // Trig
-  ctx.core.emit['math.sin'] = a => call('math.sin', a)
-  ctx.core.emit['math.cos'] = a => call('math.cos', a)
-  ctx.core.emit['math.tan'] = a => callDeps(['math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
+  ctx.core.emit['math.sin'] = a => callDeps(['math.isFinite', 'math.sin'], 'math.sin', a)
+  ctx.core.emit['math.cos'] = a => callDeps(['math.isFinite', 'math.cos'], 'math.cos', a)
+  ctx.core.emit['math.tan'] = a => callDeps(['math.isFinite', 'math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
 
   // Inverse trig
   ctx.core.emit['math.asin'] = a => callDeps(['math.atan', 'math.asin'], 'math.asin', a)
@@ -121,7 +127,7 @@ export default (ctx) => {
   ctx.core.emit['math.tanh'] = a => callDeps(['math.exp', 'math.tanh'], 'math.tanh', a)
 
   // Inverse hyperbolic
-  ctx.core.emit['math.asinh'] = a => callDeps(['math.log', 'math.asinh'], 'math.asinh', a)
+  ctx.core.emit['math.asinh'] = a => callDeps(['math.log', 'math.isFinite', 'math.asinh'], 'math.asinh', a)
   ctx.core.emit['math.acosh'] = a => callDeps(['math.log', 'math.acosh'], 'math.acosh', a)
   ctx.core.emit['math.atanh'] = a => callDeps(['math.log', 'math.atanh'], 'math.atanh', a)
 
@@ -136,7 +142,7 @@ export default (ctx) => {
   // Power
   ctx.core.emit['math.pow'] = (a, b) => callDeps(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
   ctx.core.emit['**'] = ctx.core.emit['math.pow']
-  ctx.core.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.cbrt'], 'math.cbrt', a)
+  ctx.core.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.isFinite', 'math.cbrt'], 'math.cbrt', a)
   ctx.core.emit['math.hypot'] = (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
     if (b === undefined) return f('f64.abs', a)
@@ -172,6 +178,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    ;; NaN/±Infinity → NaN (avoid trapping i32.trunc on infinities).
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -190,6 +198,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.cos'] = `(func $math.cos (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
+    ;; NaN/±Infinity → NaN (avoid trapping i32.trunc on infinities).
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (f64.const nan))))
     (local.set $sign (f64.const 1.0))
     (local.set $n (i32.trunc_f64_s (f64.floor (f64.div (local.get $x) (f64.const ${Math.PI})))))
     (local.set $r (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $n)) (f64.const ${Math.PI}))))
@@ -212,7 +222,8 @@ export default (ctx) => {
   ctx.core.stdlib['math.exp'] = `(func $math.exp (param $x f64) (result f64)
     (local $k i32) (local $t f64) (local $t2 f64) (local $result f64) (local $pow2 f64)
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
-    (if (result f64) (f64.gt (local.get $x) (f64.const 709.0)) (then (f64.const 1.7976931348623157e+308)) (else
+    ;; +Infinity → +Infinity; finite overflow (x > 709) also rounds to +Infinity.
+    (if (result f64) (f64.gt (local.get $x) (f64.const 709.0)) (then (f64.const inf)) (else
       (if (result f64) (f64.lt (local.get $x) (f64.const -745.0)) (then (f64.const 0.0)) (else
         (local.set $k (i32.trunc_f64_s (f64.div (local.get $x) (f64.const ${Math.LN2}))))
         (local.set $t (f64.sub (local.get $x) (f64.mul (f64.convert_i32_s (local.get $k)) (f64.const ${Math.LN2}))))
@@ -241,6 +252,8 @@ export default (ctx) => {
         (local.get $result))))))`
 
   ctx.core.stdlib['math.expm1'] = `(func $math.expm1 (param $x f64) (result f64)
+    ;; Preserve sign of zero: expm1(±0) = ±0.
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (f64.sub (call $math.exp (local.get $x)) (f64.const 1.0)))`
 
   // log(x) via bit-level frexp + sqrt(2)-centered split + atanh series.
@@ -408,8 +421,9 @@ export default (ctx) => {
                                     (f64.mul (local.get $x2) (f64.const 0.07692307692307693)))))))))))))))))))`
 
   ctx.core.stdlib['math.asin'] = `(func $math.asin (param $x f64) (result f64)
+    ;; Domain is [-1, 1]; outside it (including ±Infinity), Math.asin returns NaN.
     (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 1.0))
-      (then (f64.const 0.0))
+      (then (f64.const nan))
       (else (call $math.atan (f64.div (local.get $x)
         (f64.sqrt (f64.sub (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))))`
 
@@ -417,6 +431,9 @@ export default (ctx) => {
     (f64.sub (f64.const ${Math.PI / 2}) (call $math.asin (local.get $x))))`
 
   ctx.core.stdlib['math.atan2'] = `(func $math.atan2 (param $y f64) (param $x f64) (result f64)
+    ;; If either argument is NaN, the result is NaN (ECMA-262 21.3.2.5).
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
     (if (result f64) (f64.eq (local.get $x) (f64.const 0.0)) (then
       (if (result f64) (f64.eq (local.get $y) (f64.const 0.0)) (then (f64.const 0.0)) (else
         (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${Math.PI / 2})) (else (f64.neg (f64.const ${Math.PI / 2})))))))
@@ -445,27 +462,42 @@ export default (ctx) => {
         (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $e2x))) (else (local.get $e2x))))))`
 
   ctx.core.stdlib['math.asinh'] = `(func $math.asinh (param $x f64) (result f64)
+    ;; ±Infinity and NaN pass through unchanged. (log(±Inf + sqrt(Inf²+1)) → NaN otherwise.)
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
+    ;; Preserve sign of zero: asinh(±0) = ±0.
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))`
 
   ctx.core.stdlib['math.acosh'] = `(func $math.acosh (param $x f64) (result f64)
+    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
     (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const 0.0)) (else
       (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))))`
 
   ctx.core.stdlib['math.atanh'] = `(func $math.atanh (param $x f64) (result f64)
+    ;; Preserve sign of zero: atanh(±0) = ±0.
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`
 
   ctx.core.stdlib['math.cbrt'] = `(func $math.cbrt (param $x f64) (result f64)
     (local $y f64)
+    ;; ±Infinity and NaN pass through; preserve sign of zero.
+    (if (i32.eqz (call $math.isFinite (local.get $x))) (then (return (local.get $x))))
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (if (result f64) (f64.lt (local.get $x) (f64.const 0.0))
       (then (f64.neg (call $math.cbrt (f64.neg (local.get $x)))))
-      (else (if (result f64) (f64.eq (local.get $x) (f64.const 0.0))
-        (then (f64.const 0.0))
-        (else
-          ;; Initial guess via pow, then Newton-Raphson: y = (2y + x/y²)/3
-          (local.set $y (call $math.pow (local.get $x) (f64.const 0.3333333333333333)))
-          (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
-          (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
-          (local.get $y))))))`
+      (else
+        ;; Initial guess via pow, then Newton-Raphson: y = (2y + x/y²)/3
+        (local.set $y (call $math.pow (local.get $x) (f64.const 0.3333333333333333)))
+        (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
+        (local.set $y (f64.div (f64.add (f64.mul (f64.const 2.0) (local.get $y)) (f64.div (local.get $x) (f64.mul (local.get $y) (local.get $y)))) (f64.const 3.0)))
+        (local.get $y))))`
+
+  // Small finite-test helper (NaN→0, ±Inf→0, finite→1). Used by transcendental
+  // functions that need to short-circuit on infinite inputs.
+  ctx.core.stdlib['math.isFinite'] = `(func $math.isFinite (param $x f64) (result i32)
+    (i32.and
+      (f64.eq (local.get $x) (local.get $x))
+      (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`
 
   ctx.core.stdlib['math.hypot'] = `(func $math.hypot (param $x f64) (param $y f64) (result f64)
     (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`
