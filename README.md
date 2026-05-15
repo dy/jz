@@ -277,7 +277,7 @@ exports.greet(memory.String('hello'))    // marshal works the same as compile-ti
 
 `instantiate(wasm, opts?)` accepts `Uint8Array`, `ArrayBuffer`, or a pre-built `WebAssembly.Module`. The returned `{ exports, memory, instance, module }` is identical to what the `jz(src)` template tag returns — same `memory.String/Array/Object/...` constructors, same `memory.read(ptr)` decoder, same handling of `imports` / shared `memory` / WASI.
 
-The bridge is named after the value ABI: today's jz wasm uses **NaN-boxed `f64`** values with bump-allocated heap blobs, so the path is `jz/interop/nanbox` (and `jz/interop` is an alias for the default ABI). Future ABIs — flat C-style, wasm GC, component model — will live as sibling subpaths (`jz/interop/flat`, `jz/interop/gc`, …); the compiler will pick per-build via an `--abi=<name>` flag and the wasm will declare its ABI through a `_jz_abi` export so `jz/interop` can auto-select.
+The bridge encodes values as **NaN-boxed `f64`** with bump-allocated heap blobs. One boundary codec per binary — a jz wasm picks its host shape at compile time, the JS host that loads it knows which variant it asked for. Internal representation (whether a number lives as a flat `i32`, an SSO string stays inline, an object packs its fields) is analysis-driven and per-site, never a user-pickable preset.
 
 </details>
 

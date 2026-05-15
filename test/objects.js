@@ -5,7 +5,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { i64ToF64 } from '../interop/nanbox.js'
+import { i64ToF64 } from '../interop.js'
 import { run } from './util.js'
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {

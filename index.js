@@ -34,8 +34,8 @@
  * Capability hooks (ctx.schema.register, ctx.closure.make) are installed by capability modules.
  *
  * Interop host layer (memory marshaling, wrap, instantiate) lives in
- * interop/nanbox.js — also exported as the standalone `jz/interop` subpath
- * for hosts that want to run prebuilt jz wasm without pulling the compiler.
+ * interop.js — also exported as the standalone `jz/interop` subpath for
+ * hosts that want to run prebuilt jz wasm without pulling the compiler.
  *
  * @module jz
  */
@@ -51,7 +51,7 @@ import { detectOptimizeConfig } from './src/auto-config.js'
 import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
-} from './interop/nanbox.js'
+} from './interop.js'
 import { PRESETS, DEFAULT_PRESET, presetName } from './src/abi/index.js'
 
 // A host import that's a JS function may hand back any value, including a host

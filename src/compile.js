@@ -377,7 +377,7 @@ function emitFunc(func, funcFacts, programFacts) {
  *   - takes i64 params always — JS-side carrier is BigInt that reinterprets to
  *     f64 NaN-box bits. i64 dodges V8's spec-permitted NaN canonicalization at
  *     the wasm↔JS boundary (see ToJSValue / ToWebAssemblyValue). Host wrap()
- *     in interop/nanbox.js pairs by converting BigInt↔f64 via reinterpret bits.
+ *     in interop.js pairs by converting BigInt↔f64 via reinterpret bits.
  *   - converts each narrowed param at the call: f64 → i32 (truncate-sat) for
  *     numeric narrowed, f64 → i32-offset (`i32.wrap_i64 + i64.reinterpret_f64`)
  *     for pointer narrowed. The reinterpret happens once at param decode and
@@ -896,7 +896,7 @@ export default function compile(ast, profiler) {
 
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's
-  // interop/nanbox.js wrap() keys by export name. Aliased re-export
+  // interop.js wrap() keys by export name. Aliased re-export
   // (`function foo (...rest); export { foo as bar }`) needs `bar` in the
   // list; otherwise JS pads the missing args with UNDEF_NAN and the
   // VAL.ARRAY narrow path reads i32 at `__ptr_offset(UNDEF_NAN) - 8`, hitting
