@@ -1,4 +1,4 @@
-// Bench-pin tests — the competitive-regression gate.
+// Bench pin tests — the competitive-regression gate.
 //
 // Project invariant (see CONTRIBUTING.md): on the bench corpus, jz wasm is
 //   • at least as fast as V8, AssemblyScript and Porffor (speed-tuned build), and
@@ -10,7 +10,7 @@
 // `todo` entries are aspirational targets — printed for visibility, not asserted —
 // and should be promoted to `win`/`tie` the moment they're reached (ratchet).
 //
-// Standalone runner: `npm run test:bench-pin`. Skipped from `npm test` because
+// Standalone runner: `npm run test:bench`. Skipped from `npm test` because
 // it spawns the bench harness (~15-30 s) and needs optional toolchains
 // (`asc`, `porf`, `wasm-opt`); CI installs all three (see .github/workflows/bench.yml).
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -101,7 +101,7 @@ const SIZE_BUDGET = {
 // ── Run the speed harness ───────────────────────────────────────────────────
 const speedCases = Object.keys(SPEED)
 const speedTargets = ['v8', 'jz', ...(ascAvailable ? ['as'] : []), ...(porfAvailable ? ['porf'] : [])]
-console.log(`bench-pin: speed — ${speedCases.length} cases × {${speedTargets.join(',')}}…`)
+console.log(`bench: speed — ${speedCases.length} cases × {${speedTargets.join(',')}}…`)
 const speedOut = execFileSync('node', [BENCH, `--cases=${speedCases.join(',')}`, `--targets=${speedTargets.join(',')}`], { encoding: 'utf8', cwd: ROOT })
 
 const SIZE_UNIT = { B: 1, kB: 1024, MB: 1024 * 1024 }
@@ -145,7 +145,7 @@ for (const id of ['watr', 'sort', 'crc32']) {
 }
 
 // ── Run the size harness ────────────────────────────────────────────────────
-console.log('bench-pin: size — compiling jz/AS/porf + wasm-opt self-check…')
+console.log('bench: size — compiling jz/AS/porf + wasm-opt self-check…')
 const sizeOut = execFileSync('node', [SIZE_SCRIPT, '--json'], { encoding: 'utf8', cwd: ROOT })
 const sizes = {}  // id → { jz, jzOpt, as, porf }
 for (const line of sizeOut.split('\n')) {
@@ -159,7 +159,7 @@ const fmtKb = b => b == null ? '   —  ' : b < 1024 ? `${b} B`.padStart(7) : `$
 const mark = { win: '✓', tie: '≈', near: '~', todo: '✗', diff: '?', na: ' ' }
 const ratioCell = (claim, num, den) => num != null && den != null ? `${mark[claim]} ${(num / den).toFixed(2)}×` : `${mark[claim]}  —`
 
-console.log('\nbench-pin snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
+console.log('\nbench snapshot (speed = median ms, size = wasm bytes; "×" = jz/target):')
 console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.as       spd.porf     ${'jz_sz'.padStart(7)}  sz.AS        sz.porf      slack`)
 console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  -----------  ------`)
 for (const id of speedCases) {
@@ -193,7 +193,7 @@ for (const [id, claims] of Object.entries(SPEED)) {
     if (!SPEED_TOL[claim]) continue
     if (tid === 'as' && !ascAvailable) continue
     if (tid === 'porf' && !porfAvailable) continue
-    test(`bench-pin: speed ${id} jz ${claim} vs ${tid}`, () => {
+    test(`bench: speed ${id} jz ${claim} vs ${tid}`, () => {
       const r = runs[id]
       ok(r?.jz && r?.[tid], `missing data: jz=${!!r?.jz} ${tid}=${!!r?.[tid]}`)
       ok(r.jz.checksum === r[tid].checksum, `${id}: checksum mismatch jz=${r.jz.checksum} ${tid}=${r[tid].checksum} — pin should be 'diff'`)
@@ -207,7 +207,7 @@ for (const tid of ['v8', 'as', 'porf']) {
   if (tid === 'porf' && !porfAvailable) continue
   const g = geoSpeed(tid)
   if (g == null) continue
-  test(`bench-pin: speed geomean jz/${tid} ≤ ${SPEED_GEOMEAN_MAX[tid]}×`, () => {
+  test(`bench: speed geomean jz/${tid} ≤ ${SPEED_GEOMEAN_MAX[tid]}×`, () => {
     ok(g <= SPEED_GEOMEAN_MAX[tid], `geomean jz/${tid} = ${g.toFixed(3)}× > ${SPEED_GEOMEAN_MAX[tid]}×`)
   })
 }
@@ -219,7 +219,7 @@ for (const [id, claims] of Object.entries(SIZE)) {
     if (!SIZE_TOL[claim]) continue
     if (tid === 'as' && !ascAvailable) continue
     if (tid === 'porf' && !porfAvailable) continue
-    test(`bench-pin: size ${id} jz ${claim} vs ${tid}`, () => {
+    test(`bench: size ${id} jz ${claim} vs ${tid}`, () => {
       const s = sizes[id]
       ok(s?.jz && s?.[tid], `missing size: jz=${s?.jz} ${tid}=${s?.[tid]}`)
       const ratio = s.jz / s[tid]
@@ -232,7 +232,7 @@ for (const tid of ['as', 'porf']) {
   if (tid === 'porf' && !porfAvailable) continue
   const g = geoSize(tid)
   if (g == null) continue
-  test(`bench-pin: size geomean jz/${tid} ≤ ${SIZE_GEOMEAN_MAX[tid]}×`, () => {
+  test(`bench: size geomean jz/${tid} ≤ ${SIZE_GEOMEAN_MAX[tid]}×`, () => {
     ok(g <= SIZE_GEOMEAN_MAX[tid], `geomean size jz/${tid} = ${g.toFixed(3)}× > ${SIZE_GEOMEAN_MAX[tid]}×`)
   })
 }
@@ -240,7 +240,7 @@ for (const tid of ['as', 'porf']) {
 // ── Assertions: wasm-opt self-check (codegen size slack) ────────────────────
 if (wasmOptAvailable) {
   for (const id of Object.keys(SIZE)) {
-    test(`bench-pin: ${id} wasm-opt slack ≥ ${WASMOPT_SLACK_MIN}× (jz codegen not bloated)`, () => {
+    test(`bench: ${id} wasm-opt slack ≥ ${WASMOPT_SLACK_MIN}× (jz codegen not bloated)`, () => {
       const s = sizes[id]
       ok(s?.jz && s?.jzOpt, `missing wasm-opt size for ${id}`)
       const slack = s.jzOpt / s.jz
@@ -251,7 +251,7 @@ if (wasmOptAvailable) {
 
 // ── Assertions: absolute byte backstop ──────────────────────────────────────
 for (const [id, budget] of Object.entries(SIZE_BUDGET)) {
-  test(`bench-pin: ${id} jz wasm size ≤ ${budget} B (backstop)`, () => {
+  test(`bench: ${id} jz wasm size ≤ ${budget} B (backstop)`, () => {
     const r = runs[id]
     ok(r?.jz?.sizeBytes != null, `missing size for ${id}`)
     ok(r.jz.sizeBytes <= budget, `${id}: jz wasm ${r.jz.sizeBytes} B exceeds budget ${budget} B (+${r.jz.sizeBytes - budget})`)
@@ -273,5 +273,5 @@ const sizeCompile = id => compile(readFileSync(join(ROOT, `bench/${id}/${id}.js`
   optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 },
   alloc: false,
 }).length
-test('bench-pin: mat4 size-optimized compile ≤ 2500 B', () => { const b = sizeCompile('mat4'); ok(b <= 2500, `mat4 size-optimized compile: ${b} B exceeds 2500 B`) })
-test('bench-pin: biquad size-optimized compile ≤ 3000 B', () => { const b = sizeCompile('biquad'); ok(b <= 3000, `biquad size-optimized compile: ${b} B exceeds 3000 B`) })
+test('bench: mat4 size-optimized compile ≤ 2500 B', () => { const b = sizeCompile('mat4'); ok(b <= 2500, `mat4 size-optimized compile: ${b} B exceeds 2500 B`) })
+test('bench: biquad size-optimized compile ≤ 3000 B', () => { const b = sizeCompile('biquad'); ok(b <= 3000, `biquad size-optimized compile: ${b} B exceeds 3000 B`) })

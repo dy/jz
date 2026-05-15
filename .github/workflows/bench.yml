@@ -1,11 +1,11 @@
-name: bench-pin
+name: bench
 # Competitive-regression gate (see CONTRIBUTING.md "Performance & size invariant").
 # Runs on every push and PR: jz must stay at least as fast/small as V8,
 # AssemblyScript and Porffor on the bench corpus, and `wasm-opt -Oz` must not
 # find meaningful slack in jz's own output.
 on: [push, pull_request]
 jobs:
-  bench-pin:
+  bench:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,4 +23,4 @@ jobs:
           asc --version || true
           porf --version || true
           wasm-opt --version || true
-      - run: npm run test:bench-pin
+      - run: npm run test:bench

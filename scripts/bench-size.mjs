@@ -2,7 +2,7 @@
 // bench-size — wasm size comparison: jz (size-tuned) vs AssemblyScript (-Oz) vs
 // Porffor, plus a `wasm-opt -Oz` self-check that measures how much headroom is
 // left in jz's own codegen. This is the *size* track; bench.mjs is the *speed*
-// track. Both feed the regression gate in test/bench-pin.js.
+// track. Both feed the regression gate in test/bench.js.
 //
 //   node scripts/bench-size.mjs               # all cases, table
 //   node scripts/bench-size.mjs mat4 biquad   # subset
