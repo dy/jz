@@ -23,13 +23,14 @@
  */
 
 import { ctx, err, inc, PTR } from './ctx.js'
-import { T, VAL, nonNegIntLiteral, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey } from './analyze.js'
 import {
+  T, VAL, nonNegIntLiteral, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey,
+  // AST predicates (formerly in src/ast.js)
   isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
   containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
   containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
-} from './ast.js'
+} from './analyze.js'
 import {
   typed, asF64, asI32, asI64, asPtrOffset, asParamType, toI32, fromI64,
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
