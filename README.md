@@ -76,6 +76,9 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 
 </details>
 
+<!-- FIXME: cleanup options: strict may be not needed (it is strict by default unless jzified, no?), profileNames - remove alias, optimize string aliases must match numbers, not something custom, host also selects boundary wrapper isn't it?
+ -->
+
 ## CLI
 
 `npm install -g jz`
@@ -125,12 +128,15 @@ Not supported
   async/await  Promise  function*  yield
   this  class  super  extends  delete  labels
   eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
-  dynamic import  DOM  fetch  Intl  Node APIs
+  import()  DOM  fetch  Intl  Node APIs
 ```
+<!-- FIXME: can we support classes via jzify? -->
+
 ## FAQ
 
 <details>
 <summary><strong>How to pass data between JS and WASM?</strong></summary>
+<!-- FIXME: not very precise question - how to pass non-numbers -->
 
 <br>
 
@@ -185,22 +191,6 @@ jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
 </details>
 
 <details>
-<summary><strong>Isn't implicit inference evil?</strong></summary>
-
-<br>
-
-The "explicit > implicit" reflex assumes inference is hidden, fragile, or coercive. jz inference is none of those — the rules are mechanical (name, literals, operators, member access, `typeof`, assignment flow, JSDoc), the chosen types are visible in `--wat` output, and ambiguous cases fall back to NaN-boxed f64: a safe default, never a wrong type.
-
-Type annotations (eg. TypeScript) do two different jobs in one syntax:
-
-1. **Hints to the compiler** about storage (`let x: number = 5`). That's compiler internals leakage into syntax — inference reads operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignments the way a human reader does. The annotation duplicates what's already in the code.
-2. **Contracts at module boundaries** (`function f(id: UserId): User | null`). Legitimate — but a *documentation* concern, not a *language* concern.
-
-jz keeps the split clean: inference handles storage, JSDoc handles contracts. **Valid jz = valid JS** — no parallel type system to learn. Annotations don't make code faster; they sharpen what the compiler can already infer.
-
-</details>
-
-<details>
 <summary><strong>How does template interpolation work?</strong></summary>
 
 <br>
@@ -222,7 +212,7 @@ Functions are imported as host calls. Non-serializable values (host objects, cla
 
 <details>
 <summary><strong>Does it support ES module imports?</strong></summary>
-
+<!-- FIXME: It's not ES module imports, it's just imports syntax -->
 <br>
 
 Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
@@ -256,7 +246,7 @@ const { exports } = jz(mainSrc, { modules: {
 </details>
 
 <details>
-<summary><strong>How do I run a produced <code>.wasm</code> without pulling jz?</strong></summary>
+<summary><strong>How to run a produced <code>.wasm</code> without jz?</strong></summary>
 
 <br>
 
@@ -278,11 +268,12 @@ exports.greet(memory.String('hello'))    // marshal works the same as compile-ti
 `instantiate(wasm, opts?)` accepts `Uint8Array`, `ArrayBuffer`, or a pre-built `WebAssembly.Module`. The returned `{ exports, memory, instance, module }` is identical to what the `jz(src)` template tag returns — same `memory.String/Array/Object/...` constructors, same `memory.read(ptr)` decoder, same handling of `imports` / shared `memory` / WASI.
 
 The bridge encodes values as **NaN-boxed `f64`** with bump-allocated heap blobs. One boundary codec per binary — a jz wasm picks its host shape at compile time, the JS host that loads it knows which variant it asked for. Internal representation (whether a number lives as a flat `i32`, an SSO string stays inline, an object packs its fields) is analysis-driven and per-site, never a user-pickable preset.
-
+<!-- FIXME: elaborate/provide a way without jz, some contract -->
 </details>
 
 <details>
 <summary><strong>How do I pass values from the host to jz?</strong></summary>
+<!-- FIXME: the question is too similar to the first one -->
 
 <br>
 
@@ -390,7 +381,7 @@ For finer control, allocate manually: `memory.alloc(bytes)` returns a raw offset
 
 <details>
 <summary><strong>How do I run compiled WASM outside the browser?</strong></summary>
-
+<!-- FIXME: kind-of similar to prev question how to run WASM without JZ -->
 <br>
 
 ```sh
@@ -444,7 +435,7 @@ The compiled `.wasm` uses at most one import namespace:
 
 <details>
 <summary><strong>How do I add custom operators / extend the stdlib?</strong></summary>
-
+<!-- FIXME: worth elaborating about inference maybe, leading to inference question? -->
 <br>
 
 jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
@@ -471,9 +462,26 @@ import { valTypeOf, VAL } from '../src/analyze.js'
 
 </details>
 
+
+<details>
+<summary><strong>Isn't implicit inference evil?</strong></summary>
+<!-- FIXME: too defensive question/answer, possibly belongs in philosophy. Maybe better reframe as own inference hints? -->
+<br>
+
+The "explicit > implicit" reflex assumes inference is hidden, fragile, or coercive. jz inference is none of those — the rules are mechanical (name, literals, operators, member access, `typeof`, assignment flow, JSDoc), the chosen types are visible in `--wat` output, and ambiguous cases fall back to NaN-boxed f64: a safe default, never a wrong type.
+
+Type annotations (eg. TypeScript) do two different jobs in one syntax:
+
+1. **Hints to the compiler** about storage (`let x: number = 5`). That's compiler internals leakage into syntax — inference reads operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignments the way a human reader does. The annotation duplicates what's already in the code.
+2. **Contracts at module boundaries** (`function f(id: UserId): User | null`). Legitimate — but a *documentation* concern, not a *language* concern.
+
+jz keeps the split clean: inference handles storage, JSDoc handles contracts. **Valid jz = valid JS** — no parallel type system to learn. Annotations don't make code faster; they sharpen what the compiler can already infer.
+
+</details>
+
 <details>
 <summary><strong>Can I compile jz to C?</strong></summary>
-
+<!-- FIXME: add info about efficiency, results, also wasm-opt -->
 <br>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
@@ -505,6 +513,7 @@ cc program.c -o program
 
 _Numbers from `node bench/bench.mjs --targets=v8,jz,as` on Apple Silicon._
 Geomean speed: jz 0.41× V8, 0.40× AS, 0.32× Porffor. Geomean size: jz 0.85× AS.
+<!-- FIXME: Geomean should be last row -->
 `optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff lever.
 
 <details>
@@ -526,6 +535,7 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 | Small constant loop unroll | Required for biquad and mat4 speed; size cost is pinned. |
 | OBJECT-only ternary type propagation | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
 | Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
+<!-- FIXME: needs to be updated -->
 
 `npm run test:bench` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
 
