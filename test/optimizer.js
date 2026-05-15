@@ -549,9 +549,12 @@ test('array shift stays O(1)', () => {
 })
 
 test('array map/filter reuse receiver pointer for sizing and iteration', () => {
+  // Float literals keep the array ARRAY-shaped (int-only would auto-promote
+  // to TYPED via plan.js's promoteIntArrayLiterals and route through .typed:map
+  // / .typed:filter, which DO call $__len).
   const wat = jz.compile(`
     export const main = () => {
-      const a = [1, 2, 3, 4]
+      const a = [1.5, 2.5, 3.5, 4.5]
       const b = a.map(x => x + 1)
       const c = b.filter(x => x > 2)
       return c.length + c[0]
@@ -561,13 +564,13 @@ test('array map/filter reuse receiver pointer for sizing and iteration', () => {
   ok(!/\(call \$__len\b/.test(mainBody), 'known ARRAY map/filter should size from the resolved header length')
   const { main } = run(`
     export const main = () => {
-      const a = [1, 2, 3, 4]
+      const a = [1.5, 2.5, 3.5, 4.5]
       const b = a.map(x => x + 1)
       const c = b.filter(x => x > 2)
       return c.length * 10 + c[0]
     }
   `)
-  is(main(), 33)
+  is(main(), 42.5)
 })
 
 test('known array numeric index skips generic array tag dispatch', () => {
@@ -1152,10 +1155,9 @@ test('promoteIntArrayLiterals: spread receiver disqualifies', () => {
   is(main(0), 16)
 })
 
-test('promoteIntArrayLiterals: .map disqualifies (result flows to non-typed-safe methods downstream)', () => {
-  // .typed:map exists but its TYPED result feeds .filter (no .typed:filter)
-  // — corrupts on 8-byte vs 4-byte slot mismatch. Conservative disqualify
-  // until typed siblings land or result-flow taint tracking arrives.
+test('promoteIntArrayLiterals: .map promotes (.typed:map emits TYPED result; downstream re-dispatches via VAL.TYPED)', () => {
+  // .typed:map returns a TYPED carrier; subsequent .filter/.slice/[idx] on
+  // that carrier route through .typed:* emitters via emit.js:2211 lookup.
   const src = `
     export const main = () => {
       const xs = [1, 2, 3, 4]
@@ -1164,12 +1166,13 @@ test('promoteIntArrayLiterals: .map disqualifies (result flows to non-typed-safe
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), '.map is not in v1 typed-safe whitelist')
+  ok(!/\(local \$xs f64\)/.test(body), 'xs is consumed as static data; no f64 local')
+  ok(/\(local \$ys i32\)/.test(body), 'ys is unboxed i32 TYPED ptr')
   const { main } = run(src)
   is(main(), 6)
 })
 
-test('promoteIntArrayLiterals: .filter disqualifies (no .typed:filter emitter)', () => {
+test('promoteIntArrayLiterals: .filter promotes (.typed:filter emits same-element-type TYPED)', () => {
   const src = `
     export const main = () => {
       const xs = [1, 2, 3, 4]
@@ -1178,9 +1181,107 @@ test('promoteIntArrayLiterals: .filter disqualifies (no .typed:filter emitter)',
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), '.filter would corrupt on TYPED storage; disqualify')
+  ok(!/\(local \$xs f64\)/.test(body), 'xs is consumed as static data; no f64 local')
   const { main } = run(src)
   is(main(), 2)
+})
+
+test('.typed:forEach: side effect via captured slot (typed receiver via direct ctor)', () => {
+  // `arr` is a tracked TypedArray binding via `new Float64Array([…])`, so
+  // `.forEach` routes through .typed:forEach (emit.js:2211 dispatch).
+  const { main } = run(`
+    let total = 0
+    let arr = new Float64Array([1, 2, 3, 4])
+    arr.forEach(x => total += x)
+    export const main = () => total
+  `)
+  is(main(), 10)
+})
+
+test('.typed:reduce: seeded and unseeded (typed receiver)', () => {
+  const { seeded, unseeded } = run(`
+    let arr = new Float64Array([1, 2, 3, 4])
+    export const seeded = () => arr.reduce((a, b) => a + b, 10)
+    export const unseeded = () => arr.reduce((a, b) => a + b)
+  `)
+  is(seeded(), 20)
+  is(unseeded(), 10)
+})
+
+test('.typed:indexOf / .typed:includes (typed receiver)', () => {
+  const { hit, miss, included } = run(`
+    let arr = new Int32Array([10, 20, 30, 40])
+    export const hit = () => arr.indexOf(30)
+    export const miss = () => arr.indexOf(99)
+    export const included = () => arr.includes(20) ? 1 : 0
+  `)
+  is(hit(), 2)
+  is(miss(), -1)
+  is(included(), 1)
+})
+
+test('.typed:find / .typed:findIndex (typed receiver)', () => {
+  const { find, findIdx } = run(`
+    let arr = new Float64Array([1, 2, 3, 4])
+    export const find = () => arr.find(x => x > 2)
+    export const findIdx = () => arr.findIndex(x => x > 2)
+  `)
+  is(find(), 3)
+  is(findIdx(), 2)
+})
+
+test('.typed:some / .typed:every (typed receiver)', () => {
+  const { some, everyT, everyF } = run(`
+    let arr = new Float64Array([1, 2, 3, 4])
+    export const some = () => arr.some(x => x > 3) ? 1 : 0
+    export const everyT = () => arr.every(x => x > 0) ? 1 : 0
+    export const everyF = () => arr.every(x => x > 2) ? 1 : 0
+  `)
+  is(some(), 1)
+  is(everyT(), 1)
+  is(everyF(), 0)
+})
+
+test('.typed:filter preserves element type', () => {
+  const { main } = run(`
+    let arr = new Int32Array([1, 2, 3, 4, 5])
+    let out = arr.filter(x => x > 2)
+    export const main = () => out.length * 100 + out[0] + out[1] * 10 + out[2] * 1000
+  `)
+  // [3, 4, 5] → length=3, [0]=3, [1]=4, [2]=5 → 3*100 + 3 + 4*10 + 5*1000 = 5343
+  is(main(), 5343)
+})
+
+test('.typed:slice with negative and OOB indices', () => {
+  const { mid, neg, oob, full } = run(`
+    let arr = new Float64Array([10, 20, 30, 40, 50])
+    export const mid = () => { let s = arr.slice(1, 4); return s.length * 1000 + s[0] + s[1] * 10 + s[2] * 100 }
+    export const neg = () => { let s = arr.slice(-2); return s.length * 1000 + s[0] + s[1] * 10 }
+    export const oob = () => { let s = arr.slice(2, 99); return s.length * 1000 + s[0] }
+    export const full = () => arr.slice().length
+  `)
+  is(mid(), 3000 + 20 + 300 + 4000)  // [20, 30, 40]
+  is(neg(), 2000 + 40 + 500)          // [40, 50]
+  is(oob(), 3000 + 30)                 // [30, 40, 50]
+  is(full(), 5)                        // [10,20,30,40,50]
+})
+
+test('promoted int array .filter().map() chain stays typed end-to-end', () => {
+  // [1..5] auto-promotes to Int32Array. .filter and .map both have .typed:*
+  // emitters; the result of .filter is TYPED so the subsequent .map's `.${m}`
+  // dispatch hits `.typed:map` via emit.js:2211 lookup.
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3, 4, 5]
+      const ys = xs.filter(x => x > 2).map(x => x * 10)
+      return ys.length * 100 + ys[0] + ys[1] * 10 + ys[2] * 1000
+    }
+  `
+  const body = compileMain(src)
+  ok(!/\(local \$xs f64\)/.test(body), 'xs promoted away from f64 ARRAY')
+  const { main } = run(src)
+  // [3,4,5].filter(>2) → [3,4,5]; *10 → [30,40,50] → 3*100 + 30 + 40*10 + 50*1000 = 50_730
+  is(main(), 50730)
 })
 
 test('promoteIntArrayLiterals: hole disqualifies', () => {

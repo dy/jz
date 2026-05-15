@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr, truthyIR } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -209,8 +209,11 @@ export default (ctx) => {
     __typed_set_idx: ['__ptr_aux', '__ptr_offset'],
   })
 
-  // .map/.filter invoke callbacks with arity 1 internally.
-  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 1)
+  // .map invokes with arity 1; .forEach/.find/.some/.every/.filter/.findIndex
+  // invoke with (item, idx) → arity 2. Reduce with (acc, item) → arity 2.
+  // (jz omits the `arr` arg array-spec callbacks normally receive — matches
+  // array.js convention.)
+  ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
 
   inc('__mkptr', '__alloc', '__len')
 
@@ -563,13 +566,27 @@ export default (ctx) => {
 
   // .length handled by ptr.js's __len (reads from memory header [-8:len])
 
-  /** Resolve element type + view-ness for a known TypedArray variable.
-   *  Returns { et, isView, isBigInt } or null. */
+  /** Resolve element type + view-ness for a known TypedArray expression.
+   *  Returns { et, isView, isBigInt } or null. Handles:
+   *    - bare binding: `xs` (in typedElem)
+   *    - element-preserving method chain: `xs.filter(...)` / `xs.map(...)` /
+   *      `xs.slice(...)` — walks back to the root binding. View-ness clears
+   *      at the chain output (the result is always an owned typed array). */
+  const TYPED_CHAIN_METHODS = new Set(['map', 'filter', 'slice'])
   const resolveElem = (arr) => {
-    const ctor = typeof arr === 'string' && ctx.types.typedElem?.get(arr)
+    let receiver = arr, chainOutput = false
+    // Walk method-call chain inward. `arr.method(...)` parses as
+    // ['()', ['.', recv, 'method'], ...args] — peel until we hit a name.
+    while (Array.isArray(receiver) && receiver[0] === '()' &&
+        Array.isArray(receiver[1]) && receiver[1][0] === '.' &&
+        TYPED_CHAIN_METHODS.has(receiver[1][2])) {
+      receiver = receiver[1][1]
+      chainOutput = true
+    }
+    const ctor = typeof receiver === 'string' && ctx.types.typedElem?.get(receiver)
     if (!ctor) return null
-    const isView = ctor.endsWith('.view')
-    const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
+    const isView = !chainOutput && ctor.endsWith('.view')
+    const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
     const et = ELEM[name]
     return et == null ? null : { et, isView, isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array' }
   }
@@ -795,11 +812,22 @@ export default (ctx) => {
 
   // .map() on TypedArrays — SIMD auto-vectorization when pattern detected
   ctx.core.emit['.typed:map'] = (arr, fn) => {
-    // Resolve element type + view-ness from variable tracking
-    const ctor = typeof arr === 'string' && ctx.types.typedElem?.get(arr)
-    const isView = ctor?.endsWith('.view')
-    const elemName = isView ? ctor.slice(4, -5) : ctor?.slice(4)
-    const elemType = elemName && ELEM[elemName]
+    // Resolve element type + view-ness. `resolveElem` handles bare bindings AND
+    // chained method receivers (`xs.filter(…).map(…)`) by walking back to the
+    // root typedElem-tracked binding.
+    const r = resolveElem(arr)
+    const elemType = r?.et
+    const isView = r?.isView
+    const elemName = r && (r.isBigInt
+      ? (elemType === 7 ? 'BigInt64Array' : 'BigUint64Array')  // unreachable: SIMD path gated below
+      : ['Int8Array','Uint8Array','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array'][elemType])
+
+    // BigInt typed arrays: SIMD path doesn't support them; defer to scalar map.
+    if (r?.isBigInt) {
+      // Fall through to generic .map below — keeps i64-via-NaN-box semantics intact.
+      if (ctx.core.emit['.map']) return ctx.core.emit['.map'](arr, fn)
+      return null
+    }
 
     // Try SIMD: inline arrow with recognizable pattern
     if (elemType != null && Array.isArray(fn) && fn[0] === '=>') {
@@ -858,5 +886,310 @@ export default (ctx) => {
     // Unknown typed array type: fall back to generic array .map
     if (ctx.core.emit['.map']) return ctx.core.emit['.map'](arr, fn)
     return null
+  }
+
+  // === Shared typed iteration core ===
+  //
+  // typedLoop(arr, bodyFn, opts?) emits the common shape every typed iteration
+  // method needs: resolve elemType from the receiver's tracked ctor, set up
+  // (ptr, len, i) locals, walk i in [0, len), per iteration load arr[i] as f64
+  // and pass it to bodyFn. Returns the IR setup statements. Returns null if the
+  // element type can't be resolved — callers fall back to the generic array
+  // emitter.
+  //
+  // bodyFn(loadElem, i, len, ptr, exitLabel) returns IR statements. loadElem is
+  // a function (called lazily so it isn't materialized for unused-item paths)
+  // returning f64 IR for the current element. `exitLabel` lets the body break
+  // out of the loop (e.g. `.find` after a hit, `.some`/`.every` on early
+  // resolution). `i`/`len`/`ptr` are i32 local-name strings.
+  const typedLoop = (arr, bodyFn) => {
+    const r = resolveElem(arr)
+    if (!r) return null
+    const { et, isView, isBigInt } = r
+    if (isBigInt) return null  // BigInt: defer to generic .map (returns BigInts via f64-bits NaN-box)
+    const va = emit(arr)
+    const len = tempI32('tll'), ptr = tempI32('tlp'), i = tempI32('tli')
+    const id = ctx.func.uniq++
+    const exit = `$brk${id}`
+    inc('__len')
+    const loadElem = () => {
+      const off = ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', SHIFT[et]]]]
+      if (et === 7) return typed(['f64.load', off], 'f64')
+      if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
+      return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+    }
+    const setup = [
+      ['local.set', `$${ptr}`, typedDataAddr(asF64(va), isView)],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', asF64(va)]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', exit, ['loop', `$loop${id}`,
+        ['br_if', exit, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ...bodyFn(loadElem, i, len, ptr, exit),
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]]]
+    return { setup, ptr, len, i, exit, et, isView, loadElem }
+  }
+
+  // === Typed iteration emitters ===
+  //
+  // Each emitter dispatches via the `.typed:method` key on `ctx.core.emit`.
+  // emit.js:2211 picks `.typed:<m>` over `.${m}` when the receiver's val type
+  // is VAL.TYPED ('typed'), so a user-visible `arr.forEach(...)` on a tracked
+  // typed-array binding routes here automatically.
+  //
+  // Calling convention: callbacks receive (item, idx) — matches array.js
+  // (omits the `arr` arg that array-method spec passes; jz keeps the closure
+  // ABI width at 2 to spare a slot across the whole program). Reduce passes
+  // (acc, item). Closure invocation goes through `ctx.closure.call` directly.
+  // The element-type-name list is needed by allocPtr for typedAux:
+  const ET_NAME = ['Int8Array','Uint8Array','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array']
+
+  // .forEach: callback (item, idx). Result is 0 to match array.js's
+  // convention (spec says undefined; both modules pick 0 since f() exposes the
+  // result as f64 and NaN-boxed undef reads as NaN).
+  // Pre-allocate locals BEFORE typedLoop — bodyFn captures `cbLoc` by closure;
+  // TDZ would fire if we declared it after.
+  ctx.core.emit['.typed:forEach'] = (arr, fn) => {
+    const cbLoc = temp('tfc')
+    const loop = typedLoop(arr, (load, i) => [
+      ['drop', asF64(ctx.closure.call(
+        typed(['local.get', `$${cbLoc}`], 'f64'),
+        [load(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))]
+    ])
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      ...loop.setup,
+      ['f64.const', 0]], 'f64')
+  }
+
+  // .reduce: callback (acc, item) → acc. Without init, slot 0 seeds acc and
+  // the callback skips on iteration 0. Matches JS semantics; the (idx, arr)
+  // callback args are dropped (consistent with array.js).
+  ctx.core.emit['.typed:reduce'] = (arr, fn, init) => {
+    const cbLoc = temp('trc'), acc = temp('trv'), seeded = init !== undefined
+    const loop = typedLoop(arr, (load, i) => {
+      const step = ['local.set', `$${acc}`, asF64(ctx.closure.call(
+        typed(['local.get', `$${cbLoc}`], 'f64'),
+        [typed(['local.get', `$${acc}`], 'f64'), load()]))]
+      if (seeded) return [step]
+      // Unseeded: iteration 0 just stashes the value into acc.
+      return [
+        ['if', ['i32.eqz', ['local.get', `$${i}`]],
+          ['then', ['local.set', `$${acc}`, load()]],
+          ['else', step]]]
+    })
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      ['local.set', `$${acc}`, seeded ? asF64(emit(init)) : undefExpr()],
+      ...loop.setup,
+      ['local.get', `$${acc}`]], 'f64')
+  }
+
+  // .indexOf: scalar value-equality search. Returns -1 on miss. Compare on f64
+  // — Array.prototype.indexOf uses strict equality (NaN ≠ NaN).
+  ctx.core.emit['.typed:indexOf'] = (arr, val) => {
+    const found = tempI32('tif'), needle = temp('tin')
+    const loop = typedLoop(arr, (load, i, _len, _ptr, exit) => [
+      ['if', ['f64.eq', load(), ['local.get', `$${needle}`]],
+        ['then',
+          ['local.set', `$${found}`, ['local.get', `$${i}`]],
+          ['br', exit]]]
+    ])
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${needle}`, asF64(emit(val))],
+      ['local.set', `$${found}`, ['i32.const', -1]],
+      ...loop.setup,
+      ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
+  }
+
+  // .includes: like indexOf but NaN-equal-NaN (JS spec). Stash needle bits as
+  // i64 and compare via i64.eq so two NaNs with matching bit patterns match
+  // (f64.eq would say false).
+  ctx.core.emit['.typed:includes'] = (arr, val) => {
+    const found = tempI32('thf'), needle = temp('thn')
+    const loop = typedLoop(arr, (load, _i, _len, _ptr, exit) => [
+      ['if',
+        ['i32.or',
+          ['f64.eq', load(), ['local.get', `$${needle}`]],
+          ['i64.eq',
+            ['i64.reinterpret_f64', load()],
+            ['i64.reinterpret_f64', ['local.get', `$${needle}`]]]],
+        ['then', ['local.set', `$${found}`, ['i32.const', 1]], ['br', exit]]]
+    ])
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${needle}`, asF64(emit(val))],
+      ['local.set', `$${found}`, ['i32.const', 0]],
+      ...loop.setup,
+      ['f64.convert_i32_s', ['local.get', `$${found}`]]], 'f64')
+  }
+
+  // .find / .findIndex: linear scan, first truthy callback wins. Miss returns
+  // undefined / -1 respectively.
+  const findCommon = (arr, fn, returnIndex) => {
+    const cbLoc = temp('tfc'), result = temp('tfr'), foundIdx = tempI32('tfi')
+    const loop = typedLoop(arr, (load, i, _len, _ptr, exit) => {
+      const itemLoc = temp('tfit')
+      return [
+        ['local.set', `$${itemLoc}`, load()],
+        ['if', truthyIR(ctx.closure.call(
+          typed(['local.get', `$${cbLoc}`], 'f64'),
+          [typed(['local.get', `$${itemLoc}`], 'f64'),
+           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')])),
+          ['then',
+            returnIndex
+              ? ['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]
+              : ['local.set', `$${result}`, typed(['local.get', `$${itemLoc}`], 'f64')],
+            ['br', exit]]]
+      ]
+    })
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      returnIndex
+        ? ['local.set', `$${foundIdx}`, ['i32.const', -1]]
+        : ['local.set', `$${result}`, undefExpr()],
+      ...loop.setup,
+      returnIndex
+        ? typed(['f64.convert_i32_s', ['local.get', `$${foundIdx}`]], 'f64')
+        : typed(['local.get', `$${result}`], 'f64')], 'f64')
+  }
+  ctx.core.emit['.typed:find'] = (arr, fn) => findCommon(arr, fn, false)
+  ctx.core.emit['.typed:findIndex'] = (arr, fn) => findCommon(arr, fn, true)
+
+  // .some / .every: short-circuit boolean reduction. some=∃, every=∀.
+  const anyAllCommon = (arr, fn, isEvery) => {
+    const cbLoc = temp('tac'), result = tempI32('tar')
+    const loop = typedLoop(arr, (load, i, _len, _ptr, exit) => {
+      const test = truthyIR(ctx.closure.call(
+        typed(['local.get', `$${cbLoc}`], 'f64'),
+        [load(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))
+      // every: exit on falsy with result=0. some: exit on truthy with result=1.
+      return [
+        ['if', isEvery ? ['i32.eqz', test] : test,
+          ['then', ['local.set', `$${result}`, ['i32.const', isEvery ? 0 : 1]], ['br', exit]]]
+      ]
+    })
+    if (!loop) return null
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      ['local.set', `$${result}`, ['i32.const', isEvery ? 1 : 0]],
+      ...loop.setup,
+      ['f64.convert_i32_s', ['local.get', `$${result}`]]], 'f64')
+  }
+  ctx.core.emit['.typed:some'] = (arr, fn) => anyAllCommon(arr, fn, false)
+  ctx.core.emit['.typed:every'] = (arr, fn) => anyAllCommon(arr, fn, true)
+
+  // .filter: produces a TYPED array of the same element type. Allocates worst-
+  // case (len slots) then patches the byte-count header at the end with the
+  // actual passed count. Mirrors .filter in array.js but with typed-aware
+  // load/store.
+  ctx.core.emit['.typed:filter'] = (arr, fn) => {
+    const r = resolveElem(arr)
+    if (!r || r.isBigInt) return null
+    const { et, isView } = r
+    const cbLoc = temp('tfc'), arrLoc = temp('tfa')
+    const count = tempI32('tfn'), maxLen = tempI32('tfm')
+    const srcPtr = tempI32('tfsp'), srcLen = tempI32('tfsl'), srci = tempI32('tfi')
+    inc('__len')
+    const loadAt = (ptrLoc, iLoc) => {
+      const off = ['i32.add', ['local.get', `$${ptrLoc}`], ['i32.shl', ['local.get', `$${iLoc}`], ['i32.const', SHIFT[et]]]]
+      if (et === 7) return typed(['f64.load', off], 'f64')
+      if (et === 6) return typed(['f64.promote_f32', ['f32.load', off]], 'f64')
+      return typed([(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', [LOAD[et], off]], 'f64')
+    }
+    const storeAt = (ptrLoc, iLoc, valF64) => {
+      const off = ['i32.add', ['local.get', `$${ptrLoc}`], ['i32.shl', ['local.get', `$${iLoc}`], ['i32.const', SHIFT[et]]]]
+      if (et === 7) return ['f64.store', off, valF64]
+      if (et === 6) return ['f32.store', off, ['f32.demote_f64', valF64]]
+      return [STORE[et], off, [(et & 1) ? 'i32.trunc_f64_u' : 'i32.trunc_f64_s', valF64]]
+    }
+    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(ET_NAME[et]),
+      len: ['i32.shl', ['local.get', `$${maxLen}`], ['i32.const', SHIFT[et]]],
+      stride: 1, tag: 'tfd' })
+    const id = ctx.func.uniq++
+    const passes = truthyIR(ctx.closure.call(
+      typed(['local.get', `$${cbLoc}`], 'f64'),
+      [loadAt(srcPtr, srci), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64')]))
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      ['local.set', `$${arrLoc}`, asF64(emit(arr))],
+      ['local.set', `$${srcPtr}`, typedDataAddr(typed(['local.get', `$${arrLoc}`], 'f64'), isView)],
+      ['local.set', `$${srcLen}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]]],
+      ['local.set', `$${maxLen}`, ['local.get', `$${srcLen}`]],
+      dst.init,
+      ['local.set', `$${count}`, ['i32.const', 0]],
+      ['local.set', `$${srci}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${srci}`], ['local.get', `$${srcLen}`]]],
+        ['if', passes,
+          ['then',
+            storeAt(dst.local, count, loadAt(srcPtr, srci)),
+            ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]],
+        ['local.set', `$${srci}`, ['i32.add', ['local.get', `$${srci}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      // Patch byte-count header — __len reads from -8 then __typed_shift's by
+      // the typed-elem stride, so we store `count * stride` bytes here.
+      ['i32.store', ['i32.sub', ['local.get', `$${dst.local}`], ['i32.const', 8]],
+        ['i32.shl', ['local.get', `$${count}`], ['i32.const', SHIFT[et]]]],
+      dst.ptr], 'f64')
+  }
+
+  // .slice(start, end): produces TYPED array of same element type. Mirrors JS
+  // semantics — negative indices wrap from end, out-of-range clamps to len.
+  // Bulk copy via `memory.copy`.
+  ctx.core.emit['.typed:slice'] = (arr, start, end) => {
+    const r = resolveElem(arr)
+    if (!r || r.isBigInt) return null
+    const { et, isView } = r
+    const arrLoc = temp('tsa'), srcPtr = tempI32('tssp'), srcLen = tempI32('tssl')
+    const lo = tempI32('tslo'), hi = tempI32('tshi'), n = tempI32('tsn')
+    inc('__len')
+    // ECMAScript ToInteger + clamp: idx := bound; idx := idx<0 ? max(0,idx+len) : min(len,idx).
+    // Select-based to dodge nested if-arity rules.
+    // defaultExpr: when boundExpr is omitted (e.g. arr.slice() / arr.slice(2)),
+    // start defaults to 0 and end defaults to len.
+    const clamp = (boundExpr, fallback, defaultExpr) => {
+      if (boundExpr == null) return defaultExpr
+      const idx = tempI32(fallback)
+      return ['block', ['result', 'i32'],
+        ['local.set', `$${idx}`, asI32(emit(boundExpr))],
+        ['select',
+          // negative branch: max(0, idx + len)
+          ['select',
+            ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]],
+            ['i32.const', 0],
+            ['i32.gt_s', ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]], ['i32.const', 0]]],
+          // non-negative branch: min(len, idx)
+          ['select',
+            ['local.get', `$${srcLen}`],
+            ['local.get', `$${idx}`],
+            ['i32.gt_s', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]]],
+          ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]]]
+    }
+    const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(ET_NAME[et]),
+      len: ['i32.shl', ['local.get', `$${n}`], ['i32.const', SHIFT[et]]],
+      stride: 1, tag: 'tsd' })
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${arrLoc}`, asF64(emit(arr))],
+      ['local.set', `$${srcPtr}`, typedDataAddr(typed(['local.get', `$${arrLoc}`], 'f64'), isView)],
+      ['local.set', `$${srcLen}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]]],
+      ['local.set', `$${lo}`, clamp(start, 'tslo2', ['i32.const', 0])],
+      ['local.set', `$${hi}`, clamp(end, 'tshi2', ['local.get', `$${srcLen}`])],
+      ['local.set', `$${n}`,
+        ['select',
+          ['i32.sub', ['local.get', `$${hi}`], ['local.get', `$${lo}`]],
+          ['i32.const', 0],
+          ['i32.gt_s', ['local.get', `$${hi}`], ['local.get', `$${lo}`]]]],
+      dst.init,
+      // memory.copy dst, src+lo*stride, n*stride
+      ['memory.copy',
+        ['local.get', `$${dst.local}`],
+        ['i32.add', ['local.get', `$${srcPtr}`], ['i32.shl', ['local.get', `$${lo}`], ['i32.const', SHIFT[et]]]],
+        ['i32.shl', ['local.get', `$${n}`], ['i32.const', SHIFT[et]]]],
+      dst.ptr], 'f64')
   }
 }
