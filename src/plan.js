@@ -1667,6 +1667,82 @@ const specializeFixedRestCalls = (programFacts) => {
 // `recordGlobalRep` from src/infer.js) is the authoritative pass and a
 // strict superset of what this top-level walker observed.
 
+// Flow-insensitive type inference for module-level `let` bindings whose
+// initial RHS doesn't pin a type (most often `let mem;` followed later by
+// `mem = new TypedArray(...)` inside an init function). Without this the
+// read site has to runtime-check the NaN-box tag on every access — game-of-life's
+// inner step does that 9× per cell, blowing up the hot loop. We union RHS types
+// across every assignment (initial decl + every `name = …` in any function);
+// if every observed RHS is either a typed-array ctor of the same kind, a known
+// VAL.TYPED binding of the same ctor, or null/undefined, the binding is
+// monomorphically VAL.TYPED. Anything else (literal number, non-typed call,
+// mixed ctors) clears the candidacy, keeping the read site polymorphic.
+const inferModuleLetTypes = (ast) => {
+  if (!ctx.scope.userGlobals) return
+  // candidates: name → { ctor: string|null, valid: true } | { valid: false }
+  // valid=true with ctor=null means "still no positive evidence"; we promote
+  // only when ctor is non-null at the end. Assignments to nullish (undef/null)
+  // don't change ctor — they're consistent with any typed-array value.
+  const seen = new Map()
+  for (const name of ctx.scope.userGlobals) seen.set(name, { ctor: null, valid: true })
+
+  const isNullishLit = (e) => e == null || e === 'undefined' || e === 'null'
+    || (Array.isArray(e) && e[0] == null && (e[1] === undefined || e[1] === null))
+
+  const observe = (name, rhs) => {
+    const c = seen.get(name)
+    if (!c || !c.valid) return
+    if (isNullishLit(rhs)) return
+    // Resolve typed-array ctor from `new TypedArrayCtor(...)`, ternary of typed,
+    // or a reference to a name we already know is typed.
+    let ctor = typedElemCtor(rhs) ?? ternaryCtorOfRhs(rhs)
+    if (ctor === MIXED_CTORS) { c.valid = false; return }
+    if (!ctor && typeof rhs === 'string') {
+      if (ctx.scope.globalValTypes?.get(rhs) === VAL.TYPED)
+        ctor = ctx.scope.globalTypedElem?.get(rhs) ?? null
+    }
+    if (!ctor) { c.valid = false; return }
+    if (c.ctor && c.ctor !== ctor) { c.valid = false; return }
+    c.ctor = ctor
+  }
+
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=' && typeof node[1] === 'string' && seen.has(node[1])) observe(node[1], node[2])
+    if ((op === 'let' || op === 'const') && node.length > 1) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && seen.has(d[1]))
+          observe(d[1], d[2])
+      }
+    }
+    // Compound-assigns (`+=`, etc.) to a typed-array binding can't preserve
+    // the typed-array kind — invalidate.
+    if (ASSIGN_OPS.has(op) && op !== '=' && typeof node[1] === 'string' && seen.has(node[1])) {
+      const c = seen.get(node[1])
+      if (c) c.valid = false
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(ast)
+  for (const f of ctx.func.list) if (f.body && !f.raw) walk(f.body)
+
+  for (const [name, c] of seen) {
+    if (!c.valid || !c.ctor) continue
+    if (ctx.scope.globalValTypes?.get(name) === VAL.TYPED) continue
+    ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.TYPED)
+    ;(ctx.scope.globalTypedElem ||= new Map()).set(name, c.ctor)
+  }
+}
+
+// `MIXED_CTORS` and `ternaryCtorOfRhs` are not exported from analyze — re-derive
+// the sentinel locally and look up the ctor through `typedElemCtor` alone.
+// `ternaryCtorOfRhs` is purely for ternary RHSs (e.g. `cond ? new Int32Array(N) : new Int32Array(M)`),
+// which game-of-life-style sources don't use; falling back to typedElemCtor is fine.
+const MIXED_CTORS = Symbol('MIXED_CTORS')
+const ternaryCtorOfRhs = () => null
+
 const unboxConstTypedGlobals = () => {
   if (!ctx.scope.globalTypedElem || !ctx.scope.consts) return
   for (const [name, ctor] of ctx.scope.globalTypedElem) {
@@ -1738,6 +1814,7 @@ const canSkipWholeProgramNarrowing = (programFacts) =>
   !ctx.closure.make
 
 export default function plan(ast) {
+  inferModuleLetTypes(ast)
   unboxConstTypedGlobals()
 
   let programFacts = collectProgramFacts(ast)
