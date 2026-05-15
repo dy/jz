@@ -66,6 +66,7 @@ export const CALL_MODULES = dict({
   'Object.getOwnPropertyNames': ['core', 'object', 'string'],
   'Object.values': ['core', 'object', 'string'],
   'Object.entries': ['core', 'object', 'string'],
+  'Object.hasOwn': ['core', 'object', 'string', 'collection'],
   'Object.freeze': ['core', 'object'],
   'Object.assign': ['core', 'object'],
   'Object.create': ['core', 'object'],

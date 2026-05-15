@@ -137,6 +137,9 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.ARRAY}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.CLOSURE}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  // Object.hasOwn(o, k) — ES2022 static equivalent of o.hasOwnProperty(k).
+  // Reuses the same own-property emitter; receiver-type variants above apply.
+  ctx.core.emit['Object.hasOwn'] = (obj, key) => ctx.core.emit['.hasOwnProperty'](obj, key)
 
   ctx.core.emit['Object.values'] = (obj) => {
     if (isHashTyped(obj)) return emitHashValues(obj)
