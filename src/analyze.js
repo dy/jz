@@ -204,8 +204,11 @@ export const repOfGlobal = name => ctx.scope.globalReps?.get(name)
 /** Merge fields into a global's rep. Lazily allocates the map and the rep. */
 export const updateGlobalRep = (name, fields) => {
   const m = ctx.scope.globalReps ||= new Map()
-  const prev = m.get(name)
-  m.set(name, prev ? { ...prev, ...fields } : { ...fields })
+  const prev = m.get(name) || {}
+  const next = { ...prev, ...fields }
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+  if (Object.keys(next).length === 0) m.delete(name)
+  else m.set(name, next)
 }
 
 /** Look up value type for a variable name. Order: flow-sensitive refinement (if any) →

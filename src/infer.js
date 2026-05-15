@@ -46,9 +46,10 @@
 import { ctx } from './ctx.js'
 import {
   VAL, collectParamNames, valTypeOf,
-  updateRep, analyzeValTypes, analyzeIntCertain,
+  updateRep, updateGlobalRep, analyzeValTypes, analyzeIntCertain,
   staticObjectProps, typedElemCtor, ctorFromElemAux,
 } from './analyze.js'
+import { shapeOfObjectLiteral } from './shape.js'
 
 // === typeof predicate helper ==============================================
 //
@@ -413,6 +414,8 @@ export function recordGlobalRep(name, expr) {
   }
   const ctor = typedElemCtor(expr)
   if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+  const shape = shapeOfObjectLiteral(expr)
+  updateGlobalRep(name, { jsonShape: shape || undefined })
 }
 
 // === Call-site argument inference =========================================

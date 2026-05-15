@@ -710,7 +710,11 @@ const handlers = {
       const name = `${lhs[1]}$${lhs[2]}`
       if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
-    return ['=', prep(lhs), prep(rhs)]
+    const plhs = prep(lhs)
+    const prhs = prep(rhs)
+    if (depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs))
+      recordGlobalRep(plhs, prhs)
+    return ['=', plhs, prhs]
   },
 
   // try/catch/throw

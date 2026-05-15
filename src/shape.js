@@ -121,10 +121,30 @@ function parseUnifiedJsonShape(srcs) {
   return out
 }
 
+export function shapeOfObjectLiteral(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '{}') return null
+  const props = Object.create(null)
+  const names = []
+  const raw = expr.length === 2 && Array.isArray(expr[1]) && expr[1][0] === ','
+    ? expr[1].slice(1)
+    : expr.slice(1)
+
+  for (const prop of raw) {
+    if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return null
+    const name = prop[1]
+    names.push(name)
+    const child = shapeOfObjectLiteral(prop[2])
+    if (child) props[name] = child
+  }
+
+  return names.length ? { val: VAL.OBJECT, props, names } : null
+}
+
 /** Resolve the json shape for an expression by walking name → rep.jsonShape and
  *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
 export function shapeOf(expr) {
-  if (typeof expr === 'string') return ctx.func.localReps?.get(expr)?.jsonShape || null
+  if (typeof expr === 'string')
+    return ctx.func.localReps?.get(expr)?.jsonShape || ctx.scope.globalReps?.get(expr)?.jsonShape || null
   if (!Array.isArray(expr)) return null
   const [op, ...args] = expr
   if (op === '()' && args[0] === 'JSON.parse') {
