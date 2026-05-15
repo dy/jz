@@ -46,11 +46,15 @@ const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT)
 const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT)
 const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
 
-const heapGetIR = () => ctx.memory.shared
+// memory[1020] mirror also used when alloc:false (see module/core.js comment) so the
+// JS-side fallback bump allocator and wasm-side __alloc share the same heap pointer.
+const heapUsesMem = () => ctx.memory.shared || ctx.transform.alloc === false
+
+const heapGetIR = () => heapUsesMem()
   ? ['i32.load', ['i32.const', 1020]]
   : ['global.get', '$__heap']
 
-const heapSetIR = value => ctx.memory.shared
+const heapSetIR = value => heapUsesMem()
   ? ['i32.store', ['i32.const', 1020], value]
   : ['global.set', '$__heap', value]
 
@@ -487,8 +491,11 @@ export function optimizeModule(sec) {
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7
-    ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
-    ctx.scope.globalTypes.set('__heap', 'i32')
+    // Own-memory with alloc:false routes through memory[1020] (no $__heap global).
+    if (ctx.transform.alloc !== false) {
+      ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
+      ctx.scope.globalTypes.set('__heap', 'i32')
+    }
     if (ctx.scope.globals.has('__heap_start')) {
       ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
       ctx.scope.globalTypes.set('__heap_start', 'i32')

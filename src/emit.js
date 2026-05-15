@@ -185,6 +185,10 @@ function intIndexIR(key) {
   // intCertain name: forward-prop says every defining RHS is integer-shaped.
   // Captures loop variables (`for(let i=0;;i++)`), `let k = j + 1`, etc.
   if (typeof key === 'string' && repOf(key)?.intCertain) return asI32(emit(key))
+  // intCertain schema slot read `o.x`: every observed write is integer-shaped,
+  // so the loaded f64 represents an int — fold into the byte-compare fast path.
+  if (Array.isArray(key) && key[0] === '.' && typeof key[1] === 'string' && typeof key[2] === 'string' &&
+      ctx.schema.slotIntCertainAt?.(key[1], key[2]) === true) return asI32(emit(key))
   return null
 }
 

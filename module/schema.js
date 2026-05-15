@@ -100,4 +100,16 @@ export function initSchema(ctx) {
     const idx = ctx.schema.list[id]?.indexOf(prop)
     return idx >= 0 ? (ctx.schema.slotTypes.get(id)?.[idx] ?? null) : null
   }
+
+  /** Resolve per-slot intCertain: returns true iff every observed write to
+   *  `varName.prop` is integer-shaped. Precise path only — requires `varName`
+   *  to have a bound `schemaId`. Consumers (Math.floor elision, toNumF64 skip,
+   *  intIndexIR) treat `false`/`null` identically (no narrowing). */
+  ctx.schema.slotIntCertainAt = (varName, prop) => {
+    const id = ctx.schema.idOf(varName)
+    if (id == null) return false
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    if (idx < 0) return false
+    return ctx.schema.slotIntCertain.get(id)?.[idx] === true
+  }
 }

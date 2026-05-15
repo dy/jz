@@ -25,7 +25,8 @@
  */
 
 import { ctx } from './ctx.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, extractParams } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, extractParams, intLiteralValue } from './analyze.js'
+import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
@@ -805,6 +806,315 @@ const scalarizeFunctionArrayLiterals = () => {
   return changed
 }
 
+// === Int-array → Int32Array auto-promotion =================================
+//
+// A `let xs = [intLit, intLit, …]` binding whose every use is TYPED-compatible
+// is rewritten to `let xs = new Int32Array([intLit, …])`. Downstream analysis
+// then takes over: valTypeOf → VAL.TYPED, methods dispatch through `.typed:`,
+// loops get auto-vectorized via i32x4 (SIMD pass), and the carrier shrinks
+// from 8-byte f64 slots to packed i32. The promotion runs after literal
+// scalarization (so arrays fully scalarized away are already gone) and before
+// typed-array param scalarization (so a freshly-promoted array can still
+// participate in subsequent loop unrolling).
+//
+// Safety: the binding must never appear in a pattern that TYPED can't honor.
+// Disqualifiers (each fires per binding name):
+//   1. reassignment `xs = …` / compound `xs +=` / `++xs` / `--xs` — TYPED has
+//      no value-replacement op; `xs = new TypedArray(…)` would also drop the
+//      promoted view's identity.
+//   2. element write `xs[k] = v` — TYPED's i32-trunc store would lose
+//      fractional/NaN bits that VAL.ARRAY would have preserved.
+//   3. method calls outside the read-safe whitelist (push, pop, shift, …) —
+//      TYPED arrays are fixed-length; mutators don't exist on the carrier.
+//   4. `Array.isArray(xs)` — semantics flip true→false on promotion.
+//   5. `…xs` spread / `xs` as call arg / `xs` as return / bare reference in
+//      any other position — escape; callee may rely on ARRAY layout.
+//   6. captured by a closure / shadowed by an inner decl — same escape
+//      reasoning, plus the inner decl could rebind to a non-array.
+//
+// Elements at init must all be i32-range integer literals. A negative literal
+// arrives as `[null, -n]` after prepare's constant folding; intLiteralValue
+// recognizes that form. Float literals (`[1, 2.5]`) and out-of-range ints
+// (`0x80000000` on the +ve side, etc.) disqualify the array as a whole.
+
+// Methods we promote across. The bar is strict: only methods that (a) have a
+// real `.typed:*` emitter in module/typedarray.js, and (b) don't return a
+// receiver-shaped value that could flow into other methods. `.set` returns
+// undefined, so chained dispatch can't reintroduce ARRAY assumptions. `.map`
+// has a `.typed:map` emitter but returns a TYPED carrier; subsequent
+// `.filter`/`.slice`/etc. fall through to ARRAY-shaped emitters in
+// module/array.js (8-byte slots vs TYPED's 4-byte i32 slots) and corrupt
+// data. Re-enable `.map` when `.typed:filter`/`.typed:slice`/… land, or
+// when we add result-flow taint tracking. Everything else (.indexOf,
+// .forEach, .reduce, .find, .every, .join, …) lacks a typed emitter and
+// is unsafe on the same grounds.
+const _TYPED_SAFE_METHODS = new Set(['set'])
+
+// `.length` is TYPED-aware via core.js:__len (shifts the byte header by
+// __typed_shift on TAG=3). `.byteLength`/`.byteOffset`/`.buffer` are
+// TYPED-only — a user reading those already expects a typed array, so a
+// promotion candidate that hits them is a coincidence we'd rather not
+// rely on; disqualify and let them write the TypedArray construction
+// themselves.
+const _TYPED_SAFE_PROPS = new Set(['length'])
+
+// Returns the i32-range integer payload of an array-literal element, or null
+// if the element isn't a literal integer that fits in i32. Mirrors the shape
+// check used by `intLiteralValue` but without the rep-lookup (we're pre-
+// analysis here, and want a pure syntactic gate).
+const _intArrayLitElems = (expr) => {
+  if (!Array.isArray(expr) || expr[0] !== '[') return null
+  if (expr.length < 2) return null  // empty literal — low value, skip
+  const out = []
+  for (let i = 1; i < expr.length; i++) {
+    const v = intLiteralValue(expr[i])
+    if (v == null) return null
+    out.push(v)
+  }
+  return out
+}
+
+// True iff `name` appears anywhere within `node` as a bare identifier or
+// inside any expression position. Used to detect escape across a closure
+// boundary (where we can't trace the use sites locally).
+const _refsName = (node, name) => {
+  if (typeof node === 'string') return node === name
+  if (!Array.isArray(node)) return false
+  for (let i = 1; i < node.length; i++) if (_refsName(node[i], name)) return true
+  return false
+}
+
+// Walks `node` and disqualifies every candidate name that appears in an
+// unsafe context. `initSet` holds the candidate's own init-decl AST nodes
+// (their LHS reference is the binding being defined, not an escape).
+const _disqualifyPromotion = (node, candidates, disqualified, initSet) => {
+  if (initSet.has(node)) {
+    // The init decl itself: only walk the RHS (skip the LHS `name`).
+    return _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+  }
+  if (typeof node === 'string') {
+    // Bare identifier outside any handled parent context — escape.
+    if (candidates.has(node)) disqualified.add(node)
+    return
+  }
+  if (!Array.isArray(node)) return
+  const op = node[0]
+
+  // Closure body — any candidate referenced inside is captured. Bail without
+  // recursing further (we'd otherwise hit the bare-name leaf and disqualify
+  // anyway, but this is explicit and avoids walking the inner closure).
+  if (op === '=>') {
+    for (const n of candidates.keys()) {
+      if (!disqualified.has(n) && _refsName(node, n)) disqualified.add(n)
+    }
+    return
+  }
+
+  // Property access `name.prop` / `name?.prop`. Bare property reads only —
+  // method calls reach here via the `()` handler below (which intercepts
+  // before recursing into its callee).
+  if ((op === '.' || op === '?.') && typeof node[1] === 'string' && candidates.has(node[1])) {
+    if (!_TYPED_SAFE_PROPS.has(node[2])) disqualified.add(node[1])
+    return  // node[2] is the property name (string), not an expression — done
+  }
+
+  // Method or function call. Two shapes carry the candidate:
+  //   `name.method(args)` — receiver at node[1][1]; method whitelist gates.
+  //   `f(…, name, …)` / `Array.isArray(name)` — name appears as a plain arg.
+  if (op === '()') {
+    const callee = node[1]
+    // Method call on a candidate receiver.
+    if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') &&
+        typeof callee[1] === 'string' && candidates.has(callee[1])) {
+      if (!_TYPED_SAFE_METHODS.has(callee[2])) disqualified.add(callee[1])
+      // Walk method args (skip the receiver — already validated above).
+      for (let i = 2; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
+      return
+    }
+    // Array.isArray flips true→false under promotion.
+    if (callee === 'Array.isArray') {
+      const raw = node[2]
+      const list = raw == null ? [] : (Array.isArray(raw) && raw[0] === ',') ? raw.slice(1) : [raw]
+      for (const a of list) {
+        if (typeof a === 'string' && candidates.has(a)) disqualified.add(a)
+        else _disqualifyPromotion(a, candidates, disqualified, initSet)
+      }
+      return
+    }
+    // Fall through to generic recursion — `name` as a plain arg will hit the
+    // bare-name leaf above and disqualify.
+  }
+
+  // Index read `name[k]` — read access is TYPED-safe. Walk the key in case
+  // it contains references to other candidate names.
+  if (op === '[]' && typeof node[1] === 'string' && candidates.has(node[1])) {
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    return
+  }
+
+  // Element write: `['=', ['[]', name, k], v]` (and compound forms).
+  // V1 stays read-only after init — element writes would silently truncate.
+  if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]' &&
+      typeof node[1][1] === 'string' && candidates.has(node[1][1])) {
+    disqualified.add(node[1][1])
+    _disqualifyPromotion(node[1][2], candidates, disqualified, initSet)
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    return
+  }
+
+  // Whole-binding reassign: `name = …` / `name += …` / etc.
+  if (ASSIGN_OPS.has(op) && typeof node[1] === 'string' && candidates.has(node[1])) {
+    disqualified.add(node[1])
+    _disqualifyPromotion(node[2], candidates, disqualified, initSet)
+    return
+  }
+
+  // Pre/post-increment on var or element.
+  if (op === '++' || op === '--') {
+    const t = node[1]
+    if (typeof t === 'string' && candidates.has(t)) { disqualified.add(t); return }
+    if (Array.isArray(t) && t[0] === '[]' && typeof t[1] === 'string' && candidates.has(t[1])) {
+      disqualified.add(t[1])
+      _disqualifyPromotion(t[2], candidates, disqualified, initSet)
+      return
+    }
+  }
+
+  // `let`/`const` declaration — the candidate's own init lands here via the
+  // initSet branch at the top. Any *other* decl that names a candidate is a
+  // shadow (impossible after jz hoists, but defensive) and disqualifies.
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string' && candidates.has(d)) disqualified.add(d)
+      else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
+               candidates.has(d[1]) && !initSet.has(d)) {
+        disqualified.add(d[1])
+        _disqualifyPromotion(d[2], candidates, disqualified, initSet)
+      } else {
+        _disqualifyPromotion(d, candidates, disqualified, initSet)
+      }
+    }
+    return
+  }
+
+  // Spread `…name` — could be in a call, a `[`, or a destructure target.
+  if (op === '...' && typeof node[1] === 'string' && candidates.has(node[1])) {
+    disqualified.add(node[1])
+    return
+  }
+
+  // for-of / for-in iteration: receiver position is `node[2]` (a bare name
+  // there would otherwise trigger escape). TYPED supports iteration, so
+  // allow the receiver but walk the body for other refs.
+  if (op === 'for-of' || op === 'for-in') {
+    // Walk decl (node[1]), iter (node[2]), body (node[3]); receiver as bare
+    // name is fine — only the body matters for further refs to the same name
+    // (but body refs would shadow or escape, which other rules catch).
+    for (let i = 1; i < node.length; i++) {
+      const child = node[i]
+      if (i === 2 && typeof child === 'string' && candidates.has(child)) continue
+      _disqualifyPromotion(child, candidates, disqualified, initSet)
+    }
+    return
+  }
+
+  // Generic — recurse into children. Bare-name refs at unhandled positions
+  // hit the string-leaf branch above and disqualify on contact.
+  for (let i = 1; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet)
+}
+
+// Walk `body` to collect every `let X = [intLit, …]` candidate. Each entry
+// carries the exact init-decl AST node so the disqualifier can skip the
+// binding's own LHS reference (which would otherwise look like a reassign).
+const _collectIntArrayCandidates = (node, candidates) => {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (op === '=>') return
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+      const elems = _intArrayLitElems(d[2])
+      if (elems == null) continue
+      // jz hoists `let` to function scope — duplicate candidate-name collisions
+      // shouldn't happen, but if they do the second wins (disqualifyPromotion
+      // will mark both via the shadow rule).
+      candidates.set(d[1], { initDecl: d, elems })
+    }
+  }
+  for (let i = 1; i < node.length; i++) _collectIntArrayCandidates(node[i], candidates)
+}
+
+// Rewrite `let name = [...]` → `let name = new Int32Array([...])` for every
+// validated candidate. Preserves the original element AST nodes so the
+// downstream `Int32Array.from` lowering picks up its existing static-data
+// segment / per-element-store fast paths.
+const _rewritePromoted = (node, validated, initSet) => {
+  if (!Array.isArray(node)) return { node, changed: false }
+  const op = node[0]
+  if (op === '=>') {
+    // Closures don't reach validated bindings (we disqualified on capture).
+    // Still recurse — a nested closure may itself hold a promotable.
+    let changed = false
+    const out = [op]
+    for (let i = 1; i < node.length; i++) {
+      const r = _rewritePromoted(node[i], validated, initSet)
+      if (r.changed) changed = true
+      out.push(r.node)
+    }
+    return changed ? { node: out, changed: true } : { node, changed: false }
+  }
+  let changed = false
+  const out = [op]
+  for (let i = 1; i < node.length; i++) {
+    const child = node[i]
+    if ((op === 'let' || op === 'const') && Array.isArray(child) && child[0] === '=' &&
+        typeof child[1] === 'string' && validated.has(child[1]) && initSet.has(child)) {
+      const newRhs = ['()', 'new.Int32Array', child[2]]
+      out.push(['=', child[1], newRhs])
+      changed = true
+      continue
+    }
+    const r = _rewritePromoted(child, validated, initSet)
+    if (r.changed) changed = true
+    out.push(r.node)
+  }
+  return changed ? { node: out, changed: true } : { node, changed: false }
+}
+
+const promoteIntArrayLiteralsInBody = (body) => {
+  const candidates = new Map()
+  _collectIntArrayCandidates(body, candidates)
+  if (!candidates.size) return { node: body, changed: false }
+  const initSet = new Set()
+  for (const { initDecl } of candidates.values()) initSet.add(initDecl)
+  const disqualified = new Set()
+  _disqualifyPromotion(body, candidates, disqualified, initSet)
+  const validated = new Set()
+  for (const name of candidates.keys()) if (!disqualified.has(name)) validated.add(name)
+  if (!validated.size) return { node: body, changed: false }
+  return _rewritePromoted(body, validated, initSet)
+}
+
+// On the first successful promotion, pull in the typedarray module so the
+// emitted `new.Int32Array` callee has a registered emitter. Calling
+// `includeModule('typedarray')` on a no-op (already loaded) is cheap.
+const promoteIntArrayLiterals = () => {
+  let changed = false
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    const r = promoteIntArrayLiteralsInBody(func.body)
+    if (r.changed) {
+      func.body = r.node
+      invalidateLocalsCache(func.body)
+      if (!changed) includeModule('typedarray')
+      changed = true
+    }
+  }
+  return changed
+}
+
 const scalarizeFunctionObjectLiterals = () => {
   let changed = false
   for (const func of ctx.func.list) {
@@ -1439,6 +1749,12 @@ export default function plan(ast) {
   if (specializeFixedRestCalls(programFacts)) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionArrayLiterals()) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionObjectLiterals()) programFacts = collectProgramFacts(ast)
+  // Promotion runs AFTER literal scalarization (those that fully reduce to scalars
+  // are gone) and BEFORE typed-array scalarization (so a freshly-promoted array's
+  // fixed-length-typed-of-known-size variant could still participate in loop
+  // unrolling — currently it can't, since promotion produces the `[...]`-arg
+  // form rather than `new Int32Array(N)`, but the ordering keeps the door open).
+  if (promoteIntArrayLiterals()) programFacts = collectProgramFacts(ast)
   if (scalarizeFunctionTypedArrays(programFacts)) programFacts = collectProgramFacts(ast)
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.anyDynKey = programFacts.anyDyn

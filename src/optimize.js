@@ -1284,10 +1284,11 @@ export function deadStoreElim(fn) {
       if (!Array.isArray(node)) continue
       const op = node[0]
 
-      // Reads invalidate pending dead writes
+      // Reads invalidate pending dead writes. For local.tee/local.set, the RHS reads
+      // happen BEFORE the write — so a `local.get $x` inside `(local.tee $x ...)` is a
+      // real read of the OLD $x and must invalidate any pending dead-write of $x.
       const reads = new Set()
       collectGets(node, reads)
-      if (op === 'local.tee') reads.delete(node[1])
       for (const name of reads) lastWrite.delete(name)
 
       // Drop of pure expr → dead

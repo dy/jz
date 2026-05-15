@@ -989,3 +989,383 @@ test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
   `).exports
   is(entry(21), 42)
 })
+
+// === promoteIntArrayLiterals (Workstream #4) ===
+//
+// `let xs = [intLit, …]` with read-only usage and no shape-changing methods
+// gets rewritten to `let xs = new Int32Array([intLit, …])`. The carrier
+// becomes PTR.TYPED (4-byte i32 slots) instead of PTR.ARRAY (8-byte f64
+// slots); `.typed:[]` indexing fires, and `.typed:map` activates the SIMD
+// vectorizer on i32x4-shaped lambdas. The pass is purely conservative —
+// any operation that's not provably safe on a TYPED carrier disqualifies.
+//
+// Detection markers in WAT:
+//   promoted   → `(local $NAME i32)`, i32.load with 4-byte stride, no $__arr_idx_known
+//   unchanged  → `(local $NAME f64)`, $__arr_idx_known or 8-byte stride
+
+const compileMain = (src) => {
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+}
+
+test('promoteIntArrayLiterals: int-only literal with read-only loop → TYPED + SIMD', () => {
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3, 4, 5, 6, 7, 8]
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += xs[i]
+      return s
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs i32\)/.test(body), 'xs carrier should be promoted from f64 ARRAY to i32 TYPED')
+  ok(!/\$__arr_idx_known\b/.test(body), 'promoted TYPED indexing should skip the ARRAY monomorphic helper')
+  ok(/i32x4\./.test(body), 'reduction over promoted Int32Array should auto-vectorize via i32x4 SIMD')
+  const { main } = run(src)
+  is(main(), 36)
+})
+
+// Dynamic-index loop suppresses scalarizeFunctionArrayLiterals (which would
+// fold const-index reads into per-element locals) so the carrier survives
+// to the promotion gate.
+const loopSum = (lit) => `
+    export const main = (k) => {
+      const xs = ${lit}
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += xs[i + (k & 0)]
+      return s
+    }
+  `
+
+test('promoteIntArrayLiterals: float element disqualifies', () => {
+  const src = loopSum('[1, 2, 3, 4, 5, 6, 7, 8.5]')
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'float element keeps xs as f64 ARRAY')
+  const { main } = run(src)
+  is(main(0), 36.5)
+})
+
+test('promoteIntArrayLiterals: negative literals are i32-valid', () => {
+  const src = loopSum('[-1, -2, -3, -4, -5, -6, -7, -8]')
+  const body = compileMain(src)
+  ok(/\(local \$xs i32\)/.test(body), 'unary-minus on int literals stays i32-promotable')
+  const { main } = run(src)
+  is(main(0), -36)
+})
+
+test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3]
+      xs.push(4)
+      return xs.length
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), '.push needs growable ARRAY storage; promotion must skip')
+  const { main } = run(src)
+  is(main(), 4)
+})
+
+test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return false)', () => {
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3]
+      return Array.isArray(xs) ? xs.length : -1
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'Array.isArray would flip true→false under promotion')
+  const { main } = run(src)
+  is(main(), 3)
+})
+
+test('promoteIntArrayLiterals: element write disqualifies', () => {
+  const src = `
+    export const main = (k) => {
+      const xs = [1, 2, 3, 4, 5]
+      xs[k & 0] = 9
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += xs[i]
+      return s
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'element writes break v1 read-only assumption')
+  const { main } = run(src)
+  is(main(0), 23)
+})
+
+test('promoteIntArrayLiterals: bare-name escape disqualifies', () => {
+  const src = `
+    const sumArr = (a) => {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s
+    }
+    export const main = () => {
+      const xs = [1, 2, 3]
+      return sumArr(xs)
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'escape to callee with unknown receiver shape disqualifies')
+  const { main } = run(src)
+  is(main(), 6)
+})
+
+test('promoteIntArrayLiterals: closure-capture disqualifies', () => {
+  // The inliner is happy to fold trivial arrows; give the closure a side
+  // effect so it survives to the promotion gate as a real captured closure.
+  const src = `
+    export const main = (k) => {
+      let count = 0
+      const xs = [1, 2, 3, 4, 5]
+      const at = (i) => { count = count + 1; return xs[i] }
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += at((i + (k & 0)) | 0)
+      return s + count
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'capture into nested arrow disqualifies (shape unknown to inner)')
+  const { main } = run(src)
+  is(main(0), 20)
+})
+
+test('promoteIntArrayLiterals: spread receiver disqualifies', () => {
+  // Dynamic-index loop keeps xs alive past scalarizeFunctionArrayLiterals;
+  // the `[...xs]` spread is then the deciding disqualifier on the still-live
+  // candidate.
+  const src = `
+    export const main = (k) => {
+      const xs = [1, 2, 3, 4, 5]
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += xs[i + (k & 0)]
+      const ys = [...xs]
+      return s + ys[0]
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), '...spread expands generically over ARRAY; disqualify')
+  const { main } = run(src)
+  is(main(0), 16)
+})
+
+test('promoteIntArrayLiterals: .map disqualifies (result flows to non-typed-safe methods downstream)', () => {
+  // .typed:map exists but its TYPED result feeds .filter (no .typed:filter)
+  // — corrupts on 8-byte vs 4-byte slot mismatch. Conservative disqualify
+  // until typed siblings land or result-flow taint tracking arrives.
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3, 4]
+      const ys = xs.map(x => x + 1)
+      return ys.length + ys[0]
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), '.map is not in v1 typed-safe whitelist')
+  const { main } = run(src)
+  is(main(), 6)
+})
+
+test('promoteIntArrayLiterals: .filter disqualifies (no .typed:filter emitter)', () => {
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 3, 4]
+      const ys = xs.filter(x => x > 2)
+      return ys.length
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), '.filter would corrupt on TYPED storage; disqualify')
+  const { main } = run(src)
+  is(main(), 2)
+})
+
+test('promoteIntArrayLiterals: hole disqualifies', () => {
+  // Sparse literal: [1, , 3] — middle slot is a hole. intLiteralValue
+  // returns null for non-literal elements, so the candidate gate skips it.
+  const src = `
+    export const main = () => {
+      const xs = [1, , 3]
+      return xs.length
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
+  const { main } = run(src)
+  is(main(), 3)
+})
+
+test('promoteIntArrayLiterals: ++/-- on element disqualifies', () => {
+  const src = `
+    export const main = (k) => {
+      const xs = [1, 2, 3, 4, 5]
+      xs[k & 0]++
+      let s = 0
+      for (let i = 0; i < xs.length; i++) s += xs[i]
+      return s
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs f64\)/.test(body), 'element increment is a mutation; disqualify')
+  const { main } = run(src)
+  is(main(0), 16)
+})
+
+test('promoteIntArrayLiterals: large int-only literal stays promoted (length / index combo)', () => {
+  // 16-element literal with bitwise reduction: promotion + SIMD path covers
+  // both `arr.length` (TYPED-aware via __len) and `arr[i]` (.typed:[]).
+  const src = `
+    export const main = () => {
+      const xs = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+      let acc = 0
+      for (let i = 0; i < xs.length; i++) acc |= xs[i]
+      return acc
+    }
+  `
+  const body = compileMain(src)
+  ok(/\(local \$xs i32\)/.test(body), 'large int-only literal still promotes')
+  const { main } = run(src)
+  is(main(), 65535)
+})
+
+// === Workstream #5: closure-capture rep narrowing ===
+
+test('captureIntCertain: intCertain propagates across capture (Math.floor elides)', () => {
+  // Parent has `let i = n | 0` — every defining RHS is integer (bitwise-or).
+  // Inner closure captures `i` and calls `Math.floor(i)`. Math.floor on an
+  // intCertain operand is a no-op: the emitter (module/math.js:fInt) should
+  // skip `f64.floor` and just load the f64 from the env slot.
+  const src = `
+    export const make = (n) => {
+      let i = n | 0
+      const inner = () => Math.floor(i)
+      return inner
+    }
+    export const main = (n) => make(n)()
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  // Find the closure body (JZ uses U+E000 as identifier prefix).
+  const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
+  const body = wat.match(closRe)?.[0] || ''
+  ok(body, 'closure body emitted')
+  ok(!body.includes('f64.floor'), 'Math.floor elided on intCertain capture')
+  is(run(src).main(3.7), 3)
+})
+
+test('captureIntCertain: intCertain skips __to_num in arithmetic on captures', () => {
+  // `toNumF64` (src/ir.js) skips the __to_num wrapper when the operand is an
+  // intCertain name. With propagation, the captured `i` won't be wrapped in
+  // a __to_num call. Without it, __to_num would be emitted.
+  // We use string concat (forces __to_num path) to make the difference visible.
+  const src = `
+    export const make = (n) => {
+      let i = n | 0
+      const tag = () => 'x' + i
+      return tag
+    }
+    export const main = (n) => make(n)()
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
+  const body = wat.match(closRe)?.[0] || ''
+  ok(body, 'closure body emitted')
+  // With intCertain on `i`, the inner body should not insert __to_num for `i`.
+  // (concat itself may call other helpers, but the operand `i` flows straight to f64.)
+  ok(!body.includes('$__to_num'), 'no __to_num wrap on intCertain capture in concat')
+  is(run(src).main(7.9), 'x7')
+})
+
+test('captureIntCertain: float capture does NOT enable elision', () => {
+  // Counterpoint to the floor test: `i = n + 0.5` is not integer-certain, so
+  // the closure must keep `f64.floor`.
+  const src = `
+    export const make = (n) => {
+      let i = n + 0.5
+      const inner = () => Math.floor(i)
+      return inner
+    }
+    export const main = (n) => make(n)()
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
+  const body = wat.match(closRe)?.[0] || ''
+  ok(body, 'closure body emitted')
+  ok(body.includes('f64.floor'), 'float capture keeps f64.floor')
+  is(run(src).main(3), 3)
+})
+
+// === Workstream #3c: schema field intCertain ===
+
+test('schemaSlotIntCertain: Math.floor elides on intCertain slot', () => {
+  // `{ x: n | 0, y: (n * 2) | 0 }` — every observed write to slot x and y is
+  // integer-shaped (bitwise op result). Math.floor(p.x) / Math.floor(p.y)
+  // should drop the f64.floor op.
+  const src = `
+    export const main = (n) => {
+      const p = { x: n | 0, y: (n * 2) | 0 }
+      return Math.floor(p.x) + Math.floor(p.y)
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(body, 'main body emitted')
+  ok(!body.includes('f64.floor'), 'Math.floor elided on intCertain slot reads')
+  is(run(src).main(3.7), 10) // floor(3) + floor(7) = 10
+})
+
+test('schemaSlotIntCertain: float slot keeps f64.floor', () => {
+  // Counterpoint: slot is written with a non-int value → not intCertain.
+  const src = `
+    export const main = (n) => {
+      const p = { x: n + 0.5 }
+      return Math.floor(p.x)
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(body, 'main body emitted')
+  ok(body.includes('f64.floor'), 'non-int slot retains f64.floor')
+  is(run(src).main(3.0), 3)
+})
+
+test('schemaSlotIntCertain: later non-int assign poisons slot', () => {
+  // `p.x = n | 0` then `p.x = 1.5` — the second write makes the slot
+  // polymorphic. `p.x` could be 1.5 at the read site, so Math.floor must
+  // stay. Global poison: even though the literal seed was int, one non-int
+  // write anywhere in the program flips the slot false.
+  const src = `
+    export const make = (n) => {
+      const p = { x: n | 0 }
+      p.x = 1.5
+      return p
+    }
+    export const main = (n) => Math.floor(make(n).x)
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(body, 'main body emitted')
+  // Verify Math.floor is emitted *somewhere* in the produced module — could be
+  // inlined into main or `make` depending on the inliner's decisions.
+  ok(wat.includes('f64.floor'), 'poisoned slot retains f64.floor')
+  is(run(src).main(7), 1)
+})
+
+test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
+  // Slot fed by a local `k` that the per-body intCertain fixpoint marks as
+  // integer-shaped (`let k = n | 0`). The slot's write source resolves through
+  // the body-local intCertain map (not a direct literal).
+  const src = `
+    export const main = (n) => {
+      const k = n | 0
+      const p = { v: k }
+      return Math.floor(p.v)
+    }
+  `
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  // Math.floor must be elided anywhere it would have been emitted for p.v.
+  ok(!wat.includes('f64.floor'), 'Math.floor elided via local→slot intCertain transit')
+  is(run(src).main(5.9), 5)
+})

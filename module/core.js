@@ -155,7 +155,11 @@ export default (ctx) => {
   // Updated by optimizeModule() when data segment exceeds 1024 bytes.
   ctx.scope.globals.set('__heap_start', '(global $__heap_start (mut i32) (i32.const 1024))')
 
-  if (ctx.memory.shared) {
+  // Use memory[1020] for the heap pointer when shared, OR when alloc:false:
+  // without the `_alloc` export the JS-side adapter (memory.String etc) falls back
+  // to its own bump allocator at memory[1020], so wasm-side __alloc must read/write
+  // the same address or they'd silently overwrite each other's allocations.
+  if (ctx.memory.shared || ctx.transform.alloc === false) {
     // Shared memory: heap offset stored at memory[1020] (i32), just before heap start at 1024
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32)

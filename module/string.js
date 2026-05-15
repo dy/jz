@@ -112,18 +112,33 @@ export default (ctx) => {
       (local.get $i))))`
 
   // Hot (~37M calls in watr self-host). Caller guarantees $ptr is a STRING;
-  // SSO bit picks inline-byte-extract vs heap memory load.
+  // SSO bit picks inline-byte-extract vs heap memory load. Returns 0 for OOB
+  // — internal tokenizer callers (number/json/regex parsers) rely on this
+  // sentinel to terminate `while (c > 32)`-shape loops past end-of-string.
+  // The SSO bounds check is essential: i32.shr_u wraps shift count mod 32,
+  // so without it `'a'.charCodeAt(4)` would return 'a' again (shift 32→0).
   ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
-    (local $off i32)
+    (local $off i32) (local $len i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if (result i32)
       (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
-        (i32.and
-          (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8)))
-          (i32.const 0xFF)))
+        (local.set $len (i32.and
+          (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
+          (i32.const ${LAYOUT.SSO_BIT - 1})))
+        (if (result i32) (i32.ge_u (local.get $i) (local.get $len))
+          (then (i32.const 0))
+          (else (i32.and
+            (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8)))
+            (i32.const 0xFF)))))
       (else
-        (i32.load8_u (i32.add (local.get $off) (local.get $i))))))`
+        (if (result i32) (i32.lt_u (local.get $off) (i32.const 4))
+          (then (i32.const 0))
+          (else
+            (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
+            (if (result i32) (i32.ge_u (local.get $i) (local.get $len))
+              (then (i32.const 0))
+              (else (i32.load8_u (i32.add (local.get $off) (local.get $i))))))))))`
 
   ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $len i32) (local $isSso i32)
@@ -598,8 +613,9 @@ export default (ctx) => {
   // length too, so this departs from strict JS string immutability for the rare
   // `let b = a; a += x` aliasing case. The fast path can't trigger when other
   // allocations have happened since `a` was created (it's no longer at heap top).
-  // Only emitted for own-memory mode; shared memory falls back to slow path.
-  const concatFast = !ctx.memory.shared ? `
+  // Only emitted for own-memory mode with a $__heap global; shared memory and
+  // alloc:false (which routes the heap pointer through memory[1020]) fall back.
+  const concatFast = !ctx.memory.shared && ctx.transform.alloc !== false ? `
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $aoff (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; Bump-extend requires heap STRING (not SSO — its offset holds packed bytes).
@@ -633,9 +649,9 @@ export default (ctx) => {
     (local $newHeap i32) (local $off i32) (local $total i32)
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $aoff (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    ;; Heap STRING at heap top: bump-extend by 1 byte (own-memory mode only).
+    ;; Heap STRING at heap top: bump-extend by 1 byte (own-memory mode w/ $__heap global only).
     ;; Gate on STRING tag AND !SSO_BIT — for SSO, $aoff holds packed bytes (not a heap addr).
-    ${!ctx.memory.shared ? `
+    ${!ctx.memory.shared && ctx.transform.alloc !== false ? `
     (if (i32.and
           (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
           (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64}))))
@@ -1083,6 +1099,8 @@ export default (ctx) => {
   // representable as i32). Returning i32 directly lets `let c = s.charCodeAt(i)`
   // stay on the i32 ABI: chained comparisons (`c >= 48 && c <= 57`), bit-ops, and
   // `c - 48` arithmetic skip the per-iteration f64 widen + i32 trunc round-trip.
+  // OOB returns 0 (NUL byte). __char_at bounds-checks both SSO and heap paths
+  // so a tokenizer loop reading past the end terminates on the 0 sentinel.
   ctx.core.emit['.charCodeAt'] = (str, idx) =>
     typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx), 'i32')
 

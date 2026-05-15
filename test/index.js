@@ -37,6 +37,7 @@ const TESTS = [
   'timers',
   'semantic-invariants',
   'differential',
+  'parser-bugs',
 ]
 
 const argFilters = process.argv.slice(2)
