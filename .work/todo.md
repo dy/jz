@@ -66,13 +66,13 @@ jz.compile(src, { host: 'gc' })    // wasm-gc; stringref, ref-typed exports
 `opts.host` decides:
 - Which `wasm:js-string` imports may be referenced (only `js`).
 - Whether externref / ref-types are valid in export signatures (`js` yes, `wasi` no).
-- Boundary marshalling shape (`interop/<host>.js` driver).
+- Boundary marshalling shape (single `interop.js` codec; host variant selected by feature stamp, not by file).
 
 It does **not** decide the internal layout of any value. A program compiled with `host: 'js'` still gets a flat `i32` slot wherever narrowing proves an integer; a `host: 'wasi'` program still gets nanbox-tagged f64 where analysis can't disambiguate.
 
 #### Internal representation — compiler-owned, per-site
 
-`abi/` becomes `src/abi/` — internal codegen modules with no user surface. **One file per type**, holding every carrier the compiler may pick for that type. Carriers are named exports inside; the narrower picks one per site by analysis.
+`src/abi/` — internal codegen modules with no user surface. **One file per type**, holding every carrier the compiler may pick for that type. Carriers are named exports inside; the narrower picks one per site by analysis.
 
 ```
 src/abi/number.js  — nanbox-f64 (default), flat-i32, flat-f64
@@ -137,13 +137,13 @@ Each step closes one class of dynamic-fallback emit. Representation work only ru
 
 * [ ] **SSO flow-through.** Short-literal strings (≤4 ASCII) live SSO-encoded already, but concat results widen to heap pointers immediately. Where the result also fits SSO, keep it inline. Saves a heap alloc per intermediate.
 
-* [ ] **JS String Builtins specialization** (under `host: 'js'`). When a string binding's evidence is "only operated on via `wasm:js-string`-mappable ops" (`length`, `charCodeAt`, `concat`, `substring`, `fromCharCode`), the narrower picks the `jsstring` carrier from `src/abi/string.js`. The 9-item compiler-wide checklist (today in `abi/string/jsstring.js`'s docstring; folds into `src/abi/string.js` under the rename) stays the implementation plan: externref-typed locals, slot coercer, boundary wrappers, import channel, literals, mutating-fast-path gating, cross-carrier interop, carrier-aware nullish, host driver. Per-site framing makes it incremental: one proven-engine-string binding flips to externref without dragging the whole module.
+* [ ] **JS String Builtins specialization** (under `host: 'js'`). When a string binding's evidence is "only operated on via `wasm:js-string`-mappable ops" (`length`, `charCodeAt`, `concat`, `substring`, `fromCharCode`), the narrower picks the `jsstring` carrier from `src/abi/string.js`. The 9-item compiler-wide checklist in that file's docstring is the implementation plan: externref-typed locals, slot coercer, boundary wrappers, import channel, literals, mutating-fast-path gating, cross-carrier interop, carrier-aware nullish, host wiring. Per-site framing makes it incremental: one proven-engine-string binding flips to externref without dragging the whole module.
 
 #### What ships internally vs externally
 
 |                  | User-visible                       | Compiler-internal                                                |
 | ---------------- | ---------------------------------- | ---------------------------------------------------------------- |
-| Boundary shape   | `opts.host` (`js` / `wasi` / `gc`) | `interop/<host>.js` driver                                       |
+| Boundary shape   | `opts.host` (`js` / `wasi` / `gc`) | single `interop.js` codec; host variant via feature stamp        |
 | Number carrier   | —                                  | per-site, in `src/abi/number.js`: `nanboxF64` / `flatI32` / `flatF64` |
 | String carrier   | —                                  | per-site, in `src/abi/string.js`: `sso` / `jsstring` (`host: 'js'` only) |
 | Array carrier    | —                                  | per-site, in `src/abi/array.js`: `taggedLinear` / `typed`        |
@@ -155,21 +155,20 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 #### What drops from the old plan
 
 - `opts.abi` — gone. Replaced by `opts.host`.
-- `PRESETS` as a user surface — gone. Internal `src/abi/` modules are picked per-site by analysis, not by name. (The `PRESETS` table may survive briefly inside the compiler as a default-bundle until per-site picking is wired; it is not a public API.)
+- `PRESETS` as any kind of surface — gone. Internal `src/abi/` modules are picked per-site by analysis, not by name. No preset table inside the compiler either; carrier choice lives in narrower facts.
 - `JZ_ABI` env flag in tests — gone. Boundary tested by varying `opts.host`; internal repr is implementation detail (assert size / IR shape, not "preset name").
 - Preset matrix testing — gone. No preset to enumerate. Internal-rep tests are properties: "after narrowing, `x | 0` lowers to an i32 slot."
 - Free-form rep maps — never existed publicly; remains an internal property of the narrower.
-- Mass-routing as a discrete step — folded into the per-site rep work. Each workstream routes its own call sites as it lands.
 
 #### Already landed (foundation; do not undo)
 
-* [x] Slot-carrier contract — `abi/string/nanbox-sso.js` accepts slot-typed IR, emits `i64.reinterpret_f64` inline, no `src/*` imports. (Folds into the `sso` carrier of `src/abi/string.js` under the rename.)
-* [x] Empty-ops scaffold — `abi/string/jsstring.js` declares slot types, imports, and the 9-item compiler-wide checklist for real codegen. (Folds into the `jsstring` carrier of `src/abi/string.js`.)
+* [x] One file per type under `src/abi/` — `src/abi/string.js` (`sso` default + `jsstring` scaffold), `src/abi/number.js` (`nanboxF64` default). Carriers are named exports inside one type module; no preset folder layout.
+* [x] Slot-carrier contract — `sso` accepts slot-typed IR, emits `i64.reinterpret_f64` inline, no `src/*` imports.
+* [x] Empty-ops scaffold — `jsstring` declares slot types, imports, and the 9-item compiler-wide checklist for real codegen.
 * [x] Routed call sites — `module/core.js` (`?.length`), `module/string.js` (`.charCodeAt`), `src/emit.js` (cmp / concat / concatRaw / append-byte) all go through `ctx.abi.string.ops`.
-* [x] Defensive type coercion at `module/core.js:398` fixed the `?.length on string` regression.
-* [x] 1598/1598 tests green at the current internal-rep snapshot.
-* [x] Compiler-side carrier dispatch object on `ctx` (`ctx.abi.<type>.ops.<op>`). The contract stays under the rename; the only change is that `ctx.abi.<type>` resolves to a *carrier* (one of the named exports of `src/abi/<type>.js`), not a separate file.
-* [x] Optimizer-side carrier peephole (`abi/number/nanbox-f64.js#peephole`) — pure-WASM folds in `src/optimize.js`, carrier-specific folds inside the carrier. Stays as-is under the rename (folds into `nanboxF64.peephole` of `src/abi/number.js`).
+* [x] Compiler-side carrier dispatch object on `ctx` (`ctx.abi.<type>.ops.<op>`); `ctx.abi.<type>` resolves to a *carrier* (named export of `src/abi/<type>.js`), not a separate file.
+* [x] Optimizer-side carrier peephole (`src/abi/number.js#nanboxF64.peephole`) — pure-WASM folds in `src/optimize.js`, carrier-specific folds inside the carrier.
+* [x] Single `interop.js` boundary codec — DRIVERS dispatch table removed; one NaN-box codec per binary; `jz/interop` subpath compiler-free (only imports `./wasi.js`).
 
 #### Open policy questions (deferred until first non-default rep emits at scale)
 
