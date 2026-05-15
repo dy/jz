@@ -125,10 +125,9 @@ export const sso = {
 //   3. Outline the compiler-wide changes a real implementation requires —
 //      they're larger than "fill in the ops table" and need their own plan.
 //
-// Until those changes land, the `'nanbox+jsstring'` preset entry in
-// `src/abi/index.js` points at `sso` for string codegen. Wasm output is
-// byte-identical to plain `nanbox` except for the `jz:abi` custom-section
-// discriminant.
+// Until those changes land, `jsstring` is exported alongside `sso` but the
+// default bundle in `src/abi/index.js` still picks `sso`. The narrower will
+// flip individual sites to `jsstring` once the codegen paths below are real.
 //
 // ### Wire shape
 //

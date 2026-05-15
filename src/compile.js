@@ -55,7 +55,6 @@ import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix,
 } from './assemble.js'
-import { presetName } from './abi/index.js'
 
 const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : fn()
 
@@ -755,7 +754,7 @@ export default function compile(ast, profiler) {
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
   // per-function below as funcFacts settle. Bytes themselves are unchanged.
-  if (ctx.transform.inspect) ctx.inspect = { abi: presetName(ctx.abi), functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
+  if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const funcFacts = new Map()
   for (const func of ctx.func.list) {

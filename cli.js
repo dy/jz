@@ -45,8 +45,6 @@ Options:
   -O<n>, --optimize <n>     Optimization level: 0 off, 1 size-only, 2 default,
                             3 aggressive. Aliases: -Os/size, -Ob/balanced, -Of/speed.
   --host <js|wasi>          Runtime-service lowering (default js)
-  --abi <preset>            ABI preset (default 'nanbox'). Recorded in the wasm
-                            as a 'jz:abi' custom section so jz/interop sniffs it.
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --names                   Emit wasm name section for profilers/debuggers
   --strict                  Strict jz mode (no auto-transform), reject dynamic fallbacks
@@ -130,7 +128,7 @@ function parseOptimize(v) {
 
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
-  let optimize, host, alloc = true, names = false, abi
+  let optimize, host, alloc = true, names = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -142,8 +140,6 @@ async function handleCompile(args) {
     else if (a === '--optimize' || a === '-O') optimize = parseOptimize(args[++i])
     else if (/^-O.+/.test(a)) optimize = parseOptimize(a.slice(2))
     else if (a === '--host') host = args[++i]
-    else if (a === '--abi') abi = args[++i]
-    else if (a.startsWith('--abi=')) abi = a.slice('--abi='.length)
     else if (a === '--no-alloc') alloc = false
     else if (a === '--names') names = true
     else if (!inputFile) inputFile = a
@@ -230,7 +226,6 @@ async function handleCompile(args) {
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),
     ...(host && { host }),
-    ...(abi && { abi }),
     ...(alloc === false && { alloc: false }),
     ...(names && { profileNames: true }),
     ...(Object.keys(modules).length && { modules }),
