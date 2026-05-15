@@ -50,7 +50,7 @@ export default (ctx) => {
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
     __jp_val: ['__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
-    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__utf8_enc'],
+    __jp_str: ['__sso_char', '__char_at', '__str_byteLen', '__hex4', '__ishex', '__utf8_enc'],
     __hex4: ['__hex1'],
     __jp_num: ['__pow10'],
     __jp_arr: ['__jp_val'],
@@ -278,6 +278,11 @@ export default (ctx) => {
   // and skips the redundant __str_hash call inside the generic insert. 0 is a
   // sentinel meaning "string had escapes — recompute via __str_hash".
   ctx.scope.globals.set('__jp_keyh', '(global $__jp_keyh (mut i32) (i32.const 0))')
+  // Sticky syntax-error flag. Set by any parser sub-routine on malformed input;
+  // checked once by __jp after the top-level value, which throws if it is set.
+  // Sticky (never cleared mid-parse) so recursive descent need not thread an
+  // error result through every call — __jp resets it per invocation.
+  ctx.scope.globals.set('__jp_err', '(global $__jp_err (mut i32) (i32.const 0))')
   // Runtime schema infrastructure. __schema_next points at the first free slot
   // in $__schema_tbl reserved for runtime registration; compile.js initializes
   // it to ctx.schema.list.length when __jp_obj is included. The schema cache
@@ -300,17 +305,19 @@ export default (ctx) => {
 
   // Whitespace skip — inlined at every call site as a tight loop. Compact
   // JSON often has zero whitespace between tokens, so the dominant case is
-  // a single peek + break. WS chars (9/10/13/32) all fit in [0..32]; we
-  // exit on anything > 32 unsigned. The sentinel byte (PEEK returns -1
-  // sign-extended) is 0xFFFFFFFF unsigned — > 32 — so the same check
-  // handles EOF without a separate guard. Other control chars in [0..8],
-  // [11..12], [14..31] would be falsely consumed as WS, but those aren't
-  // valid in well-formed JSON anyway.
+  // a single peek + break. Per the JSON grammar only tab (9), LF (10), CR
+  // (13) and space (32) are JSONWhitespace; every other byte — including
+  // other control chars and non-ASCII Unicode spaces — ends the run, so a
+  // stray VT/FF or U+2028 surfaces to the value dispatcher as a syntax
+  // error. The sentinel byte (PEEK returns -1) matches none of the four and
+  // ends the run too, so EOF needs no separate guard.
   let WS_ID = 0
   const WS = () => {
     const id = WS_ID++
     return `(block $jpws_d${id} (loop $jpws_l${id}
-      (br_if $jpws_d${id} (i32.gt_u ${PEEK} (i32.const 32)))
+      (br_if $jpws_d${id} (i32.eqz (i32.or
+        (i32.or (i32.eq ${PEEK} (i32.const 32)) (i32.eq ${PEEK} (i32.const 9)))
+        (i32.or (i32.eq ${PEEK} (i32.const 10)) (i32.eq ${PEEK} (i32.const 13))))))
       ${ADV(1)}
       (br $jpws_l${id})))`
   }
@@ -327,6 +334,21 @@ export default (ctx) => {
     (if (i32.le_u (i32.sub (i32.or (local.get $c) (i32.const 0x20)) (i32.const 97)) (i32.const 5))
       (then (return (i32.sub (i32.or (local.get $c) (i32.const 0x20)) (i32.const 87)))))
     (i32.const 0))`
+
+  // Strict hex-digit predicate — 1 iff $c is [0-9A-Fa-f], else 0. Used to
+  // validate \uXXXX escapes (__hex1 itself is lenient and returns 0 for
+  // non-hex, which would silently accept `\u0X50`).
+  ctx.core.stdlib['__ishex'] = `(func $__ishex (param $c i32) (result i32)
+    (i32.or
+      (i32.le_u (i32.sub (local.get $c) (i32.const 48)) (i32.const 9))
+      (i32.le_u (i32.sub (i32.or (local.get $c) (i32.const 0x20)) (i32.const 97)) (i32.const 5))))`
+
+  // All four bytes at the current parse position are hex digits.
+  const HEX4_VALID = `(i32.and
+    (i32.and (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (global.get $__jppos))))
+             (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 1))))))
+    (i32.and (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 2)))))
+             (call $__ishex (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 3)))))))`
 
   // Read 4 hex bytes at absolute address $p → 16-bit value.
   ctx.core.stdlib['__hex4'] = `(func $__hex4 (param $p i32) (result i32)
@@ -366,6 +388,9 @@ export default (ctx) => {
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 34)))
       (br_if $d (i32.eq (local.get $ch) (i32.const -1)))
+      ;; Unescaped control char (U+0000..U+001F) is not a valid JSONStringCharacter.
+      (if (i32.lt_u (local.get $ch) (i32.const 32))
+        (then (global.set $__jp_err (i32.const 1)) (br $d)))
       ;; Mark non-simple: escape (\\=92) or non-ASCII (load8_s gives <0 for byte≥128).
       (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_s (local.get $ch) (i32.const 0)))
         (then (local.set $simple (i32.const 0))))
@@ -384,6 +409,9 @@ export default (ctx) => {
           (local.set $len (i32.add (local.get $len) (i32.const 1)))
           ${ADV(1)}))
       (br $l)))
+    ;; Loop exited on the closing quote (34) or EOF (-1); the latter means an
+    ;; unterminated string literal.
+    (if (i32.eq (local.get $ch) (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
     ;; Stash hash. 0/1 bumped to 2 to match __str_hash convention; escape strings
     ;; (simple==0) get sentinel 0 so __jp_obj falls back to non-prehashed insert.
     (global.set $__jp_keyh
@@ -422,6 +450,7 @@ export default (ctx) => {
           ${ADV(1)}
           (if (i32.eq (local.get $ch) (i32.const 117))  ;; \\uXXXX
             (then
+              (if (i32.eqz ${HEX4_VALID}) (then (global.set $__jp_err (i32.const 1))))
               (local.set $cp (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
               ${ADV(4)}
               ;; High surrogate immediately followed by \\uXXXX low surrogate → combine.
@@ -431,6 +460,7 @@ export default (ctx) => {
                              (i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const 1)))) (i32.const 117))))
                 (then
                   ${ADV(2)}
+                  (if (i32.eqz ${HEX4_VALID}) (then (global.set $__jp_err (i32.const 1))))
                   (local.set $i (call $__hex4 (i32.add (global.get $__jpstr) (global.get $__jppos))))
                   ${ADV(4)}
                   (local.set $cp (i32.add (i32.const 0x10000)
@@ -525,7 +555,11 @@ export default (ctx) => {
       ${WS()}
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 93)))
-      (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)}))
+      ;; After an element only a comma (more) or close-bracket (done) is
+      ;; valid; anything else (incl. EOF) is a syntax error. Break to terminate.
+      (if (i32.eq (local.get $ch) (i32.const 44))
+        (then ${ADV(1)})
+        (else (global.set $__jp_err (i32.const 1)) (br $d)))
       (br $l)))
     ${ADV(1)}
     (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (local.get $len))
@@ -654,7 +688,11 @@ export default (ctx) => {
       ${WS()}
       (local.set $ch ${PEEK})
       (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
-      (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)}))
+      ;; After a member only a comma (more) or close-brace (done) is
+      ;; valid; anything else (incl. EOF) is a syntax error. Break to terminate.
+      (if (i32.eq (local.get $ch) (i32.const 44))
+        (then ${ADV(1)})
+        (else (global.set $__jp_err (i32.const 1)) (br $d)))
       (br $l)))
     ${ADV(1)}
     ;; Resolve schema sid (cached or freshly registered).
@@ -673,6 +711,19 @@ export default (ctx) => {
       (br $vl)))
     (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $obj)))`
 
+  // Verify a bare keyword literal: the dispatch char is already known to be
+  // word[0]; AND-check word[1..] against the bytes after the parse position.
+  // Past-end reads land in the 0xFF sentinel pad, which matches nothing.
+  const litMatch = (word) => {
+    const tests = [...word].slice(1).map((c, i) =>
+      `(i32.eq (i32.load8_u (i32.add (global.get $__jpstr) (i32.add (global.get $__jppos) (i32.const ${i + 1})))) (i32.const ${c.charCodeAt(0)}))`)
+    return tests.reduce((a, b) => `(i32.and ${a} ${b})`)
+  }
+  const litCase = (ch, word, valIR, adv) => `(if (i32.eq (local.get $ch) (i32.const ${ch}))
+      (then (if ${litMatch(word)}
+        (then ${ADV(adv)} (return ${valIR}))
+        (else (global.set $__jp_err (i32.const 1)) (return ${NULL_WAT})))))`
+
   // Main value dispatcher
   ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)
     (local $ch i32)
@@ -687,12 +738,11 @@ export default (ctx) => {
     (if (i32.or (i32.and (i32.ge_s (local.get $ch) (i32.const 48)) (i32.le_s (local.get $ch) (i32.const 57)))
                 (i32.eq (local.get $ch) (i32.const 45)))
       (then (return (call $__jp_num))))
-    (if (i32.eq (local.get $ch) (i32.const 116))
-      (then ${ADV(4)} (return (f64.const 1))))
-    (if (i32.eq (local.get $ch) (i32.const 102))
-      (then ${ADV(5)} (return (f64.const 0))))
-    (if (i32.eq (local.get $ch) (i32.const 110))
-      (then ${ADV(4)} (return ${NULL_WAT})))
+    ${litCase(116, 'true', '(f64.const 1)', 4)}
+    ${litCase(102, 'false', '(f64.const 0)', 5)}
+    ${litCase(110, 'null', NULL_WAT, 4)}
+    ;; No production matched — malformed JSON value.
+    (global.set $__jp_err (i32.const 1))
     ${NULL_WAT})`
 
   function canSpecializeJsonShape(v) {
@@ -859,7 +909,7 @@ ${localDecls}
   // overshoot from speculative peek/adv on malformed input still hits sentinel,
   // not unallocated memory.
   ctx.core.stdlib['__jp'] = `(func $__jp (param $str i64) (result f64)
-    (local $len i32) (local $buf i32) (local $i i32)
+    (local $len i32) (local $buf i32) (local $i i32) (local $r f64)
     (local.set $len (call $__str_byteLen (local.get $str)))
     (local.set $buf (call $__alloc (i32.add (local.get $len) (i32.const 8))))
     ;; Pre-fill 8 sentinel bytes at end (writes overlapping a 64-bit slot).
@@ -879,7 +929,13 @@ ${localDecls}
     (global.set $__jpstr (local.get $buf))
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
-    (call $__jp_val))`
+    (global.set $__jp_err (i32.const 0))
+    (local.set $r (call $__jp_val))
+    ;; Any non-whitespace byte after the top-level value is a syntax error.
+    ${WS()}
+    (if (i32.ne ${PEEK} (i32.const -1)) (then (global.set $__jp_err (i32.const 1))))
+    (if (global.get $__jp_err) (then (throw $__jz_err (f64.const 0))))
+    (local.get $r))`
 
   // === Emitters ===
 
@@ -889,11 +945,21 @@ ${localDecls}
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
+    // A non-string primitive literal argument is coerced via ToString, then
+    // parsed: JSON.parse(0) → "0", JSON.parse(null) → "null", JSON.parse() →
+    // "undefined" (which parses to a SyntaxError, the spec-correct outcome).
+    // Literals reach the emitter as `[null, value]` nodes.
+    if (x === undefined) x = ['str', 'undefined']
+    else if (Array.isArray(x) && x[0] == null && typeof x[1] !== 'string')
+      x = ['str', x[1] == null ? 'null' : String(x[1])]
     const src = jsonConstString(ctx, x)
     if (src != null) {
       try { return emitJsonConstValue(JSON.parse(src)) }
       catch { /* fall through to runtime parser for invalid JSON so runtime behavior stays unchanged */ }
     }
+    // The runtime parser (and any shape parser that falls back to it) raises a
+    // SyntaxError via $__jz_err on malformed input, so the throw tag must exist.
+    ctx.runtime.throws = true
     const shapeSrcs = jsonShapeStrings(ctx, x)
     if (shapeSrcs) {
       try {
