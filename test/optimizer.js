@@ -817,6 +817,45 @@ test('single-char string index equality keeps array fallback semantics', () => {
   is(main(), 9)
 })
 
+test('single-char index equality: non-literal int index (loop variable)', () => {
+  const wat = jz.compile(`
+    export const main = (s) => {
+      let i = 0
+      while (i < s.length && s[i] === ' ') i++
+      return i
+    }
+  `, { wat: true, optimize: { watr: false } })
+  const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
+  ok(!/\(call \$__str_idx\b/.test(mainBody), 'loop-variable char equality should skip __str_idx materialization')
+  ok(/\(call \$__char_at\b/.test(mainBody), 'expected direct char byte comparison')
+})
+
+test('single-char index equality: for-loop runtime correctness', () => {
+  const { main } = run(`
+    export const main = (s) => {
+      let n = 0
+      for (let i = 0; i < s.length; i++) if (s[i] === '"') n++
+      return n
+    }
+  `)
+  is(main('a"b"c"'), 3)
+  is(main(''), 0)
+  is(main('no quotes'), 0)
+})
+
+test('single-char index equality: !== with loop variable', () => {
+  const { main } = run(`
+    export const main = (s) => {
+      let i = 0
+      while (i < s.length && s[i] !== ' ') i++
+      return i
+    }
+  `)
+  is(main('abc def'), 3)
+  is(main('   '), 0)
+  is(main('abc'), 3)
+})
+
 test('resolveOptimize: levels, booleans, object overrides', () => {
   const level2 = resolveOptimize(true)
   const allOff = resolveOptimize(false)
