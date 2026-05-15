@@ -317,6 +317,15 @@ test('Object.keys: existing OBJECT-literal path still works', () => {
   }`)
   is(f(), 3)
 })
+
+test('Object.getOwnPropertyNames: returns object literal property names', () => {
+  const { f } = run(`export let f = () => {
+    let o = {x: 1, y: 2, z: 3}
+    let names = Object.getOwnPropertyNames(o)
+    return names.indexOf("x") + names.indexOf("y") + names.indexOf("z")
+  }`)
+  is(f(), 3)
+})
 // Trailing commas in object literals: subscript represents `{a:1, b,}` as
 // `[",", [":","a",1], "b", null]` — a phantom `null` entry past the last
 // real prop. Without filtering in prep, the literal carried an extra
