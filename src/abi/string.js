@@ -56,6 +56,107 @@
 // take. Kept as a one-liner so each op reads as a single `call`.
 const ssoI64 = (sF64) => ['i64.reinterpret_f64', sF64]
 
+// LAYOUT lives in `src/ctx.js`, which loads this module mid-bootstrap (line 10
+// of ctx.js, before LAYOUT itself is bound). ESM live bindings mean the import
+// resolves but the value is `undefined` until ctx.js finishes. All charCodeAt /
+// inline paths read these constants at *call* time (compile-time, after ctx is
+// fully initialized) — never at module top level — so this is safe.
+import { LAYOUT } from '../ctx.js'
+
+// Local copy of analyze.js#isReassigned — pulling the real one creates a load-
+// order cycle (abi/string ← ctx ← analyze ← ir ← ctx). Kept minimal: detects
+// any `=`/compound-assign/`++`/`--` of `name` anywhere in `body`. `let`/`const`
+// declarations are NOT reassignments (the param can't be redeclared anyway,
+// but a shadowing inner `let s = ...` shouldn't poison the outer param's
+// fast path). False positives are conservative — we just disable the fast
+// path and fall through to shape 2.
+const _CC_ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
+const _paramReassigned = (body, name) => {
+  if (!Array.isArray(body)) return false
+  const op = body[0]
+  if (_CC_ASSIGN_OPS.has(op) && body[1] === name) return true
+  if ((op === '++' || op === '--') && body[1] === name) return true
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null && _paramReassigned(d[2], name)) return true
+    }
+    return false
+  }
+  for (let i = 1; i < body.length; i++) if (_paramReassigned(body[i], name)) return true
+  return false
+}
+
+/** Pre-shifted SSO discriminator (bit 46 of the i64 ptr). Computed lazily on
+ *  first read since LAYOUT is undefined when this module's top level runs.
+ *  Memoized in the closure so all later call sites pay zero overhead. */
+let _ssoBitI64 = null
+const ssoBitI64 = () => _ssoBitI64 ??= '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+
+/** Allocate a fresh i64 local in the current function. Replicated here (not
+ *  imported from `src/ir.js`) to keep this module loadable during ctx.js
+ *  bootstrap — see header note about the cycle. */
+const allocLocalI64 = (ctx, tag) => {
+  let name
+  do { name = `_${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  ctx.func.locals.set(name, 'i64')
+  return name
+}
+const allocLocalI32 = (ctx, tag) => {
+  let name
+  do { name = `_${tag}${ctx.func.uniq++}` } while (ctx.func.locals.has(name))
+  ctx.func.locals.set(name, 'i32')
+  return name
+}
+
+/** Emit the function-entry decomposition prologue for the param-fast-path
+ *  shape of `charCodeAt`. Decodes the f64 NaN-box once per call into three i32
+ *  scratch locals (`base`, `len`, `sso`) recorded in `dec`. Per-iter
+ *  `charCodeAt` then collapses to a length compare + 2-arm select; the load
+ *  from `(base + i)` stays memory-safe when SSO because the inner select
+ *  reroutes the address to 0 (always-valid memory[0]).
+ *
+ *  Returns an array of IR statements suitable for splicing between the boxed-
+ *  param inits and the user body in `emitFunc`. The off<4 guard preserves the
+ *  pre-decomp semantics: any pointer with offset bits below 4 (null/undefined
+ *  reaching here via type error) gets `len=0` so every bounds check trips and
+ *  every `charCodeAt` returns 0 — same shape as the legacy `__char_at`. */
+export function emitCharDecompPrologue(dec) {
+  const param = dec.param
+  const ptr = ['i64.reinterpret_f64', ['local.get', `$${param}`]]
+  const ssoTest = ['i64.ne',
+    ['i64.and', ptr, ['i64.const', ssoBitI64()]],
+    ['i64.const', 0]]
+  const offMask = `0x${LAYOUT.OFFSET_MASK.toString(16).toUpperCase()}`
+  const off = ['i32.wrap_i64', ['i64.and', ptr, ['i64.const', offMask]]]
+  const ssoLen = ['i32.and',
+    ['i32.wrap_i64', ['i64.shr_u', ptr, ['i64.const', LAYOUT.AUX_SHIFT]]],
+    ['i32.const', LAYOUT.SSO_BIT - 1]]
+  // Heap length is `i32.load(off - 4)`; guard against off<4 (corrupt/non-string
+  // payload) so the load doesn't trap on a wrapped-negative address.
+  const heapLen = ['if', ['result', 'i32'],
+    ['i32.lt_u', off, ['i32.const', 4]],
+    ['then', ['i32.const', 0]],
+    ['else', ['i32.load', ['i32.sub', off, ['i32.const', 4]]]]]
+  return [
+    ['if',
+      ssoTest,
+      ['then',
+        ['local.set', `$${dec.sso}`, ['i32.const', 1]],
+        ['local.set', `$${dec.base}`, off],
+        ['local.set', `$${dec.len}`, ssoLen],
+        // SSO: route every per-iter load to address 0 (always valid, byte
+        // discarded by the outer select).
+        ['local.set', `$${dec.loadbase}`, ['i32.const', 0]]],
+      ['else',
+        ['local.set', `$${dec.sso}`, ['i32.const', 0]],
+        ['local.set', `$${dec.base}`, off],
+        ['local.set', `$${dec.len}`, heapLen],
+        // Heap: per-iter loads use the real string-data base.
+        ['local.set', `$${dec.loadbase}`, off]]],
+  ]
+}
+
 export const sso = {
   // Wasm slot type a string value occupies under this carrier: the f64
   // NaN-boxed slot (PTR.STRING tag in the high bits, SSO inline data or
@@ -74,10 +175,163 @@ export const sso = {
     /** Char code at index i. Receiver: f64 slot carrier; index: i32. Returns
      *  i32 — 0 for out-of-bounds (NUL byte). Keeps tokenizer hot loops on the
      *  i32 ABI (no per-iteration f64 widen/truncate). User code that wants
-     *  JS-spec NaN-for-OOB can guard with an explicit length check. */
+     *  JS-spec NaN-for-OOB can guard with an explicit length check.
+     *
+     *  Two emission shapes, picked at the call site:
+     *
+     *  1. **Param-decomposition fast path** — when the receiver is a `local.get`
+     *     of a function parameter that isn't boxed (no closure mutation) and
+     *     isn't a generator/async frame slot, we hoist the SSO-bit test, offset
+     *     extraction, and heap-length load to a function-entry prologue. The
+     *     prologue writes three i32 locals — `$<p>$ccbase`, `$<p>$cclen`,
+     *     `$<p>$ccsso` — once per call. Every `charCodeAt` in the body collapses
+     *     to a length compare + a 2-arm select between the two byte
+     *     formulations: `(off >> (i*8)) & 0xFF` for the SSO 4-byte packed form
+     *     and `i32.load8_u (base + i)` for the heap form. Memory safety of the
+     *     load when the string is actually SSO is preserved by feeding the load
+     *     address through `select(0, base+i, sso)` — for SSO strings the load
+     *     reads byte 0 of linear memory (always valid in wasm), and the outer
+     *     select discards the garbage. Tokenizer-shape loops go from ~13
+     *     instructions per char (5 of them loop-invariant but un-LICM'd by V8
+     *     because of the surrounding `if/else`) to 4: `local.get`, `i32.ge_u`,
+     *     `i32.add`, `i32.load8_u`. Closes the AS gap on the tokenizer pin.
+     *
+     *  2. **Generic inline fallback** — when the receiver is some other
+     *     expression (member access, call result, ternary on f64 strings, etc.)
+     *     we emit the SSO-vs-heap dispatch in line. Watr's L2 default keeps the
+     *     WAT-level inliner off (regex-split miscompile, watr 4.6.4), so we
+     *     can't rely on watr to inline `__char_at` for us. Side-effect-free
+     *     leaves (`local.get` of non-param locals, `*.const`, `global.get`)
+     *     duplicate the f64→i64 reinterpret at every use and trust V8 CSE;
+     *     anything heavier spills once to an i64 temp so each branch reuses the
+     *     same value.
+     *
+     *  Function-entry prologue emission for shape 1 happens in
+     *  `src/compile.js#emitFunc` — it drains `ctx.func.charDecomp` after the
+     *  body emit completes and splices an init block between the boxed-param
+     *  inits and the user statements. */
     charCodeAt: (sF64, iI32, ctx) => {
-      ctx.core.includes.add('__char_at')
-      return ['call', '$__char_at', ssoI64(sF64), iI32]
+      // Shape 1: receiver is a `local.get` of a non-boxed function parameter.
+      // The decomposition is correct only when the parameter's value can't
+      // change after entry — boxed params are stored in heap cells and read
+      // through `f64.load`, so we conservatively skip them. Non-param locals
+      // are excluded too: even if narrowing concludes they're never reassigned,
+      // their initialisation typically happens inside the function body and the
+      // prologue would run before the init.
+      if (Array.isArray(sF64) && sF64[0] === 'local.get') {
+        const raw = typeof sF64[1] === 'string' ? sF64[1] : ''
+        const name = raw.startsWith('$') ? raw.slice(1) : raw
+        const param = ctx.func.current?.params?.find(p => p.name === name)
+        const isBoxed = ctx.func.boxed?.has(name)
+        // The decomposition only stays in sync if the param's f64 slot is
+        // never overwritten — `s = s + 'X'` would invalidate the cached
+        // base/len/sso/loadbase locals. Also require the param's wasm slot
+        // to actually be `f64` (i64.reinterpret_f64 below would fail
+        // validation otherwise — narrowed-to-int params have type 'i32').
+        if (param && param.type === 'f64' && param.ptrKind == null
+            && !isBoxed && ctx.func.body && !_paramReassigned(ctx.func.body, name)) {
+          if (!ctx.func.charDecomp) ctx.func.charDecomp = new Map()
+          let dec = ctx.func.charDecomp.get(name)
+          if (!dec) {
+            const base = `${name}$ccbase`
+            const len = `${name}$cclen`
+            const sso = `${name}$ccsso`
+            // `loadbase` is the address used for the per-iter `load8_u`: equal
+            // to `base` when heap (real string data) and 0 when SSO (memory[0]
+            // is always valid; the loaded byte is garbage but the outer select
+            // discards it). Pre-computing it in the prologue removes a
+            // per-iter `select` and lets V8 fold the add into the load.
+            const loadbase = `${name}$ccldb`
+            ctx.func.locals.set(base, 'i32')
+            ctx.func.locals.set(len, 'i32')
+            ctx.func.locals.set(sso, 'i32')
+            ctx.func.locals.set(loadbase, 'i32')
+            dec = { base, len, sso, loadbase, param: name }
+            ctx.func.charDecomp.set(name, dec)
+          }
+          // Two nested ifs: bounds check (predicted taken) and SSO/heap split
+          // (predicted heap for tokenizer-shape loops where strings are long).
+          // The inner if lets V8 entirely skip the SSO-byte arithmetic when
+          // taking the heap path — a `select` would force both formulations
+          // to execute on the assumption the CMOV is cheaper than the branch.
+          const ssoByteExpr = ['i32.and',
+            ['i32.shr_u', ['local.get', `$${dec.base}`], ['i32.shl', iI32, ['i32.const', 3]]],
+            ['i32.const', 0xFF]]
+          const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], iI32]]
+          return ['if', ['result', 'i32'],
+            ['i32.ge_u', iI32, ['local.get', `$${dec.len}`]],
+            ['then', ['i32.const', 0]],
+            ['else',
+              ['if', ['result', 'i32'],
+                ['local.get', `$${dec.sso}`],
+                ['then', ssoByteExpr],
+                ['else', heapByteExpr]]]]
+        }
+      }
+
+      // Shape 2: generic inline form for non-param receivers.
+      //
+      // Both the receiver `sF64` and the index `iI32` are duplicated across the
+      // SSO/heap branches (and within each branch for bounds + load). Either
+      // side may be a side-effecting expression — e.g. parse.js's `str[i++]`
+      // lowers to a charCodeAt whose index is a `(block (local.set $tmp
+      // (f64.add (f64.load $i) 1)) (f64.store $i $tmp) (local.get $tmp))` —
+      // so we MUST spill anything that isn't side-effect-free to a local
+      // before referencing it more than once. Leaves (`local.get`, `*.const`,
+      // `global.get`) are safe to duplicate; everything else is spilled.
+      const isLeaf = (n) => Array.isArray(n) &&
+        (n[0] === 'local.get' || n[0] === 'global.get' ||
+         n[0] === 'i32.const' || n[0] === 'i64.const' || n[0] === 'f64.const' || n[0] === 'f32.const')
+      const sLeaf = isLeaf(sF64)
+      const iLeaf = isLeaf(iI32)
+      const ptrI64Expr = ssoI64(sF64)
+      let ptrName = null
+      let getPtr
+      if (sLeaf) {
+        getPtr = () => ssoI64(sF64)
+      } else {
+        ptrName = allocLocalI64(ctx, 'cc')
+        getPtr = () => ['local.get', `$${ptrName}`]
+      }
+      let idxName = null
+      let getIdx
+      if (iLeaf) {
+        getIdx = () => iI32
+      } else {
+        idxName = allocLocalI32(ctx, 'ci')
+        getIdx = () => ['local.get', `$${idxName}`]
+      }
+      const offMask = `0x${LAYOUT.OFFSET_MASK.toString(16).toUpperCase()}`
+      const offExpr = () => ['i32.wrap_i64', ['i64.and', getPtr(), ['i64.const', offMask]]]
+      const ssoLen = ['i32.and',
+        ['i32.wrap_i64', ['i64.shr_u', getPtr(), ['i64.const', LAYOUT.AUX_SHIFT]]],
+        ['i32.const', LAYOUT.SSO_BIT - 1]]
+      const ssoByte = ['i32.and',
+        ['i32.shr_u', offExpr(), ['i32.mul', getIdx(), ['i32.const', 8]]],
+        ['i32.const', 0xFF]]
+      const ssoBranch = ['if', ['result', 'i32'],
+        ['i32.ge_u', getIdx(), ssoLen],
+        ['then', ['i32.const', 0]],
+        ['else', ssoByte]]
+      const heapLen = ['i32.load', ['i32.sub', offExpr(), ['i32.const', 4]]]
+      const heapByte = ['i32.load8_u', ['i32.add', offExpr(), getIdx()]]
+      const heapBranch = ['if', ['result', 'i32'],
+        ['i32.lt_u', offExpr(), ['i32.const', 4]],
+        ['then', ['i32.const', 0]],
+        ['else', ['if', ['result', 'i32'],
+          ['i32.ge_u', getIdx(), heapLen],
+          ['then', ['i32.const', 0]],
+          ['else', heapByte]]]]
+      const dispatch = ['if', ['result', 'i32'],
+        ['i64.ne', ['i64.and', getPtr(), ['i64.const', ssoBitI64()]], ['i64.const', 0]],
+        ['then', ssoBranch],
+        ['else', heapBranch]]
+      if (sLeaf && iLeaf) return dispatch
+      const preface = ['block', ['result', 'i32']]
+      if (!sLeaf) preface.push(['local.set', `$${ptrName}`, ptrI64Expr])
+      if (!iLeaf) preface.push(['local.set', `$${idxName}`, iI32])
+      preface.push(dispatch)
+      return preface
     },
 
     /** Content equality. Both args: f64 slot carriers. Returns i32 boolean. */
