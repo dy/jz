@@ -308,6 +308,23 @@ export function valTypeOf(expr) {
     if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
     return VAL.NUMBER
   }
+  // Assignment & compound-assign expressions return the rhs value. Without this,
+  // `(a = x*x) + (b = y*y)` falls through to null and `+` emits the polymorphic
+  // string-concat dispatch on two pure-numeric subexpressions.
+  if (op === '=') return valTypeOf(args[1])
+  if (op === '+=') {
+    const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
+    const tb = valTypeOf(args[1])
+    if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+    return VAL.NUMBER
+  }
+  if (['-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>='].includes(op)) {
+    const ta = typeof args[0] === 'string' ? lookupValType(args[0]) : null
+    const tb = valTypeOf(args[1])
+    if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
+    return VAL.NUMBER
+  }
 
   if (op === '()') {
     const callee = args[0]
