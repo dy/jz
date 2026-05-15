@@ -368,6 +368,11 @@ export function toNumF64(node, v) {
   // intCertain locals: every reachable def is integer-valued, so the binding
   // never carries a NaN-boxed pointer — skip the __to_num wrapper.
   if (typeof node === 'string' && repOf(node)?.intCertain === true) return asF64(v)
+  // intCertain schema slot reads `o.x`: every observed write is integer-shaped,
+  // so the loaded f64 is a plain number — same justification as the local case.
+  if (Array.isArray(node) && node[0] === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {
+    if (ctx.schema.slotIntCertainAt?.(node[1], node[2]) === true) return asF64(v)
+  }
   // IR-level shapes that produce real f64 numbers (never NaN-boxed pointers):
   // i32→f64 conversions, stdlib clock helper. Skip the __to_num call wrapper.
   if (Array.isArray(v)) {

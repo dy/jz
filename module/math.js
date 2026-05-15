@@ -24,8 +24,16 @@ export default (ctx) => {
   const f2 = (op, a, b) => typed([op, asF64(emit(a)), asF64(emit(b))], 'f64')
   // floor/ceil/trunc/round are no-ops on integer-valued operands. When the
   // arg is a local whose every def is integer-valued (intCertain lattice),
-  // skip the wasm op and just hand back the operand cast to f64.
-  const isIntCertain = a => typeof a === 'string' && repOf(a)?.intCertain === true
+  // skip the wasm op and just hand back the operand cast to f64. Same elision
+  // fires for schema-field reads `o.x` when every observed write to that slot
+  // is integer-shaped (ctx.schema.slotIntCertainAt).
+  const isIntCertain = a => {
+    if (typeof a === 'string') return repOf(a)?.intCertain === true
+    if (Array.isArray(a) && a[0] === '.' && typeof a[1] === 'string' && typeof a[2] === 'string') {
+      return ctx.schema.slotIntCertainAt?.(a[1], a[2]) === true
+    }
+    return false
+  }
   const fInt = (op, a) => isIntCertain(a) ? asF64(emit(a)) : f(op, a)
   const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => asF64(emit(a)))], 'f64'))
   const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))

@@ -94,6 +94,14 @@ export default (ctx) => {
     const captureValTypes = new Map()
     const captureSchemaVars = new Map()
     const captureTypedElems = new Map()
+    // Propagate parent's intCertain rep across captures: the parent's narrower
+    // already guarantees every defining RHS (including assignments inside
+    // nested arrows) is integer-valued, so the f64 round-trip through the env
+    // slot preserves integer semantics. Consumers inside the inner body —
+    // `toNumF64` elision (src/ir.js), math fast paths (module/math.js),
+    // bitwise-key indexing (src/emit.js) — fire on captures just as they
+    // would on directly-declared locals.
+    const captureIntCertain = new Set()
     // Propagate parent's directClosures across captures: a const-bound closure captured
     // by an inner arrow can still be direct-dispatched in the inner body (skip
     // call_indirect on the captured pointer). Gated on isReassigned over the inner body
@@ -108,6 +116,7 @@ export default (ctx) => {
       if (elemType != null) captureTypedElems.set(name, elemType)
       const bodyName = ctx.func.directClosures?.get(name)
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
+      if (repOf(name)?.intCertain === true) captureIntCertain.add(name)
     }
 
     const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
@@ -130,6 +139,7 @@ export default (ctx) => {
       ...(defaults && { defaults }),
       ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }),
       ...(captureIntConsts.size && { intConsts: captureIntConsts }),
+      ...(captureIntCertain.size && { intCertain: captureIntCertain }),
       ...(captureValTypes.size && { valTypes: captureValTypes }),
       ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
       ...(captureTypedElems.size && { typedElems: captureTypedElems }),

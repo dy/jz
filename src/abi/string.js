@@ -71,7 +71,10 @@ export const sso = {
       return ['call', '$__str_byteLen', ssoI64(sF64)]
     },
 
-    /** Char code at index i. Receiver: f64 slot carrier; index: i32. Returns i32. */
+    /** Char code at index i. Receiver: f64 slot carrier; index: i32. Returns
+     *  i32 — 0 for out-of-bounds (NUL byte). Keeps tokenizer hot loops on the
+     *  i32 ABI (no per-iteration f64 widen/truncate). User code that wants
+     *  JS-spec NaN-for-OOB can guard with an explicit length check. */
     charCodeAt: (sF64, iI32, ctx) => {
       ctx.core.includes.add('__char_at')
       return ['call', '$__char_at', ssoI64(sF64), iI32]

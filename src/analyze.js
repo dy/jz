@@ -2048,7 +2048,16 @@ export function collectProgramFacts(ast) {
   // through valTypeOf → lookupValType. Skips into closures — they're observed via
   // their own func.list entry. The overlay is the per-function analyzeBody.valTypes
   // map (already populated with the same overlay-aware walk).
-  if (doSchema && f.hasSchemaLiterals) observeProgramSlots(ast)
+  if (doSchema && f.hasSchemaLiterals) {
+    observeProgramSlots(ast)
+    // Per-slot intCertain mirror of the per-binding lattice. Runs after slot
+    // type observation (which it does not depend on) — same trigger gate so
+    // programs without schema literals skip both. Re-runnable: subsequent
+    // collectProgramFacts invocations (E2 phase) overwrite the same map; the
+    // analysis is monotone-down so re-running can only widen poisoning, never
+    // un-poison — safe.
+    analyzeSchemaSlotIntCertain(ast)
+  }
 
   return {
     dynVars: f.dynVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
@@ -2106,4 +2115,157 @@ export function observeProgramSlots(ast) {
     for (const mi of ctx.module.moduleInits) visit(mi)
   }
   ctx.func.localValTypesOverlay = prevOverlay
+}
+
+/** Whole-program slot intCertain observation.
+ *
+ *  A schema slot `(sid, idx)` is `intCertain` iff every write to it across the
+ *  program is integer-shaped (literal int, bitwise op, intCertain local read,
+ *  …). Mirrors `analyzeIntCertain`'s `isIntExpr` rules but works at module
+ *  scope: each body gets a local `intCertain` fixpoint over its own bindings,
+ *  then schema writes within that body are reduced against the fixpoint.
+ *
+ *  Global poison semantics: any non-int write to a slot — in any body —
+ *  permanently flips it false. Slots never observed stay `undefined`.
+ *
+ *  Cross-function flow (slot written from a call's return value) is **not**
+ *  tracked — those writes count as non-int and poison the slot. Conservative:
+ *  produces only false negatives, never false positives. */
+export function analyzeSchemaSlotIntCertain(ast) {
+  if (!ctx.schema?.register) return
+  const slotIntCertain = ctx.schema.slotIntCertain
+  const poisonSlot = (sid, idx) => {
+    let arr = slotIntCertain.get(sid)
+    if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    arr[idx] = false
+  }
+  const observeSlot = (sid, idx, isInt) => {
+    let arr = slotIntCertain.get(sid)
+    if (!arr) { arr = []; slotIntCertain.set(sid, arr) }
+    while (arr.length <= idx) arr.push(undefined)
+    if (arr[idx] === false) return
+    if (!isInt) { arr[idx] = false; return }
+    if (arr[idx] === undefined) arr[idx] = true
+  }
+
+  // Per-body fixpoint: replicates analyzeIntCertain's two-pass collect/iterate
+  // but stays local to the body so it can run during collectProgramFacts
+  // (before emit-time inferLocals sets per-function intCertain reps).
+  const analyzeBodyLocally = (body) => {
+    const defs = new Map()
+    const pushDef = (name, rhs) => {
+      let list = defs.get(name)
+      if (!list) { list = []; defs.set(name, list) }
+      list.push(rhs)
+    }
+    const collect = (node) => {
+      if (!Array.isArray(node)) return
+      const [op, ...args] = node
+      if (op === '=>') return
+      if (op === 'let' || op === 'const') {
+        for (const a of args)
+          if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2])
+      } else if (op === '=' && typeof args[0] === 'string') {
+        pushDef(args[0], args[1])
+      } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
+                 !INT_CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
+        pushDef(args[0], [op.slice(0, -1), args[0], args[1]])
+      } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
+        pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]])
+      }
+      for (const a of args) collect(a)
+    }
+    collect(body)
+    const intCertain = new Map()
+    for (const name of defs.keys()) intCertain.set(name, true)
+    const isIntExpr = (expr) => {
+      if (typeof expr === 'number') return Number.isInteger(expr) && !Object.is(expr, -0)
+      if (typeof expr === 'boolean') return true
+      if (typeof expr === 'string') return intCertain.get(expr) === true
+      if (!Array.isArray(expr)) return false
+      const sv = staticValue(expr)
+      if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return false
+      const [op, ...args] = expr
+      if (op == null) {
+        const v = args[0]
+        if (typeof v === 'number') return Number.isInteger(v) && !Object.is(v, -0)
+        if (typeof v === 'boolean') return true
+        return false
+      }
+      if (INT_BIT_OPS.has(op) || INT_CMP_OPS.has(op)) return true
+      if (op === '.') {
+        if ((args[1] === 'length' || args[1] === 'byteLength') && typeof args[0] === 'string') {
+          const vt = lookupValType(args[0])
+          return vt === VAL.TYPED || vt === VAL.ARRAY || vt === VAL.STRING || vt === VAL.BUFFER
+        }
+        if (args[1] === 'size' && typeof args[0] === 'string') {
+          const vt = lookupValType(args[0])
+          return vt === VAL.SET || vt === VAL.MAP
+        }
+        return false
+      }
+      if (INT_CLOSED_OPS.has(op)) {
+        const a = isIntExpr(args[0])
+        const b = args[1] != null ? isIntExpr(args[1]) : a
+        return a && b
+      }
+      if (op === 'u-' || op === 'u+') return isIntExpr(args[0])
+      if (op === '?:') return isIntExpr(args[1]) && isIntExpr(args[2])
+      if (op === '&&' || op === '||') return isIntExpr(args[0]) && isIntExpr(args[1])
+      if (op === '()') {
+        const c = args[0]
+        if (typeof c === 'string' && c.startsWith('math.') && INT_MATH_FNS.has(c.slice(5))) return true
+        if (Array.isArray(c) && c[0] === '.' && c[1] === 'Math' && INT_MATH_FNS.has(c[2])) return true
+      }
+      return false
+    }
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const [name, rhsList] of defs) {
+        if (!intCertain.get(name)) continue
+        if (!rhsList.every(isIntExpr)) { intCertain.set(name, false); changed = true }
+      }
+    }
+    return isIntExpr
+  }
+
+  // Body walker: for each `{}` literal observe per-slot intCertain; for each
+  // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
+  // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
+  const visit = (node, isInt) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === '{}') {
+      const parsed = staticObjectProps(node.slice(1))
+      if (parsed) {
+        const sid = ctx.schema.register(parsed.names)
+        for (let i = 0; i < parsed.values.length; i++) observeSlot(sid, i, isInt(parsed.values[i]))
+      }
+    } else if (op === '=' && Array.isArray(node[1]) && node[1][0] === '.') {
+      const [, obj, prop] = node[1]
+      if (typeof obj === 'string') {
+        // Same precise-path resolution as ctx.schema.slotVT — no structural
+        // fallback (slot index could differ across schemas with the same prop).
+        const sid = repOf(obj)?.schemaId ?? ctx.schema.vars.get(obj)
+        if (sid != null) {
+          const idx = ctx.schema.list[sid]?.indexOf(prop)
+          if (idx >= 0) observeSlot(sid, idx, isInt(node[2]))
+          else if (idx < 0) {/* off-schema write — irrelevant to existing slots */}
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) visit(node[i], isInt)
+  }
+
+  if (ast) visit(ast, analyzeBodyLocally(ast))
+  for (const func of ctx.func.list) {
+    if (!func.body || func.raw) continue
+    visit(func.body, analyzeBodyLocally(func.body))
+  }
+  if (ctx.module.initFacts?.hasSchemaLiterals && ctx.module.moduleInits) {
+    for (const mi of ctx.module.moduleInits) visit(mi, analyzeBodyLocally(mi))
+  }
 }

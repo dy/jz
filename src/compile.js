@@ -463,6 +463,7 @@ function emitClosureBody(cb) {
   ctx.func.locals = new Map()
   ctx.func.localReps = null
   if (cb.intConsts) for (const [name, v] of cb.intConsts) updateRep(name, { intConst: v })
+  if (cb.intCertain) for (const name of cb.intCertain) updateRep(name, { intCertain: true })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
     ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])

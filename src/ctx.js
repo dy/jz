@@ -199,6 +199,15 @@ export function reset(proto, globals) {
                            // returns the slot's kind for `.prop` AST nodes, letting
                            // `+`/`===`/method dispatch elide `__is_str_key` checks
                            // on numeric properties of known shapes.
+    slotIntCertain: new Map(),  // schemaId → Array<boolean | undefined>
+                                //   undefined: no write observed, true: all observed
+                                //   writes are integer-shaped, false: poisoned by at
+                                //   least one non-int write. Populated by
+                                //   `analyzeSchemaSlotIntCertain` (whole-program
+                                //   walk over `{}` literals + `obj.prop = expr`
+                                //   writes). Read by `ctx.schema.slotIntCertainAt`
+                                //   so Math.floor/toNumF64/intIndexIR consumers fire
+                                //   on `.prop` reads of provably-integer slots.
   }
 
   ctx.closure = {

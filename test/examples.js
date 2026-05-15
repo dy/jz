@@ -1,0 +1,159 @@
+import test from 'tst';
+import { is, ok } from 'tst/assert.js';
+import jz from '../index.js';
+import fs from 'fs';
+
+let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
+
+test('example: mandelbrot output natively matches WASM', () => {
+    let nativeExports = (() => {
+        let mem;
+        const NUM_COLORS = 2048;
+        return {
+            resize: (w, h) => { mem = new Uint16Array(w * h); return mem; },
+            computeLine: (y, width, height, limit) => {
+                let translateX = width  * (1.0 / 1.6);
+                let translateY = height * (1.0 / 2.0);
+                let scale      = 10.0 / (3 * width < 4 * height ? 3 * width : 4 * height);
+                let imaginary  = (y - translateY) * scale;
+                let realOffset = translateX * scale;
+                let stride     = y * width;
+                let invLimit   = 1.0 / limit;
+                let minIterations = 8 < limit ? 8 : limit;
+                for (let x = 0; x < width; ++x) {
+                    let real = x * scale - realOffset;
+                    let ix = 0.0, iy = 0.0, ixSq = 0.0, iySq = 0.0;
+                    let iteration = 0;
+                    while ((ixSq = ix * ix) + (iySq = iy * iy) <= 4.0) {
+                        iy = 2.0 * ix * iy + imaginary;
+                        ix = ixSq - iySq + real;
+                        if (iteration >= limit) break;
+                        ++iteration;
+                    }
+                    while (iteration < minIterations) {
+                        let ixNew = ix * ix - iy * iy + real;
+                        iy = 2.0 * ix * iy + imaginary;
+                        ix = ixNew;
+                        ++iteration;
+                    }
+                    let col = NUM_COLORS - 1;
+                    let sqd = ix * ix + iy * iy;
+                    if (sqd > 1.0) {
+                        let frac = Math.log2(0.5 * Math.log(sqd));
+                        let val = (iteration + 1 - frac) * invLimit;
+                        if (val < 0.0) val = 0.0;
+                        if (val > 1.0) val = 1.0;
+                        col = ((NUM_COLORS - 1) * val) | 0;
+                    }
+                    mem[stride + x] = col;
+                }
+            }
+        };
+    })();
+
+    let w = 10, h = 10, l = 40;
+    let nativeArr = nativeExports.resize(w, h);
+    nativeExports.computeLine(0, w, h, l);
+
+    let { exports, memory } = jz(mandelbrotSrc, { env: { 'Math.log': Math.log, 'Math.log2': Math.log2 }});
+    let ptr = exports.resize(w, h);
+    let wasmArr = memory.read(ptr);
+    exports.computeLine(0, w, h, l);
+
+    for (let i = 0; i < w * h; i++) {
+        is(wasmArr[i], nativeArr[i]);
+    }
+});
+
+let golSrc = fs.readFileSync(new URL('../examples/game-of-life/game-of-life.js', import.meta.url), 'utf8');
+
+test('example: game-of-life output natively matches WASM', () => {
+    let nativeExports = (() => {
+        let BGR_ALIVE = 0;
+        let BGR_DEAD = 0;
+        let BIT_ROT = 0;
+
+        let width = 0, height = 0, offset = 0;
+        let mem;
+
+        let init = (w, h, alive, dead, rot_val) => {
+            BGR_ALIVE = alive;
+            BGR_DEAD = dead;
+            BIT_ROT = rot_val;
+            width = w;
+            height = h;
+            offset = w * h;
+            mem = new Uint32Array(w * h * 2);
+
+            for (let y = 0; y < h; ++y) {
+                for (let x = 0; x < w; ++x) {
+                    mem[offset + (y * width + x)] = Math.random() > 0.1
+                        ? BGR_DEAD & 0x00ffffff
+                        : (BGR_ALIVE | 0xff000000) >>> 0;
+                }
+            }
+            return mem;
+        };
+
+        let rot = (x, y, v) => {
+            let alpha = Math.max((v >>> 24) - BIT_ROT, 0);
+            mem[offset + (y * width + x)] = ((alpha << 24) | (v & 0x00ffffff)) >>> 0;
+        };
+
+        let step = () => {
+            let w = width, h = height;
+            let hm1 = h - 1, wm1 = w - 1;
+
+            for (let y = 0; y < h; ++y) {
+                let ym1 = y == 0 ? hm1 : y - 1,
+                    yp1 = y == hm1 ? 0 : y + 1;
+                for (let x = 0; x < w; ++x) {
+                    let xm1 = x == 0 ? wm1 : x - 1,
+                        xp1 = x == wm1 ? 0 : x + 1;
+
+                    let aliveNeighbors =
+                        (mem[ym1 * w + xm1] & 1) + (mem[ym1 * w + x] & 1) + (mem[ym1 * w + xp1] & 1) +
+                        (mem[y   * w + xm1] & 1)                          + (mem[y   * w + xp1] & 1) +
+                        (mem[yp1 * w + xm1] & 1) + (mem[yp1 * w + x] & 1) + (mem[yp1 * w + xp1] & 1);
+
+                    let self = mem[y * w + x];
+                    if (self & 1) {
+                        if ((aliveNeighbors & 0b1110) == 0b0010) rot(x, y, self);
+                        else mem[offset + (y * width + x)] = (BGR_DEAD | 0xff000000) >>> 0;
+                    } else {
+                        if (aliveNeighbors == 3) mem[offset + (y * width + x)] = (BGR_ALIVE | 0xff000000) >>> 0;
+                        else rot(x, y, self);
+                    }
+                }
+            }
+        };
+        return { init, step };
+    })();
+
+    let w = 10, h = 10;
+    // mock math random
+    let randIdx = 0;
+    let rands = Array.from({length: 100}, (_, i) => (i*997%100)/100);
+    const mockRandom = () => {
+        let r = rands[randIdx++];
+        if (randIdx >= rands.length) randIdx = 0;
+        return r;
+    };
+    Math.random = mockRandom;
+
+    randIdx = 0;
+    let nativeArr = nativeExports.init(w, h, 0xD392E6, 0xA61B85, 10);
+    for (let i = 0; i < w * h; i++) { nativeArr[i] = nativeArr[i + w*h]; } // copy output back
+    nativeExports.step();
+
+    let { exports, memory } = jz(golSrc, { env: { 'Math.random': mockRandom, 'Math.max': Math.max }});
+    randIdx = 0;
+    let ptr = exports.init(w, h, 0xD392E6, 0xA61B85, 10);
+    let wasmArr = memory.read(ptr);
+    for (let i = 0; i < w * h; i++) { wasmArr[i] = wasmArr[i + w*h]; }
+    exports.step();
+
+    for (let i = 0; i < w * h * 2; i++) {
+        is(wasmArr[i], nativeArr[i]);
+    }
+});
