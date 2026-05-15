@@ -574,3 +574,12 @@ if (fails.length) {
   console.log(`\n── Sample failures ──`)
   fails.forEach(f => console.log(`  ✗ ${f}`))
 }
+
+// CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
+// non-zero if pass count drops below the baseline. Skipped in --quick mode
+// (which only runs a subset, so its pass count isn't comparable).
+const baseline = Number(process.env.JZ_TEST262_BASELINE)
+if (!QUICK && Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
+  console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+  process.exit(1)
+}

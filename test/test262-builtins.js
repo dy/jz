@@ -775,5 +775,12 @@ if (skips.size) {
 if (fails.length) {
   console.log(`\n── Sample failures ──`)
   fails.forEach(f => console.log(`  x ${f}`))
-  process.exitCode = 1
+}
+
+// CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
+// non-zero if pass count drops below the baseline. Otherwise just report.
+const baseline = Number(process.env.JZ_TEST262_BASELINE)
+if (Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
+  console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+  process.exit(1)
 }
