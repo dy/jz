@@ -15,7 +15,7 @@ const buildDir = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench', 'c
 fs.mkdirSync(buildDir, { recursive: true })
 
 const N = 4096
-const N_ITERS = 128
+const N_ITERS = 64
 const N_RUNS = 21
 const N_WARMUP = 5
 
@@ -44,4 +44,4 @@ for (let i = 0; i < N_RUNS; i++) {
 const sorted = [...samples].sort((a, b) => a - b)
 const medianMs = sorted[(N_RUNS - 1) >> 1]
 const medianUs = (medianMs * 1000) | 0
-console.log(`median_us=${medianUs} checksum=${cs} samples=${N * N_ITERS} stages=1 runs=${N_RUNS}`)
+console.log(`median_us=${medianUs} checksum=${cs} samples=${N * N_ITERS} stages=2 runs=${N_RUNS}`)

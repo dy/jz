@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 #define N 4096
-#define N_ITERS 128
+#define N_ITERS 64
 #define N_RUNS 21
 #define N_WARMUP 5
 
@@ -14,7 +14,7 @@ static uint32_t run_kernel(const double* a, double* b, double scale) {
   uint32_t h = 0x811c9dc5u;
   for (int i = 0; i < N_ITERS; i++) {
     for (int j = 0; j < N; j++) b[j] = a[j] * scale + i;
-    for (int j = 0; j < N; j += 64) h = mix_u32(h, (uint32_t)(int)b[j]);
+    for (int j = 0; j < N; j++) h = mix_u32(h, (uint32_t)(int)b[j]);
   }
   return h;
 }
@@ -31,7 +31,7 @@ int main(void) {
     cs = run_kernel(a, b, 2);
     samples[i] = now_ms() - t0;
   }
-  print_result(median_us(samples, N_RUNS), cs, N * N_ITERS, 1, N_RUNS);
+  print_result(median_us(samples, N_RUNS), cs, N * N_ITERS, 2, N_RUNS);
   free(a);
   free(b);
 }

@@ -13,7 +13,7 @@ declare function perfNow(): f64
 declare function logLine(medianUs: i32, checksum: u32, samples: i32, stages: i32, runs: i32): void
 
 const N: i32 = 4096
-const N_ITERS: i32 = 128
+const N_ITERS: i32 = 64
 const N_RUNS: i32 = 21
 const N_WARMUP: i32 = 5
 
@@ -30,7 +30,7 @@ function runKernel(a: Array<f64>, scale: f64): u32 {
   for (let i = 0; i < N_ITERS; i++) {
     const iLocal: f64 = <f64>i
     for (let k = 0; k < n; k++) unchecked(b[k] = a[k] * scale + iLocal)
-    for (let j = 0; j < n; j += 64) h = (h ^ <u32>(<i32>unchecked(b[j]))) * 0x01000193
+    for (let j = 0; j < n; j++) h = (h ^ <u32>(<i32>unchecked(b[j]))) * 0x01000193
   }
   return h
 }
@@ -59,5 +59,5 @@ export function main(): void {
     unchecked(sorted[j + 1] = v)
   }
   const medianMs = unchecked(sorted[(N_RUNS - 1) >> 1])
-  logLine(<i32>(medianMs * 1000.0), cs, N * N_ITERS, 1, N_RUNS)
+  logLine(<i32>(medianMs * 1000.0), cs, N * N_ITERS, 2, N_RUNS)
 }

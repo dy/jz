@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 const N: usize = 4096;
-const N_ITERS: usize = 128;
+const N_ITERS: usize = 64;
 const N_RUNS: usize = 21;
 const N_WARMUP: usize = 5;
 
@@ -28,7 +28,7 @@ fn run_kernel(a: &[f64], scale: f64) -> u32 {
     for i in 0..N_ITERS {
         let i_local = i as f64;
         for k in 0..N { b[k] = a[k] * scale + i_local; }
-        for j in (0..N).step_by(64) {
+        for j in 0..N {
             h = mix(h, b[j] as i32 as u32);
         }
     }
@@ -50,6 +50,6 @@ fn main() {
 
     println!(
         "median_us={} checksum={} samples={} stages={} runs={}",
-        median_us(&mut samples), cs, N * N_ITERS, 1, N_RUNS
+        median_us(&mut samples), cs, N * N_ITERS, 2, N_RUNS
     );
 }
