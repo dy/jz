@@ -111,34 +111,55 @@ export default (ctx) => {
       (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
       (local.get $i))))`
 
-  // Hot (~37M calls in watr self-host). Caller guarantees $ptr is a STRING;
-  // SSO bit picks inline-byte-extract vs heap memory load. Returns 0 for OOB
-  // — internal tokenizer callers (number/json/regex parsers) rely on this
-  // sentinel to terminate `while (c > 32)`-shape loops past end-of-string.
-  // The SSO bounds check is essential: i32.shr_u wraps shift count mod 32,
-  // so without it `'a'.charCodeAt(4)` would return 'a' again (shift 32→0).
+  // Hot (~37M calls in watr self-host, ~40k/scan in tokenizer bench). Caller
+  // guarantees $ptr is a STRING; SSO bit picks inline-byte-extract vs heap memory
+  // load. Returns 0 for OOB — internal tokenizer callers (number/json/regex
+  // parsers) rely on this sentinel to terminate `while (c > 32)`-shape loops
+  // past end-of-string. The SSO bounds check is essential: i32.shr_u wraps shift
+  // count mod 32, so without it `'a'.charCodeAt(4)` would return 'a' again
+  // (shift 32→0).
+  //
+  // Body written as a single nested-if expression with NO locals so watr's
+  // inliner picks it up (gate: no-locals + ≤4 params + body.length===1). After
+  // inlining into a hot loop, V8's LICM hoists the SSO-bit test, offset
+  // extraction and heap-length load out — the per-iteration cost collapses to a
+  // load+bounds-check, beating call-site overhead. Repeated `i32.wrap_i64 +
+  // i64.and OFFSET_MASK` subexpressions rely on CSE in the consumer; both
+  // V8/TurboFan and watr's own propagate pass handle this.
   ctx.core.stdlib['__char_at'] = `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
-    (local $off i32) (local $len i32)
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if (result i32)
       (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
-        (local.set $len (i32.and
-          (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
-          (i32.const ${LAYOUT.SSO_BIT - 1})))
-        (if (result i32) (i32.ge_u (local.get $i) (local.get $len))
+        (if (result i32)
+          (i32.ge_u (local.get $i)
+            (i32.and
+              (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
+              (i32.const ${LAYOUT.SSO_BIT - 1})))
           (then (i32.const 0))
           (else (i32.and
-            (i32.shr_u (local.get $off) (i32.mul (local.get $i) (i32.const 8)))
+            (i32.shr_u
+              (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+              (i32.mul (local.get $i) (i32.const 8)))
             (i32.const 0xFF)))))
       (else
-        (if (result i32) (i32.lt_u (local.get $off) (i32.const 4))
+        (if (result i32)
+          (i32.lt_u
+            (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+            (i32.const 4))
           (then (i32.const 0))
           (else
-            (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
-            (if (result i32) (i32.ge_u (local.get $i) (local.get $len))
+            (if (result i32)
+              (i32.ge_u (local.get $i)
+                (i32.load
+                  (i32.sub
+                    (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+                    (i32.const 4))))
               (then (i32.const 0))
-              (else (i32.load8_u (i32.add (local.get $off) (local.get $i))))))))))`
+              (else
+                (i32.load8_u
+                  (i32.add
+                    (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+                    (local.get $i))))))))))`
 
   ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $len i32) (local $isSso i32)

@@ -36,6 +36,7 @@ import {
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
+import { emitCharDecompPrologue } from './abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
@@ -203,6 +204,7 @@ function enterFunc(func) {
   ctx.func.body = func.body
   ctx.func.directClosures = null
   ctx.func.localProps = null
+  ctx.func.charDecomp = null
 }
 
 function analyzeFuncForEmit(func, programFacts) {
@@ -391,22 +393,37 @@ function emitFunc(func, funcFacts, programFacts) {
       ['f64.store', ['local.get', `$${cell}`], nullExpr()])
   }
 
+  // Drain `ctx.func.charDecomp` after body emit: any param `charCodeAt` use
+  // registered a decomposition request that needs a function-entry prologue
+  // initialising its three i32 locals (base / len / sso). Locals themselves
+  // were already added to `ctx.func.locals` during emit so they appear in the
+  // local-decl block below.
+  const charDecompInits = []
+  const collectCharDecompInits = () => {
+    if (!ctx.func.charDecomp) return
+    for (const dec of ctx.func.charDecomp.values())
+      charDecompInits.push(...emitCharDecompPrologue(dec))
+  }
+
   if (block) {
     const stmts = emitBody(body)
+    collectCharDecompInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     // I: Skip trailing fallback when last statement is return (unreachable code)
     const lastStmt = stmts.at(-1)
     const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
-    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
+    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
   } else if (multi && body[0] === '[') {
     const values = body.slice(1).map(e => asF64(emit(e)))
+    collectCharDecompInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-    fn.push(...boxedParamInits, ...preboxedLocalInits, ...values)
+    fn.push(...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...values)
   } else {
     const ir = emit(body)
+    collectCharDecompInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
-    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
+    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
   // Restore schema.vars so param bindings don't leak to next function.
