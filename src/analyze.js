@@ -1028,6 +1028,10 @@ export function analyzeBody(body) {
   // was later re-typed to f64. Without this, integer-init locals shadowed
   // by f64-arithmetic RHSs end up with `i32.trunc_sat_f64_s` truncating the
   // fractional value (e.g. mandelbrot escape: `x2 = zx*zx` losing 3.515 → 3).
+  // Also re-checks `=` and compound-assign reassignments — single-pass walk
+  // visits each assign once with stale operand types, missing widens through
+  // back-edges (`iy = 2.0 * ix * iy + 1.0` where `ix` widens later in the loop
+  // body, demanding `iy` widen on the next iteration).
   // Monotonic: only widens i32 → f64. Bound by locals count so no infinite loop.
   let widened = true
   while (widened) {
@@ -1046,6 +1050,22 @@ export function analyzeBody(body) {
             }
           }
         }
+      }
+      if (op === '=' && typeof node[1] === 'string') {
+        const name = node[1], rhs = node[2]
+        if (locals.get(name) === 'i32' && exprType(rhs, locals) === 'f64') {
+          locals.set(name, 'f64'); widened = true
+        }
+      }
+      if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
+        const name = node[1]
+        if (locals.get(name) === 'i32' && exprType([op[0], name, node[2]], locals) === 'f64') {
+          locals.set(name, 'f64'); widened = true
+        }
+      }
+      if (op === '/=' && typeof node[1] === 'string') {
+        const name = node[1]
+        if (locals.get(name) === 'i32') { locals.set(name, 'f64'); widened = true }
       }
       for (let i = 1; i < node.length; i++) recheck(node[i])
     }

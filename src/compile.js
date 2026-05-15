@@ -919,6 +919,19 @@ export default function compile(ast, profiler) {
   }
   if (ctx.runtime.data && !ctx.memory.shared)
     sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
+  // alloc:false routes the heap pointer through memory[1020] (no $__heap global).
+  // Initialize it at module-load — otherwise the first __alloc reads 0 and overlaps
+  // allocations with the static-data / constant-pool region.  Owned memory only;
+  // for shared memory the host is responsible for init.  Emitted last so it
+  // overrides any prior segment that happened to cover bytes 1020..1023.
+  if (ctx.transform.alloc === false && !ctx.memory.shared && sec.memory.length > 0) {
+    const dataLen = ctx.runtime.data?.length || 0
+    const heapBase = dataLen > 1024 ? (dataLen + 7) & ~7 : 1024
+    const initBytes = String.fromCharCode(
+      heapBase & 0xFF, (heapBase >> 8) & 0xFF,
+      (heapBase >> 16) & 0xFF, (heapBase >> 24) & 0xFF)
+    sec.data.push(['data', ['i32.const', 1020], '"' + escBytes(initBytes) + '"'])
+  }
   // Passive segment for shared-memory string literals (copied via memory.init at runtime)
   if (ctx.runtime.strPool)
     sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
