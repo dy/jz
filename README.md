@@ -2,7 +2,7 @@
 
 
 
-## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![t262](https://github.com/dy/jz/actions/workflows/test262.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test262.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
+## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![test262](https://github.com/dy/jz/actions/workflows/test262.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test262.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
 
 **JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
