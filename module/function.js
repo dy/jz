@@ -12,7 +12,7 @@
 
 import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { isReassigned } from '../src/ast.js'
+import { isReassigned } from '../src/analyze.js'
 import { T, lookupValType, repOf, findFreeVars } from '../src/analyze.js'
 import { PTR, LAYOUT, inc, err } from '../src/ctx.js'
 
