@@ -1,9 +1,9 @@
 /**
- * Interop: NaN-box ABI — the v1 jz host↔wasm boundary.
+ * jz/interop — host-side boundary codec.
  *
- * Importable standalone as `jz/interop/nanbox` (or `jz/interop`) without
- * pulling the compiler, parser, or watr — use this to run prebuilt jz wasm
- * from a host that doesn't need to compile. Sole dependency: `../wasi.js`.
+ * Importable as `jz/interop` without pulling the compiler, parser, or watr —
+ * use this to run prebuilt jz wasm from a host that doesn't need to compile.
+ * Sole external dependency: `./wasi.js`.
  *
  * Marshals NaN-boxed `f64` values across the boundary: bump-allocated heap
  * blobs (strings, arrays, typed arrays, objects), schema transport for
@@ -17,10 +17,96 @@
  *   wrap(memSrc, inst?)                   — adapt raw wasm exports to JS calling convention
  *   instantiate(wasm, opts?)              — instantiate prebuilt wasm bytes + wrap
  *
- * @module jz/interop/nanbox
+ * One boundary codec per binary: a jz wasm picks its host shape at compile
+ * time (`opts.host`). There is no runtime "driver sniff" — the host loading
+ * the binary knows which variant it asked for.
+ *
+ * @module jz/interop
  */
 
-import { linkWasi, envFuncNames, makeJsAllocator, customSection, sectionReader, attachTimers } from './_shared.js'
+import { wasi } from './wasi.js'
+
+// ── WASI linking ────────────────────────────────────────────────────────────
+
+const linkWasi = (mod, opts) => {
+  const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
+  return { needsWasi, wasiImports: needsWasi ? wasi(opts) : null }
+}
+
+const envFuncNames = (mod) =>
+  new Set(WebAssembly.Module.imports(mod)
+    .filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
+
+// ── Allocator wiring ────────────────────────────────────────────────────────
+// Heap pointer lives at byte 1020 (same convention as wasm-side allocator).
+// 8-byte aligned bump on JS side; wasm `_alloc` takes over if exported.
+
+const HEAP_PTR_ADDR = 1020
+const HEAP_START = 1024
+
+const makeJsAllocator = (mem) => {
+  const dv = () => new DataView(mem.buffer)
+  const alloc = (bytes) => {
+    let d = dv(), p = d.getInt32(HEAP_PTR_ADDR, true)
+    const aligned = (p + 7) & ~7
+    const next = aligned + bytes
+    if (next > mem.buffer.byteLength) {
+      mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
+      d = dv()  // buffer was detached by grow
+    }
+    d.setInt32(HEAP_PTR_ADDR, next, true)
+    return aligned
+  }
+  const reset = () => dv().setInt32(HEAP_PTR_ADDR, HEAP_START, true)
+  const initHeapPtr = () => {
+    const d = dv()
+    if (d.getInt32(HEAP_PTR_ADDR, true) < HEAP_START) d.setInt32(HEAP_PTR_ADDR, HEAP_START, true)
+  }
+  return { alloc, reset, initHeapPtr }
+}
+
+// ── Custom-section reading ──────────────────────────────────────────────────
+
+const customSection = (mod, name) => {
+  const secs = WebAssembly.Module.customSections(mod, name)
+  return secs.length ? new Uint8Array(secs[0]) : null
+}
+
+const sectionReader = (bytes) => {
+  const td = new TextDecoder()
+  let i = 0
+  return {
+    pos: () => i,
+    seek: (p) => { i = p },
+    eof: () => i >= bytes.length,
+    u8: () => bytes[i++],
+    varint: () => {
+      let r = 0, s = 0
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const x = bytes[i++]
+        r |= (x & 0x7F) << s
+        if (!(x & 0x80)) return r
+        s += 7
+      }
+    },
+    str: (n) => { const s = td.decode(bytes.subarray(i, i + n)); i += n; return s },
+    bytes: (n) => { const r = bytes.subarray(i, i + n); i += n; return r },
+  }
+}
+
+const attachTimers = (inst) => {
+  if (!inst.exports.__timer_tick) return
+  const tick = inst.exports.__timer_tick
+  let hadTimers = false
+  const id = setInterval(() => {
+    const remaining = tick()
+    if (remaining > 0) hadTimers = true
+    if (hadTimers && remaining <= 0) clearInterval(id)
+  }, 1)
+}
+
+// ── NaN-box codec ───────────────────────────────────────────────────────────
 
 // NaN-boxing encode/decode — shared 8-byte scratch buffer
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf)
@@ -115,9 +201,8 @@ export const memory = (src) => {
 
   const dv = () => new DataView(mem.buffer)
 
-  // Allocator scaffold (heap-ptr at byte 1020, 8-byte aligned bump fallback) is
-  // ABI-agnostic memory-layout policy — same for nanbox/flat/gc. Wasm `_alloc`
-  // takes over when the module exports it; `_clear`/jsReset rewinds.
+  // Allocator scaffold (heap-ptr at byte 1020, 8-byte aligned bump fallback).
+  // Wasm `_alloc` takes over when the module exports it; `_clear`/jsReset rewinds.
   const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem)
   let alloc = wasmExports?._alloc || jsAlloc
   initHeapPtr()
@@ -714,7 +799,7 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
  *
  * Compile-and-instantiate is the caller's job — pass already-compiled bytes:
  *   import { instantiate } from 'jz/interop'
- *   const { exports, memory } = await instantiate(wasmBytes)
+ *   const { exports, memory } = instantiate(wasmBytes)
  *
  * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm  prebuilt wasm
  * @param {object} [opts]  host options: imports, memory, _interp, host-shape flags

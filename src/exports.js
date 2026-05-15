@@ -49,7 +49,7 @@ export const isExported = f => {
 
 /** Iterate JS-visible export names that resolve to `funcName`. Used to emit
  *  per-export ABI metadata in custom sections — one entry per JS-visible name,
- *  since the host (interop/nanbox.js wrap) keys by export name. */
+ *  since the host (interop.js wrap) keys by export name. */
 export function* exportNamesOf(funcName) {
   for (const [key, val] of Object.entries(ctx.func.exports)) {
     if (val === true && key === funcName) yield key

@@ -188,11 +188,10 @@ export const sso = {
 //      `externref` nullishness is a single `ref.is_null` (no NaN inspection),
 //      so the optional-chain emit needs a carrier-aware nullish predicate.
 //
-//   9. **Driver.** `interop/index.js` reads the `jz:abi` section and picks a
-//      driver. The `nanbox+jsstring` driver passes externref strings
-//      directly (no encode/decode), and supplies the `wasm:js-string`
-//      imports object. JS strings already act as externrefs at the host
-//      boundary — the driver mostly hands them through.
+//   9. **Host wiring.** `interop.js` passes externref strings directly
+//      (no encode/decode) and supplies the `wasm:js-string` imports object
+//      when the binary references any. JS strings already act as externrefs
+//      at the host boundary — the bridge mostly hands them through.
 
 export const jsstring = {
   // Wasm slot type a string value occupies under this carrier. Read by

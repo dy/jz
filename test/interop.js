@@ -1,4 +1,4 @@
-// jz/interop — standalone host-side ABI bridge.
+// jz/interop — standalone host-side boundary bridge.
 //
 // Validates that prebuilt jz wasm bytes can be instantiated and called using
 // ONLY the `jz/interop` subpath (no compiler / parser / watr dep). The wasm is
@@ -12,7 +12,6 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import * as interop from 'jz/interop'
-import * as interopNanbox from 'jz/interop/nanbox'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
 
@@ -23,51 +22,26 @@ test('interop: subpath surface matches expected exports', () => {
   }
 })
 
-test('interop: umbrella `jz/interop` re-exports nanbox codec helpers verbatim', () => {
-  // `instantiate` is the sniff-and-dispatch wrapper, so its identity differs
-  // from the nanbox subpath's by design. Everything else is a passthrough.
-  for (const name of ['memory', 'wrap', 'ptr', 'offset', 'type', 'aux',
-                      'i64ToF64', 'f64ToI64', 'coerce', 'NULL_NAN', 'UNDEF_NAN']) {
-    is(interop[name], interopNanbox[name], `umbrella's ${name} === nanbox's ${name}`)
-  }
-})
-
-test('interop: umbrella instantiate works on default-preset wasm', () => {
-  // No `jz:abi` section emitted at default preset → umbrella picks `nanbox`
-  // via the legacy fallback, identical behavior to direct subpath import.
+test('interop: instantiate works on baseline wasm', () => {
   const wasm = compile(`export let f = (x) => x + 1`)
   const { exports } = interop.instantiate(wasm)
   is(exports.f(41), 42)
 })
 
-test('interop: subpath file imports stay inside interop/ + abi/ + wasi', async () => {
+test('interop: subpath stays compiler-free — only ./wasi.js outside its file', async () => {
   // The whole point of the subpath: it can be loaded without dragging in the
-  // compiler. Enforce it as a static contract — interop/* may only import
-  // from sibling interop modules, the compiler-free `abi/` registry (presets,
-  // reps), and `../wasi.js`. Any new dep here is a regression. Transitive:
-  // walk every imported file.
+  // compiler. Enforce it as a static contract — `jz/interop` may import only
+  // `./wasi.js`. Any new dep here is a regression.
   const { readFileSync } = await import('node:fs')
-  const seen = new Set()
-  const walk = async (specifier) => {
-    const url = await import.meta.resolve(specifier)
-    if (seen.has(url)) return
-    seen.add(url)
-    const src = readFileSync(new URL(url), 'utf8')
-    const imports = [...src.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
-    for (const imp of imports) {
-      ok(imp.startsWith('./') || imp.startsWith('../abi/') || imp.endsWith('wasi.js'),
-        `${specifier} imports ${imp} — must stay inside interop/, ../abi/, or be ../wasi.js`)
-      for (const forbidden of ['subscript', 'watr', '../src/', '../index.js', '../module/']) {
-        ok(!imp.includes(forbidden), `${specifier} must not import '${forbidden}'`)
-      }
-      // Recurse into local relative imports (skip wasi — terminal leaf)
-      if (imp.startsWith('./') || imp.startsWith('../abi/')) {
-        const next = new URL(imp, url).href
-        await walk(next)
-      }
+  const url = await import.meta.resolve('jz/interop')
+  const src = readFileSync(new URL(url), 'utf8')
+  const imports = [...src.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
+  for (const imp of imports) {
+    ok(imp === './wasi.js', `jz/interop imports ${imp} — only './wasi.js' is allowed`)
+    for (const forbidden of ['subscript', 'watr', './src/', './index.js', './module/']) {
+      ok(!imp.includes(forbidden), `jz/interop must not import '${forbidden}'`)
     }
   }
-  await walk('jz/interop')
 })
 
 // ── prebuilt-wasm round-trip ────────────────────────────────────────────────
