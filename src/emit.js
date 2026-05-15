@@ -175,6 +175,19 @@ function stringLiteral(node) {
   return null
 }
 
+// Index expressions where peepholing `s[k] === 'X'` to char-byte compare is
+// semantics-preserving: must produce a non-negative *integer* at run time so
+// `__str_byteLen u> k` bounds-checks the same range JS would. Out-of-range
+// (negative or ≥ len) falls into the `else 0` arm — matches `undefined === 'X'`.
+function intIndexIR(key) {
+  const lit = nonNegIntLiteral(key)
+  if (lit != null) return ['i32.const', lit]
+  // intCertain name: forward-prop says every defining RHS is integer-shaped.
+  // Captures loop variables (`for(let i=0;;i++)`), `let k = j + 1`, etc.
+  if (typeof key === 'string' && repOf(key)?.intCertain) return asI32(emit(key))
+  return null
+}
+
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)
   const rightLit = stringLiteral(b)
@@ -189,8 +202,8 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   if ([...lit].some(c => c.charCodeAt(0) > 0x7F)) return null
 
   const [, obj, key] = indexed
-  const idx = nonNegIntLiteral(key)
-  if (idx == null) return null
+  const idxIR = intIndexIR(key)
+  if (idxIR == null) return null
 
   const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
   if (vt && vt !== VAL.STRING) return null
@@ -203,30 +216,37 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   // Single-char literal: compare byte directly, skipping __str_idx allocation.
   if (lit.length !== 1 || !ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
 
-  const ptr = temp('sc'), idxIR = ['i32.const', idx]
+  // Stash the index in a local when it isn't a constant — bounds + load both reference it.
+  const isConstIdx = Array.isArray(idxIR) && idxIR[0] === 'i32.const'
+  let idxRefIR = idxIR, idxBindIR = null
+  if (!isConstIdx) {
+    const idxTmp = tempI32('si')
+    idxBindIR = ['local.set', `$${idxTmp}`, idxIR]
+    idxRefIR = ['local.get', `$${idxTmp}`]
+  }
+
+  const ptr = temp('sc')
   inc('__str_byteLen', '__char_at')
   const charEq = ['if', ['result', 'i32'],
-    ['i32.gt_u', ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxIR],
-    ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR], ['i32.const', lit.charCodeAt(0)]]],
+    ['i32.gt_u', ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxRefIR],
+    ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR], ['i32.const', lit.charCodeAt(0)]]],
     ['else', ['i32.const', 0]]]
 
+  const prelude = idxBindIR ? [['local.set', `$${ptr}`, asF64(emit(obj))], idxBindIR] : [['local.set', `$${ptr}`, asF64(emit(obj))]]
+
   if (vt === VAL.STRING) {
-    return typed(['block', ['result', 'i32'],
-      ['local.set', `$${ptr}`, asF64(emit(obj))],
-      finish(charEq)], 'i32')
+    return typed(['block', ['result', 'i32'], ...prelude, finish(charEq)], 'i32')
   }
 
   inc('__ptr_type', '__typed_idx', '__eq')
   const genericEq = ['call', '$__eq',
-    ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxIR]],
+    ['i64.reinterpret_f64', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR]],
     asI64(emit(['str', lit]))]
   const cmp = ['if', ['result', 'i32'],
     ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], ['i32.const', PTR.STRING]],
     ['then', charEq],
     ['else', genericEq]]
-  return typed(['block', ['result', 'i32'],
-    ['local.set', `$${ptr}`, asF64(emit(obj))],
-    finish(cmp)], 'i32')
+  return typed(['block', ['result', 'i32'], ...prelude, finish(cmp)], 'i32')
 }
 
 // === Flow-sensitive type refinement ===
