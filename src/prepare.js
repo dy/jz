@@ -296,8 +296,31 @@ const renameFunc = (func, nextName) => {
 
 /** Map JS typeof strings to jz type checks. Codes < 0 trigger specialized emitTypeofCmp paths. */
 const TYPEOF_MAP = { 'number': -1, 'string': -2, 'undefined': -3, 'boolean': -4, 'object': -5, 'function': -6, 'bigint': -7 }
+// Spec §13.5.3: `typeof undeclared_x` returns 'undefined' without throwing.
+// True iff `name` is a bare identifier with no resolution path. Mirrors the
+// resolution chain inside `prep()` so we don't speculate emit-time failures.
+function isUnresolvableBareIdent(name) {
+  if (typeof name !== 'string') return false
+  if (name in CONSTANTS || name in F64_CONSTANTS) return false
+  if (name === 'Boolean' || name === 'Number') return false
+  if (PROHIBITED[name]) return false
+  if (scopes.length && isDeclared(name)) return false
+  if (ctx.scope.chain[name]) return false
+  if (GLOBALS[name]) return false
+  if (ctx.func.names.has(name)) return false
+  if (ctx.func?.locals?.has?.(name)) return false
+  // Top-level decls live in ctx.scope.globals / userGlobals (set by prepDecl at
+  // depth 0). Current arrow's local names are tracked in funcLocalNames.
+  if (ctx.scope.globals?.has?.(name)) return false
+  if (ctx.scope.userGlobals?.has?.(name)) return false
+  const fnNames = funcLocalNames[funcLocalNames.length - 1]
+  if (fnNames?.has(name)) return false
+  return true
+}
 // Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
 function staticTypeofString(x) {
+  // Spec §13.5.3: unresolvable bare ref → 'undefined'.
+  if (isUnresolvableBareIdent(x)) return 'undefined'
   // Bare callable global: parseInt, parseFloat, isNaN, isFinite, Error, BigInt, etc.
   if (typeof x === 'string' && !ctx.func?.locals?.has(x) && GLOBALS[x] && ctx.core.emit?.[x]?.length > 0) return 'function'
   const px = prep(x)
@@ -557,6 +580,14 @@ function prepDecl(op, ...inits) {
         if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
         ctx.scope.globals.set(declName, `(global $${declName} (mut f64) (f64.const 0))`)
         ctx.scope.userGlobals.add(declName)
+      } else if (typeof declName === 'string') {
+        // Bare hoisted decl inside a function (var X jzified to `let X` at top
+        // of arrow + a later `X = …` assignment). Without registering here, the
+        // name is invisible to scope predicates like `isUnresolvableBareIdent`
+        // until the assignment runs — which is after any reference to it.
+        const fnNames = funcLocalNames[funcLocalNames.length - 1]
+        if (fnNames) fnNames.add(declName)
+        if (scopes.length > 0) scopes[scopes.length - 1].set(declName, declName)
       }
       rest.push(declName)
       continue
@@ -1044,6 +1075,8 @@ const handlers = {
     return ['?.()', prep(callee), ...items.map(prep)]
   },
   // Boolean literals NaN-box as f64 — typeof at runtime returns 'number'. Fold here so the JS-spec value survives.
+  // Unresolvable bare refs fold to 'undefined' via staticTypeofString (spec §13.5.3) —
+  // the only place a stray identifier doesn't ReferenceError.
   'typeof'(a) {
     if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeForStringOnly(); return ['str', 'boolean'] }
     const known = staticTypeofString(a)
