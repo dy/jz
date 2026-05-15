@@ -589,3 +589,39 @@ test('import: transitive re-export-only chain still resolves', () => {
   )
   is(exports.f(), 7)
 })
+
+// Bare side-effect imports — `import './x.js'` (no `from` clause). Must
+// compile (sub-module is link-loaded) and run its top-level side effects.
+
+test('bare side-effect import compiles', () => {
+  const { exports } = jz(
+    `import './sub.js'; export let f = () => 1`,
+    { modules: { './sub.js': 'export const x = 1' } }
+  )
+  is(exports.f(), 1)
+})
+
+test('bare side-effect import runs module init', () => {
+  const { exports } = jz(
+    `import './counter.js'; import { count } from './counter.js'; export let f = () => count`,
+    { modules: { './counter.js': 'export let count = 0; count = 42' } }
+  )
+  is(exports.f(), 42)
+})
+
+// Nested imports must not stack prefixes. When module A imports module B and
+// both have specifiers without `__`, the older "sub-import" name heuristic
+// misclassified B's already-prefixed funcs as A-owned and re-mangled them to
+// `A$B$name`. The resulting WAT referenced names that didn't exist. Funcs are
+// now tagged with their owning module's prefix instead.
+
+test('nested module imports do not stack prefixes', () => {
+  const { exports } = jz(
+    `import './a.js'; import { f } from './a.js'; export let g = () => f()`,
+    { modules: {
+      './a.js': `import { x } from './b.js'; export let f = () => x()`,
+      './b.js': `export let x = () => 42`,
+    } }
+  )
+  is(exports.g(), 42)
+})

@@ -517,3 +517,29 @@ test('regex stress: greedy backtrack', async () => {
   is(await evaluate('/^.*c$/.test("abc")'), 1)
   is(await evaluate('/^.*c$/.test("abd")'), 0)
 })
+
+// === new RegExp() with literal pattern ===
+// `new RegExp("[a-z]+")` and `new RegExp("foo", "i")` lower to the same path
+// as `/[a-z]+/` and `/foo/i`. Dynamic patterns can't be compiled at build time
+// and must surface a clean error.
+
+test('new RegExp() with literal pattern', () => {
+  const r = jz(`export let f = (s) => { let re = new RegExp("[a-z]+"); return re.test(s) }`)
+  const m = r.memory
+  is(r.exports.f(m.String('abc')), 1)
+  is(r.exports.f(m.String('123')), 0)
+})
+
+test('new RegExp() with literal flags', () => {
+  const r = jz(`export let f = (s) => { let re = new RegExp("foo", "i"); return re.test(s) }`)
+  const m = r.memory
+  is(r.exports.f(m.String('FOO')), 1)
+  is(r.exports.f(m.String('BAR')), 0)
+})
+
+test('new RegExp(dynamic) errors clearly', () => {
+  throws(
+    () => jz(`export let f = (s) => { let re = new RegExp(s); return re.test("abc") }`),
+    /string-literal pattern|dynamic regex/i
+  )
+})

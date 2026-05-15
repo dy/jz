@@ -948,3 +948,116 @@ test('inter-function call from block body', () => {
   is(f(3), 10)
   is(f(5), 26)
 })
+
+// === delete: computed key lowers to runtime, static key remains prohibited ===
+// Static `delete obj.x` would change a fixed-shape slot's structural type and
+// stays a compile error. `delete obj[k]` lowers to `__dyn_del`, which removes
+// from the per-object shadow store AND clears any matching schema slot to
+// UNDEF_NAN so subsequent reads see "absent".
+
+test('delete: computed key removes a dynamically-added property', () => {
+  // Uses `jz()` directly — runtime needs the dynamic-property host imports
+  // that the bare-instance `run()` in this file doesn't wire up.
+  const { f } = jz(`export let f = () => {
+    let ctx = {a: 1}
+    ctx['c'] = 99
+    delete ctx['c']
+    return ctx['c']
+  }`).exports
+  is(f(), undefined)
+})
+
+test('delete: computed key clears a matching schema slot', () => {
+  const { f } = jz(`export let f = (k) => {
+    let ctx = {a: 1, b: 2}
+    delete ctx[k]
+    return ctx[k]
+  }`).exports
+  is(f('a'), undefined)
+})
+
+test('delete: leaves other keys intact', () => {
+  const { f } = jz(`export let f = (k) => {
+    let ctx = {a: 1, b: 2}
+    delete ctx[k]
+    return ctx['b']
+  }`).exports
+  is(f('a'), 2)
+})
+
+test('delete: literal-key form rejected (fixed schema)', () => {
+  let err
+  try { compile(`export let f = () => { let o = {x: 1}; delete o.x; return o.x }`) }
+  catch (e) { err = e }
+  ok(err && /object shape is fixed/.test(err.message),
+    `static delete should remain prohibited; got: ${err?.message?.slice(0, 80)}`)
+})
+
+test('delete: jzify path also rejects literal-key form', () => {
+  let err
+  try { compile(`export let _run = () => { let o = { x: 1 }; delete o.x; return o.x }`, { jzify: true }) }
+  catch (e) { err = e }
+  ok(err?.message.includes('object shape is fixed'), `delete should remain prohibited: ${err?.message?.slice(0, 80)}`)
+})
+
+// === Unicode identifiers (test262 identifiers/start-unicode-*, part-unicode-*) ===
+
+test('unicode escape in identifier — \\u{XXXX} compiles and runs', () => {
+  const exports = run(`export let _run = () => { var \\u{0860} = 1; return \\u{0860} }`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+test('non-ASCII identifier — bare codepoint works', () => {
+  const exports = run(`export let _run = () => { var ࡠ = 1; return ࡠ }`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+// === Lexical grammar basics (test262: ASI, comments, line terminators, directive prologue) ===
+
+test('lexical grammar: ASI, comments, whitespace, line terminators, directive prologue', () => {
+  const exports = run(`"use strict";
+    export let _run = () => {
+      let a = 1	/* multi-line comment */
+      let b = 2 // single-line comment
+      return a +
+        b
+    }`, { jzify: true })
+  is(exports._run(), 3)
+})
+
+test('hashbang is accepted as a first-line comment', () => {
+  const exports = run(`#! /usr/bin/env jz
+export let _run = () => 1`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+test('debugger statement: parse and ignore at runtime', () => {
+  const exports = run(`export let _run = () => { let x = 1; debugger; return x + 1 }`, { jzify: true })
+  is(exports._run(), 2)
+})
+
+// === Redeclarations (test262) ===
+// jzify lowers `function`→`const` and `var`→`let`; dedup keeps a single binding
+// per name so a `var` redeclaration after a function declaration is a no-op.
+
+test('redeclaration: function declaration followed by var of the same name', () => {
+  const exports = run(`export let _run = () => { function f() { return 42 } var f; return f() }`, { jzify: true })
+  is(exports._run(), 42)
+})
+
+test('redeclaration: var of a name later (re)declared as a function', () => {
+  const exports = run(`export let _run = () => { var f; function f() { return 9 } return f() }`, { jzify: true })
+  is(exports._run(), 9)
+})
+
+test('redeclaration: repeated var keeps the first initializer', () => {
+  const exports = run(`export let _run = () => { var x = 3; var x; return x }`, { jzify: true })
+  is(exports._run(), 3)
+})
+
+// === for-in with `let` as identifier (test262 identifier-let-allowed) ===
+
+test('for-in with let as identifier compiles and runs', () => {
+  const exports = run(`export let _run = () => { for (let in {}) {} return 1 }`, { jzify: true })
+  is(exports._run(), 1)
+})

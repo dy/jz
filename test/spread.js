@@ -106,6 +106,35 @@ test('spread in WASM call: mixed', () => {
   is(f(), 10)  // 1+2+3+4
 })
 
+test('spread in optional call: fn?.(...args) on non-null callable', () => {
+  const { f } = run(`export let f = () => {
+    let add = (a, b, c) => a + b + c
+    let args = [10, 20, 30]
+    return add?.(...args)
+  }`)
+  is(f(), 60)
+})
+
+test('spread in optional call: fn?.(...args) on null short-circuits', () => {
+  const { f } = run(`export let f = (n) => {
+    let add = (a, b, c) => a + b + c
+    let fn = n > 0 ? add : null
+    let args = [1, 2, 3]
+    return fn?.(...args)
+  }`)
+  is(f(1), 6)
+  is(f(0), undefined)
+})
+
+test('spread in optional call: mixed positional + spread args', () => {
+  const { f } = run(`export let f = () => {
+    let sum4 = (a, b, c, d) => a + b + c + d
+    let tail = [3, 4]
+    return sum4?.(1, 2, ...tail)
+  }`)
+  is(f(), 10)
+})
+
 // ============================================
 // SPREAD IN ARRAY METHODS
 // ============================================

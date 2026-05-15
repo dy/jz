@@ -1,7 +1,7 @@
 // Spread, destruct alias, TypedArrays, Set, Map
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import { i64ToF64, f64ToI64 } from '../interop/nanbox.js'
 
 const interp = { __ext_prop:()=>0n, __ext_has:()=>0, __ext_set:()=>0, __ext_call:()=>0n }
@@ -361,4 +361,136 @@ test('instanceof jzify: nested expression', () => {
     return (a instanceof Array) + (a instanceof Object)
   }`)
   is(f(), 2)
+})
+
+// === jzify normalizations (test262) ===
+// jzify rewrites pre-let JS into the lex-only subset jz accepts. These cases
+// were flagged by test262 surface scans before each lowering existed.
+
+test('jzify: var initializer compiles as assignment to the declared name', () => {
+  const exports = runJzify(`export let _run = () => { var x = 1; return x }`)
+  is(exports._run(), 1)
+})
+
+test('jzify: for (var k in obj) compiles', () => {
+  const exports = runJzify(`export let _run = () => {
+    let o = { a: 1, b: 2 }
+    let n = 0
+    for (var k in o) n += 1
+    return n
+  }`)
+  is(exports._run(), 2)
+})
+
+test('jzify: for (const x of xs || []) normalizes fallback source', () => {
+  const exports = runJzify(`export let _run = () => {
+    let xs = [1, 2]
+    let n = 0
+    for (const x of xs || []) n += x
+    return n
+  }`)
+  is(exports._run(), 3)
+})
+
+test('jzify: preserves new Array(n) length constructor', () => {
+  const exports = runJzify(`export let _run = () => {
+    let a = new Array(4)
+    return a.length
+  }`)
+  is(exports._run(), 4)
+
+  const wasm = compile(`export let _run = () => {
+    let a = new Array(4).fill(2)
+    return a.length + a[0]
+  }`, { jzify: true })
+  ok(wasm.byteLength > 0)
+})
+
+test('jzify: supports bare Array(n) length constructor', () => {
+  const exports = runJzify(`export let make = (n) => {
+    let a = Array(n)
+    return a.length
+  }`)
+  is(exports.make(4), 4)
+})
+
+test('jzify: lowers destructured arrow params with expression object body', () => {
+  const exports = runJzify(`export let _run = () =>
+    [[1, 2]].map(([a, b]) => ({ sum: a + b }))[0].sum
+  `)
+  is(exports._run(), 3)
+})
+
+test('jzify: folds static esbuild __export helper to live local binding', () => {
+  // esbuild emits `__export(src_exports, { default: () => mod_default })`.
+  // The fold rewrites `src_exports.default()` to `mod_default()` at build time.
+  const { _run } = jz(`
+    var __defProp = Object.defineProperty;
+    var __export = (target, all) => {
+      for (var name in all)
+        __defProp(target, name, { get: all[name], enumerable: true });
+    };
+    var src_exports = {};
+    __export(src_exports, { default: () => mod_default });
+    function impl() { return 42 }
+    var mod_default = impl;
+    export let _run = () => src_exports?.default();
+  `, { jzify: true }).exports
+  is(_run(), 42)
+})
+
+test('jzify: groups conditional array spread as [...(cond ? a : b)]', () => {
+  const exports = runJzify(`export let _run = () => {
+    let yes = [1, 2]
+    let no = [3]
+    let out = [...true ? yes : no]
+    return out.length + out[1]
+  }`)
+  is(exports._run(), 4)
+})
+
+// === arguments object (test262) ===
+// Implicit `arguments` is synthesized from a rest-params lowering whenever the
+// body references the name. `var arguments` / `let arguments` declarations
+// shadow that — they're ordinary locals.
+
+test('arguments: jzify supports no-formal trailing-comma cases', () => {
+  const exports = runJzify(`export let _run = () => {
+    let assert = (cond, msg) => { if (!cond) throw msg }
+    assert.sameValue = (a, b, msg) => { if (a != b && !(a != a && b != b)) throw msg }
+    var callCount = 0
+    function ref() {
+      assert.sameValue(arguments.length, 2)
+      assert.sameValue(arguments[0], 42)
+      assert.sameValue(arguments[1], 'TC39')
+      callCount = callCount + 1
+    }
+    ref(42, 'TC39',)
+    assert.sameValue(callCount, 1)
+    return 1
+  }`)
+  is(exports._run(), 1)
+})
+
+test('arguments: default initializer can reference arguments', () => {
+  const exports = runJzify(`export let _run = () => {
+    function ref(a = arguments.length) { return a }
+    return ref() + ref(7) * 10
+  }`)
+  is(exports._run(), 70)
+})
+
+test('arguments: `var arguments` is an ordinary local, not the implicit object', () => {
+  const exports = runJzify(`export let _run = () => { var arguments; arguments = 7; return arguments }`)
+  is(exports._run(), 7)
+})
+
+test('arguments: `let arguments` initializer is honored', () => {
+  const exports = runJzify(`export let _run = () => { let arguments = 5; return arguments + 1 }`)
+  is(exports._run(), 6)
+})
+
+test('arguments: implicit object still works alongside an unrelated function', () => {
+  const exports = runJzify(`export let _run = () => { let g = function(){ return arguments.length }; return g(1,2,3) }`)
+  is(exports._run(), 3)
 })

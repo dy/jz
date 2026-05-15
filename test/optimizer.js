@@ -924,3 +924,29 @@ test('deadStoreElim: dead `local.set` with side-effecting RHS must keep the RHS'
   `, { optimize: 2 })
   is(main(), 5)
 })
+
+// === Inliner: expression-bodied arrow whose entire body is a candidate call ===
+// plan.js's `inlineHotInternalCalls` walks non-exported function bodies and
+// passes them to `inlineInStmt`. For a block-bodied function that's right —
+// statement-position calls discard their return value. For an expression-
+// bodied arrow (`func.body[0] !== '{}'`), the same path silently dropped the
+// value: the body became an empty block and the caller observed 0/undefined.
+// Fix: dispatch on body shape — non-block bodies route through `inlineInExpr`.
+
+test('inliner preserves return value of an expr-bodied arrow whose entire body is a candidate call', () => {
+  const { entry } = jz(`
+    let leaf = () => 42
+    let mid = () => leaf()
+    export let entry = () => mid()
+  `).exports
+  is(entry(), 42)
+})
+
+test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
+  const { entry } = jz(`
+    let twice = (n) => n * 2
+    let wrap = (n) => twice(n)
+    export let entry = (n) => wrap(n)
+  `).exports
+  is(entry(21), 42)
+})
