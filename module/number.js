@@ -20,7 +20,8 @@ export default (ctx) => {
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws'],
+    __skipws: ['__char_at', '__strws'],
     __to_bigint: ['__char_at', '__str_byteLen'],
     __parseInt: ['__char_at', '__str_byteLen'],
     __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
@@ -34,6 +35,9 @@ export default (ctx) => {
   // so accumulated error stays at O(log n) ULPs.
   ctx.core.stdlib['__pow10'] = `(func $__pow10 (param $n i32) (result f64)
     (local $r f64)
+    ;; 10^309 already overflows f64 (max ~1.8e308); short-circuit so callers
+    ;; get Infinity rather than the truncated product of a 9-bit decomposition.
+    (if (i32.ge_s (local.get $n) (i32.const 309)) (then (return (f64.const inf))))
     (local.set $r (f64.const 1))
     (if (i32.and (local.get $n) (i32.const 1))
       (then (local.set $r (f64.mul (local.get $r) (f64.const 10)))))
@@ -414,11 +418,59 @@ export default (ctx) => {
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
+  // __strws(c: i32) → i32 — ECMA StrWhiteSpace predicate. Covers TAB..CR, SP,
+  // NBSP, BOM, LS/PS, and every Unicode Space_Separator. U+180E is *not*
+  // whitespace (declassified in Unicode 6.3).
+  ctx.core.stdlib['__strws'] = `(func $__strws (param $c i32) (result i32)
+    (i32.or
+      (i32.or
+        (i32.and (i32.ge_s (local.get $c) (i32.const 9)) (i32.le_s (local.get $c) (i32.const 13)))
+        (i32.or (i32.eq (local.get $c) (i32.const 32)) (i32.eq (local.get $c) (i32.const 160))))
+      (i32.or
+        (i32.or
+          (i32.eq (local.get $c) (i32.const 0x1680))
+          (i32.and (i32.ge_s (local.get $c) (i32.const 0x2000)) (i32.le_s (local.get $c) (i32.const 0x200a))))
+        (i32.or
+          (i32.or (i32.eq (local.get $c) (i32.const 0x2028)) (i32.eq (local.get $c) (i32.const 0x2029)))
+          (i32.or
+            (i32.or (i32.eq (local.get $c) (i32.const 0x202f)) (i32.eq (local.get $c) (i32.const 0x205f)))
+            (i32.or (i32.eq (local.get $c) (i32.const 0x3000)) (i32.eq (local.get $c) (i32.const 0xfeff))))))))`
+
+  // __skipws(v, i, len) → i32 — advance the byte index i past any run of
+  // StrWhiteSpace. Strings are UTF-8, so each step decodes one scalar: every
+  // whitespace code point is ≤ U+FEFF (≤ 3 bytes), and a 4-byte lead is never
+  // whitespace, so it (and any non-space scalar) ends the run.
+  ctx.core.stdlib['__skipws'] = `(func $__skipws (param $v i64) (param $i i32) (param $len i32) (result i32)
+    (local $b i32) (local $cp i32) (local $n i32)
+    (block $done (loop $l
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $b (call $__char_at (local.get $v) (local.get $i)))
+      (if (i32.lt_u (local.get $b) (i32.const 0x80))
+        (then (local.set $cp (local.get $b)) (local.set $n (i32.const 1)))
+        (else (if (i32.lt_u (local.get $b) (i32.const 0xe0))
+          (then
+            (local.set $n (i32.const 2))
+            (local.set $cp (i32.or
+              (i32.shl (i32.and (local.get $b) (i32.const 0x1f)) (i32.const 6))
+              (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 0x3f)))))
+          (else (if (i32.lt_u (local.get $b) (i32.const 0xf0))
+            (then
+              (local.set $n (i32.const 3))
+              (local.set $cp (i32.or (i32.or
+                (i32.shl (i32.and (local.get $b) (i32.const 0x0f)) (i32.const 12))
+                (i32.shl (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 0x3f)) (i32.const 6)))
+                (i32.and (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 2))) (i32.const 0x3f)))))
+            (else (return (local.get $i))))))))
+      (br_if $done (i32.eqz (call $__strws (local.get $cp))))
+      (local.set $i (i32.add (local.get $i) (local.get $n)))
+      (br $l)))
+    (local.get $i))`
+
   ctx.core.stdlib['__to_num'] = `(func $__to_num (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $wsEnd i32)
+    (local $radix i32) (local $digit i32)
     (local $result f64) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
@@ -434,41 +486,76 @@ export default (ctx) => {
         (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
           (then (return (f64.const nan))))))
     (local.set $len (call $__str_byteLen (local.get $v)))
-    ;; Skip leading whitespace.
-    (block $ws (loop $wsl
-      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
-      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $wsl)))
-    (local.set $wsEnd (local.get $i))
-    ;; Sign.
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+    ;; Trim leading whitespace. An empty / all-whitespace string is +0.
+    (local.set $i (call $__skipws (local.get $v) (i32.const 0) (local.get $len)))
+    (if (i32.ge_s (local.get $i) (local.get $len)) (then (return (f64.const 0))))
+    ;; NonDecimalIntegerLiteral (0x / 0o / 0b). Per the grammar no sign may
+    ;; precede the prefix, so it is matched before sign consumption.
+    (if (i32.and
+      (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48)))
+      (then
+        (local.set $c (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))))
+        (if (i32.or (i32.eq (local.get $c) (i32.const 120)) (i32.eq (local.get $c) (i32.const 88)))
+          (then (local.set $radix (i32.const 16))))
+        (if (i32.or (i32.eq (local.get $c) (i32.const 111)) (i32.eq (local.get $c) (i32.const 79)))
+          (then (local.set $radix (i32.const 8))))
+        (if (i32.or (i32.eq (local.get $c) (i32.const 98)) (i32.eq (local.get $c) (i32.const 66)))
+          (then (local.set $radix (i32.const 2))))))
+    (if (local.get $radix)
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 2)))
+        (block $ndDone (loop $ndLoop
+          (br_if $ndDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          ;; Decode digit; 99 sentinel for any non-[0-9a-fA-F] char so the
+          ;; unsigned ">= radix" test rejects it and any out-of-base digit.
+          (local.set $digit
+            (if (result i32) (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
+              (then (i32.sub (local.get $c) (i32.const 48)))
+              (else (if (result i32) (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 102)))
+                (then (i32.sub (local.get $c) (i32.const 87)))
+                (else (if (result i32) (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 70)))
+                  (then (i32.sub (local.get $c) (i32.const 55)))
+                  (else (i32.const 99))))))))
+          (br_if $ndDone (i32.ge_u (local.get $digit) (local.get $radix)))
+          (local.set $result (f64.add (f64.mul (local.get $result) (f64.convert_i32_s (local.get $radix))) (f64.convert_i32_s (local.get $digit))))
+          (local.set $seen (i32.const 1))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $ndLoop)))
+        ;; No digits, or trailing non-whitespace ("0b1.0", "0xg") → NaN.
+        (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+        (local.set $i (call $__skipws (local.get $v) (local.get $i) (local.get $len)))
+        (if (i32.lt_s (local.get $i) (local.get $len)) (then (return (f64.const nan))))
+        (return (local.get $result))))
+    ;; Sign (StrDecimalLiteral only).
+    (if (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    ;; 0x prefix → hex parse and early return
-    (if (i32.and
-      (i32.le_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
-        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
-          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
+    ;; "Infinity" — the only non-numeric token ToNumber accepts. The 8 letters
+    ;; are packed little-endian in one i64; any mismatch, short input, or
+    ;; trailing non-whitespace makes the whole string NaN.
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 73)))
       (then
-        (local.set $i (i32.add (local.get $i) (i32.const 2)))
-        (block $hexDone (loop $hexLoop
-          (br_if $hexDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
-          (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
-            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 48)))))
-              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
-          (if (i32.and (i32.ge_s (local.get $c) (i32.const 97)) (i32.le_s (local.get $c) (i32.const 102)))
-            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 87)))))
-              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))
-          (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 70)))
-            (then (local.set $result (f64.add (f64.mul (local.get $result) (f64.const 16)) (f64.convert_i32_s (i32.sub (local.get $c) (i32.const 55)))))
-              (local.set $seen (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $hexLoop)))))
-        (return (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))))
+        (block $infBad
+          (local.set $digit (i32.const 0))
+          (loop $infl
+            (if (i32.lt_s (local.get $digit) (i32.const 8))
+              (then
+                (br_if $infBad (i32.ge_s (i32.add (local.get $i) (local.get $digit)) (local.get $len)))
+                (br_if $infBad (i32.ne
+                  (call $__char_at (local.get $v) (i32.add (local.get $i) (local.get $digit)))
+                  (i32.and (i32.wrap_i64 (i64.shr_u (i64.const 0x7974696e69666e49)
+                    (i64.extend_i32_u (i32.shl (local.get $digit) (i32.const 3))))) (i32.const 255))))
+                (local.set $digit (i32.add (local.get $digit) (i32.const 1)))
+                (br $infl))))
+          (local.set $i (call $__skipws (local.get $v) (i32.add (local.get $i) (i32.const 8)) (local.get $len)))
+          (br_if $infBad (i32.lt_s (local.get $i) (local.get $len)))
+          (return (if (result f64) (local.get $neg) (then (f64.const -inf)) (else (f64.const inf)))))
+        (return (f64.const nan))))
     ;; Decimal significand. Keep 17 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     (block $numDone (loop $numLoop
@@ -506,15 +593,12 @@ export default (ctx) => {
           (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $numLoop)))
-    ;; No digits seen: empty/whitespace-only string coerces to 0; non-numeric
-    ;; content (sign-only, "abc", etc.) coerces to NaN.
-    (if (i32.eqz (local.get $seen))
-      (then
-        (if (i32.ge_s (local.get $wsEnd) (local.get $len))
-          (then (return (f64.const 0))))
-        (return (f64.const nan))))
+    ;; No digits — the literal was a bare sign or stray text ("abc", "+") → NaN.
+    ;; (Empty / all-whitespace strings already returned +0 above.)
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
     (if (local.get $round) (then (local.set $result (f64.add (local.get $result) (f64.const 1)))))
-    ;; Scientific notation.
+    ;; Scientific notation. 'e'/'E' commits to an ExponentPart — at least one
+    ;; digit must follow ("1e", "5e+" are NaN).
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.or
         (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
@@ -541,11 +625,13 @@ export default (ctx) => {
           (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $expLoop)))
-        (if (local.get $expDigits)
-          (then
-            (if (local.get $expNeg)
-              (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
-              (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))))
+        (if (i32.eqz (local.get $expDigits)) (then (return (f64.const nan))))
+        (if (local.get $expNeg)
+          (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
+          (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))
+    ;; Reject trailing non-whitespace ("5px", numeric separators "1_0", …).
+    (local.set $i (call $__skipws (local.get $v) (local.get $i) (local.get $len)))
+    (if (i32.lt_s (local.get $i) (local.get $len)) (then (return (f64.const nan))))
     (if (i32.gt_s (local.get $decExp) (i32.const 0))
       (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
     (if (i32.lt_s (local.get $decExp) (i32.const 0))
