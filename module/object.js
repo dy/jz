@@ -102,6 +102,8 @@ export default (ctx) => {
 
   // === Object static methods ===
 
+  ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
+
   ctx.core.emit['Object.keys'] = (obj) => {
     if (isHashTyped(obj)) return emitHashKeys(obj)
     const schema = resolveSchema(obj)
