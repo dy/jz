@@ -1634,11 +1634,23 @@ export const emitter = {
 
   '&&': (a, b) => {
     const va = emit(a)
-    if (isLit(va)) { const v = litVal(va); return (v !== 0 && v === v) ? emit(b) : va }
+    // Constant-folded literal: pre-bind under truthy refinements (b runs only when a was truthy).
+    if (isLit(va)) {
+      const v = litVal(va)
+      if (v !== 0 && v === v) {
+        const refs = extractRefinements(a, new Map(), true)
+        return withRefinements(refs, b, () => emit(b))
+      }
+      return va
+    }
+    // a is truthy in the right-arm — narrow b accordingly. Matches `?:`'s then-arm threading
+    // (`Array.isArray(x) && x[0]` → x[0] sees x as ARRAY, eliding union-rep fallbacks).
+    const rightRefs = extractRefinements(a, new Map(), true)
+    const emitRight = () => withRefinements(rightRefs, b, () => emit(b))
     // i32 fast path: use i32 tee as cond directly (nonzero=truthy in wasm `if`),
     // skip f64 round-trip and __is_truthy call entirely.
     if (va.type === 'i32') {
-      const vb = emit(b)
+      const vb = emitRight()
       const t = tempI32()
       if (vb.type === 'i32') {
         return typed(['if', ['result', 'i32'],
@@ -1655,15 +1667,25 @@ export const emitter = {
     const teed = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
     return typed(['if', ['result', 'f64'],
       toBoolFromEmitted(teed),
-      ['then', asF64(emit(b))],
+      ['then', asF64(emitRight())],
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
 
   '||': (a, b) => {
     const va = emit(a)
-    if (isLit(va)) { const v = litVal(va); return (v !== 0 && v === v) ? va : emit(b) }
+    // Constant-folded literal: pre-bind under falsy refinements (b runs only when a was falsy).
+    if (isLit(va)) {
+      const v = litVal(va)
+      if (v !== 0 && v === v) return va
+      const refs = extractRefinements(a, new Map(), false)
+      return withRefinements(refs, b, () => emit(b))
+    }
+    // a is falsy in the right-arm — `x == null || ...` proves x is null/undefined in b;
+    // De Morgan'd via the sense=false branch of extractRefinements (mirrors the ?: else-arm).
+    const rightRefs = extractRefinements(a, new Map(), false)
+    const emitRight = () => withRefinements(rightRefs, b, () => emit(b))
     if (va.type === 'i32') {
-      const vb = emit(b)
+      const vb = emitRight()
       const t = tempI32()
       if (vb.type === 'i32') {
         return typed(['if', ['result', 'i32'],
@@ -1681,7 +1703,7 @@ export const emitter = {
     return typed(['if', ['result', 'f64'],
       toBoolFromEmitted(teed),
       ['then', ['local.get', `$${t}`]],
-      ['else', asF64(emit(b))]], 'f64')
+      ['else', asF64(emitRight())]], 'f64')
   },
 
   // a ?? b: returns b only if a is nullish
