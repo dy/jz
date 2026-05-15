@@ -133,6 +133,7 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.ARRAY}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.STRING}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
   ctx.core.emit[`.${VAL.CLOSURE}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
+  ctx.core.emit['Object.hasOwn'] = (obj, key) => ctx.core.emit['.hasOwnProperty'](obj, key)
 
   ctx.core.emit['Object.values'] = (obj) => {
     if (isHashTyped(obj)) return emitHashValues(obj)

@@ -602,6 +602,42 @@ test('hasOwnProperty: dynamic key on known-schema OBJECT', () => {
   is(f('z'), 0)
 })
 
+test('Object.hasOwn: dynamic key on known-schema OBJECT', () => {
+  const { f } = run(`
+    export let f = (k) => {
+      const x = {a: 1, b: 2}
+      return Object.hasOwn(x, k) ? 1 : 0
+    }
+  `)
+  is(f('a'), 1)
+  is(f('z'), 0)
+})
+
+test('Object.hasOwn: HASH receiver via JSON.parse', () => {
+  const { f } = run(`export let f = (s, k) => Object.hasOwn(JSON.parse(s), k) ? 1 : 0`)
+  is(f('{"a":1,"b":2}', 'a'), 1)
+  is(f('{"a":1,"b":2}', 'z'), 0)
+})
+
+test('Object.hasOwn: Array numeric index', () => {
+  const { f } = run(`export let f = () => {
+    const a = [10, 20, 30]
+    return Object.hasOwn(a, 0) ? 1 : 0
+  }`)
+  is(f(), 1)
+})
+
+test('Object.hasOwn: String numeric index', () => {
+  const { f } = run(`export let f = (i) => Object.hasOwn("abc", i) ? 1 : 0`)
+  is(f(1), 1)
+  is(f(9), 0)
+})
+
+test('Object.hasOwn: absent inherited property on empty object', () => {
+  const { f } = run(`export let f = () => Object.hasOwn({}, 'toString') ? 1 : 0`)
+  is(f(), 0)
+})
+
 test('jzify: Object.hasOwnProperty.call canonicalizes to instance hasOwnProperty', () => {
   const { f } = jz(`
     export let f = (k) => {
