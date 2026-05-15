@@ -28,6 +28,25 @@ test('Regression: Object.assign extends target with new fields', () => {
   is(f(), 6)
 })
 
+test('Regression: Object.assign copies unknown-schema source', () => {
+  const { f } = run(`export let f = (json) => {
+    let out = {x: 0, y: 0}
+    Object.assign(out, JSON.parse(json))
+    return out.x * 10 + out.y
+  }`)
+  is(f('{"x":4,"y":7}'), 47)
+})
+
+test('Regression: Object.assign with unknown-schema source preserves target alias', () => {
+  const { f } = run(`export let f = (json) => {
+    let target = {x: 0}
+    let alias = target
+    let out = Object.assign(target, JSON.parse(json))
+    return alias.x * 100 + target.y * 10 + (out === alias)
+  }`)
+  is(f('{"x":4,"y":7}'), 471)
+})
+
 test('Regression: property read does not call method emitter with same name', () => {
   const { f } = run(`export let f = () => {
     let item = {}
