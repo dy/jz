@@ -490,19 +490,22 @@ cc program.c -o program
 
 | | jz | [Node](https://nodejs.org/) | [Porffor](https://github.com/CanadaHonk/porffor) | [AS](https://github.com/AssemblyScript/assemblyscript) | WAT | C | [Go](https://go.dev/) | [Zig](https://ziglang.org/) | [Rust](https://www.rust-lang.org/) | [NumPy](https://numpy.org/) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| [biquad](bench/biquad/biquad.js) | 6.40ms<br>4.1kB | 12.02ms<br>3.2kB | fails | 8.88ms<br>1.9kB | 6.44ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
-| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>1.9kB | 0.20ms<br>2.0kB | 0.41ms<br>3.2kB | 0.08ms<br>1.6kB | 0.10ms<br>344 B | 0.13ms | 0.08ms | 0.14ms | 0.12ms | 5.13ms |
-| [mat4](bench/mat4/mat4.js) | 2.12ms<br>3.0kB | 11.90ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.44ms<br>1.6kB | 8.10ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
-| [aos](bench/aos/aos.js) | 1.61ms<br>2.0kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
-| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.24ms<br>1.2kB | 13.53ms<br>1.8kB | 13.47ms<br>3.0kB | 12.23ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
-| [bitwise](bench/bitwise/bitwise.js) | 1.62ms<br>1.3kB | 5.25ms<br>1005 B | fails | 11.97ms<br>1.5kB | 4.95ms<br>355 B | 1.30ms | 5.23ms | 4.16ms | 1.30ms | 14.77ms |
-| [poly](bench/poly/poly.js) | 0.37ms<br>1.4kB | 2.29ms<br>1014 B | fails | 1.13ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
-| [callback](bench/callback/callback.js) | 0.05ms<br>1.5kB | 0.86ms<br>828 B | fails | 1.48ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
-| [json](bench/json/json.js) | 0.23ms<br>10.9kB | 0.37ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
-| [sort](bench/sort/sort.js) | 8.44ms<br>1.9kB | 9.98ms<br>1.6kB | fails | 10.18ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
-| [crc32](bench/crc32/crc32.js) | 11.96ms<br>1.5kB | 13.35ms<br>1.8kB | 80.76ms<br>3.1kB | 12.04ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
+| [biquad](bench/biquad/biquad.js) | 6.50ms<br>3.4kB | 12.35ms<br>3.2kB | fails | 9.03ms<br>1.9kB | 6.49ms<br>767 B | 5.30ms | 8.96ms<br>fma | 5.04ms | 5.27ms | 3.09s |
+| [mat4](bench/mat4/mat4.js) | 2.74ms<br>3.3kB | 11.96ms<br>1.2kB | 88.68ms<br>2.4kB<br>diff | 9.32ms<br>1.6kB | 8.12ms<br>414 B | 2.76ms | 12.51ms | 2.74ms | 1.78ms | 389.44ms |
+| [poly](bench/poly/poly.js) | 0.37ms<br>1.2kB | 2.32ms<br>1014 B | fails | 1.15ms<br>1.3kB | 0.81ms<br>359 B | 0.52ms | 0.80ms | 0.80ms | 0.57ms | 0.61ms |
+| [bitwise](bench/bitwise/bitwise.js) | 1.40ms<br>1.2kB | 5.32ms<br>1005 B | fails | 12.13ms<br>1.5kB | 4.88ms<br>355 B | 1.30ms | 5.23ms | 4.16ms | 1.30ms | 14.77ms |
+| [tokenizer](bench/tokenizer/tokenizer.js) | 0.10ms<br>1.7kB | 0.21ms<br>2.0kB | 0.41ms<br>3.2kB | 0.08ms<br>1.6kB | 0.10ms<br>344 B | 0.13ms | 0.08ms | 0.14ms | 0.12ms | 5.13ms |
+| [callback](bench/callback/callback.js) | 0.03ms<br>1.4kB | 0.88ms<br>828 B | fails | 1.49ms<br>1.9kB | 0.25ms<br>267 B | 0.10ms | 0.20ms | 0.01ms | 0.09ms | 1.81ms |
+| [aos](bench/aos/aos.js) | 1.62ms<br>1.8kB | 1.82ms<br>1.1kB | fails | 1.91ms<br>2.2kB | 1.07ms<br>481 B | 1.20ms | 0.90ms | 0.90ms | 1.20ms | 2.55ms |
+| [mandelbrot](bench/mandelbrot/mandelbrot.js) | 12.55ms<br>1.0kB | 13.80ms<br>1.8kB | 13.47ms<br>3.0kB | 12.42ms<br>1.3kB | — | 12.26ms | 12.46ms | 12.31ms | 12.23ms | — |
+| [json](bench/json/json.js) | 0.23ms<br>7.7kB | 0.38ms<br>1.2kB | fails | — | — | 0.21ms | 1.17ms | 0.69ms | 0.68ms | 1.20ms |
+| [sort](bench/sort/sort.js) | 5.96ms<br>1.6kB | 11.13ms<br>1.6kB | fails | 10.22ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
+| [crc32](bench/crc32/crc32.js) | 12.12ms<br>1.2kB | 13.43ms<br>1.8kB | 80.76ms<br>3.1kB | 12.19ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
+| [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs` on Apple Silicon._ `optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff leverage.
+_Numbers from `node bench/bench.mjs --targets=v8,jz,as` on Apple Silicon._
+Geomean speed: jz 0.41× V8, 0.40× AS, 0.32× Porffor. Geomean size: jz 0.85× AS.
+`optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff lever.
 
 <details>
 <summary><strong>Optimizations</strong></summary>
