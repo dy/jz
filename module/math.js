@@ -170,11 +170,12 @@ export default (ctx) => {
   // ============================================
 
   ctx.core.stdlib['math.sign'] = `(func $math.sign (param $x f64) (result f64)
-    (if (result f64) (f64.eq (local.get $x) (f64.const 0.0))
-      (then (f64.const 0.0))
-      (else (if (result f64) (f64.gt (local.get $x) (f64.const 0.0))
-        (then (f64.const 1.0))
-        (else (f64.const -1.0))))))`
+    ;; sign(NaN) = NaN, sign(±0) = ±0 — both pass x through unchanged.
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
+    (if (result f64) (f64.gt (local.get $x) (f64.const 0.0))
+      (then (f64.const 1.0))
+      (else (f64.const -1.0))))`
 
   ctx.core.stdlib['math.sin'] = `(func $math.sin (param $x f64) (result f64)
     (local $n i32) (local $r f64) (local $x2 f64) (local $sign f64)
@@ -323,6 +324,8 @@ export default (ctx) => {
   // For u==1 (x below ulp), result is just x; preserves -0 from x=-0 path.
   ctx.core.stdlib['math.log1p'] = `(func $math.log1p (param $x f64) (result f64)
     (local $u f64)
+    ;; log1p(+Inf) = +Inf — the ratio trick below would compute Inf/Inf = NaN.
+    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
     (local.set $u (f64.add (f64.const 1.0) (local.get $x)))
     (if (f64.eq (local.get $u) (f64.const 1.0))
       (then (return (local.get $x))))
@@ -445,6 +448,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.sinh'] = `(func $math.sinh (param $x f64) (result f64)
     (local $ex f64)
+    ;; Preserve sign of zero: sinh(±0) = ±0 (the f64.lt sign test below is false for -0).
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (local.set $ex (call $math.exp (f64.abs (local.get $x))))
     (local.set $ex (f64.mul (f64.const 0.5) (f64.sub (local.get $ex) (f64.div (f64.const 1.0) (local.get $ex)))))
     (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.neg (local.get $ex))) (else (local.get $ex))))`
@@ -455,6 +460,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.tanh'] = `(func $math.tanh (param $x f64) (result f64)
     (local $e2x f64)
+    ;; Preserve sign of zero: tanh(±0) = ±0 (the f64.lt sign test below is false for -0).
+    (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
     (if (result f64) (f64.gt (f64.abs (local.get $x)) (f64.const 22.0))
       (then (if (result f64) (f64.lt (local.get $x) (f64.const 0.0)) (then (f64.const -1.0)) (else (f64.const 1.0))))
       (else (local.set $e2x (call $math.exp (f64.mul (f64.const 2.0) (f64.abs (local.get $x)))))
@@ -470,7 +477,8 @@ export default (ctx) => {
 
   ctx.core.stdlib['math.acosh'] = `(func $math.acosh (param $x f64) (result f64)
     (if (f64.eq (local.get $x) (f64.const inf)) (then (return (f64.const inf))))
-    (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const 0.0)) (else
+    ;; acosh is defined only for x >= 1; everything below (incl. -Inf) is NaN.
+    (if (result f64) (f64.lt (local.get $x) (f64.const 1.0)) (then (f64.const nan)) (else
       (call $math.log (f64.add (local.get $x) (f64.sqrt (f64.sub (f64.mul (local.get $x) (local.get $x)) (f64.const 1.0))))))))`
 
   ctx.core.stdlib['math.atanh'] = `(func $math.atanh (param $x f64) (result f64)
