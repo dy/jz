@@ -159,11 +159,24 @@ export default (ctx) => {
   // to its own bump allocator at memory[1020], so wasm-side __alloc must read/write
   // the same address or they'd silently overwrite each other's allocations.
   if (ctx.memory.shared || ctx.transform.alloc === false) {
-    // Shared memory: heap offset stored at memory[1020] (i32), just before heap start at 1024
+    // Heap offset stored at memory[1020] (i32), just before heap start at 1024.
+    // We still want to grow memory when running out of pages — without growth a
+    // host-run binary traps on the first allocation that exceeds the initial
+    // 64 KB. Use the same geometric-growth strategy as the owned-memory variant.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
-      (local $ptr i32)
+      (local $ptr i32) (local $next i32) (local $cur i32) (local $need i32)
       (local.set $ptr (i32.load (i32.const 1020)))
-      (i32.store (i32.const 1020) (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
+      (local.set $cur (i32.shl (memory.size) (i32.const 16)))
+      (if (i32.gt_u (local.get $next) (local.get $cur))
+        (then
+          (local.set $need (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
+          (if (i32.lt_u (local.get $need) (memory.size)) (then (local.set $need (memory.size))))
+          (if (i32.eq (memory.grow (local.get $need)) (i32.const -1))
+            (then (if (i32.eq (memory.grow
+              (i32.shr_u (i32.add (i32.sub (local.get $next) (local.get $cur)) (i32.const 65535)) (i32.const 16)))
+              (i32.const -1)) (then (unreachable)))))))
+      (i32.store (i32.const 1020) (local.get $next))
       (local.get $ptr))`
     ctx.core.stdlib['__clear'] = `(func $__clear
       (i32.store (i32.const 1020) (i32.const 1024)))`
