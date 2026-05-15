@@ -1291,8 +1291,10 @@ export function deadStoreElim(fn) {
       collectGets(node, reads)
       for (const name of reads) lastWrite.delete(name)
 
-      // Drop of pure expr → dead
-      if (op === 'drop' && isPure(node[1])) {
+      // Drop of pure expr → dead. Only `(drop EXPR)`: a bare `(drop)` consumes
+      // an implicit stack value (e.g. a `try_table` catch payload) — removing it
+      // would unbalance the stack.
+      if (op === 'drop' && node.length === 2 && isPure(node[1])) {
         dead.push({ parent: items, idx: i, drop: true })
       }
 
