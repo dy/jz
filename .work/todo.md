@@ -212,7 +212,7 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 * [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
 * [ ] jz as a compilation target — DSLs that want WASM output emit jz-compatible code (needs a simple IR / intermediate format) and get WASM for free
 * [ ] The template tag as a build tool — jz\`code\` in a Node script replaces a build step. No webpack, no esbuild, no plugin. Uniquely elegant and under-marketed.
-
+* [ ] AS integrations/plugins from https://www.assemblyscript.org/built-with-assemblyscript.html
 
 ---
 
