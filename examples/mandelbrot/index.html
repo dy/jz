@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Mandelbrot set - jz</title>
+<link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: sans-serif; }
+  h1 { padding: 20px; font-size: 12pt; margin: 0; }
+  a { color: #111; text-decoration: none; }
+  a:hover { color: #0074C1; text-decoration: underline; }
+  canvas { position: absolute; top: 60px; left: 20px; width: calc(100% - 40px); height: calc(100% - 80px); background: #eee; }
+  canvas.gradient { left: 0; top: 0px; height: 2px; width: 100%; }
+</style>
+</head>
+<body>
+<h1>
+  <a href="https://en.wikipedia.org/wiki/Mandelbrot_set">Mandelbrot set</a> in
+  <a href="http://assemblyscript.org">AssemblyScript</a>
+  ( <a href="https://github.com/AssemblyScript/examples/blob/main/mandelbrot/assembly/index.ts">source</a> )
+</h1>
+<canvas></canvas>
+<script>"use strict";
+
+// Set this to false if you prefer a plain image instead.
+var animate = true;
+
+// Set up the canvas with a 2D rendering context
+var cnv = document.getElementsByTagName("canvas")[0];
+var ctx = cnv.getContext("2d");
+var bcr = cnv.getBoundingClientRect();
+
+// Compute the size of the viewport
+var width  = bcr.width  | 0;
+var height = bcr.height | 0;
+var ratio  = window.devicePixelRatio || 1;
+width  *= ratio;
+height *= ratio;
+var size = width * height;
+var byteSize = size << 1; // discrete color indices in range [0, 2047] (here: 2b per pixel)
+
+cnv.width  = width;
+cnv.height = height;
+
+ctx.scale(ratio, ratio);
+
+// Compute the size of and instantiate the module's memory
+
+const imageData = ctx.createImageData(width, height);
+const argb = new Uint32Array(imageData.data.buffer);
+
+// Fetch and instantiate the module
+fetch("mandelbrot.wasm")
+.then(response => response.arrayBuffer())
+.then(buffer => WebAssembly.instantiate(buffer, {
+  env: { 'Math.log': Math.log, 'Math.log2': Math.log2 }
+}))
+.then(module => {
+  const exports = module.instance.exports;
+  const computeLine = exports.computeLine;
+  
+  const ptr = exports.resize(width, height);
+  const _f64 = new Float64Array(1);
+  const _u32 = new Uint32Array(_f64.buffer);
+  _f64[0] = ptr; const offset = _u32[0];
+  const mem = new Uint16Array(exports.memory.buffer, offset, width * height);
+  window.DBGMEM = mem;
+  window.DBGWIDTH = width;
+  window.DBGHEIGHT = height;
+  window.DBGARGB = argb;
+
+  const updateLine = function (y) {
+    var yx = y * width;
+    for (let x = 0; x < width; ++x) {
+      argb[yx + x] = colors[mem[yx + x]];
+    }
+  };
+
+  // Compute an initial balanced version of the set.
+  const limit = 40;
+  for (let y = 0; y < height; ++y) {
+    computeLine(y, width, height, limit);
+    updateLine(y);
+  }
+
+  // Keep rendering the image buffer.
+  (function render() {
+    if (animate) requestAnimationFrame(render);
+    ctx.putImageData(imageData, 0, 0);
+  })();
+
+  if (animate) {
+
+    // Let it glow a bit by occasionally shifting the limit...
+    var currentLimit = limit;
+    const shiftRange = 10;
+
+    (function updateShift() {
+      currentLimit = limit + (2 * Math.random() * shiftRange - shiftRange) | 0
+      setTimeout(updateShift, 1000 + (1500 * Math.random()) | 0);
+    })();
+
+    // ...while continously recomputing a subset of it.
+    const flickerRange = 3;
+    (function updateFlicker() {
+      for (let i = 0, k = (0.05 * height) | 0; i < k; ++i) {
+        let ry = (Math.random() * height) | 0;
+        let rl = (2 * Math.random() * flickerRange - flickerRange) | 0;
+        computeLine(ry, width, height, currentLimit + rl);
+        updateLine(ry);
+      }
+      setTimeout(updateFlicker, 1000 / 30);
+    })();
+
+  }
+}).catch(err => {
+  alert("Failed to load WASM: " + err.message + " (ad blocker, maybe?)");
+  console.log(err.stack);
+});
+
+// Compute a nice set of colors using a gradient
+const colors = (() => {
+  const cnv  = document.createElement("canvas");
+  cnv.width  = 2048;
+  cnv.height = 1;
+  const ctx = cnv.getContext("2d");
+  const grd = ctx.createLinearGradient(0, 0, 2048, 0);
+  grd.addColorStop(0.0000, "#000764");
+  grd.addColorStop(0.1600, "#2068CB");
+  grd.addColorStop(0.4200, "#EDFFFF");
+  grd.addColorStop(0.6425, "#FFAA00");
+  grd.addColorStop(0.8575, "#000200");
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, 2048, 1);
+  cnv.className = "gradient";
+  setTimeout(() => document.body.appendChild(cnv));
+  return new Uint32Array(ctx.getImageData(0, 0, 2048, 1).data.buffer);
+})();
+</script>
+</body>
+</html>
