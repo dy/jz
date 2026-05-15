@@ -40,7 +40,6 @@
  * @module jz
  */
 
-import './src/parser-patch.js'
 import { parse } from 'subscript/feature/jessie'
 import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } from "watr";
 import { ctx, reset, err } from './src/ctx.js'
