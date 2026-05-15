@@ -122,6 +122,18 @@ function hoistVars(node, names) {
     if (out.length === 2) return out[1]
     return out
   }
+  // Block body: recursing the inner `;` may collapse it to a bare expression
+  // (e.g. `{ v + 1; }` → `['{}', ['+','v',1]]`), which prepare.js would then
+  // mistake for an object literal. Re-wrap as a 1-stmt `;` if the inner was
+  // block-shaped going in but collapsed to a non-statement-op expression.
+  if (op === '{}' && node.length === 2) {
+    const inner = node[1]
+    const wasBlock = inner != null && Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0])
+    const t = hoistVars(inner, names)
+    if (!wasBlock || t == null) return ['{}', t]
+    const stayed = Array.isArray(t) && JZ_BLOCK_OPS.has(t[0])
+    return ['{}', stayed ? t : [';', t]]
+  }
   const out = new Array(node.length)
   out[0] = op
   for (let i = 1; i < node.length; i++) out[i] = hoistVars(node[i], names)
@@ -275,6 +287,13 @@ const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
+
+// Block-shape ops used to detect "this `{}` is a block body, not an object literal".
+// Mirrors analyze.STMT_OPS — kept inline so jzify stays self-contained.
+const JZ_BLOCK_OPS = new Set([';', 'let', 'const', 'var', 'return', 'if', 'for', 'for-in', 'for-of',
+  'while', 'do', 'break', 'continue', 'switch', 'throw', 'try', 'catch', 'finally',
+  '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
+  '++', '--', '()', 'function', 'class', 'import', 'export', 'label'])
 
 /** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape
  *  already pins down its runtime type. Returns true/false or null (unknown).
@@ -530,7 +549,20 @@ const handlers = {
   },
 
   '=>'(params, body) {
-    const [p2, b2] = lowerArguments(params, body)
+    // The subscript parser sometimes elides the `[';', stmt, null]` wrapper inside
+    // an arrow's `{` block when the block contains a single bare expression — the
+    // result `['{}', expr]` is syntactically identical to an object-literal shape,
+    // and prepare.js' `{}` handler can no longer tell them apart. JS grammar makes
+    // it unambiguous: `=>` followed by `{` is always a block (use `=> ({...})` for
+    // an object return), so coerce single-expr bodies back to `['{}', [';', expr]]`.
+    let b = body
+    if (Array.isArray(b) && b[0] === '{}' && b.length === 2) {
+      const inner = b[1]
+      if (inner != null && !(Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0]))) {
+        b = ['{}', [';', inner]]
+      }
+    }
+    const [p2, b2] = lowerArguments(params, b)
     return ['=>', p2, transform(b2)]
   },
 
@@ -630,8 +662,20 @@ const handlers = {
       ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transform(body)]]]]
   },
 
-  // Block body: recurse as scope for hoisting
-  '{}'(...args) { return ['{}', ...args.map(a => transformScope(a) ?? a)] },
+  // Block body: recurse as scope for hoisting. transformScope reduces a single-statement
+  // sequence to its bare element; if the input WAS block-shaped (`;` list or a single
+  // statement op), we re-wrap the collapsed result in `[';', ...]` so prepare.js keeps
+  // routing the `{}` through the block branch instead of mistaking it for `{ expr }`.
+  '{}'(...args) {
+    return ['{}', ...args.map((a, i) => {
+      const t = transformScope(a) ?? a
+      if (i !== 0 || a == null) return t
+      const blockIn = Array.isArray(a) && JZ_BLOCK_OPS.has(a[0])
+      if (!blockIn || t == null) return t
+      const stmtOut = Array.isArray(t) && JZ_BLOCK_OPS.has(t[0])
+      return stmtOut ? t : [';', t]
+    })]
+  },
 
   // Export: recurse into exported declaration. Statement-form `export function name`
   // and `export default function name` must be hoisted as const-arrows — otherwise

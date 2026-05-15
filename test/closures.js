@@ -783,3 +783,28 @@ test('IIFE arrow returning sparse array literal materializes holes as null', () 
   is(r[0], null)
   is(r[1], '')
 })
+
+// Arrow whose `{}` body contains a single expression statement: per JS grammar,
+// `=> {` is always a block (use `=> ({...})` for an object return), so the body
+// must return `undefined`, NOT allocate an empty object. The parser may emit
+// `['{}', expr]` for the body — jzify normalizes it back to a block shape
+// (`['{}', [';', expr]]`) so prepare.js doesn't mistake it for an object literal.
+test('arrow block body with single expression-statement returns undefined', () => {
+  // Bare form covered by test262 (statement-body-requires-braces-must-return-explicitly-missing.js)
+  const { f } = runHost(`
+    var plusOne = v => { v + 1; }
+    export let f = () => plusOne(1)
+  `, { jzify: true })
+  is(f(), undefined)
+})
+
+test('arrow block body inside another arrow returns undefined', () => {
+  // Nested form: parser elides the `;` wrapper deeper inside; verifies the
+  // jzify `=>` normalization fires across nesting depth.
+  const { f } = runHost(`export let f = () => {
+    var plusOne = v => { v + 1; }
+    let r = plusOne(1)
+    return r === undefined ? 1 : 2
+  }`, { jzify: true })
+  is(f(), 1)
+})
