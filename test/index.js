@@ -27,8 +27,7 @@ const TESTS = [
   'regex',
   'simd',
   'cli',
-  'object-regressions',
-  'jessie-regressions',
+  'objects',
   'interop',
   'external',
   'watr',
@@ -36,7 +35,6 @@ const TESTS = [
   'inference',
   'perf',
   'timers',
-  'test262-regressions',
   'semantic-invariants',
   'differential',
 ]

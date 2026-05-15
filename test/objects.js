@@ -1,3 +1,7 @@
+// Object shape & semantics: literals (schemas, trailing commas, nested,
+// anonymous-receiver `.prop`), Object.* methods (assign/freeze/keys/values/
+// entries/getOwnPropertyNames/hasOwnProperty/create), polymorphic receivers
+// through `?:`, dynamic key writes against fixed-shape slots.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
@@ -707,4 +711,81 @@ test('Regression: bitwise compound assignments on typed-array index targets', ()
     }
   `)
   is(f(), 9)
+})
+
+// Object.create — schema-typed proto copy + array proto clone + null proto.
+// Originally hit "Unknown stdlib 'array'" because the emitter pulled the array
+// module without the proto inclusion list.
+test('Object.create(null) compiles', () => {
+  const { f } = run(`export let f = () => { let o = Object.create(null); return 42 }`)
+  is(f(), 42)
+})
+
+test('Object.create with schema-typed proto copies properties', () => {
+  const { f } = run(`export let f = () => {
+    let proto = { x: 1, y: 2 }
+    let o = Object.create(proto)
+    return o.x + o.y
+  }`)
+  is(f(), 3)
+})
+
+test('Object.create with array proto clones data', () => {
+  // watr pattern: ctx.local = Object.create(param)
+  const { f } = run(`export let f = () => {
+    let arr = [10, 20, 30]
+    let copy = Object.create(arr)
+    return copy[0] + copy[1] + copy[2]
+  }`)
+  is(f(), 60)
+})
+
+// IIFE property access — `(function(){}).hasOwnProperty('caller')` used to
+// crash with "table index is out of bounds" because __dyn_get_expr_t returned
+// NULL_NAN for missing properties and call_indirect blindly used it as a
+// table index. Now guarded with a __ptr_type check. (test262 S13.2_A7_T1/T2)
+
+test('IIFE property access — .hasOwnProperty("caller") does not crash', () => {
+  const exports = run(`export let _run = () => { (function(){}).hasOwnProperty('caller'); return 1 }`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+test('IIFE property access — .hasOwnProperty("arguments") does not crash', () => {
+  const exports = run(`export let _run = () => { (function(){}).hasOwnProperty('arguments'); return 1 }`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+test('semicolon before leading-paren IIFE after object initializer', () => {
+  const exports = run(`let state = 0
+    const table = {};
+    (function populate(value) { state = value })(7)
+    export let _run = () => state`, { jzify: true })
+  is(exports._run(), 7)
+})
+
+// Computed property names — static keys map to fixed-shape slots; dynamic
+// computed keys lower to dict-side stores; effectful coercion runs and the
+// coerced key is the resolved property name. (test262 ObjectLiteral cases)
+
+test('computed property names: static keys map to fixed-shape object slots', () => {
+  const exports = run(`export let _run = () => {
+    let o = { ['x']: 1, [1 + 1]: 2, [true ? 3 : 4]: 5 }
+    if (o.x !== 1) return 0
+    if (o[2] !== 2) return 0
+    if (o[String(3)] !== 5) return 0
+    return 1
+  }`, { jzify: true })
+  is(exports._run(), 1)
+})
+
+test('computed property names: dynamic computed key lowers to dict-side store', () => {
+  // `{ [x = "kk"]: 3 }` mutates x to "kk" and stores 3 under that key.
+  const exports = run(`export let _run = () => { let x = "a"; let o = { [x = "kk"]: 3 }; return o["kk"] }`, { jzify: true })
+  is(exports._run(), 3)
+})
+
+test('computed property names: effectful coercion runs and key stores under coerced value', () => {
+  // `{ [(x = 1, "k")]: 2 }` — the comma side-effect runs; "k" is the resolved key.
+  const exports = run(`export let _run = () => { let x = 0; let o = { [(x = 1, "k")]: 2 }; return x + o["k"] }`, { jzify: true })
+  is(exports._run(), 3)
 })

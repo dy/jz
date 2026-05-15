@@ -444,3 +444,81 @@ test('error: module resolution error includes file name', () => {
   ok(error, 'should throw')
   ok(error.message.includes('nonexistent'), `message mentions module file: ${error.message}`)
 })
+
+// ============================================================================
+// Built-in Error subclasses — `new TypeError(msg)` / bare `TypeError(msg)`
+// reach JS as a real Error with the message preserved
+// ============================================================================
+
+for (const cls of ['SyntaxError', 'TypeError', 'RangeError', 'ReferenceError', 'URIError', 'EvalError']) {
+  test(`${cls}: throw new ${cls} surfaces message`, () => {
+    let error
+    try { jz(`export let f = () => { throw new ${cls}("bad ${cls}") }`).exports.f() }
+    catch (caught) { error = caught }
+    ok(error instanceof Error)
+    is(error.message, `bad ${cls}`)
+  })
+
+  test(`${cls}: throw ${cls}() (no new) surfaces message`, () => {
+    let error
+    try { jz(`export let f = () => { throw ${cls}("bare ${cls}") }`).exports.f() }
+    catch (caught) { error = caught }
+    ok(error instanceof Error)
+    is(error.message, `bare ${cls}`)
+  })
+}
+
+test('Error subclasses: try/catch with throw new TypeError', () => {
+  is(run(`export let f = (x) => {
+    try { if (x < 0) throw new TypeError("neg"); return x }
+    catch (e) { return -1 }
+  }`).f(-5), -1)
+})
+
+// ============================================================================
+// Dead-throw carrier — treeshake must preserve __jz_last_err_bits even when
+// the function carrying the only throw is itself dead-stripped
+// ============================================================================
+
+test('throw inside an unused arrow does not break codegen', () => {
+  const wasm = compile(`const err = () => { throw 1 }; export let f = () => 1`)
+  ok(wasm instanceof Uint8Array)
+})
+
+test('throw declares + exports __jz_last_err_bits even when carrier is dead', () => {
+  const wat = compile(`const err = () => { throw 1 }; export let f = () => 1`, { wat: true })
+  ok(wat.includes('(global $__jz_last_err_bits'), 'last-err global declared')
+  ok(wat.includes('(export "__jz_last_err_bits"'), 'last-err global exported')
+})
+
+// ============================================================================
+// Error wrapping — unknown identifier errors must read as jz wording, not
+// watr's internal "Unknown local/func/global" phrasing
+// ============================================================================
+
+test('unknown global references surface as a clean jz error, not watr "Unknown ..."', () => {
+  let err
+  try { compile(`export let f = () => SomethingUndefined()`) }
+  catch (e) { err = e }
+  ok(err, 'compile should fail')
+  ok(!/Unknown (local|func|global)/.test(err.message),
+    `watr-shaped error leaked: ${err.message.slice(0, 120)}`)
+})
+
+// ============================================================================
+// .caller / .callee prohibition — bad-practice access surfaces a clear error
+// ============================================================================
+
+test('prohibited: .caller property access', () => {
+  let err
+  try { compile(`export let f = () => { let g = ()=>42; return g.caller }`, { jzify: true }) }
+  catch (e) { err = e }
+  ok(err?.message.includes('caller'), `.caller should be prohibited: ${err?.message?.slice(0, 60)}`)
+})
+
+test('prohibited: .callee property access', () => {
+  let err
+  try { compile(`export let f = () => { let g = ()=>42; return g.callee }`, { jzify: true }) }
+  catch (e) { err = e }
+  ok(err?.message.includes('callee'), `.callee should be prohibited: ${err?.message?.slice(0, 60)}`)
+})
