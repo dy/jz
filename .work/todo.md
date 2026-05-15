@@ -125,7 +125,18 @@ Each step closes one class of dynamic-fallback emit. Representation work only ru
 
 #### Workstreams, in priority order
 
-* [ ] **Narrowing investigation (primary).** Pick 5 real jz programs whose output is larger than it should be. For each dynamic-fallback site (`__str_concat`, `__dyn_get`, `__add_any`, `__eq_any`, …), trace why narrowing didn't reach it. Categorize: missing operator evidence, missing member-access evidence, conditional flow not threaded, JSDoc unread. Each category becomes a `narrow.js` follow-up. Target: 5–20× size reduction on the survey programs without touching the representation layer.
+* [x] **Narrowing investigation (primary).** Survey: `.work/narrow-survey.mjs` (per-bench counts) + `.work/narrow-watr-hotspots.mjs` (per-function). Findings: `.work/narrow-findings.md`. Headline: every numeric / typed-array bench is **already at zero fallbacks**; only `watr` (the self-hosted WAT compiler) has any — 1289 emits, 47.5 % clustered in its top 10 functions. Categorization:
+  - **A. Dynamic-keyed object with all-known keys → poisoned to HASH** (132 `__dyn_set` in `$__start`, plus the rest of the 212 `__dyn_set`). Repro: a single `o[k]` computed read on a 6-key object literal explodes 2 KB → 65 KB and turns every initialization write into `__dyn_set`. **Not a narrowing gap** — codegen-layout choice. Moves to **workstream #3**, extended scope: keep schema layout under computed-key access; dispatch the computed read over the known key set.
+  - **B. `s[i]` emits __str_idx + SSO alloc per char** (446 emits, top fallback). Each indexed read materializes a one-char SSO string even when the consumer is `=== '\\'` (charcode-equivalent). **Moves to workstream #6**, extended scope: elide SSO materialization when the consumer compares with a single-char literal.
+  - **C. Polymorphic AST-node receiver** (`cleanup(node)` where node = string | array | null). The `Array.isArray(node)` discriminator's facts aren't threaded across `?:` / `&&` arms, so each `node[0]` keeps the union rep. Real `narrow.js` follow-up — leveraged across all watr AST passes.
+  - **D. Heterogeneous ctx = array+object** in watr's `compile()`. Legitimate mixed identity; codegen-rep question, not narrower.
+  - **E. err()'s `text + ...` concat allocates heap** even when the result fits SSO. Folds into workstream #6.
+  - **F. `for-in` over known-schema source** (`for (let kind in SECTION)`) should unroll at compile time per `prepare.js:1339-1346` — verify it fires for watr's constants; gaps become narrow follow-ups.
+  ## Recommended narrow.js follow-ups (workstream #1 deliverable):
+  - **C.1** Thread `Array.isArray(x)` facts through `?:` / `&&` / `||` arms (companion to the existing `typeof === 'string'` plumbing in `narrow.js`).
+  - **C.2** Thread `x == null` / `x != null` flow-narrowing.
+  - **F.1** Verify and fix `for-in` over known-schema unrolling on watr's `SECTION` / `KIND` / `INSTR` / `DEFTYPE`.
+  ## Conclusion: rebalance — the survey says narrowing handles numeric/typed-array codegen at the floor; the remaining wins on dynamic-shape code are mostly **codegen layout (#3) and SSO peephole (#6)**, not narrower gaps. Parallelize #1.C/F + #3 + #6 rather than serialize.
 
 * [ ] **Per-site flat-number specialization.** Where narrowing proves a binding is integer-only or non-tag-traffic-f64, emit it as a flat slot (`i32` / bare `f64`) and skip box/unbox at every use. The peephole already collapses `i64.reinterpret_f64 (f64.reinterpret_i64 x)` after inlining — this work moves the elision earlier so wasted i64 traffic never lands in the IR. Carriers: `flatI32`, `flatF64` added to `src/abi/number.js`. Dispatch: narrower tags the binding's carrier; emit reads `ctx.abi.number[binding.carrier].ops.<op>`.
 
