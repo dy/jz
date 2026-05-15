@@ -17,6 +17,14 @@ test('Regression: Object.assign overwrites existing field from subset schema', (
   is(out[2], 2)
 })
 
+test('Regression: Object.freeze returns the input object value', () => {
+  const { f } = run(`
+    const config = Object.freeze({ mode: 1 })
+    export let f = () => config.mode
+  `)
+  is(f(), 1)
+})
+
 test('Regression: Object.assign extends target with new fields', () => {
   const { f } = run(`export let f = () => {
     let target = {x: 1}
@@ -26,6 +34,25 @@ test('Regression: Object.assign extends target with new fields', () => {
     return target.x + target.y + target.z
   }`)
   is(f(), 6)
+})
+
+test('Regression: Object.assign copies unknown-schema source', () => {
+  const { f } = run(`export let f = (json) => {
+    let out = {x: 0, y: 0}
+    Object.assign(out, JSON.parse(json))
+    return out.x * 10 + out.y
+  }`)
+  is(f('{"x":4,"y":7}'), 47)
+})
+
+test('Regression: Object.assign with unknown-schema source preserves target alias', () => {
+  const { f } = run(`export let f = (json) => {
+    let target = {x: 0}
+    let alias = target
+    let out = Object.assign(target, JSON.parse(json))
+    return alias.x * 100 + target.y * 10 + (out === alias)
+  }`)
+  is(f('{"x":4,"y":7}'), 471)
 })
 
 test('Regression: property read does not call method emitter with same name', () => {
@@ -314,6 +341,15 @@ test('Object.keys: existing OBJECT-literal path still works', () => {
   const { f } = run(`export let f = () => {
     let o = {x: 1, y: 2, z: 3}
     return Object.keys(o).length
+  }`)
+  is(f(), 3)
+})
+
+test('Object.getOwnPropertyNames: returns object literal property names', () => {
+  const { f } = run(`export let f = () => {
+    let o = {x: 1, y: 2, z: 3}
+    let names = Object.getOwnPropertyNames(o)
+    return names.indexOf("x") + names.indexOf("y") + names.indexOf("z")
   }`)
   is(f(), 3)
 })
