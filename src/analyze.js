@@ -452,8 +452,10 @@ function staticValue(node) {
   if (args.length === 1) {
     const value = staticValue(args[0])
     if (value === NO_VALUE) return NO_VALUE
-    if (op === 'u+') return +value
-    if (op === 'u-') return -value
+    // Parser emits raw `-`/`+` for both unary and binary; prep later normalizes
+    // unary to `u-`/`u+`, but staticPropertyKey runs on raw parser AST.
+    if (op === 'u+' || op === '+') return +value
+    if (op === 'u-' || op === '-') return -value
     if (op === '!') return !value
     if (op === '~') return ~value
     return NO_VALUE

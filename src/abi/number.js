@@ -2,10 +2,13 @@
  * src/abi/number — number carriers.
  *
  * One file holds every strategy the compiler may pick for a number-typed
- * binding. Carriers are named exports; the narrower tags each site with the
- * chosen carrier, and codegen reads `ctx.abi.number[<carrier>]` (today only
- * the default carrier is reached — per-site picking arrives with the flat-
- * number specialization workstream).
+ * binding. Today `nanboxF64` is the only carrier; flat-i32 / flat-f64
+ * specialization is achieved through direct type narrowing in `narrow.js`
+ * (Phase E i32 results, Phase E3 pointer results, locals/params lifted by
+ * the fixpoint) rather than via a carrier-bundle dispatch. The single-carrier
+ * `ctx.abi` infrastructure is scaffold for the architectural cleanup that
+ * would migrate those narrowed cases into named carriers here. See
+ * `.work/todo.md` "Boundary protocol and internal representation".
  *
  * Carriers:
  *   - `nanboxF64`  default. f64 carrier with NaN-boxed pointers. Owns the
@@ -13,8 +16,6 @@
  *                  (`wrap(extend x)→x`, `trunc(convert x)→x`, …) stay in
  *                  `src/optimize.js`; the folds here assume the low 32 bits
  *                  of a NaN-boxed f64 are the pointer offset.
- *   - `flatI32`    (planned) bare i32 slot when narrowing proves integer.
- *   - `flatF64`    (planned) bare f64 slot when narrowing proves no tag traffic.
  *
  * No `name`/`type` discriminant field — carriers are referenced by object
  * identity from the default-bundle in `src/abi/index.js`.

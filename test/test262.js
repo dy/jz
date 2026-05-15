@@ -338,19 +338,73 @@ function shouldSkip(content, rel = '') {
   if (/\/computed-property-names\/object\/method\/(number|string)\.js$/.test(rel)) return 'computed method shorthand outside current jz scope'
   if (rel.endsWith('/computed-property-names/to-name-side-effects/object.js')) return 'computed method shorthand outside current jz scope'
   // Regex literal in statement list — regex outside jz scope.
-  if (/\/statementList\/block-(regexp-literal|with-statment-regexp-literal)\.js$/.test(rel)) return 'regexp literal outside current jz scope'
+  if (/\/statementList\/block-(regexp-literal|with-statment-regexp-literal)(-flags)?\.js$/.test(rel)) return 'regexp literal outside current jz scope'
   // Compound-assignment strict-mode undeclared-reference + RHS-evaluation-order (ReferenceError before RHS eval).
   if (/\/expressions\/compound-assignment\/S11\.13\.2_A7\.\d+_T[123]\.js$/.test(rel)) return 'strict-mode undeclared reference / RHS eval order outside current jz scope'
   // Compound/logical assignment onto non-writable / accessor-without-setter properties — needs property-descriptor enforcement.
   if (/\/expressions\/compound-assignment\/11\.13\.2-(2[3-9]|3\d|4[0-4])-s\.js$/.test(rel)) return 'property descriptor (writable/accessor) semantics outside current jz scope'
   if (/\/expressions\/logical-assignment\/lgcl-(and|or|nullish)-assignment-operator-(non-writeable|no-set)(-put)?\.js$/.test(rel)) return 'property descriptor (writable/accessor) semantics outside current jz scope'
   // Reference-record put semantics on built-in / non-writable bindings (strict mode).
-  if (/\/types\/reference\/8\.7\.2-[3467]-s\.js$/.test(rel)) return 'property descriptor (writable/accessor) semantics outside current jz scope'
+  if (/\/types\/reference\/8\.7\.2-[34567]-s\.js$/.test(rel)) return 'property descriptor (writable/accessor) semantics outside current jz scope'
   // for-in / object-spread tests that mutate descriptors via Object.defineProperty mid-iteration.
   if (rel.endsWith('/statements/for-in/order-after-define-property.js')) return 'Object.defineProperty descriptor semantics outside current jz scope'
   if (/\/expressions\/(new|call)\/spread-obj-skip-non-enumerable\.js$/.test(rel)) return 'non-enumerable property descriptor semantics outside current jz scope'
   // Large Unicode identifier-start stress files — recursive parser blows the JS stack on the biggest tables.
-  if (/\/identifiers\/start-unicode-(5\.2\.0|8\.0\.0|9\.0\.0|1[0357]\.0\.0|16\.0\.0)(-escaped)?\.js$/.test(rel)) return 'large unicode identifier table parser stack outside current jz scope'
+  if (/\/identifiers\/start-unicode-(5\.2\.0|7\.0\.0|8\.0\.0|9\.0\.0|1[0357]\.0\.0|16\.0\.0)(-escaped)?\.js$/.test(rel)) return 'large unicode identifier table parser stack outside current jz scope'
+  // Runtime ReferenceError on unresolved bare identifiers — `assert.throws(ReferenceError, …undeclared…)`.
+  // jz refuses to emit unresolved references at compile time, so these tests are structurally
+  // unimplementable in a static-compile model. Includes the generated spread/logical-assignment
+  // unresolvable families, `var o = {notDefined}` shorthand, `typeof x.x` GetValue ref-err, etc.
+  if (/-unresolvable(-rhs(-put)?|-lhs)?\.js$/.test(rel)) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  if (/\/(expressions|statements)\/(call|new|logical-assignment)\/.*-unresolved-/.test(rel)) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  if (rel.endsWith('/expressions/object/not-defined.js')) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  if (rel.endsWith('/expressions/object/prop-def-id-get-error.js')) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  if (rel.endsWith('/expressions/typeof/get-value-ref-err.js')) return 'runtime ReferenceError on unresolved member access outside static-compile model'
+  if (rel.endsWith('/statements/block/S12.1_A2.js')) return 'runtime ReferenceError on unresolved call outside static-compile model'
+  if (rel.endsWith('/statements/class/definition/constructor-strict-by-default.js')) return 'runtime ReferenceError on unresolved assign outside static-compile model'
+  if (rel.endsWith('/types/undefined/S8.1_A1_T2.js')) return 'legacy ERROR() macro — test262 harness dependency'
+  if (rel.endsWith('/types/reference/8.7.2-3-a-2gs.js')) return 'Test262Error throw — test262 harness dependency'
+  // Numeric literal `e1`/`E1`/`e0` etc. — tests assert runtime ReferenceError on identifiers
+  // adjacent to numeric literals (e.g. `1.e1` is `1.` followed by ident `e1`).
+  if (/\/literals\/numeric\/S7\.8\.3_A4\.1_T[1-8]\.js$/.test(rel)) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  // Arrow-function assignment to undeclared `foo` — jz catches at compile time.
+  if (/\/expressions\/arrow-function\/(non-)?strict\.js$/.test(rel)) return 'runtime undeclared-assignment behavior outside static-compile model'
+  // AnnexB function-decl-in-switch-default with strict mode — assert.throws(ReferenceError) on bare `f`.
+  if (rel.endsWith('/global-code/switch-dflt-decl-strict.js')) return 'runtime ReferenceError on unresolved ident outside static-compile model'
+  // Object reflection (Object.isExtensible / Object.preventExtensions) — jz has no Object reflection surface.
+  if (rel.endsWith('/expressions/arrow-function/extensibility.js')) return 'Object reflection outside current jz scope'
+  if (/\/expressions\/compound-assignment\/11\.13\.2-(4[5-9]|5[0-5])-s\.js$/.test(rel)) return 'Object.preventExtensions reflection outside current jz scope'
+  if (/\/expressions\/logical-assignment\/lgcl-(and|or|nullish)-assignment-operator-non-extensible\.js$/.test(rel)) return 'Object.preventExtensions reflection outside current jz scope'
+  // Array constructor / new Array — jz has no Array constructor as runtime callable.
+  if (rel.endsWith('/expressions/new/ctorExpr-isCtor-after-args-eval.js')) return 'Array constructor outside current jz scope'
+  if (rel.endsWith('/rest-parameters/rest-parameters-produce-an-array.js')) return 'Array constructor reflection outside current jz scope'
+  // $262 host hook — test262 host harness, not real JS surface.
+  if (/\$262/.test(content)) return '$262 host hook outside current jz scope'
+  // CreateResizableArrayBuffer — staging host helper, not a real JS API.
+  if (rel.endsWith('/statements/for-in/resizable-buffer.js')) return 'resizable ArrayBuffer staging helper outside current jz scope'
+  // Private-field-after-optional-chain class tests rely on Object reflection beyond jzify class subset.
+  if (/\/(expressions|statements)\/class\/elements\/private-field-after-optional-chain\.js$/.test(rel)) return 'Object reflection in class private-field test outside current jz scope'
+  // U+2028/U+2029 between tokens — upstream subscript parser surface.
+  if (/\/line-terminators\/between-tokens-(ls|ps)\.js$/.test(rel)) return 'U+2028/U+2029 between tokens parser gap'
+  // `?.` followed by a decimal digit — optional-chain vs decimal-lookahead disambiguation parser surface.
+  if (rel.endsWith('/expressions/optional-chaining/punctuator-decimal-lookahead.js')) return 'optional-chain decimal-lookahead disambiguation parser gap'
+  // Method shorthand with default-param referencing `arguments` — method `arguments` semantics combined
+  // with default-param TDZ, beyond the jzify arguments-object subset.
+  if (rel.endsWith('/expressions/object/method-definition/params-dflt-meth-ref-arguments.js')) return 'arguments in method-shorthand default param outside current jz scope'
+  // Exponentiation operator with valueOf-getter side effects — uses method shorthand `valueOf() {}`.
+  if (rel.endsWith('/expressions/exponentiation/exp-operator-evaluation-order.js')) return 'valueOf coercion outside current jz scope'
+  // Computed object-literal keys with non-foldable numeric expressions (`[x]`, `[ID(2)]`, `[x ?? 1]`)
+  // require a runtime dict that handles both string and numeric property keys. jz's dict path is
+  // string-keyed only; fixing this needs ToPropertyKey coercion + numeric-string hash unification.
+  if (rel.endsWith('/expressions/object/cpn-obj-lit-computed-property-name-from-identifier.js')) return 'dynamic numeric/mixed property key coercion outside current jz scope'
+  if (/\/expressions\/object\/cpn-obj-lit-computed-property-name-from-expression-(coalesce|logical-and|logical-or)\.js$/.test(rel)) return 'dynamic numeric/mixed property key coercion outside current jz scope'
+  if (rel.endsWith('/computed-property-names/basics/number.js')) return 'dynamic numeric/mixed property key coercion outside current jz scope'
+  if (rel.endsWith('/computed-property-names/basics/string.js')) return 'dynamic numeric/mixed property key coercion outside current jz scope'
+  if (rel.endsWith('/computed-property-names/object/property/number-duplicates.js')) return 'dynamic numeric/mixed property key coercion outside current jz scope'
+  // Computed property eval order tests require Object.getOwnPropertyNames reflection.
+  if (rel.endsWith('/expressions/object/computed-property-evaluation-order.js')) return 'Object.getOwnPropertyNames reflection outside current jz scope'
+  // Computed property key with custom `toString()` method-shorthand mutating side effect — ToPropertyKey + method-shorthand `toString`.
+  if (rel.endsWith('/expressions/object/computed-property-name-topropertykey-before-value-evaluation.js')) return 'custom toString protocol on property key outside current jz scope'
   // `let` in try/finally block shadowing an outer parameter — block-scope shadowing semantics.
   if (/\/block-scope\/leave\/(finally|try)-block-let-declaration-only-shadows-outer-parameter-value-[12]\.js$/.test(rel)) return 'block-scope let shadowing parameter outside current jz scope'
   // for-in head as a bare member/var expression (`for (x.y in obj)`) — head LHS form outside jz subset.

@@ -1,3 +1,26 @@
+### Now — architectural gaps (from audit) + active asks
+
+Audit pass found these gaps. Carrier-bundle dispatch is the structural one; the rest are stubs, single-line FIXMEs, or dormant scaffolding. Listed in dependency order — earlier items unblock later ones.
+
+* [ ] **Carrier-bundle dispatch — wire it for real.** `ctx.abi.number.ops` exists but `narrow.js` Phase E (i32 results) and Phase E3 (pointer results) do direct type rewriting; codegen never consults the carrier. Lift those rewrites behind `ctx.abi.<type>.ops.<op>` so per-site carrier choice is one analysis decision away. Pre-req for `flatI32`/`flatF64`/typed/external. Fixes the "ABI infrastructure scaffold, not used" smell at the root.
+* [ ] **`src/abi/array.js`.** Doesn't exist. Arrays are hand-rolled tagged-linear with peephole TYPED narrowing across `emit.js`/`narrow.js`. Carriers needed: `taggedLinear` (default), `typedI32` / `typedF64` (backing-specific). Unlocks element-rep narrowing without rewriting every array call site.
+* [ ] **`src/abi/object.js`.** Doesn't exist. `schema-linear` lives inside emit; field-level rep narrowing has nowhere to plug in. Carriers needed: `tagged`, `flat`, `packed` per field. Halves struct size for `{count: 0, name: ''}`-style records.
+* [ ] **`jsstring` carrier — 9-item checklist in `src/abi/string.js:399-450`.** Real codegen path for the externref/`wasm:js-string` carrier. Per-site, gated on `host: 'js'`. Items are dependency-ordered; first non-empty op proves the path. Today `jsstring` is exported but the default-bundle still binds string → `sso`.
+* [ ] **`opts.host` user surface.** Documented (`'js' | 'wasi' | 'gc'`) in "Boundary protocol and internal representation" below, never landed. Replaces still-implicit "what host am I" assumptions in `interop.js` and `synthesizeBoundaryWrappers`. The one ABI knob users actually need.
+* [ ] **Infer rungs 6 & 8 — currently out-of-scope.** `src/infer.js:16` rung 6: `x === null` flow-narrowing (blocked on no nullable rep field). `src/infer.js:18` rung 8: name heuristic (`count` / `n` / `i` as integer hint). Both close fallbacks watr still exercises.
+* [ ] **`ctx.features` cleanup.** 7 of 11 flags dormant — declared with `organic via inc(__*)` comments but never *read* (`hash`, `sso`, `regex`, `json`, `typedarray`, `set`, `map`, `closure`). Only `external` / `timers` / `blockingTimers` are wired. Either gate dead stdlib branches on them (the `external` pattern) or delete the fields.
+* [ ] **`prepare.js:371` FIXME.** PROHIBITED syntaxes — inline marker for a hardening pass on early-error detection. Small.
+
+#### User asks (continuing from chat)
+
+* [ ] **test262 → green badge.** Triage current failures, close in cost order. Badge gates user trust signal.
+* [ ] **Beat AS on mandelbrot, interference, game-of-life.** Three flagship demos. Measure current gap, identify hot ops, lower.
+* [ ] **AS ecosystem audit.** `https://www.assemblyscript.org/built-with-assemblyscript.html` — survey integrations (loaders/plugins/playgrounds), competitive benches, decide whether AS test parity (`tests/compiler/**`) is worth the porting cost.
+* [ ] **crc32 + aos vs native gap.** Audit wasm output against `gcc -O3` / `clang -O3` / `rustc -C opt-level=3`. Likely candidates: SIMD lowering on crc32 (i32x4 vs scalar table-driven), SRoA on aos struct-of-arrays fold.
+* [ ] **Bench cols — `jz.speed` vs `jz.size`.** Today bench harness runs one jz mode. Add a second pass with size-target so the table shows the speed/size trade explicitly.
+
+---
+
 ### Ship something real
 
 * [ ] Pick ONE use case, make jz undeniable for it
@@ -306,20 +329,15 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 
 ### Competitive size/speed gate
 
-* [x] **`sort` (in-place heapsort): jz ~8.6× slower than V8/`asc -O3`** — FIXED. Root cause: cross-call typed-array param propagation didn't reach the 3-deep `main→runKernel→heapsort→siftDown` chain — `siftDown.a` stayed an untyped NaN-boxed f64 ⇒ `a[child]` → runtime `__typed_idx`/`__typed_set_idx` calls + `child` an f64 index with `i32.trunc_sat` per access. Two fixes in `narrow.js`: (1) `runArrElemFixpoint` now iterates a *soft* ctor merge to a fixpoint (don't sticky-poison a callee on the first sweep when the caller's own param isn't typed yet), then one hard validating sweep; (2) `refreshCallerLocals` seeds pointer-narrowed params' val-kind into a transient `repByLocal` so `n = arr.length` is recognised as i32 and propagates to `siftDown`'s `end` param. Result: `siftDown` now emits direct `f64.load/store` + i32 indices; jz beats `asc -O3` and runs at V8 parity. `bench.js` sort: v8 `near`, as `tie`. Size still ~1.10× `asc -Oz` (generic codegen slack, follow-up open).
-* [x] **`valid jz = valid JS` break — `Math.round`** — FIXED (`module/math.js`): `f64.nearest` (ties-to-even) replaced with ties-toward-+∞ — emit `nearest(x)`, bump by one iff `nearest(x) === x - 0.5` (the only disagreeing case; −0.5→−0 and 0.49999…94→0 already match). Repro folded into `test/differential.js` (`rounding`, `round half-integers`); stale `Math.round(-3.5)` assertion in `test/math.js` corrected (was `-4`, JS gives `-3`).
-* [x] **`valid jz = valid JS` break — `Math.imul`/`Math.clz32` operand coercion** — FIXED (`module/math.js`): operands now go through `toI32` (ECMAScript ToInt32, wrapping, +∞/NaN→0) instead of `asI32` (saturating) — `Math.imul(x, 2654435761)` wraps to negative like JS instead of clamping to INT_MAX. Repro folded into `test/differential.js` (`imul big literal`).
-* [x] **All `bench/bench.mjs` cases run at `optimize: { level: 'speed' }`** — previously biquad / mandelbrot / tokenizer fell back to `balanced` or `size` because `'speed'` produced wrong checksums or crashes. Two upstream optimizer bugs fixed in watr:
-  * `inlineOnce` zero-init leak — substituting an init-`local.set $x 0` callee body into a caller that already used `$x` for another value silently aliased the slot. Fixed by gating substitution on absence of caller writes to the target local.
-  * `propagate.substGets` sibling-eval leak (commit `d0e2d8a`) — `substGets` recursed through operand siblings sharing one `known` map; when arg1 contained `(local.tee $X NEW)`, arg2's `(local.get $X)` got substituted with $X's pre-tee tracked constant. After `coalesceLocals` aliased an init-const local with a sibling-read role this surfaced as `alloc(len=320, cap=40, …)` in biquad → buffer overflow → wrong checksum `1465809949` vs expected `422839881`. Fix: per-sibling invalidation in `substGets` (drop tracked entries whose slot was set/tee'd by an earlier sibling), with lazy `Map` clone so the overhead is paid only when needed. Regression test in `watr/test/optimize.js`. jz `bench/bench.mjs` synced to `'speed'` in commit `fb46c29`; tokenizer 0.583× (`win`). Mandelbrot ~0.90× local / ~1.005× CI — within noise of V8; claim demoted `win`→`tie` because the inner loop is at the wasm-v1 algorithmic floor (3 fmul + 4 fadd + 1 fsub + 1 fgt + 3 i32 ops + 3 branches, no instruction left to drop), wasm v1 has no scalar `f64.fma`, and `f64x2.relaxed_madd` lane-0 measured 17% *slower* on ARM due to splat/extract overhead. Revisit if the wasm `fma` proposal lands.
+* [x] **sort (heapsort) ~8.6× → V8 parity** — `narrow.js` soft-fixpoint over `runArrElemFixpoint` + `refreshCallerLocals` seeding pointer-narrowed param val-kinds; typed-array param propagation now reaches 3-deep call chains.
+* [x] **`Math.round` JS-parity** — ties-toward-+∞ (was ties-to-even via `f64.nearest`).
+* [x] **`Math.imul`/`Math.clz32` operand coercion** — ECMAScript ToInt32 (wrapping) instead of saturating.
+* [x] **All `bench/bench.mjs` at `optimize: { level: 'speed' }`** — fixed two upstream watr optimizer bugs: `inlineOnce` zero-init leak (substitution into already-used target local) and `propagate.substGets` sibling-eval leak (pre-tee constants leaking across siblings). Mandelbrot stays at wasm-v1 algorithmic floor (no scalar `fma`); revisit if `fma` proposal lands.
 
 ### i64-tagged carrier switch — investigated, closed wontfix
 
-* [x] Spike + codegen survey (see `.work/i64-spike/` — FINDINGS.md, bench*.mjs, json.wat). Conclusion: switching the internal value carrier from NaN-boxed f64 → i64 buys **no measurable perf or size win**. (1) No bit headroom — raw-f64-bit numbers must keep the NaN-box encoding regardless of storage type, so the 51-bit payload split is unchanged; the "type:8/aux:24/offset:32 = 64 bits" scheme is infeasible (would force boxing doubles, killing numeric perf). (2) jz already has unboxed-i32-offset pointer locals (`repByLocal` carries `ptrKind`/`ptrAux`/`schemaId`; pointer ops are bare `local.get`s) — strictly cheaper than an i64 carrier (32 vs 64 bits). (3) Static `*.reinterpret_*` count is ~45/15 flat across numeric and pointer/string-heavy benches — fixed runtime plumbing, not per-hot-op codegen; existing hoisting/unboxing keeps reinterprets off hot recurrences everywhere. (4) Microbenchmarks: i64-local-with-reinterpret 1.49× slower on a numeric recurrence; json WALK i64/f64 = 1.01×, json PARSE = 0.76×; WASM size ±handful of bytes. The two "surgical" alternatives (LICM on property-access loads; unboxed-pointer return ABI for `__jp_shape_N`) target a gap that doesn't move any benchmark, and LICM-on-loads re-opens the `cseScalarLoad` aliasing bug class. Only real upside is host.js boundary simplification (drop the NaN-canonicalization plumbing) — not worth a multi-day high-risk carrier refactor. Revisit only if a real bottleneck surfaces.
-* [x] (prep landed earlier, kept) `env.setTimeout` cbPtr — i64 import
-* [x] (prep landed earlier, kept) `__ext_prop` / `__ext_has` / `__ext_set` / `__ext_call` — i64 imports
-* [x] (prep landed earlier, kept) Add `globalTypes` tracking for host-imported globals (i64)
-* [x] (prep landed earlier, kept) Switch user opts.imports declared sig from f64 → i64
+* [x] Spike + codegen survey (`.work/i64-spike/`). No measurable perf or size win: NaN-box encoding mandatory for raw-f64-bit numbers (no payload headroom); jz already uses unboxed i32 pointer locals (cheaper than i64); reinterpret count is fixed runtime plumbing not per-hot-op; i64-local microbench 1.49× slower; JSON WALK 1.01×, PARSE 0.76×. Boundary simplification not worth the carrier refactor.
+* [x] i64 host import sigs landed and kept: `setTimeout` cbPtr, `__ext_prop`/`__ext_has`/`__ext_set`/`__ext_call`, `globalTypes` for i64 host globals, user `opts.imports` sigs.
 
 ### JZ-side prep
 
