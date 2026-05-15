@@ -117,6 +117,14 @@ test('regression: jzify preserves new Array length constructor', () => {
   ok(wasm.byteLength > 0, 'new Array(n).fill(...) compiles through jzify')
 })
 
+test('regression: jzify supports bare Array length constructor', () => {
+  const exports = run(`export let make = (n) => {
+    let a = Array(n)
+    return a.length
+  }`)
+  is(exports.make(4), 4, 'Array(n) allocates expected length')
+})
+
 test('regression: jzify lowers destructured arrow params with expression object body', () => {
   const exports = run(`export let _run = () =>
     [[1, 2]].map(([a, b]) => ({ sum: a + b }))[0].sum
