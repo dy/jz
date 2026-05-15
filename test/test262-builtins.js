@@ -743,7 +743,7 @@ for (const subpath of TRACKED_BUILTIN_PATHS) {
       results[status]++
       count++
 
-      if (status === 'fail' && fails.length < 30) fails.push(`${rel}: ${error}`)
+      if (status === 'fail' && fails.length < 1000) fails.push(`${rel}: ${error}`)
       if (status === 'skip') skips.set(error, (skips.get(error) || 0) + 1)
     } catch {
       results.skip++

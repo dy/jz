@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -346,8 +346,18 @@ export default (ctx) => {
   }
   ctx.core.emit['new.ArrayBuffer'] = arrayBufferCtor
 
-  // new DataView(buffer) → same ptr (BUFFER). Its type tag may differ from BUFFER but methods ignore type.
-  ctx.core.emit['new.DataView'] = (bufExpr) => asF64(emit(bufExpr))
+  // new DataView(buffer) → same ptr (BUFFER). Methods ignore the type tag.
+  // new DataView(buffer, byteOffset[, byteLength]) → BUFFER ptr re-anchored at
+  // parent_offset + byteOffset. Subsequent DV reads/writes naturally honor the
+  // base offset since DV emitters compute `ptrOffsetIR(dv) + i32.add(off)`.
+  // byteLength is currently ignored (no DV bounds checking yet).
+  ctx.core.emit['new.DataView'] = (bufExpr, offExpr) => {
+    if (offExpr == null) return asF64(emit(bufExpr))
+    const bufPtr = asF64(emit(bufExpr))
+    const off = asI32(emit(offExpr))
+    return mkPtrIR(PTR.BUFFER, 0,
+      ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', bufPtr]], off])
+  }
 
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
   ctx.core.emit['BigInt64Array'] = (bufExpr) => {
@@ -486,44 +496,214 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  // DataView set methods: extract i32 offset from f64 ptr, store value
-  const DV_SET = {
-    setInt8: 'i32.store8', setUint8: 'i32.store8',
-    setInt16: 'i32.store16', setUint16: 'i32.store16',
-    setInt32: 'i32.store', setUint32: 'i32.store',
-    setFloat32: 'f32.store', setFloat64: 'f64.store',
-    setBigInt64: 'i64.store', setBigUint64: 'i64.store',
+  // DataView endianness — wasm memory is natively little-endian. The DV `littleEndian`
+  // arg defaults to `false` per ECMA-262 (big-endian); when LE is false we have to
+  // byte-swap. `staticLE` peels a literal `[null, x]` AST node and returns:
+  //   true/false  — known endianness, no runtime branch needed
+  //   null        — dynamic, emit `if le (native) else (bswap)`
+  // We treat `undefined`/`null`/`0`/`''` as falsy (BE) per ToBoolean.
+  const staticLE = (node) => {
+    if (node === undefined) return false                              // arg omitted → BE
+    if (Array.isArray(node) && node[0] == null) {
+      // [] → undefined, [null, x] → literal x
+      if (node.length === 1) return false
+      const v = node[1]
+      if (v === undefined || v === null) return false
+      if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return !!v
+    }
+    return null  // dynamic
   }
-  for (const [method, storeOp] of Object.entries(DV_SET)) {
-    ctx.core.emit[`.${method}`] = (dv, off, val, _le) => {
+
+  // bswap16: i32 bytes [b0 b1] → [b1 b0]. Result is unsigned 16-bit; signed-16
+  // sign-extension is applied by the load op (i32.load16_s) at the call site.
+  const bswap16I32 = (v) => {
+    const t = tempI32('bs16')
+    return ['block', ['result', 'i32'],
+      ['local.set', `$${t}`, v],
+      ['i32.or',
+        ['i32.shl', ['i32.and', ['local.get', `$${t}`], ['i32.const', 0xff]], ['i32.const', 8]],
+        ['i32.and', ['i32.shr_u', ['local.get', `$${t}`], ['i32.const', 8]], ['i32.const', 0xff]]]]
+  }
+
+  // bswap32: i32 bytes [b0 b1 b2 b3] → [b3 b2 b1 b0]. Symmetric — used for both
+  // load (after native LE load) and store (before native LE store).
+  const bswap32I32 = (v) => {
+    const t = tempI32('bs32')
+    return ['block', ['result', 'i32'],
+      ['local.set', `$${t}`, v],
+      ['i32.or',
+        ['i32.or',
+          ['i32.shl', ['local.get', `$${t}`], ['i32.const', 24]],
+          ['i32.shl', ['i32.and', ['local.get', `$${t}`], ['i32.const', 0xff00]], ['i32.const', 8]]],
+        ['i32.or',
+          ['i32.and', ['i32.shr_u', ['local.get', `$${t}`], ['i32.const', 8]], ['i32.const', 0xff00]],
+          ['i32.and', ['i32.shr_u', ['local.get', `$${t}`], ['i32.const', 24]], ['i32.const', 0xff]]]]]
+  }
+
+  // bswap64: rotate bytes via two 32-bit halves. We need a runtime helper because
+  // i64 doesn't have inline byte-swap and we'd otherwise emit a 64-line tree.
+  ctx.core.stdlib['__bswap64'] = `(func $__bswap64 (param $v i64) (result i64)
+    (local $r i64)
+    (local.set $r (i64.shl (i64.and (local.get $v) (i64.const 0xff)) (i64.const 56)))
+    (local.set $r (i64.or (local.get $r) (i64.shl (i64.and (local.get $v) (i64.const 0xff00)) (i64.const 40))))
+    (local.set $r (i64.or (local.get $r) (i64.shl (i64.and (local.get $v) (i64.const 0xff0000)) (i64.const 24))))
+    (local.set $r (i64.or (local.get $r) (i64.shl (i64.and (local.get $v) (i64.const 0xff000000)) (i64.const 8))))
+    (local.set $r (i64.or (local.get $r) (i64.shr_u (i64.and (local.get $v) (i64.const 0xff00000000)) (i64.const 8))))
+    (local.set $r (i64.or (local.get $r) (i64.shr_u (i64.and (local.get $v) (i64.const 0xff0000000000)) (i64.const 24))))
+    (local.set $r (i64.or (local.get $r) (i64.shr_u (i64.and (local.get $v) (i64.const 0xff000000000000)) (i64.const 40))))
+    (local.set $r (i64.or (local.get $r) (i64.shr_u (local.get $v) (i64.const 56))))
+    (local.get $r))`
+  const bswap64I64 = (v) => { inc('__bswap64'); return ['call', '$__bswap64', v] }
+
+  // DV float reads return raw f64 bits, which may be non-canonical NaN (sign-flipped
+  // or with payload). jz's `__eq` fast path only treats canonical NaN (0x7FF8…0000)
+  // as NaN, so non-canonical NaN would break `v !== v` semantics. Canonicalize here
+  // (cheap: 4 wasm ops) so `getFloat32`/`getFloat64` return a real-spec NaN value.
+  ctx.core.stdlib['__canon_nan'] = `(func $__canon_nan (param $v f64) (result f64)
+    (select
+      (f64.reinterpret_i64 (i64.const 0x7FF8000000000000))
+      (local.get $v)
+      (f64.ne (local.get $v) (local.get $v))))`
+  const canonNaN = (vIR) => { inc('__canon_nan'); return typed(['call', '$__canon_nan', vIR], 'f64') }
+
+  // DataView set methods: extract i32 offset from f64 ptr, optionally byte-swap, store.
+  // 8-bit ops ignore the LE arg entirely (single byte — no swap possible).
+  const DV_SET = {
+    setInt8: ['i32.store8', 'i32', 1],   setUint8: ['i32.store8', 'i32', 1],
+    setInt16: ['i32.store16', 'i32', 2], setUint16: ['i32.store16', 'i32', 2],
+    setInt32: ['i32.store', 'i32', 4],   setUint32: ['i32.store', 'i32', 4],
+    setFloat32: ['f32.store', 'f32', 4], setFloat64: ['f64.store', 'f64', 8],
+    setBigInt64: ['i64.store', 'i64', 8], setBigUint64: ['i64.store', 'i64', 8],
+  }
+  for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
+    ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
       const dvOff = ptrOffsetIR(emit(dv), VAL.BUFFER)
       const addr = ['i32.add', dvOff, asI32(emit(off))]
-      let v = emit(val)
-      if (method.includes('BigInt') || method.includes('BigUint'))
-        v = typed(['i64.reinterpret_f64', asF64(v)], 'i64')
-      else if (method.includes('Float64')) v = asF64(v)
-      else if (method.includes('Float32')) v = typed(['f32.demote_f64', asF64(v)], 'f32')
-      else v = asI32(v)
-      return [storeOp, addr, v]
+      // Coerce value into the wasm value type the store op consumes.
+      let v
+      if (valType === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
+      else if (valType === 'f64') v = asF64(emit(val))
+      else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(emit(val))], 'f32')
+      else v = asI32(emit(val))
+
+      if (size === 1) return [storeOp, addr, v]
+
+      // For BE we byte-swap the integer payload; floats route through bitcast i↔f.
+      const swap = (iVal) => size === 2 ? bswap16I32(iVal) : size === 4 ? bswap32I32(iVal) : bswap64I64(iVal)
+      const beStore = () => {
+        if (valType === 'f32') {
+          const swapped = typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', v], 'i32'))], 'f32')
+          return [storeOp, addr, swapped]
+        }
+        if (valType === 'f64') {
+          const swapped = typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', v], 'i64'))], 'f64')
+          return [storeOp, addr, swapped]
+        }
+        return [storeOp, addr, swap(v)]
+      }
+
+      const le = staticLE(leNode)
+      if (le === true) return [storeOp, addr, v]
+      if (le === false) return beStore()
+      // Dynamic: hoist value + addr into temps so each branch can re-use.
+      const aT = tempI32('dvsa')
+      const vLoc = valType === 'i64' ? tempI64('dvsv') : valType === 'i32' ? tempI32('dvsv') : temp('dvsv')
+      // Re-declare with correct type for f32 (temp() defaults to f64).
+      if (valType === 'f32') ctx.func.locals.set(vLoc, 'f32')
+      const leT = tempI32('dvsle')
+      return ['block',
+        ['local.set', `$${aT}`, addr],
+        ['local.set', `$${vLoc}`, v],
+        ['local.set', `$${leT}`, asI32(emit(leNode))],
+        ['if',
+          ['local.get', `$${leT}`],
+          ['then', [storeOp, ['local.get', `$${aT}`], typed(['local.get', `$${vLoc}`], valType)]],
+          ['else', (() => {
+            const refV = typed(['local.get', `$${vLoc}`], valType)
+            if (valType === 'f32') return [storeOp, ['local.get', `$${aT}`], typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', refV], 'i32'))], 'f32')]
+            if (valType === 'f64') return [storeOp, ['local.get', `$${aT}`], typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', refV], 'i64'))], 'f64')]
+            return [storeOp, ['local.get', `$${aT}`], swap(refV)]
+          })()]]]
     }
   }
 
-  // DataView get methods: extract i32 offset, load value, return as f64
+  // DataView get methods: extract i32 offset, load value, optionally byte-swap, return as f64.
+  // 8-bit ops ignore the LE arg entirely (single byte).
   const DV_GET = {
-    getInt8: ['i32.load8_s', 'i32'], getUint8: ['i32.load8_u', 'i32'],
-    getInt16: ['i32.load16_s', 'i32'], getUint16: ['i32.load16_u', 'i32'],
-    getInt32: ['i32.load', 'i32'], getUint32: ['i32.load', 'i32'],
-    getFloat32: ['f32.load', 'f32'], getFloat64: ['f64.load', 'f64'],
-    getBigInt64: ['i64.load', 'i64'], getBigUint64: ['i64.load', 'i64'],
+    getInt8: ['i32.load8_s', 'i32', 1, true],  getUint8: ['i32.load8_u', 'i32', 1, false],
+    getInt16: ['i32.load16_s', 'i32', 2, true], getUint16: ['i32.load16_u', 'i32', 2, false],
+    getInt32: ['i32.load', 'i32', 4, true],    getUint32: ['i32.load', 'i32', 4, false],
+    getFloat32: ['f32.load', 'f32', 4, false], getFloat64: ['f64.load', 'f64', 8, false],
+    getBigInt64: ['i64.load', 'i64', 8, true], getBigUint64: ['i64.load', 'i64', 8, false],
   }
-  for (const [method, [loadOp, resultType]] of Object.entries(DV_GET)) {
-    ctx.core.emit[`.${method}`] = (dv, off, _le) => {
+  for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
+    ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
       const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), asI32(emit(off))]
-      const raw = typed([loadOp, addr], resultType)
-      if (resultType === 'f64') return raw
-      if (resultType === 'f32') return typed(['f64.promote_f32', raw], 'f64')
-      if (resultType === 'i64') return typed(['f64.reinterpret_i64', raw], 'f64')
-      return typed(['f64.convert_i32_s', raw], 'f64')
+
+      // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
+      // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
+      const toF64 = (raw) => {
+        if (resultType === 'f64') return canonNaN(raw)
+        if (resultType === 'f32') return canonNaN(typed(['f64.promote_f32', raw], 'f64'))
+        if (resultType === 'i64') return typed(['f64.reinterpret_i64', raw], 'f64')
+        return typed(signed ? ['f64.convert_i32_s', raw] : ['f64.convert_i32_u', raw], 'f64')
+      }
+
+      if (size === 1) return toF64(typed([loadOp, addr], resultType))
+
+      // LE path: native wasm load is already little-endian.
+      // BE path: load as raw int (always little-endian on wasm), byte-swap, then
+      //          reinterpret to the requested type so sign-extension matches.
+      // For unsigned 16-bit, bswap16 only spans the low half — no extra masking needed.
+      // For signed 16-bit BE, swap then sign-extend via `i32.extend16_s`.
+      const beLoad = () => {
+        if (size === 2) {
+          const rawU = bswap16I32(typed(['i32.load16_u', addr], 'i32'))
+          return toF64(typed(signed ? ['i32.extend16_s', rawU] : rawU, 'i32'))
+        }
+        if (size === 4) {
+          if (resultType === 'f32') {
+            return toF64(typed(['f32.reinterpret_i32', bswap32I32(typed(['i32.load', addr], 'i32'))], 'f32'))
+          }
+          return toF64(typed(bswap32I32(typed(['i32.load', addr], 'i32')), 'i32'))
+        }
+        // size === 8 (f64 or i64).
+        if (resultType === 'f64') {
+          return toF64(typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', addr], 'i64'))], 'f64'))
+        }
+        return typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', addr], 'i64'))], 'f64')
+      }
+
+      const le = staticLE(leNode)
+      if (le === true) return toF64(typed([loadOp, addr], resultType))
+      if (le === false) return beLoad()
+      // Dynamic LE: hoist addr, branch on leNode at runtime.
+      const aT = tempI32('dvga')
+      const leT = tempI32('dvgle')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${aT}`, addr],
+        ['local.set', `$${leT}`, asI32(emit(leNode))],
+        ['if', ['result', 'f64'],
+          ['local.get', `$${leT}`],
+          ['then', asF64(toF64(typed([loadOp, ['local.get', `$${aT}`]], resultType)))],
+          ['else', asF64((() => {
+            // Replicate beLoad but using hoisted addr.
+            const a = ['local.get', `$${aT}`]
+            if (size === 2) {
+              const rawU = bswap16I32(typed(['i32.load16_u', a], 'i32'))
+              return toF64(typed(signed ? ['i32.extend16_s', rawU] : rawU, 'i32'))
+            }
+            if (size === 4) {
+              if (resultType === 'f32') {
+                return toF64(typed(['f32.reinterpret_i32', bswap32I32(typed(['i32.load', a], 'i32'))], 'f32'))
+              }
+              return toF64(typed(bswap32I32(typed(['i32.load', a], 'i32')), 'i32'))
+            }
+            if (resultType === 'f64') {
+              return toF64(typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64'))
+            }
+            return typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64')
+          })())]]], 'f64')
     }
   }
 
