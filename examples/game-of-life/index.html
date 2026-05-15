@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="user-scalable=0" />
+<title>Conway's Game of Life - jz</title>
+<link rel="icon" href="https://github.com/evanw/jz/favicon.ico" type="image/x-icon" />
+<style>
+  html, body { height: 100%; margin: 0; overflow: hidden; color: #111; background: #fff; font-family: sans-serif; }
+  body { border-top: 2px solid #bc18d4; }
+  h1 { padding: 18px 20px 20px; font-size: 12pt; margin: 0; }
+  a { color: #111; text-decoration: none; }
+  a:hover { color: #bc18d4; text-decoration: underline; }
+  canvas { position: absolute; top: 60px; left: 20px; width: calc(100% - 40px); height: calc(100% - 80px); background: #100707; cursor: cell; user-select: none; }
+  #edge { position: absolute; bottom: 40px; right: 40px; color: #fff; display: none; text-shadow: 0 1px 2px #000; -ms-user-select: none; user-select: none; }
+</style>
+</head>
+<body>
+<h1>
+  <a href="https://en.wikipedia.org/wiki/Conway's_Game_of_Life">Conway's Game of Life</a> in
+  <a href="http://assemblyscript.org">AssemblyScript</a>
+  ( <a href="https://github.com/AssemblyScript/examples/blob/main/game-of-life/assembly/index.ts">source</a> )
+</h1>
+<canvas></canvas>
+<div id="edge">Might be blurry because MS Edge does not support 'image-rendering: crisp-edges' (yet) :-(</div>
+<script>"use strict";
+
+// Configuration
+const RGB_ALIVE = 0xD392E6;
+const RGB_DEAD  = 0xA61B85;
+const BIT_ROT   = 10;
+
+// Set up the canvas with a 2D rendering context
+var canvas = document.getElementsByTagName("canvas")[0];
+var ctx = canvas.getContext("2d");
+var bcr = canvas.getBoundingClientRect();
+
+// Compute the size of the universe (here: 2px per cell)
+var width    = bcr.width  >>> 1;
+var height   = bcr.height >>> 1;
+var size     = width * height;
+var byteSize = (2 * size) << 2; // input & output (here: 4b per cell)
+
+canvas.width  = width;
+canvas.height = height;
+canvas.style = `
+  image-rendering: optimizeSpeed;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: -o-crisp-edges;
+  image-rendering: optimize-contrast;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+  -ms-interpolation-mode: nearest-neighbor;
+`;
+ctx.imageSmoothingEnabled = false;
+
+// Compute the size of and instantiate the module's memory
+
+// Fetch and instantiate the module
+fetch("game-of-life.wasm")
+.then(response => response.arrayBuffer())
+.then(buffer => WebAssembly.instantiate(buffer, {
+  env: { 'Math.random': Math.random, 'Math.max': Math.max } }))
+.then(module => {
+  var exports = module.instance.exports;
+
+  // Initialize the module with the universe's width and height
+    const BIT_ROT_VAL = BIT_ROT;
+  const BGR_ALIVE_VAL = rgb2bgr(RGB_ALIVE) | 1;
+  const BGR_DEAD_VAL = rgb2bgr(RGB_DEAD) & ~1;
+  const ptr = exports.init(width, height, BGR_ALIVE_VAL, BGR_DEAD_VAL, BIT_ROT_VAL);
+  const _f64 = new Float64Array(1);
+  const _u32 = new Uint32Array(_f64.buffer);
+  _f64[0] = ptr; const memOffset = _u32[0];
+  var mem = new Uint32Array(exports.memory.buffer, memOffset, width * height * 2);
+
+  // Update about 30 times a second
+  (function update() {
+    setTimeout(update, 1000 / 30);
+    mem.copyWithin(0, size, 2 * size); // copy output to input
+    exports.step();                    // perform the next step
+  })();
+
+  // Keep rendering the output at [size, 2*size]
+  var imageData = ctx.createImageData(width, height);
+  var argb = new Uint32Array(imageData.data.buffer);
+
+  (function render() {
+    requestAnimationFrame(render);
+    argb.set(mem.subarray(size, 2 * size)); // copy output to image buffer
+    ctx.putImageData(imageData, 0, 0);      // apply image buffer
+  })();
+
+  // When clicked or dragged, fill the current row and column with random live cells
+  let down = false;
+  for (const ty of ["mousedown", "touchstart"]) {
+    canvas.addEventListener(ty, e => down = true);
+  }
+  for (const ty of ["mouseup", "touchend"]) {
+    document.addEventListener(ty, e => down = false);
+  }
+  for (const ty of ["mousemove", "touchmove", "mousedown"]) {
+    canvas.addEventListener(ty, e => {
+      if (!down) return;
+      const touches = e.touches;
+      let loc;
+      if (touches) {
+        if (touches.length > 1) return;
+        loc = touches[0];
+      } else {
+        loc = e;
+      }
+      const rect = canvas.getBoundingClientRect();
+      exports.fill(
+        (loc.clientX - rect.left) >>> 1,
+        (loc.clientY - rect.top)  >>> 1,
+        0.5
+      );
+    });
+  }
+
+  // :-(
+  if (navigator.userAgent.includes(" Edge/")) {
+    document.getElementById("edge").style.display = "block";
+  }
+}).catch(err => {
+  alert("Failed to load WASM: " + err.message + " (ad blocker, maybe?)");
+  console.log(err.stack);
+});
+
+// see comment in assembly/index.ts on why this is useful
+function rgb2bgr(rgb) {
+  return ((rgb >>> 16) & 0xff) | (rgb & 0xff00) | (rgb & 0xff) << 16;
+}
+</script>
+</body>
+</html>
