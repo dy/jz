@@ -28,6 +28,7 @@
     "bench": "node bench/bench.mjs",
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
+    "build:examples": "for dir in examples/*; do node \"$dir/build.mjs\"; done",
     "test:bench-pin": "node test/bench-pin.js",
     "test:all": "npm test && npm run test:bench-pin",
     "prepublishOnly": "npm run test:all"
@@ -43,7 +44,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.4.8",
+    "subscript": "^10.4.10",
     "watr": "^4.6.5"
   },
   "keywords": [
