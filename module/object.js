@@ -112,6 +112,7 @@ export default (ctx) => {
     // runtime: HASH walks the probe table, anything else returns [].
     return emitRuntimeKeys(obj)
   }
+  ctx.core.emit['Object.getOwnPropertyNames'] = ctx.core.emit['Object.keys']
 
   // Object.prototype.hasOwnProperty(key) — own-property presence check.
   // Compile-time fold for literal keys against object literals or variables
