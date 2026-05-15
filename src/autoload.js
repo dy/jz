@@ -65,6 +65,7 @@ export const CALL_MODULES = dict({
   'Object.keys': ['core', 'object', 'string'],
   'Object.values': ['core', 'object', 'string'],
   'Object.entries': ['core', 'object', 'string'],
+  'Object.freeze': ['core', 'object'],
   'Object.assign': ['core', 'object'],
   'Object.create': ['core', 'object'],
   'Object.defineProperty': ['core', 'object'],
