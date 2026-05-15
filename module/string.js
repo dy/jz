@@ -29,7 +29,7 @@ export default (ctx) => {
     __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
-    __str_indexof: ['__str_byteLen'],
+    __str_indexof: ['__str_byteLen', '__to_str'],
     __str_substring: ['__str_slice'],
     __str_startswith: ['__str_byteLen'],
     __str_endswith: ['__str_byteLen'],
@@ -389,6 +389,8 @@ export default (ctx) => {
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
+    ;; ToString the search value (21.1.3.9 step 4) — coerces undefined/null/number/etc.
+    (local.set $ndl (call $__to_str (local.get $ndl)))
     (local.set $hlen (call $__str_byteLen (local.get $hay)))
     (local.set $nlen (call $__str_byteLen (local.get $ndl)))
     (if (i32.eqz (local.get $nlen)) (then (return (local.get $from))))
@@ -944,15 +946,26 @@ export default (ctx) => {
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
-  ctx.core.emit['.string:indexOf'] = (str, search, from) => {
-    inc('__str_indexof')
-    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), from ? asI32(emit(from)) : ['i32.const', 0]]], 'f64')
+  // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
+  // string / boolean / null / undefined positions coerce per spec) then trunc.
+  // trunc_sat maps NaN→0 and ±∞→±maxint — both clamp correctly downstream.
+  const posIndex = (node) => {
+    if (node == null) return ['i32.const', 0]
+    inc('__to_num')
+    return asI32(typed(['call', '$__to_num', asI64(emit(node))], 'f64'))
   }
 
-  ctx.core.emit['.string:includes'] = (str, search) => {
+  ctx.core.emit['.string:indexOf'] = (str, search, from) => {
     inc('__str_indexof')
+    const hay = asI64(emit(str)), ndl = asI64(emit(search))
+    return typed(['f64.convert_i32_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)]], 'f64')
+  }
+
+  ctx.core.emit['.string:includes'] = (str, search, from) => {
+    inc('__str_indexof')
+    const hay = asI64(emit(str)), ndl = asI64(emit(search))
     return typed(['f64.convert_i32_s',
-      ['i32.ge_s', ['call', '$__str_indexof', asI64(emit(str)), asI64(emit(search)), ['i32.const', 0]], ['i32.const', 0]]], 'f64')
+      ['i32.ge_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)], ['i32.const', 0]]], 'f64')
   }
 
   // Generic (no collision)
@@ -1142,9 +1155,18 @@ export default (ctx) => {
     return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(emit(code)))
   }
 
-  // String.fromCodePoint(cp) → UTF-8 encoded string
-  ctx.core.stdlib['__fromCodePoint'] = `(func $__fromCodePoint (param $cp i32) (result f64)
-    (local $off i32) (local $len i32)
+  // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.
+  // Param is f64 (already ToNumber-coerced); throws RangeError ($__jz_err) when
+  // the value is not an integer in [0, 0x10FFFF] (22.1.2.2 step 5.d).
+  ctx.core.stdlib['__fromCodePoint'] = `(func $__fromCodePoint (param $cpf f64) (result f64)
+    (local $cp i32) (local $off i32) (local $len i32)
+    (if (i32.or
+          (i32.or
+            (f64.ne (f64.trunc (local.get $cpf)) (local.get $cpf))
+            (f64.lt (local.get $cpf) (f64.const 0)))
+          (f64.gt (local.get $cpf) (f64.const 0x10FFFF)))
+      (then (throw $__jz_err (f64.const 0))))
+    (local.set $cp (i32.trunc_sat_f64_s (local.get $cpf)))
     ;; ASCII: 1 byte SSO
     (if (i32.lt_u (local.get $cp) (i32.const 128))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT | 1}) (local.get $cp)))))
@@ -1169,10 +1191,20 @@ export default (ctx) => {
         (i32.shl (i32.or (i32.const 0x80) (i32.and (i32.shr_u (local.get $cp) (i32.const 6)) (i32.const 0x3F))) (i32.const 16)))
         (i32.shl (i32.or (i32.const 0x80) (i32.and (local.get $cp) (i32.const 0x3F))) (i32.const 24))))))`
 
-  ctx.core.emit['String.fromCodePoint'] = (code) => {
-    if (code === undefined) return emit(['str', ''])
-    inc('__fromCodePoint')
-    return typed(['call', '$__fromCodePoint', asI32(emit(code))], 'f64')
+  // String.fromCodePoint(...codePoints) — variadic; each arg is ToNumber-coerced
+  // then validated/encoded by __fromCodePoint, results concatenated left to right.
+  ctx.core.emit['String.fromCodePoint'] = (...codes) => {
+    if (codes.length === 0) return emit(['str', ''])
+    ctx.runtime.throws = true
+    inc('__fromCodePoint', '__to_num')
+    const one = (node) => typed(['call', '$__fromCodePoint',
+      ['call', '$__to_num', asI64(emit(node))]], 'f64')
+    let r = one(codes[0])
+    for (let i = 1; i < codes.length; i++) {
+      inc('__str_concat_raw')
+      r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
+    }
+    return r
   }
 
   // .at(i) → charAt with negative index support
