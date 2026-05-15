@@ -46,8 +46,8 @@
 import { ctx } from './ctx.js'
 import {
   VAL, collectParamNames, valTypeOf,
-  updateRep, analyzeValTypes, analyzeIntCertain,
-  staticObjectProps, typedElemCtor, ctorFromElemAux,
+  updateRep, updateGlobalRep, analyzeValTypes, analyzeIntCertain,
+  staticObjectProps, typedElemCtor, ctorFromElemAux, shapeOfObjectLiteralAst,
 } from './analyze.js'
 
 // === typeof predicate helper ==============================================
@@ -413,6 +413,11 @@ export function recordGlobalRep(name, expr) {
   }
   const ctor = typedElemCtor(expr)
   if (ctor) (ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
+  // Static-shape capture for module-level object literals — lets `{ ...G.path }`
+  // resolve its source schema by walking the global rep's shape tree at the
+  // spread site (see shape walk in analyze.js / resolveSchema in object.js).
+  const sh = shapeOfObjectLiteralAst(expr)
+  if (sh) updateGlobalRep(name, { jsonShape: sh })
 }
 
 // === Call-site argument inference =========================================

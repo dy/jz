@@ -2564,7 +2564,10 @@ function parseUnifiedJsonShape(srcs) {
 /** Resolve the json shape for an expression by walking name → rep.jsonShape and
  *  `.prop` / `[i]` indirection. Returns null when shape is unknown at this site. */
 export function shapeOf(expr) {
-  if (typeof expr === 'string') return ctx.func.localReps?.get(expr)?.jsonShape || null
+  if (typeof expr === 'string')
+    return ctx.func.localReps?.get(expr)?.jsonShape
+        ?? ctx.scope.globalReps?.get(expr)?.jsonShape
+        ?? null
   if (!Array.isArray(expr)) return null
   const [op, ...args] = expr
   if (op === '()' && args[0] === 'JSON.parse') {
@@ -2580,4 +2583,29 @@ export function shapeOf(expr) {
     if (parent?.val === VAL.ARRAY) return parent.elem || null
   }
   return null
+}
+
+/** Build a structural shape from a `{}` AST node — recursive for nested
+ *  object/array literals + propagating shapes through identifier references
+ *  (so `let G = {…}; let H = {x: G}` carries G's shape under H.x). Returns
+ *  null when any property breaks the static-shape contract (computed key,
+ *  spread, non-shape value). Only called from `recordGlobalRep` — local
+ *  bindings keep relying on `shapeOf` whose narrower contract (JSON.parse /
+ *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
+ *  locking a static jsonShape onto it. */
+export function shapeOfObjectLiteralAst(expr) {
+  if (typeof expr === 'string') return shapeOf(expr)
+  if (!Array.isArray(expr) || expr[0] !== '{}') return shapeOf(expr)
+  const raw = expr.length === 2 && Array.isArray(expr[1]) && expr[1][0] === ','
+    ? expr[1].slice(1)
+    : expr.slice(1)
+  const props = Object.create(null)
+  const names = []
+  for (const p of raw) {
+    if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') return null
+    names.push(p[1])
+    const child = shapeOfObjectLiteralAst(p[2])
+    if (child) props[p[1]] = child
+  }
+  return names.length ? { val: VAL.OBJECT, props, names } : null
 }

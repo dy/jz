@@ -308,6 +308,32 @@ test('spread: {x: 0, ...a} prefix override', () => {
   is(f(), 11)  // a.x overrides the 0
 })
 
+test('spread: nested object-literal source schema', () => {
+  // Module-level literal trees + spread of nested `.left.required` walks the
+  // captured shape (recordGlobalRep + shapeOfObjectLiteralAst) so each spread
+  // source resolves a schema instead of falling to runtime.
+  const { f } = run(`
+    let groups = {
+      left: {
+        required: {a: 1, b: 2},
+        optional: {c: 3}
+      },
+      right: {
+        required: {d: 4},
+        optional: {e: 5}
+      }
+    }
+    let merged = {
+      ...groups.left.required,
+      ...groups.left.optional,
+      ...groups.right.required,
+      ...groups.right.optional
+    }
+    export let f = () => merged.a + merged.e
+  `)
+  is(f(), 6)
+})
+
 // ============================================
 // OBJECT REST DESTRUCTURING
 // ============================================
