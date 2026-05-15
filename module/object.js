@@ -215,14 +215,16 @@ export default (ctx) => {
       }
     }
     const tSchema = resolveSchema(target)
+    const sourceSchemas = sources.map(resolveSchema)
     if (!tSchema) err('Object.assign: target needs known schema')
+    if (sourceSchemas.some(s => !s)) return emitDynamicAssign(target, sources, sourceSchemas)
     const t = temp('at'), s = temp('as')
     const tBase = tempI32('tb'), sBase2 = tempI32('sb')
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
-    for (const source of sources) {
-      const sSchema = resolveSchema(source)
-      if (!sSchema) err('Object.assign: source needs known schema')
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i]
+      const sSchema = sourceSchemas[i]
       body.push(['local.set', `$${s}`, asF64(emit(source))])
       body.push(['local.set', `$${sBase2}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
       for (let si = 0; si < sSchema.length; si++) {
@@ -340,6 +342,57 @@ export default (ctx) => {
 }
 
 // --- Helpers ---
+
+// Used only after the target schema is known. Unknown HASH targets can grow by
+// returning a new pointer, which would not preserve aliases to the old value.
+function emitDynamicAssign(target, sources, sourceSchemas = sources.map(resolveSchema)) {
+  includeModule('collection')
+  inc('__hash_set', '__dyn_get_any', '__ptr_offset', '__len')
+  const t = temp('adt'), s = temp('ads'), sBase = tempI32('adsb')
+  const keys = temp('adk'), keysBase = tempI32('adkb'), len = tempI32('adn')
+  const i = tempI32('adi'), key = temp('adkey')
+  const id = ctx.func.uniq++
+  const body = [['local.set', `$${t}`, asF64(emit(target))]]
+
+  for (let si = 0; si < sources.length; si++) {
+    const source = sources[si]
+    const sSchema = sourceSchemas[si]
+    body.push(['local.set', `$${s}`, asF64(emit(source))])
+    if (sSchema) {
+      body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
+      for (let pi = 0; pi < sSchema.length; pi++)
+        body.push(['local.set', `$${t}`, ['f64.reinterpret_i64',
+          ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+            asI64(emit(['str', String(sSchema[pi])])),
+            ['i64.load', slotAddr(sBase, pi)]]]])
+      continue
+    }
+
+    body.push(
+      ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'adk')],
+      ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$adbrk${id}_${si}`, ['loop', `$adloop${id}_${si}`,
+        ['br_if', `$adbrk${id}_${si}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['local.set', `$${key}`, ['f64.load',
+          ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
+        ['local.set', `$${t}`, ['f64.reinterpret_i64',
+          ['call', '$__hash_set',
+            ['i64.reinterpret_f64', ['local.get', `$${t}`]],
+            ['i64.reinterpret_f64', ['local.get', `$${key}`]],
+            ['call', '$__dyn_get_any',
+              ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+              ['i64.reinterpret_f64', ['local.get', `$${key}`]]]]]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$adloop${id}_${si}`]]])
+  }
+
+  if (typeof target === 'string' && ctx.func.locals.get(target) === 'f64')
+    body.push(['local.set', `$${target}`, ['local.get', `$${t}`]])
+  body.push(['local.get', `$${t}`])
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
 
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
@@ -575,16 +628,22 @@ function hashEntriesFromTemp(t) {
 // types (ARRAY, nullish, primitives) return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
 function emitRuntimeKeys(obj) {
+  const t = temp('rk')
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    runtimeKeysFromTemp(t, 'rk')], 'f64')
+}
+
+function runtimeKeysFromTemp(t, tag) {
   inc('__ptr_type')
   // Ensure the schema table global exists even in programs that never use
   // JSON.parse or compile-time schemas — the OBJECT arm reads it at runtime
   // and the watr resolver requires the symbol to be declared.
   if (!ctx.scope.globals.has('__schema_tbl'))
     ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
-  const t = temp('rk'), tt = tempI32('rkt')
-  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: 'rke' })
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, asF64(emit(obj))],
+  const tt = tempI32(`${tag}t`)
+  const empty = allocPtr({ type: PTR.ARRAY, len: 0, tag: `${tag}e` })
+  return ['block', ['result', 'f64'],
     ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
@@ -594,7 +653,7 @@ function emitRuntimeKeys(obj) {
           ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
           ['i32.ne', ['global.get', '$__schema_tbl'], ['i32.const', 0]]],
         ['then', objectKeysFromTemp(t)],
-        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]], 'f64')
+        ['else', ['block', ['result', 'f64'], empty.init, empty.ptr]]]]]]
 }
 
 function emitRuntimeValues(obj) {
