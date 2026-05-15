@@ -1439,10 +1439,12 @@ export const emitter = {
     }
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a + b)
     if (_f) return _f
-    if (isLit(vb) && litVal(vb) === 0) return va
-    if (isLit(va) && litVal(va) === 0) return vb
+    // Neither side is a string here (string paths handled above), but either may
+    // still be null/undefined/pointer — numeric `+` performs ToNumber like `-`/`*`.
+    if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
+    if (isLit(va) && litVal(va) === 0) return toNumF64(b, vb)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.add', va, vb], 'i32')
-    return typed(['f64.add', asF64(va), asF64(vb)], 'f64')
+    return typed(['f64.add', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '-': (a, b) => {
     if (_expect === 'void' && isPostfix(a, '++', b)) return emit(a, 'void')

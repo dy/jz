@@ -353,8 +353,10 @@ export const f64rem = (a, b) => {
 
 /** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
  *  Skips coercion when static type proves the value is already numeric
- *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT) or when
- *  __to_num is not available (no string module loaded → no strings possible). */
+ *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT). When the full
+ *  string-parsing `__to_num` isn't loaded (no string module → no strings can
+ *  exist) nullish *literals* still fold statically (null→+0, undefined→NaN);
+ *  non-literal values pass through uncoerced. */
 export function toNumF64(node, v) {
   if (v.type === 'i32' || isLit(v)) return asF64(v)
   const vt = keyValType(node)
@@ -379,7 +381,22 @@ export function toNumF64(node, v) {
     if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
     if (v[0] === 'call' && v[1] === '$__time_ms') return v
   }
-  if (!ctx.core.stdlib['__to_num']) return asF64(v)
+  if (!ctx.core.stdlib['__to_num']) {
+    // No full ToNumber helper loaded — the program provably has no strings.
+    // A nullish *literal* still coerces (null→+0, undefined→NaN) — fold it
+    // statically so `Math.log10(null)` & friends are correct at zero cost.
+    // Non-literal values fall through to `asF64`: an untyped runtime value
+    // *could* be a nullish sentinel, but blanket per-use coercion taxes every
+    // numeric kernel (fib, math loops) — nullable-param coercion belongs once
+    // at the function boundary (null-flow inference), not at each use site.
+    const f = asF64(v)
+    if (Array.isArray(f) && f[0] === 'f64.const' && typeof f[1] === 'string') {
+      const lit = f[1]
+      if (lit.startsWith('nan:'))                           // NaN-boxed sentinel/pointer
+        return typed(['f64.const', lit.slice(4) === NULL_NAN ? 0 : 'nan'], 'f64')
+    }
+    return f
+  }
   inc('__to_num')
   return typed(['call', '$__to_num', asI64(v)], 'f64')
 }
