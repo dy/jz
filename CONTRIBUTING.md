@@ -61,7 +61,7 @@ node test/strings.js
 
 jz makes a load-bearing promise: **on the bench corpus, jz wasm is at least as
 fast and at least as small as the alternatives.** Concretely, enforced by
-`test/bench-pin.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
+`test/bench.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
 
 - **Speed** (`-O` speed-tuned build): jz median ≤ V8, AssemblyScript (`asc -O3`)
   and Porffor on every comparable case, and ≤ them on geomean.
@@ -75,12 +75,12 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 Run locally (needs `asc`, `porf`, `wasm-opt` on PATH for the full picture):
 
 ```sh
-npm run test:bench-pin   # the gate
+npm run test:bench   # the gate
 npm run bench:size       # just the wasm-size table (jz vs AS -Oz vs porf, + wasm-opt slack)
 npm run bench            # just the speed harness
 ```
 
-**Ratchet, don't backslide.** `bench-pin.js` carries per-case `win`/`tie`/`todo`
+**Ratchet, don't backslide.** `bench.js` carries per-case `win`/`tie`/`todo`
 claims and geomean ceilings. When you make jz beat a `todo`, promote it to
 `win`/`tie` in the same PR; when you shrink codegen, tighten the relevant
 geomean ceiling and the `wasm-opt` slack budget. A PR may not move any claim
@@ -96,7 +96,7 @@ the unrolled/vectorized hot kernels — say so in the commit and adjust the
 2. For a fair size/speed comparison, add a self-contained `bench/<name>/<name>.as.ts`
    (AssemblyScript port — env imports `perfNow`/`logLine`, see `bench/bitwise/bitwise.as.ts`).
    Optional: `<name>.c` / `.rs` / `.go` / `.zig` for native baselines, `<name>.wat` for a hand-written reference.
-3. Add the case to the `SPEED` and `SIZE` maps in `test/bench-pin.js` (claims
+3. Add the case to the `SPEED` and `SIZE` maps in `test/bench.js` (claims
    default to `todo` / `na`), and a `SIZE_BUDGET` backstop.
 4. `npm run bench -- --cases=<name>` and `npm run bench:size -- <name>` to see where it lands.
 

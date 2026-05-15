@@ -29,8 +29,8 @@
     "bench:size": "node scripts/bench-size.mjs",
     "bench:compile": "node scripts/bench-compile.mjs",
     "build:examples": "for dir in examples/*; do node \"$dir/build.mjs\"; done",
-    "test:bench-pin": "node test/bench-pin.js",
-    "test:all": "npm test && npm run test:bench-pin",
+    "test:bench": "node test/bench.js",
+    "test:all": "npm test && npm run test:bench",
     "prepublishOnly": "npm run test:all"
   },
   "repository": {
