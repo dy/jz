@@ -17,6 +17,14 @@ test('Regression: Object.assign overwrites existing field from subset schema', (
   is(out[2], 2)
 })
 
+test('Regression: Object.freeze returns the input object value', () => {
+  const { f } = run(`
+    const config = Object.freeze({ mode: 1 })
+    export let f = () => config.mode
+  `)
+  is(f(), 1)
+})
+
 test('Regression: Object.assign extends target with new fields', () => {
   const { f } = run(`export let f = () => {
     let target = {x: 1}
