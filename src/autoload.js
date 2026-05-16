@@ -61,7 +61,7 @@ export const CALL_MODULES = dict({
   'console.log': ['core', 'string', 'number', 'console'],
   'console.warn': ['core', 'string', 'number', 'console'],
   'console.error': ['core', 'string', 'number', 'console'],
-  'Object.fromEntries': ['collection', 'string'],
+  'Object.fromEntries': ['core', 'object', 'collection', 'string'],
   'Object.keys': ['core', 'object', 'string'],
   'Object.getOwnPropertyNames': ['core', 'object', 'string'],
   'Object.values': ['core', 'object', 'string'],

@@ -386,8 +386,12 @@ export default (ctx) => {
     err('Object.defineProperty descriptor semantics are outside jz scope; jzify only folds static bundler export helpers')
   }
 
-  // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs
+  // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs.
+  // Spec step 1 is RequireObjectCoercible(iterable): a missing/nullish argument
+  // is a TypeError, not an `emit(undefined)` compiler crash.
   ctx.core.emit['Object.fromEntries'] = (arr) => {
+    const nullishThrow = requireCoercible(arr)
+    if (nullishThrow) return nullishThrow
     inc('__hash_new', '__hash_set')
     inc('__str_hash', '__str_eq')
     const va = asF64(emit(arr))
