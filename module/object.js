@@ -155,9 +155,31 @@ export default (ctx) => {
   // Reuses the same own-property emitter; receiver-type variants above apply.
   ctx.core.emit['Object.hasOwn'] = (obj, key) => ctx.core.emit['.hasOwnProperty'](obj, key)
 
+  // String primitives are coerced to exotic String objects whose own enumerable
+  // properties are the indexed characters. Object.values/entries iterate them.
+  const stringValType = (obj) => (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.STRING
+
   ctx.core.emit['Object.values'] = (obj) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
+    if (stringValType(obj)) {
+      inc('__str_idx', '__str_len')
+      const s = temp('osv'), i = tempI32('osvi'), len = tempI32('osvl')
+      const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+      const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'osv' })
+      const id = ctx.func.uniq++
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(obj))],
+        ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
+        out.init,
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          elemStore(out.local, i, ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]]),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
     if (!schema) return emitRuntimeValues(obj)
@@ -176,6 +198,28 @@ export default (ctx) => {
   ctx.core.emit['Object.entries'] = (obj) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
+    if (stringValType(obj)) {
+      inc('__str_idx', '__str_len', '__to_str')
+      const s = temp('oes'), i = tempI32('oesi'), len = tempI32('oesl'), pair = tempI32('oep')
+      const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+      const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oes' })
+      const id = ctx.func.uniq++
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(obj))],
+        ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
+        out.init,
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+          ['f64.store', slotAddr(pair, 0), ['f64.reinterpret_i64',
+            ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]],
+          ['f64.store', slotAddr(pair, 1), ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]]],
+          elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
     if (!schema) return emitRuntimeEntries(obj)
