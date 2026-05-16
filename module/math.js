@@ -2,10 +2,9 @@
  * Math module - Math.sin, Math.cos, Math.sqrt, Math.PI, etc.
  *
  * Module API:
- * - ctx.core.emit['math.X'] = (args) => WasmNode - custom emitters
+ * - ctx.core.emit['math.X'] = emitter(deps, args => WasmNode) - emitters with declarative stdlib deps
  * - ctx.core.stdlib['math.X'] = '(func ...)' - WAT function definitions
- * - ctx.deps['math.X'] = ['dep1', 'dep2'] - stdlib dependencies
- * - include('math.X') - marks stdlib for inclusion (called by emitters)
+ * - ctx.core.stdlibDeps['math.X'] = ['dep'] - direct stdlib→stdlib edges (expanded transitively)
  *
  * Prepare resolves Math.sin(x) → ['()', 'math.sin', x]
  * Compile looks up ctx.core.emit['math.sin'] and calls it.
@@ -15,10 +14,32 @@
 
 import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { inc } from '../src/ctx.js'
+import { emitter } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
 
 export default (ctx) => {
+  // Direct stdlib→stdlib call edges. resolveIncludes() expands these transitively,
+  // so each emitter declares only the single stdlib it directly calls.
+  Object.assign(ctx.core.stdlibDeps, {
+    'math.sin': ['math.isFinite'],
+    'math.cos': ['math.isFinite'],
+    'math.tan': ['math.sin', 'math.cos'],
+    'math.expm1': ['math.exp'],
+    'math.log2': ['math.log'],
+    'math.log1p': ['math.log'],
+    'math.pow': ['math.exp', 'math.log'],
+    'math.asin': ['math.atan'],
+    'math.acos': ['math.asin'],
+    'math.atan2': ['math.atan'],
+    'math.sinh': ['math.exp'],
+    'math.cosh': ['math.exp'],
+    'math.tanh': ['math.exp'],
+    'math.asinh': ['math.isFinite', 'math.log'],
+    'math.acosh': ['math.log'],
+    'math.atanh': ['math.log'],
+    'math.cbrt': ['math.isFinite', 'math.pow'],
+  })
+
   // Helpers: all math ops take f64 and return f64. Args go through ToNumber
   // (toNumF64) — ECMA Math methods coerce each argument, so null→0, undefined→NaN.
   const f = (op, a) => typed([op, toNumF64(a, emit(a))], 'f64')
@@ -41,8 +62,7 @@ export default (ctx) => {
   // undefined→NaN, and strings get parsed. Without this, raw NaN-boxed pointers
   // (null/undefined/strings) would propagate through math.log etc. and surface
   // as the original null/undefined sentinel after decode.
-  const call = (name, ...args) => (inc(name), typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64'))
-  const callDeps = (deps, name, ...args) => (inc(...deps), call(name, ...args))
+  const call = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64')
 
   // Constants
   ctx.core.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
@@ -108,51 +128,48 @@ export default (ctx) => {
   ctx.core.emit['math.fround'] = a => typed(['f64.promote_f32', ['f32.demote_f64', toNumF64(a, emit(a))]], 'f64')
 
   // Sign
-  ctx.core.emit['math.sign'] = a => call('math.sign', a)
+  ctx.core.emit['math.sign'] = emitter(['math.sign'], a => call('math.sign', a))
 
   // Trig
-  ctx.core.emit['math.sin'] = a => callDeps(['math.isFinite', 'math.sin'], 'math.sin', a)
-  ctx.core.emit['math.cos'] = a => callDeps(['math.isFinite', 'math.cos'], 'math.cos', a)
-  ctx.core.emit['math.tan'] = a => callDeps(['math.isFinite', 'math.sin', 'math.cos', 'math.tan'], 'math.tan', a)
+  ctx.core.emit['math.sin'] = emitter(['math.sin'], a => call('math.sin', a))
+  ctx.core.emit['math.cos'] = emitter(['math.cos'], a => call('math.cos', a))
+  ctx.core.emit['math.tan'] = emitter(['math.tan'], a => call('math.tan', a))
 
   // Inverse trig
-  ctx.core.emit['math.asin'] = a => callDeps(['math.atan', 'math.asin'], 'math.asin', a)
-  ctx.core.emit['math.acos'] = a => callDeps(['math.atan', 'math.asin', 'math.acos'], 'math.acos', a)
-  ctx.core.emit['math.atan'] = a => call('math.atan', a)
-  ctx.core.emit['math.atan2'] = (a, b) => callDeps(['math.atan', 'math.atan2'], 'math.atan2', a, b)
+  ctx.core.emit['math.asin'] = emitter(['math.asin'], a => call('math.asin', a))
+  ctx.core.emit['math.acos'] = emitter(['math.acos'], a => call('math.acos', a))
+  ctx.core.emit['math.atan'] = emitter(['math.atan'], a => call('math.atan', a))
+  ctx.core.emit['math.atan2'] = emitter(['math.atan2'], (a, b) => call('math.atan2', a, b))
 
   // Hyperbolic
-  ctx.core.emit['math.sinh'] = a => callDeps(['math.exp', 'math.sinh'], 'math.sinh', a)
-  ctx.core.emit['math.cosh'] = a => callDeps(['math.exp', 'math.cosh'], 'math.cosh', a)
-  ctx.core.emit['math.tanh'] = a => callDeps(['math.exp', 'math.tanh'], 'math.tanh', a)
+  ctx.core.emit['math.sinh'] = emitter(['math.sinh'], a => call('math.sinh', a))
+  ctx.core.emit['math.cosh'] = emitter(['math.cosh'], a => call('math.cosh', a))
+  ctx.core.emit['math.tanh'] = emitter(['math.tanh'], a => call('math.tanh', a))
 
   // Inverse hyperbolic
-  ctx.core.emit['math.asinh'] = a => callDeps(['math.log', 'math.isFinite', 'math.asinh'], 'math.asinh', a)
-  ctx.core.emit['math.acosh'] = a => callDeps(['math.log', 'math.acosh'], 'math.acosh', a)
-  ctx.core.emit['math.atanh'] = a => callDeps(['math.log', 'math.atanh'], 'math.atanh', a)
+  ctx.core.emit['math.asinh'] = emitter(['math.asinh'], a => call('math.asinh', a))
+  ctx.core.emit['math.acosh'] = emitter(['math.acosh'], a => call('math.acosh', a))
+  ctx.core.emit['math.atanh'] = emitter(['math.atanh'], a => call('math.atanh', a))
 
   // Exponential and logarithmic
-  ctx.core.emit['math.exp'] = a => call('math.exp', a)
-  ctx.core.emit['math.expm1'] = a => callDeps(['math.exp', 'math.expm1'], 'math.expm1', a)
-  ctx.core.emit['math.log'] = a => call('math.log', a)
-  ctx.core.emit['math.log2'] = a => callDeps(['math.log', 'math.log2'], 'math.log2', a)
-  ctx.core.emit['math.log10'] = a => callDeps(['math.log10'], 'math.log10', a)
-  ctx.core.emit['math.log1p'] = a => callDeps(['math.log', 'math.log1p'], 'math.log1p', a)
+  ctx.core.emit['math.exp'] = emitter(['math.exp'], a => call('math.exp', a))
+  ctx.core.emit['math.expm1'] = emitter(['math.expm1'], a => call('math.expm1', a))
+  ctx.core.emit['math.log'] = emitter(['math.log'], a => call('math.log', a))
+  ctx.core.emit['math.log2'] = emitter(['math.log2'], a => call('math.log2', a))
+  ctx.core.emit['math.log10'] = emitter(['math.log10'], a => call('math.log10', a))
+  ctx.core.emit['math.log1p'] = emitter(['math.log1p'], a => call('math.log1p', a))
 
   // Power
-  ctx.core.emit['math.pow'] = (a, b) => callDeps(['math.exp', 'math.log', 'math.pow'], 'math.pow', a, b)
+  ctx.core.emit['math.pow'] = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
   ctx.core.emit['**'] = ctx.core.emit['math.pow']
-  ctx.core.emit['math.cbrt'] = a => callDeps(['math.exp', 'math.log', 'math.pow', 'math.isFinite', 'math.cbrt'], 'math.cbrt', a)
-  ctx.core.emit['math.hypot'] = (a, b, ...rest) => {
+  ctx.core.emit['math.cbrt'] = emitter(['math.cbrt'], a => call('math.cbrt', a))
+  ctx.core.emit['math.hypot'] = emitter(['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
     if (b === undefined) return f('f64.abs', a)
     let r = call('math.hypot', a, b)
-    for (const x of rest) {
-      inc('math.hypot')
-      r = typed(['call', '$math.hypot', r, asF64(emit(x))], 'f64')
-    }
+    for (const x of rest) r = typed(['call', '$math.hypot', r, asF64(emit(x))], 'f64')
     return r
-  }
+  })
 
   // Integer/bit operations: return i32 directly. Consumers `asF64`-rebox at
   // store/return boundaries; consumers staying in i32 (bit chains, i32 locals)
@@ -163,7 +180,7 @@ export default (ctx) => {
   ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(emit(a)), toI32(emit(b))], 'i32')
 
   // Random
-  ctx.core.emit['math.random'] = () => (inc('math.random'), typed(['call', '$math.random'], 'f64'))
+  ctx.core.emit['math.random'] = emitter(['math.random'], () => typed(['call', '$math.random'], 'f64'))
 
   // ============================================
   // WAT stdlib implementations

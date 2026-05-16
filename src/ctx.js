@@ -99,6 +99,22 @@ export const derive = (parent) => ({ ...parent })
 /** Include stdlib names for emission. */
 export const inc = (...names) => names.forEach(n => ctx.core.includes.add(n))
 
+/** Wrap an emit handler with a declarative stdlib-dependency list. The deps
+ *  become data — exposed as `.deps` (tabulatable, analyzable) — and are `inc`'d
+ *  on every call, while the body `fn` stays a pure `args → IR` builder (also
+ *  reachable as `.pure`). Emitters with no stdlib needs skip the wrapper and
+ *  register as plain functions; behaviour is identical either way. */
+export const emitter = (deps, fn) => {
+  const run = (...args) => (inc(...deps), fn(...args))
+  run.deps = deps
+  run.pure = fn
+  // Preserve the body's arity: `typeof Math.x` folding keys off emitter `.length`
+  // to tell callable builtins (sin) from constant ones (PI). The rest-param
+  // wrapper would otherwise report 0 for everything.
+  Object.defineProperty(run, 'length', { value: fn.length, configurable: true })
+  return run
+}
+
 /** Expand ctx.core.includes transitively via ctx.core.stdlibDeps. Call before WASM assembly.
  *  Each module co-locates its own deps with its stdlib registrations at init time. */
 export function resolveIncludes() {
