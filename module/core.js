@@ -840,8 +840,11 @@ export default (ctx) => {
           (i64.eq (i64.and (local.get $v) (i64.const 0xFFF0000000000000))
                   (i64.const 0xFFF0000000000000)))
       (then (return (global.get $__tof_number))))
-    (if (call $__is_nullish (local.get $v))
+    (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN}))
       (then (return (global.get $__tof_undefined))))
+    ;; typeof null === "object" — the historical JS quirk, distinct from undefined.
+    (if (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
+      (then (return (global.get $__tof_object))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if ${stringTest}
       (then (return (global.get $__tof_string))))
