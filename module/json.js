@@ -126,23 +126,33 @@ export default (ctx) => {
     (i32.store8 (i32.add (global.get $__jbuf) (global.get $__jpos)) (local.get $b))
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
 
-  // __jput_str(ptr: i64) — append string chars (without quotes) to buffer
+  // __jput_str(ptr: i64) — append string chars (without quotes) to buffer.
+  // Per QuoteJSONString: every code unit U+0000..U+001F must be escaped — the
+  // five with short forms (\b \t \n \f \r) plus \uXXXX for the rest.
   ctx.core.stdlib['__jput_str'] = `(func $__jput_str (param $ptr i64)
-    (local $len i32) (local $i i32) (local $ch i32)
+    (local $len i32) (local $i i32) (local $ch i32) (local $n i32)
     (local.set $len (call $__str_byteLen (local.get $ptr)))
     (local.set $i (i32.const 0))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $ch (call $__char_at (local.get $ptr) (local.get $i)))
       ;; Escape special JSON chars
-      (if (i32.le_u (local.get $ch) (i32.const 13))
+      (if (i32.lt_u (local.get $ch) (i32.const 32))
         (then
           (if (i32.eq (local.get $ch) (i32.const 10)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 110)))
           (else (if (i32.eq (local.get $ch) (i32.const 13)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 114)))
           (else (if (i32.eq (local.get $ch) (i32.const 9)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 116)))
           (else (if (i32.eq (local.get $ch) (i32.const 8)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 98)))
           (else (if (i32.eq (local.get $ch) (i32.const 12)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 102)))
-            (else (call $__jput (local.get $ch)))))))))))))
+          (else
+            ;; \\u00XX — control char with no short escape
+            (call $__jput (i32.const 92)) (call $__jput (i32.const 117))
+            (call $__jput (i32.const 48)) (call $__jput (i32.const 48))
+            (call $__jput (i32.add (i32.const 48) (i32.shr_u (local.get $ch) (i32.const 4))))
+            (local.set $n (i32.and (local.get $ch) (i32.const 15)))
+            (if (i32.ge_u (local.get $n) (i32.const 10))
+              (then (call $__jput (i32.add (local.get $n) (i32.const 87))))
+              (else (call $__jput (i32.add (local.get $n) (i32.const 48))))))))))))))))
         (else
           (if (i32.eq (local.get $ch) (i32.const 34)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 34)))
           (else (if (i32.eq (local.get $ch) (i32.const 92)) (then (call $__jput (i32.const 92)) (call $__jput (i32.const 92)))
