@@ -1176,9 +1176,42 @@ export function analyzeValTypes(body) {
   // in different scopes — jz hoists `let` to function scope so they share a name).
   // Once invalidated, no later setter can re-establish a definite ctor.
   const typedPoison = new Set()
+  // DataView vars whose ctor args can't be pinned to literals (or that got
+  // reassigned to a differently-shaped DataView) — once bad, never bounds-checked.
+  const dvBoundsBad = new Set()
   const invalidate = (name) => {
     typedPoison.add(name)
     ctx.types.typedElem?.delete(name)
+    ctx.types.dvBounds?.delete(name)
+    dvBoundsBad.add(name)
+  }
+  // Record `new DataView(buf, byteOffset?, byteLength?)` ctor args when byteOffset
+  // and byteLength are numeric literals (or absent). The emitter uses these to
+  // bounds-check DV get/set against the view size (spec 25.3.1.1 GetViewValue
+  // step 13). A non-literal offset would need its runtime value to find the
+  // parent buffer header, so such views fall back to no bounds checking.
+  function trackDataView(name, rhs) {
+    if (!ctx.types.dvBounds) ctx.types.dvBounds = new Map()
+    if (dvBoundsBad.has(name)) return
+    const args = rhs[2]
+    const list = typeof args === 'string' ? [args]
+      : (Array.isArray(args) && args[0] === ',' ? args.slice(1) : null)
+    const litNum = (n) => typeof n === 'number' ? n
+      : (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' ? n[1] : undefined)
+    const off = list && list.length > 1 ? litNum(list[1]) : null
+    const len = list && list.length > 2 ? litNum(list[2]) : null
+    const ok = list && list.length >= 1 && list.length <= 3
+      && (list.length < 2 || off != null) && (list.length < 3 || len != null)
+    const meta = ok ? { off: off ?? 0, len: len ?? null } : null
+    const key = meta && `${meta.off}:${meta.len}`
+    const prev = ctx.types.dvBounds.get(name)
+    if (!meta || (prev && prev.key !== key)) {
+      ctx.types.dvBounds.delete(name)
+      dvBoundsBad.add(name)
+    } else {
+      meta.key = key
+      ctx.types.dvBounds.set(name, meta)
+    }
   }
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
@@ -1190,6 +1223,7 @@ export function analyzeValTypes(body) {
       else ctx.types.typedElem.set(name, c)
     }
     const ctor = typedElemCtor(rhs)
+    if (ctor === 'new.DataView') trackDataView(name, rhs)
     if (ctor) return setOrInvalidate(ctor)
     // TYPED-narrowed call result carries elem aux on f.sig.ptrAux — reverse-map it
     // back to a canonical ctor string so unboxablePtrs's typedElemAux lookup
