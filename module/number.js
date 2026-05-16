@@ -9,7 +9,7 @@
  * @module number
  */
 
-import { typed, asF64, asI32, asI64, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { isReassigned } from '../src/analyze.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
@@ -800,7 +800,10 @@ export default (ctx) => {
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     needParseInt()
-    return typed(['call', '$__parseInt', asI64(emit(x)), radix ? asI32(emit(radix)) : ['i32.const', 0]], 'f64')
+    // Radix is coerced ToNumber then ToInt32 (modular wrap; NaN/±∞→0) per spec —
+    // a raw trunc would turn a string radix into garbage and Infinity into maxint.
+    const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
+    return typed(['call', '$__parseInt', asI64(emit(x)), radixIR], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
   const addImportOnce = (ctx, mod, name, fn) => {
