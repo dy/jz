@@ -1249,7 +1249,7 @@ const handlers = {
       const inner = args[0]
       includeForArrayLiteral()
       if (inner == null) return ['[']
-      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); if (items.length && items[items.length - 1] === null) items.pop(); return ['[', ...items.map(item => item == null ? [, JZ_NULL] : prep(item))] }
+      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); if (items.length && items[items.length - 1] === null) items.pop(); return ['[', ...items.map(item => item == null ? [, undefined] : prep(item))] }
       return ['[', prep(inner)]
     }
     if (typeof args[0] === 'string' && ctx.module.namespaces?.[args[0]]) {

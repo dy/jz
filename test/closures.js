@@ -776,11 +776,11 @@ test('closure-unbox: no reinterpret/wrap_i64 roundtrip in inlined closure call',
 // stringified the array node and hit the sentinel: "Cannot convert a Symbol
 // value to a string". The lookup now requires `typeof callee === 'string'`.
 
-test('IIFE arrow returning sparse array literal materializes holes as null', () => {
+test('IIFE arrow returning sparse array literal materializes holes as undefined', () => {
   const { f } = runHost(`export let f = () => (p => [, ''])([1])`)
   const r = f()
   is(r.length, 2)
-  is(r[0], null)
+  is(r[0], undefined)
   is(r[1], '')
 })
 
