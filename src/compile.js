@@ -133,6 +133,13 @@ const isBoundaryWrapped = (func) => {
 }
 
 const ensureThrowRuntime = (sec) => {
+  // A pulled stdlib helper may throw $__jz_err even when no user `throw` set the
+  // flag (e.g. __to_num on a Symbol). Detect it from the included stdlib bodies
+  // so the $__jz_err tag is always present when something can raise it.
+  if (!ctx.runtime.throws && [...ctx.core.includes].some(n => {
+    const body = ctx.core.stdlib[n]
+    return typeof body === 'string' && body.includes('(throw ')
+  })) ctx.runtime.throws = true
   if (!ctx.runtime.throws) return
 
   if (!ctx.scope.globals.has('__jz_last_err_bits'))

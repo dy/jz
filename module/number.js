@@ -20,7 +20,7 @@ export default (ctx) => {
     __mkstr: ['__alloc'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__toExp'],
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
-    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws'],
+    __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
     __to_bigint: ['__char_at', '__str_byteLen'],
     __parseInt: ['__char_at', '__str_byteLen'],
@@ -477,6 +477,12 @@ export default (ctx) => {
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (local.set $t (call $__ptr_type (local.get $v)))
+    ;; ToNumber(Symbol) is a TypeError. A Symbol is an ATOM (type 0) with a user
+    ;; atom-id (>= 16); null/undefined returned above, and a bare NaN carries
+    ;; aux 0, so type==0 && aux>=16 uniquely identifies a Symbol.
+    (if (i32.and (i32.eqz (local.get $t))
+                 (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
+      (then (throw $__jz_err (f64.const 0))))
     ;; Non-string values go through ToString per JS spec, then re-check the
     ;; type in case ToString itself returned a non-string sentinel.
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))

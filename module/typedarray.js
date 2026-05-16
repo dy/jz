@@ -7,7 +7,7 @@
  * @module typed
  */
 
-import { typed, asF64, asI32, asI64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
@@ -338,9 +338,10 @@ export default (ctx) => {
   // ArrayBuffer: first-class byte storage with [-8:byteLen][-4:byteCap][bytes].
   // DataView: passthrough ptr to the same BUFFER — DataView methods operate on raw bytes via offset.
 
-  // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer
+  // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer.
+  // Length is ToNumber-coerced (ToIndex) so a Symbol length raises a TypeError.
   const arrayBufferCtor = (sizeExpr) => {
-    const n = asI32(emit(sizeExpr))
+    const n = asI32(toNumF64(sizeExpr, emit(sizeExpr)))
     const out = allocPtr({ type: PTR.BUFFER, len: n, stride: 1, tag: 'ab' })
     return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
@@ -581,10 +582,12 @@ export default (ctx) => {
     (i32.trunc_sat_f64_s (local.get $idx)))`
 
   // ToIndex the DV byte offset, throwing RangeError on a negative/oversized value.
+  // The offset is ToNumber-coerced first (per ToIndex) so a Symbol byte offset
+  // raises a TypeError instead of silently truncating to 0.
   const dvIndex = (offNode) => {
     ctx.runtime.throws = true
     inc('__dv_index')
-    return typed(['call', '$__dv_index', asF64(emit(offNode))], 'i32')
+    return typed(['call', '$__dv_index', toNumF64(offNode, emit(offNode))], 'i32')
   }
 
   // DataView set methods: extract i32 offset from f64 ptr, optionally byte-swap, store.
@@ -600,12 +603,14 @@ export default (ctx) => {
     ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
       const dvOff = ptrOffsetIR(emit(dv), VAL.BUFFER)
       const addr = ['i32.add', dvOff, dvIndex(off)]
-      // Coerce value into the wasm value type the store op consumes.
+      // Coerce value into the wasm value type the store op consumes. Non-BigInt
+      // stores ToNumber the value first (per SetViewValue) so a Symbol value
+      // raises a TypeError and a string value parses instead of truncating to 0.
       let v
       if (valType === 'i64') v = typed(['i64.reinterpret_f64', asF64(emit(val))], 'i64')
-      else if (valType === 'f64') v = asF64(emit(val))
-      else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(emit(val))], 'f32')
-      else v = asI32(emit(val))
+      else if (valType === 'f64') v = asF64(toNumF64(val, emit(val)))
+      else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
+      else v = asI32(toNumF64(val, emit(val)))
 
       if (size === 1) return [storeOp, addr, v]
 
