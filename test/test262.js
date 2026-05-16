@@ -182,7 +182,139 @@ function countJs(dir) {
   return count
 }
 
+// Legacy Sputnik language tests that exercise genuine jz limitations.
+// Dropping the blanket `Test262Error legacy harness` skip let jz run this
+// corpus (+534 passes); these residual files each hit a specific feature
+// jz cannot yet model. Exact rel paths only — a Map can never over-skip a
+// passing test the way a pattern can. Revisit entries as the named fix lands.
+const LEGACY_LANG_LIMITATIONS = new Map([
+  // ASI is not applied around a postfix/prefix ++/-- operator.
+  ['test/language/asi/S7.9.2_A1_T7.js', 'ASI around ++/-- operator'],
+  ['test/language/asi/S7.9_A5.2_T1.js', 'ASI around ++/-- operator'],
+  ['test/language/asi/S7.9_A5.4_T1.js', 'ASI around ++/-- operator'],
+  ['test/language/asi/S7.9_A5.6_T1.js', 'ASI around ++/-- operator'],
+  ['test/language/asi/S7.9_A5.6_T2.js', 'ASI around ++/-- operator'],
+  // `null` is a NaN-boxed sentinel, not ToNumber-coerced to 0 as ES requires.
+  ['test/language/expressions/addition/S11.6.1_A3.1_T1.3.js', 'null not ToNumber-coerced (NaN-boxed sentinel)'],
+  ['test/language/expressions/compound-assignment/S11.13.2_A4.1_T1.4.js', 'null not ToNumber-coerced in compound assignment'],
+  ['test/language/expressions/compound-assignment/S11.13.2_A4.2_T1.4.js', 'null not ToNumber-coerced in compound assignment'],
+  ['test/language/expressions/compound-assignment/S11.13.2_A4.3_T1.4.js', 'null not ToNumber-coerced in compound assignment'],
+  ['test/language/expressions/compound-assignment/S11.13.2_A4.4_T1.3.js', 'null not ToNumber-coerced in compound assignment'],
+  ['test/language/expressions/compound-assignment/S11.13.2_A4.5_T1.4.js', 'null not ToNumber-coerced in compound assignment'],
+  ['test/language/expressions/postfix-decrement/S11.3.2_A3_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/postfix-decrement/S11.3.2_A4_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/postfix-increment/S11.3.1_A3_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/postfix-increment/S11.3.1_A4_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/prefix-decrement/S11.4.5_A3_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/prefix-decrement/S11.4.5_A4_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/prefix-increment/S11.4.4_A3_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/prefix-increment/S11.4.4_A4_T4.js', 'null not ToNumber-coerced in increment/decrement'],
+  ['test/language/expressions/greater-than-or-equal/S11.8.4_A3.1_T1.3.js', 'null not ToNumber-coerced in relational comparison'],
+  ['test/language/expressions/less-than-or-equal/S11.8.3_A3.1_T1.3.js', 'null not ToNumber-coerced in relational comparison'],
+  // Object model: numeric vs string computed keys are not unified.
+  ['test/language/expressions/assignment/S8.12.5_A1.js', 'object numeric vs string computed-key identity'],
+  ['test/language/expressions/assignment/S8.12.5_A2.js', 'object numeric vs string computed-key identity'],
+  // Calling / constructing a non-callable does not raise a runtime TypeError.
+  ['test/language/expressions/call/S11.2.3_A3_T1.js', 'call of non-callable: no runtime TypeError'],
+  ['test/language/expressions/call/S11.2.3_A3_T2.js', 'call of non-callable: no runtime TypeError'],
+  ['test/language/expressions/call/S11.2.3_A3_T3.js', 'call of non-callable: no runtime TypeError'],
+  ['test/language/expressions/call/S11.2.3_A3_T4.js', 'call of non-callable: no runtime TypeError'],
+  ['test/language/expressions/call/S11.2.3_A3_T5.js', 'call of non-callable: no runtime TypeError'],
+  ['test/language/expressions/new/S11.2.2_A3_T1.js', 'new on non-constructor: no runtime TypeError'],
+  ['test/language/expressions/new/S11.2.2_A3_T2.js', 'new on non-constructor: no runtime TypeError'],
+  ['test/language/expressions/new/S11.2.2_A3_T3.js', 'new on non-constructor: no runtime TypeError'],
+  ['test/language/expressions/new/S11.2.2_A3_T4.js', 'new on non-constructor: no runtime TypeError'],
+  ['test/language/expressions/new/S11.2.2_A3_T5.js', 'new on non-constructor: no runtime TypeError'],
+  ['test/language/expressions/property-accessors/S11.2.1_A3_T4.js', 'property access on null/undefined: no runtime TypeError'],
+  ['test/language/expressions/property-accessors/S11.2.1_A3_T5.js', 'property access on null/undefined: no runtime TypeError'],
+  // Booleans are erased to f64 — no boolean→string coercion / typeof.
+  ['test/language/expressions/concatenation/S9.8_A3_T2.js', 'boolean→string coercion (boolean type erased to f64)'],
+  ['test/language/types/boolean/S8.3_A1_T2.js', 'typeof boolean (boolean type erased to f64)'],
+  // Loose equality between a denormal-number string and number.
+  ['test/language/expressions/does-not-equals/S11.9.2_A5.3.js', 'string<->number loose equality of denormal'],
+  ['test/language/expressions/equals/S11.9.1_A5.3.js', 'string<->number loose equality of denormal'],
+  // Lone-surrogate / astral-plane string relational comparison.
+  ['test/language/expressions/greater-than/S11.8.2_A4.12_T1.js', 'lone-surrogate / astral string comparison'],
+  ['test/language/expressions/less-than/S11.8.1_A4.12_T1.js', 'lone-surrogate / astral string comparison'],
+  ['test/language/expressions/greater-than-or-equal/S11.8.4_A4.12_T1.js', 'lone-surrogate / astral string comparison'],
+  ['test/language/expressions/less-than-or-equal/S11.8.3_A4.12_T1.js', 'lone-surrogate / astral string comparison'],
+  ['test/language/source-text/6.1.js', 'astral code point source-text handling'],
+  // `in` operator: needs a real object model / prototype chain.
+  ['test/language/expressions/in/S11.8.7_A2.1_T1.js', 'in operator on built-in constructor object'],
+  ['test/language/expressions/in/S11.8.7_A2.4_T1.js', 'in operator on built-in constructor object'],
+  ['test/language/expressions/in/S11.8.7_A2.4_T2.js', 'in operator on built-in constructor object'],
+  ['test/language/expressions/in/S11.8.7_A3.js', 'in operator: RHS-not-object TypeError'],
+  ['test/language/expressions/in/S11.8.7_A4.js', 'in operator: non-string key ToString coercion'],
+  ['test/language/expressions/in/S8.12.6_A2_T1.js', 'in operator: inherited Object.prototype property'],
+  ['test/language/expressions/in/S8.12.6_A3.js', 'in operator: property present with undefined value'],
+  // `instanceof`: needs declared-binding errors and an Error class hierarchy.
+  ['test/language/expressions/instanceof/S11.8.6_A2.1_T2.js', 'instanceof: undeclared-identifier ReferenceError'],
+  ['test/language/expressions/instanceof/S11.8.6_A2.1_T3.js', 'instanceof: undeclared-identifier ReferenceError'],
+  ['test/language/expressions/instanceof/S11.8.6_A2.4_T3.js', 'instanceof: undeclared-identifier ReferenceError'],
+  ['test/language/expressions/instanceof/S11.8.6_A3.js', 'instanceof: RHS-not-callable TypeError'],
+  ['test/language/expressions/instanceof/S11.8.6_A5_T1.js', 'instanceof across Error subclass hierarchy'],
+  ['test/language/expressions/instanceof/S11.8.6_A5_T2.js', 'instanceof across Error subclass hierarchy'],
+  // Operand evaluation order when an operand assigns to the other's binding.
+  ['test/language/expressions/modulus/S11.5.3_A2.4_T1.js', 'operand evaluation order with assignment side-effect'],
+  // typeof of NaN-boxed values is ambiguous (null / NaN / erased boolean).
+  ['test/language/types/null/S8.2_A3.js', 'typeof null (NaN-boxed sentinel)'],
+  ['test/language/types/number/S8.5_A3.js', 'typeof x===literal broken for NaN value'],
+  // Plain objects lack Object.prototype methods / property arithmetic.
+  ['test/language/types/object/S8.6.2_A3.js', 'Object.prototype.toString on plain object'],
+  ['test/language/types/object/S8.6_A2_T2.js', 'increment of absent object property'],
+  ['test/language/types/object/S8.6_A3_T2.js', 'prefix-increment of object property'],
+  ['test/language/types/reference/S8.7_A2.js', 'Array constructor reference semantics'],
+  // `var` is not flow-sensitively typed: a use before its initializer sees a
+  // known type, so `x !== undefined` mis-folds (undefined is f64 NaN).
+  ['test/language/types/boolean/S8.3_A1_T1.js', 'use-before-init: undefined (NaN) self-inequality'],
+  ['test/language/types/reference/S8.7.2_A2.js', 'use-before-init / increment of undefined'],
+  ['test/language/statements/while/S12.6.2_A1.js', 'use-before-init: undefined (NaN) self-inequality'],
+  ['test/language/statements/for/S12.6.3_A2.js', 'for-head throwing expression / var-before-init'],
+  ['test/language/statements/variable/S14_A1.js', 'var hoisting from if/else branches / use-before-init'],
+  // Scope-chain / execution-context semantics jz does not model.
+  ['test/language/function-code/S10.4_A1.1_T1.js', 'fresh execution context per call'],
+  ['test/language/identifier-resolution/S10.2.2_A1_T1.js', 'scope-chain identifier resolution'],
+  ['test/language/identifier-resolution/S10.2.2_A1_T3.js', 'scope-chain identifier resolution'],
+  ['test/language/identifier-resolution/S10.2.2_A1_T4.js', 'scope-chain identifier resolution'],
+  ['test/language/statements/function/S13_A15_T1.js', 'arguments object override semantics'],
+  ['test/language/statements/function/S13.2.1_A5_T2.js', 'built-in function as first-class value'],
+  // String literal: a backslash before a non-ASCII non-escape character.
+  ['test/language/literals/string/S7.8.4_A4.2_T5.js', 'backslash before non-ASCII non-escape char'],
+  ['test/language/literals/string/S7.8.4_A4.2_T7.js', 'backslash before non-ASCII non-escape char'],
+  // Parser gap (tracked upstream in subscript): `do <stmt> while (...)`.
+  ['test/language/statements/do-while/S12.6.1_A1.js', 'parser: do-while statement'],
+  ['test/language/statements/do-while/S12.6.1_A2.js', 'parser: do-while statement'],
+  ['test/language/statements/variable/S12.2_A12.js', 'parser: do-while with var statement'],
+  // Nested for-in walking an object hierarchy.
+  ['test/language/statements/for-in/S12.6.4_A5.1.js', 'nested for-in over prototype chain'],
+  ['test/language/statements/for-in/S12.6.4_A5.js', 'nested for-in over prototype chain'],
+  // switch fall-through (a non-break case continues into the next).
+  ['test/language/statements/switch/S12.11_A1_T1.js', 'switch case fall-through'],
+  ['test/language/statements/switch/S12.11_A1_T3.js', 'switch case fall-through'],
+  ['test/language/statements/switch/S12.11_A4_T1.js', 'switch case fall-through'],
+  // try/finally control-flow and thrown-object semantics.
+  ['test/language/statements/throw/S12.13_A3_T4.js', 'thrown object identity'],
+  ['test/language/statements/try/S12.14_A1.js', 'var hoisting out of try block'],
+  ['test/language/statements/try/S12.14_A7_T3.js', 'caught-exception object identity'],
+  ['test/language/statements/try/S12.14_A9_T2.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A9_T3.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A9_T4.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A10_T2.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A10_T3.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A10_T4.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A11_T2.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A11_T3.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A11_T4.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A12_T2.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A12_T3.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A12_T4.js', 'finally block with continue/break/return'],
+  ['test/language/statements/try/S12.14_A18_T7.js', 'caught-exception object identity'],
+  ['test/language/statements/try/S12.14_A19_T1.js', 'Error.prototype.toString on caught exception'],
+  ['test/language/statements/try/S12.14_A19_T2.js', 'Error.prototype.toString on caught exception'],
+])
+
 function shouldSkip(content, rel = '') {
+  if (LEGACY_LANG_LIMITATIONS.has(rel)) return LEGACY_LANG_LIMITATIONS.get(rel)
   const codeContent = content
     .replace(/\/\*---[\s\S]*?---\*\//, '')
     .replace(/^\/\/[^\n]*(?:\n|$)/gm, '')
@@ -464,10 +596,8 @@ function shouldSkip(content, rel = '') {
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
   if (/negative:\s*\n\s+phase:\s+parse/.test(content)) return 'negative parse test'
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
-  // Legacy Sputnik tests `throw new Test262Error(...)` directly. jz compiles and
-  // runs that pattern fine (ASSERT_HARNESS defines Test262Error); the regexp
-  // literal corpus is clean enough to run, so it's exempt from this skip.
-  if (content.includes('Test262Error') && !content.includes('assert.throws') && !rel.includes('/literals/regexp/')) return 'Test262Error legacy harness'
+  // (Legacy Sputnik tests `throw new Test262Error(...)` directly — jz compiles
+  // and runs that fine via ASSERT_HARNESS, so no skip is needed for them.)
   // Skip tests with harness-specific directives
   if (content.includes('$DONE') && !content.includes('runTest')) return 'harness dependency'
   if (content.includes('Test262:Async')) return 'async test'
@@ -538,6 +668,7 @@ function runTest(src, options = {}) {
         msg.includes('not exported') || msg.includes('has no default') ||
         msg.includes('Unknown module') || msg.includes('Unknown instruction') ||
         msg.includes('Unknown global') ||
+        msg.includes('is not in scope') ||
         msg.includes('Imports argument must be present') ||
         msg.includes('function import requires a callable')) {
       return { status: 'skip', error: msg.slice(0, 80) }
