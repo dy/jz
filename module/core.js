@@ -793,12 +793,23 @@ export default (ctx) => {
         ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
   }
 
-  // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object
-  // (booleans are f64 and hit the number branch; no bigints). Strings are preallocated into globals and
+  // Statically boolean-typed operands: `Boolean(x)`, logical-not, and the
+  // relational/equality comparisons always yield a JS boolean — jz carries it as
+  // f64 0/1 but `typeof` must still report "boolean". None of these ops can
+  // produce a non-boolean, so the recognizer never false-positives. The `()`
+  // arm also unwraps parenthesized expressions (`typeof (a < b)`).
+  const BOOL_RESULT_OPS = new Set(['!', '<', '<=', '>', '>=', '==', '!=', '===', '!=='])
+  const isBoolExpr = (n) => Array.isArray(n) && (
+    BOOL_RESULT_OPS.has(n[0]) ||
+    (n[0] === '()' && (n[1] === 'Boolean' || isBoolExpr(n[1]))))
+
+  // typeof: returns JS-style string. Reachable results are number/undefined/string/function/symbol/object/boolean
+  // (booleans without a static type hit the number branch; no bigints). Strings are preallocated into globals and
   // initialized in __start (see compile.js). Comparison patterns (typeof x === 'string') are optimized
   // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
   ctx.core.emit['typeof'] = (a) => {
     if (valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
+    if (isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
       ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object']
       for (const s of ctx.runtime.typeofStrs)
