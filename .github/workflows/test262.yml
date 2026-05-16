@@ -47,7 +47,7 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 built-ins suite
         env:
-          # Baseline (as of last green main, 2026-05-16): 650 passes / 147 fails.
+          # Baseline (as of last green main, 2026-05-16): 651 passes / 146 fails.
           # Built-ins coverage is more volatile than language; lift this when fixes land.
-          JZ_TEST262_BASELINE: 650
+          JZ_TEST262_BASELINE: 651
         run: npm run test262:builtins
