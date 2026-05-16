@@ -1502,6 +1502,9 @@ export const emitter = {
       return fromI64(['i64.rem_s', asI64(emit(a)), asI64(emit(b))])
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a % b, b => b !== 0)
     if (_f) return _f
+    // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
+    // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
+    if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },

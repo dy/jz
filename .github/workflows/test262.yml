@@ -21,10 +21,10 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 language suite
         env:
-          # Baseline (as of last green main, 2026-05-16): 872 passes / 0 fails / 22508 skips.
+          # Baseline (as of last green main, 2026-05-16): 1407 passes / 0 fails / 21973 skips.
           # If you intentionally add or skip tests, bump this number in the same commit.
           # The runner exits non-zero if pass count drops below the baseline.
-          JZ_TEST262_BASELINE: 872
+          JZ_TEST262_BASELINE: 1407
         run: npm run test262
 
   test262-builtins:
