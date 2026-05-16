@@ -340,6 +340,10 @@ export function valTypeOf(expr) {
       if (callee === 'new.Date') return VAL.DATE
       if (callee === 'new.ArrayBuffer') return VAL.BUFFER
       if (callee === 'new.DataView') return VAL.BUFFER
+      // `new Array(...)` is a plain growable Array, not a TypedArray — index
+      // stores must route through __arr_set_idx_ptr (grow + persist), so it
+      // must NOT fall into the new.* → VAL.TYPED catch-all below.
+      if (callee === 'new.Array') return VAL.ARRAY
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
