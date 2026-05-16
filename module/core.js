@@ -651,6 +651,17 @@ export default (ctx) => {
       return emitLengthAccess(asF64(emit(obj)), vt, notString)
     }
 
+    // Type-specific property emitter (`.regex:source`, …) — the property-read
+    // mirror of the `.vt:method` method-dispatch table. Property emitters take
+    // a single arg (the receiver); arity ≥ 2 entries are method emitters and
+    // must not be routed here (reading `re.test` as a value is not a call).
+    const ptRep = typeof obj === 'string' ? repOf(obj) : null
+    const ptVt = ptRep ? ptRep.val : valTypeOf(obj)
+    if (ptVt) {
+      const tpEmitter = ctx.core.emit[`.${ptVt}:${prop}`]
+      if (tpEmitter && tpEmitter.length <= 1) return tpEmitter(obj)
+    }
+
     // Module-registered property emitter (.size, etc.)
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]

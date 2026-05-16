@@ -770,6 +770,44 @@ export default (ctx) => {
         ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
   }
 
+  // === Regex instance properties ===
+  // A regex value is a compile-time id; pattern + flags live in the literal AST
+  // (`['//', pattern, flags]`) or in the regex-var table. Every property below
+  // resolves entirely at compile time. Routed by the `.regex:<prop>` dispatch
+  // added to core's `.` handler — registered with arity ≤ 1 (receiver only).
+
+  /** Resolve a regex-typed operand to its `['//', pattern, flags]` literal AST. */
+  const regexAstOf = (obj) => {
+    if (Array.isArray(obj) && obj[0] === '//') return obj
+    if (typeof obj === 'string' && ctx.runtime.regex.vars.has(obj)) return ctx.runtime.regex.vars.get(obj)
+    return null
+  }
+  const flagsOf = (obj) => { const a = regexAstOf(obj); return (a && a[2]) || '' }
+
+  // RegExp.prototype.source — the pattern text. A literal stores it verbatim
+  // (already grammar-escaped), so `/A/.source` is the 6-char "A".
+  // An empty pattern serializes to "(?:)" so the result re-parses to a regex.
+  ctx.core.emit['.regex:source'] = (obj) => {
+    const a = regexAstOf(obj)
+    return emit(['str', (a && a[1]) || '(?:)'])
+  }
+
+  // RegExp.prototype.flags — flag characters in canonical order (sec-get-regexp.prototype.flags).
+  const FLAG_ORDER = 'dgimsvy'
+  ctx.core.emit['.regex:flags'] = (obj) => {
+    const f = flagsOf(obj)
+    return emit(['str', [...FLAG_ORDER].filter(c => f.includes(c)).join('')])
+  }
+
+  // Individual flag accessors → 1/0 (jz carries booleans as f64).
+  for (const [prop, ch] of [
+    ['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'], ['dotAll', 's'],
+    ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
+  ]) ctx.core.emit[`.regex:${prop}`] = (obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64')
+
+  // lastIndex — jz regexes are stateless; a freshly-evaluated regex reads 0.
+  ctx.core.emit['.regex:lastIndex'] = () => typed(['f64.const', 0], 'f64')
+
   // str.search(/re/) → first match position or -1
   ctx.core.emit['.string:search'] = (str, search) => {
     const id = resolveRegex(search)
