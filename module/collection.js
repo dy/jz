@@ -444,10 +444,53 @@ export default (ctx) => {
 
   // === Set ===
 
-  ctx.core.emit['new.Set'] = () => {
+  ctx.core.emit['new.Set'] = (iterExpr) => {
     ctx.features.set = true
-    const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag: 'set' })
-    return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
+    if (iterExpr == null) {
+      const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY, tag: 'set' })
+      return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
+    }
+    // new Set(iterable): seed from an array argument's elements. __set_add does
+    // SameValueZero dedup + −0 normalization. A non-array argument leaves the set
+    // empty — the ptr_type guard zeroes the length so the loop is skipped.
+    //
+    // __set_add is a FIXED-capacity probe (genUpsert never grows the table); a
+    // full table makes its probe loop spin forever. So the table is pre-sized to
+    // the smallest power of two greater than 2*len: distinct entries ≤ len, so the
+    // table stays ≤50% full and every insert finds a free slot. cap = 1 <<
+    // (32 − clz(m−1)) with m = 2*len + INIT_CAP rounds 2*len up to a power of two
+    // and floors at INIT_CAP for the empty/short case.
+    inc('__set_add', '__ptr_type', '__len', '__typed_idx')
+    const setL = temp('nss'), arrL = temp('nsa')
+    const iL = tempI32('nsi'), lenL = tempI32('nsl')
+    const capExpr = ['i32.shl', ['i32.const', 1],
+      ['i32.sub', ['i32.const', 32], ['i32.clz',
+        ['i32.sub',
+          ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', INIT_CAP]],
+          ['i32.const', 1]]]]]
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY, tag: 'set' })
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${arrL}`, asF64(emit(iterExpr))],
+      ['local.set', `$${lenL}`, ['i32.const', 0]],
+      ['if', ['i32.eq',
+          ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]],
+          ['i32.const', PTR.ARRAY]],
+        ['then', ['local.set', `$${lenL}`,
+          ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]]]],
+      out.init,
+      ['local.set', `$${setL}`, out.ptr],
+      ['local.set', `$${iL}`, ['i32.const', 0]],
+      ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
+        ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
+        ['local.set', `$${setL}`, ['f64.reinterpret_i64',
+          ['call', '$__set_add',
+            ['i64.reinterpret_f64', ['local.get', `$${setL}`]],
+            ['i64.reinterpret_f64', ['call', '$__typed_idx',
+              ['i64.reinterpret_f64', ['local.get', `$${arrL}`]],
+              ['local.get', `$${iL}`]]]]]],
+        ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
+        ['br', `$l_${iL}`]]],
+      ['local.get', `$${setL}`]], 'f64')
   }
 
   ctx.core.emit['.add'] = (setExpr, val) => {
