@@ -22,7 +22,9 @@ export function initSchema(ctx) {
   ctx.schema._byProp = byProp
 
   ctx.schema.register = (props) => {
-    const key = props.join('\x01')
+    // Length prefix disambiguates [] from [''] (both join to '') and any
+    // shorter prop list from a longer one whose extra entries are empty.
+    const key = props.length + '\x01' + props.join('\x01')
     const existing = byKey.get(key)
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1

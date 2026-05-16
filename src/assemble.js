@@ -188,8 +188,12 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
 
   const schemaInit = []
   const hasJpObj = ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
-  const needsSchemaTbl = (ctx.schema.list.length && (
-    ctx.core.includes.has('__stringify') ||
+  const hasStringify = ctx.core.includes.has('__stringify')
+  // Empty object literals register a `[]` schema so their schemaId indexes a
+  // valid list entry. But __dyn_get already guards `$__schema_tbl == 0`, so a
+  // table holding only empty schemas is pure dead weight there. __json_obj has
+  // no such guard — it must read the table whenever stringify is in play.
+  const tblConsumed = hasStringify ||
     ctx.core.includes.has('__dyn_get') ||
     ctx.core.includes.has('__dyn_get_t') ||
     ctx.core.includes.has('__dyn_get_t_h') ||
@@ -198,7 +202,9 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     ctx.core.includes.has('__dyn_get_any_t') ||
     ctx.core.includes.has('__dyn_get_expr') ||
     ctx.core.includes.has('__dyn_get_expr_t') ||
-    ctx.core.includes.has('__dyn_get_or'))) ||
+    ctx.core.includes.has('__dyn_get_or')
+  const needsSchemaTbl = (ctx.schema.list.length && tblConsumed &&
+    (hasStringify || ctx.schema.list.some(s => s.length > 0))) ||
     hasJpObj
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length

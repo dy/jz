@@ -31,7 +31,10 @@ export default (ctx) => {
       // schema-slot writes to offsets >= 8 land out-of-bounds.
       const target = takeLiteralTarget()
       const merged = target ? ctx.schema.resolve(target) : null
-      const schemaId = merged ? ctx.schema.idOf(target) : 0
+      // Register the empty schema so schemaId always indexes a real schema.list
+      // entry — __json_obj and dyn-get load keys via $__schema_tbl[sid] and would
+      // crash on an unregistered id 0 (table left uninitialized when list empty).
+      const schemaId = merged ? ctx.schema.idOf(target) : ctx.schema.register([])
       const cap = merged ? Math.max(1, merged.length) : 1
       return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap]])
     }

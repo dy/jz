@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, tempI32, nullExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -42,10 +42,12 @@ function hashCapFor(n) {
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
-    __stringify: ['__json_val', '__jput', '__jput_str', '__jput_num', '__mkstr'],
-    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jput_str', '__json_val'],
-    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jput_str', '__json_val'],
+    __stringify: ['__json_val', '__json_setgap', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+    __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
+    __jindent: ['__jput'],
+    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
+    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_val'],
+    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -113,6 +115,13 @@ export default (ctx) => {
   ctx.scope.globals.set('__jpos', '(global $__jpos (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__jcap', '(global $__jcap (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__schema_tbl', '(global $__schema_tbl (mut i32) (i32.const 0))')
+  // Pretty-print state for the `space` argument. $__jgap points at the gap
+  // string bytes ($__jgaplen of them); $__jdepth is the live nesting depth.
+  // $__jgaplen == 0 ⇒ compact mode — every indent emission below is gated on
+  // it, so the no-space path stays byte-identical to the unindented output.
+  ctx.scope.globals.set('__jgap', '(global $__jgap (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jgaplen', '(global $__jgaplen (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jdepth', '(global $__jdepth (mut i32) (i32.const 0))')
 
   // __jput(byte: i32) — append one byte to output buffer
   ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
@@ -125,6 +134,61 @@ export default (ctx) => {
         (global.set $__jbuf (local.get $new))))
     (i32.store8 (i32.add (global.get $__jbuf) (global.get $__jpos)) (local.get $b))
     (global.set $__jpos (i32.add (global.get $__jpos) (i32.const 1))))`
+
+  // __jindent — emit a newline followed by $__jdepth copies of the gap string.
+  // No-op in compact mode ($__jgaplen == 0), so callers can invoke it
+  // unconditionally and the unindented output stays exactly as before.
+  ctx.core.stdlib['__jindent'] = `(func $__jindent
+    (local $i i32) (local $j i32)
+    (if (i32.eqz (global.get $__jgaplen)) (then (return)))
+    (call $__jput (i32.const 10))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (global.get $__jdepth)))
+      (local.set $j (i32.const 0))
+      (block $d2 (loop $l2
+        (br_if $d2 (i32.ge_s (local.get $j) (global.get $__jgaplen)))
+        (call $__jput (i32.load8_u (i32.add (global.get $__jgap) (local.get $j))))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $l2)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l))))`
+
+  // __json_setgap(space: i64) — derive the indentation gap from the third
+  // JSON.stringify argument. Number → min(10, ToInteger) spaces; String →
+  // first min(10) code units; anything else → compact. Resets $__jdepth.
+  ctx.core.stdlib['__json_setgap'] = `(func $__json_setgap (param $sp i64)
+    (local $f f64) (local $n i32) (local $i i32) (local $g i32)
+    (global.set $__jdepth (i32.const 0))
+    (global.set $__jgaplen (i32.const 0))
+    (local.set $f (f64.reinterpret_i64 (local.get $sp)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then
+        (local.set $n (i32.trunc_sat_f64_s (local.get $f)))
+        (if (i32.gt_s (local.get $n) (i32.const 10)) (then (local.set $n (i32.const 10))))
+        (if (i32.lt_s (local.get $n) (i32.const 1)) (then (return)))
+        (local.set $g (call $__alloc (local.get $n)))
+        (block $d (loop $l
+          (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+          (i32.store8 (i32.add (local.get $g) (local.get $i)) (i32.const 32))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+        (global.set $__jgap (local.get $g))
+        (global.set $__jgaplen (local.get $n))
+        (return)))
+    (if (i32.eq (call $__ptr_type (local.get $sp)) (i32.const ${PTR.STRING}))
+      (then
+        (local.set $n (call $__str_byteLen (local.get $sp)))
+        (if (i32.gt_s (local.get $n) (i32.const 10)) (then (local.set $n (i32.const 10))))
+        (if (i32.eqz (local.get $n)) (then (return)))
+        (local.set $g (call $__alloc (local.get $n)))
+        (block $d (loop $l
+          (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
+          (i32.store8 (i32.add (local.get $g) (local.get $i))
+            (call $__char_at (local.get $sp) (local.get $i)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+        (global.set $__jgap (local.get $g))
+        (global.set $__jgaplen (local.get $n)))))`
 
   // __jput_str(ptr: i64) — append string chars (without quotes) to buffer.
   // Per QuoteJSONString: every code unit U+0000..U+001F must be escaped — the
@@ -196,12 +260,20 @@ export default (ctx) => {
         (local.set $len (call $__len (local.get $val)))
         (local.set $off (call $__ptr_offset (local.get $val)))
         (local.set $i (i32.const 0))
+        ;; A non-empty array opens one indent level; an empty array stays compact.
+        (if (i32.gt_s (local.get $len) (i32.const 0))
+          (then (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))))
         (block $d (loop $l
           (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
           (if (local.get $i) (then (call $__jput (i32.const 44))))  ;; ,
+          (call $__jindent)
           (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $l)))
+        (if (i32.gt_s (local.get $len) (i32.const 0))
+          (then
+            (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
+            (call $__jindent)))
         (call $__jput (i32.const 93))  ;; ]
         (return)))
     ;; HASH/MAP — iterate entries: {"key":val,...}
@@ -223,6 +295,7 @@ export default (ctx) => {
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $first (i32.const 1))
     (call $__jput (i32.const 123))
+    (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $cap)))
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const 24))))
@@ -231,13 +304,17 @@ export default (ctx) => {
           (if (i32.eqz (local.get $first))
             (then (call $__jput (i32.const 44))))
           (local.set $first (i32.const 0))
+          (call $__jindent)
           (call $__jput (i32.const 34))
           (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
           (call $__jput (i32.const 34))
           (call $__jput (i32.const 58))
+          (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
           (call $__json_val (i64.load (i32.add (local.get $slot) (i32.const 16))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
+    (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
+    (if (i32.eqz (local.get $first)) (then (call $__jindent)))
     (call $__jput (i32.const 125)))`
 
   // __json_obj(val: f64) — stringify OBJECT using runtime schema name table.
@@ -256,24 +333,33 @@ export default (ctx) => {
       (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
     (call $__jput (i32.const 123))
+    (if (i32.gt_s (local.get $nkeys) (i32.const 0))
+      (then (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
       (if (local.get $i) (then (call $__jput (i32.const 44))))
+      (call $__jindent)
       (call $__jput (i32.const 34))
       (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
       (call $__jput (i32.const 34))
       (call $__jput (i32.const 58))
+      (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
       (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
+    (if (i32.gt_s (local.get $nkeys) (i32.const 0))
+      (then
+        (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
+        (call $__jindent)))
     (call $__jput (i32.const 125)))`
 
-  // __stringify(val: i64) → f64 (NaN-boxed string)
-  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (result f64)
+  // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
+  ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (param $space i64) (result f64)
     ;; Reset output buffer
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
     (global.set $__jcap (i32.const 256))
+    (call $__json_setgap (local.get $space))
     (call $__json_val (local.get $val))
     ;; Create string from buffer
     (call $__mkstr (global.get $__jbuf) (global.get $__jpos)))`
@@ -949,9 +1035,13 @@ ${localDecls}
 
   // === Emitters ===
 
-  ctx.core.emit['JSON.stringify'] = (x) => {
+  // JSON.stringify(value [, replacer [, space ]]). The replacer argument is
+  // not yet supported and is ignored; `space` drives indentation (see
+  // __json_setgap). An absent `space` passes `undefined` → compact output.
+  ctx.core.emit['JSON.stringify'] = (x, _replacer, space) => {
     inc('__stringify')
-    return typed(['call', '$__stringify', asI64(emit(x))], 'f64')
+    const spaceIR = asI64(space == null ? undefExpr() : emit(space))
+    return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
