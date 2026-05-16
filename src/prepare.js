@@ -327,6 +327,18 @@ function staticTypeofString(x) {
   if (typeof px === 'string' && px.includes('.') && ctx.core.emit?.[px]?.length > 0) return 'function'
   return null
 }
+// Builtin-namespace constructors expose `prototype`/`length`/`name` as own
+// properties; plain namespaces (Math, JSON, Reflect, Atomics) do not.
+const NS_CTORS = new Set(['Number', 'String', 'Boolean', 'BigInt', 'Object',
+  'Array', 'Symbol', 'Error', 'Date', 'RegExp', 'Function', 'Map', 'Set',
+  'Promise', 'ArrayBuffer', 'DataView', 'WeakMap', 'WeakSet'])
+// `NS.hasOwnProperty("member")` is a compile-time question: jz models a
+// builtin namespace as a set of emit keys, so a member is owned iff jz emits
+// it — plus the universal constructor trio for constructor namespaces.
+function namespaceHasOwn(mod, name, member) {
+  if (ctx.core.emit[`${mod}.${member}`] != null) return true
+  return NS_CTORS.has(name) && (member === 'prototype' || member === 'length' || member === 'name')
+}
 function resolveTypeof(node) {
   const [op, a, b] = node
   // typeof x == 'string' → type check
@@ -1165,6 +1177,18 @@ const handlers = {
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
+      // Compile-time namespace introspection: `NS.hasOwnProperty("member")` on
+      // a builtin namespace folds to a literal — no runtime namespace object.
+      if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
+        const mod = ctx.scope.chain[obj]
+        if (mod && !mod.includes('.') && hasModule(mod)) {
+          const cargs = flatArgs(args).filter(a => a != null)
+          const member = cargs.length === 1 ? stringValue(cargs[0]) : null
+          // Include the module so its emit keys (the namespace's member set)
+          // are registered; unreferenced emitters/data dead-strip in compile.
+          if (member != null) { includeModule(mod); return [, namespaceHasOwn(mod, obj, member) ? 1 : 0] }
+        }
+      }
       const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
       if (key && ctx.module.hostImports?.[obj]?.[prop]) {
         const spec = ctx.module.hostImports[obj][prop]
