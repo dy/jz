@@ -364,18 +364,34 @@ export default (ctx) => {
   }
   ctx.core.emit['new.ArrayBuffer'] = arrayBufferCtor
 
-  // new DataView(buffer) → same ptr (BUFFER). Methods ignore the type tag.
-  // new DataView(buffer, byteOffset[, byteLength]) → BUFFER ptr re-anchored at
-  // parent_offset + byteOffset. Subsequent DV reads/writes naturally honor the
-  // base offset since DV emitters compute `ptrOffsetIR(dv) + i32.add(off)`.
-  // byteLength isn't stored on the pointer; get/set bounds-check the access via
-  // statically-recorded ctor args (see dvViewSize / analyze's trackDataView).
-  ctx.core.emit['new.DataView'] = (bufExpr, offExpr) => {
-    if (offExpr == null) return asF64(emit(bufExpr))
-    const bufPtr = asF64(emit(bufExpr))
-    const off = asI32(emit(offExpr))
-    return mkPtrIR(PTR.BUFFER, 0,
-      ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', bufPtr]], off])
+  // new DataView(buffer, byteOffset?, byteLength?) — a first-class view object,
+  // represented exactly like a typed-array subview: a 16-byte descriptor
+  // [byteLen:i32][dataOff:i32][parentOff:i32][pad] behind a TYPED|view pointer.
+  // byteOffset/byteLength are ToIndex-coerced; the no-length form snapshots the
+  // remaining buffer (buffer.byteLength - byteOffset). Because the view extent
+  // lives in the descriptor, .byteLength/.byteOffset/.buffer and the get/set
+  // bounds checks all read it at runtime — correct regardless of how the
+  // receiver variable was assigned, and ArrayBuffer.isView(dv) is now true.
+  ctx.core.emit['new.DataView'] = (bufExpr, offExpr, lenExpr) => {
+    ctx.features.typedarray = true
+    const src = temp('dvs')
+    const parentOff = tempI32('dvp')
+    const off = tempI32('dvo')
+    const dst = tempI32('dvd')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${src}`, asF64(emit(bufExpr))],
+      ['local.set', `$${parentOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
+      ['local.set', `$${off}`, offExpr == null ? ['i32.const', 0] : dvIndex(offExpr)],
+      ['local.set', `$${dst}`, ['call', '$__alloc', ['i32.const', 16]]],
+      ['i32.store', ['local.get', `$${dst}`],
+        lenExpr == null
+          ? ['i32.sub', ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['local.get', `$${off}`]]
+          : dvIndex(lenExpr)],
+      ['i32.store', ['i32.add', ['local.get', `$${dst}`], ['i32.const', 4]],
+        ['i32.add', ['local.get', `$${parentOff}`], ['local.get', `$${off}`]]],
+      ['i32.store', ['i32.add', ['local.get', `$${dst}`], ['i32.const', 8]],
+        ['local.get', `$${parentOff}`]],
+      mkPtrIR(PTR.TYPED, 8, ['local.get', `$${dst}`])], 'f64')
   }
 
   // BigInt64Array(buffer) (bare form, legacy): coerce to same data, Float64Array-compatible storage.
@@ -385,13 +401,13 @@ export default (ctx) => {
     return mkPtrIR(PTR.TYPED, typedAux('BigInt64Array'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]])
   }
 
-  // .buffer — always aliased (zero-copy). BUFFER/DataView: passthrough.
+  // .buffer — always aliased (zero-copy). BUFFER: passthrough.
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
-  // TYPED view: BUFFER at descriptor[8] (root parent data offset).
+  // TYPED view (incl. DataView): BUFFER at descriptor[8] (root parent data offset).
   ctx.core.emit['.buffer'] = (obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
-      if (ctor === 'new.ArrayBuffer' || ctor === 'new.DataView') return asF64(emit(obj))
+      if (ctor === 'new.ArrayBuffer') return asF64(emit(obj))
       if (ctor?.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
         const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
@@ -407,11 +423,12 @@ export default (ctx) => {
     return typed(['call', '$__to_buffer', asI64(emit(obj))], 'f64')
   }
 
-  // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride. View TYPED: descriptor[0].
+  // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
+  // View TYPED (incl. DataView): descriptor[0], via the __byte_length fallback.
   ctx.core.emit['.byteLength'] = (obj) => {
     if (typeof obj === 'string') {
       const ctor = ctx.types.typedElem?.get(obj)
-      if (ctor === 'new.ArrayBuffer' || ctor === 'new.DataView') {
+      if (ctor === 'new.ArrayBuffer') {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]]], 'f64')
       }
       if (ctor && ctor.startsWith('new.')) {
@@ -465,8 +482,9 @@ export default (ctx) => {
           (i32.load (i32.add (local.get $off) (i32.const 8)))))
       (else (i32.const 0))))`
 
-  // ArrayBuffer.isView(x) — true iff x is a TYPED pointer. (DataView passthrough cannot be
-  // distinguished from ArrayBuffer since both are BUFFER pointers; both report false.)
+  // ArrayBuffer.isView(x) — true iff x is a TYPED pointer. Typed arrays and
+  // DataViews are both TYPED-tagged (a DataView is a TYPED|view descriptor), so
+  // both report true; a bare ArrayBuffer is BUFFER-tagged and reports false.
   ctx.core.emit['ArrayBuffer.isView'] = (v) => {
     if (v === undefined) return typed(['f64.const', 0], 'f64')
     const va = asF64(emit(v))
@@ -608,36 +626,25 @@ export default (ctx) => {
     return typed(['call', '$__dv_index', toNumF64(offNode, emit(offNode))], 'i32')
   }
 
-  // View-size IR for a DataView whose ctor byteOffset/byteLength are statically
-  // known (recorded by analyze's trackDataView). Returns null when the receiver
-  // isn't a bounds-trackable DataView variable. The no-explicit-length form reads
-  // the parent ArrayBuffer's byteLength header [-8] — reachable from the DV
-  // pointer itself at `dvOffset - byteOffset - 8` — so it never depends on the
-  // backing buffer variable still holding the same value.
-  const dvViewSize = (dv) => {
-    if (typeof dv !== 'string') return null
-    if (ctx.types.typedElem?.get(dv) !== 'new.DataView') return null
-    const meta = ctx.types.dvBounds?.get(dv)
-    if (!meta) return null
-    if (meta.len != null) return ['i32.const', meta.len]
-    return ['i32.sub',
-      ['i32.load', ['i32.sub', ptrOffsetIR(emit(dv), VAL.BUFFER), ['i32.const', meta.off + 8]]],
-      ['i32.const', meta.off]]
-  }
+  // A DataView receiver resolves to its 16-byte descriptor pointer
+  // [byteLen:i32][dataOff:i32][parentOff:i32]. get/set hoist this once, then
+  // read dataOff (desc[4]) for the access address and byteLen (desc[0]) as the
+  // view size for the bounds check.
+  const dvDescriptor = (dv) => ptrOffsetIR(emit(dv), VAL.TYPED)
+  const dvDataOff = (descLocal) => ['i32.load', ['i32.add', ['local.get', `$${descLocal}`], ['i32.const', 4]]]
+  const dvViewSize = (descLocal) => ['i32.load', ['local.get', `$${descLocal}`]]
 
   // ToIndex the DV byte offset, then bounds-check `getIndex + elementSize > viewSize`
   // (spec 25.3.1.1 GetViewValue / SetViewValue step 13) — a RangeError when the
   // access would run past the view. elementSize moves to the static side of the
-  // compare so a saturated/huge index can't overflow the i32 addition. When the
-  // view isn't statically trackable this is just `dvIndex` (no bounds check).
-  const dvIndexChecked = (dv, off, size) => {
-    const vsize = dvViewSize(dv)
-    if (vsize == null) return dvIndex(off)
+  // compare so a saturated/huge index can't overflow the i32 addition. viewSize is
+  // read live from the descriptor, so the check holds for every DataView receiver.
+  const dvIndexChecked = (offNode, size, viewSize) => {
     ctx.runtime.throws = true
     const idxT = tempI32('dvb')
     return typed(['block', ['result', 'i32'],
-      ['local.set', `$${idxT}`, dvIndex(off)],
-      ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', vsize, ['i32.const', size]]],
+      ['local.set', `$${idxT}`, dvIndex(offNode)],
+      ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', viewSize, ['i32.const', size]]],
         ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
       ['local.get', `$${idxT}`]], 'i32')
   }
@@ -653,7 +660,10 @@ export default (ctx) => {
   }
   for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
     ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
-      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndexChecked(dv, off, size)]
+      // Resolve the receiver's descriptor once; the store reads dataOff/byteLen from it.
+      const desc = tempI32('dvD')
+      const fin = (body) => ['block', ['local.set', `$${desc}`, dvDescriptor(dv)], body]
+      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, size, dvViewSize(desc))]
       // Coerce value into the wasm value type the store op consumes. Non-BigInt
       // stores ToNumber the value first (per SetViewValue) so a Symbol value
       // raises a TypeError and a string value parses instead of truncating to 0.
@@ -663,7 +673,7 @@ export default (ctx) => {
       else if (valType === 'f32') v = typed(['f32.demote_f64', asF64(toNumF64(val, emit(val)))], 'f32')
       else v = asI32(toNumF64(val, emit(val)))
 
-      if (size === 1) return [storeOp, addr, v]
+      if (size === 1) return fin([storeOp, addr, v])
 
       // For BE we byte-swap the integer payload; floats route through bitcast i↔f.
       const swap = (iVal) => size === 2 ? bswap16I32(iVal) : size === 4 ? bswap32I32(iVal) : bswap64I64(iVal)
@@ -680,15 +690,15 @@ export default (ctx) => {
       }
 
       const le = staticLE(leNode)
-      if (le === true) return [storeOp, addr, v]
-      if (le === false) return beStore()
+      if (le === true) return fin([storeOp, addr, v])
+      if (le === false) return fin(beStore())
       // Dynamic: hoist value + addr into temps so each branch can re-use.
       const aT = tempI32('dvsa')
       const vLoc = valType === 'i64' ? tempI64('dvsv') : valType === 'i32' ? tempI32('dvsv') : temp('dvsv')
       // Re-declare with correct type for f32 (temp() defaults to f64).
       if (valType === 'f32') ctx.func.locals.set(vLoc, 'f32')
       const leT = tempI32('dvsle')
-      return ['block',
+      return fin(['block',
         ['local.set', `$${aT}`, addr],
         ['local.set', `$${vLoc}`, v],
         ['local.set', `$${leT}`, truthyIR(emit(leNode))],
@@ -700,7 +710,7 @@ export default (ctx) => {
             if (valType === 'f32') return [storeOp, ['local.get', `$${aT}`], typed(['f32.reinterpret_i32', swap(typed(['i32.reinterpret_f32', refV], 'i32'))], 'f32')]
             if (valType === 'f64') return [storeOp, ['local.get', `$${aT}`], typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.reinterpret_f64', refV], 'i64'))], 'f64')]
             return [storeOp, ['local.get', `$${aT}`], swap(refV)]
-          })()]]]
+          })()]]])
     }
   }
 
@@ -715,7 +725,11 @@ export default (ctx) => {
   }
   for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
     ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
-      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndexChecked(dv, off, size)]
+      // Resolve the receiver's descriptor once; the load reads dataOff/byteLen from it.
+      const desc = tempI32('dvD')
+      const fin = (body) => typed(['block', ['result', 'f64'],
+        ['local.set', `$${desc}`, dvDescriptor(dv)], asF64(body)], 'f64')
+      const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, size, dvViewSize(desc))]
 
       // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
       // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
@@ -726,7 +740,7 @@ export default (ctx) => {
         return typed(signed ? ['f64.convert_i32_s', raw] : ['f64.convert_i32_u', raw], 'f64')
       }
 
-      if (size === 1) return toF64(typed([loadOp, addr], resultType))
+      if (size === 1) return fin(toF64(typed([loadOp, addr], resultType)))
 
       // LE path: native wasm load is already little-endian.
       // BE path: load as raw int (always little-endian on wasm), byte-swap, then
@@ -752,12 +766,12 @@ export default (ctx) => {
       }
 
       const le = staticLE(leNode)
-      if (le === true) return toF64(typed([loadOp, addr], resultType))
-      if (le === false) return beLoad()
+      if (le === true) return fin(toF64(typed([loadOp, addr], resultType)))
+      if (le === false) return fin(beLoad())
       // Dynamic LE: hoist addr, branch on leNode at runtime.
       const aT = tempI32('dvga')
       const leT = tempI32('dvgle')
-      return typed(['block', ['result', 'f64'],
+      return fin(typed(['block', ['result', 'f64'],
         ['local.set', `$${aT}`, addr],
         ['local.set', `$${leT}`, truthyIR(emit(leNode))],
         ['if', ['result', 'f64'],
@@ -780,7 +794,7 @@ export default (ctx) => {
               return toF64(typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64'))
             }
             return typed(['f64.reinterpret_i64', bswap64I64(typed(['i64.load', a], 'i64'))], 'f64')
-          })())]]], 'f64')
+          })())]]], 'f64'))
     }
   }
 

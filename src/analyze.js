@@ -339,11 +339,13 @@ export function valTypeOf(expr) {
       if (callee === 'new.Map') return VAL.MAP
       if (callee === 'new.Date') return VAL.DATE
       if (callee === 'new.ArrayBuffer') return VAL.BUFFER
-      if (callee === 'new.DataView') return VAL.BUFFER
       // `new Array(...)` is a plain growable Array, not a TypedArray — index
       // stores must route through __arr_set_idx_ptr (grow + persist), so it
       // must NOT fall into the new.* → VAL.TYPED catch-all below.
       if (callee === 'new.Array') return VAL.ARRAY
+      // `new DataView(...)` falls through to VAL.TYPED: a DataView is a proper
+      // view object (TYPED|view ptr over a 16-byte descriptor), same shape as a
+      // typed-array subview — see module/typedarray.js `new.DataView`.
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
@@ -1176,42 +1178,9 @@ export function analyzeValTypes(body) {
   // in different scopes — jz hoists `let` to function scope so they share a name).
   // Once invalidated, no later setter can re-establish a definite ctor.
   const typedPoison = new Set()
-  // DataView vars whose ctor args can't be pinned to literals (or that got
-  // reassigned to a differently-shaped DataView) — once bad, never bounds-checked.
-  const dvBoundsBad = new Set()
   const invalidate = (name) => {
     typedPoison.add(name)
     ctx.types.typedElem?.delete(name)
-    ctx.types.dvBounds?.delete(name)
-    dvBoundsBad.add(name)
-  }
-  // Record `new DataView(buf, byteOffset?, byteLength?)` ctor args when byteOffset
-  // and byteLength are numeric literals (or absent). The emitter uses these to
-  // bounds-check DV get/set against the view size (spec 25.3.1.1 GetViewValue
-  // step 13). A non-literal offset would need its runtime value to find the
-  // parent buffer header, so such views fall back to no bounds checking.
-  function trackDataView(name, rhs) {
-    if (!ctx.types.dvBounds) ctx.types.dvBounds = new Map()
-    if (dvBoundsBad.has(name)) return
-    const args = rhs[2]
-    const list = typeof args === 'string' ? [args]
-      : (Array.isArray(args) && args[0] === ',' ? args.slice(1) : null)
-    const litNum = (n) => typeof n === 'number' ? n
-      : (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' ? n[1] : undefined)
-    const off = list && list.length > 1 ? litNum(list[1]) : null
-    const len = list && list.length > 2 ? litNum(list[2]) : null
-    const ok = list && list.length >= 1 && list.length <= 3
-      && (list.length < 2 || off != null) && (list.length < 3 || len != null)
-    const meta = ok ? { off: off ?? 0, len: len ?? null } : null
-    const key = meta && `${meta.off}:${meta.len}`
-    const prev = ctx.types.dvBounds.get(name)
-    if (!meta || (prev && prev.key !== key)) {
-      ctx.types.dvBounds.delete(name)
-      dvBoundsBad.add(name)
-    } else {
-      meta.key = key
-      ctx.types.dvBounds.set(name, meta)
-    }
   }
   function trackTyped(name, rhs) {
     if (!ctx.types.typedElem) ctx.types.typedElem = new Map() // first use in this function scope
@@ -1223,7 +1192,6 @@ export function analyzeValTypes(body) {
       else ctx.types.typedElem.set(name, c)
     }
     const ctor = typedElemCtor(rhs)
-    if (ctor === 'new.DataView') trackDataView(name, rhs)
     if (ctor) return setOrInvalidate(ctor)
     // TYPED-narrowed call result carries elem aux on f.sig.ptrAux — reverse-map it
     // back to a canonical ctor string so unboxablePtrs's typedElemAux lookup
@@ -1619,8 +1587,9 @@ export function exprType(expr, locals) {
  *       SET    ← `new Set(...)`
  *       MAP    ← `new Map(...)`
  *       CLOSURE← `=>` literal
- *       BUFFER ← `new ArrayBuffer(...)` / `new DataView(...)`
+ *       BUFFER ← `new ArrayBuffer(...)`
  *       TYPED  ← `new XxxArray(...)` / method returning typed array
+ *                (`new DataView(...)` is TYPED but stays boxed — no elem aux)
  *   - not captured in boxed storage (boxed locals stay f64 for the heap slot)
  *   - never compared to null/undefined (we lose the nullish NaN representation)
  *
@@ -1669,7 +1638,7 @@ export function unboxablePtrs(body, locals, boxed) {
         if (kind === VAL.SET) return callee === 'new.Set'
         if (kind === VAL.MAP) return callee === 'new.Map'
         if (kind === VAL.DATE) return callee === 'new.Date'
-        if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer' || callee === 'new.DataView'
+        if (kind === VAL.BUFFER) return callee === 'new.ArrayBuffer'
         if (kind === VAL.TYPED) return callee.endsWith('Array') && callee !== 'new.ArrayBuffer'
       }
       // Call to narrow-ABI'd helper of matching VAL kind.
