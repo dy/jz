@@ -463,34 +463,77 @@ export default (ctx) => {
       (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))
     (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`
 
+  // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
+  // 11-term odd polynomial split into even/odd parts. Accurate to <1 ulp —
+  // the old Taylor series was ~2e-6 off near |x|=0.5. Drives asin/acos/atan2.
   ctx.core.stdlib['math.atan'] = `(func $math.atan (param $x f64) (result f64)
-    (local $x2 f64) (local $abs_x f64) (local $reduced f64)
+    (local $abs_x f64) (local $id i32) (local $r f64) (local $z f64) (local $w f64)
+    (local $s1 f64) (local $s2 f64) (local $ahi f64) (local $alo f64) (local $res f64)
+    ;; NaN passes through unchanged.
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (local.set $abs_x (f64.abs (local.get $x)))
-    (if (result f64) (f64.gt (local.get $abs_x) (f64.const 1.0))
+    ;; |x| >= 2^66: atan saturates to ±π/2.
+    (if (f64.ge (local.get $abs_x) (f64.const 7.378697629483821e19))
+      (then (return (f64.copysign (f64.const 1.5707963267948966) (local.get $x)))))
+    (if (f64.lt (local.get $abs_x) (f64.const 0.4375))
       (then
-        (if (result f64) (f64.gt (local.get $x) (f64.const 0.0))
-          (then (f64.sub (f64.const ${Math.PI / 2}) (call $math.atan (f64.div (f64.const 1.0) (local.get $x)))))
-          (else (f64.add (f64.neg (f64.const ${Math.PI / 2})) (call $math.atan (f64.div (f64.const 1.0) (local.get $x)))))))
+        ;; |x| < 2^-27: atan(x) ≈ x (also preserves sign of zero).
+        (if (f64.lt (local.get $abs_x) (f64.const 7.450580596923828e-9))
+          (then (return (local.get $x))))
+        (local.set $id (i32.const -1))
+        (local.set $r (local.get $x)))
       (else
-        (if (result f64) (f64.gt (local.get $abs_x) (f64.const 0.5))
+        (local.set $r (local.get $abs_x))
+        (if (f64.lt (local.get $abs_x) (f64.const 1.1875))
           (then
-            (local.set $reduced (f64.div (local.get $x) (f64.add (f64.const 1.0) (f64.sqrt (f64.add (f64.const 1.0) (f64.mul (local.get $x) (local.get $x)))))))
-            (f64.mul (f64.const 2.0) (call $math.atan (local.get $reduced))))
+            (if (f64.lt (local.get $abs_x) (f64.const 0.6875))
+              (then ;; id=0: r = (2x-1)/(2+x)
+                (local.set $id (i32.const 0))
+                (local.set $r (f64.div (f64.sub (f64.mul (f64.const 2.0) (local.get $r)) (f64.const 1.0))
+                                       (f64.add (f64.const 2.0) (local.get $r)))))
+              (else ;; id=1: r = (x-1)/(x+1)
+                (local.set $id (i32.const 1))
+                (local.set $r (f64.div (f64.sub (local.get $r) (f64.const 1.0))
+                                       (f64.add (local.get $r) (f64.const 1.0)))))))
           (else
-            (local.set $x2 (f64.mul (local.get $x) (local.get $x)))
-            (f64.mul (local.get $x)
-              (f64.sub (f64.const 1.0)
-                (f64.mul (local.get $x2)
-                  (f64.sub (f64.const 0.3333333333333333)
-                    (f64.mul (local.get $x2)
-                      (f64.sub (f64.const 0.2)
-                        (f64.mul (local.get $x2)
-                          (f64.sub (f64.const 0.14285714285714285)
-                            (f64.mul (local.get $x2)
-                              (f64.sub (f64.const 0.1111111111111111)
-                                (f64.mul (local.get $x2)
-                                  (f64.sub (f64.const 0.09090909090909091)
-                                    (f64.mul (local.get $x2) (f64.const 0.07692307692307693)))))))))))))))))))`
+            (if (f64.lt (local.get $abs_x) (f64.const 2.4375))
+              (then ;; id=2: r = (x-1.5)/(1+1.5x)
+                (local.set $id (i32.const 2))
+                (local.set $r (f64.div (f64.sub (local.get $r) (f64.const 1.5))
+                                       (f64.add (f64.const 1.0) (f64.mul (f64.const 1.5) (local.get $r))))))
+              (else ;; id=3: r = -1/x
+                (local.set $id (i32.const 3))
+                (local.set $r (f64.div (f64.const -1.0) (local.get $r)))))))))
+    (local.set $z (f64.mul (local.get $r) (local.get $r)))
+    (local.set $w (f64.mul (local.get $z) (local.get $z)))
+    (local.set $s1 (f64.mul (local.get $z)
+      (f64.add (f64.const 0.3333333333333293)
+        (f64.mul (local.get $w) (f64.add (f64.const 0.14285714272503466)
+          (f64.mul (local.get $w) (f64.add (f64.const 0.09090887133436507)
+            (f64.mul (local.get $w) (f64.add (f64.const 0.06661073137387531)
+              (f64.mul (local.get $w) (f64.add (f64.const 0.049768779946159324)
+                (f64.mul (local.get $w) (f64.const 0.016285820115365782)))))))))))))
+    (local.set $s2 (f64.mul (local.get $w)
+      (f64.add (f64.const -0.19999999999876483)
+        (f64.mul (local.get $w) (f64.add (f64.const -0.11111110405462356)
+          (f64.mul (local.get $w) (f64.add (f64.const -0.0769187620504483)
+            (f64.mul (local.get $w) (f64.add (f64.const -0.058335701337905735)
+              (f64.mul (local.get $w) (f64.const -0.036531572744216916)))))))))))
+    ;; |x| < 0.4375: result = r - r*(s1+s2), sign carried by r itself.
+    (if (i32.lt_s (local.get $id) (i32.const 0))
+      (then (return (f64.sub (local.get $r) (f64.mul (local.get $r) (f64.add (local.get $s1) (local.get $s2)))))))
+    ;; Reconstruct: z = atanhi[id] - ((r*(s1+s2) - atanlo[id]) - r), sign of x.
+    (if (i32.eq (local.get $id) (i32.const 0))
+      (then (local.set $ahi (f64.const 0.4636476090008061)) (local.set $alo (f64.const 2.2698777452961687e-17)))
+      (else (if (i32.eq (local.get $id) (i32.const 1))
+        (then (local.set $ahi (f64.const 0.7853981633974483)) (local.set $alo (f64.const 3.061616997868383e-17)))
+        (else (if (i32.eq (local.get $id) (i32.const 2))
+          (then (local.set $ahi (f64.const 0.982793723247329)) (local.set $alo (f64.const 1.3903311031230998e-17)))
+          (else (local.set $ahi (f64.const 1.5707963267948966)) (local.set $alo (f64.const 6.123233995736766e-17))))))))
+    (local.set $res (f64.sub (local.get $ahi)
+      (f64.sub (f64.sub (f64.mul (local.get $r) (f64.add (local.get $s1) (local.get $s2))) (local.get $alo))
+               (local.get $r))))
+    (f64.copysign (local.get $res) (local.get $x)))`
 
   ctx.core.stdlib['math.asin'] = `(func $math.asin (param $x f64) (result f64)
     ;; Domain is [-1, 1]; outside it (including ±Infinity), Math.asin returns NaN.
@@ -577,6 +620,9 @@ export default (ctx) => {
       (f64.lt (f64.abs (local.get $x)) (f64.const inf))))`
 
   ctx.core.stdlib['math.hypot'] = `(func $math.hypot (param $x f64) (param $y f64) (result f64)
+    ;; Any ±Infinity argument ⇒ +Infinity, even when the other is NaN (ECMA-262 21.3.2.18).
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const inf))))
+    (if (f64.eq (f64.abs (local.get $y)) (f64.const inf)) (then (return (f64.const inf))))
     (f64.sqrt (f64.add (f64.mul (local.get $x) (local.get $x)) (f64.mul (local.get $y) (local.get $y)))))`
 
   ctx.core.stdlib['math.random'] = `(func $math.random (result f64)
