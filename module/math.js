@@ -452,6 +452,20 @@ export default (ctx) => {
         (if (local.get $neg_base)
           (then (local.set $result (f64.neg (local.get $result)))))
         (return (local.get $result))))
+    ;; x is ±Infinity with |y| >= 2^31 (the i32 fast path above handles smaller y):
+    ;; magnitude is Inf for y>0, 0 for y<0; sign is negative only when x is -Inf
+    ;; and y is an odd integer. Odd-ness is tested in f64 (y, y/2 both integral)
+    ;; to avoid an i32.trunc trap on |y| beyond i32 range.
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf))
+      (then
+        (local.set $result
+          (select (f64.const inf) (f64.const 0.0) (f64.gt (local.get $y) (f64.const 0.0))))
+        (if (i32.and (f64.lt (local.get $x) (f64.const 0.0))
+                     (i32.and (f64.eq (f64.nearest (local.get $y)) (local.get $y))
+                              (f64.ne (f64.nearest (f64.mul (local.get $y) (f64.const 0.5)))
+                                      (f64.mul (local.get $y) (f64.const 0.5)))))
+          (then (local.set $result (f64.neg (local.get $result)))))
+        (return (local.get $result))))
     ;; x == 0 with non-integer y -> y<0 ? Infinity : 0 (sign-of-zero only matters for integer y, handled above)
     (if (f64.eq (local.get $x) (f64.const 0.0))
       (then
@@ -550,8 +564,14 @@ export default (ctx) => {
     (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
     (if (f64.ne (local.get $y) (local.get $y)) (then (return (local.get $y))))
     (if (result f64) (f64.eq (local.get $x) (f64.const 0.0)) (then
-      (if (result f64) (f64.eq (local.get $y) (f64.const 0.0)) (then (f64.const 0.0)) (else
-        (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${Math.PI / 2})) (else (f64.neg (f64.const ${Math.PI / 2})))))))
+      ;; y is ±0 too: result is ±0 when x is +0, ±π when x is -0; sign taken from y.
+      (if (result f64) (f64.eq (local.get $y) (f64.const 0.0))
+        (then (f64.copysign
+          (select (f64.const ${Math.PI}) (f64.const 0.0)
+                  (f64.lt (f64.copysign (f64.const 1.0) (local.get $x)) (f64.const 0.0)))
+          (local.get $y)))
+        (else
+          (if (result f64) (f64.gt (local.get $y) (f64.const 0.0)) (then (f64.const ${Math.PI / 2})) (else (f64.neg (f64.const ${Math.PI / 2})))))))
       (else (if (result f64) (f64.ge (local.get $x) (f64.const 0.0))
         (then (call $math.atan (f64.div (local.get $y) (local.get $x))))
         (else (if (result f64) (f64.ge (local.get $y) (f64.const 0.0))
