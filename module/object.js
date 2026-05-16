@@ -103,7 +103,22 @@ export default (ctx) => {
 
   ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
 
+  // RequireObjectCoercible: Object.keys/values/entries reject null & undefined
+  // with a TypeError. A literal lowers to a [null, value] node — so `null` is
+  // [null, null] and `undefined` is [null, undefined] (both JSON-print alike);
+  // a missing argument arrives as JS undefined. Anything else (incl.
+  // booleans/numbers, which JS boxes) is left to the normal path.
+  const isNullishLiteral = (node) => node === undefined
+    || (Array.isArray(node) && node.length === 2 && node[0] == null && node[1] == null)
+  const requireCoercible = (node) => {
+    if (!isNullishLiteral(node)) return null
+    ctx.runtime.throws = true
+    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+  }
+
   ctx.core.emit['Object.keys'] = (obj) => {
+    const nullish = requireCoercible(obj)
+    if (nullish) return nullish
     if (isHashTyped(obj)) return emitHashKeys(obj)
     const schema = resolveSchema(obj)
     if (schema) return emitStringArray(schema)
@@ -141,6 +156,8 @@ export default (ctx) => {
   ctx.core.emit['Object.hasOwn'] = (obj, key) => ctx.core.emit['.hasOwnProperty'](obj, key)
 
   ctx.core.emit['Object.values'] = (obj) => {
+    const nullish = requireCoercible(obj)
+    if (nullish) return nullish
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
     if (!schema) return emitRuntimeValues(obj)
@@ -157,6 +174,8 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Object.entries'] = (obj) => {
+    const nullish = requireCoercible(obj)
+    if (nullish) return nullish
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
     if (!schema) return emitRuntimeEntries(obj)
