@@ -275,10 +275,19 @@ function dedupeRedecls(stmts) {
   return out
 }
 
-/** Wrap function body for arrow conversion */
+/** Wrap function body for arrow conversion.
+ *  Produces the canonical block form `['{}', [';', ...stmts]]`: a `{}` whose
+ *  sole child is a `;`-list. A bare single statement (`['{}', stmt]`, from the
+ *  parser eliding the `;` wrapper) would otherwise be mistaken for an object
+ *  literal, so it is `;`-wrapped here too — `function`→arrow conversions bypass
+ *  the `=>` transform handler and must normalize their own bodies. */
 function wrapArrowBody(body) {
   const t = transformScope(body)
-  return Array.isArray(t) && (t[0] === '{}' || t[0] === ';') ? (t[0] === '{}' ? t : ['{}', t]) : ['{}', t]
+  if (!Array.isArray(t)) return ['{}', [';', t]]
+  if (t[0] === ';') return ['{}', t]
+  if (t[0] !== '{}') return ['{}', [';', t]]
+  if (t.length === 2 && !(Array.isArray(t[1]) && t[1][0] === ';')) return ['{}', [';', t[1]]]
+  return t
 }
 
 /** Prototype identity check: X.prototype.Y */
@@ -549,16 +558,17 @@ const handlers = {
   },
 
   '=>'(params, body) {
-    // The subscript parser sometimes elides the `[';', stmt, null]` wrapper inside
-    // an arrow's `{` block when the block contains a single bare expression — the
-    // result `['{}', expr]` is syntactically identical to an object-literal shape,
-    // and prepare.js' `{}` handler can no longer tell them apart. JS grammar makes
-    // it unambiguous: `=>` followed by `{` is always a block (use `=> ({...})` for
-    // an object return), so coerce single-expr bodies back to `['{}', [';', expr]]`.
+    // The subscript parser elides the `[';', stmt, null]` wrapper inside an
+    // arrow's `{` block when the block holds a single statement — the result
+    // `['{}', stmt]` is syntactically identical to an object-literal shape, and
+    // downstream `{}` handlers can no longer tell them apart. JS grammar makes
+    // it unambiguous: `=>` followed by `{` is always a block (use `=> ({...})`
+    // for an object return), so coerce every single-statement body to the
+    // canonical `['{}', [';', stmt]]` block form — `;`-wrapped, never bare.
     let b = body
     if (Array.isArray(b) && b[0] === '{}' && b.length === 2) {
       const inner = b[1]
-      if (inner != null && !(Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0]))) {
+      if (inner != null && !(Array.isArray(inner) && inner[0] === ';')) {
         b = ['{}', [';', inner]]
       }
     }
@@ -672,8 +682,12 @@ const handlers = {
       if (i !== 0 || a == null) return t
       const blockIn = Array.isArray(a) && JZ_BLOCK_OPS.has(a[0])
       if (!blockIn || t == null) return t
-      const stmtOut = Array.isArray(t) && JZ_BLOCK_OPS.has(t[0])
-      return stmtOut ? t : [';', t]
+      // transformScope collapses a single-statement `;`-list to its bare element;
+      // re-wrap so the block always stays `['{}', [';', ...]]`. The `;` is the
+      // only reliable block marker — a bare statement op can desugar to an
+      // expression op downstream (postfix `c++` → `['-', ...]`) and lose its
+      // block identity, leaving `['{}', expr]` mistakable for an object literal.
+      return Array.isArray(t) && t[0] === ';' ? t : [';', t]
     })]
   },
 

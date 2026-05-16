@@ -1228,17 +1228,26 @@ export function analyzeValTypes(body) {
     for (let i = 1; i < node.length && n <= 1; i++) n = writeCount(node[i], name, n)
     return n
   }
-  // `var o = {…}` is rewritten by jzify into `let o; o = {…}`, so the object
-  // literal's schemaId never reaches `o`'s rep the way a direct `let o = {…}`
-  // decl binds it — leaving `o.prop` / `o.method()` dispatch to structural
-  // subtyping, which mis-resolves when another in-scope object shares a member
-  // at a different slot. Bind the schemaId, but only for a single-assignment,
-  // non-parameter local: a polymorphically reassigned holder keeps dynamic
-  // dispatch (correct, just slower).
-  function bindObjSchema(name, rhs) {
+  // Bind an object-literal's schemaId onto its holding local's rep so that
+  // `o.prop` / `o.method()` dispatch is precise instead of falling back to
+  // structural subtyping (which mis-resolves when another in-scope object
+  // shares a member at a different slot). `shapeOf` already covers plain-data
+  // literals on a direct `let o = {…}` decl, but not literals with
+  // function-valued props — and `var o = {…}` is rewritten by jzify into
+  // `let o; o = {…}`, so the schemaId never reaches `o` either way.
+  // `expectWrites` is the reassignment count that marks `o` single-assignment:
+  // 1 for the jzify `=` form (the synthesized assignment IS the only write),
+  // 0 for a direct `let`/`const` decl (the initializer is not counted as a
+  // write). A polymorphically reassigned holder keeps dynamic dispatch.
+  // A name already in `ctx.schema.vars` carries a prepare-phase schema
+  // (Object.assign merge via `inferAssignSchema`, destructure tracking) that
+  // supersedes the bare-literal one — binding here would shadow the merged
+  // schema (rep schemaId wins over `ctx.schema.vars` in `idOf`).
+  function bindObjSchema(name, rhs, expectWrites = 1) {
     if (ctx.func.current?.params?.some(p => p.name === name)) return
+    if (ctx.schema.vars?.has(name)) return
     const sid = objLiteralSchemaId(rhs)
-    if (sid != null && writeCount(body, name, 0) === 1) updateRep(name, { schemaId: sid })
+    if (sid != null && writeCount(body, name, 0) === expectWrites) updateRep(name, { schemaId: sid })
   }
   function walk(node) {
     if (!Array.isArray(node)) return
@@ -1292,6 +1301,10 @@ export function analyzeValTypes(body) {
             ctx.schema.vars.set(a[1], sid)
           }
         }
+        // `shapeOf` misses object literals with function-valued props; bind
+        // their schemaId here so number-hint ToPrimitive (valueOf/toString slot
+        // dispatch) resolves. expectWrites=0: a decl initializer is not a write.
+        if (vt === VAL.OBJECT) bindObjSchema(a[1], a[2], 0)
         // Propagate schemaId from a narrowed call result so subsequent valTypeOf
         // calls in this function body see the precise schema. emitDecl rebinds
         // this at emission time too — analyze-time binding is what unlocks the

@@ -358,7 +358,10 @@ export const f64rem = (a, b) => {
  *  exist) nullish *literals* still fold statically (null→+0, undefined→NaN);
  *  non-literal values pass through uncoerced. */
 export function toNumF64(node, v) {
-  if (v.type === 'i32' || isLit(v)) return asF64(v)
+  // An i32 node carrying `.ptrKind` is an *unboxed pointer* (object/array local),
+  // not a number — skipping coercion would reinterpret pointer bits as an f64.
+  // Only a plain i32 (loop counter, `x|0`) is genuinely already-numeric.
+  if ((v.type === 'i32' && v.ptrKind == null) || isLit(v)) return asF64(v)
   const vt = keyValType(node)
   if (vt === VAL.NUMBER || vt === VAL.BIGINT) return asF64(v)
   if (vt === VAL.DATE) {
