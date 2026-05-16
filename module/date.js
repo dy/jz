@@ -9,7 +9,7 @@
  * @module date
  */
 
-import { typed, asF64, toNumF64, allocPtr } from '../src/ir.js'
+import { typed, asF64, toNumF64, allocPtr, temp } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { inc, PTR } from '../src/ctx.js'
 import { VAL } from '../src/analyze.js'
@@ -618,10 +618,14 @@ export default (ctx) => {
   const emitDateSetTime = (dateExpr, ms) => {
     inc('__date_time_clip')
     const d = asF64(emit(dateExpr))
-    const t = typed(['call', '$__date_time_clip', toNumF64(ms, emit(ms))], 'f64')
+    // Clip once into a temp: the result feeds both the store and the block
+    // value, and sharing one IR node across two tree positions miscompiles
+    // under CSE (it hoists the arg without emitting its local.set).
+    const t = temp('st')
     return typed(['block', ['result', 'f64'],
-      ['f64.store', ['i32.wrap_i64', ['i64.reinterpret_f64', d]], t],
-      t], 'f64')
+      ['local.set', `$${t}`, typed(['call', '$__date_time_clip', toNumF64(ms, emit(ms))], 'f64')],
+      ['f64.store', ['i32.wrap_i64', ['i64.reinterpret_f64', d]], ['local.get', `$${t}`]],
+      ['local.get', `$${t}`]], 'f64')
   }
 
   ctx.core.emit['.getTime'] = emitDateGetTime
