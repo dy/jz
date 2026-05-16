@@ -685,6 +685,8 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
     './src/print.js':   watrSrc('print.js'),
     './src/polyfill.js':watrSrc('polyfill.js'),
     './src/optimize.js':watrSrc('optimize.js'),
+    './src/template.js':watrSrc('template.js'),
+    './template.js':    watrSrc('template.js'),
     './encode.js':      watrSrc('encode.js'),
     './const.js':       watrSrc('const.js'),
     './parse.js':       watrSrc('parse.js'),

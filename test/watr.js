@@ -15,6 +15,7 @@ const ENTRY_MODULES = {
   './src/print.js': watrSrc('print.js'),
   './src/polyfill.js': watrSrc('polyfill.js'),
   './src/optimize.js': watrSrc('optimize.js'),
+  './src/template.js': watrSrc('template.js'),
   './encode.js': watrSrc('encode.js'),
   './const.js': watrSrc('const.js'),
   './parse.js': watrSrc('parse.js'),
@@ -23,6 +24,7 @@ const ENTRY_MODULES = {
   './polyfill.js': watrSrc('polyfill.js'),
   './optimize.js': watrSrc('optimize.js'),
   './print.js': watrSrc('print.js'),
+  './template.js': watrSrc('template.js'),
 }
 
 const COMPILE_MODULES = {
