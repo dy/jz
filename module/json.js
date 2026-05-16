@@ -21,6 +21,43 @@ function jsonConstString(ctx, expr) {
   return null
 }
 
+// Sentinel distinct from any JS value `JSON.stringify` could hold (`undefined`
+// is a legitimate literal — an array hole or a bare `undefined`).
+const NOT_LIT = Symbol('not-literal')
+
+// Evaluate a prepared AST node to its constant JS value, or NOT_LIT if any
+// part is dynamic. Mirrors the literal grammar prepare produces: `[null, v]`
+// for primitives, `['str', s]`, `['[' …]` arrays, `['{}' …]` objects.
+function literalValue(node) {
+  if (node === undefined) return undefined            // array hole
+  if (!Array.isArray(node)) return NOT_LIT
+  const op = node[0]
+  if (op == null) return node[1]                      // number | string | bool | null | undefined
+  if (op === 'str') return node[1]
+  if (op === 'u-') { const v = literalValue(node[1]); return v === NOT_LIT ? NOT_LIT : -v }
+  if (op === '[') {
+    const arr = []
+    for (let i = 1; i < node.length; i++) {
+      const v = literalValue(node[i])
+      if (v === NOT_LIT) return NOT_LIT
+      arr.push(v)
+    }
+    return arr
+  }
+  if (op === '{}') {
+    const obj = {}
+    for (let i = 1; i < node.length; i++) {
+      const e = node[i]
+      if (!Array.isArray(e) || e[0] !== ':' || (typeof e[1] !== 'string' && typeof e[1] !== 'number')) return NOT_LIT
+      const v = literalValue(e[2])
+      if (v === NOT_LIT) return NOT_LIT
+      obj[e[1]] = v
+    }
+    return obj
+  }
+  return NOT_LIT
+}
+
 function jsonShapeString(ctx, expr) {
   if (typeof expr === 'string') return ctx.scope.shapeStrs?.get(expr) ?? null
   return null
@@ -1092,13 +1129,54 @@ ${localDecls}
 
   // === Emitters ===
 
-  // JSON.stringify(value [, replacer [, space ]]). The replacer argument is
-  // not yet supported and is ignored; `space` drives indentation (see
-  // __json_setgap). An absent `space` passes `undefined` → compact output.
-  ctx.core.emit['JSON.stringify'] = (x, _replacer, space) => {
+  // JSON.stringify(value [, replacer [, space ]]).
+  //
+  // Compile-time fold: when `value` is a fully-literal tree — and `replacer` /
+  // `space` are likewise constant — the result is computed with the host
+  // `JSON.stringify` and emitted as a single string constant. This is the
+  // mirror of the `JSON.parse` const-fold: spec-exact (replacer-array filtering,
+  // dedup, key order, indentation all come free from the host), and it removes
+  // the runtime call entirely. The runtime `__stringify` path (which ignores a
+  // replacer) handles every non-constant case unchanged.
+  ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
+    const folded = foldStringify(x, replacer, space)
+    if (folded !== undefined) return folded
     inc('__stringify')
     const spaceIR = asI64(space == null ? undefExpr() : emit(space))
     return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')
+  }
+
+  // Returns folded IR, or `undefined` when any argument is non-constant.
+  function foldStringify(x, replacer, space) {
+    const val = literalValue(x)
+    if (val === NOT_LIT) return undefined
+
+    let rep
+    if (replacer != null) {
+      const rv = literalValue(replacer)
+      if (rv === NOT_LIT) {
+        const arr = jsonShapeStrings(ctx, replacer)   // const-bound string array
+        if (arr == null) return undefined
+        rep = arr
+      } else if (rv == null) {
+        rep = undefined                               // null / undefined replacer
+      } else if (Array.isArray(rv)) {
+        rep = rv
+      } else {
+        return undefined                              // function replacer — can't fold
+      }
+    }
+
+    let sp
+    if (space != null) {
+      sp = literalValue(space)
+      if (sp === NOT_LIT) return undefined
+    }
+
+    let result
+    try { result = JSON.stringify(val, rep, sp) }
+    catch { return undefined }
+    return result === undefined ? undefExpr() : asF64(emit(['str', result]))
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
