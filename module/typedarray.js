@@ -368,7 +368,8 @@ export default (ctx) => {
   // new DataView(buffer, byteOffset[, byteLength]) → BUFFER ptr re-anchored at
   // parent_offset + byteOffset. Subsequent DV reads/writes naturally honor the
   // base offset since DV emitters compute `ptrOffsetIR(dv) + i32.add(off)`.
-  // byteLength is currently ignored (no DV bounds checking yet).
+  // byteLength isn't stored on the pointer; get/set bounds-check the access via
+  // statically-recorded ctor args (see dvViewSize / analyze's trackDataView).
   ctx.core.emit['new.DataView'] = (bufExpr, offExpr) => {
     if (offExpr == null) return asF64(emit(bufExpr))
     const bufPtr = asF64(emit(bufExpr))
@@ -607,6 +608,40 @@ export default (ctx) => {
     return typed(['call', '$__dv_index', toNumF64(offNode, emit(offNode))], 'i32')
   }
 
+  // View-size IR for a DataView whose ctor byteOffset/byteLength are statically
+  // known (recorded by analyze's trackDataView). Returns null when the receiver
+  // isn't a bounds-trackable DataView variable. The no-explicit-length form reads
+  // the parent ArrayBuffer's byteLength header [-8] — reachable from the DV
+  // pointer itself at `dvOffset - byteOffset - 8` — so it never depends on the
+  // backing buffer variable still holding the same value.
+  const dvViewSize = (dv) => {
+    if (typeof dv !== 'string') return null
+    if (ctx.types.typedElem?.get(dv) !== 'new.DataView') return null
+    const meta = ctx.types.dvBounds?.get(dv)
+    if (!meta) return null
+    if (meta.len != null) return ['i32.const', meta.len]
+    return ['i32.sub',
+      ['i32.load', ['i32.sub', ptrOffsetIR(emit(dv), VAL.BUFFER), ['i32.const', meta.off + 8]]],
+      ['i32.const', meta.off]]
+  }
+
+  // ToIndex the DV byte offset, then bounds-check `getIndex + elementSize > viewSize`
+  // (spec 25.3.1.1 GetViewValue / SetViewValue step 13) — a RangeError when the
+  // access would run past the view. elementSize moves to the static side of the
+  // compare so a saturated/huge index can't overflow the i32 addition. When the
+  // view isn't statically trackable this is just `dvIndex` (no bounds check).
+  const dvIndexChecked = (dv, off, size) => {
+    const vsize = dvViewSize(dv)
+    if (vsize == null) return dvIndex(off)
+    ctx.runtime.throws = true
+    const idxT = tempI32('dvb')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${idxT}`, dvIndex(off)],
+      ['if', ['i32.gt_s', ['local.get', `$${idxT}`], ['i32.sub', vsize, ['i32.const', size]]],
+        ['then', ['throw', '$__jz_err', ['f64.const', 0]]]],
+      ['local.get', `$${idxT}`]], 'i32')
+  }
+
   // DataView set methods: extract i32 offset from f64 ptr, optionally byte-swap, store.
   // 8-bit ops ignore the LE arg entirely (single byte — no swap possible).
   const DV_SET = {
@@ -618,8 +653,7 @@ export default (ctx) => {
   }
   for (const [method, [storeOp, valType, size]] of Object.entries(DV_SET)) {
     ctx.core.emit[`.${method}`] = (dv, off, val, leNode) => {
-      const dvOff = ptrOffsetIR(emit(dv), VAL.BUFFER)
-      const addr = ['i32.add', dvOff, dvIndex(off)]
+      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndexChecked(dv, off, size)]
       // Coerce value into the wasm value type the store op consumes. Non-BigInt
       // stores ToNumber the value first (per SetViewValue) so a Symbol value
       // raises a TypeError and a string value parses instead of truncating to 0.
@@ -681,7 +715,7 @@ export default (ctx) => {
   }
   for (const [method, [loadOp, resultType, size, signed]] of Object.entries(DV_GET)) {
     ctx.core.emit[`.${method}`] = (dv, off, leNode) => {
-      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndex(off)]
+      const addr = ['i32.add', ptrOffsetIR(emit(dv), VAL.BUFFER), dvIndexChecked(dv, off, size)]
 
       // Convert a wasm-typed raw value back into the f64 ABI return. Float reads
       // canonicalize NaN (see __canon_nan) so downstream `v !== v` works.
