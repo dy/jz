@@ -136,7 +136,7 @@ export default (ctx) => {
   ctx.core.emit['math.expm1'] = a => callDeps(['math.exp', 'math.expm1'], 'math.expm1', a)
   ctx.core.emit['math.log'] = a => call('math.log', a)
   ctx.core.emit['math.log2'] = a => callDeps(['math.log', 'math.log2'], 'math.log2', a)
-  ctx.core.emit['math.log10'] = a => callDeps(['math.log', 'math.log10'], 'math.log10', a)
+  ctx.core.emit['math.log10'] = a => callDeps(['math.log10'], 'math.log10', a)
   ctx.core.emit['math.log1p'] = a => callDeps(['math.log', 'math.log1p'], 'math.log1p', a)
 
   // Power
@@ -316,8 +316,77 @@ export default (ctx) => {
   ctx.core.stdlib['math.log2'] = `(func $math.log2 (param $x f64) (result f64)
     (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN2})))`
 
+  // log10 via fdlibm's two-term decomposition: log10(x) = k*log10(2) + log10(m).
+  // A plain log(x)/ln(10) double-rounds (rounding of log itself, then of the
+  // divide), so exact powers of ten drift — log10(1000) lands on 2.9999…996.
+  // Reducing x = m·2^k, splitting log10(2) and 1/ln(10) into hi/lo halves, and
+  // keeping the bulk term (k·log10_2hi, hi·ivln10hi) carry-free recovers the
+  // last ulps, so log10(10/100/1000/…) round-trips to exact integers.
   ctx.core.stdlib['math.log10'] = `(func $math.log10 (param $x f64) (result f64)
-    (f64.div (call $math.log (local.get $x)) (f64.const ${Math.LN10})))`
+    (local $bits i64) (local $k i32) (local $m f64) (local $f f64)
+    (local $hfsq f64) (local $s f64) (local $z f64) (local $w f64)
+    (local $t1 f64) (local $t2 f64) (local $R f64)
+    (local $hi f64) (local $lo f64) (local $dk f64)
+    (local $valhi f64) (local $vallo f64) (local $y f64)
+    ;; Special values: NaN→NaN, x≤0 → (-inf for 0, NaN for negative), +inf→+inf.
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    (if (f64.le (local.get $x) (f64.const 0.0))
+      (then
+        (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (f64.const -inf))))
+        (return (f64.const nan))))
+    (if (f64.eq (local.get $x) (f64.const inf)) (then (return (local.get $x))))
+    ;; Normalize subnormals so the bit-extracted exponent is meaningful.
+    (local.set $k (i32.const 0))
+    (if (f64.lt (local.get $x) (f64.const 0x1p-1022))
+      (then
+        (local.set $x (f64.mul (local.get $x) (f64.const 0x1p54)))
+        (local.set $k (i32.const -54))))
+    ;; frexp: k += exponent, m = mantissa forced into [1,2).
+    (local.set $bits (i64.reinterpret_f64 (local.get $x)))
+    (local.set $k (i32.add (local.get $k) (i32.sub
+                    (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const 52)) (i64.const 0x7ff)))
+                    (i32.const 1023))))
+    (local.set $m (f64.reinterpret_i64
+                    (i64.or (i64.and (local.get $bits) (i64.const 0x000fffffffffffff))
+                            (i64.const 0x3ff0000000000000))))
+    ;; Center on sqrt(2): m ∈ [sqrt2/2, sqrt2) keeps the kernel argument small.
+    (if (f64.ge (local.get $m) (f64.const 1.4142135623730951))
+      (then
+        (local.set $m (f64.mul (local.get $m) (f64.const 0.5)))
+        (local.set $k (i32.add (local.get $k) (i32.const 1)))))
+    ;; log(m) kernel: f - hfsq + s*(hfsq+R), s = f/(2+f), polynomial in s².
+    (local.set $f (f64.sub (local.get $m) (f64.const 1.0)))
+    (local.set $hfsq (f64.mul (f64.const 0.5) (f64.mul (local.get $f) (local.get $f))))
+    (local.set $s (f64.div (local.get $f) (f64.add (f64.const 2.0) (local.get $f))))
+    (local.set $z (f64.mul (local.get $s) (local.get $s)))
+    (local.set $w (f64.mul (local.get $z) (local.get $z)))
+    (local.set $t1 (f64.mul (local.get $w) (f64.add (f64.const 0.3999999999940942)
+      (f64.mul (local.get $w) (f64.add (f64.const 0.22222198432149792)
+        (f64.mul (local.get $w) (f64.const 0.15313837699209373)))))))
+    (local.set $t2 (f64.mul (local.get $z) (f64.add (f64.const 0.6666666666666735)
+      (f64.mul (local.get $w) (f64.add (f64.const 0.2857142874366239)
+        (f64.mul (local.get $w) (f64.add (f64.const 0.1818357216161805)
+          (f64.mul (local.get $w) (f64.const 0.14798198605116586)))))))))
+    (local.set $R (f64.add (local.get $t2) (local.get $t1)))
+    ;; hi = high 32 bits of (f - hfsq); lo = the carry-free remainder.
+    (local.set $hi (f64.sub (local.get $f) (local.get $hfsq)))
+    (local.set $hi (f64.reinterpret_i64
+      (i64.and (i64.reinterpret_f64 (local.get $hi)) (i64.const 0xffffffff00000000))))
+    (local.set $lo (f64.add
+      (f64.sub (f64.sub (local.get $f) (local.get $hi)) (local.get $hfsq))
+      (f64.mul (local.get $s) (f64.add (local.get $hfsq) (local.get $R)))))
+    ;; Combine with k·log10(2): bulk in val_hi, corrections in val_lo.
+    (local.set $valhi (f64.mul (local.get $hi) (f64.const 0.4342944818781689)))
+    (local.set $dk (f64.convert_i32_s (local.get $k)))
+    (local.set $y (f64.mul (local.get $dk) (f64.const 0.30102999566361177)))
+    (local.set $vallo (f64.add (f64.add
+      (f64.mul (local.get $dk) (f64.const 3.694239077158931e-13))
+      (f64.mul (f64.add (local.get $lo) (local.get $hi)) (f64.const 2.5082946711645275e-11)))
+      (f64.mul (local.get $lo) (f64.const 0.4342944818781689))))
+    (local.set $w (f64.add (local.get $y) (local.get $valhi)))
+    (local.set $vallo (f64.add (local.get $vallo)
+      (f64.add (f64.sub (local.get $y) (local.get $w)) (local.get $valhi))))
+    (f64.add (local.get $vallo) (local.get $w)))`
 
   // log1p(x) via Kahan's compensated trick: with u = 1+x, log(u) loses bits when x is
   // small (because u rounds to ~1), but the ratio x/(u-1) is exactly the missing factor.
