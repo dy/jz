@@ -142,7 +142,7 @@ const EXCLUDED_PATTERNS = [
   /\bnew\b.*\btarget\b/, /\bwith\b/,
   /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
   /iterator/i, /\bSymbol\b/, /symbol\.species/i, /symbol\.toPrimitive/i,
-  /symbol\.iterator/i, /for[\s-]*of/i, /regexp/i,
+  /symbol\.iterator/i, /for[\s-]*of/i,
   /dynamic[\s-]*import/i, /import\.meta/i,
   /\bexport\s+default\b/,
   /\bdelete\b/,
@@ -155,7 +155,7 @@ const EXCLUDED_PATTERNS = [
 const CLASS_EXCLUDED_PATTERNS = [
   /async/i, /await/, /generator/i, /yield/, /\bsuper\b/, /reflect/i, /proxy/i,
   /\bnew\b.*\btarget\b/, /\bWeak(Ref|Map|Set)\b/, /\bBigInt\b/i,
-  /iterator/i, /\bSymbol\b/, /for[\s-]*of/i, /regexp/i,
+  /iterator/i, /\bSymbol\b/, /for[\s-]*of/i,
   /dynamic[\s-]*import/i, /import\.meta/i, /\bexport\s+default\b/, /\bdelete\b/,
 ]
 const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
@@ -218,7 +218,27 @@ function shouldSkip(content, rel = '') {
   if (rel.includes('/statements/switch/scope-lex-')) return 'switch lexical environment semantics outside current jz scope'
   if (rel.includes('/statements/try/12.14-')) return 'legacy catch scope semantics outside current jz scope'
   if (rel.includes('/function-code/eval-')) return 'direct eval parameter environment outside current jz scope'
-  if (rel.includes('/regexp/')) return 'regexp outside current jz scope'
+  // RegExp literal tests: jz supports regex literals + .source/.flags/flag
+  // accessors/.test/.match/.exec. Skip only the corpus jz's regex model
+  // genuinely can't handle; everything else falls through to the generic
+  // negative-test / harness filters below (and runs).
+  if (rel.includes('/literals/regexp/')) {
+    // `.source` can't reproduce \uXXXX / \xXX escapes — subscript's regex
+    // literal parser resolves them before jz sees the pattern (raw-text
+    // fidelity loss, same class as tagged-template raw-segment loss).
+    if (rel.endsWith('/S7.8.5_A1.1_T1.js') || rel.endsWith('/S7.8.5_A2.1_T1.js'))
+      return 'regex .source unicode-escape raw fidelity (subscript parser)'
+    // A regex literal compiles to a compile-time id; identical literals dedup
+    // to one id, so distinct-literal object-identity tests are out of model.
+    if (rel.endsWith('/S7.8.5_A4.2.js') || rel.endsWith('/inequality.js'))
+      return 'regex literal object identity outside compile-time-id model'
+    // jz's regex engine: no named capture groups, no u-flag unicode/surrogate semantics.
+    if (rel.includes('/named-groups/')) return 'named capture groups unsupported by jz regex engine'
+    if (/\/regexp\/u-[^/]*\.js$/.test(rel)) return 'u-flag unicode/surrogate regex semantics unsupported'
+  }
+  // The `RegExp` constructor/global isn't exposed by jz — regex is literal-only.
+  // (Literal-dir tests are exempt: `instanceof RegExp` there folds to a constant.)
+  else if (/\bRegExp\b/.test(codeContent)) return 'RegExp constructor/global unsupported'
   if (/features:\s*\[[^\]]*destructuring-binding/.test(content) || rel.includes('/dstr/') || rel.includes('/destructuring/')) return 'destructuring binding outside current jz subset'
   // Destructuring patterns in let/var/const declarators — `let [x]`, `let {x}` — outside jz subset.
   if (/\b(let|var|const)\s*[\[{]/.test(codeContent)) return 'destructuring binding outside current jz subset'
@@ -444,7 +464,10 @@ function shouldSkip(content, rel = '') {
   // Skip negative tests (expected to throw SyntaxError) — jz rejects differently
   if (/negative:\s*\n\s+phase:\s+parse/.test(content)) return 'negative parse test'
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
-  if (content.includes('Test262Error') && !content.includes('assert.throws')) return 'Test262Error legacy harness'
+  // Legacy Sputnik tests `throw new Test262Error(...)` directly. jz compiles and
+  // runs that pattern fine (ASSERT_HARNESS defines Test262Error); the regexp
+  // literal corpus is clean enough to run, so it's exempt from this skip.
+  if (content.includes('Test262Error') && !content.includes('assert.throws') && !rel.includes('/literals/regexp/')) return 'Test262Error legacy harness'
   // Skip tests with harness-specific directives
   if (content.includes('$DONE') && !content.includes('runTest')) return 'harness dependency'
   if (content.includes('Test262:Async')) return 'async test'
