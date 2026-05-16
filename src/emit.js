@@ -1966,9 +1966,19 @@ export const emitter = {
       }
 
       let vt = keyValType(obj)
+      // A reassigned slice/concat receiver may carry a stale `vt` — a reassignment
+      // inside a nested closure escapes analyzeValTypes' poisoning (its walk stops
+      // at `=>`). Drop to runtime dispatch, but only for guessy types: STRING/ARRAY
+      // dispatch correctly either way, and BUFFER/TYPED are construction proofs
+      // (`new ArrayBuffer`/`new XxxArray`) — the runtime String/Array fallback has
+      // no branch for them, so nulling `vt` would miscompile `ab.slice()` into an
+      // f64-array copy. jzify also splits every `var x = init` into `let x; x = init`,
+      // marking single-assignment vars "reassigned"; keeping definite BUFFER/TYPED
+      // is what keeps `var`-declared buffers correct.
       if (typeof obj === 'string' && isReassigned(ctx.func.body, obj)
         && (method === 'slice' || method === 'concat')
-        && vt !== VAL.STRING && vt !== VAL.ARRAY) vt = null
+        && vt !== VAL.STRING && vt !== VAL.ARRAY
+        && vt !== VAL.BUFFER && vt !== VAL.TYPED) vt = null
 
       // Helper to call method with arguments (handles spread expansion)
       const callMethod = (objArg, methodEmitter) => {
