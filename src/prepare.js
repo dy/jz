@@ -1177,6 +1177,14 @@ const handlers = {
       }
     } else if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, prop] = callee
+      // `Array.isArray(NS)` on a bare builtin global folds to false — a
+      // namespace/constructor value is never an array.
+      if (obj === 'Array' && prop === 'isArray') {
+        const cargs = flatArgs(args).filter(a => a != null)
+        const a0 = cargs.length === 1 ? cargs[0] : null
+        if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
+          return [, 0]
+      }
       // Compile-time namespace introspection: `NS.hasOwnProperty("member")` on
       // a builtin namespace folds to a literal — no runtime namespace object.
       if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
