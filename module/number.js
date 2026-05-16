@@ -672,9 +672,18 @@ export default (ctx) => {
       (then (throw $__jz_err (f64.const 0))))
     (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $n))))`
 
+  // StringToBigInt: strict — the whole trimmed string must be a single integer
+  // literal, else a SyntaxError ($__jz_err). Unlike parseInt this does NOT stop
+  // at the first bad char: `BigInt("10n")` and `BigInt("000 12")` throw. Empty
+  // or all-whitespace strings parse to 0n. Radix prefixes 0b/0o/0x (case-
+  // insensitive) are recognised only when no sign precedes them, so `-0x1`
+  // surfaces its `x` as an invalid decimal digit and throws, as the spec wants.
+  // (jz's BigInt is i64-backed, so values past 2^63 wrap — out of these tests'
+  // range.)
   ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
-    (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
-    (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64) (local $f f64)
+    (local $t i32) (local $len i32) (local $i i32) (local $end i32) (local $c i32)
+    (local $neg i32) (local $sign i32) (local $radix i32) (local $digit i32)
+    (local $seen i32) (local $result i64) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (call $__num_to_bigint (local.get $f)))))
@@ -682,26 +691,43 @@ export default (ctx) => {
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (local.set $len (call $__str_byteLen (local.get $v)))
+    (local.set $end (local.get $len))
+    ;; Trim leading whitespace (any byte <= 32).
     (block $ws (loop $wsl
-      (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $ws (i32.ge_s (local.get $i) (local.get $end)))
       (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
-      (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
-      (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+    ;; Trim trailing whitespace.
+    (block $te (loop $tel
+      (br_if $te (i32.le_s (local.get $end) (local.get $i)))
+      (br_if $te (i32.gt_s (call $__char_at (local.get $v) (i32.sub (local.get $end) (i32.const 1))) (i32.const 32)))
+      (local.set $end (i32.sub (local.get $end) (i32.const 1)))
+      (br $tel)))
+    ;; Empty / all-whitespace string → 0n.
+    (if (i32.ge_s (local.get $i) (local.get $end))
+      (then (return (f64.reinterpret_i64 (i64.const 0)))))
+    ;; Optional single leading sign — decimal literals only.
+    (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+    (if (i32.eq (local.get $c) (i32.const 45))
+      (then (local.set $neg (i32.const 1)) (local.set $sign (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1))))
+      (else (if (i32.eq (local.get $c) (i32.const 43))
+        (then (local.set $sign (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))))
     (local.set $radix (i32.const 10))
-    (if (i32.and
-      (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-      (i32.and (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))
-        (i32.or (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 120))
-          (i32.eq (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 88)))))
-      (then (local.set $radix (i32.const 16)) (local.set $i (i32.add (local.get $i) (i32.const 2)))))
+    ;; Radix prefix 0b/0o/0x (case-insensitive) — not allowed after a sign.
+    (if (i32.and (i32.eqz (local.get $sign))
+          (i32.and (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $end))
+                   (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48))))
+      (then
+        (local.set $c (i32.or (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))) (i32.const 0x20)))
+        (if (i32.eq (local.get $c) (i32.const 98)) (then (local.set $radix (i32.const 2))))
+        (if (i32.eq (local.get $c) (i32.const 111)) (then (local.set $radix (i32.const 8))))
+        (if (i32.eq (local.get $c) (i32.const 120)) (then (local.set $radix (i32.const 16))))
+        (if (i32.ne (local.get $radix) (i32.const 10))
+          (then (local.set $i (i32.add (local.get $i) (i32.const 2)))))))
+    ;; Strict scan — every remaining char must be a valid radix digit.
     (block $done (loop $lp
-      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (br_if $done (i32.ge_s (local.get $i) (local.get $end)))
       (local.set $c (call $__char_at (local.get $v) (local.get $i)))
       (local.set $digit (i32.const -1))
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 48)) (i32.le_s (local.get $c) (i32.const 57)))
@@ -710,7 +736,8 @@ export default (ctx) => {
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 87)))))
       (if (i32.and (i32.ge_s (local.get $c) (i32.const 65)) (i32.le_s (local.get $c) (i32.const 90)))
         (then (local.set $digit (i32.sub (local.get $c) (i32.const 55)))))
-      (br_if $done (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix))))
+      (if (i32.or (i32.lt_s (local.get $digit) (i32.const 0)) (i32.ge_s (local.get $digit) (local.get $radix)))
+        (then (throw $__jz_err (f64.const 0))))
       (local.set $seen (i32.const 1))
       (local.set $result
         (i64.add
@@ -718,7 +745,8 @@ export default (ctx) => {
           (i64.extend_i32_s (local.get $digit))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $lp)))
-    (if (i32.eqz (local.get $seen)) (then (return (f64.reinterpret_i64 (i64.const 0)))))
+    ;; A sign or radix prefix with no digits ("-", "0x", "0b") is a SyntaxError.
+    (if (i32.eqz (local.get $seen)) (then (throw $__jz_err (f64.const 0))))
     (f64.reinterpret_i64
       (if (result i64) (local.get $neg)
         (then (i64.sub (i64.const 0) (local.get $result)))
@@ -926,6 +954,9 @@ export default (ctx) => {
   // For number input: truncate directly. For string / unknown: first coerce via __to_num
   // (handles both decimal and hex string parse), then truncate.
   ctx.core.emit['BigInt'] = (x) => {
+    // Every BigInt() path can fault: a non-integral Number is a RangeError and
+    // a malformed String is a SyntaxError, both raised via $__jz_err.
+    ctx.runtime.throws = true
     const vt = valTypeOf(x)
     if (vt === VAL.BIGINT) {
       if (typeof x === 'bigint' || (typeof x === 'string' && !isReassigned(ctx.func.body, x))) return emit(x)
@@ -941,7 +972,6 @@ export default (ctx) => {
             ['else', ['local.get', `$${t}`]]]]]], 'f64')
     }
     if (vt === VAL.NUMBER) {
-      ctx.runtime.throws = true
       inc('__num_to_bigint')
       return typed(['call', '$__num_to_bigint', asF64(emit(x))], 'f64')
     }
