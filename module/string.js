@@ -12,7 +12,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -956,9 +956,14 @@ export default (ctx) => {
     return asI32(toNumF64(node, emit(node)))
   }
 
+  // An OBJECT search arg coerces via ToPrimitive(string) at compile time;
+  // __str_indexof's internal __to_str cannot invoke a user-defined toString.
+  const searchArg = (search) =>
+    valTypeOf(search) === VAL.OBJECT ? toStrI64(search, emit(search)) : asI64(emit(search))
+
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {
     inc('__str_indexof')
-    const hay = asI64(emit(str)), ndl = asI64(emit(search))
+    const hay = asI64(emit(str)), ndl = searchArg(search)
     return typed(['f64.convert_i32_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)]], 'f64')
   }
 
@@ -974,7 +979,7 @@ export default (ctx) => {
   ctx.core.emit['.string:includes'] = (str, search, from) => {
     const guard = regexpSearchGuard(search); if (guard) return guard
     inc('__str_indexof')
-    const hay = asI64(emit(str)), ndl = asI64(emit(search))
+    const hay = asI64(emit(str)), ndl = searchArg(search)
     return typed(['f64.convert_i32_s',
       ['i32.ge_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)], ['i32.const', 0]]], 'f64')
   }
@@ -1025,8 +1030,11 @@ export default (ctx) => {
   const stringSearchMethod = (name) => (str, sfx) => {
     const guard = regexpSearchGuard(sfx); if (guard) return guard
     inc(name)
-    let sfxArg = asI64(emit(sfx))
-    if (valTypeOf(sfx) !== VAL.STRING) {
+    const esfx = emit(sfx)
+    let sfxArg = asI64(esfx)
+    if (valTypeOf(sfx) === VAL.OBJECT) {
+      sfxArg = toStrI64(sfx, esfx)
+    } else if (valTypeOf(sfx) !== VAL.STRING) {
       inc('__to_str')
       sfxArg = ['call', '$__to_str', sfxArg]
     }
@@ -1086,7 +1094,7 @@ export default (ctx) => {
   ctx.core.emit['strcat'] = (...parts) => {
     inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
-    if (parts.length === 1) return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(parts[0]))]], 'f64')
+    if (parts.length === 1) return typed(['f64.reinterpret_i64', toStrI64(parts[0], emit(parts[0]))], 'f64')
 
     const vals = parts.map(() => temp('s'))
     const lens = parts.map(() => tempI32('sl'))
@@ -1096,7 +1104,7 @@ export default (ctx) => {
     const ir = []
 
     for (let i = 0; i < parts.length; i++) {
-      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(parts[i]))]]])
+      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', toStrI64(parts[i], emit(parts[i]))]])
       ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', 0]])
@@ -1158,8 +1166,7 @@ export default (ctx) => {
       inc('__ftoa')
       return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
     }
-    inc('__to_str')
-    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(value))]], 'f64')
+    return typed(['f64.reinterpret_i64', toStrI64(value, emit(value))], 'f64')
   }
 
   ctx.core.emit['String.fromCharCode'] = (code) => {

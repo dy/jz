@@ -36,7 +36,7 @@ import {
   NULL_IR, nullExpr, undefExpr, MAX_CLOSURE_ARITY,
   WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS,
   mkPtrIR, ptrOffsetIR, ptrTypeIR,
-  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64,
+  isLit, litVal, isNullishLit, isPureIR, emitNum, f64rem, toNumF64, toStrI64,
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
@@ -1416,7 +1416,11 @@ export const emitter = {
       return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx), 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
-      return typed(ctx.abi.string.ops.concat(asF64(emit(a)), asF64(emit(b)), ctx), 'f64')
+      // An OBJECT operand coerces via ToPrimitive(string) at compile time —
+      // __str_concat's runtime __to_str cannot invoke a user-defined toString.
+      const ea = vtA === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(a, emit(a))], 'f64') : asF64(emit(a))
+      const eb = vtB === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(b, emit(b))], 'f64') : asF64(emit(b))
+      return typed(ctx.abi.string.ops.concat(ea, eb, ctx), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
       return fromI64(['i64.add', asI64(emit(a)), asI64(emit(b))])
