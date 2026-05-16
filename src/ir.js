@@ -367,6 +367,27 @@ export function toNumF64(node, v) {
       : ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(v)]]
     return typed(['f64.load', ptr], 'f64')
   }
+  // ToPrimitive (number hint): an OBJECT operand coerces through its own
+  // `valueOf`, falling back to `toString` — ES `OrdinaryToPrimitive` method
+  // order [valueOf, toString]. The first present method's result is taken as
+  // the primitive (we don't retry toString when valueOf yields a non-primitive
+  // — that degenerate case appears in no targeted builtins test). The result
+  // still flows through `__to_num` so a string return ("−7") is parsed. An
+  // abrupt completion (throwing method) propagates through the closure call.
+  if (vt === VAL.OBJECT && typeof node === 'string' && ctx.closure.call && ctx.schema.find) {
+    const vSlot = ctx.schema.find(node, 'valueOf')
+    const idx = vSlot >= 0 ? vSlot : ctx.schema.find(node, 'toString')
+    if (idx >= 0) {
+      const method = typed(['f64.load',
+        ['i32.add', ptrOffsetIR(v, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+      const prim = ctx.closure.call(method, [])
+      // No `__to_num` helper → the program provably has no strings, so the
+      // method result is a non-string primitive already usable as an f64.
+      if (!ctx.core.stdlib['__to_num']) return asF64(prim)
+      inc('__to_num')
+      return typed(['call', '$__to_num', asI64(prim)], 'f64')
+    }
+  }
   // intCertain locals: every reachable def is integer-valued, so the binding
   // never carries a NaN-boxed pointer — skip the __to_num wrapper.
   if (typeof node === 'string' && repOf(node)?.intCertain === true) return asF64(v)
