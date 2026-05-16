@@ -338,10 +338,27 @@ export default (ctx) => {
   // ArrayBuffer: first-class byte storage with [-8:byteLen][-4:byteCap][bytes].
   // DataView: passthrough ptr to the same BUFFER — DataView methods operate on raw bytes via offset.
 
+  // ToIndex + allocation-ceiling for ArrayBuffer byte lengths: ToInteger (NaN→0,
+  // trunc toward zero), then a RangeError for negatives and for any size jz
+  // cannot represent as an i32 byte count. The ceiling sits just below 2^31 so
+  // the trunc never traps and leaves room for the 8-byte buffer header — this
+  // also rejects the spec's ≥2^53 case and genuinely un-allocatable sizes.
+  ctx.core.stdlib['__ab_len'] = `(func $__ab_len (param $n f64) (result i32)
+    (if (f64.ne (local.get $n) (local.get $n)) (then (local.set $n (f64.const 0))))
+    (local.set $n (f64.trunc (local.get $n)))
+    (if (i32.or
+          (f64.lt (local.get $n) (f64.const 0))
+          (f64.ge (local.get $n) (f64.const 2147483640)))
+      (then (throw $__jz_err (f64.const 0))))
+    (i32.trunc_f64_s (local.get $n)))`
+
   // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer.
-  // Length is ToNumber-coerced (ToIndex) so a Symbol length raises a TypeError.
+  // Length is ToNumber-coerced (ToIndex) so a Symbol length raises a TypeError;
+  // __ab_len then throws a RangeError on a negative or oversized request.
   const arrayBufferCtor = (sizeExpr) => {
-    const n = asI32(toNumF64(sizeExpr, emit(sizeExpr)))
+    ctx.runtime.throws = true
+    inc('__ab_len')
+    const n = typed(['call', '$__ab_len', toNumF64(sizeExpr, emit(sizeExpr))], 'i32')
     const out = allocPtr({ type: PTR.BUFFER, len: n, stride: 1, tag: 'ab' })
     return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
   }
