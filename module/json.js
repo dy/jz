@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { T } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -42,12 +42,13 @@ function hashCapFor(n) {
 
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
-    __stringify: ['__json_val', '__json_setgap', '__jput', '__jput_str', '__jput_num', '__mkstr'],
+    __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
+    __json_omit: ['__ptr_type'],
     __jindent: ['__jput'],
     __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_val'],
-    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_val'],
+    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_val'],
+    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -228,6 +229,17 @@ export default (ctx) => {
   ctx.core.stdlib['__jput_num'] = `(func $__jput_num (param $val f64)
     (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
+  // __json_omit(val: i64) → i32 — 1 if the value serializes to nothing
+  // (undefined or a function/CLOSURE). Per the JSON spec such values are
+  // dropped from objects, rendered as null in arrays, and make a top-level
+  // JSON.stringify return undefined.
+  ctx.core.stdlib['__json_omit'] = `(func $__json_omit (param $val i64) (result i32)
+    (local $f f64)
+    (local.set $f (f64.reinterpret_i64 (local.get $val)))
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (i32.const 0))))
+    (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (i32.const 1))))
+    (i32.eq (call $__ptr_type (local.get $val)) (i32.const ${PTR.CLOSURE})))`
+
   // __json_val(val: i64) — stringify any value, append to buffer
   ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val i64)
     (local $type i32) (local $len i32) (local $i i32) (local $off i32) (local $f f64)
@@ -290,7 +302,7 @@ export default (ctx) => {
   // __json_hash(val: i64) — stringify HASH/MAP: iterate slots, emit {"key":val,...}
   // Slot layout: 24 bytes each — [hash:f64][key:f64][val:f64]. Empty slots have hash==0.
   ctx.core.stdlib['__json_hash'] = `(func $__json_hash (param $val i64)
-    (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32)
+    (local $off i32) (local $cap i32) (local $i i32) (local $slot i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $first (i32.const 1))
@@ -301,16 +313,19 @@ export default (ctx) => {
       (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const 24))))
       (if (f64.ne (f64.load (local.get $slot)) (f64.const 0))
         (then
-          (if (i32.eqz (local.get $first))
-            (then (call $__jput (i32.const 44))))
-          (local.set $first (i32.const 0))
-          (call $__jindent)
-          (call $__jput (i32.const 34))
-          (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
-          (call $__jput (i32.const 34))
-          (call $__jput (i32.const 58))
-          (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-          (call $__json_val (i64.load (i32.add (local.get $slot) (i32.const 16))))))
+          (local.set $pv (i64.load (i32.add (local.get $slot) (i32.const 16))))
+          (if (i32.eqz (call $__json_omit (local.get $pv)))
+            (then
+              (if (i32.eqz (local.get $first))
+                (then (call $__jput (i32.const 44))))
+              (local.set $first (i32.const 0))
+              (call $__jindent)
+              (call $__jput (i32.const 34))
+              (call $__jput_str (i64.load (i32.add (local.get $slot) (i32.const 8))))
+              (call $__jput (i32.const 34))
+              (call $__jput (i32.const 58))
+              (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+              (call $__json_val (local.get $pv))))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
@@ -323,7 +338,7 @@ export default (ctx) => {
   // Object props are sequential f64 at ptr_offset, indexed same as schema.
   ctx.core.stdlib['__json_obj'] = `(func $__json_obj (param $val i64)
     (local $off i32) (local $sid i32) (local $keys i32) (local $nkeys i32)
-    (local $i i32) (local $koff i32)
+    (local $i i32) (local $koff i32) (local $first i32) (local $pv i64)
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $sid (call $__ptr_aux (local.get $val)))
     ;; Load keys array from schema table: schema_tbl + sid * 8
@@ -332,29 +347,33 @@ export default (ctx) => {
     (local.set $nkeys (call $__len
       (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
+    (local.set $first (i32.const 1))
     (call $__jput (i32.const 123))
-    (if (i32.gt_s (local.get $nkeys) (i32.const 0))
-      (then (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))))
+    (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $nkeys)))
-      (if (local.get $i) (then (call $__jput (i32.const 44))))
-      (call $__jindent)
-      (call $__jput (i32.const 34))
-      (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
-      (call $__jput (i32.const 34))
-      (call $__jput (i32.const 58))
-      (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
-      (call $__json_val (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (local.set $pv (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
+      (if (i32.eqz (call $__json_omit (local.get $pv)))
+        (then
+          (if (i32.eqz (local.get $first)) (then (call $__jput (i32.const 44))))
+          (local.set $first (i32.const 0))
+          (call $__jindent)
+          (call $__jput (i32.const 34))
+          (call $__jput_str (i64.load (i32.add (local.get $koff) (i32.shl (local.get $i) (i32.const 3)))))
+          (call $__jput (i32.const 34))
+          (call $__jput (i32.const 58))
+          (if (global.get $__jgaplen) (then (call $__jput (i32.const 32))))
+          (call $__json_val (local.get $pv))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
-    (if (i32.gt_s (local.get $nkeys) (i32.const 0))
-      (then
-        (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
-        (call $__jindent)))
+    (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
+    (if (i32.eqz (local.get $first)) (then (call $__jindent)))
     (call $__jput (i32.const 125)))`
 
   // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
   ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (param $space i64) (result f64)
+    ;; Top-level undefined / function serializes to nothing → return undefined.
+    (if (call $__json_omit (local.get $val)) (then (return ${UNDEF_WAT})))
     ;; Reset output buffer
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
