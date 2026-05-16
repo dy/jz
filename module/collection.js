@@ -94,19 +94,20 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
 }
 
 /** Generate lookup probe function.
- *  wantValue=true: return slot value, missing => NULL_NAN sentinel.
+ *  wantValue=true: return slot value, missing => `undefined` (UNDEF_NAN) — a
+ *    missing Map entry / object property reads as `undefined` in JS, never null.
  *  wantValue=false: return i32 0/1 existence flag.
  *  hasExt: emit EXTERNAL fallthrough (delegate to __ext_prop/__ext_has). */
 function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue, hasExt) {
   const rt = wantValue ? 'i64' : 'i32'
   const onEmpty = wantValue
-    ? `(return (i64.const ${NULL_NAN}))`
+    ? `(return (i64.const ${UNDEF_NAN}))`
     : '(return (i32.const 0))'
   const onFound = wantValue
     ? '(return (i64.load (i32.add (local.get $slot) (i32.const 16))))'
     : '(return (i32.const 1))'
   const notFound = wantValue
-    ? `(i64.const ${NULL_NAN})`
+    ? `(i64.const ${UNDEF_NAN})`
     : '(i32.const 0)'
   const tExpr = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const typeGuard = hasExt
@@ -359,6 +360,7 @@ export default (ctx) => {
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: ['__str_hash', '__str_eq', '__ptr_type'],
     __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish'],
+    __coll_clear: ['__ptr_type', '__ptr_offset'],
   })
 
   inc('__ptr_offset', '__cap')
@@ -508,6 +510,31 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ['call', '$__set_delete', asI64(emit(setExpr)), asI64(emit(val))]], 'f64')
   }
 
+  // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
+  // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
+  // stdlib reads the ptr tag to pick the entry stride.
+  ctx.core.emit['.clear'] = (collExpr) => {
+    inc('__coll_clear')
+    return typed(['call', '$__coll_clear', asI64(emit(collExpr))], 'f64')
+  }
+
+  // Zero every slot (so probes see empty) and reset the length header. Entry
+  // stride is 16 for a SET, 24 for a MAP — `(t == MAP) << 3` adds the 8-byte
+  // value column. Returns undefined; a non-collation arg is a guarded no-op.
+  ctx.core.stdlib['__coll_clear'] = `(func $__coll_clear (param $coll i64) (result f64)
+    (local $off i32) (local $cap i32) (local $t i32)
+    (local.set $t (call $__ptr_type (local.get $coll)))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
+      (then
+        (local.set $off (call $__ptr_offset (local.get $coll)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+        (memory.fill (local.get $off) (i32.const 0)
+          (i32.mul (local.get $cap)
+            (i32.add (i32.const ${SET_ENTRY})
+              (i32.shl (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.const 3)))))
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
+    (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
+
   ctx.core.emit['.size'] = (expr) => {
     return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
   }
@@ -578,7 +605,7 @@ export default (ctx) => {
   // Generated Map probe functions
   ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
   ctx.core.stdlib['__map_get'] = () => genLookup('__map_get', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, true, ctx.features.external)
-  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEq, PTR.MAP, NULL_NAN, ctx.features.external)
+  ctx.core.stdlib['__map_get_h'] = () => genLookupStrictPrehashed('__map_get_h', MAP_ENTRY, sameValueZeroEq, PTR.MAP, UNDEF_NAN, ctx.features.external)
   ctx.core.stdlib['__map_has'] = () => genLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP, false, ctx.features.external)
   ctx.core.stdlib['__map_delete'] = genDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEq, PTR.MAP)
 
