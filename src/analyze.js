@@ -516,7 +516,7 @@ function staticArrayElems(expr) {
 }
 
 /** Schema-id for an object literal expression. Returns null on dynamic keys, spread, shorthand. */
-function objLiteralSchemaId(expr) {
+export function objLiteralSchemaId(expr) {
   if (!Array.isArray(expr) || expr[0] !== '{}' || !ctx.schema?.register) return null
   const parsed = staticObjectProps(expr.slice(1))
   return parsed ? ctx.schema.register(parsed.names) : null

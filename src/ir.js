@@ -21,7 +21,7 @@
  */
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
-import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal } from './analyze.js'
+import { T, VAL, valTypeOf, lookupValType, repOf, repOfGlobal, objLiteralSchemaId } from './analyze.js'
 
 // === Numeric range ===
 
@@ -374,9 +374,18 @@ export function toNumF64(node, v) {
   // — that degenerate case appears in no targeted builtins test). The result
   // still flows through `__to_num` so a string return ("−7") is parsed. An
   // abrupt completion (throwing method) propagates through the closure call.
-  if (vt === VAL.OBJECT && typeof node === 'string' && ctx.closure.call && ctx.schema.find) {
-    const vSlot = ctx.schema.find(node, 'valueOf')
-    const idx = vSlot >= 0 ? vSlot : ctx.schema.find(node, 'toString')
+  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
+    // Resolve the method slot from either a schema-bound variable or an inline
+    // object literal (schemaId baked into its registered props list).
+    let idx = -1
+    if (typeof node === 'string') {
+      const vSlot = ctx.schema.find(node, 'valueOf')
+      idx = vSlot >= 0 ? vSlot : ctx.schema.find(node, 'toString')
+    } else {
+      const sid = objLiteralSchemaId(node)
+      const props = sid != null ? ctx.schema.list[sid] : null
+      if (props) idx = props.indexOf('valueOf') >= 0 ? props.indexOf('valueOf') : props.indexOf('toString')
+    }
     if (idx >= 0) {
       const method = typed(['f64.load',
         ['i32.add', ptrOffsetIR(v, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')

@@ -12,7 +12,7 @@
  * @module string
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -949,10 +949,11 @@ export default (ctx) => {
   // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
   // string / boolean / null / undefined positions coerce per spec) then trunc.
   // trunc_sat maps NaN→0 and ±∞→±maxint — both clamp correctly downstream.
+  // `toNumF64` routes an object position through `valueOf`/`toString`
+  // (ToPrimitive), so a throwing method propagates as an abrupt completion.
   const posIndex = (node) => {
     if (node == null) return ['i32.const', 0]
-    inc('__to_num')
-    return asI32(typed(['call', '$__to_num', asI64(emit(node))], 'f64'))
+    return asI32(toNumF64(node, emit(node)))
   }
 
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {
@@ -1163,7 +1164,9 @@ export default (ctx) => {
 
   ctx.core.emit['String.fromCharCode'] = (code) => {
     if (code === undefined) return emit(['str', ''])
-    return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(emit(code)))
+    // ToUint16(ToNumber(code)): `toNumF64` performs ToPrimitive on an object
+    // argument, so a throwing valueOf/toString propagates per spec.
+    return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, asI32(toNumF64(code, emit(code))))
   }
 
   // String.fromCodePoint(cp) → UTF-8 encoded string for one code point.
@@ -1207,9 +1210,9 @@ export default (ctx) => {
   ctx.core.emit['String.fromCodePoint'] = (...codes) => {
     if (codes.length === 0) return emit(['str', ''])
     ctx.runtime.throws = true
-    inc('__fromCodePoint', '__to_num')
+    inc('__fromCodePoint')
     const one = (node) => typed(['call', '$__fromCodePoint',
-      ['call', '$__to_num', asI64(emit(node))]], 'f64')
+      toNumF64(node, emit(node))], 'f64')
     let r = one(codes[0])
     for (let i = 1; i < codes.length; i++) {
       inc('__str_concat_raw')
