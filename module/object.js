@@ -197,6 +197,9 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Object.assign'] = (target, ...sources) => {
+    // RequireObjectCoercible(target) — null/undefined is a TypeError.
+    const nullish = requireCoercible(target)
+    if (nullish) return nullish
     if (typeof target === 'string') {
       const vt = repOf(target)?.val
       if (vt && vt !== VAL.OBJECT) {
