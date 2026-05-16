@@ -110,16 +110,16 @@ export default (ctx) => {
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
     ;; ES spec: |x| >= 1e21 or 0 < |x| < 1e-6 → exponential notation (default mode only).
-    ;; Cap prec at 9: mantissa fits i32, avoiding trunc_f64_u trap. Fewer digits than
-    ;; ECMAScript shortest-repr ideal, but valid output for very large/small numbers.
+    ;; __toExp clamps the digit count so its scaled mantissa fits an unsigned i32.
+    ;; Fewer digits than ECMAScript shortest-repr ideal, but valid output.
     (if (i32.eqz (local.get $mode))
       (then
         (if (f64.ge (f64.abs (local.get $val)) (f64.const 1e21))
-          (then (return (call $__toExp (local.get $val) (i32.const 9)))))
+          (then (return (call $__toExp (local.get $val) (i32.const 8) (i32.const 1)))))
         (if (i32.and
               (f64.gt (f64.abs (local.get $val)) (f64.const 0))
               (f64.lt (f64.abs (local.get $val)) (f64.const 1e-6)))
-          (then (return (call $__toExp (local.get $val) (i32.const 9)))))))
+          (then (return (call $__toExp (local.get $val) (i32.const 8) (i32.const 1)))))))
     (local.set $buf (call $__alloc (i32.const 40)))
     ;; Sign
     (if (f64.lt (local.get $val) (f64.const 0))
@@ -208,15 +208,22 @@ export default (ctx) => {
           (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))
     (call $__mkstr (local.get $buf) (local.get $pos)))`
 
-  // __toExp(val: f64, prec: i32) → f64 (NaN-boxed string)
-  // Format: [-]d.ddd...e[+/-]dd — integer-based digit extraction
-  ctx.core.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (result f64)
+  // __toExp(val: f64, prec: i32, strip: i32) → f64 (NaN-boxed string)
+  // Format: [-]d.ddd...e[+/-]dd — integer-based digit extraction.
+  // strip=1 drops trailing fractional zeros (default ToString); strip=0 keeps
+  // the exact prec digits (toExponential/toPrecision need a fixed digit count).
+  ctx.core.stdlib['__toExp'] = `(func $__toExp (param $val f64) (param $prec i32) (param $strip i32) (result f64)
     (local $buf i32) (local $pos i32) (local $neg i32) (local $exp i32)
     (local $len i32) (local $i i32) (local $j i32)
     (local $mantissa f64) (local $scale f64)
     (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
     (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
     (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
+    ;; The scaled mantissa is (prec+1) digits; cap prec at 8 so it stays below
+    ;; 2^32 (10^9 < 2^32 < 10^10), otherwise i32.trunc_f64_u below traps with
+    ;; "float unrepresentable in integer range" — e.g. 7.5e-151 normalizes to
+    ;; 7.5 and 7.5*10^9 already overflows an unsigned i32.
+    (if (i32.gt_s (local.get $prec) (i32.const 8)) (then (local.set $prec (i32.const 8))))
     (local.set $buf (call $__alloc (i32.const 32)))
     ;; Sign
     (if (f64.lt (local.get $val) (f64.const 0))
@@ -262,6 +269,16 @@ export default (ctx) => {
         (i32.store8 (i32.add (local.get $buf) (i32.add (local.get $pos) (i32.const 1))) (i32.const 46))
         (local.set $pos (i32.add (local.get $pos) (i32.add (local.get $len) (i32.const 1)))))
       (else (local.set $pos (i32.add (local.get $pos) (local.get $len)))))
+    ;; Shortest form: drop trailing zeros (and a bare '.') from the mantissa.
+    ;; The leading digit is always 1-9, so the walk-back stops at the '.' at worst.
+    (if (i32.and (local.get $strip) (i32.gt_s (local.get $prec) (i32.const 0)))
+      (then
+        (block $sz (loop $szl
+          (br_if $sz (i32.ne (i32.load8_u (i32.sub (i32.add (local.get $buf) (local.get $pos)) (i32.const 1))) (i32.const 48)))
+          (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))
+          (br $szl)))
+        (if (i32.eq (i32.load8_u (i32.sub (i32.add (local.get $buf) (local.get $pos)) (i32.const 1))) (i32.const 46))
+          (then (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))))))
     ;; Write 'e', sign, exponent
     (i32.store8 (i32.add (local.get $buf) (local.get $pos)) (i32.const 101))
     (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
@@ -853,7 +870,7 @@ export default (ctx) => {
 
   ctx.core.emit['.number:toExponential'] = (n, d) => {
     inc('__toExp')
-    return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0]))], 'f64')
+    return typed(['call', '$__toExp', asF64(emit(n)), asI32(emit(d || [, 0])), ['i32.const', 0]], 'f64')
   }
 
   ctx.core.emit['.number:toPrecision'] = (n, p) => {
@@ -880,7 +897,7 @@ export default (ctx) => {
         ['i32.or',
           ['i32.lt_s', ['local.get', `$${exp}`], ['i32.const', -6]],
           ['i32.ge_s', ['local.get', `$${exp}`], ['local.get', `$${pr}`]]],
-        ['then', ['call', '$__toExp', ['local.get', `$${val}`], ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]]]],
+        ['then', ['call', '$__toExp', ['local.get', `$${val}`], ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['i32.const', 0]]],
         ['else', ['call', '$__ftoa', ['local.get', `$${val}`],
           ['i32.sub', ['i32.sub', ['local.get', `$${pr}`], ['i32.const', 1]], ['local.get', `$${exp}`]],
           ['i32.const', 1]]]]], 'f64')
