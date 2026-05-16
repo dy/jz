@@ -402,6 +402,31 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Array.from'] = (src, mapFn) => {
+    // Array.from(string) → array of single-char strings. The generic __arr_from
+    // path memory.copies len*8 bytes from the string's byte storage (1 byte/char),
+    // reading far past its end → OOB trap. Iterate __str_idx per char instead.
+    if (resolveValType(src, valTypeOf, lookupValType) === VAL.STRING) {
+      inc('__str_idx', '__str_len')
+      const len = tempI32('sfl'), i = tempI32('sfi'), s = temp('sfs')
+      const lenIR = ['local.get', `$${len}`]
+      const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'sfr' })
+      const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+      const ch = typed(['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]], 'f64')
+      const item = cb ? cb.call([ch, idxArg(cb, i)]) : ch
+      const id = ctx.func.uniq++
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, asF64(emit(src))],
+        ['local.set', `$${len}`, ['call', '$__str_len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+        out.init,
+        ...(cb ? [cb.setup] : []),
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
+          elemStore(out.local, i, asF64(item)),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
     const lengthExpr = arrayLikeLength(src)
     if (lengthExpr) {
       const len = tempI32('fl'), i = tempI32('fi')
