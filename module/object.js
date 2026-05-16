@@ -103,6 +103,27 @@ export default (ctx) => {
 
   ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
 
+  // Object.isExtensible / isSealed / isFrozen.
+  // jz fixes an object's schema at construction: a `{…}` literal can
+  // neither grow nor lose keys, so an OBJECT value is non-extensible and
+  // sealed; its slots stay writable, so it is not frozen. Arrays, maps,
+  // sets and hashes grow dynamically → extensible. Primitives are
+  // non-objects → ES2015 reports them sealed & frozen, not extensible.
+  const extKind = (obj) => {
+    const t = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    if (t === VAL.OBJECT) return { ext: 0, sealed: 1, frozen: 0 }
+    if (t === VAL.NUMBER || t === VAL.STRING || t === VAL.BIGINT) return { ext: 0, sealed: 1, frozen: 1 }
+    return { ext: 1, sealed: 0, frozen: 0 }
+  }
+  const objQuery = (pick) => (obj) => {
+    const v = pick(extKind(obj))
+    if (obj == null) return typed(['f64.const', v], 'f64')
+    return typed(['block', ['result', 'f64'], ['drop', asF64(emit(obj))], ['f64.const', v]], 'f64')
+  }
+  ctx.core.emit['Object.isExtensible'] = objQuery((k) => k.ext)
+  ctx.core.emit['Object.isSealed'] = objQuery((k) => k.sealed)
+  ctx.core.emit['Object.isFrozen'] = objQuery((k) => k.frozen)
+
   // RequireObjectCoercible: Object.keys/values/entries reject null & undefined
   // with a TypeError. A literal lowers to a [null, value] node — so `null` is
   // [null, null] and `undefined` is [null, undefined] (both JSON-print alike);
