@@ -201,17 +201,27 @@ const fixedScalarTypedArray = (expr) => {
 
 const ASSIGN_TARGET_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??='])
 
-const safeScalarArrayUse = (node, name, parentOp = null) => {
+const safeScalarArrayUse = (node, name, len, parentOp = null) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node)) return true
   const op = node[0]
   if (ASSIGN_TARGET_OPS.has(op) && node[1] === name) return false
   if ((op === 'let' || op === 'const') && node.slice(1).some(d => d === name || (Array.isArray(d) && d[1] === name))) return false
   if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  // Element write `name[idx] (op)= v` / `name[idx]++`: an out-of-bounds index
+  // grows the array (sparse-array semantics), which the fixed scalar slot set
+  // can't model — reject unless idx is a literal within the literal's bounds.
+  if ((ASSIGN_TARGET_OPS.has(op) || op === '++' || op === '--')
+      && Array.isArray(node[1]) && node[1][0] === '[]' && node[1][1] === name) {
+    const idx = intLit(node[1][2])
+    if (idx == null || idx < 0 || idx >= len) return false
+    for (let i = 2; i < node.length; i++) if (!safeScalarArrayUse(node[i], name, len, op)) return false
+    return true
+  }
   if (op === '[]' && node[1] === name) return intLit(node[2]) != null
   if (op === '...' && node[1] === name) return parentOp === '['
   for (let i = 1; i < node.length; i++) {
-    if (!safeScalarArrayUse(node[i], name, op)) return false
+    if (!safeScalarArrayUse(node[i], name, len, op)) return false
   }
   return true
 }
@@ -676,7 +686,7 @@ const scalarizeArrayLiteralSeq = (seq) => {
     let ok = true
     for (let j = 0; j < stmts.length && ok; j++) {
       if (j === i) continue
-      ok = safeScalarArrayUse(stmts[j], decl[1])
+      ok = safeScalarArrayUse(stmts[j], decl[1], elems.length)
     }
     if (!ok) continue
     candidates.set(decl[1], { index: i, op: stmt[0], elems })
