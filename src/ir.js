@@ -434,6 +434,37 @@ export function toNumF64(node, v) {
   return typed(['call', '$__to_num', asI64(v)], 'f64')
 }
 
+/** Coerce an emitted IR value to a jz string per JS `ToString`, returning an
+ *  i64 string value. The mirror of `toNumF64` for the string hint: an OBJECT
+ *  operand coerces through `OrdinaryToPrimitive(string)` — method order
+ *  [toString, valueOf] — by resolving the method slot from a schema-bound
+ *  variable or inline object literal and emitting a closure call. The result
+ *  still flows through `__to_str` so a numeric return is rendered. A throwing
+ *  method propagates as an abrupt completion through the closure call. */
+export function toStrI64(node, v) {
+  const vt = keyValType(node)
+  if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
+    let idx = -1
+    if (typeof node === 'string') {
+      const tSlot = ctx.schema.find(node, 'toString')
+      idx = tSlot >= 0 ? tSlot : ctx.schema.find(node, 'valueOf')
+    } else {
+      const sid = objLiteralSchemaId(node)
+      const props = sid != null ? ctx.schema.list[sid] : null
+      if (props) idx = props.indexOf('toString') >= 0 ? props.indexOf('toString') : props.indexOf('valueOf')
+    }
+    if (idx >= 0) {
+      const method = typed(['f64.load',
+        ['i32.add', ptrOffsetIR(v, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+      const prim = ctx.closure.call(method, [])
+      inc('__to_str')
+      return typed(['call', '$__to_str', asI64(prim)], 'i64')
+    }
+  }
+  inc('__to_str')
+  return typed(['call', '$__to_str', asI64(v)], 'i64')
+}
+
 /** Convert already-emitted WASM node to i32 boolean. NaN is falsy (like JS).
  *  Peepholes: i32 → as-is; `f64.convert_i32_*(x)` → x (i32 conversion never NaN);
  *  nested `__is_truthy(x)` → x (already 0/1); literal f64 const folds to 0/1. */
