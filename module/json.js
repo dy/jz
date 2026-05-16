@@ -45,10 +45,11 @@ export default (ctx) => {
     __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
     __json_omit: ['__ptr_type'],
+    __json_enter: ['__alloc'],
     __jindent: ['__jput'],
-    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_hash', '__json_obj'],
-    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_val'],
-    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_val'],
+    __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
+    __json_hash: ['__ptr_offset', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val'],
+    __json_obj: ['__ptr_offset', '__ptr_aux', '__len', '__jput', '__jindent', '__jput_str', '__json_omit', '__json_enter', '__json_leave', '__json_val'],
     __jput_num: ['__ftoa'],
     __jput_str: ['__char_at', '__str_byteLen'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -123,6 +124,12 @@ export default (ctx) => {
   ctx.scope.globals.set('__jgap', '(global $__jgap (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__jgaplen', '(global $__jgaplen (mut i32) (i32.const 0))')
   ctx.scope.globals.set('__jdepth', '(global $__jdepth (mut i32) (i32.const 0))')
+  // Cycle-detection stack: the i64 values of the containers currently open on
+  // the recursion path. JSON.stringify of a structure that points back at an
+  // ancestor must throw a TypeError. $__jstack is a lazily-allocated buffer of
+  // up to 256 entries; $__jsp is the live depth.
+  ctx.scope.globals.set('__jstack', '(global $__jstack (mut i32) (i32.const 0))')
+  ctx.scope.globals.set('__jsp', '(global $__jsp (mut i32) (i32.const 0))')
 
   // __jput(byte: i32) — append one byte to output buffer
   ctx.core.stdlib['__jput'] = `(func $__jput (param $b i32)
@@ -240,6 +247,30 @@ export default (ctx) => {
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (i32.const 1))))
     (i32.eq (call $__ptr_type (local.get $val)) (i32.const ${PTR.CLOSURE})))`
 
+  // __json_enter(val: i64) — push a container onto the cycle stack, throwing a
+  // TypeError ($__jz_err) if it is already an open ancestor (a circular ref).
+  ctx.core.stdlib['__json_enter'] = `(func $__json_enter (param $val i64)
+    (local $i i32) (local $st i32)
+    (local.set $st (global.get $__jstack))
+    (if (i32.eqz (local.get $st))
+      (then
+        (local.set $st (call $__alloc (i32.const 2048)))
+        (global.set $__jstack (local.get $st))))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (global.get $__jsp)))
+      (if (i64.eq (i64.load (i32.add (local.get $st) (i32.shl (local.get $i) (i32.const 3)))) (local.get $val))
+        (then (throw $__jz_err (f64.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    ;; A structure deeper than the buffer is treated as non-serializable.
+    (if (i32.ge_s (global.get $__jsp) (i32.const 256)) (then (throw $__jz_err (f64.const 0))))
+    (i64.store (i32.add (local.get $st) (i32.shl (global.get $__jsp) (i32.const 3))) (local.get $val))
+    (global.set $__jsp (i32.add (global.get $__jsp) (i32.const 1))))`
+
+  // __json_leave — pop the most recent container off the cycle stack.
+  ctx.core.stdlib['__json_leave'] = `(func $__json_leave
+    (global.set $__jsp (i32.sub (global.get $__jsp) (i32.const 1))))`
+
   // __json_val(val: i64) — stringify any value, append to buffer
   ctx.core.stdlib['__json_val'] = `(func $__json_val (param $val i64)
     (local $type i32) (local $len i32) (local $i i32) (local $off i32) (local $f f64)
@@ -268,6 +299,7 @@ export default (ctx) => {
     ;; Array
     (if (i32.eq (local.get $type) (i32.const ${PTR.ARRAY}))
       (then
+        (call $__json_enter (local.get $val))
         (call $__jput (i32.const 91))  ;; [
         (local.set $len (call $__len (local.get $val)))
         (local.set $off (call $__ptr_offset (local.get $val)))
@@ -287,6 +319,7 @@ export default (ctx) => {
             (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
             (call $__jindent)))
         (call $__jput (i32.const 93))  ;; ]
+        (call $__json_leave)
         (return)))
     ;; HASH/MAP — iterate entries: {"key":val,...}
     (if (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
@@ -306,6 +339,7 @@ export default (ctx) => {
     (local.set $off (call $__ptr_offset (local.get $val)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (local.set $first (i32.const 1))
+    (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
     (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
     (block $d (loop $l
@@ -330,7 +364,8 @@ export default (ctx) => {
       (br $l)))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
     (if (i32.eqz (local.get $first)) (then (call $__jindent)))
-    (call $__jput (i32.const 125)))`
+    (call $__jput (i32.const 125))
+    (call $__json_leave))`
 
   // __json_obj(val: f64) — stringify OBJECT using runtime schema name table.
   // Schema name table: global $__schema_tbl → array of f64 pointers.
@@ -348,6 +383,7 @@ export default (ctx) => {
       (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))
     (local.set $koff (local.get $keys))
     (local.set $first (i32.const 1))
+    (call $__json_enter (local.get $val))
     (call $__jput (i32.const 123))
     (global.set $__jdepth (i32.add (global.get $__jdepth) (i32.const 1)))
     (block $d (loop $l
@@ -368,13 +404,15 @@ export default (ctx) => {
       (br $l)))
     (global.set $__jdepth (i32.sub (global.get $__jdepth) (i32.const 1)))
     (if (i32.eqz (local.get $first)) (then (call $__jindent)))
-    (call $__jput (i32.const 125)))`
+    (call $__jput (i32.const 125))
+    (call $__json_leave))`
 
   // __stringify(val: i64, space: i64) → f64 (NaN-boxed string)
   ctx.core.stdlib['__stringify'] = `(func $__stringify (param $val i64) (param $space i64) (result f64)
     ;; Top-level undefined / function serializes to nothing → return undefined.
     (if (call $__json_omit (local.get $val)) (then (return ${UNDEF_WAT})))
-    ;; Reset output buffer
+    ;; Reset output buffer + cycle stack
+    (global.set $__jsp (i32.const 0))
     (global.set $__jbuf (call $__alloc (i32.const 256)))
     (global.set $__jpos (i32.const 0))
     (global.set $__jcap (i32.const 256))
