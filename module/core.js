@@ -866,7 +866,13 @@ export default (ctx) => {
   // expression. `instanceof SyntaxError` returning correct results would need
   // proper class machinery; until then, code that throws specific subclasses
   // compiles and the user-visible message is preserved.
-  const passthroughError = (msg) => asF64(emit(msg))
+  // jz models an error as its message value (passthrough — `throw` accepts any
+  // value). A no-arg `new Error()` has no message, so it lowers to `undefined`
+  // rather than crashing on a missing argument. Emitting `['str','']` here would
+  // drag the whole string module into programs that only `throw new Error()`.
+  const passthroughError = (msg) => msg == null
+    ? typed(['f64.const', `nan:${UNDEF_NAN}`], 'f64')
+    : asF64(emit(msg))
   ctx.core.emit['Error'] = passthroughError
   ctx.core.emit['SyntaxError'] = passthroughError
   ctx.core.emit['TypeError'] = passthroughError
