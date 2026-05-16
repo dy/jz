@@ -401,7 +401,29 @@ export default (ctx) => {
     return null
   }
 
+  // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
+  // IsCallable(mapfn) is false, throw a TypeError before iterating items.
+  // An explicit `undefined` arrives as the literal node [null, undefined];
+  // treat it as absent. Statically flag literal forms that can't be callable.
+  const isUndefinedNode = (n) => n === undefined
+    || (Array.isArray(n) && n[0] == null && n.length === 2 && n[1] === undefined)
+  const isNonCallableMapFn = (n) => {
+    if (!Array.isArray(n)) return false        // undefined / identifier — unknown
+    const op = n[0]
+    if (op == null) return true                // [null,x] literal — null/number/bigint
+    if (op === '=>') return false              // arrow function — callable
+    if (op === '{}' || op === 'str' || op === 'strcat' || op === '//') return true
+    if (op === '[]' && n.length < 3) return true            // array literal
+    if (op === '()' && n[1] === 'Symbol') return true       // Symbol(...) result
+    return false                               // calls / member access — unknown
+  }
+
   ctx.core.emit['Array.from'] = (src, mapFn) => {
+    if (isUndefinedNode(mapFn)) mapFn = undefined
+    else if (isNonCallableMapFn(mapFn)) {
+      ctx.runtime.throws = true
+      return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+    }
     // Array.from(string) → array of single-char strings. The generic __arr_from
     // path memory.copies len*8 bytes from the string's byte storage (1 byte/char),
     // reading far past its end → OOB trap. Iterate __str_idx per char instead.
@@ -448,8 +470,26 @@ export default (ctx) => {
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
     }
-    inc('__arr_from')
-    return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
+    if (!mapFn) {
+      inc('__arr_from')
+      return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
+    }
+    // mapfn present: iterate the source array element by element, reading each
+    // slot fresh inside the loop so a callback that mutates a not-yet-visited
+    // source element sees its update (spec reads source[k] per step).
+    inc('__len')
+    const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+    const s = temp('afs'), len = tempI32('afl')
+    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
+    const loop = arrayLoop(typed(['local.get', `$${s}`], 'f64'),
+      (_p, _l, i, item) => [elemStore(out.local, i, asF64(cb.call([item, idxArg(cb, i)])))], len)
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s}`, asF64(emit(src))],
+      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      out.init,
+      cb.setup,
+      ...loop,
+      out.ptr], 'f64')
   }
 
   // Grow array if capacity insufficient. Returns (possibly new) NaN-boxed pointer.
