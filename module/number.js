@@ -22,7 +22,7 @@ export default (ctx) => {
     __toExp: ['__itoa', '__pow10', '__mkstr', '__static_str'],
     __to_num: ['__char_at', '__str_byteLen', '__pow10', '__to_str', '__skipws', '__ptr_aux'],
     __skipws: ['__char_at', '__strws'],
-    __to_bigint: ['__char_at', '__str_byteLen'],
+    __to_bigint: ['__char_at', '__str_byteLen', '__num_to_bigint'],
     __parseInt: ['__char_at', '__str_byteLen'],
     __parseFloat: ['__char_at', '__str_byteLen', '__pow10', '__to_str'],
   })
@@ -661,12 +661,23 @@ export default (ctx) => {
       (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
+  // NumberToBigInt: a RangeError unless n is an integral Number — finite and
+  // equal to its own truncation. NaN fails the f64.eq integrality test;
+  // ±Infinity fails the finite test. Non-integers (1.1, .5, …) fail integrality.
+  // The throw rides $__jz_err so `assert.throws`/try-catch observe it.
+  ctx.core.stdlib['__num_to_bigint'] = `(func $__num_to_bigint (param $n f64) (result f64)
+    (if (i32.eqz (i32.and
+          (f64.eq (local.get $n) (f64.trunc (local.get $n)))
+          (f64.lt (f64.abs (local.get $n)) (f64.const inf))))
+      (then (throw $__jz_err (f64.const 0))))
+    (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $n))))`
+
   ctx.core.stdlib['__to_bigint'] = `(func $__to_bigint (param $v i64) (result f64)
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $radix i32) (local $digit i32) (local $seen i32) (local $result i64) (local $f f64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f))
-      (then (return (f64.reinterpret_i64 (i64.trunc_sat_f64_s (local.get $f))))))
+      (then (return (call $__num_to_bigint (local.get $f)))))
     (local.set $t (call $__ptr_type (local.get $v)))
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
@@ -929,8 +940,11 @@ export default (ctx) => {
             ['then', ['call', '$__to_bigint', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
             ['else', ['local.get', `$${t}`]]]]]], 'f64')
     }
-    if (vt === VAL.NUMBER)
-      return typed(['f64.reinterpret_i64', ['i64.trunc_sat_f64_s', asF64(emit(x))]], 'f64')
+    if (vt === VAL.NUMBER) {
+      ctx.runtime.throws = true
+      inc('__num_to_bigint')
+      return typed(['call', '$__num_to_bigint', asF64(emit(x))], 'f64')
+    }
     inc('__to_bigint')
     return typed(['call', '$__to_bigint', asI64(emit(x))], 'f64')
   }
