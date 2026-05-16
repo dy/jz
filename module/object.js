@@ -7,7 +7,7 @@
  * @module object
  */
 
-import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemStore } from '../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL, repOf, updateRep, shapeOf } from '../src/analyze.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
@@ -116,10 +116,39 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
   }
 
+  // Arrays and (coerced) strings expose their indices as own enumerable
+  // keys — Object.keys/entries iterate "0".."n-1". `arrayValType` mirrors
+  // `stringValType` below: a string arg is a variable name, anything else
+  // an AST node.
+  const arrayValType = (obj) => (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.ARRAY
+  // Index-string key array for an array-like receiver. `lenCall` is the
+  // length builtin: __len for jz arrays, __str_len for strings.
+  const emitIndexKeys = (obj, lenCall) => {
+    inc(lenCall, '__to_str')
+    const v = temp('ik'), i = tempI32('iki'), len = tempI32('ikl')
+    const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
+    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'ik' })
+    const id = ctx.func.uniq++
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${v}`, asF64(emit(obj))],
+      ['local.set', `$${len}`, ['call', `$${lenCall}`, vPtr()]],
+      out.init,
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        elemStore(out.local, i, ['f64.reinterpret_i64',
+          ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]),
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      out.ptr], 'f64')
+  }
+
   ctx.core.emit['Object.keys'] = (obj) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
     if (isHashTyped(obj)) return emitHashKeys(obj)
+    if (arrayValType(obj)) return emitIndexKeys(obj, '__len')
+    if (stringValType(obj)) return emitIndexKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
     if (schema) return emitStringArray(schema)
     // Receiver type unknown at compile time. Dispatch on ptr-type at
@@ -180,6 +209,7 @@ export default (ctx) => {
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
     }
+    if (arrayValType(obj)) { inc('__arr_from'); return typed(['call', '$__arr_from', asI64(emit(obj))], 'f64') }
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
     if (!schema) return emitRuntimeValues(obj)
@@ -215,6 +245,29 @@ export default (ctx) => {
           ['f64.store', slotAddr(pair, 0), ['f64.reinterpret_i64',
             ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]],
           ['f64.store', slotAddr(pair, 1), ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]]],
+          elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
+    if (arrayValType(obj)) {
+      inc('__len', '__to_str', '__ptr_offset', '__alloc_hdr')
+      const v = temp('oea'), i = tempI32('oeai'), len = tempI32('oeal'), base = tempI32('oeab'), pair = tempI32('oeap')
+      const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
+      const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oea' })
+      const id = ctx.func.uniq++
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${v}`, asF64(emit(obj))],
+        ['local.set', `$${len}`, ['call', '$__len', vPtr()]],
+        out.init,
+        ['local.set', `$${base}`, ['call', '$__ptr_offset', vPtr()]],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+          ['f64.store', slotAddr(pair, 0), ['f64.reinterpret_i64',
+            ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]],
+          ['f64.store', slotAddr(pair, 1), elemLoad(base, i)],
           elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
