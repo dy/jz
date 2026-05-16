@@ -1211,6 +1211,35 @@ export function analyzeValTypes(body) {
     const tc = ternaryCtorOfRhs(rhs)
     if (tc) setOrInvalidate(tc)
   }
+  // Total write count for `name` across the whole body, recursing into nested
+  // closures so a closure that reassigns the var is also counted. Capped at 2 —
+  // callers only need the "exactly one write" verdict.
+  function writeCount(node, name, n) {
+    if (n > 1 || !Array.isArray(node)) return n
+    const o = node[0]
+    if ((ASSIGN_OPS.has(o) || o === '++' || o === '--') && node[1] === name) n++
+    if (o === 'let' || o === 'const') {
+      for (let i = 1; i < node.length && n <= 1; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && d[2] != null) n = writeCount(d[2], name, n)
+      }
+      return n
+    }
+    for (let i = 1; i < node.length && n <= 1; i++) n = writeCount(node[i], name, n)
+    return n
+  }
+  // `var o = {…}` is rewritten by jzify into `let o; o = {…}`, so the object
+  // literal's schemaId never reaches `o`'s rep the way a direct `let o = {…}`
+  // decl binds it — leaving `o.prop` / `o.method()` dispatch to structural
+  // subtyping, which mis-resolves when another in-scope object shares a member
+  // at a different slot. Bind the schemaId, but only for a single-assignment,
+  // non-parameter local: a polymorphically reassigned holder keeps dynamic
+  // dispatch (correct, just slower).
+  function bindObjSchema(name, rhs) {
+    if (ctx.func.current?.params?.some(p => p.name === name)) return
+    const sid = objLiteralSchemaId(rhs)
+    if (sid != null && writeCount(body, name, 0) === 1) updateRep(name, { schemaId: sid })
+  }
   function walk(node) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -1292,6 +1321,7 @@ export function analyzeValTypes(body) {
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
       propagateTyped(args[0], args[1])
+      if (vt === VAL.OBJECT) bindObjSchema(args[0], args[1])
       return
     }
     // Track property assignments for auto-boxing: x.prop = val
