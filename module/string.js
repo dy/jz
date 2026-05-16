@@ -961,7 +961,17 @@ export default (ctx) => {
     return typed(['f64.convert_i32_s', ['call', '$__str_indexof', hay, ndl, posIndex(from)]], 'f64')
   }
 
+  // String.prototype.{includes,startsWith,endsWith} run IsRegExp(searchString)
+  // and throw a TypeError when it is a RegExp. Detect a regex-typed search arg
+  // at compile time and lower to a $__jz_err throw.
+  const regexpSearchGuard = (search) => {
+    if (valTypeOf(search) !== VAL.REGEX) return null
+    ctx.runtime.throws = true
+    return typed(['block', ['result', 'f64'], ['throw', '$__jz_err', ['f64.const', 0]]], 'f64')
+  }
+
   ctx.core.emit['.string:includes'] = (str, search, from) => {
+    const guard = regexpSearchGuard(search); if (guard) return guard
     inc('__str_indexof')
     const hay = asI64(emit(str)), ndl = asI64(emit(search))
     return typed(['f64.convert_i32_s',
@@ -1012,6 +1022,7 @@ export default (ctx) => {
   // Search args go through ToString per spec — coerce non-string-typed args
   // via __to_str so the underlying byte-compare receives an actual string.
   const stringSearchMethod = (name) => (str, sfx) => {
+    const guard = regexpSearchGuard(sfx); if (guard) return guard
     inc(name)
     let sfxArg = asI64(emit(sfx))
     if (valTypeOf(sfx) !== VAL.STRING) {
