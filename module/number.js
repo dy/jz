@@ -488,7 +488,7 @@ export default (ctx) => {
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
     (local $radix i32) (local $digit i32)
-    (local $result f64) (local $f f64)
+    (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
@@ -579,7 +579,7 @@ export default (ctx) => {
           (br_if $infBad (i32.lt_s (local.get $i) (local.get $len)))
           (return (if (result f64) (local.get $neg) (then (f64.const -inf)) (else (f64.const inf)))))
         (return (f64.const nan))))
-    ;; Decimal significand. Keep 17 significant decimal digits, track the
+    ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     (block $numDone (loop $numLoop
       (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
@@ -600,13 +600,15 @@ export default (ctx) => {
           (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $numLoop)))
-      (if (i32.lt_s (local.get $sigDigits)
-        (if (result i32) (local.get $dot) (then (i32.const 16)) (else (i32.const 17))))
+      ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
+      ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
+      ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
+      (if (i32.lt_s (local.get $sigDigits) (i32.const 18))
         (then
-          (local.set $result
-            (f64.add
-              (f64.mul (local.get $result) (f64.const 10))
-              (f64.convert_i32_s (local.get $c))))
+          (local.set $mant
+            (i64.add
+              (i64.mul (local.get $mant) (i64.const 10))
+              (i64.extend_i32_s (local.get $c))))
           (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
           (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
         (else
@@ -619,7 +621,8 @@ export default (ctx) => {
     ;; No digits — the literal was a bare sign or stray text ("abc", "+") → NaN.
     ;; (Empty / all-whitespace strings already returned +0 above.)
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (local.get $round) (then (local.set $result (f64.add (local.get $result) (f64.const 1)))))
+    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
+    (local.set $result (f64.convert_i64_u (local.get $mant)))
     ;; Scientific notation. 'e'/'E' commits to an ExponentPart — at least one
     ;; digit must follow ("1e", "5e+" are NaN).
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
@@ -756,7 +759,7 @@ export default (ctx) => {
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $result f64) (local $f f64)
+    (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (local.set $t (call $__ptr_type (local.get $v)))
@@ -783,7 +786,7 @@ export default (ctx) => {
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    ;; Decimal significand. Keep 17 significant decimal digits, track the
+    ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
     (block $numDone (loop $numLoop
       (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
@@ -804,13 +807,15 @@ export default (ctx) => {
           (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $numLoop)))
-      (if (i32.lt_s (local.get $sigDigits)
-        (if (result i32) (local.get $dot) (then (i32.const 16)) (else (i32.const 17))))
+      ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
+      ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
+      ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
+      (if (i32.lt_s (local.get $sigDigits) (i32.const 18))
         (then
-          (local.set $result
-            (f64.add
-              (f64.mul (local.get $result) (f64.const 10))
-              (f64.convert_i32_s (local.get $c))))
+          (local.set $mant
+            (i64.add
+              (i64.mul (local.get $mant) (i64.const 10))
+              (i64.extend_i32_s (local.get $c))))
           (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
           (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
         (else
@@ -821,7 +826,8 @@ export default (ctx) => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $numLoop)))
     (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (local.get $round) (then (local.set $result (f64.add (local.get $result) (f64.const 1)))))
+    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
+    (local.set $result (f64.convert_i64_u (local.get $mant)))
     ;; Scientific notation.
     (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
       (i32.or
