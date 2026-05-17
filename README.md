@@ -135,6 +135,31 @@ Not supported
 ## FAQ
 
 <details>
+<summary><strong>Where does jz differ from JavaScript?</strong></summary>
+
+<br>
+
+jz compiles a **distilled JS subset to static WASM** — it is not a JavaScript engine and does not chase full TC39 semantics. `Valid jz = valid JS` means jz source always parses and runs as JS; it does **not** promise byte-identical results for the cases below. `--wat` shows exactly what was emitted.
+
+**Out of scope — by design, not unfinished.** Each needs a runtime jz deliberately does not ship; the compiler errors instead of emitting something slow:
+
+- Dynamic execution & reflection — `eval`, `Function`, `with`, `import()`, `Proxy`, `Reflect`, `WeakMap`/`WeakSet`, property descriptors, accessors.
+- Concurrency — `async`/`await`, `Promise`, generators, iterators.
+- General-runtime surface a numeric / DSP / parser kernel never touches — `Intl`, realms, resizable `ArrayBuffer`, `DataView`, dynamic `RegExp` patterns, the `Symbol` registry and most well-known symbols, the full `BigInt` surface. A few of these have partial static support; the rest will not be added — that is what keeps the output close to hand-written WAT.
+
+**Behavioral divergences — valid jz whose result differs from V8.** Tracked, narrowing over time:
+
+- **Booleans are numbers.** `true`/`false` compile to `1`/`0`. `typeof` is recovered statically where a boolean can be proven, but a boolean carried through an untyped binding reports `"number"`, `String(true)` is `"1"`, and `parseInt(true)` is `1`. A real-boolean carrier is planned.
+- **Objects are fixed-layout schemas** — key set and order fixed at the literal, `delete` rejected, `memory.Object({...})` must match the source key order.
+- **Errors are untagged** — `throw` carries a value, not a typed `Error`; `e instanceof TypeError` does not discriminate.
+- **`Set`/`Map` iterate slot order**, not insertion order.
+- **Memory is not reclaimed** automatically — see *How does memory work?*.
+
+For full TC39 conformance use [porffor](https://github.com/CanadaHonk/porffor); jz trades completeness for low-level numeric performance by design.
+
+</details>
+
+<details>
 <summary><strong>How to pass data between JS and WASM?</strong></summary>
 <!-- FIXME: not very precise question - how to pass non-numbers -->
 
