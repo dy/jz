@@ -88,9 +88,9 @@ test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
   is(/__ext_prop/.test(body), true)
 })
 
-// === Organically usage-gated features ===
+// === Organically usage-gated substrates (no ctx.features flag — inc(__*) drives them) ===
 
-test('features.hash OFF: scalar-only — no hash substrate', () => {
+test('organic hash gating OFF: scalar-only — no hash substrate', () => {
   const w = wat(`export let f = (x) => x + 1`)
   is(hasDef(w, '__hash_get'), false)
   is(hasDef(w, '__hash_set'), false)
@@ -99,7 +99,7 @@ test('features.hash OFF: scalar-only — no hash substrate', () => {
   is(hasDef(w, '__str_hash'), false)
 })
 
-test('features.hash ON: JSON.parse pulls schema substrate', () => {
+test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
   // JSON.parse builds OBJECT pointers via a runtime schema cache (__jp_obj
   // routes through __jp_schema_get); previously it emitted HASH and pulled
   // __hash_set_local. The schema substrate is what gets exercised now.
@@ -107,7 +107,7 @@ test('features.hash ON: JSON.parse pulls schema substrate', () => {
   ok(hasDef(w, '__jp_schema_get'))
 })
 
-test('features.hash ON: untyped .prop pulls __dyn_get_any_t', () => {
+test('organic hash gating ON: untyped .prop pulls __dyn_get_any_t', () => {
   const w = wat(`export let f = (o) => o.x`)
   ok(hasDef(w, '__dyn_get_any_t'))
 })
@@ -134,24 +134,24 @@ test('array grow: dynamic props keep mover when arrays can grow', () => {
   ok(hasDef(w, '__dyn_move'))
 })
 
-test('features.regex OFF: scalar-only — no regex stdlibs', () => {
+test('organic regex gating OFF: scalar-only — no regex stdlibs', () => {
   const w = wat(`export let f = (x) => x + 1`)
   is(hasDef(w, '__regex_new'), false)
   is(hasDef(w, '__regex_exec'), false)
 })
 
-test('features.regex ON: regex literal pulls regex stdlibs', () => {
+test('organic regex gating ON: regex literal pulls regex stdlibs', () => {
   const w = wat(`export let f = (s) => s.match(/a/)`)
   ok(/regex/i.test(w))
 })
 
-test('features.json OFF: scalar-only — no JSON stdlibs', () => {
+test('organic json gating OFF: scalar-only — no JSON stdlibs', () => {
   const w = wat(`export let f = (x) => x + 1`)
   is(hasDef(w, '__json_stringify'), false)
   is(hasDef(w, '__jp_val'), false)
 })
 
-test('features.json ON: JSON.stringify pulls json stdlibs', () => {
+test('organic json gating ON: JSON.stringify pulls json stdlibs', () => {
   const w = wat(`export let f = (x) => JSON.stringify(x)`)
   ok(/__json_|__js_/.test(w))
 })

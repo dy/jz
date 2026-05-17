@@ -295,16 +295,15 @@ export function reset(proto, globals) {
   //       currently forces SSO for ≤4 ASCII chars at string.js:49)
   ctx.abi = ABI_DEFAULTS
 
+  // Only flags actually read by codegen live here. Hash/regex/json substrates
+  // are pulled organically by inc(__*) — no flag mediates them, so no flag exists.
   ctx.features = {
-    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site. WIRED.
-    hash: false,      // PTR.HASH + __dyn_* substrate. Organic: any inc(__hash_*/__dyn_*) implies on.
+    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
-    regex: false,     // RegExp literals + methods. Organic via inc(__regex_*).
-    json: false,      // JSON.parse/stringify. Organic via inc(__jp_*/__json_*).
-    typedarray: false,// Float64Array/Int32Array/etc. Organic via inc(__typed_*) + ctx.closure.floor.
-    set: false,       // Set. Organic via inc(__set_*).
-    map: false,       // Map. Organic via inc(__map_*).
-    closure: false,   // First-class functions. Organic via ctx.closure.table population.
+    typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
+    set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
+    map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
+    closure: false,   // First-class functions. Set when ctx.closure.table is populated.
     timers: false,          // Set by prepare.js when timer module is included
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
   }
