@@ -224,6 +224,12 @@ export function reset(proto, globals) {
                                 //   writes). Read by `ctx.schema.slotIntCertainAt`
                                 //   so Math.floor/toNumF64/intIndexIR consumers fire
                                 //   on `.prop` reads of provably-integer slots.
+    inlineArray: new Set(),     // schemaId set — schemas whose `Array<S>` instances
+                                //   use the `structInline` SRoA carrier (K f64
+                                //   fields inlined per element, no per-row object).
+                                //   Populated whole-program by `analyzeStructInline`
+                                //   (default-disqualify); read by the array
+                                //   push/index/length codegen.
   }
 
   ctx.closure = {

@@ -2199,6 +2199,294 @@ export function narrowReturnArrayElems(field, paramReps, valueUsed) {
 }
 
 /**
+ * Whole-program SRoA eligibility — decides which object schemas may back an
+ * `Array<S>` with the `structInline` carrier (the K f64 schema fields inlined
+ * per element, no per-row heap object). Writes `ctx.schema.inlineArray:
+ * Set<sid>`, read by the array push / index / length codegen.
+ *
+ * Default-disqualify: a schema is inlinable only when *every* observed use of
+ * every `Array<S>` binding — across all user functions and module inits — is
+ * one the structInline codegen handles. A missed or unrecognized use poisons
+ * the schema, so the worst outcome is a lost optimization, never a stride
+ * mismatch (miscompile).
+ *
+ * Handled uses of an `Array<S>` binding `a`:
+ *   - decl/reassign from `[]` (empty), a call returning `Array<S>`, or an alias
+ *   - `a.push({S-literal})`        — struct push (K-cell store)
+ *   - `a.length`                  — physical len / K
+ *   - `a[i]` consumed as `const p = a[i]` cursor, or directly `a[i].field`
+ *   - `a` passed where the callee param is `Array<S>` (paramReps agreement)
+ *   - `return a` when the enclosing function returns `Array<S>`
+ * A cursor `p` (`const p = a[i]`) may only be read/written as `p.field`.
+ * Anything else — bare ref, value escape, other array method, `a[i] = …`
+ * element-replace — poisons S.
+ *
+ * Reads codegen truth: a binding is `Array<S>` iff its settled rep
+ * (`funcFacts.get(func).localReps`) carries `arrayElemSchema = S` — the exact
+ * map the emitter consults — so the analysis and the emitter never disagree on
+ * which bindings are inline-carried.
+ *
+ * Conservative corners (sound, give up the optimization): closures and module
+ * inits are not walked in detail — any schema reachable as a `.push({S})`
+ * argument, an `Array<S>`-returning call, an `[{S}, …]` literal, or a captured
+ * tracked array inside one is poisoned.
+ */
+export function analyzeStructInline(funcFacts, programFacts) {
+  const inlineArray = ctx.schema?.inlineArray
+  if (!inlineArray || !ctx.schema?.list) return
+  const { paramReps } = programFacts
+  const cand = new Set()      // sids observed as an `Array<S>` element schema
+  const black = new Set()     // sids disqualified by some use
+
+  const propsOf = (sid) => ctx.schema.list[sid] || []
+  const inSchema = (sid, p) => typeof p === 'string' && propsOf(sid).includes(p)
+  const isStrLit = (k) => Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string'
+
+  // Argument list of a `['()', callee, argNode]` call node.
+  const argsOf = (node) => {
+    const a = node[2]
+    return a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+  }
+
+  // `name` referenced anywhere as a value (skips `:`/`.` property-name slots).
+  const mentions = (node, name) => {
+    if (typeof node === 'string') return node === name
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op === 'str') return false
+    if (op === ':') return mentions(node[2], name)
+    if (op === '.' || op === '?.') return mentions(node[1], name)
+    for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
+    return false
+  }
+
+  // Poison every schema whose `Array<S>` could materialize inside an un-walked
+  // subtree (closure body / module init): `.push({S})` args, `Array<S>`-returning
+  // calls, `[{S}, …]` array literals. Standalone `{S}` objects are independent
+  // of array layout and intentionally left alone.
+  const poisonAll = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '()') {
+      const callee = node[1]
+      if (typeof callee === 'string') {
+        const sid = ctx.func.map?.get(callee)?.arrayElemSchema
+        if (sid != null) black.add(sid)
+      } else if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'push') {
+        for (const a of argsOf(node)) {
+          const sid = objLiteralSchemaId(a)
+          if (sid != null) black.add(sid)
+        }
+      }
+    } else if (op === '[' || op === '[]') {
+      for (const el of staticArrayElems(node) || []) {
+        const sid = objLiteralSchemaId(el)
+        if (sid != null) black.add(sid)
+      }
+    }
+    for (let i = 1; i < node.length; i++) poisonAll(node[i])
+  }
+
+  for (const [func, facts] of funcFacts) {
+    const body = func?.body
+    const reps = facts?.localReps
+    if (func?.raw || !reps || body == null || typeof body !== 'object') continue
+
+    // `Array<S>` bindings of this function (codegen truth) and their schemas.
+    const arrName = new Map()       // name → sid
+    for (const [name, r] of reps) {
+      const sid = r?.arrayElemSchema
+      if (sid == null) continue
+      if ((propsOf(sid).length || 0) < 1) continue   // K=0 — not inlinable
+      cand.add(sid)
+      arrName.set(name, sid)
+    }
+    if (!arrName.size) continue
+
+    // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
+    const cursor = new Map()        // name → sid
+    const declSeen = new Set()
+    const collectCursors = (node) => {
+      if (!Array.isArray(node) || node[0] === '=>') return
+      if (node[0] === 'let' || node[0] === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+          const name = d[1], rhs = d[2]
+          if (declSeen.has(name)) { const s = cursor.get(name); if (s != null) black.add(s) }
+          declSeen.add(name)
+          if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 &&
+              typeof rhs[1] === 'string' && arrName.has(rhs[1]) && !isStrLit(rhs[2])) {
+            const sid = arrName.get(rhs[1])
+            if (cursor.has(name) || arrName.has(name)) black.add(sid)
+            else cursor.set(name, sid)
+          }
+        }
+      }
+      for (let i = 1; i < node.length; i++) collectCursors(node[i])
+    }
+    collectCursors(body)
+
+    // A `['[]', arrName, idx]` element read of a tracked array → its sid.
+    const elemArrSid = (n) =>
+      Array.isArray(n) && n[0] === '[]' && n.length === 3 &&
+      typeof n[1] === 'string' && arrName.has(n[1]) && !isStrLit(n[2])
+        ? arrName.get(n[1]) : null
+
+    // Pass 2 — verify every occurrence is a structInline-handled use.
+    const flag = (c) => {
+      if (typeof c !== 'string') return false
+      if (arrName.has(c)) { black.add(arrName.get(c)); return true }
+      if (cursor.has(c)) { black.add(cursor.get(c)); return true }
+      return false
+    }
+    const visitChild = (c) => { if (!flag(c)) verify(c) }
+
+    function verify(node) {
+      if (!Array.isArray(node)) return
+      const op = node[0]
+      if (op === 'str') return
+      if (op === '=>') {                       // closure — un-walked, poison
+        for (const n of arrName.keys()) if (mentions(node, n)) black.add(arrName.get(n))
+        for (const [n, s] of cursor) if (mentions(node, n)) black.add(s)
+        poisonAll(node)
+        return
+      }
+      if (op === ':') { visitChild(node[2]); return }
+
+      if (op === '.' || op === '?.') {
+        const o = node[1], p = node[2]
+        if (typeof o === 'string') {
+          if (arrName.has(o)) { if (!(op === '.' && p === 'length')) black.add(arrName.get(o)) }
+          else if (cursor.has(o)) { if (!(op === '.' && inSchema(cursor.get(o), p))) black.add(cursor.get(o)) }
+          return
+        }
+        const esid = elemArrSid(o)
+        if (esid != null) {
+          if (!(op === '.' && inSchema(esid, p))) black.add(esid)
+          visitChild(o[2])
+          return
+        }
+        visitChild(o)
+        return
+      }
+
+      if (op === '[]') {
+        const o = node[1], k = node[2]
+        if (typeof o === 'string') {
+          if (arrName.has(o)) black.add(arrName.get(o))   // element value escape
+          else if (cursor.has(o)) { if (!(isStrLit(k) && inSchema(cursor.get(o), k[1]))) black.add(cursor.get(o)) }
+          if (k != null) visitChild(k)
+          return
+        }
+        const esid = elemArrSid(o)
+        if (esid != null) {
+          if (!(isStrLit(k) && inSchema(esid, k[1]))) black.add(esid)
+          visitChild(o[2])
+        } else if (o != null) visitChild(o)
+        if (k != null) visitChild(k)
+        return
+      }
+
+      // Reassignment of the array binding — localReps already proved every rhs
+      // an `Array<S>` producer; verify the rhs, don't flag the name.
+      if (op === '=' && typeof node[1] === 'string' && arrName.has(node[1])) {
+        visitChild(node[2])
+        return
+      }
+
+      if (op === '()') {
+        const callee = node[1]
+        if (Array.isArray(callee) && callee[0] === '.') {
+          const recv = callee[1], method = callee[2]
+          if (typeof recv === 'string' && arrName.has(recv)) {
+            const sid = arrName.get(recv)
+            const args = argsOf(node)
+            if (method !== 'push' || !args.length) black.add(sid)
+            else for (const arg of args) {
+              if (Array.isArray(arg) && arg[0] === '{}' && objLiteralSchemaId(arg) === sid) {
+                for (let i = 1; i < arg.length; i++) {
+                  const pr = arg[i]
+                  visitChild(Array.isArray(pr) && pr[0] === ':' ? pr[2] : pr)
+                }
+              } else black.add(sid)
+            }
+            return
+          }
+          if (typeof recv === 'string' && cursor.has(recv)) { black.add(cursor.get(recv)); return }
+          const esid = elemArrSid(recv)
+          if (esid != null) { black.add(esid); visitChild(recv[2]) }
+          else visitChild(recv)
+          for (const a of argsOf(node)) visitChild(a)
+          return
+        }
+        if (typeof callee === 'string') {
+          const args = argsOf(node)
+          const known = ctx.func.map?.has(callee)
+          const cParams = paramReps?.get(callee)
+          for (let k = 0; k < args.length; k++) {
+            const arg = args[k]
+            if (typeof arg === 'string' && arrName.has(arg)) {
+              const sid = arrName.get(arg)
+              if (!(known && cParams?.get(k)?.arrayElemSchema === sid)) black.add(sid)
+            } else if (!flag(arg)) verify(arg)
+          }
+          return
+        }
+        visitChild(callee)
+        for (const a of argsOf(node)) visitChild(a)
+        return
+      }
+
+      if (op === 'return') {
+        const e = node[1]
+        if (typeof e === 'string') {
+          if (arrName.has(e)) { if (func.arrayElemSchema !== arrName.get(e)) black.add(arrName.get(e)) }
+          else flag(e)
+          return
+        }
+        const esid = elemArrSid(e)
+        if (esid != null) { black.add(esid); visitChild(e[2]); return }
+        if (e != null) visitChild(e)
+        return
+      }
+
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          if (!Array.isArray(d) || d[0] !== '=') { if (Array.isArray(d)) visitChild(d); continue }
+          const name = d[1], rhs = d[2]
+          if (typeof name === 'string' && cursor.has(name) &&
+              Array.isArray(rhs) && rhs[0] === '[]') {
+            if (rhs[2] != null) visitChild(rhs[2])   // cursor decl — verify index only
+            continue
+          }
+          if (typeof name === 'string' && arrName.has(name)) {
+            const elems = staticArrayElems(rhs)
+            if (elems && elems.length) black.add(arrName.get(name))    // non-empty literal — unhandled
+            else if (!(typeof rhs === 'string' && arrName.has(rhs)))   // alias — leave
+              visitChild(rhs)
+            continue
+          }
+          if (typeof name !== 'string') visitChild(name)
+          visitChild(rhs)
+        }
+        return
+      }
+
+      for (let i = 1; i < node.length; i++) visitChild(node[i])
+    }
+    verify(body)
+  }
+
+  // Module inits are not walked in detail — poison any schema whose array form
+  // could appear there (struct-array consumed/built at module scope).
+  if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
+
+  for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
+}
+
+/**
  * Phase: program-fact collection.
  *
  * Single whole-program walk over the module AST + each user function body

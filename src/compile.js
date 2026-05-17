@@ -31,7 +31,7 @@ import {
   T, VAL, analyzeBody,
   unboxablePtrs, typedElemAux, invalidateLocalsCache,
   boxedCaptures, updateRep,
-  isBlockBody,
+  isBlockBody, analyzeStructInline,
 } from './analyze.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from './optimize.js'
@@ -837,6 +837,10 @@ export default function compile(ast, profiler) {
     funcFacts.set(func, facts)
     captureFuncInspect(func, facts, programFacts)
   }
+  // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the
+  // `structInline` carrier. Runs once the per-function reps have settled (they
+  // are codegen truth) and before any function is emitted.
+  analyzeStructInline(funcFacts, programFacts)
   const funcs = ctx.func.list.map(func => emitFunc(func, funcFacts.get(func), programFacts))
   funcs.push(...synthesizeBoundaryWrappers())
 
