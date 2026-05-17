@@ -194,8 +194,8 @@ test('intConst: body write to param clears intConst (validateIntConstParams)', (
 test('inferArrElemSchema: consistent caller schemas → direct slot load', () => {
   // initRows builds an array of `{x,y}` objects via .push. narrowReturnArrayElems
   // sets initRows.arrayElemSchema; runArrFixpoint propagates to runKernel's param
-  // via inferArrElemSchema. The callee's `rows[i].x` becomes a direct
-  // `f64.load offset=K` over a ptr-unboxed local (no __dyn_get_*, no __is_str_key).
+  // via inferArrElemSchema. The callee's `rows[i].y` becomes a direct
+  // `f64.load offset=8` over a ptr-unboxed local (no __dyn_get_*, no __is_str_key).
   const wat = jz.compile(`
     const initRows = () => {
       const xs = []
@@ -207,7 +207,7 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
       let s = 0
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i]
-        s = s + r.x
+        s = s + r.y
       }
       return s
     }

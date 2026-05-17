@@ -35,7 +35,7 @@ export default (ctx) => {
       // entry — __json_obj and dyn-get load keys via $__schema_tbl[sid] and would
       // crash on an unregistered id 0 (table left uninitialized when list empty).
       const schemaId = merged ? ctx.schema.idOf(target) : ctx.schema.register([])
-      const cap = merged ? Math.max(1, merged.length) : 1
+      const cap = ctx.abi.object.ops.allocSlots(merged ? merged.length : 0)
       return mkPtrIR(PTR.OBJECT, schemaId, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', cap]])
     }
 
@@ -86,16 +86,16 @@ export default (ctx) => {
     }
 
     const body = [
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]],
     ]
     for (let i = 0; i < values.length; i++)
-      body.push(['f64.store', slotAddr(t, i), asF64(emit(values[i]))])
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], i, asF64(emit(values[i]))))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
       inc('__dyn_set')
       for (let i = 0; i < schema.length; i++)
         body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
-          ['i64.load', slotAddr(t, i)]]])
+          ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])
     }
     body.push(['local.get', `$${ptr}`])
 
@@ -244,7 +244,7 @@ export default (ctx) => {
     const body = [['local.set', `$${t}`, va], out.init,
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
     for (let i = 0; i < n; i++)
-      body.push(['f64.store', slotAddr(out.local, i), ['f64.load', slotAddr(base, i)]])
+      body.push(['f64.store', slotAddr(out.local, i), ctx.abi.object.ops.load(['local.get', `$${base}`], i)])
     body.push(out.ptr)
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -310,7 +310,7 @@ export default (ctx) => {
       body.push(
         ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
         ['f64.store', slotAddr(pair, 0), emit(['str', schema[i]])],
-        ['f64.store', slotAddr(pair, 1), ['f64.load', slotAddr(base, i)]],
+        ['f64.store', slotAddr(pair, 1), ctx.abi.object.ops.load(['local.get', `$${base}`], i)],
         ['f64.store', slotAddr(out.local, i), mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])])
     }
     body.push(out.ptr)
@@ -339,8 +339,8 @@ export default (ctx) => {
         updateRep(target, { schemaId })
         const t = tempI32('bx'), s = temp('bs')
         const body = [
-          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, boxedSchema.length)]]],
-          ['f64.store', ['local.get', `$${t}`], asF64(emit(target))],
+          ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(boxedSchema.length)]]],
+          ctx.abi.object.ops.store(['local.get', `$${t}`], 0, asF64(emit(target))),
         ]
         const sBase = tempI32('sb')
         for (const source of sources) {
@@ -350,7 +350,7 @@ export default (ctx) => {
           for (let si = 0; si < sSchema.length; si++) {
             const ti = boxedSchema.indexOf(sSchema[si])
             if (ti < 0) continue
-            body.push(['f64.store', slotAddr(t, ti), ['f64.load', slotAddr(sBase, si)]])
+            body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase}`], si)))
           }
         }
         body.push(['local.set', `$${target}`,
@@ -375,7 +375,7 @@ export default (ctx) => {
       for (let si = 0; si < sSchema.length; si++) {
         const ti = tSchema.indexOf(sSchema[si])
         if (ti < 0) continue
-        body.push(['f64.store', slotAddr(tBase, ti), ['f64.load', slotAddr(sBase2, si)]])
+        body.push(ctx.abi.object.ops.store(['local.get', `$${tBase}`], ti, ctx.abi.object.ops.load(['local.get', `$${sBase2}`], si)))
       }
     }
     body.push(['local.get', `$${t}`])
@@ -479,12 +479,12 @@ export default (ctx) => {
     const srcBase = tempI32('cb')
     const body = [
       ['local.set', `$${s}`, asF64(emit(proto))],
-      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, n)]]],
+      ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(n)]]],
       ['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
     ]
     // Copy all properties from proto
     for (let i = 0; i < n; i++)
-      body.push(['f64.store', slotAddr(t, i), ['f64.load', slotAddr(srcBase, i)]])
+      body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], i, ctx.abi.object.ops.load(['local.get', `$${srcBase}`], i)))
     body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
@@ -513,7 +513,7 @@ function emitDynamicAssign(target, sources, sourceSchemas = sources.map(resolveS
         body.push(['local.set', `$${t}`, ['f64.reinterpret_i64',
           ['call', '$__hash_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
             asI64(emit(['str', String(sSchema[pi])])),
-            ['i64.load', slotAddr(sBase, pi)]]]])
+            ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], pi)]]])
       continue
     }
 
@@ -591,7 +591,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   const ptr = temp('objp')
   const src = tempI32('osp')
 
-  const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', Math.max(1, schema.length)]]]]
+  const body = [['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(schema.length)]]]]
 
   // Process props in order — later props override earlier (JS semantics)
   let srcF
@@ -606,11 +606,11 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
         srcF ??= temp('ospf')
         body.push(['local.set', `$${srcF}`, asF64(emit(p[1]))])
         for (let i = 0; i < schema.length; i++) {
-          const slot = slotAddr(t, i)
-          body.push(['f64.store', slot,
+          const base = ['local.get', `$${t}`]
+          body.push(ctx.abi.object.ops.store(base, i,
             ['f64.reinterpret_i64', ['call', '$__dyn_get_or', ['i64.reinterpret_f64', ['local.get', `$${srcF}`]],
               asI64(emit(['str', String(schema[i])])),
-              ['i64.load', slot]]]])
+              ctx.abi.object.ops.loadBits(base, i)]]))
         }
         continue
       }
@@ -618,11 +618,11 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       for (let si = 0; si < sSchema.length; si++) {
         const ti = schema.indexOf(sSchema[si])
         if (ti < 0) continue
-        body.push(['f64.store', slotAddr(t, ti), ['f64.load', slotAddr(src, si)]])
+        body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${src}`], si)))
       }
     } else if (Array.isArray(p) && p[0] === ':') {
       const ti = schema.indexOf(p[1])
-      if (ti >= 0) body.push(['f64.store', slotAddr(t, ti), asF64(emit(p[2]))])
+      if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, asF64(emit(p[2]))))
     }
   }
 
@@ -631,7 +631,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)
       body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
-        ['i64.load', slotAddr(t, i)]]])
+        ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])
   }
   body.push(['local.get', `$${ptr}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')

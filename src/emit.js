@@ -482,6 +482,16 @@ export function emitDecl(...inits) {
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
 
+    // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
+    // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
+    // rewritten by the `.`/`[]` flat hooks. See scanFlatObjects (analyze.js).
+    const flatDecl = ctx.func.flatObjects?.get(name)
+    if (flatDecl && Array.isArray(init) && init[0] === '{}') {
+      for (let j = 0; j < flatDecl.names.length; j++)
+        result.push(['local.set', `$${name}#${j}`, asF64(emit(flatDecl.values[j]))])
+      continue
+    }
+
     // Multi-value ephemeral destructuring — skip heap alloc when temp is
     // assigned from a multi-value call then immediately destructured element-by-element.
     if (name.startsWith(T) && Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string'
@@ -1105,15 +1115,25 @@ export const emitter = {
       const litKey = isLiteralStr(idx) ? idx[1]
         : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
         : null
+      // SRoA flat object: `o['k'] = x` → `local.set $o#i` (no heap store).
+      if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+        const fo = ctx.func.flatObjects.get(arr)
+        const fi = fo.names.indexOf(litKey)
+        if (fi >= 0) {
+          const t = temp()
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${t}`, valueExpr],
+            ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
+            ['local.get', `$${t}`]], 'f64')
+        }
+      }
       if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
         const slot = ctx.schema.find(arr, litKey)
         if (slot >= 0) {
           const t = temp()
           return typed(['block', ['result', 'f64'],
             ['local.set', `$${t}`, valueExpr],
-            ['f64.store',
-              ['i32.add', ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), ['i32.const', slot * 8]],
-              ['local.get', `$${t}`]],
+            ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
             ['local.get', `$${t}`]], 'f64')
         }
       }
@@ -1262,6 +1282,18 @@ export const emitter = {
     // Object property assignment: obj.prop = x
     if (Array.isArray(name) && name[0] === '.') {
       const [, obj, prop] = name
+      // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
+      const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
+      if (flatW) {
+        const fi = flatW.names.indexOf(prop)
+        if (fi >= 0) {
+          const t = temp()
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${t}`, asF64(emit(val))],
+            ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
+            ['local.get', `$${t}`]], 'f64')
+        }
+      }
       // Schema-based object → f64.store at fixed offset.
       if (typeof obj === 'string' && ctx.schema.find) {
         const idx = ctx.schema.find(obj, prop)
@@ -1271,7 +1303,7 @@ export const emitter = {
           if (shadow) inc('__dyn_set')
           const stmts = [
             ['local.set', `$${t}`, vv],
-            ['f64.store', ['i32.add', ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]], ['local.get', `$${t}`]],
+            ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
           ]
           if (shadow)
             stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
@@ -2234,11 +2266,11 @@ export const emitter = {
           // Boxed handle is OBJECT-kind, never ARRAY — skip forwarding.
           const loadInner = [
             ['local.set', `$${boxBase}`, ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT)],
-            ['local.set', `$${innerName}`, ['f64.load', ['local.get', `$${boxBase}`]]]]
+            ['local.set', `$${innerName}`, ctx.abi.object.ops.load(['local.get', `$${boxBase}`], 0)]]
           const result = callMethod(innerName, emitter)
           // Mutating methods may reallocate; writeback inner value to boxed slot
           if (BOXED_MUTATORS.has(method)) {
-            const wb = ['f64.store', ['local.get', `$${boxBase}`], ['local.get', `$${innerName}`]]
+            const wb = ctx.abi.object.ops.store(['local.get', `$${boxBase}`], 0, ['local.get', `$${innerName}`])
             return typed(['block', ['result', 'f64'], ...loadInner, asF64(result), wb], 'f64')
           }
           // Non-mutating: just load inner and call
@@ -2275,7 +2307,7 @@ export const emitter = {
       if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call) {
         const idx = ctx.schema.find(obj, method)
         if (idx >= 0 && !ctx.schema.isBoxed?.(obj)) {
-          const propRead = typed(['f64.load', ['i32.add', ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+          const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
           if (parsed.hasSpread) {
             const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
             return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
@@ -2288,7 +2320,7 @@ export const emitter = {
       if (typeof obj === 'string' && ctx.schema.find && ctx.closure.call && ctx.schema.isBoxed?.(obj)) {
         const idx = ctx.schema.find(obj, method)
         if (idx >= 0) {
-          const propRead = typed(['f64.load', ['i32.add', ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+          const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
           return ctx.closure.call(propRead, parsed.normal)
         }
       }

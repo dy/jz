@@ -636,6 +636,160 @@ function ternaryCtorOfRhs(rhs) {
 // narrowing; narrowReturnArrayElems clears entries between fixpoint iters.
 
 /**
+ * SRoA eligibility scan — which `let/const o = {staticLiteral}` bindings can
+ * have their fields dissolved into plain WASM locals (`flat` carrier): no heap
+ * alloc, no field load/store, `o.prop` becomes `local.get`.
+ *
+ * A binding is flat-eligible iff `o` appears ONLY as a literal-key `.`/`[]`
+ * READ of an in-schema prop, or the member LHS of a literal-key `.`/`[]` WRITE
+ * of an in-schema prop. Any other mention — bare ref, dynamic/numeric key,
+ * off-schema prop, `?.`, reassignment, compound assign, `++`/`--`, `delete`,
+ * closure capture, self-referential initializer, duplicate keys, or a second
+ * declaration — disqualifies it. A non-escaping object is never observed by
+ * any object walk (keys/values/entries/assign/spread/JSON/for-in/dyn), so the
+ * transform is additive and sound. Conservative: any doubt → not flat.
+ *
+ * Returns `Map<name, {names, values}>` — the literal's parallel prop arrays.
+ * Field `i` of binding `o` lives in WASM local `o#${i}` (`#` cannot occur in a
+ * jz identifier, so the name is collision-free).
+ */
+function scanFlatObjects(body) {
+  const cand = new Map()                 // name → {names, values}
+  const dead = new Set()
+  const declCount = new Map()
+
+  const isLitStr = (k) => Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string'
+  const inSchema = (name, prop) => cand.get(name)?.names.includes(prop)
+  const CMP = new Set(['==', '===', '!=', '!==', '<=', '>='])
+  const isCompound = (op) =>
+    typeof op === 'string' && op !== '=' && op !== '=>' && op.endsWith('=') && !CMP.has(op)
+
+  // `name` referenced anywhere as a value (skips `:`/`.` property-name slots).
+  const mentions = (node, name) => {
+    if (typeof node === 'string') return node === name
+    if (!Array.isArray(node)) return false
+    const op = node[0]
+    if (op === 'str') return false
+    if (op === ':') return mentions(node[2], name)
+    if (op === '.' || op === '?.') return mentions(node[1], name)
+    for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
+    return false
+  }
+
+  // Pass 1 — collect `let/const name = {staticLiteral}` candidates (skip closures).
+  const collect = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        if (typeof a === 'string') { declCount.set(a, (declCount.get(a) || 0) + 1); continue }
+        if (!Array.isArray(a) || a[0] !== '=') { collect(a); continue }
+        if (typeof a[1] === 'string') {
+          declCount.set(a[1], (declCount.get(a[1]) || 0) + 1)
+          const rhs = a[2]
+          if (Array.isArray(rhs) && rhs[0] === '{}') {
+            const props = staticObjectProps(rhs.slice(1))
+            if (props && new Set(props.names).size === props.names.length && !cand.has(a[1]))
+              cand.set(a[1], props)
+          }
+        }
+        collect(a[2])
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  collect(body)
+
+  // Drop names declared more than once and self-referential initializers.
+  for (const [n, c] of declCount) if (c > 1) cand.delete(n)
+  for (const [n, props] of cand) {
+    if (props.values.some(v => mentions(v, n))) cand.delete(n)
+  }
+  if (!cand.size) return cand
+
+  // Pass 2 — verify every occurrence is a safe literal-key access.
+  const visitChild = (c) => {
+    if (typeof c === 'string') { if (cand.has(c)) dead.add(c); return }
+    verify(c)
+  }
+  function verify(node) {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'str') return
+    if (op === '=>') {                       // closure capture — any mention disqualifies
+      for (const n of cand.keys()) if (mentions(node, n)) dead.add(n)
+      return
+    }
+    if (op === ':') { visitChild(node[2]); return }
+    if (op === '.' || op === '?.') {
+      const o = node[1], p = node[2]
+      if (typeof o === 'string' && cand.has(o)) {
+        if (!(op === '.' && typeof p === 'string' && inSchema(o, p))) dead.add(o)
+      } else visitChild(o)
+      return                                 // p is a property name, never a ref
+    }
+    if (op === '[]') {
+      const o = node[1], k = node[2]
+      if (typeof o === 'string' && cand.has(o)) {
+        if (!(isLitStr(k) && inSchema(o, k[1]))) dead.add(o)
+      } else visitChild(o)
+      if (k != null) visitChild(k)
+      return
+    }
+    if (op === '=') {
+      const lhs = node[1]
+      if (typeof lhs === 'string') { if (cand.has(lhs)) dead.add(lhs) }
+      else if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
+        if (!(typeof lhs[2] === 'string' && inSchema(lhs[1], lhs[2]))) dead.add(lhs[1])
+      }
+      else if (Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
+        const k = lhs[2]
+        if (!(isLitStr(k) && inSchema(lhs[1], k[1]))) dead.add(lhs[1])
+        if (k != null) visitChild(k)
+      }
+      else visitChild(lhs)
+      visitChild(node[2])
+      return
+    }
+    if (op === '++' || op === '--' || isCompound(op)) {
+      const t = node[1]
+      if (typeof t === 'string') { if (cand.has(t)) dead.add(t) }
+      else if (Array.isArray(t) && (t[0] === '.' || t[0] === '[]') &&
+               typeof t[1] === 'string' && cand.has(t[1])) dead.add(t[1])
+      else visitChild(t)
+      for (let i = 2; i < node.length; i++) visitChild(node[i])
+      return
+    }
+    if (op === 'delete') {
+      const t = node[1]
+      if (Array.isArray(t) && (t[0] === '.' || t[0] === '[]') &&
+          typeof t[1] === 'string' && cand.has(t[1])) dead.add(t[1])
+      else visitChild(t)
+      return
+    }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        if (typeof a === 'string') continue
+        if (Array.isArray(a) && a[0] === '=') {
+          if (typeof a[1] !== 'string') visitChild(a[1])
+          visitChild(a[2])
+        } else visitChild(a)
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) visitChild(node[i])
+  }
+  verify(body)
+
+  for (const n of dead) cand.delete(n)
+  return cand
+}
+
+/**
  * Unified per-body analysis. Single AST traversal producing every per-binding
  * fact the emitter needs:
  *
@@ -675,6 +829,7 @@ export function analyzeBody(body) {
   if (body === null || typeof body !== 'object') return {
     locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(),
     arrElemValTypes: new Map(), typedElems: new Map(), escapes: new Map(),
+    flatObjects: new Map(),
   }
   const hit = _bodyFactsCache.get(body)
   if (hit) return hit
@@ -1101,7 +1256,17 @@ export function analyzeBody(body) {
     ctx.func.localTypedElemsOverlay = prevTypedOverlay
   }
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes }
+  // SRoA: dissolve non-escaping object-literal bindings into field locals.
+  // The dead `o` local is dropped — every `o` reference is rewritten by the
+  // codegen flat hooks, so a stray `local.get $o` becomes a loud wasm
+  // validation error instead of a silent miscompile.
+  const flatObjects = doSchemas ? scanFlatObjects(body) : new Map()
+  for (const [name, props] of flatObjects) {
+    for (let i = 0; i < props.names.length; i++) locals.set(`${name}#${i}`, 'f64')
+    locals.delete(name)
+  }
+
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects }
   _bodyFactsCache.set(body, result)
   return result
 }

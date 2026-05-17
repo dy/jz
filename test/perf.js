@@ -608,7 +608,7 @@ test('codegen: JSON.parse(let SRC) walk uses slot loads — no __dyn_get/__to_nu
     let SRC = '{"items":[{"id":1,"v":10}],"meta":{"k":7}}'
     export let walk = () => {
       let o = JSON.parse(SRC)
-      return o.meta.k + o.items[0].id
+      return o.meta.k + o.items[0].v
     }
   `, { wat: true })
   const fMatch = wat.match(/\(func \$walk[\s\S]*?^  \)$/m)

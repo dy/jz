@@ -128,15 +128,15 @@ export default (ctx) => {
       const keys = Object.keys(v)
       // Empty object: minimal OBJECT with no slots.
       if (keys.length === 0) {
-        return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', 1]])
+        return mkPtrIR(PTR.OBJECT, 0, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(0)]])
       }
       const schemaId = ctx.schema.register(keys)
       const t = tempI32('jobj')
       const body = [
-        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', keys.length]]],
+        ['local.set', `$${t}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ctx.abi.object.ops.allocSlots(keys.length)]]],
       ]
       for (let i = 0; i < keys.length; i++) {
-        body.push(['f64.store', slotAddr(t, i), asF64(emitJsonConstValue(v[keys[i]]))])
+        body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], i, asF64(emitJsonConstValue(v[keys[i]]))))
       }
       body.push(mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`]))
       return typed(['block', ['result', 'f64'], ...body], 'f64')

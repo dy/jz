@@ -161,6 +161,7 @@ export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
 export const MAX_CLOSURE_ARITY = 8
 
 /** Matches WASM instructions that require a memory section. */
+// FIXME: can be simpler regex, just test second part - load vs store vs grow vs size vs memory
 export const MEM_OPS = /\b(i32\.load|i32\.store|f64\.load|f64\.store|f32\.load|f32\.store|i64\.load|i64\.store|memory\.size|memory\.grow|i32\.load8|i32\.load16|i32\.store8|i32\.store16)\b/
 
 export const WASM_OPS = new Set(['block','loop','if','then','else','br','br_if','call','call_indirect','return','return_call','throw','try_table','catch','nop','drop','unreachable','select','result','mut','param','func','module','memory','table','elem','data','type','import','export','local','global','ref'])
@@ -381,8 +382,7 @@ function toPrimitiveChain(node, v, order) {
   const body = [['result', 'i64'],
     ['local.set', `$${optr}`, ptrOffsetIR(v, VAL.OBJECT)]]
   for (const idx of present) {
-    const method = typed(['f64.load',
-      ['i32.add', ['local.get', `$${optr}`], ['i32.const', idx * 8]]], 'f64')
+    const method = typed(ctx.abi.object.ops.load(['local.get', `$${optr}`], idx), 'f64')
     body.push(
       ['local.set', `$${prim}`, asI64(ctx.closure.call(method, []))],
       ['br_if', blk, ['local.get', `$${prim}`],

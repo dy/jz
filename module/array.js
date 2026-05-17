@@ -682,12 +682,17 @@ export default (ctx) => {
     const litKey = isLiteralStr(idx) ? idx[1]
       : typeof arr === 'string' && lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx)
       : null
+    // SRoA flat object: `o['k']` → `local.get $o#i` (analyze.js scanFlatObjects).
+    if (litKey != null && typeof arr === 'string' && ctx.func.flatObjects?.has(arr)) {
+      const fo = ctx.func.flatObjects.get(arr)
+      const fi = fo.names.indexOf(litKey)
+      if (fi >= 0) return typed(['local.get', `$${arr}#${fi}`], 'f64')
+    }
     if (litKey != null && typeof arr === 'string' && ctx.schema.find) {
       const slot = ctx.schema.find(arr, litKey)
       if (slot >= 0) {
         inc('__ptr_offset')
-        return typed(['f64.load',
-          ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]], ['i32.const', slot * 8]]], 'f64')
+        return typed(ctx.abi.object.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(arr))]], slot), 'f64')
       }
     }
     if (litKey != null && typeof arr === 'string' && lookupValType(arr) === VAL.HASH) {
