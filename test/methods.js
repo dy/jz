@@ -132,6 +132,12 @@ test('.includes: string via variable still matches', () => {
   is(run(`export let f = () => { let x = "B"; return ["A","B","C"].includes(x) }`).f(), 1)
 })
 
+// === .join ===
+
+test('.join: default separator', () => {
+  is(runHost(`export let f = () => ["A", "B", "C"].join()`).f(), 'A,B,C')
+})
+
 // === .sort ===
 
 test('.sort: numeric ascending', () => {
