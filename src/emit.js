@@ -1056,7 +1056,15 @@ export const emitter = {
     if (Array.isArray(name) && name[0] === '[]') {
       const [, arr, idx] = name
       const keyType = keyValType(idx)
-      const useRuntimeKeyDispatch = keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING)
+      // A provably-numeric index name — an int-certain loop counter or a
+      // NUMBER-typed local — can never be a string key, so the runtime
+      // `__is_str_key` → `__dyn_set` dispatch is dead. Mirrors the index *read*
+      // path (`intIndexIR`), closing the read/write asymmetry on `arr[i] = …`
+      // inside refined-array loops (e.g. watr's recursive AST walkers).
+      const idxNumericName = typeof idx === 'string' &&
+        (repOf(idx)?.intCertain === true || repOf(idx)?.val === VAL.NUMBER)
+      const useRuntimeKeyDispatch = !idxNumericName &&
+        (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
       const keyExpr = asF64(emit(idx))
       const valueExpr = asF64(emit(val))
       const storeArrayValue = (arrExpr, idxNode, persist) => {
