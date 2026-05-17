@@ -290,6 +290,17 @@ test('object: computed values', () => {
   is(run('export let f = (a, b) => { let o = {sum: a + b, diff: a - b}; return o.sum * o.diff }').f(5, 3), 16)
 })
 
+test('object: flat-object facts stay scoped per function', () => {
+  const { f } = run(`
+    let score = () => {
+      const pair = {left: 2, right: 5}
+      return pair.left + pair.right
+    }
+    export let f = () => score()
+  `)
+  is(f(), 7)
+})
+
 // --- Write ---
 
 test('object: write property', () => {
