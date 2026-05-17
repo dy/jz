@@ -15,6 +15,102 @@ import { isReassigned } from '../src/analyze.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
+// ─── Shared decimal-number parsing fragments ────────────────────────────────
+// `__to_num` (Number coercion) and `__parseFloat` both scan a StrDecimalLiteral
+// significand + ExponentPart, and that scan was verbatim-identical between them
+// — a "fix the same bug twice" hazard (commit 652ba5f patched both copies).
+// These named fragments are the common core, spliced into both bodies; the
+// produced WASM is unchanged, the source now has one place to fix.
+// Required locals (every consumer declares them):
+//   $v i64 · $i $len $c $dot $seen $sigDigits $decExp $dropped $round
+//   $exp $expNeg $expDigits i32 · $mant i64 · $result f64
+
+// 18-significant-digit significand → $mant; $decExp tracks the base-10 exponent
+// of dropped/fractional digits; $round defers a single round-up.
+const DEC_SIGNIFICAND = `
+    (block $numDone (loop $numLoop
+      (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+      (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
+        (then
+          (local.set $dot (i32.const 1))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $numLoop)))
+      (br_if $numDone
+        (i32.or
+          (i32.lt_s (local.get $c) (i32.const 48))
+          (i32.gt_s (local.get $c) (i32.const 57))))
+      (local.set $seen (i32.const 1))
+      (local.set $c (i32.sub (local.get $c) (i32.const 48)))
+      (if (i32.and (i32.eqz (local.get $sigDigits)) (i32.eqz (local.get $c)))
+        (then
+          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $numLoop)))
+      ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
+      ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
+      ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
+      (if (i32.lt_s (local.get $sigDigits) (i32.const 18))
+        (then
+          (local.set $mant
+            (i64.add
+              (i64.mul (local.get $mant) (i64.const 10))
+              (i64.extend_i32_s (local.get $c))))
+          (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
+          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
+        (else
+          (if (i32.eqz (local.get $dropped))
+            (then (if (i32.ge_s (local.get $c) (i32.const 5)) (then (local.set $round (i32.const 1))))))
+          (local.set $dropped (i32.const 1))
+          (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $numLoop)))`
+
+// No significant digit seen → NaN; apply the deferred round; $mant → $result.
+const FINISH_SIGNIFICAND = `
+    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
+    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
+    (local.set $result (f64.convert_i64_u (local.get $mant)))`
+
+// ExponentPart scan: 'e'/'E' + optional sign + digits → $exp / $expDigits.
+// `tail` runs inside the e/E branch — Number rejects an empty exponent ("1e")
+// as NaN, parseFloat ignores it, so each caller passes its own resolution.
+const sciExponent = (tail) => `
+    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+      (i32.or
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
+        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
+      (then
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
+          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+        (block $expDone (loop $expLoop
+          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
+          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (br_if $expDone
+            (i32.or
+              (i32.lt_s (local.get $c) (i32.const 48))
+              (i32.gt_s (local.get $c) (i32.const 57))))
+          (local.set $exp
+            (i32.add
+              (i32.mul (local.get $exp) (i32.const 10))
+              (i32.sub (local.get $c) (i32.const 48))))
+          (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $expLoop)))
+        ${tail}))`
+
+// Apply the accumulated base-10 exponent to $result via __pow10.
+const POW10_SCALE = `
+    (if (i32.gt_s (local.get $decExp) (i32.const 0))
+      (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
+    (if (i32.lt_s (local.get $decExp) (i32.const 0))
+      (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))`
+
 export default (ctx) => {
   Object.assign(ctx.core.stdlibDeps, {
     __mkstr: ['__alloc'],
@@ -581,87 +677,20 @@ export default (ctx) => {
         (return (f64.const nan))))
     ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
-    (block $numDone (loop $numLoop
-      (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
-      (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
-        (then
-          (local.set $dot (i32.const 1))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $numLoop)))
-      (br_if $numDone
-        (i32.or
-          (i32.lt_s (local.get $c) (i32.const 48))
-          (i32.gt_s (local.get $c) (i32.const 57))))
-      (local.set $seen (i32.const 1))
-      (local.set $c (i32.sub (local.get $c) (i32.const 48)))
-      (if (i32.and (i32.eqz (local.get $sigDigits)) (i32.eqz (local.get $c)))
-        (then
-          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $numLoop)))
-      ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
-      ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
-      ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
-      (if (i32.lt_s (local.get $sigDigits) (i32.const 18))
-        (then
-          (local.set $mant
-            (i64.add
-              (i64.mul (local.get $mant) (i64.const 10))
-              (i64.extend_i32_s (local.get $c))))
-          (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
-          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
-        (else
-          (if (i32.eqz (local.get $dropped))
-            (then (if (i32.ge_s (local.get $c) (i32.const 5)) (then (local.set $round (i32.const 1))))))
-          (local.set $dropped (i32.const 1))
-          (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $numLoop)))
+    ${DEC_SIGNIFICAND}
     ;; No digits — the literal was a bare sign or stray text ("abc", "+") → NaN.
     ;; (Empty / all-whitespace strings already returned +0 above.)
-    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
-    (local.set $result (f64.convert_i64_u (local.get $mant)))
+    ${FINISH_SIGNIFICAND}
     ;; Scientific notation. 'e'/'E' commits to an ExponentPart — at least one
     ;; digit must follow ("1e", "5e+" are NaN).
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.or
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
-      (then
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
-          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
-          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (block $expDone (loop $expLoop
-          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
-          (br_if $expDone
-            (i32.or
-              (i32.lt_s (local.get $c) (i32.const 48))
-              (i32.gt_s (local.get $c) (i32.const 57))))
-          (local.set $exp
-            (i32.add
-              (i32.mul (local.get $exp) (i32.const 10))
-              (i32.sub (local.get $c) (i32.const 48))))
-          (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $expLoop)))
-        (if (i32.eqz (local.get $expDigits)) (then (return (f64.const nan))))
+    ${sciExponent(`(if (i32.eqz (local.get $expDigits)) (then (return (f64.const nan))))
         (if (local.get $expNeg)
           (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
-          (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))
+          (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))`)}
     ;; Reject trailing non-whitespace ("5px", numeric separators "1_0", …).
     (local.set $i (call $__skipws (local.get $v) (local.get $i) (local.get $len)))
     (if (i32.lt_s (local.get $i) (local.get $len)) (then (return (f64.const nan))))
-    (if (i32.gt_s (local.get $decExp) (i32.const 0))
-      (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
-    (if (i32.lt_s (local.get $decExp) (i32.const 0))
-      (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
+    ${POW10_SCALE}
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
   // NumberToBigInt: a RangeError unless n is an integral Number — finite and
@@ -788,82 +817,15 @@ export default (ctx) => {
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
-    (block $numDone (loop $numLoop
-      (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
-      (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
-        (then
-          (local.set $dot (i32.const 1))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $numLoop)))
-      (br_if $numDone
-        (i32.or
-          (i32.lt_s (local.get $c) (i32.const 48))
-          (i32.gt_s (local.get $c) (i32.const 57))))
-      (local.set $seen (i32.const 1))
-      (local.set $c (i32.sub (local.get $c) (i32.const 48)))
-      (if (i32.and (i32.eqz (local.get $sigDigits)) (i32.eqz (local.get $c)))
-        (then
-          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $numLoop)))
-      ;; Accumulate the significand in an i64 (exact to 18 decimal digits,
-      ;; since 10^18 < 2^63) and convert to f64 once at the end — a single
-      ;; correctly-rounded i64->f64 step instead of lossy per-digit f64 math.
-      (if (i32.lt_s (local.get $sigDigits) (i32.const 18))
-        (then
-          (local.set $mant
-            (i64.add
-              (i64.mul (local.get $mant) (i64.const 10))
-              (i64.extend_i32_s (local.get $c))))
-          (local.set $sigDigits (i32.add (local.get $sigDigits) (i32.const 1)))
-          (if (local.get $dot) (then (local.set $decExp (i32.sub (local.get $decExp) (i32.const 1))))))
-        (else
-          (if (i32.eqz (local.get $dropped))
-            (then (if (i32.ge_s (local.get $c) (i32.const 5)) (then (local.set $round (i32.const 1))))))
-          (local.set $dropped (i32.const 1))
-          (if (i32.eqz (local.get $dot)) (then (local.set $decExp (i32.add (local.get $decExp) (i32.const 1)))))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $numLoop)))
-    (if (i32.eqz (local.get $seen)) (then (return (f64.const nan))))
-    (if (local.get $round) (then (local.set $mant (i64.add (local.get $mant) (i64.const 1)))))
-    (local.set $result (f64.convert_i64_u (local.get $mant)))
+    ${DEC_SIGNIFICAND}
+    ${FINISH_SIGNIFICAND}
     ;; Scientific notation.
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.or
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
-      (then
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
-          (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
-          (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (block $expDone (loop $expLoop
-          (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
-          (br_if $expDone
-            (i32.or
-              (i32.lt_s (local.get $c) (i32.const 48))
-              (i32.gt_s (local.get $c) (i32.const 57))))
-          (local.set $exp
-            (i32.add
-              (i32.mul (local.get $exp) (i32.const 10))
-              (i32.sub (local.get $c) (i32.const 48))))
-          (local.set $expDigits (i32.add (local.get $expDigits) (i32.const 1)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $expLoop)))
-        (if (local.get $expDigits)
+    ${sciExponent(`(if (local.get $expDigits)
           (then
             (if (local.get $expNeg)
               (then (local.set $decExp (i32.sub (local.get $decExp) (local.get $exp))))
-              (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))))
-    (if (i32.gt_s (local.get $decExp) (i32.const 0))
-      (then (local.set $result (f64.mul (local.get $result) (call $__pow10 (local.get $decExp))))))
-    (if (i32.lt_s (local.get $decExp) (i32.const 0))
-      (then (local.set $result (f64.div (local.get $result) (call $__pow10 (i32.sub (i32.const 0) (local.get $decExp)))))))
+              (else (local.set $decExp (i32.add (local.get $decExp) (local.get $exp)))))))`)}
+    ${POW10_SCALE}
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
