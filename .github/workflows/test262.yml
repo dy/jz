@@ -47,7 +47,10 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 built-ins suite
         env:
-          # Baseline (as of last green main, 2026-05-17): 701 passes / 96 fails.
-          # Built-ins coverage is more volatile than language; lift this when fixes land.
+          # Baseline (as of last green main, 2026-05-17): 701 passes / 0 in-scope
+          # fails / 62 xfail (out-of-scope: BigInt, Symbol, RegExp exec, …).
+          # The runner gates on pass < baseline AND any in-scope fail > 0; an
+          # out-of-scope fail must be added to EXPECTED_FAIL_* in the runner.
+          # Lift this baseline when fixes land.
           JZ_TEST262_BASELINE: 701
         run: npm run test262:builtins

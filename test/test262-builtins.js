@@ -588,6 +588,78 @@ const DATE_UNSUPPORTED_TESTS = new Map([
   ['built-ins/Date/UTC/coercion-order.js', 'object ToPrimitive coercion'],
 ])
 
+// ── Expected failures ───────────────────────────────────────────────────────
+// Built-ins tests that COMPILE and RUN but assert-fail because they exercise a
+// feature jz deliberately does not implement (out of scope for the distilled-JS
+// subset) or a documented representation divergence. They still run, but bucket
+// as `xfail` instead of `fail`, so the `fail` count gates *in-scope* correctness
+// honestly — any non-zero `fail` is a genuine regression. If a listed *file*
+// ever passes it is reported as `xpass` so the entry can be pruned. Compile-time
+// fails ("… is not in scope" / "Unknown op" …) are bucketed as `skip` by runTest.
+//
+// A prefix covers a whole feature family that will not be implemented; a file
+// entry is an exact, individually-reviewed expectation (and gets xpass tracking).
+const EXPECTED_FAIL_PREFIXES = [
+  ['built-ins/BigInt/', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
+  ['built-ins/RegExp/prototype/exec/', 'dynamic RegExp lastIndex / u-flag exec — out of scope'],
+  ['built-ins/ArrayBuffer/', 'resizable ArrayBuffer options — out of scope'],
+  ['built-ins/Symbol/', 'Symbol primitive semantics — out of scope'],
+]
+const EXPECTED_FAIL_FILES = new Map([
+  // JSON.parse — ToString-coerces a non-string argument
+  ['built-ins/JSON/parse/text-non-string-primitive.js', 'JSON.parse non-string-arg ToString coercion — out of scope'],
+  ['built-ins/JSON/parse/text-object.js', 'JSON.parse non-string-arg ToString coercion — out of scope'],
+  // JSON.stringify — replacer argument (jz stringify is single-arg)
+  ['built-ins/JSON/stringify/replacer-array-duplicates.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-array-order.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-array-undefined.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-function-array-circular.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-function-object-circular.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-function-result-undefined.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/replacer-function-tojson.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/stringify/value-bigint-replacer.js', 'JSON.stringify replacer argument — out of scope'],
+  // JSON.stringify — toJSON() hook
+  ['built-ins/JSON/stringify/value-tojson-array-circular.js', 'JSON.stringify toJSON() hook — out of scope'],
+  ['built-ins/JSON/stringify/value-tojson-not-function.js', 'JSON.stringify toJSON() hook — out of scope'],
+  ['built-ins/JSON/stringify/value-tojson-object-circular.js', 'JSON.stringify toJSON() hook — out of scope'],
+  // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges
+  ['built-ins/JSON/stringify/space-string-object.js', 'JSON.stringify wrapper-object coercion — out of scope'],
+  ['built-ins/JSON/stringify/value-boolean-object.js', 'JSON.stringify wrapper-object coercion — out of scope'],
+  ['built-ins/JSON/stringify/value-object-abrupt.js', 'JSON.stringify abrupt-getter propagation — out of scope'],
+  ['built-ins/JSON/stringify/value-object-circular.js', 'JSON.stringify circular-reference detection — out of scope'],
+  ['built-ins/JSON/stringify/value-symbol.js', 'JSON.stringify of Symbol value — out of scope'],
+  ['built-ins/JSON/stringify/value-string-escape-ascii.js', 'object key insertion order — documented divergence'],
+  // String
+  ['built-ins/String/fromCharCode/touint16-tonumber-throws-bigint.js', 'BigInt-arg ToNumber throw — out of scope'],
+  ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
+  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'boolean ToString — documented divergence (boolean repr as number)'],
+  // Array
+  ['built-ins/Array/from/elements-added-after.js', 'live iterator protocol — out of scope'],
+  ['built-ins/Array/prototype/concat/create-ctor-non-object.js', 'Symbol.species constructor lookup — out of scope'],
+  // Object — function objects, array-likes, dynamic schema, iterable coercion
+  ['built-ins/Object/keys/15.2.3.14-3-2.js', 'Object.keys on function object — out of scope'],
+  ['built-ins/Object/keys/15.2.3.14-3-4.js', 'Object.keys on arguments/array-like — out of scope'],
+  ['built-ins/Object/assign/OnlyOneArgument.js', 'primitive ToObject boxing — out of scope'],
+  ['built-ins/Object/assign/assignment-to-readonly-property-of-target-must-throw-a-typeerror-exception.js', 'Object.assign dynamic target schema — out of scope'],
+  ['built-ins/Object/fromEntries/string-entry-primitive-throws.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
+  ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
+  ['built-ins/Object/fromEntries/supports-symbols.js', 'Object.fromEntries Symbol keys — out of scope'],
+  // Set
+  ['built-ins/Set/prototype/add/preserves-insertion-order.js', 'Set iterates slot order, not insertion order — documented divergence'],
+  // parseInt / parseFloat
+  ['built-ins/parseInt/S15.1.2.2_A1_T1.js', 'parseInt(boolean) — documented divergence (boolean repr as number)'],
+  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
+  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],
+  ['built-ins/parseFloat/S15.1.2.3_A1_T1.js', 'parseFloat(boolean) — documented divergence (boolean repr as number)'],
+])
+
+function expectedFailReason(rel) {
+  if (EXPECTED_FAIL_FILES.has(rel)) return EXPECTED_FAIL_FILES.get(rel)
+  for (const [prefix, reason] of EXPECTED_FAIL_PREFIXES)
+    if (rel.startsWith(prefix)) return reason
+  return null
+}
+
 function isNumberFunctionalTest(rel) {
   return NUMBER_CONSTANT_TESTS.has(rel) ||
     /^built-ins\/Number\/S9\.3\.1_/.test(rel) ||
@@ -700,6 +772,12 @@ function runTest(src) {
     return { status: 'pass' }
   } catch (e) {
     const msg = e.message || String(e)
+    // An unresolved reference ("'JSON' is not in scope", "'$262' is not in
+    // scope", …) means the test names a built-in or namespace jz does not
+    // implement — feature-absent, not a wrong answer. Group as one skip reason.
+    if (msg.includes('is not in scope')) {
+      return { status: 'skip', error: 'unsupported builtin or namespace-as-value' }
+    }
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
         msg.includes('prohibited') || msg.includes('Unknown tag') ||
         msg.includes('Unknown func') || msg.includes('Unknown local') ||
@@ -713,9 +791,11 @@ function runTest(src) {
   }
 }
 
-const results = { pass: 0, fail: 0, skip: 0 }
+const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
 const fails = []
 const skips = new Map()
+const xfails = new Map()
+const xpasses = []
 const builtinsDir = join(TEST262, 'test', 'built-ins')
 const allBuiltinsFiles = countJs(builtinsDir)
 
@@ -740,11 +820,18 @@ for (const subpath of TRACKED_BUILTIN_PATHS) {
       }
 
       const { status, error } = runTest(src)
-      results[status]++
       count++
 
-      if (status === 'fail' && fails.length < 1000) fails.push(`${rel}: ${error}`)
-      if (status === 'skip') skips.set(error, (skips.get(error) || 0) + 1)
+      const xfReason = expectedFailReason(rel)
+      if (status === 'fail' && xfReason) {
+        results.xfail++
+        xfails.set(xfReason, (xfails.get(xfReason) || 0) + 1)
+      } else {
+        results[status]++
+        if (status === 'fail' && fails.length < 1000) fails.push(`${rel}: ${error}`)
+        if (status === 'skip') skips.set(error, (skips.get(error) || 0) + 1)
+        if (status === 'pass' && EXPECTED_FAIL_FILES.has(rel)) xpasses.push(rel)
+      }
     } catch {
       results.skip++
       skips.set('read/runner error', (skips.get('read/runner error') || 0) + 1)
@@ -755,12 +842,13 @@ for (const subpath of TRACKED_BUILTIN_PATHS) {
   console.log(`  ${subpath}/: ${count} tests`)
 }
 
-const total = results.pass + results.fail + results.skip
+const total = results.pass + results.fail + results.xfail + results.skip
 const coverage = allBuiltinsFiles ? (results.pass / allBuiltinsFiles * 100).toFixed(2) : '0.00'
 
 console.log(`\n── Built-ins results ──`)
 console.log(`  Pass:          ${results.pass}`)
 console.log(`  Fail:          ${results.fail}`)
+console.log(`  Xfail:         ${results.xfail}  (ran, expected to fail — out-of-scope feature)`)
 console.log(`  Skip:          ${results.skip}`)
 console.log(`  Tracked files: ${total}/${allBuiltinsFiles} built-ins JS files`)
 console.log(`\n  Built-ins coverage (pass / built-ins JS files): ${coverage}% (${results.pass}/${allBuiltinsFiles})`)
@@ -772,15 +860,35 @@ if (skips.size) {
   }
 }
 
+if (xfails.size) {
+  console.log(`\n── Expected failures (out of scope) ──`)
+  for (const [reason, count] of [...xfails.entries()].sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${count} ${reason}`)
+  }
+}
+
+if (xpasses.length) {
+  console.log(`\n── Unexpected passes — prune from EXPECTED_FAIL_FILES ──`)
+  xpasses.forEach(f => console.log(`  ✓ ${f}`))
+}
+
 if (fails.length) {
-  console.log(`\n── Sample failures ──`)
+  console.log(`\n── Failures (in-scope — should be 0) ──`)
   fails.forEach(f => console.log(`  x ${f}`))
 }
 
 // CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
-// non-zero if pass count drops below the baseline. Otherwise just report.
+// non-zero if pass count drops below the baseline, or if any *in-scope* test
+// fails. Out-of-scope fails are bucketed as `xfail` and do not gate; a non-zero
+// `fail` is therefore a genuine regression or an unlisted out-of-scope test.
 const baseline = Number(process.env.JZ_TEST262_BASELINE)
-if (Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
-  console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
-  process.exit(1)
+if (Number.isFinite(baseline) && baseline > 0) {
+  if (results.pass < baseline) {
+    console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+    process.exit(1)
+  }
+  if (results.fail > 0) {
+    console.error(`\nFAIL: ${results.fail} in-scope failure(s) — fix, or add to EXPECTED_FAIL_* if out of scope`)
+    process.exit(1)
+  }
 }
