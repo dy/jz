@@ -168,7 +168,9 @@ export default (ctx) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
     if (b === undefined) return f('f64.abs', a)
     let r = call('math.hypot', a, b)
-    for (const x of rest) r = typed(['call', '$math.hypot', r, asF64(emit(x))], 'f64')
+    // ToNumber every rest arg too (matches min/max) — an object arg's valueOf
+    // must run and may throw, which Math.hypot propagates.
+    for (const x of rest) r = typed(['call', '$math.hypot', r, toNumF64(x, emit(x))], 'f64')
     return r
   })
 
