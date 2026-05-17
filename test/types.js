@@ -356,6 +356,20 @@ test('switch: jzify strips terminal breaks inside braced cases', () => {
   is(f(2), 30)
 })
 
+test('switch: jzify keeps destructured-param function body as statements', () => {
+  const { f } = jz(`
+    function f(x, { kind }) {
+      switch (kind) {
+        case "a": return x + 1
+        default: return x + 2
+      }
+    }
+    export { f }
+  `, { jzify: true }).exports
+  is(f(10, { kind: 'a' }), 11)
+  is(f(10, { kind: 'b' }), 12)
+})
+
 test('switch: jzify lowers nested case breaks', () => {
   const { f } = run(`export let f = (x) => {
     let y = 0
