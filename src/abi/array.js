@@ -20,13 +20,17 @@
  *                  pointer (Array<OBJECT|STRING>); both are 8 bytes wide, so
  *                  one carrier serves every plain `[]`.
  *
- * A future `structInline` carrier — for an `Array<{uniform schema}>` whose
- * element pointers never escape as object identities — widens the cell to the
- * K f64 fields of the element schema (stride K), so `rows[i].x` is one direct
- * `f64.load` with no per-row object allocation and no pointer indirection. It
- * slots in here behind the same `ops` surface: the only change is `idx`→slot
- * arithmetic (`K*i + field` instead of `i`). That is the SRoA seam this file
- * exists to provide; see `.work/todo.md` for the carrier-selection plan.
+ *   structInline — SRoA layout for an `Array<{uniform K-field schema}>` whose
+ *                  element pointers never escape as object identities: the K
+ *                  f64 schema fields are inlined into the data region (stride
+ *                  K), so `rows[i].x` is one direct `f64.load` with no per-row
+ *                  object allocation and no pointer indirection. `len`/`cap`
+ *                  still count *physical* f64 cells, so every stride-8 helper
+ *                  (`__alloc_hdr`, `__arr_grow`, `__len`, `__set_len`) is
+ *                  reused untouched — `.push` of a struct writes K cells and
+ *                  adds K to `len`; `.length` divides the physical len by K.
+ *                  Picked per-schema by `analyzeStructInline` (src/analyze.js),
+ *                  whole-program, default-disqualify.
  *
  * Typed arrays (`Float64Array`/`Int32Array`/…) are a distinct value type
  * (`VAL.TYPED`, ctor-determined stride) handled by `module/typedarray.js`, not
@@ -61,6 +65,24 @@ export const taggedLinear = {
     store: (base, idx, val) => ['f64.store', addr(base, idx), val],
   },
 }
+
+// structInline(K) — SRoA carrier factory. Logical element `idx` occupies K
+// consecutive 8-byte cells; the carrier hands back the byte address of the
+// element's first cell, and field `f` is then a plain `+f*8` composed by the
+// schema slot machinery (`ctx.abi.object.ops`). Built on demand per schema
+// (`K = ctx.schema.list[sid].length`) — not a `ctx.abi` default.
+export const structInline = (K) => ({
+  K,
+  ops: {
+    // Byte address of logical element `idx`'s first cell off i32 `base`.
+    // A JS-integer idx folds to a constant; an IR-node idx emits `idx*K`
+    // then the `<<3` (via `addr`).
+    elemAddr: (base, idx) =>
+      typeof idx === 'number'
+        ? addr(base, idx * K)
+        : addr(base, K === 1 ? idx : ['i32.mul', idx, ['i32.const', K]]),
+  },
+})
 
 // Default carrier — picked when the narrower has no stronger evidence.
 // Reached via `ctx.abi.array`.

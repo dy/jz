@@ -23,7 +23,7 @@
 import nanboxF64 from './number.js'
 import sso, { jsstring } from './string.js'
 import tagged from './object.js'
-import taggedLinear from './array.js'
+import taggedLinear, { structInline } from './array.js'
 
 /** The default carrier bundle — what `ctx.abi` resolves to. Identity-stable
  *  reference so codegen can compare without string keys. */
@@ -32,4 +32,4 @@ export const DEFAULTS = Object.freeze({ number: nanboxF64, string: sso, object: 
 // Carrier re-exports — for tests and tools that want to reach a specific
 // carrier directly. Per-site narrowing will use these via `ctx.abi.<type>`
 // once the narrower exposes the full carrier dictionary.
-export { nanboxF64, sso, jsstring, tagged, taggedLinear }
+export { nanboxF64, sso, jsstring, tagged, taggedLinear, structInline }
