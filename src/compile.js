@@ -303,6 +303,7 @@ function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
+    flatObjects: new Map(ctx.func.flatObjects),
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
@@ -328,6 +329,7 @@ function emitFunc(func, funcFacts, programFacts) {
   const block = funcFacts.block
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
+  ctx.func.flatObjects = new Map(funcFacts.flatObjects)
   ctx.func.localReps = cloneRepMap(funcFacts.localReps)
   ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
 
