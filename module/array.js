@@ -1786,5 +1786,5 @@ export default (ctx) => {
 
   // .join(sep) → concatenate array elements with separator string
   ctx.core.emit['.join'] = (arr, sep) => (inc('__str_join'),
-    typed(['call', '$__str_join', asI64(emit(arr)), asI64(emit(sep))], 'f64'))
+    typed(['call', '$__str_join', asI64(emit(arr)), asI64(emit(sep == null ? ['str', ','] : sep))], 'f64'))
 }
