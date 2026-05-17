@@ -730,9 +730,9 @@ export default (ctx) => {
       if (keyType === VAL.STRING) return typed(dynLoad(asF64(emit(arr)), asF64(emit(idx))), 'f64')
       if (useRuntimeKeyDispatch)
         return emitDynamicKeyDispatch(asF64(emit(arr)), keyExpr =>
-          ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], ['i32.shl', asI32(typed(keyExpr, 'f64')), ['i32.const', 3]]]])
+          ctx.abi.array.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], asI32(typed(keyExpr, 'f64'))))
       return typed(
-        ['f64.load', ['i32.add', ['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], ['i32.shl', vi, ['i32.const', 3]]]],
+        ctx.abi.array.ops.load(['call', '$__ptr_offset', ['i64.reinterpret_f64', inner]], vi),
         'f64')
     }
     // HASH receiver with runtime string key: probe the HASH directly via
@@ -782,11 +782,9 @@ export default (ctx) => {
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        return typed(['f64.load',
-          ['i32.add',
-            ['local.tee', `$${baseI32}`,
-              ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
-            ['i32.shl', vi, ['i32.const', 3]]]], 'f64')
+        return typed(ctx.abi.array.ops.load(
+          ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+          vi), 'f64')
       }
       const baseTmp = temp()
       // Numeric key (literal or known-NUMBER name) → skip __is_str_key dispatch;
