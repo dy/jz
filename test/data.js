@@ -304,6 +304,17 @@ test('object: write preserves other props', () => {
   }`).f(), 4)
 })
 
+test('object: reassigned literal can use narrower field set', () => {
+  is(run(`export let f = () => {
+    let o = {}
+    o.a = 1
+    o.b = 2
+    o.c = 3
+    o = {a: 4, b: 5}
+    return o.a + o.b
+  }`).f(), 9)
+})
+
 // --- Pass & return ---
 
 test('object: pass to function', () => {
