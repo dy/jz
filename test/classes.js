@@ -121,6 +121,18 @@ test('this inside a method-nested arrow refers to the instance', () => {
   is(run(), 306)   // (1+100) + (2+100) + (3+100)
 })
 
+// A method whose name collides with a Map/Set method (`get`/`set`/`has`/`add`/
+// `delete`), called directly on a `new`/call expression: the receiver is an
+// untyped call result, so the collection emitter must not be picked for a
+// zero-arg call (it would `emit()` a missing key and crash codegen).
+test('collection-named method on a direct `new` chain', () => {
+  const { run } = compile(`
+    class C { constructor(v){ this.v = v } get(){ return this.v + 1 } has(){ return this.v } }
+    export let run = () => new C(10).get() * 100 + new C(7).has()
+  `)
+  is(run(), 1107)   // (10+1)*100 + 7
+})
+
 test('rejects `extends`', () => rejects(`class B {} class A extends B {} export let run = () => 1`, /extends/))
 test('rejects `static`', () => rejects(`class A { static n = 5 } export let run = () => 1`, /static/))
 test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export let run = () => 1`, /getter/))
