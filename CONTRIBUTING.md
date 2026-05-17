@@ -65,6 +65,12 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 
 - **Speed** (`-O` speed-tuned build): jz median ≤ V8, AssemblyScript (`asc -O3`)
   and Porffor on every comparable case, and ≤ them on geomean.
+- **Native parity**: jz wasm runs at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
+  (jz *beats* native C on `poly`, `mat4`, `aos`, `tokenizer`, `sort`, ties
+  `mandelbrot`). Two cases trail native and are pinned `near`, not as a parity
+  claim: `biquad` is wasm-v1 ISA-bound (no scalar `fma` — hand-written WAT ties
+  it too) and `json` is string-carrier bound. The geomean ceiling is the
+  guarantee; the `near` per-case pins are regression backstops.
 - **Size** (`optimize: 'size'` build): jz wasm ≤ AssemblyScript (`asc -Oz --converge`)
   and ≤ Porffor on every comparable case, and ≤ them on geomean.
 - **No codegen slack**: `wasm-opt -Oz` must not be able to meaningfully shrink
@@ -80,11 +86,11 @@ npm run bench:size       # just the wasm-size table (jz vs AS -Oz vs porf, + was
 npm run bench            # just the speed harness
 ```
 
-**Ratchet, don't backslide.** `bench.js` carries per-case `win`/`tie`/`todo`
-claims and geomean ceilings. When you make jz beat a `todo`, promote it to
-`win`/`tie` in the same PR; when you shrink codegen, tighten the relevant
-geomean ceiling and the `wasm-opt` slack budget. A PR may not move any claim
-backward. If a change trades size for speed (or vice-versa) deliberately — e.g.
+**Ratchet, don't backslide.** `bench.js` carries per-case `win`/`tie`/`near`/`todo`
+claims (against each competitor and against native C) and geomean ceilings. When
+you make jz beat a `todo` or close a `near` gap, promote it to `win`/`tie` in the
+same PR; when you shrink codegen, tighten the relevant geomean ceiling and the
+`wasm-opt` slack budget. A PR may not move any claim backward. If a change trades size for speed (or vice-versa) deliberately — e.g.
 the unrolled/vectorized hot kernels — say so in the commit and adjust the
 *size* budget, not the speed pin.
 

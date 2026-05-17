@@ -537,7 +537,9 @@ cc program.c -o program
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 _Numbers from `node bench/bench.mjs --targets=v8,jz,as` on Apple Silicon._
-Geomean speed: jz 0.41× V8, 0.40× AS, 0.32× Porffor. Geomean size: jz 0.85× AS.
+Geomean speed: jz 0.41× V8, 0.40× AS, 0.32× Porffor, **0.88× native C (`clang -O3`)**.
+Geomean size: jz 0.85× AS. jz wasm runs at native speed — ahead of `clang -O3` on
+the corpus geomean — and `test/bench.js` gates it so a regression fails CI.
 <!-- FIXME: Geomean should be last row -->
 `optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff lever.
 
