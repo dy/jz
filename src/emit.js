@@ -51,6 +51,13 @@ import { typeofPredicate } from './infer.js'
 // to decide whether to emit a value-returning or side-effect-only form.
 let _expect = null
 
+// A genuine i32 *number* — safe for the i32 fast path in arithmetic/bitwise
+// operators. An unboxed pointer (object/array/string/closure local kept as a
+// raw i32 handle) is *also* i32-typed but carries `.ptrKind`; treating it as a
+// number would compute on raw pointer bits. A ptrKind-carrying operand must
+// instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
+const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
+
 const FIRST_CLASS_UNARY_MATH = {
   'math.abs': 'f64.abs',
   'math.sqrt': 'f64.sqrt',
@@ -82,7 +89,7 @@ function builtinFunctionValue(name) {
 const emitNeg = (a) => {
   if (valTypeOf(a) === VAL.BIGINT) return fromI64(['i64.sub', ['i64.const', 0], asI64(emit(a))])
   const v = emit(a)
-  return isLit(v) ? emitNum(-litVal(v)) : v.type === 'i32'
+  return isLit(v) ? emitNum(-litVal(v)) : isI32Num(v)
     ? typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
     : typed(['f64.neg', toNumF64(a, v)], 'f64')
 }
@@ -1451,7 +1458,7 @@ export const emitter = {
     // still be null/undefined/pointer — numeric `+` performs ToNumber like `-`/`*`.
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
     if (isLit(va) && litVal(va) === 0) return toNumF64(b, vb)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.add', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.add', va, vb], 'i32')
     return typed(['f64.add', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '-': (a, b) => {
@@ -1464,7 +1471,7 @@ export const emitter = {
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.sub', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.sub', va, vb], 'i32')
     return typed(['f64.sub', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   'u+': a => {
@@ -1486,7 +1493,7 @@ export const emitter = {
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
     if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.mul', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.mul', va, vb], 'i32')
     return typed(['f64.mul', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '/': (a, b) => {
@@ -1505,7 +1512,7 @@ export const emitter = {
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
     // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
     if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
-    if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.rem_s', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
   // === Comparisons (always i32 result) ===
@@ -1757,7 +1764,7 @@ export const emitter = {
   // i32 / lit values are already numeric — the toNumF64 wrap is skipped to keep
   // the numeric fast path at one wasm instruction. Non-numeric (NaN-boxed string,
   // unknown type) routes through __to_num so "2026" | 0 === 2026.
-  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(v.type === 'i32' ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32') },
+  '~':   a => { const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32') },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
   ].map(([op, fn]) => [op, (a, b) => {
@@ -1770,8 +1777,8 @@ export const emitter = {
       if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
       if (op === '>>') return emitNum(la >> lb)
     }
-    const ca = va.type === 'i32' || isLit(va) ? va : toNumF64(a, va)
-    const cb = vb.type === 'i32' || isLit(vb) ? vb : toNumF64(b, vb)
+    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va)
+    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb)
     return typed([`i32.${fn}`, toI32(ca), toI32(cb)], 'i32')
   }])),
   '>>>': (a, b) => {
@@ -1781,8 +1788,8 @@ export const emitter = {
     // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
     // signed for negative-high-bit s values, flipping sign and breaking the
     // canonical "uint32 → f64" idiom used in PRNGs and bit-manipulation code.
-    const ca = va.type === 'i32' || isLit(va) ? va : toNumF64(a, va)
-    const cb = vb.type === 'i32' || isLit(vb) ? vb : toNumF64(b, vb)
+    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va)
+    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb)
     const node = typed(['i32.shr_u', toI32(ca), toI32(cb)], 'i32')
     node.unsigned = true
     return node
