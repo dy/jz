@@ -169,6 +169,13 @@ export function emitTypeofCmp(a, b, cmpOp) {
 const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
 
+// Map/Set methods whose generic (`.${method}`) emitter assumes a collection
+// receiver and dereferences a key/value argument. Every one needs ≥1 argument
+// (`.get(k)` / `.has(v)` / `.add(v)` / `.delete(v)` / `.set(k[,v])`), so a
+// zero-arg call on a not-proven-collection receiver cannot be the collection
+// op — it is a user/closure method and must not reach the collection emitter.
+const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
+
 // Pointer kinds for which JS `==` / `!=` is pure reference equality — i.e. i64 bit
 // compare of the NaN-box is equivalent to __eq. Excludes STRING (content compare for
 // heap strings) and BIGINT (content compare).
@@ -2325,8 +2332,16 @@ export const emitter = {
         }
       }
 
-      // Generic only
-      if (ctx.core.emit[genKey]) {
+      // Generic only — but a collection emitter (`.get`/`.set`/`.has`/`.add`/
+      // `.delete`) assumes a Map/Set receiver: a proven collection already
+      // dispatched via `.${vt}:${method}` above, so reaching here means the
+      // receiver is not a proven collection. A zero-arg call then cannot be the
+      // collection op (each needs ≥1 key/value arg) — it is a user/closure
+      // method (e.g. `new C().get()`). Skip the collection emitter so it falls
+      // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
+      const collectionMisfit = COLLECTION_METHODS.has(method) &&
+        !parsed.hasSpread && parsed.normal.length === 0
+      if (ctx.core.emit[genKey] && !collectionMisfit) {
         return callMethod(obj, ctx.core.emit[genKey])
       }
 
