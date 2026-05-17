@@ -448,7 +448,7 @@ export default (ctx) => {
   // (read on the AST `.prop` node), not via tagging this IR node.
   function emitSchemaSlotRead(baseExpr, idx) {
     const base = baseExpr?.type === 'f64' ? baseExpr : typed(baseExpr, 'f64')
-    return typed(['f64.load', ['i32.add', ptrOffsetIR(base, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
+    return typed(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'f64')
   }
 
   function emitHashGetLocalConst(base, key, prop) {
@@ -621,6 +621,13 @@ export default (ctx) => {
   // === Property dispatch (.length, .prop) ===
 
   ctx.core.emit['.'] = (obj, prop) => {
+    // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js scanFlatObjects).
+    const flatR = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
+    if (flatR) {
+      const fi = flatR.names.indexOf(prop)
+      if (fi >= 0) return typed(['local.get', `$${obj}#${fi}`], 'f64')
+    }
+
     // Boxed object: delegate .length and .prop to inner value or schema
     if (typeof obj === 'string' && ctx.schema.isBoxed(obj)) {
       if (prop === 'length') {

@@ -248,6 +248,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // Re-walk now with reps in place.
   invalidateLocalsCache(body)
   ctx.func.locals = block ? analyzeBody(body).locals : new Map()
+  // SRoA flat-object bindings — `let o = {...}` dissolved into `o#i` field
+  // locals. Consumed by the codegen flat hooks (emitDecl, `.`/`[]` read+write).
+  ctx.func.flatObjects = block ? analyzeBody(body).flatObjects : new Map()
   // Usage-based shape inference (STRING / ARRAY) for params not already typed
   // by paramReps. Descends into nested closures so a param used in a definite
   // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
