@@ -67,7 +67,7 @@ export default (ctx) => {
     // R: Static data segment for objects of pure-literal property values (own-memory only).
     // Even with shadow needed, we can skip alloc + N stores; just feed literal values to __dyn_set.
     const shadow = needsDynShadow(target)
-    if (values.length >= 2 && !ctx.memory.shared) {
+    if (values.length >= 2 && values.length === schema.length && !ctx.memory.shared) {
       const emitted = values.map(emit)
       // asF64 folds i32.const → f64.const so int-literal values also qualify.
       const slots = emitted.map(v => extractF64Bits(asF64(v)))
