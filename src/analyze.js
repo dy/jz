@@ -2303,6 +2303,22 @@ export function analyzeStructInline(funcFacts, programFacts) {
     }
     if (!arrName.size) continue
 
+    // A structInline `Array<S>` value is only ever born from an empty `[]`
+    // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`
+    // iff it is: a tracked `Array<sid>` alias, an empty `[]` literal, or a call
+    // to a user function (whose returned array is structInline whenever sid
+    // survives this whole-program pass). Every other source — a non-empty
+    // `[{S},…]` literal, a builtin call (`JSON.parse`, `Object.values`, `.map`,
+    // `.slice`, a member access onto a parsed object) — yields a taggedLinear
+    // array and must poison sid.
+    const safeArrSource = (expr, sid) => {
+      if (typeof expr === 'string') return arrName.get(expr) === sid
+      if (!Array.isArray(expr)) return false
+      const elems = staticArrayElems(expr)
+      if (elems) return elems.length === 0
+      return expr[0] === '()' && typeof expr[1] === 'string' && !!ctx.func.map?.has(expr[1])
+    }
+
     // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
     const cursor = new Map()        // name → sid
     const declSeen = new Set()
@@ -2388,10 +2404,13 @@ export function analyzeStructInline(funcFacts, programFacts) {
         return
       }
 
-      // Reassignment of the array binding — localReps already proved every rhs
-      // an `Array<S>` producer; verify the rhs, don't flag the name.
+      // Reassignment of the array binding — the rhs must be a structInline
+      // `Array<S>` producer; an alias is left un-walked (flagging it would
+      // self-poison), other producers are walked to verify their subtree.
       if (op === '=' && typeof node[1] === 'string' && arrName.has(node[1])) {
-        visitChild(node[2])
+        const sid = arrName.get(node[1])
+        if (!safeArrSource(node[2], sid)) black.add(sid)
+        else if (typeof node[2] !== 'string') visitChild(node[2])
         return
       }
 
@@ -2445,6 +2464,10 @@ export function analyzeStructInline(funcFacts, programFacts) {
           else flag(e)
           return
         }
+        // A function typed `Array<S>` must return a structInline producer —
+        // a non-empty literal / builtin call here yields a taggedLinear array.
+        if (func.arrayElemSchema != null && !safeArrSource(e, func.arrayElemSchema))
+          black.add(func.arrayElemSchema)
         const esid = elemArrSid(e)
         if (esid != null) { black.add(esid); visitChild(e[2]); return }
         if (e != null) visitChild(e)
@@ -2462,10 +2485,9 @@ export function analyzeStructInline(funcFacts, programFacts) {
             continue
           }
           if (typeof name === 'string' && arrName.has(name)) {
-            const elems = staticArrayElems(rhs)
-            if (elems && elems.length) black.add(arrName.get(name))    // non-empty literal — unhandled
-            else if (!(typeof rhs === 'string' && arrName.has(rhs)))   // alias — leave
-              visitChild(rhs)
+            const sid = arrName.get(name)
+            if (!safeArrSource(rhs, sid)) black.add(sid)               // non-structInline producer
+            else if (typeof rhs !== 'string') visitChild(rhs)          // [] / user-call — verify subtree
             continue
           }
           if (typeof name !== 'string') visitChild(name)
@@ -2484,6 +2506,17 @@ export function analyzeStructInline(funcFacts, programFacts) {
   if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
 
   for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
+}
+
+/** Schema id when `name` is bound (codegen truth) to a structInline `Array<S>`,
+ *  else null. `ctx.func.localReps` is the per-function rep map the emitter
+ *  consults for element-schema facts; `ctx.schema.inlineArray` is the
+ *  whole-program eligibility set filled by `analyzeStructInline`. Read together
+ *  so the emitter never inline-carries a binding the analysis rejected. */
+export function inlineArraySid(name) {
+  if (typeof name !== 'string') return null
+  const sid = ctx.func.localReps?.get(name)?.arrayElemSchema
+  return sid != null && ctx.schema.inlineArray?.has(sid) ? sid : null
 }
 
 /**
