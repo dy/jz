@@ -75,6 +75,9 @@ function hoistVars(node, names) {
     names.add(node[1][1])
     return ['=', node[1][1], hoistVars(node[2], names)]
   }
+  if (op === '=' && isDestructurePat(node[1])) {
+    return ['=', hoistPattern(node[1], names), hoistVars(node[2], names)]
+  }
   // For-head `;` is positional (init; cond; update), not a statement sequence.
   // Recurse into each slot but never filter nulls — empty slots are valid.
   if (op === 'for') {
@@ -109,6 +112,18 @@ function hoistVars(node, names) {
     if (decls.length === 1) return decls[0]
     return [',', ...decls]
   }
+  if (op === 'let' || op === 'const') {
+    const decls = [op]
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (Array.isArray(d) && d[0] === '=' && isDestructurePat(d[1])) {
+        decls.push(['=', hoistPattern(d[1], names), hoistVars(d[2], names)])
+      } else {
+        decls.push(hoistVars(d, names))
+      }
+    }
+    return decls
+  }
   // Filter null returns from `;` sequences (bare-var no-ops). `{}` is left
   // to recurse normally — it may be either a block or an object literal,
   // and we don't want to clobber `['{}', null]` (empty object literal).
@@ -138,6 +153,26 @@ function hoistVars(node, names) {
   out[0] = op
   for (let i = 1; i < node.length; i++) out[i] = hoistVars(node[i], names)
   return out
+}
+
+function hoistPattern(node, names) {
+  if (node == null || !Array.isArray(node)) return node
+  const op = node[0]
+  if (op === '=') return ['=', hoistPattern(node[1], names), hoistVars(node[2], names)]
+  if (op === ':') return [':', hoistVars(node[1], names), hoistPattern(node[2], names)]
+  if (op === '...') return ['...', hoistPattern(node[1], names)]
+  if (op === '[]' || op === '{}' || op === ',') return [op, ...node.slice(1).map(n => hoistPattern(n, names))]
+  return hoistVars(node, names)
+}
+
+function transformPattern(node) {
+  if (node == null || !Array.isArray(node)) return node
+  const op = node[0]
+  if (op === '=') return ['=', transformPattern(node[1]), transform(node[2])]
+  if (op === ':') return [':', transform(node[1]), transformPattern(node[2])]
+  if (op === '...') return ['...', transformPattern(node[1])]
+  if (op === '[]' || op === '{}' || op === ',') return [op, ...node.slice(1).map(transformPattern)]
+  return transform(node)
 }
 
 function prependDecls(body, names) {
@@ -599,6 +634,7 @@ const handlers = {
       for (let i = targets.length - 1; i >= 0; i--) stmts.push(['=', transform(targets[i]), val])
       return stmts.length === 1 ? stmts[0] : [';', ...stmts]
     }
+    if (isDestructurePat(lhs)) return ['=', transformPattern(lhs), transform(rhs)]
   },
 
   'switch'(disc, ...cases) {
