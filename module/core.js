@@ -12,7 +12,7 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, temp, usesDynProps, ptrOffsetIR, isNullish, valKindToPtr } from '../src/ir.js'
 import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf } from '../src/analyze.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, T, repOf, updateRep, shapeOf, inlineArraySid } from '../src/analyze.js'
 import { ctx, err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral } from './collection.js'
@@ -535,6 +535,15 @@ export default (ctx) => {
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
     if (slot >= 0) return emitSchemaSlotRead(asF64(va), slot)
+    // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
+    // structInline element cell, a narrowed local): resolve the field's fixed
+    // slot directly from `ptrAux` — more precise than the structural
+    // `ctx.schema.find(null, …)` and never falls to the dyn dispatcher.
+    if (va?.ptrKind === VAL.OBJECT && va.ptrAux != null && typeof prop === 'string') {
+      const sch = ctx.schema.list[va.ptrAux]
+      const si = sch ? sch.indexOf(prop) : -1
+      if (si >= 0) return emitSchemaSlotRead(asF64(va), si)
+    }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : ctx.schema.find(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
     // OBJECT shape via JSON-shape propagation, the parent shape's `names`
@@ -664,6 +673,14 @@ export default (ctx) => {
       // semantics. Skips the call + NaN-unbox round-trip entirely.
       if (Array.isArray(obj) && (obj[0] === 'str' || obj[0] == null) && typeof obj[1] === 'string') {
         return typed(['f64.const', Buffer.byteLength(obj[1], 'utf8')], 'f64')
+      }
+      // structInline Array<S>: the header `len` counts physical f64 cells (K
+      // per element), so the JS array length is `physicalLen / K`.
+      const inlSid = inlineArraySid(obj)
+      if (inlSid != null) {
+        const K = ctx.schema.list[inlSid].length
+        const physLen = ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY), ['i32.const', 8]]]
+        return typed(['f64.convert_i32_s', K > 1 ? ['i32.div_s', physLen, ['i32.const', K]] : physLen], 'f64')
       }
       const rep = typeof obj === 'string' ? repOf(obj) : null
       const vt = rep ? rep.val : valTypeOf(obj)

@@ -10,7 +10,8 @@
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
 import { emit, materializeMulti } from '../src/emit.js'
-import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey } from '../src/analyze.js'
+import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/analyze.js'
+import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
@@ -43,6 +44,25 @@ function hoistArrayValue(arr) {
 }
 
 const arrayLenFromPtr = ptr => ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]
+
+/** K schema-ordered field-value AST nodes of an object literal `{S}` for a
+ *  structInline `.push({S})`, or null if `lit` is not a plain static-key `{}`
+ *  literal carrying exactly schema `sid`'s fields. Mapped by name into schema
+ *  order so push sites with differing key order flatten to the same cell run. */
+function structLiteralFields(lit, sid) {
+  if (!Array.isArray(lit) || lit[0] !== '{}') return null
+  const parsed = staticObjectProps(lit.slice(1))
+  const schema = ctx.schema.list[sid]
+  if (!parsed || parsed.names.length !== schema.length) return null
+  const byName = new Map()
+  for (let i = 0; i < parsed.names.length; i++) byName.set(parsed.names[i], parsed.values[i])
+  const out = []
+  for (const name of schema) {
+    if (!byName.has(name)) return null
+    out.push(byName.get(name))
+  }
+  return out
+}
 
 // Pure-expression check: no statements, binders, control flow, or assignments.
 // Inlining is only safe for these — anything else needs the full closure machinery.
@@ -759,6 +779,24 @@ export default (ctx) => {
     if (keyType === VAL.STRING)
       return typed(dynLoad(ptrExpr, asF64(emit(idx))), 'f64')
     if (vt === 'array') {
+      // structInline Array<S>: element i is K consecutive inline f64 schema
+      // cells — no per-row heap object, no stored element pointer. `arr[i]` is
+      // the byte address of the element's first cell, returned as a first-class
+      // unboxed OBJECT pointer (schema S); `arr[i].field` then composes a plain
+      // `+field*8` off it. The narrower proved every use of this binding is one
+      // structInline handles (src/analyze.js analyzeStructInline).
+      const inlSid = inlineArraySid(arr)
+      if (inlSid != null) {
+        inc('__ptr_offset')
+        const baseI32 = tempI32('ab')
+        const K = ctx.schema.list[inlSid].length
+        const cell = typed(structInline(K).ops.elemAddr(
+          ['local.tee', `$${baseI32}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]]],
+          vi), 'i32')
+        cell.ptrKind = VAL.OBJECT
+        cell.ptrAux = inlSid
+        return cell
+      }
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),
       // not __typed_idx (which does __len + __ptr_offset = two forwarding follows
       // plus type-dispatch overhead irrelevant for plain arrays).
@@ -854,6 +892,23 @@ export default (ctx) => {
 
   // .push(val) → append, increment len, return array (possibly reallocated pointer)
   ctx.core.emit['.push'] = (arr, ...vals) => {
+    // structInline Array<S>: `.push({S})` writes the K schema fields as K
+    // consecutive f64 cells. Flatten the struct literal into K schema-ordered
+    // field-value nodes and fall through to the general multi-value store path
+    // — `len`/`cap` count physical cells, so `__arr_grow_known` and the cell
+    // loop are reused untouched; `.push` then returns the logical element count
+    // (`len / K`). K=1 stays a single value → the `__arr_push1` fast path.
+    const inlSid = inlineArraySid(arr)
+    const inlK = inlSid != null ? ctx.schema.list[inlSid].length : 0
+    if (inlSid != null) {
+      const flat = []
+      for (const v of vals) {
+        const fields = structLiteralFields(v, inlSid)
+        if (!fields) err(`structInline Array.push expects { ${ctx.schema.list[inlSid].join(', ')} } literal arguments`)
+        flat.push(...fields)
+      }
+      vals = flat
+    }
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
@@ -937,7 +992,11 @@ export default (ctx) => {
       else
         body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
     }
-    body.push(['f64.convert_i32_s', ['local.get', `$${len}`]])
+    // structInline: `len` counts physical cells — `.push` returns the JS array
+    // length, i.e. the logical element count `len / K`.
+    body.push(['f64.convert_i32_s', inlK > 1
+      ? ['i32.div_s', ['local.get', `$${len}`], ['i32.const', inlK]]
+      : ['local.get', `$${len}`]])
 
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
