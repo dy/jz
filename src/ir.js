@@ -701,22 +701,21 @@ export const isUndef = (f64expr) => {
   return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]], 'i32')
 }
 
-// === Array layout helpers ===
+// === Array layout helpers — routed through the array carrier (abi/array.js) ===
 
-/** Slot address: `base + idx*8` IR. Uses `local.get` directly when idx=0. */
+/** Slot address: element `idx` off `baseLocal`. Constant idx folds the `*8`. */
 export function slotAddr(baseLocal, idx) {
-  const base = ['local.get', `$${baseLocal}`]
-  return idx === 0 ? base : ['i32.add', base, ['i32.const', idx * 8]]
+  return ctx.abi.array.ops.addr(['local.get', `$${baseLocal}`], idx)
 }
 
 /** Load f64 element from array data at ptr + i*8. ptr/i are local name strings. */
 export function elemLoad(ptr, i) {
-  return ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
+  return ctx.abi.array.ops.load(['local.get', `$${ptr}`], ['local.get', `$${i}`])
 }
 
 /** Store f64 val at array data ptr + i*8. ptr/i are local name strings. */
 export function elemStore(ptr, i, val) {
-  return ['f64.store', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]], val]
+  return ctx.abi.array.ops.store(['local.get', `$${ptr}`], ['local.get', `$${i}`], val)
 }
 
 /** Emit a loop iterating over array elements. Returns IR instruction list.
