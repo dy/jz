@@ -147,6 +147,19 @@ export default (ctx) => {
   ctx.core.stdlib['__ptr_type'] = `(func $__ptr_type (param $ptr i64) (result i32)
     (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))`
 
+  // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
+  // ATOM (null/undefined/boolean/symbol) nor STRING. A genuine f64 Number is
+  // never NaN-boxed, so `f64.eq(x,x)` holding proves it a primitive. Drives the
+  // ES `OrdinaryToPrimitive` method-fallback chain (src/ir.js toPrimitiveChain).
+  ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
+    (local $t i32)
+    (if (f64.eq (f64.reinterpret_i64 (local.get $p)) (f64.reinterpret_i64 (local.get $p)))
+      (then (return (i32.const 0))))
+    (local.set $t (call $__ptr_type (local.get $p)))
+    (i32.and
+      (i32.ne (local.get $t) (i32.const ${PTR.ATOM}))
+      (i32.ne (local.get $t) (i32.const ${PTR.STRING}))))`
+
   // === Bump allocator ===
 
   // Heap-base watermark: gates header-backed propsPtr fast paths so static-data

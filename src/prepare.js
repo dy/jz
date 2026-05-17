@@ -1044,6 +1044,14 @@ const handlers = {
       }
     }
     let preparedBody = prep(body)
+    // An expression-bodied arrow returning an empty object literal — `() => ({})`
+    // — preps to a bare `['{}']`, structurally identical to an empty block body.
+    // The grouping `()` that marked it an expression is unwrapped by then, so
+    // wrap it in an explicit `return` — otherwise downstream block/expression
+    // classification (compile.js `isBlockBody`) misreads it as an empty block.
+    if (!(Array.isArray(body) && body[0] === '{}')
+        && Array.isArray(preparedBody) && preparedBody[0] === '{}' && preparedBody.length === 1)
+      preparedBody = ['{}', [';', ['return', ['{}']]]]
     if (bodyPrefix.length) {
       const prefix = bodyPrefix.filter(x => x != null)
       if (Array.isArray(preparedBody) && preparedBody[0] === '{}' && Array.isArray(preparedBody[1]) && preparedBody[1][0] === ';')
