@@ -73,6 +73,10 @@ test('hygiene: __arr0 does not collide with array temp', () => {
   is(run('export let f = () => { let __arr0 = 5; return [1][0] + __arr0 }').f(), 6)
 })
 
+test('hygiene: closure default array literal declares allocation temp', () => {
+  is(run('export let f = () => { let len = (value = []) => value.length; return len() }').f(), 0)
+})
+
 // ============================================================================
 // Block scoping — let/const are block-scoped
 // ============================================================================
