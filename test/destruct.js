@@ -154,6 +154,16 @@ test('destruct assign: ({x: a = v} = obj) alias default', () => {
   is(f(), 6)
 })
 
+test('destruct: jzify preserves object default pattern before spread use', () => {
+  const { f } = jz(`export let f = () => {
+    const source = { items: [3, 1, 2] }
+    const { items = [] } = source
+    const sorted = [...items].sort((a, b) => a - b)
+    return sorted.length * 10 + sorted[0]
+  }`, { jzify: true }).exports
+  is(f(), 31)
+})
+
 test('destruct assign: scalar array literal swap does not allocate array', () => {
   const wat = compile(`export let f = () => {
     let a = 1, b = 2
