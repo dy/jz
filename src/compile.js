@@ -663,6 +663,21 @@ function emitClosureBody(cb) {
   }
 
   // Insert locals (captures + params + declared)
+  // Build default-param initializer IR before local declarations are emitted:
+  // default expressions can allocate temporaries (for example `param = []`).
+  const defaultParamInits = []
+  if (cb.defaults) {
+    for (const [pname, defVal] of Object.entries(cb.defaults)) {
+      if (boxedParamNames.has(pname)) {
+        defaultParamInits.push(['if', isUndef(['f64.load', boxedAddr(pname)]),
+          ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
+      } else {
+        defaultParamInits.push(['if', isUndef(['local.get', `$${pname}`]),
+          ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
+      }
+    }
+  }
+
   for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
 
   // Load captures from env: boxed → i32.load (raw cell pointer), immutable → f64.load value.
@@ -735,17 +750,7 @@ function emitClosureBody(cb) {
 
   // Default params for closures (check sentinel after unpack)
   // Only `undefined` triggers default per spec — `null`/`0`/`false` pass through.
-  if (cb.defaults) {
-    for (const [pname, defVal] of Object.entries(cb.defaults)) {
-      if (boxedParamNames.has(pname)) {
-        fn.push(['if', isUndef(['f64.load', boxedAddr(pname)]),
-          ['then', ['f64.store', boxedAddr(pname), asF64(emit(defVal))]]])
-      } else {
-        fn.push(['if', isUndef(['local.get', `$${pname}`]),
-          ['then', ['local.set', `$${pname}`, asF64(emit(defVal))]]])
-      }
-    }
-  }
+  fn.push(...defaultParamInits)
   fn.push(...preboxedLocalInits)
   fn.push(...bodyIR)
   // I: Skip trailing fallback when last statement is return
