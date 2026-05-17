@@ -15,7 +15,7 @@
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
-import { inc, PTR, LAYOUT } from '../src/ctx.js'
+import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
 
 // SSO discriminator bit pre-shifted to its slot in the full i64 ptr (bit 46).
 // Used as `i64.and ptr SSO_BIT_I64` for branch-without-extracting-aux.
@@ -1017,13 +1017,14 @@ export default (ctx) => {
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
 
-  // Factory for simple str→call patterns: [emitKey, stdlibName, argCoercions, i32Result?]
-  const coerce = { f: asF64, i: asI32 }
-  const strMethod = (name, args, i32Result) => (str, ...params) => {
-    inc(name)
-    const call = ['call', `$${name}`, asF64(emit(str)), ...params.map((p, i) => coerce[args[i]](emit(p)))]
-    return typed(i32Result ? ['f64.convert_i32_s', call] : call, 'f64')
-  }
+  // Declarative emitter for regular `(recv, ...args) → call($stdlib, coerced...)` methods.
+  // `coerce` is a per-argument code string ('I' i64 · 'F' f64 · 'i' i32); index 0 is the receiver.
+  // `ret` is the helper's result type — 'f64' is returned directly, 'i32' is widened to the f64 ABI.
+  const CO = { I: asI64, F: asF64, i: asI32 }
+  const method = (stdlib, coerce, ret = 'f64') => emitter([stdlib], (...nodes) => {
+    const c = ['call', `$${stdlib}`, ...nodes.map((n, i) => CO[coerce[i]](emit(n)))]
+    return typed(ret === 'i32' ? ['f64.convert_i32_s', c] : c, 'f64')
+  })
 
   // Search args go through ToString per spec — coerce non-string-typed args
   // via __to_str so the underlying byte-compare receives an actual string.
@@ -1042,20 +1043,13 @@ export default (ctx) => {
   }
   ctx.core.emit['.startsWith'] = stringSearchMethod('__str_startswith')
   ctx.core.emit['.endsWith'] = stringSearchMethod('__str_endswith')
-  ctx.core.emit['.trim'] = (str) => (inc('__str_trim'),
-    typed(['call', '$__str_trim', asI64(emit(str))], 'f64'))
-  ctx.core.emit['.trimStart'] = (str) => (inc('__str_trimStart'),
-    typed(['call', '$__str_trimStart', asI64(emit(str))], 'f64'))
-  ctx.core.emit['.trimEnd'] = (str) => (inc('__str_trimEnd'),
-    typed(['call', '$__str_trimEnd', asI64(emit(str))], 'f64'))
-  ctx.core.emit['.repeat'] = (str, n) => (inc('__str_repeat'),
-    typed(['call', '$__str_repeat', asI64(emit(str)), asI32(emit(n))], 'f64'))
-  ctx.core.emit['.split'] = (str, sep) => (inc('__str_split'),
-    typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep))], 'f64'))
-  ctx.core.emit['.replace'] = (str, search, repl) => (inc('__str_replace'),
-    typed(['call', '$__str_replace', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64'))
-  ctx.core.emit['.replaceAll'] = (str, search, repl) => (inc('__str_replaceall'),
-    typed(['call', '$__str_replaceall', asI64(emit(str)), asI64(emit(search)), asI64(emit(repl))], 'f64'))
+  ctx.core.emit['.trim']       = method('__str_trim',       'I')
+  ctx.core.emit['.trimStart']  = method('__str_trimStart',  'I')
+  ctx.core.emit['.trimEnd']    = method('__str_trimEnd',    'I')
+  ctx.core.emit['.repeat']     = method('__str_repeat',     'Ii')
+  ctx.core.emit['.split']      = method('__str_split',      'II')
+  ctx.core.emit['.replace']    = method('__str_replace',    'III')
+  ctx.core.emit['.replaceAll'] = method('__str_replaceall', 'III')
 
   ctx.core.emit['.toUpperCase'] = (str) => {
     inc('__str_case')
@@ -1079,10 +1073,7 @@ export default (ctx) => {
   // the spec exactly; for non-ASCII it follows UTF-8 byte order, which is
   // codepoint order for well-formed strings — close enough for sort-stability
   // use cases, wrong for human-language collation.
-  ctx.core.emit['.localeCompare'] = (str, other) => {
-    inc('__str_cmp')
-    return typed(['f64.convert_i32_s', ['call', '$__str_cmp', asI64(emit(str)), asI64(emit(other))]], 'f64')
-  }
+  ctx.core.emit['.localeCompare'] = method('__str_cmp', 'II', 'i32')
 
   ctx.core.emit['.string:concat'] = (str, ...others) => {
     inc('__str_concat')
