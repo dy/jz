@@ -225,7 +225,7 @@ function normalizeForDecl(kind, name, names) {
 
 /** Convert a named function declaration to a hoisted const arrow */
 function hoistFnDecl(name, params, body) {
-  const [p2, b2] = lowerArguments(params, body)
+  const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
   const decl = ['const', ['=', name, ['=>', p2, wrapArrowBody(b2)]]]
   decl._hoisted = true
   return decl
@@ -338,6 +338,12 @@ function wrapArrowBody(body) {
   if (t[0] !== '{}') return ['{}', [';', t]]
   if (t.length === 2 && !(Array.isArray(t[1]) && t[1][0] === ';')) return ['{}', [';', t[1]]]
   return t
+}
+
+function functionBodyBlock(body) {
+  if (Array.isArray(body) && body[0] === '{}') return body
+  if (Array.isArray(body) && body[0] === ';') return ['{}', body]
+  return ['{}', [';', body]]
 }
 
 /** Prototype identity check: X.prototype.Y */
@@ -586,7 +592,7 @@ const handlers = {
   '()'(callee, ...rest) {
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
-      const [p2, b2] = lowerArguments(params, body)
+      const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
       return [';', ['let', ['=', name, ['=>', arrowParams(p2), wrapArrowBody(b2)]]], ['()', name, ...rest.map(transform)]]
     }
   },
@@ -595,7 +601,7 @@ const handlers = {
   // bound inside body per ES spec: `function f(){...f...}` → `(()=>{let f;f=arrow;return f})()`.
   // Statement-form named functions are hoisted by transformScope before reaching here.
   'function'(name, params, body) {
-    const [p2, b2] = lowerArguments(params, body)
+    const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
     const arrow = ['=>', p2, wrapArrowBody(b2)]
     if (name) {
       return ['()', ['()', ['=>', null, ['{}', [';',
