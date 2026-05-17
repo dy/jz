@@ -351,6 +351,48 @@ export const f64rem = (a, b) => {
     ['f64.sub', ga, ['f64.mul', ['f64.trunc', ['f64.div', ga, gb]], gb]]], 'f64')
 }
 
+/** Resolve the slot index of a ToPrimitive method (`valueOf`/`toString`) on an
+ *  OBJECT operand — from a schema-bound variable or an inline object literal.
+ *  Returns -1 when the method is absent. */
+function primMethodIdx(node, name) {
+  if (typeof node === 'string') return ctx.schema.find(node, name)
+  const sid = objLiteralSchemaId(node)
+  const props = sid != null ? ctx.schema.list[sid] : null
+  return props ? props.indexOf(name) : -1
+}
+
+/** Emit the ES `OrdinaryToPrimitive` method-fallback chain for an OBJECT operand,
+ *  returning an i64 IR node holding the resulting primitive — or null when the
+ *  object exposes none of the hinted methods. `order` is the method-try order
+ *  (number hint → [valueOf,toString]; string hint → [toString,valueOf]). Each
+ *  present method is called in turn: a primitive result short-circuits out, a
+ *  non-primitive (object) result falls through to the next method, and if every
+ *  method yields a non-primitive a TypeError is thrown — the spec algorithm. */
+function toPrimitiveChain(node, v, order) {
+  const present = order.map(name => primMethodIdx(node, name)).filter(i => i >= 0)
+  if (!present.length) return null
+  ctx.runtime.throws = true
+  inc('__is_object')
+  const blk = `$tp${ctx.func.uniq++}`
+  const prim = tempI64('prim')
+  const optr = tempI32('op')
+  // Resolve the object's data pointer once — `v` may carry side effects and is
+  // referenced once per method slot below.
+  const body = [['result', 'i64'],
+    ['local.set', `$${optr}`, ptrOffsetIR(v, VAL.OBJECT)]]
+  for (const idx of present) {
+    const method = typed(['f64.load',
+      ['i32.add', ['local.get', `$${optr}`], ['i32.const', idx * 8]]], 'f64')
+    body.push(
+      ['local.set', `$${prim}`, asI64(ctx.closure.call(method, []))],
+      ['br_if', blk, ['local.get', `$${prim}`],
+        ['i32.eqz', ['call', '$__is_object', ['local.get', `$${prim}`]]]])
+  }
+  // Every method returned a non-primitive — `Cannot convert object to primitive`.
+  body.push(['throw', '$__jz_err', ['f64.const', 0]])
+  return typed(['block', blk, ...body], 'i64')
+}
+
 /** Coerce an emitted IR value to a plain f64 Number per JS `ToNumber`.
  *  Skips coercion when static type proves the value is already numeric
  *  (i32 node, compile-time literal, known VAL.NUMBER/VAL.BIGINT). When the full
@@ -370,34 +412,20 @@ export function toNumF64(node, v) {
       : ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(v)]]
     return typed(['f64.load', ptr], 'f64')
   }
-  // ToPrimitive (number hint): an OBJECT operand coerces through its own
-  // `valueOf`, falling back to `toString` — ES `OrdinaryToPrimitive` method
-  // order [valueOf, toString]. The first present method's result is taken as
-  // the primitive (we don't retry toString when valueOf yields a non-primitive
-  // — that degenerate case appears in no targeted builtins test). The result
-  // still flows through `__to_num` so a string return ("−7") is parsed. An
-  // abrupt completion (throwing method) propagates through the closure call.
+  // ToPrimitive (number hint): an OBJECT operand coerces through the
+  // `OrdinaryToPrimitive` method chain [valueOf, toString] — `valueOf` is tried
+  // first, and when it yields a non-primitive `toString` is tried; if both
+  // yield non-primitives a TypeError is thrown. The chosen primitive still
+  // flows through `__to_num` so a string return ("−7") is parsed. An abrupt
+  // completion (throwing method) propagates through the closure call.
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
-    // Resolve the method slot from either a schema-bound variable or an inline
-    // object literal (schemaId baked into its registered props list).
-    let idx = -1
-    if (typeof node === 'string') {
-      const vSlot = ctx.schema.find(node, 'valueOf')
-      idx = vSlot >= 0 ? vSlot : ctx.schema.find(node, 'toString')
-    } else {
-      const sid = objLiteralSchemaId(node)
-      const props = sid != null ? ctx.schema.list[sid] : null
-      if (props) idx = props.indexOf('valueOf') >= 0 ? props.indexOf('valueOf') : props.indexOf('toString')
-    }
-    if (idx >= 0) {
-      const method = typed(['f64.load',
-        ['i32.add', ptrOffsetIR(v, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
-      const prim = ctx.closure.call(method, [])
+    const prim = toPrimitiveChain(node, v, ['valueOf', 'toString'])
+    if (prim) {
       // No `__to_num` helper → the program provably has no strings, so the
-      // method result is a non-string primitive already usable as an f64.
+      // primitive is a non-string value already usable as an f64.
       if (!ctx.core.stdlib['__to_num']) return asF64(prim)
       inc('__to_num')
-      return typed(['call', '$__to_num', asI64(prim)], 'f64')
+      return typed(['call', '$__to_num', prim], 'f64')
     }
   }
   // intCertain locals: every reachable def is integer-valued, so the binding
@@ -436,29 +464,18 @@ export function toNumF64(node, v) {
 
 /** Coerce an emitted IR value to a jz string per JS `ToString`, returning an
  *  i64 string value. The mirror of `toNumF64` for the string hint: an OBJECT
- *  operand coerces through `OrdinaryToPrimitive(string)` — method order
- *  [toString, valueOf] — by resolving the method slot from a schema-bound
- *  variable or inline object literal and emitting a closure call. The result
- *  still flows through `__to_str` so a numeric return is rendered. A throwing
- *  method propagates as an abrupt completion through the closure call. */
+ *  operand coerces through `OrdinaryToPrimitive(string)` — method chain
+ *  [toString, valueOf], `toString` first with fallback to `valueOf`, TypeError
+ *  if both yield non-primitives. The chosen primitive still flows through
+ *  `__to_str` so a numeric return is rendered. A throwing method propagates as
+ *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = keyValType(node)
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.find) {
-    let idx = -1
-    if (typeof node === 'string') {
-      const tSlot = ctx.schema.find(node, 'toString')
-      idx = tSlot >= 0 ? tSlot : ctx.schema.find(node, 'valueOf')
-    } else {
-      const sid = objLiteralSchemaId(node)
-      const props = sid != null ? ctx.schema.list[sid] : null
-      if (props) idx = props.indexOf('toString') >= 0 ? props.indexOf('toString') : props.indexOf('valueOf')
-    }
-    if (idx >= 0) {
-      const method = typed(['f64.load',
-        ['i32.add', ptrOffsetIR(v, VAL.OBJECT), ['i32.const', idx * 8]]], 'f64')
-      const prim = ctx.closure.call(method, [])
+    const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
+    if (prim) {
       inc('__to_str')
-      return typed(['call', '$__to_str', asI64(prim)], 'i64')
+      return typed(['call', '$__to_str', prim], 'i64')
     }
   }
   inc('__to_str')
