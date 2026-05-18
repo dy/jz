@@ -832,6 +832,26 @@ test('for: nested', () => {
   is(f(3, 3), 9)  // (0*0+0*1+0*2) + (1*0+1*1+1*2) + (2*0+2*1+2*2) = 0+3+6
 })
 
+test('for: omitted init and step with condition', () => {
+  const { f } = run(`export let f = () => {
+    let i = 0
+    for (; i < 4; ) i++
+    return i
+  }`, { jzify: true })
+  is(f(), 4)
+})
+
+test('for: omitted init condition and step', () => {
+  const { f } = run(`export let f = () => {
+    let i = 0
+    for (;;) {
+      i++
+      if (i == 4) return i
+    }
+  }`, { jzify: true })
+  is(f(), 4)
+})
+
 // === Do-while loop (jzify lowers to for + once-flag) ===
 
 test('do-while: basic', () => {

@@ -1735,7 +1735,11 @@ const handlers = {
         r = ['for-in', varName, prep(src), prep(body)]
       }
     } else {
-      r = ['for', prep(head), prep(body)]
+      // Some parser/jzify shapes for `for (;;)` and `for (; cond; )` arrive
+      // as a null or bare-condition head instead of the canonical
+      // `[';', init, cond, step]` tuple. Normalize them before emit so they
+      // remain ordinary for-loops, not malformed two-slot nodes.
+      r = ['for', null, head == null ? null : prep(head), null, prep(body)]
     }
     popScope()
     return r
