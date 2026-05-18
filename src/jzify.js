@@ -750,9 +750,20 @@ function lowerClass(name, heritage, body) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
+function lowerArrayConstructorArgs(args) {
+  const flat = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  if (flat.length === 1 && flat[0] != null) return null
+  if (flat.length === 0 || (flat.length === 1 && flat[0] == null)) return ['[]', null]
+  return ['[]', flat.length === 1 ? transform(flat[0]) : [',', ...flat.map(transform)]]
+}
+
 const handlers = {
   // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
   '()'(callee, ...rest) {
+    if (callee === 'Array') {
+      const lowered = lowerArrayConstructorArgs(rest)
+      if (lowered) return lowered
+    }
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
       const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
@@ -854,8 +865,15 @@ const handlers = {
 
   // new → call (keep TypedArrays)
   'new'(ctor, ...cargs) {
+    if (Array.isArray(ctor) && ctor[0] === '.' && Array.isArray(ctor[1]) && ctor[1][0] === '()') {
+      return ['.', transform(['new', ctor[1]]), ctor[2]]
+    }
     if (Array.isArray(ctor) && ctor[0] === '()' && Array.isArray(ctor[1]) && ctor[1][0] === '.') {
       return ['()', ['.', transform(['new', ctor[1][1]]), ctor[1][2]], ...ctor.slice(2).map(transform)]
+    }
+    if (Array.isArray(ctor) && ctor[0] === '()' && ctor[1] === 'Array') {
+      const lowered = lowerArrayConstructorArgs(ctor.slice(2))
+      if (lowered) return lowered
     }
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
     if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp')) return ['new', transform(ctor), ...cargs.map(transform)]
