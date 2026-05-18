@@ -28,6 +28,7 @@ export default function jzify(ast) {
   doIdx = 0
   classIdx = 0
   objThisIdx = 0
+  staticClassIdx = 0
   // Hoist module-level vars: any `var x` inside nested blocks bubbles up.
   const names = new Set()
   ast = hoistVars(ast, names)
@@ -545,6 +546,7 @@ const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
 // kept as the literal key string `#name` (jz allows it).
 let classIdx = 0
 let objThisIdx = 0
+let staticClassIdx = 0
 
 const classBodyItems = (body) =>
   body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
@@ -618,7 +620,7 @@ function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
 function lowerClass(name, heritage, body) {
   if (heritage != null) jzifyError('`class … extends …` is not supported yet — flatten the hierarchy or compose explicitly')
   let ctorParams = null, ctorBody = null
-  const methods = [], fields = []
+  const methods = [], fields = [], statics = []
   for (const it of classBodyItems(body)) {
     if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
     if (!Array.isArray(it)) continue
@@ -630,9 +632,22 @@ function lowerClass(name, heritage, body) {
     }
     if (it[0] === '=') {
       const lhs = it[1]
-      if (Array.isArray(lhs) && lhs[0] === 'static') jzifyError('`static` class members are not supported yet')
+      if (Array.isArray(lhs) && lhs[0] === 'static') {
+        if (typeof lhs[1] !== 'string') jzifyError('computed static class fields are not supported')
+        statics.push([lhs[1], it[2]])
+        continue
+      }
       if (typeof lhs !== 'string') jzifyError('computed/destructured class fields are not supported')
       fields.push([lhs, it[2]])
+      continue
+    }
+    if (it[0] === 'static' && typeof it[1] === 'string') {
+      statics.push([it[1], null])
+      continue
+    }
+    if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === '=>') {
+      if (typeof it[1][1] !== 'string') jzifyError('computed static class member names are not supported')
+      statics.push([it[1][1], it[1][2], true])
       continue
     }
     if (it[0] === 'get' || it[0] === 'set') jzifyError('class getters/setters are not supported — jz objects have no accessors')
@@ -663,7 +678,19 @@ function lowerClass(name, heritage, body) {
     else if (cb != null) stmts.push(cb)
   }
   stmts.push(['return', self])
-  return ['=>', arrowParams(ctorParams ?? ['()', null]), ['{}', [';', ...stmts]]]
+  const factory = ['=>', arrowParams(ctorParams ?? ['()', null]), ['{}', [';', ...stmts]]]
+  if (statics.length === 0) return factory
+
+  const cls = name || `class${staticClassIdx++}`
+  const staticStmts = [['let', ['=', cls, factory]]]
+  for (const [sname, value, isMethod] of statics) {
+    const rhs = isMethod
+      ? transform(['=>', value[1], block(renameThis(value[2], cls))])
+      : value == null ? UNDEF : transform(renameThis(value, cls))
+    staticStmts.push(['=', ['.', cls, sname], rhs])
+  }
+  staticStmts.push(['return', cls])
+  return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
 const handlers = {
