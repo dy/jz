@@ -334,6 +334,40 @@ test('spread: nested object-literal source schema', () => {
   is(f(), 6)
 })
 
+test('spread: nested var-assigned object-literal source schema with jzify', () => {
+  const { f } = run(`
+    var groups = {
+      left: {
+        required: {a: 1, b: 2},
+        optional: {c: 3}
+      },
+      right: {
+        required: {d: 4},
+        optional: {e: 5}
+      }
+    }
+    var merged = {
+      ...groups.left.required,
+      ...groups.left.optional,
+      ...groups.right.required,
+      ...groups.right.optional
+    }
+    export let f = () => merged.b + merged.d
+  `, { jzify: true })
+  is(f(), 6)
+})
+
+test('spread: var-assigned defaults provide source schema with jzify', () => {
+  const { f } = run(`
+    var defaults = {x: 1, y: 2}
+    export let f = (json) => {
+      var merged = {...defaults, ...JSON.parse(json)}
+      return merged.x * 10 + merged.y
+    }
+  `, { jzify: true })
+  is(f('{"x":4,"y":7}'), 47)
+})
+
 // ============================================
 // OBJECT REST DESTRUCTURING
 // ============================================

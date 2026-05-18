@@ -24,7 +24,7 @@
 
 import { parse } from 'subscript/feature/jessie'
 import { ctx, err, derive } from './ctx.js'
-import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticPropertyKey } from './analyze.js'
+import { T, STMT_OPS, VAL, extractParams, collectParamNames, classifyParam, observeNodeFacts, staticObjectProps, staticPropertyKey } from './analyze.js'
 import { recordGlobalRep } from './infer.js'
 import { isFuncRef } from './ir.js'
 import {
@@ -762,7 +762,16 @@ const handlers = {
       }
       if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
-    return ['=', prep(lhs), prep(rhs)]
+    const plhs = prep(lhs)
+    const prhs = prep(rhs)
+    if (depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs) && !ctx.scope.globalReps?.has(plhs)) {
+      recordGlobalRep(plhs, prhs)
+      if (Array.isArray(prhs) && prhs[0] === '{}') {
+        const props = staticObjectProps(prhs.slice(1))
+        if (props) ctx.schema.vars.set(plhs, ctx.schema.register(props.names))
+      }
+    }
+    return ['=', plhs, prhs]
   },
 
   // try/catch/throw
