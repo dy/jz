@@ -526,6 +526,16 @@ test('autoload: user function named like missing built-in', () => {
   is(exports.f(), 42)
 })
 
+test('autoload: user function wins over internal emitter name', () => {
+  const { exports } = jz(`
+    function str(value) {
+      return typeof value === "string" ? value.length : 0
+    }
+    export let f = () => str("abcd")
+  `, { jzify: true })
+  is(exports.f(), 4)
+})
+
 // JS calling convention drops extras and pads missing with undefined; wasm
 // validates exact arity at every call site. The emitter matches the call's
 // arg count to the declared import signature so a mismatch on either side
