@@ -72,6 +72,15 @@ function hoistVars(node, names) {
     }
     return [op, lhs, hoistVars(node[2], names)]
   }
+  // Labeled statement: subscript joins a labeled compound statement's head and
+  // body with a synthetic '=>' (`label: while (c) body` parses as
+  // [':', label, [':', 'while', ['=>', ['()', c], body]]]). Normalize that to a
+  // real ['while'|'for'|'if', …] node first, so the '=>' branch below does not
+  // mistake the join for an arrow-function scope and hoist the loop body's
+  // `var`s only as far as the loop instead of the enclosing function.
+  if (op === ':' && typeof node[1] === 'string') {
+    return [':', node[1], hoistVars(normalizeLabeledBody(node[2]), names)]
+  }
   if (op === '=' && Array.isArray(node[1]) && node[1][0] === 'var' && typeof node[1][1] === 'string' && node[1].length === 2) {
     names.add(node[1][1])
     return ['=', node[1][1], hoistVars(node[2], names)]
