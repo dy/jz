@@ -1792,7 +1792,17 @@ const unboxConstTypedGlobals = () => {
  * eliminate the `__dyn_*` machinery from a namespace-only program outright.
  */
 const flattenFuncNamespaces = (ast) => {
-  if (!ctx.func.multiProp?.size) return false
+  const names = ctx.func.names
+  if (!names?.size) return false
+  // Cheap structural gate: a flattenable namespace exists only if some lifted
+  // `f$prop` name's `f` is itself a function (prepare lifts every `f.prop =
+  // arrow` — multiProp slots included). No such pair → skip the AST walk.
+  let hasNs = false
+  for (const n of names) {
+    const i = n.indexOf('$')
+    if (i > 0 && names.has(n.slice(0, i))) { hasNs = true; break }
+  }
+  if (!hasNs) return false
   const ns = analyzeFuncNamespaces(ast)
   if (!ns.size) return false
   // f → Map<prop, decision>; decision is { global } (SROA) or { drop } (dead
