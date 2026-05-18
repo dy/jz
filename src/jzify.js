@@ -33,7 +33,7 @@ export default function jzify(ast) {
   const names = new Set()
   ast = hoistVars(ast, names)
   if (names.size) ast = prependDecls(ast, names)
-  return foldStaticExportHelpers(canonicalizeObjectIdioms(transformScope(ast)))
+  return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(transformScope(ast))))
 }
 
 /**
@@ -1003,6 +1003,257 @@ function foldStaticExportHelpers(ast) {
   return rewritten.length === 0 ? null : rewritten.length === 1 ? rewritten[0] : [';', ...rewritten]
 }
 
+// Esbuild's CommonJS/ESM interop helpers alias Object reflection built-ins into
+// locals (`var __create = Object.create`, `var __getOwnPropNames =
+// Object.getOwnPropertyNames`, ...). jz deliberately does not expose those
+// built-ins as first-class function values, but the helpers are static enough to
+// lower back to the supported direct calls and module reads.
+function foldStaticBundlerHelpers(ast) {
+  const body = astSeq(ast)
+  if (!body) return ast
+
+  const aliases = collectBuiltinAliases(body)
+  const copyHelpers = collectCopyPropHelpers(body, aliases)
+  const interopHelpers = collectInteropHelpers(body, aliases, copyHelpers)
+  const interopBindings = collectInteropBindings(body, interopHelpers)
+
+  let rewritten = body.map(stmt => rewriteBundlerAliases(stmt, aliases, interopBindings))
+  if (interopBindings.size) rewritten = rewritten.map(stmt => replaceInteropReads(stmt, interopBindings))
+  rewritten = rewritten.map(stmt => rewriteBundlerAliases(stmt, aliases, interopBindings))
+  rewritten = rewritten.filter(stmt => stmt != null)
+
+  const live = new Set()
+  for (const stmt of rewritten) {
+    const b = bindingOf(stmt)
+    if (b && (aliases.has(b[0]) || copyHelpers.has(b[0]) || interopHelpers.has(b[0]) || interopBindings.has(b[0]))) continue
+    collectRefs(stmt, live)
+  }
+
+  rewritten = rewritten.filter(stmt => {
+    const b = bindingOf(stmt)
+    if (!b) return true
+    if (aliases.has(b[0]) && !live.has(b[0])) return false
+    if (copyHelpers.has(b[0]) && !live.has(b[0])) return false
+    if (interopHelpers.has(b[0]) && !live.has(b[0])) return false
+    if (interopBindings.has(b[0]) && !live.has(b[0])) return false
+    return true
+  })
+
+  return rewritten.length === 0 ? null : rewritten.length === 1 ? rewritten[0] : [';', ...rewritten]
+}
+
+function collectBuiltinAliases(body) {
+  const aliases = new Map()
+  for (const stmt of body) {
+    const b = bindingOf(stmt)
+    if (!b) continue
+    const key = objectBuiltinKey(b[1])
+    if (key) aliases.set(b[0], key)
+  }
+  return aliases
+}
+
+function objectBuiltinKey(node) {
+  if (isObjectCreate(node)) return 'Object.create'
+  if (isObjectGetPrototypeOf(node)) return 'Object.getPrototypeOf'
+  if (isObjectGetOwnPropertyNames(node)) return 'Object.getOwnPropertyNames'
+  if (isObjectGetOwnPropertyDescriptor(node)) return 'Object.getOwnPropertyDescriptor'
+  if (isObjectDefineProperty(node)) return 'Object.defineProperty'
+  if (isObjectHasOwnPropertyRef(node)) return 'Object.prototype.hasOwnProperty'
+  return null
+}
+
+function collectCopyPropHelpers(body, aliases) {
+  const helpers = new Set()
+  for (const stmt of body) {
+    const b = bindingOf(stmt)
+    if (b && Array.isArray(b[1]) && b[1][0] === '=>' &&
+        containsAliasCall(b[1], aliases, 'Object.getOwnPropertyNames') &&
+        containsAliasCall(b[1], aliases, 'Object.defineProperty')) {
+      helpers.add(b[0])
+    }
+  }
+  return helpers
+}
+
+function collectInteropHelpers(body, aliases, copyHelpers) {
+  const helpers = new Set()
+  for (const stmt of body) {
+    const b = bindingOf(stmt)
+    if (b && Array.isArray(b[1]) && b[1][0] === '=>' &&
+        (containsAliasCall(b[1], aliases, 'Object.create') || containsNamedCall(b[1], copyHelpers))) {
+      helpers.add(b[0])
+    }
+  }
+  return helpers
+}
+
+function collectInteropBindings(body, helpers) {
+  const bindings = new Map()
+  if (!helpers.size) return bindings
+  for (const stmt of body) {
+    const b = bindingOf(stmt)
+    if (!b || !Array.isArray(b[1]) || b[1][0] !== '()' || !helpers.has(b[1][1])) continue
+    const args = callArgs(b[1].slice(2))
+    if (args.length >= 1) bindings.set(b[0], args[0])
+  }
+  return bindings
+}
+
+function rewriteBundlerAliases(node, aliases, interopBindings) {
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+
+  if (node[0] === ';') {
+    const out = [';']
+    for (let i = 1; i < node.length; i++) {
+      const child = rewriteBundlerAliases(node[i], aliases, interopBindings)
+      if (child != null) out.push(child)
+    }
+    return out.length === 1 ? null : out.length === 2 ? out[1] : out
+  }
+  if (node[0] === '{}' && node.length === 2) {
+    const wasBlock = node[1] != null && Array.isArray(node[1]) && JZ_BLOCK_OPS.has(node[1][0])
+    const inner = rewriteBundlerAliases(node[1], aliases, interopBindings)
+    if (!wasBlock || inner == null) return ['{}', inner]
+    const stayed = Array.isArray(inner) && JZ_BLOCK_OPS.has(inner[0])
+    return ['{}', stayed ? inner : [';', inner]]
+  }
+
+  if (node[0] === '()') {
+    const args = callArgs(node.slice(2))
+    const callee = node[1]
+
+    if (typeof callee === 'string') {
+      const key = aliases.get(callee)
+      const define = key === 'Object.defineProperty' ? staticDefineProperty(args) : undefined
+      if (define !== undefined) return define
+      if (key === 'Object.getOwnPropertyNames') return ['()', 'Object.getOwnPropertyNames', ...args.map(n => rewriteBundlerAliases(n, aliases, interopBindings))]
+      if (key === 'Object.create') {
+        const proto = args[0]
+        if (isGetPrototypeOfCall(proto, aliases)) return ['{}', null]
+        return ['()', 'Object.create', ...args.map(n => rewriteBundlerAliases(n, aliases, interopBindings))]
+      }
+    }
+
+    if (isObjectDefineProperty(callee)) {
+      const define = staticDefineProperty(args)
+      if (define !== undefined) return define
+    }
+
+    const hasOwn = aliasedHasOwnPropertyCall(callee, aliases)
+    if (hasOwn && args.length >= 2) {
+      return ['()', ['.', rewriteBundlerAliases(args[0], aliases, interopBindings), 'hasOwnProperty'],
+        rewriteBundlerAliases(args[1], aliases, interopBindings)]
+    }
+
+    const seqCall = commaZeroCall(callee, interopBindings)
+    if (seqCall) return ['()', seqCall, ...args.map(n => rewriteBundlerAliases(n, aliases, interopBindings))]
+  }
+
+  if (node[0] === '.' || node[0] === '?.') {
+    return [node[0], rewriteBundlerAliases(node[1], aliases, interopBindings), node[2]]
+  }
+  if (node[0] === ':') return [node[0], node[1], rewriteBundlerAliases(node[2], aliases, interopBindings)]
+  return node.map((part, i) => i === 0 ? part : rewriteBundlerAliases(part, aliases, interopBindings))
+}
+
+function replaceInteropReads(node, bindings) {
+  if (typeof node === 'string' && bindings.has(node)) return cloneAst(bindings.get(node))
+  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
+  if (node[0] === '=' && typeof node[1] === 'string') return ['=', node[1], replaceInteropReads(node[2], bindings)]
+  if (node[0] === 'let' || node[0] === 'const' || node[0] === 'var') {
+    return [node[0], ...node.slice(1).map(decl =>
+      Array.isArray(decl) && decl[0] === '=' ? ['=', decl[1], replaceInteropReads(decl[2], bindings)] : decl)]
+  }
+  if ((node[0] === '.' || node[0] === '?.') && typeof node[1] === 'string' && typeof node[2] === 'string' && bindings.has(node[1])) {
+    const mod = cloneAst(bindings.get(node[1]))
+    return node[2] === 'default' ? mod : [node[0], mod, node[2]]
+  }
+  if (node[0] === ':') return [node[0], node[1], replaceInteropReads(node[2], bindings)]
+  return node.map((part, i) => i === 0 ? part : replaceInteropReads(part, bindings))
+}
+
+function containsAliasCall(node, aliases, key) {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && typeof node[1] === 'string' && aliases.get(node[1]) === key) return true
+  for (let i = 1; i < node.length; i++) if (containsAliasCall(node[i], aliases, key)) return true
+  return false
+}
+
+function containsNamedCall(node, names) {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && typeof node[1] === 'string' && names.has(node[1])) return true
+  for (let i = 1; i < node.length; i++) if (containsNamedCall(node[i], names)) return true
+  return false
+}
+
+function isGetPrototypeOfCall(node, aliases) {
+  if (!Array.isArray(node) || node[0] !== '()') return false
+  const callee = node[1]
+  return (typeof callee === 'string' && aliases.get(callee) === 'Object.getPrototypeOf') || isObjectGetPrototypeOf(callee)
+}
+
+function aliasedHasOwnPropertyCall(callee, aliases) {
+  return Array.isArray(callee) && callee[0] === '.' && callee[2] === 'call' &&
+    typeof callee[1] === 'string' && aliases.get(callee[1]) === 'Object.prototype.hasOwnProperty'
+}
+
+function commaZeroCall(callee, bindings) {
+  if (!Array.isArray(callee) || callee[0] !== '()' || !Array.isArray(callee[1]) || callee[1][0] !== ',') return null
+  const parts = callee[1].slice(1)
+  if (parts.length !== 2 || !isZeroLiteral(parts[0])) return null
+  const fn = replaceInteropReads(parts[1], bindings)
+  return fn === parts[1] ? null : fn
+}
+
+function staticDefineProperty(args) {
+  if (args.length < 3) return undefined
+  const [obj, keyExpr, desc] = args
+  const key = stringLiteral(keyExpr)
+  if (typeof key !== 'string') return undefined
+  const props = objectProps(desc)
+  if (!props) return undefined
+  if (key === '__esModule') return null
+  const value = descriptorProp(props, 'value')
+  if (value !== undefined) return ['=', ['.', obj, key], value]
+  const getter = descriptorProp(props, 'get')
+  const got = getterReturnExpr(getter)
+  if (got !== null) return ['=', ['.', obj, key], got]
+  return undefined
+}
+
+function descriptorProp(props, key) {
+  for (const prop of props) {
+    if (Array.isArray(prop) && prop[0] === ':' && prop[1] === key) return prop[2]
+  }
+  return undefined
+}
+
+function stringLiteral(node) {
+  return Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
+}
+
+function collectRefs(node, out) {
+  if (typeof node === 'string') { out.add(node); return }
+  if (!Array.isArray(node)) return
+  if (node[0] === 'let' || node[0] === 'const' || node[0] === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const decl = node[i]
+      if (Array.isArray(decl) && decl[0] === '=') collectRefs(decl[2], out)
+    }
+    return
+  }
+  if ((node[0] === '.' || node[0] === '?.') && typeof node[2] === 'string') {
+    collectRefs(node[1], out)
+    return
+  }
+  if (node[0] === ':') {
+    collectRefs(node[2], out)
+    return
+  }
+  for (let i = 1; i < node.length; i++) collectRefs(node[i], out)
+}
+
 function astSeq(ast) {
   if (!Array.isArray(ast)) return null
   return ast[0] === ';' ? ast.slice(1).filter(Boolean) : [ast]
@@ -1010,6 +1261,22 @@ function astSeq(ast) {
 
 function isObjectDefineProperty(node) {
   return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'defineProperty'
+}
+
+function isObjectCreate(node) {
+  return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'create'
+}
+
+function isObjectGetPrototypeOf(node) {
+  return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'getPrototypeOf'
+}
+
+function isObjectGetOwnPropertyNames(node) {
+  return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'getOwnPropertyNames'
+}
+
+function isObjectGetOwnPropertyDescriptor(node) {
+  return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'getOwnPropertyDescriptor'
 }
 
 /** Unwrap an esbuild module binding to `[name, init]`. After hoistVars, a binding
@@ -1078,6 +1345,8 @@ function getterReturnExpr(node) {
   if (params.length !== 0) return null
   const body = node[2]
   if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === 'return') return body[1][1]
+  if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';' &&
+      Array.isArray(body[1][1]) && body[1][1][0] === 'return') return body[1][1][1]
   if (Array.isArray(body) && body[0] === 'return') return body[1]
   return body
 }
