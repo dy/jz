@@ -2057,6 +2057,147 @@ export function unboxablePtrs(body, locals, boxed) {
   return result
 }
 
+/**
+ * CSE-safe load bases — `let/const` pointer locals whose `(f64.load offset=K $X)`
+ * reads `cseScalarLoad` (src/optimize.js) may scalar-replace without a store
+ * clobbering them. `cseScalarLoad` is module-wide disabled because it scanned
+ * *every* i32 local; a store through an i32 local legitimately aliasing the load
+ * base returned stale bytes. This pass is the missing soundness gate: a
+ * per-function whitelist, each entry proven non-aliasing — guarantee, not guess.
+ *
+ * `X` qualifies iff ALL hold:
+ *  (a) X is an unboxed pointer — `localReps.get(X).ptrKind` set, `locals[X]==='i32'`.
+ *  (b) X is bound exactly once (no re-decl, no `=`/`++`/`--`/compound reassign).
+ *  (c) Every occurrence of X is the receiver of a `.`/`?.`/`[]` *read* — never a
+ *      write target, never a bare value (alias / arg / return / stored element),
+ *      never captured by a closure. So X's pointer lives only in `$X`; nothing
+ *      else holds it, and no store names it.
+ *  (d) The allocation X's bytes live in is disjoint from every store target.
+ *      jz allocations carry one kind each and distinct kinds never share bytes,
+ *      so X is store-safe when every store's base has a determinable kind ≠ X's
+ *      source kind. Any indeterminable store target disqualifies the whole set
+ *      (a store through unknown memory could alias anything).
+ *
+ * (c)+(d): no store in the function can touch a cell reachable via `$X + K`, so
+ * a load on `$X` is invariant between two control-flow boundaries — exactly
+ * `cseScalarLoad`'s straight-line region model. Method-call mutations (`.push`,
+ * …) need no accounting here: the pass already flushes its table on every call.
+ *
+ * Returns `Set<name>` — names only, no `$` prefix (the caller stamps it).
+ */
+export function cseSafeLoadBases(body, locals, localReps) {
+  if (body === null || typeof body !== 'object') return new Set()
+
+  // Allocation kind a pointer name's bytes live in: ptrKind (unboxed) wins,
+  // else value-kind, else an array-schema'd binding is an ARRAY, else unknown.
+  const kindOf = (name) => {
+    if (typeof name !== 'string') return null
+    const r = localReps?.get(name)
+    return r?.ptrKind || r?.val || (r?.arrayElemSchema != null ? VAL.ARRAY : null) ||
+      ctx.scope.globalValTypes?.get(name) || null
+  }
+  // X's bytes live in: the array/object an element read drew it from
+  // (`X = src[i]` / `X = src.f`), else a fresh `{}`/`new` (X's own kind).
+  const srcKind = (rhs) =>
+    Array.isArray(rhs) && (rhs[0] === '[]' || rhs[0] === '.' || rhs[0] === '?.') &&
+      typeof rhs[1] === 'string' ? kindOf(rhs[1]) : valTypeOf(rhs)
+
+  // Pass 1 — bound-once unboxed-pointer candidates; record each source kind.
+  const cand = new Map()                 // name → source allocation kind
+  const declCount = new Map()
+  const collect = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        if (typeof a === 'string') { declCount.set(a, (declCount.get(a) || 0) + 1); continue }
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+          const name = a[1]
+          declCount.set(name, (declCount.get(name) || 0) + 1)
+          if (localReps?.get(name)?.ptrKind != null && locals.get(name) === 'i32')
+            cand.set(name, srcKind(a[2]))
+          collect(a[2])
+        } else collect(a)
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  collect(body)
+  for (const [n, c] of declCount) if (c > 1) cand.delete(n)
+  if (!cand.size) return new Set()
+
+  // Pass 2 — every occurrence must be a `.`/`?.`/`[]` read receiver (c).
+  const live = new Set(cand.keys())
+  const walk = (node, inClosure) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'str') return
+    const closured = inClosure || op === '=>'
+    if (op === 'let' || op === 'const') {        // decl `=` — bound name is not a use
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        if (typeof a === 'string') continue
+        if (Array.isArray(a) && a[0] === '=') {
+          if (typeof a[1] !== 'string') walk(a[1], closured)
+          walk(a[2], closured)
+        } else walk(a, closured)
+      }
+      return
+    }
+    if (op === '.' || op === '?.' || op === '[]') {   // member READ — receiver is safe
+      const o = node[1]
+      if (typeof o === 'string') { if (inClosure && cand.has(o)) live.delete(o) }
+      else walk(o, closured)
+      if (op === '[]' && node[2] != null) walk(node[2], closured)
+      return
+    }
+    if (ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete') {
+      const t = node[1]                            // write target — X here disqualifies
+      if (typeof t === 'string') { if (cand.has(t)) live.delete(t) }
+      else if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') &&
+               typeof t[1] === 'string' && cand.has(t[1])) live.delete(t[1])
+      else walk(t, closured)
+      for (let i = 2; i < node.length; i++) walk(node[i], closured)
+      return
+    }
+    for (let i = 1; i < node.length; i++) {        // any other position — bare X escapes
+      const c = node[i]
+      if (typeof c === 'string') { if (cand.has(c)) live.delete(c) }
+      else walk(c, closured)
+    }
+  }
+  walk(body, false)
+  if (!live.size) return live
+
+  // Pass 3 — store-target disjointness (d). A store lands in `base`'s allocation.
+  let unknownStore = false
+  const storeKinds = new Set()
+  const scanStores = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && Array.isArray(node[1]) &&
+        (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') &&
+        typeof node[1][1] === 'string') {
+      const k = kindOf(node[1][1])
+      if (k == null) unknownStore = true
+      else storeKinds.add(k)
+    }
+    for (let i = 1; i < node.length; i++) scanStores(node[i])
+  }
+  scanStores(body)
+  if (unknownStore) return new Set()
+
+  const safe = new Set()
+  for (const name of live) {
+    const k = cand.get(name)
+    if (k != null && !storeKinds.has(k)) safe.add(name)
+  }
+  return safe
+}
+
 // === Param / closure helpers ===
 
 export function extractParams(rawParams) {

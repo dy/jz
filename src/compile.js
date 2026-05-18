@@ -29,7 +29,7 @@ import { parse as parseWat } from 'watr'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
 import {
   T, VAL, analyzeBody,
-  unboxablePtrs, typedElemAux, invalidateLocalsCache,
+  unboxablePtrs, cseSafeLoadBases, typedElemAux, invalidateLocalsCache,
   boxedCaptures, updateRep,
   isBlockBody, analyzeStructInline,
 } from './analyze.js'
@@ -302,12 +302,19 @@ function analyzeFuncForEmit(func, programFacts) {
     updateRep(p.name, fields)
   }
 
+  // CSE-safe load bases — pointer locals whose memory reads `cseScalarLoad`
+  // may scalar-replace. Computed last: needs every `let`/param ptrKind in place.
+  const cseLoadBases = block
+    ? cseSafeLoadBases(body, ctx.func.locals, ctx.func.localReps)
+    : new Set()
+
   return {
     block,
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
     flatObjects: new Map(ctx.func.flatObjects),
     sliceViews: new Set(ctx.func.sliceViews),
+    cseLoadBases,
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
@@ -360,6 +367,11 @@ function emitFunc(func, funcFacts, programFacts) {
   }
 
   const fn = ['func', `$${name}`]
+  // Stamp the emit-side CSE soundness whitelist onto the func node (expando —
+  // watr print/compile ignore non-index props). `cseScalarLoad` reads it; absent
+  // it the pass is a no-op. `$`-prefixed to match WAT local names directly.
+  if (funcFacts.cseLoadBases?.size)
+    fn.cseLoadBases = new Set([...funcFacts.cseLoadBases].map(n => `$${n}`))
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export

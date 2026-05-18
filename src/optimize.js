@@ -867,44 +867,33 @@ export function hoistInvariantCellLoads(fn) {
  * — emits 6 f64.load on $p (each of x/y/z twice); collapses to 3 unique loads
  * shared via tee'd snap locals.
  *
- * Safety: jz's invariant — distinct unboxed-pointer locals come from distinct
- * fresh allocations (unboxablePtrs refuses to unbox aliased locals).
- * So `(f64.store ADDR ...)` with base `(local.get $Y)` for $Y ≠ $X cannot
- * touch addresses reachable via `$X + K`. Stores to typed-array slots in the
- * loop body don't invalidate row-pointer reads.
+ * Safety: candidacy is the emit-side `cseSafeLoadBases` whitelist (src/analyze.js),
+ * stamped onto the func node as `fn.cseLoadBases`. Every base in it is a
+ * bound-once unboxed pointer used solely as a member-read receiver whose
+ * allocation kind is disjoint from every store the function performs. So
+ * `(f64.store ADDR ...)` anywhere in the body cannot touch addresses reachable
+ * via `$X + K` for a whitelisted $X — the proof is carried from emit, where the
+ * VAL kinds and binding shapes are still known, never re-guessed at WAT level.
  *
  * Region boundaries that flush the table:
  *   - branch (br/br_if/br_table/return/unreachable)
  *   - non-pure call
  *   - loop / if  (control flow)
  *   - local.set/local.tee on a tracked $X (invalidates that X's entries)
- *   - store whose address tree references a tracked $X
+ *   - store whose address tree references a tracked $X (defence-in-depth —
+ *     the whitelist already guarantees this never happens)
  * Blocks are treated as transparent — recurse into children.
  */
 export function cseScalarLoad(fn) {
-  // DISABLED: the safety claim above relies on `unboxablePtrs` having vetted
-  // every i32 local as a non-aliased fresh-allocation pointer. But this pass scans
-  // *all* i32 locals from `(local … i32)` decls — wasm-native i32 scalars (lengths,
-  // indices), narrow-ABI helper returns, and analyze.js's new arrayElemSchema-driven
-  // unboxes share the same declaration form. The metacircular path (jz-compiled
-  // watr.wasm) trips this: CSE'd loads survive across stores that legitimately
-  // mutate the same memory through a different i32 local, returning stale bytes
-  // (manifests as "memory access out of bounds" once a corrupted offset is
-  // dereferenced). Re-enable once candidacy is restricted to vetted pointers
-  // (e.g. emit-side annotation or rep-derived whitelist).
-  return
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  const i32Locals = new Set()
-  for (let i = 2; i < fn.length; i++) {
-    const c = fn[i]
-    if (Array.isArray(c) && (c[0] === 'local' || c[0] === 'param') && typeof c[1] === 'string' && c[2] === 'i32') {
-      i32Locals.add(c[1])
-    }
-  }
-  if (!i32Locals.size) return
+  // Soundness gate: only the emit-proven non-aliasing bases. Absent the stamp
+  // (e.g. a post-watrOptimize re-run on rebuilt nodes) the set is empty and the
+  // pass is a strict no-op — never a speculative CSE.
+  const bases = fn.cseLoadBases
+  if (!(bases instanceof Set) || bases.size === 0) return
 
   let snapId = 0
   while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__cs${snapId}`)) snapId++
@@ -919,10 +908,10 @@ export function cseScalarLoad(fn) {
     }
   }
 
-  // Scan a node's subtree and return the set of i32 locals referenced via local.get.
+  // Scan a node's subtree and return the set of tracked bases referenced via local.get.
   const collectGets = (node, out) => {
     if (!Array.isArray(node)) return
-    if (node[0] === 'local.get' && typeof node[1] === 'string' && i32Locals.has(node[1])) {
+    if (node[0] === 'local.get' && typeof node[1] === 'string' && bases.has(node[1])) {
       out.add(node[1])
       return
     }
@@ -1009,7 +998,7 @@ export function cseScalarLoad(fn) {
     const lp = parseLoad(node)
     if (lp) {
       const addr = node[lp.addrIdx]
-      if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string' && i32Locals.has(addr[1])) {
+      if (Array.isArray(addr) && addr[0] === 'local.get' && typeof addr[1] === 'string' && bases.has(addr[1])) {
         const X = addr[1]
         const key = `${X}|${lp.K}`
         const entry = table.get(key)
