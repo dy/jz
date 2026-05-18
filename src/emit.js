@@ -2010,8 +2010,10 @@ export const emitter = {
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
 
-      // Function property call: fn.prop(args) → direct call to fn$prop
-      if (typeof obj === 'string' && ctx.func.names.has(obj)) {
+      // Function property call: fn.prop(args) → direct call to fn$prop.
+      // Skipped when the property was reassigned (wrapper composition) — then
+      // it is a mutable slot and must be read dynamically before the call.
+      if (typeof obj === 'string' && ctx.func.names.has(obj) && !ctx.func.multiProp.has(`${obj}.${method}`)) {
         const fname = `${obj}$${method}`
         if (ctx.func.names.has(fname)) {
           const func = ctx.func.map.get(fname)
