@@ -355,6 +355,9 @@ export default (ctx) => {
     __dyn_get_any_t: () => ctx.features.external
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop']
       : ['__dyn_get_t', '__hash_get_local'],
+    __dyn_get_any_t_h: () => ctx.features.external
+      ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
+      : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__is_nullish', '__str_eq'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
@@ -927,6 +930,28 @@ export default (ctx) => {
       (then (call $__hash_get_local (local.get $obj) (local.get $key)))
       (else
         (local.set $val (call $__dyn_get_t (local.get $obj) (local.get $key) (local.get $t)))
+        (if (result i64)
+          (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
+          (then (local.get $val))
+          (else ${extArm})))))`
+  }
+
+  // Prehashed variant of __dyn_get_any_t for constant string keys: the FNV hash
+  // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
+  // Hot for the layered-parser pattern — `parse.step`/`parse.space`/… reads a
+  // function-object property with a literal key on every parser step.
+  ctx.core.stdlib['__dyn_get_any_t_h'] = () => {
+    const extArm = ctx.features.external
+      ? `(if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+            (then (call $__ext_prop (local.get $obj) (local.get $key)))
+            (else (i64.const ${NULL_NAN})))`
+      : `(i64.const ${NULL_NAN})`
+    return `(func $__dyn_get_any_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
+    (local $val i64)
+    (if (result i64) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then (call $__hash_get_local_h (local.get $obj) (local.get $key) (local.get $h)))
+      (else
+        (local.set $val (call $__dyn_get_t_h (local.get $obj) (local.get $key) (local.get $t) (local.get $h)))
         (if (result i64)
           (i64.ne (local.get $val) (i64.const ${UNDEF_NAN}))
           (then (local.get $val))

@@ -298,7 +298,7 @@ test('dynamic prop reads reuse receiver type tag', () => {
       return o.a + o.b + o.c
     }
   `, { wat: true })
-  ok(/\(call \$__dyn_get_any_t\b/.test(wat))
+  ok(/\(call \$__dyn_get_any_t_h\b/.test(wat))
   ok(/\$__pt\d+/.test(wat), 'expected repeated receiver tag to be hoisted')
 })
 
@@ -658,7 +658,7 @@ test('known array spread skips string/typed item dispatch', () => {
     export const main = () => copy([1, 2, 3])[1]
   `, { wat: true, optimize: { watr: false } })
   const copyBody = wat.match(/\(func \$copy[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/\(call \$__arr_idx_known\b/.test(copyBody), 'known ARRAY spread should read via monomorphic array helper')
+  ok(/\(memory\.copy\b/.test(copyBody), 'known ARRAY spread should bulk-copy with memory.copy')
   ok(!/\(call \$__str_idx\b/.test(copyBody), 'known ARRAY spread should skip string indexing')
   ok(!/\(call \$__typed_idx\b/.test(copyBody), 'known ARRAY spread should skip typed/runtime indexing')
   const { main } = run(`

@@ -1342,6 +1342,36 @@ export function deadStoreElim(fn) {
 }
 
 /**
+ * Module-wide scan for "volatile" globals — those mutated (`global.set`) in any
+ * function other than `$__start`. Globals written only in `$__start` are
+ * init-once: `$__start` runs to completion before any other function, so they
+ * are effectively read-only afterwards and stay promotable.
+ *
+ * promoteGlobals uses this to avoid caching a callee-mutable global into a
+ * function-entry local across a call (which would leave the local stale).
+ *
+ * @param {Array<Array>} funcs - all module function IR nodes
+ * @returns {Set<string>} volatile global names (with leading `$`)
+ */
+export function collectVolatileGlobals(funcs) {
+  const volatile = new Set()
+  const scan = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'global.set') {
+      if (typeof node[1] === 'string') volatile.add(node[1])
+      for (let i = 2; i < node.length; i++) scan(node[i])
+      return
+    }
+    for (let i = 1; i < node.length; i++) scan(node[i])
+  }
+  for (const fn of funcs) {
+    if (!Array.isArray(fn) || fn[0] !== 'func' || fn[1] === '$__start') continue
+    for (let i = 2; i < fn.length; i++) scan(fn[i])
+  }
+  return volatile
+}
+
+/**
  * Promote read-only globals to locals within each function.
  *
  * When a global is only read (never written) within a function and read ≥ 2 times,
@@ -1355,17 +1385,26 @@ export function deadStoreElim(fn) {
  * also written (global.set) are left untouched — the promotion would be unsound if
  * the global changes between reads.
  *
+ * A within-function read-only check is NOT sufficient: a callee can mutate the
+ * global between two reads in this function. `volatileGlobals` (globals written
+ * anywhere outside `$__start`) gates that case — a volatile global is not
+ * promoted in any function that makes a call. Init-once globals (written only in
+ * `$__start`) stay promotable everywhere.
+ *
  * @param {Array} fn - Function IR (WAT-as-array)
  * @param {Map<string,string>} [globalTypes] - Optional: global name → wasm type ('i32'|'f64'|'i64'|'funcref')
+ * @param {Set<string>} [volatileGlobals] - Optional: globals mutated outside `$__start` (see collectVolatileGlobals)
  */
-export function promoteGlobals(fn, globalTypes) {
+export function promoteGlobals(fn, globalTypes, volatileGlobals) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
-  // Collect global.get counts and detect any global.set
+  // Collect global.get counts, detect any global.set, and note whether the
+  // function makes a call (a callee may mutate a volatile global between reads).
   const getCounts = new Map()  // globalName → count
   const written = new Set()
+  let hasCall = false
 
   const scan = (node) => {
     if (!Array.isArray(node)) return
@@ -1379,6 +1418,7 @@ export function promoteGlobals(fn, globalTypes) {
       if (node[2]) scan(node[2])
       return
     }
+    if (op === 'call' || op === 'call_indirect') hasCall = true
     for (let i = 1; i < node.length; i++) scan(node[i])
   }
 
@@ -1398,6 +1438,8 @@ export function promoteGlobals(fn, globalTypes) {
   const replacements = new Map()
   for (const [gName, count] of getCounts) {
     if (count < 3 || written.has(gName)) continue
+    // Unsound to cache a callee-mutable global across a call in this function.
+    if (hasCall && volatileGlobals && volatileGlobals.has(gName)) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
     if (!type) continue  // can't determine type, skip
@@ -1864,8 +1906,10 @@ export function sortStrPoolByFreq(funcs, strPoolRef, strDedupMap) {
  *
  * @param fn  func IR node
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
+ * @param globalTypes optional global name → wasm type map (for promoteGlobals)
+ * @param volatileGlobals optional set of callee-mutable globals (see collectVolatileGlobals)
  */
-export function optimizeFunc(fn, cfg, globalTypes) {
+export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals) {
   if (cfg && cfg.hoistPtrType === false &&
       cfg.hoistInvariantPtrOffset === false &&
       cfg.hoistInvariantPtrOffsetLoop === false &&
@@ -1890,7 +1934,7 @@ export function optimizeFunc(fn, cfg, globalTypes) {
   if (!cfg || cfg.csePureExpr !== false) csePureExpr(fn)
   if (!cfg || cfg.dropDeadZeroInit !== false) dropDeadZeroInit(fn)
   if (!cfg || cfg.deadStoreElim !== false) deadStoreElim(fn)
-  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes)
+  if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, volatileGlobals)
   // Vectorizer runs PRE-watr unless full watr is enabled (`watr: true`). For full watr,
   // defer to post — full passes (notably `inlineOnce` + the post-inline `propagate`
   // sweep) reshape the IR so much that pre-watr SIMD patterns get scrambled. Light
@@ -1958,11 +2002,18 @@ function walkRewrite(node, doInline, counts) {
       ['i64.eq', node[2], ['i64.const', NULL_BITS]],
       ['i64.eq', node[2], ['i64.const', UNDEF_BITS]]]
     if (fname === '$__is_truthy' && Array.isArray(node[2]) && node[2][0] === 'i64.reinterpret_f64'
-        && Array.isArray(node[2][1]) && node[2][1][0] === 'local.get') {
-      const lget = node[2][1]
-      const bits = node[2]
+        && Array.isArray(node[2][1]) && (node[2][1][0] === 'local.get' || node[2][1][0] === 'local.tee')) {
+      // `local.tee $x SRC` evaluates SRC once, stores to $x, returns the value —
+      // hot for `a || b` lowering (`__is_truthy(local.tee $t …)`). Keep the tee
+      // as the first use (the `if` condition runs before then/else, and f64.eq's
+      // left operand runs first), so $x is set before every `local.get` repeat.
+      const ref = node[2][1]
+      const lname = ref[1]
+      const lget = ['local.get', lname]
+      const first = ref[0] === 'local.tee' ? ref : lget
+      const bits = ['i64.reinterpret_f64', lget]
       return ['if', ['result', 'i32'],
-        ['f64.eq', lget, lget],
+        ['f64.eq', first, lget],
         ['then', ['f64.ne', lget, ['f64.const', 0]]],
         ['else', ['i32.and',
           ['i32.and',

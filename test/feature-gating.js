@@ -82,9 +82,10 @@ test('features.external OFF: __dyn_get_any factory collapses (no __ext_prop call
 })
 
 test('features.external ON: __dyn_get_any_t factory has EXTERNAL arm', () => {
+  // Literal key `.x` folds the FNV hash at compile time → prehashed `_h` variant.
   const w = wat(`export let f = (o) => o.x`)
-  ok(hasDef(w, '__dyn_get_any_t'))
-  const body = w.match(/\(func \$__dyn_get_any_t[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
+  ok(hasDef(w, '__dyn_get_any_t_h'))
+  const body = w.match(/\(func \$__dyn_get_any_t_h[\s\S]*?\)\s*(?=\(func|\(export|\(start|$)/)[0]
   is(/__ext_prop/.test(body), true)
 })
 
@@ -108,8 +109,9 @@ test('organic hash gating ON: JSON.parse pulls schema substrate', () => {
 })
 
 test('organic hash gating ON: untyped .prop pulls __dyn_get_any_t', () => {
+  // Literal key `.x` folds the FNV hash at compile time → prehashed `_h` variant.
   const w = wat(`export let f = (o) => o.x`)
-  ok(hasDef(w, '__dyn_get_any_t'))
+  ok(hasDef(w, '__dyn_get_any_t_h'))
 })
 
 test('array grow: plain push does not pull dynamic prop mover', () => {

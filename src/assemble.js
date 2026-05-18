@@ -34,7 +34,7 @@ const parseTemplate = (str) => {
   return cloneTemplate(tmpl)
 }
 import { T, VAL, analyzeValTypes } from './analyze.js'
-import { optimizeFunc, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from './optimize.js'
+import { optimizeFunc, collectVolatileGlobals, hoistConstantPool, specializeMkptr, specializePtrBase, sortStrPoolByFreq, arenaRewindModule } from './optimize.js'
 import { emit } from './emit.js'
 import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart } from './ir.js'
 
@@ -46,9 +46,9 @@ const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT)
 const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT)
 const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
 
-// memory[1020] mirror also used when alloc:false (see module/core.js comment) so the
-// JS-side fallback bump allocator and wasm-side __alloc share the same heap pointer.
-const heapUsesMem = () => ctx.memory.shared || ctx.transform.alloc === false
+// memory[1020] holds the heap pointer only for shared memory (wasm globals are
+// per-instance — see module/core.js comment). Non-shared memory uses $__heap.
+const heapUsesMem = () => ctx.memory.shared
 
 const heapGetIR = () => heapUsesMem()
   ? ['i32.load', ['i32.const', 1020]]
@@ -200,6 +200,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     ctx.core.includes.has('__dyn_get_expr_t_h') ||
     ctx.core.includes.has('__dyn_get_any') ||
     ctx.core.includes.has('__dyn_get_any_t') ||
+    ctx.core.includes.has('__dyn_get_any_t_h') ||
     ctx.core.includes.has('__dyn_get_expr') ||
     ctx.core.includes.has('__dyn_get_expr_t') ||
     ctx.core.includes.has('__dyn_get_or')
@@ -464,7 +465,9 @@ export function optimizeModule(sec) {
   }
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
   const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
-  for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) optimizeFunc(s, cfg, globalTypesMap)
+  const allFuncs = [...sec.funcs, ...sec.stdlib, ...sec.start]
+  const volatileGlobals = collectVolatileGlobals(allFuncs)
+  for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals)
   if (!cfg || cfg.arenaRewind !== false) {
     const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
     const fnByName = new Map()
@@ -497,11 +500,10 @@ export function optimizeModule(sec) {
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
     const heapBase = (dataLen + 7) & ~7
-    // Own-memory with alloc:false routes through memory[1020] (no $__heap global).
-    if (ctx.transform.alloc !== false) {
-      ctx.scope.globals.set('__heap', `(global $__heap (mut i32) (i32.const ${heapBase}))`)
-      ctx.scope.globalTypes.set('__heap', 'i32')
-    }
+    // Non-shared memory always carries a $__heap global — start it past the
+    // static data so the bump allocator never overwrites a literal.
+    ctx.scope.globals.set('__heap', `(global $__heap (export "__heap") (mut i32) (i32.const ${heapBase}))`)
+    ctx.scope.globalTypes.set('__heap', 'i32')
     if (ctx.scope.globals.has('__heap_start')) {
       ctx.scope.globals.set('__heap_start', `(global $__heap_start (mut i32) (i32.const ${heapBase}))`)
       ctx.scope.globalTypes.set('__heap_start', 'i32')
