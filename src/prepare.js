@@ -746,10 +746,20 @@ const handlers = {
         return prep([';', preStmt, ['=', pattern, rhs]])
       }
     }
-    // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop
+    // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop.
+    // A property can be reassigned — esbuild/jessie wrapper-composition does
+    // `p.s = ...; var old = p.s; p.s = () => old()...`. Each assignment extracts
+    // its own top-level function; the property holds whichever was assigned last,
+    // and an earlier snapshot keeps pointing at the prior one. Collide → fresh name.
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
       && hasFunc(lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
-      const name = `${lhs[1]}$${lhs[2]}`
+      let name = `${lhs[1]}$${lhs[2]}`
+      // Reassignment → the property is mutable; record it so `fn.prop()` calls
+      // emit a dynamic property read + indirect call instead of a direct call.
+      if (ctx.func.names.has(name)) {
+        ctx.func.multiProp.add(`${lhs[1]}.${lhs[2]}`)
+        do name = `${lhs[1]}$${lhs[2]}$${ctx.func.uniq++}`; while (ctx.func.names.has(name))
+      }
       if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
     return ['=', prep(lhs), prep(rhs)]

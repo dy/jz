@@ -493,6 +493,26 @@ test('fn.prop: arrow extraction + direct call', () => {
   `).f(), 42)
 })
 
+test('fn.prop: reassignment is a mutable slot, not a static direct call', () => {
+  // A function-property reassigned more than once (esbuild/jessie
+  // wrapper-composition) must dispatch dynamically — the call sees the
+  // latest value, an earlier snapshot keeps pointing at the prior one.
+  // jz() wires the host imports the dynamic-property call path needs.
+  is(jz(`
+    let p = (n) => n
+    p.s = () => 1
+    p.s = () => 2
+    export let f = () => p.s()
+  `).exports.f(), 2)
+  is(jz(`
+    let p = (n) => n
+    p.s = () => 1
+    let old = p.s
+    p.s = () => old() + 10
+    export let f = () => p.s()
+  `).exports.f(), 11)
+})
+
 test('auto-box: local array property', () => {
   is(run('export let f = () => { let a = [1, 2, 3]; a.x = 99; return a.x }').f(), 99)
 })

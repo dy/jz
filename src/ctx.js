@@ -176,6 +176,7 @@ export function reset(proto, globals) {
     list: [],
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
     map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
+    multiProp: new Set(),  // Set<"obj.prop"> — function-properties assigned >1× (wrapper composition); suppresses the static fn.prop() direct call
     exports: {},
     current: null,
     locals: new Map(),
