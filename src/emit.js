@@ -500,10 +500,13 @@ export function emitDecl(...inits) {
     // SRoA flat object: `let o = {a:1, b:2}` — dissolve fields into `o#i`
     // locals, no heap alloc. Each field local ← asF64(value). Reads/writes are
     // rewritten by the `.`/`[]` flat hooks. See scanFlatObjects (analyze.js).
+    // Monotonic-extension fields (`o.newProp = …`) carry no literal value —
+    // they init to undefined so a read before the write matches JS.
     const flatDecl = ctx.func.flatObjects?.get(name)
     if (flatDecl && Array.isArray(init) && init[0] === '{}') {
       for (let j = 0; j < flatDecl.names.length; j++)
-        result.push(['local.set', `$${name}#${j}`, asF64(emit(flatDecl.values[j]))])
+        result.push(['local.set', `$${name}#${j}`,
+          flatDecl.values[j] === undefined ? undefExpr() : asF64(emit(flatDecl.values[j]))])
       continue
     }
 

@@ -149,6 +149,63 @@ test('escape analysis: local object property reads scalarize literal', () => {
   is(run(src).main(4), 9)
 })
 
+test('escape analysis: monotonically-extended object scalarizes', () => {
+  // Real code extends static objects (`o.newProp = …`); SRoA must follow the
+  // monotonic extension into flat field locals rather than bail to the heap.
+  const src = `
+    export const main = (x) => {
+      const o = { a: x }
+      o.b = x + 1
+      o.c = o.a + o.b
+      return o.c
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$__alloc_hdr\b/.test(wat), 'extended non-escaping object should not allocate')
+  is(run(src).main(4), 9)
+})
+
+test('escape analysis: extension field read before write yields undefined', () => {
+  // `o.b` init to undefined at the decl — a read that runs before the write
+  // matches JS, and the conditional write still scalarizes.
+  const src = `
+    export const main = (cond) => {
+      const o = { a: 10 }
+      const before = o.b
+      if (cond) o.b = 5
+      return o.b
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$__alloc_hdr\b/.test(wat), 'conditionally-extended object should not allocate')
+  is(run(src).main(1), 5)
+  is(run(src).main(0), undefined)  // unwritten extension field reads undefined
+})
+
+test('escape analysis: bracket-key extension scalarizes', () => {
+  const src = `
+    export const main = (x) => {
+      const o = { x: x }
+      o['y'] = 7
+      return o.x + o['y']
+    }
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(!/\(call \$__alloc_hdr\b/.test(wat), 'bracket-key-extended object should not allocate')
+  is(run(src).main(1), 8)
+})
+
+test('escape analysis: extended object that escapes still heap allocates', () => {
+  const wat = jz.compile(`
+    export const main = (x) => {
+      const obj = { a: x }
+      obj.b = x + 1
+      return obj
+    }
+  `, { wat: true })
+  ok(/\(call \$__alloc_hdr\b/.test(wat), 'escaping extended object must stay materialized')
+})
+
 test('escape analysis: returned object still heap allocates', () => {
   const wat = jz.compile(`
     export const main = (x) => {

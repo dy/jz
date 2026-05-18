@@ -710,6 +710,31 @@ function scanFlatObjects(body) {
   }
   if (!cand.size) return cand
 
+  // Pass 1.5 — monotonic field extension. Real code extends static objects
+  // (`o.newProp = …`); SRoA must not bail on that. A literal-key write to a
+  // candidate adds a flat field — initialized to `undefined` at the decl, so a
+  // read that runs before the write yields `undefined` exactly as JS does.
+  // The field universe stays statically closed: Pass 2 still disqualifies the
+  // candidate on any computed-key or off-schema access, so the literal keys
+  // plus the keys collected here are exhaustive. (`delete` also disqualifies,
+  // so every surviving candidate is genuinely monotonically extended.)
+  const collectExtension = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === '=') {
+      const lhs = node[1]
+      if (Array.isArray(lhs) && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
+        const key = lhs[0] === '.' && typeof lhs[2] === 'string' ? lhs[2]
+          : lhs[0] === '[]' && isLitStr(lhs[2]) ? lhs[2][1] : null
+        if (key != null) {
+          const c = cand.get(lhs[1])
+          if (!c.names.includes(key)) { c.names.push(key); c.values.push(undefined) }
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) collectExtension(node[i])
+  }
+  collectExtension(body)
+
   // Pass 2 — verify every occurrence is a safe literal-key access.
   const visitChild = (c) => {
     if (typeof c === 'string') { if (cand.has(c)) dead.add(c); return }
