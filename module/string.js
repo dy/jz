@@ -20,6 +20,22 @@ import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
 // SSO discriminator bit pre-shifted to its slot in the full i64 ptr (bit 46).
 // Used as `i64.and ptr SSO_BIT_I64` for branch-without-extracting-aux.
 const SSO_BIT_I64 = '0x' + (BigInt(LAYOUT.SSO_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+// Slice/view discriminator bit, pre-shifted to bit 45 — same branch-without-aux trick.
+const SLICE_BIT_I64 = '0x' + (BigInt(LAYOUT.SLICE_BIT) << BigInt(LAYOUT.AUX_SHIFT)).toString(16).toUpperCase().padStart(16, '0')
+
+// WAT (no-locals expression): byte length of a heap STRING given its raw $-local
+// names for the offset and the i64 ptr. A view (SLICE_BIT) carries its length in
+// aux[12:0]; an own heap string reads the i32 header at off-4. Callers must have
+// already excluded SSO. Used inline by the hot char/eq helpers so a slice never
+// reads a bogus length out of a parent buffer's bytes.
+const heapLenExpr = (ptrLocal, offLocal) => `(if (result i32)
+  (i64.ne (i64.and (local.get ${ptrLocal}) (i64.const ${SLICE_BIT_I64})) (i64.const 0))
+  (then (i32.and
+    (i32.wrap_i64 (i64.shr_u (local.get ${ptrLocal}) (i64.const ${LAYOUT.AUX_SHIFT})))
+    (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+  (else (if (result i32) (i32.ge_u (local.get ${offLocal}) (i32.const 4))
+    (then (i32.load (i32.sub (local.get ${offLocal}) (i32.const 4))))
+    (else (i32.const 0)))))`
 
 
 export default (ctx) => {
@@ -29,6 +45,7 @@ export default (ctx) => {
     __str_append_byte: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_copy: [],
     __str_slice: ['__str_byteLen', '__alloc'],
+    __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice'],
     __str_indexof: ['__str_byteLen', '__to_str'],
     __str_substring: ['__str_slice'],
     __str_startswith: ['__str_byteLen'],
@@ -42,7 +59,7 @@ export default (ctx) => {
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
     __str_idx: [],
-    __str_eq: ['__char_at'],
+    __str_eq: ['__char_at', '__str_byteLen'],
     __str_cmp: ['__char_at', '__str_byteLen'],
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
@@ -146,23 +163,31 @@ export default (ctx) => {
             (i32.const 0xFF)))))
       (else
         (if (result i32)
-          (i32.lt_u
-            (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-            (i32.const 4))
+          (i32.ge_u (local.get $i)
+            ;; non-SSO length: view → aux[12:0]; own heap string → header at off-4
+            ;; (off<4 sentinel guards the literal-data-segment edge). Both arms
+            ;; are loop-invariant — V8 LICM hoists the whole select.
+            (if (result i32)
+              (i64.ne (i64.and (local.get $ptr) (i64.const ${SLICE_BIT_I64})) (i64.const 0))
+              (then (i32.and
+                (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
+                (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+              (else
+                (if (result i32)
+                  (i32.lt_u
+                    (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+                    (i32.const 4))
+                  (then (i32.const 0))
+                  (else (i32.load
+                    (i32.sub
+                      (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+                      (i32.const 4))))))))
           (then (i32.const 0))
           (else
-            (if (result i32)
-              (i32.ge_u (local.get $i)
-                (i32.load
-                  (i32.sub
-                    (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-                    (i32.const 4))))
-              (then (i32.const 0))
-              (else
-                (i32.load8_u
-                  (i32.add
-                    (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
-                    (local.get $i))))))))))`
+            (i32.load8_u
+              (i32.add
+                (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
+                (local.get $i)))))))))`
 
   ctx.core.stdlib['__str_idx'] = `(func $__str_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $len i32) (local $isSso i32)
@@ -177,9 +202,15 @@ export default (ctx) => {
           (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
           (i32.const ${LAYOUT.SSO_BIT - 1})))
         (else
-          (if (result i32) (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
-            (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
-            (else (i32.const 0))))))
+          (if (result i32)
+            (i64.ne (i64.and (local.get $ptr) (i64.const ${SLICE_BIT_I64})) (i64.const 0))
+            (then (i32.and
+              (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})))
+              (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+            (else
+              (if (result i32) (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $off) (i32.const 4)))
+                (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
+                (else (i32.const 0))))))))
     (if (result f64)
       (i32.or (i32.lt_s (local.get $i) (i32.const 0)) (i32.ge_u (local.get $i) (local.get $len)))
       (then (f64.const nan:${UNDEF_NAN}))
@@ -227,8 +258,8 @@ export default (ctx) => {
       (then
         (if (i32.or (i32.lt_u (local.get $offA) (i32.const 4)) (i32.lt_u (local.get $offB) (i32.const 4)))
           (then (return (i32.const 0))))
-        (local.set $len (i32.load (i32.sub (local.get $offA) (i32.const 4))))
-        (local.set $lenB (i32.load (i32.sub (local.get $offB) (i32.const 4))))
+        (local.set $len ${heapLenExpr('$a', '$offA')})
+        (local.set $lenB ${heapLenExpr('$b', '$offB')})
         (if (i32.ne (local.get $len) (local.get $lenB))
           (then (return (i32.const 0))))
         (local.set $lenB (i32.and (local.get $len) (i32.const -4)))
@@ -250,20 +281,9 @@ export default (ctx) => {
           (br $lh)))
         (return (i32.const 1))))
     ;; Mixed (SSO×heap) or anything else: compute len per side then per-byte via __char_at.
-    (if (local.get $ssoA)
-      (then (local.set $len (i32.and
-        (i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const ${LAYOUT.AUX_SHIFT})))
-        (i32.const ${LAYOUT.SSO_BIT - 1}))))
-      (else
-        (if (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offA) (i32.const 4)))
-          (then (local.set $len (i32.load (i32.sub (local.get $offA) (i32.const 4))))))))
-    (if (local.get $ssoB)
-      (then (local.set $lenB (i32.and
-        (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const ${LAYOUT.AUX_SHIFT})))
-        (i32.const ${LAYOUT.SSO_BIT - 1}))))
-      (else
-        (if (i32.and (i32.eq (local.get $tb) (i32.const ${PTR.STRING})) (i32.ge_u (local.get $offB) (i32.const 4)))
-          (then (local.set $lenB (i32.load (i32.sub (local.get $offB) (i32.const 4))))))))
+    ;; __str_byteLen handles SSO, slice (SLICE_BIT) and own-heap encodings uniformly.
+    (local.set $len (call $__str_byteLen (local.get $a)))
+    (local.set $lenB (call $__str_byteLen (local.get $b)))
     (if (i32.ne (local.get $len) (local.get $lenB))
       (then (return (i32.const 0))))
     (block $dm (loop $lm
@@ -318,10 +338,14 @@ export default (ctx) => {
         (if (result i32) (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT}))
           (then (i32.and (local.get $aux) (i32.const ${LAYOUT.SSO_BIT - 1})))
           (else
-            (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
-            (if (result i32) (i32.ge_u (local.get $off) (i32.const 4))
-              (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
-              (else (i32.const 0))))))
+            (if (result i32) (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_BIT}))
+              ;; view: length lives in aux[12:0], not a header.
+              (then (i32.and (local.get $aux) (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+              (else
+                (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+                (if (result i32) (i32.ge_u (local.get $off) (i32.const 4))
+                  (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
+                  (else (i32.const 0))))))))
       (else (i32.const 0))))`
 
   // === WAT: string methods ===
@@ -367,6 +391,48 @@ export default (ctx) => {
       (else
         (memory.copy (local.get $off) (i32.add (local.get $srcOff) (local.get $start)) (local.get $nlen))))
     (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $off)))`
+
+  // No-copy slice: returns a VIEW into the receiver's buffer instead of copying
+  // bytes. Only emitted when escape analysis proves the result never outlives the
+  // parent (a non-escaping local). A view is a heap STRING with SLICE_BIT set and
+  // its length in aux[12:0]; the offset points straight into the parent's bytes,
+  // so it stays valid as long as the parent does. Falls back to a real copy
+  // (__str_slice) when the parent is SSO (no buffer to point into) or the result
+  // is longer than SLICE_LEN_MASK (aux can't hold the length). Clamping mirrors
+  // __str_slice; the fallback re-clamps idempotently.
+  ctx.core.stdlib['__str_slice_view'] = `(func $__str_slice_view (param $ptr i64) (param $start i32) (param $end i32) (result f64)
+    (local $len i32) (local $nlen i32) (local $srcOff i32) (local $tag i32)
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
+    (if (i32.lt_s (local.get $end) (i32.const 0))
+      (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.const 0))))
+    (if (i32.gt_s (local.get $start) (local.get $len))
+      (then (local.set $start (local.get $len))))
+    (if (i32.lt_s (local.get $end) (i32.const 0))
+      (then (local.set $end (i32.const 0))))
+    (if (i32.gt_s (local.get $end) (local.get $len))
+      (then (local.set $end (local.get $len))))
+    (if (i32.ge_s (local.get $start) (local.get $end))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    (local.set $nlen (i32.sub (local.get $end) (local.get $start)))
+    (local.set $tag (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ;; View-eligible: STRING parent, not SSO, length fits aux[12:0].
+    (if (i32.and
+          (i32.and
+            (i32.eq (local.get $tag) (i32.const ${PTR.STRING}))
+            (i64.eqz (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64}))))
+          (i32.le_u (local.get $nlen) (i32.const ${LAYOUT.SLICE_LEN_MASK})))
+      (then
+        (local.set $srcOff (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (return (call $__mkptr
+          (i32.const ${PTR.STRING})
+          (i32.or (i32.const ${LAYOUT.SLICE_BIT}) (local.get $nlen))
+          (i32.add (local.get $srcOff) (local.get $start))))))
+    ;; Fallback: copy (SSO parent, or slice too long for the aux length field).
+    (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
 
   ctx.core.stdlib['__str_substring'] = `(func $__str_substring (param $ptr i64) (param $start i32) (param $end i32) (result f64)
     (local $len i32) (local $tmp i32)
@@ -644,11 +710,14 @@ export default (ctx) => {
   const concatFast = !ctx.memory.shared && ctx.transform.alloc !== false ? `
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $aoff (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    ;; Bump-extend requires heap STRING (not SSO — its offset holds packed bytes).
+    ;; Bump-extend requires an OWN heap STRING — not SSO (offset holds packed bytes)
+    ;; and not a slice/view (bumping would corrupt the parent buffer it points into).
     (if (i32.and
           (i32.and
             (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-            (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64}))))
+            (i32.and
+              (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})))
+              (i64.eqz (i64.and (local.get $a) (i64.const ${SLICE_BIT_I64})))))
           (i32.eq
             (i32.and (i32.add (i32.add (local.get $aoff) (local.get $alen)) (i32.const 7)) (i32.const -8))
             (global.get $__heap)))
@@ -676,11 +745,14 @@ export default (ctx) => {
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $aoff (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; Heap STRING at heap top: bump-extend by 1 byte (own-memory mode w/ $__heap global only).
-    ;; Gate on STRING tag AND !SSO_BIT — for SSO, $aoff holds packed bytes (not a heap addr).
+    ;; Gate on STRING tag AND !SSO_BIT ($aoff would hold packed bytes) AND !SLICE_BIT
+    ;; (a view's $aoff points into a parent buffer — bumping it would corrupt the parent).
     ${!ctx.memory.shared && ctx.transform.alloc !== false ? `
     (if (i32.and
           (i32.eq (local.get $ta) (i32.const ${PTR.STRING}))
-          (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64}))))
+          (i32.and
+            (i64.eqz (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})))
+            (i64.eqz (i64.and (local.get $a) (i64.const ${SLICE_BIT_I64})))))
       (then
         (local.set $alen (i32.load (i32.sub (local.get $aoff) (i32.const 4))))
         (if (i32.eq
@@ -938,16 +1010,24 @@ export default (ctx) => {
   // override to return the primitive — strings already covered by .string:valueOf.
   ctx.core.emit['.valueOf'] = (val) => asF64(emit(val))
 
-  ctx.core.emit['.string:slice'] = (str, start, end) => {
-    inc('__str_slice')
+  // `.slice` lowering, parametrised on the backing helper: __str_slice copies
+  // bytes; __str_slice_view returns a no-copy SLICE_BIT view — used only when
+  // escape analysis proved the result never outlives its parent buffer (see
+  // scanSliceViews / emitDecl). The `#view` key cannot be produced by method
+  // dispatch (`#` is not a legal identifier char), so the view variant is
+  // reachable only through the explicit emitDecl route.
+  const sliceEmitter = (fn) => (str, start, end) => {
+    inc(fn)
     const startIR = start == null ? ['i32.const', 0] : asI32(emit(start))
-    if (end != null) return typed(['call', '$__str_slice', asI64(emit(str)), startIR, asI32(emit(end))], 'f64')
+    if (end != null) return typed(['call', `$${fn}`, asI64(emit(str)), startIR, asI32(emit(end))], 'f64')
     const t = temp('t')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
+      ['call', `$${fn}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]], startIR,
         ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
   }
+  ctx.core.emit['.string:slice'] = sliceEmitter('__str_slice')
+  ctx.core.emit['.string:slice#view'] = sliceEmitter('__str_slice_view')
 
   // ToIntegerOrInfinity for a string-method position argument: ToNumber (so
   // string / boolean / null / undefined positions coerce per spec) then trunc.

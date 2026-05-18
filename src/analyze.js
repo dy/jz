@@ -815,6 +815,94 @@ function scanFlatObjects(body) {
 }
 
 /**
+ * No-copy slice scan — which `let/const t = s.slice(...)` bindings can be a
+ * VIEW (a SLICE_BIT pointer straight into `s`'s buffer) instead of a fresh
+ * byte copy.
+ *
+ * jz rewinds the bump arena only at function exit, so every string the
+ * function can observe stays alive until it returns. A view is therefore sound
+ * exactly when its binding does NOT escape the function: `t` must never be
+ * returned, passed as a call argument, stored into a heap object/array,
+ * captured by a closure, aliased to another binding, reassigned, or
+ * compound-assigned. The permitted uses — receiver of a `.`/`[]`, operand of a
+ * comparison or `+`, a boolean test — read `t` synchronously and never persist
+ * it past the function.
+ *
+ * Declared exactly once as `let/const`. The result is purely structural —
+ * whether the receiver is actually a string (so `.slice` lowers to the string
+ * view) is settled later, at emit time, when param types are known; emitDecl
+ * keeps the ordinary copying slice for any non-string receiver. Conservative:
+ * any unrecognised position disqualifies the binding.
+ *
+ * Returns `Set<name>` of view-eligible binding names.
+ */
+function scanSliceViews(body) {
+  const isSliceCall = (n) =>
+    Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
+    && n[1][0] === '.' && n[1][2] === 'slice'
+
+  // Pass 1 — collect `let/const t = X.slice(...)`; remember each decl `=` node
+  // so Pass 2 does not mistake the binding for a reassignment.
+  const cand = new Set()
+  const declOf = new Map()                 // name → its `['=', name, sliceCall]` node
+  const declCount = new Map()
+  const collect = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') return
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
+        if (typeof a === 'string') { declCount.set(a, (declCount.get(a) || 0) + 1); continue }
+        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
+          declCount.set(a[1], (declCount.get(a[1]) || 0) + 1)
+          if (isSliceCall(a[2])) { cand.add(a[1]); declOf.set(a[1], a) }
+          collect(a[2])
+        } else collect(a)
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  collect(body)
+  // A name declared more than once is ambiguous — drop it.
+  for (const [n, c] of declCount) if (c > 1) cand.delete(n)
+  if (!cand.size) return cand
+
+  // Pass 2 — escape check. Each occurrence of a candidate must sit in a
+  // whitelisted non-escaping position; any other mention disqualifies it.
+  const SAFE_CMP = new Set(['===', '!==', '==', '!=', '<', '>', '<=', '>='])
+  const safeAt = (parentOp, k) => {
+    if ((parentOp === '.' || parentOp === '?.') && k === 1) return true  // member receiver
+    if (parentOp === '[]' && k === 1) return true                        // indexed object
+    if (SAFE_CMP.has(parentOp)) return true                              // comparison operand
+    if (parentOp === '+') return true                                    // concat / numeric — copies
+    if (parentOp === '!' || parentOp === 'typeof' || parentOp === 'void') return true
+    if ((parentOp === 'if' || parentOp === 'while' || parentOp === 'do-while') && k === 1) return true
+    if (parentOp === '?:' && k === 1) return true                        // ternary condition only
+    return false
+  }
+  const walk = (node, inClosure) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    const closured = inClosure || op === '=>'
+    for (let k = 1; k < node.length; k++) {
+      const child = node[k]
+      if (typeof child === 'string') {
+        if (!cand.has(child)) continue
+        if (inClosure) { cand.delete(child); continue }                     // captured → escapes
+        if (op === '=' && k === 1 && declOf.get(child) === node) continue   // the binding itself
+        if (!safeAt(op, k)) cand.delete(child)
+        continue
+      }
+      walk(child, closured)
+    }
+  }
+  walk(body, false)
+  return cand
+}
+
+/**
  * Unified per-body analysis. Single AST traversal producing every per-binding
  * fact the emitter needs:
  *
@@ -1291,7 +1379,11 @@ export function analyzeBody(body) {
     locals.delete(name)
   }
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects }
+  // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
+  // Consumed by emitDecl, which lowers the initializer to a SLICE_BIT view.
+  const sliceViews = doSchemas ? scanSliceViews(body) : new Set()
+
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews }
   _bodyFactsCache.set(body, result)
   return result
 }
