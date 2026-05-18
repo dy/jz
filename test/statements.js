@@ -862,6 +862,14 @@ test('break: exits loop', () => {
   is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 3) break; s += i } return s }').f(), 3)
 })
 
+test('break: exits labeled if statement', () => {
+  is(run('export let f = (x) => { let s = 0; out: if (x) { s++; break out; s += 10 } return s }', { jzify: true }).f(1), 1)
+})
+
+test('break: exits labeled outer loop from nested loop', () => {
+  is(run('export let f = () => { let s = 0; outer: for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) { s++; if (i == 1 && j == 1) break outer } } return s }', { jzify: true }).f(), 6)
+})
+
 test('continue: skips iteration', () => {
   is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 2) continue; s += i } return s }').f(), 8)
 })

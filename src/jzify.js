@@ -303,6 +303,23 @@ const JZ_BLOCK_OPS = new Set([';', 'let', 'const', 'var', 'return', 'if', 'for',
   'while', 'do', 'break', 'continue', 'switch', 'throw', 'try', 'catch', 'finally',
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   '++', '--', '()', 'function', 'class', 'import', 'export', 'label'])
+const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
+
+function normalizeLabeledBody(node) {
+  if (!Array.isArray(node)) return node
+  // subscript parses `label: if (c) { body }` as
+  // `[':', label, [':', 'if', ['=>', ['()', c], body]]]`.
+  if (node[0] === ':' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>') {
+    const op = node[1]
+    const params = node[2][1]
+    const body = node[2][2]
+    const head = Array.isArray(params) && params[0] === '()' ? params[1] : params
+    if (op === 'if') return ['if', head, body]
+    if (op === 'while') return ['while', head, body]
+    if (op === 'for') return ['for', head, body]
+  }
+  return node
+}
 
 /** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape
  *  already pins down its runtime type. Returns true/false or null (unknown).
@@ -586,6 +603,12 @@ const handlers = {
   // fall back to treating it as `let`.
   'var'(...args) {
     return ['let', ...args.map(transform)]
+  },
+
+  ':'(label, body) {
+    const stmt = normalizeLabeledBody(body)
+    if (typeof label === 'string' && Array.isArray(stmt) && LABEL_BODY_OPS.has(stmt[0]))
+      return ['label', label, transform(stmt)]
   },
 
   '='(lhs, rhs) {
