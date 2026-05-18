@@ -47,6 +47,8 @@ export default (ctx) => {
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
     __str_encode: ['__str_byteLen', '__str_copy'],
+    __decodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__uri_hex'],
+    __uri_hex: [],
     __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
@@ -1217,6 +1219,100 @@ export default (ctx) => {
       r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
     }
     return r
+  }
+
+  ctx.core.stdlib['__uri_hex'] = `(func $__uri_hex (param $c i32) (result i32)
+    (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57)))
+      (then (i32.sub (local.get $c) (i32.const 48)))
+      (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 70)))
+        (then (i32.sub (local.get $c) (i32.const 55)))
+        (else (if (result i32) (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 102)))
+          (then (i32.sub (local.get $c) (i32.const 87)))
+          (else (i32.const -1))))))))`
+
+  ctx.core.stdlib['__decodeURIComponent'] = `(func $__decodeURIComponent (param $v i64) (result f64)
+    (local $s i64) (local $len i32) (local $i i32)
+    (local $base i32) (local $dst i32) (local $outLen i32)
+    (local $c i32) (local $hi i32) (local $lo i32)
+    (local $b i32) (local $n i32) (local $j i32) (local $cp i32) (local $min i32) (local $stored i32)
+    (local.set $s (call $__to_str (local.get $v)))
+    (local.set $len (call $__str_byteLen (local.get $s)))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (local.get $len))))
+    (local.set $dst (i32.add (local.get $base) (i32.const 4)))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
+      (local.set $stored (i32.const 0))
+      (local.set $c (call $__char_at (local.get $s) (local.get $i)))
+      (if (i32.eq (local.get $c) (i32.const 37))
+        (then
+          (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
+            (then (throw $__jz_err (f64.const 0))))
+          (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
+          (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
+          (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
+            (then (throw $__jz_err (f64.const 0))))
+          (local.set $c (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
+          (local.set $i (i32.add (local.get $i) (i32.const 3)))
+          (if (i32.ge_u (local.get $c) (i32.const 128))
+            (then
+              (if (i32.and (i32.ge_u (local.get $c) (i32.const 0xC2)) (i32.le_u (local.get $c) (i32.const 0xDF)))
+                (then
+                  (local.set $n (i32.const 2))
+                  (local.set $cp (i32.and (local.get $c) (i32.const 0x1F)))
+                  (local.set $min (i32.const 0x80)))
+                (else (if (i32.and (i32.ge_u (local.get $c) (i32.const 0xE0)) (i32.le_u (local.get $c) (i32.const 0xEF)))
+                  (then
+                    (local.set $n (i32.const 3))
+                    (local.set $cp (i32.and (local.get $c) (i32.const 0x0F)))
+                    (local.set $min (i32.const 0x800)))
+                  (else (if (i32.and (i32.ge_u (local.get $c) (i32.const 0xF0)) (i32.le_u (local.get $c) (i32.const 0xF4)))
+                    (then
+                      (local.set $n (i32.const 4))
+                      (local.set $cp (i32.and (local.get $c) (i32.const 0x07)))
+                      (local.set $min (i32.const 0x10000)))
+                    (else (throw $__jz_err (f64.const 0))))))))
+              (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $c))
+              (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
+              (local.set $j (i32.const 1))
+              (block $seqDone (loop $seq
+                (br_if $seqDone (i32.ge_s (local.get $j) (local.get $n)))
+                (if (i32.ge_s (i32.add (local.get $i) (i32.const 2)) (local.get $len))
+                  (then (throw $__jz_err (f64.const 0))))
+                (if (i32.ne (call $__char_at (local.get $s) (local.get $i)) (i32.const 37))
+                  (then (throw $__jz_err (f64.const 0))))
+                (local.set $hi (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 1)))))
+                (local.set $lo (call $__uri_hex (call $__char_at (local.get $s) (i32.add (local.get $i) (i32.const 2)))))
+                (if (i32.or (i32.lt_s (local.get $hi) (i32.const 0)) (i32.lt_s (local.get $lo) (i32.const 0)))
+                  (then (throw $__jz_err (f64.const 0))))
+                (local.set $b (i32.or (i32.shl (local.get $hi) (i32.const 4)) (local.get $lo)))
+                (if (i32.or (i32.lt_u (local.get $b) (i32.const 0x80)) (i32.gt_u (local.get $b) (i32.const 0xBF)))
+                  (then (throw $__jz_err (f64.const 0))))
+                (local.set $cp (i32.or (i32.shl (local.get $cp) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
+                (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $b))
+                (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))
+                (local.set $i (i32.add (local.get $i) (i32.const 3)))
+                (local.set $j (i32.add (local.get $j) (i32.const 1)))
+                (br $seq)))
+              (if (i32.or
+                    (i32.or (i32.lt_u (local.get $cp) (local.get $min)) (i32.gt_u (local.get $cp) (i32.const 0x10FFFF)))
+                    (i32.and (i32.ge_u (local.get $cp) (i32.const 0xD800)) (i32.le_u (local.get $cp) (i32.const 0xDFFF))))
+                (then (throw $__jz_err (f64.const 0))))
+              (local.set $stored (i32.const 1)))))
+        (else
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))))
+      (if (i32.eqz (local.get $stored))
+        (then
+          (i32.store8 (i32.add (local.get $dst) (local.get $outLen)) (local.get $c))
+          (local.set $outLen (i32.add (local.get $outLen) (i32.const 1)))))
+      (br $loop)))
+    (i32.store (local.get $base) (local.get $outLen))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $dst)))`
+
+  ctx.core.emit['decodeURIComponent'] = (value) => {
+    ctx.runtime.throws = true
+    inc('__decodeURIComponent')
+    return typed(['call', '$__decodeURIComponent',
+      value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))], 'f64')
   }
 
   // .at(i) → charAt with negative index support

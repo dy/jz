@@ -1,6 +1,6 @@
 // Comprehensive string method tests
 import test from 'tst'
-import { is, ok, almost } from 'tst/assert.js'
+import { is, ok, almost, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import jz from '../index.js'
 
@@ -16,6 +16,33 @@ function run(code) {
 
 test('String.fromCharCode: A', () => {
   is(run('export let f = () => String.fromCharCode(65).length').f(), 1)
+})
+
+// === decodeURIComponent ===
+
+test('decodeURIComponent: decodes escaped component bytes', () => {
+  const mod = run('export let f = () => decodeURIComponent("%3B%2F%3F%3A%40%26%3D%2B%24%2C%23")')
+  is(mod.memory.read(mod.f()), ';/?:@&=+$,#')
+})
+
+test('decodeURIComponent: accepts lowercase hex and UTF-8 bytes', () => {
+  const mod = run('export let f = () => decodeURIComponent("%c3%a9%20%E2%98%83")')
+  is(mod.memory.read(mod.f()), 'é ☃')
+})
+
+test('decodeURIComponent: leaves unescaped text unchanged', () => {
+  const mod = run('export let f = (x) => decodeURIComponent(x)')
+  is(mod.memory.read(mod.f(mod.memory.String('plain-value'))), 'plain-value')
+})
+
+test('decodeURIComponent: missing argument decodes undefined', () => {
+  const mod = run('export let f = () => decodeURIComponent()')
+  is(mod.memory.read(mod.f()), 'undefined')
+})
+
+test('decodeURIComponent: malformed escape throws', () => {
+  const mod = run('export let f = () => decodeURIComponent("%xz")')
+  throws(() => mod.f())
 })
 
 // === + operator on strings ===
