@@ -466,6 +466,31 @@ const cloneNode = (node) => {
   return copy
 }
 
+/** True if `node` contains a `break`/`continue` that belongs to it — i.e. not
+ *  one nested inside its own function. (Nested loops are intentionally counted:
+ *  an over-detection only opts into the safe frame-carrying lowering below.) */
+const hasLoopJump = (node) => {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === '=>' || op === 'function') return false
+  return node.some(hasLoopJump)
+}
+
+/** Retarget a for-in iteration's *own* unlabeled `break`/`continue` to explicit
+ *  block labels — `break` to the construct-wide label, `continue` to this
+ *  iteration's label. Nested loops/functions own their jumps and are skipped;
+ *  labeled jumps already name their target and are left untouched. */
+const retargetLoopJumps = (node, brkLabel, contLabel) => {
+  if (!Array.isArray(node)) return node
+  const op = node[0]
+  if (op === 'break' && node.length === 1) return ['break', brkLabel]
+  if (op === 'continue' && node.length === 1) return ['break', contLabel]
+  if (op === 'for' || op === 'for-in' || op === 'while' || op === 'do'
+      || op === '=>' || op === 'function') return node
+  return node.map(c => retargetLoopJumps(c, brkLabel, contLabel))
+}
+
 function prep(node) {
   if (Array.isArray(node)) includeForOp(node[0])
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
@@ -910,6 +935,15 @@ const handlers = {
       if (!assignedStaticGlobals.has(plhs) && (staticStr != null || staticArr)) bindStaticGlobal(plhs, staticStr, staticArr)
       else deleteStaticGlobal(plhs)
       assignedStaticGlobals.add(plhs)
+    }
+    // Local object-literal assignment to a not-yet-shaped variable — e.g. a `var`
+    // that jzify hoisted into `let x; x = {…}`. Recording the schema here lets the
+    // binding behave like `let x = {…}`: fixed-slot field access and for-in unroll.
+    // First assignment fixes the shape (mirrors the global rule above).
+    else if (typeof plhs === 'string' && Array.isArray(prhs) && prhs[0] === '{}'
+        && !ctx.schema.vars.has(plhs)) {
+      const props = staticObjectProps(prhs.slice(1))
+      if (props) ctx.schema.vars.set(plhs, ctx.schema.register(props.names))
     }
     return ['=', plhs, prhs]
   },
@@ -1590,14 +1624,33 @@ const handlers = {
         const keys = ctx.schema.list[sid]
         if (!keys || !keys.length) { popScope(); return null }
         includeForKnownKeyIteration()
-        const stmts = []
-        for (let i = 0; i < keys.length; i++) {
-          stmts.push(i === 0
-            ? ['let', ['=', varName, [, keys[i]]]]
-            : ['=', varName, [, keys[i]]])
-          stmts.push(cloneNode(body))
+        if (!hasLoopJump(body)) {
+          // No break/continue → flat unroll, no loop frame needed.
+          const stmts = []
+          for (let i = 0; i < keys.length; i++) {
+            stmts.push(i === 0
+              ? ['let', ['=', varName, [, keys[i]]]]
+              : ['=', varName, [, keys[i]]])
+            stmts.push(cloneNode(body))
+          }
+          r = prep([';', ...stmts])
+        } else {
+          // break/continue present → an unrolled loop still needs its frames.
+          // Wrap each iteration in a labeled block (continue target) and the
+          // whole run in an outer labeled block (break target): `break` exits
+          // the construct, `continue` falls through to the next iteration.
+          const brkL = `${T}fibrk${ctx.func.uniq++}`
+          const decl = prep(['let', ['=', varName, [, keys[0]]]])
+          const parts = [decl]
+          for (let i = 0; i < keys.length; i++) {
+            const contL = `${T}ficont${ctx.func.uniq++}`
+            const iter = prep(i === 0
+              ? cloneNode(body)
+              : [';', ['=', varName, [, keys[i]]], cloneNode(body)])
+            parts.push(['label', contL, retargetLoopJumps(iter, brkL, contL)])
+          }
+          r = ['label', brkL, [';', ...parts]]
         }
-        r = prep([';', ...stmts])
       } else {
         // Dynamic object → HASH runtime iteration
         includeForRuntimeKeyIteration()
