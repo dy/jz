@@ -249,6 +249,7 @@ export default (ctx) => {
     ],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset'],
     __arr_push1: ['__arr_grow_known', '__ptr_offset'],
+    __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
     __typed_idx: () => ctx.features.typedarray || ctx.features.external
       ? ['__len']
       : ['__len', '__ptr_offset'],
