@@ -30,7 +30,7 @@ export default (ctx) => {
     __date_day: [],
     __date_time_within_day: ['__date_day'],
     __date_weekday: ['__date_day'],
-    __date_year_from_time: ['__date_days_from_year'],
+    __date_year_from_time: ['__date_day', '__date_days_from_year'],
     __date_in_leap_year: ['__date_year_from_time', '__date_days_from_year'],
     __date_day_within_year: ['__date_day', '__date_year_from_time', '__date_days_from_year'],
     __date_month_from_time: ['__date_day_within_year', '__date_in_leap_year'],
