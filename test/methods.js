@@ -260,6 +260,16 @@ test('.shift: dynamic properties move with array', () => {
   }`).f(), 227)
 })
 
+// === .unshift ===
+
+test('.unshift: prepends and pulls grow helper', () => {
+  is(run(`export let f = () => {
+    let a = [2]
+    let n = a.unshift(1)
+    return n * 100 + a.length * 10 + a[0]
+  }`).f(), 221)
+})
+
 // === .slice ===
 
 test('.slice: middle', () => {
