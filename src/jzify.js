@@ -540,11 +540,12 @@ const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
 //     return selfN
 //   }
 //
-// Out of scope for now (rejected with a clear message): `extends`/`super`,
+// Out of scope for now (rejected with a clear message): `super.foo`,
 // `static` members, getters/setters, computed/private-via-`#` member names are
 // kept as the literal key string `#name` (jz allows it).
 let classIdx = 0
 let objThisIdx = 0
+const DEFAULT_DERIVED_CTOR_ARITY = 8
 
 const classBodyItems = (body) =>
   body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
@@ -568,6 +569,35 @@ function usesThis(node) {
   if (node[0] === '.' || node[0] === '?.') return usesThis(node[1])
   if (node[0] === ':') return usesThis(node[2])
   return node.some(usesThis)
+}
+
+function hasSuperProp(node) {
+  if (!Array.isArray(node)) return false
+  if ((node[0] === '.' || node[0] === '?.') && node[1] === 'super') return true
+  return node.some(hasSuperProp)
+}
+
+function isSuperCall(node) {
+  return Array.isArray(node) && node[0] === '()' && node[1] === 'super'
+}
+
+function splitCtorSuper(body) {
+  if (body == null) return { args: null, body }
+  if (isSuperCall(body)) return { args: body.slice(2), body: null }
+  if (Array.isArray(body) && body[0] === '{}') {
+    const inner = splitCtorSuper(body[1])
+    return { args: inner.args, body: ['{}', inner.body] }
+  }
+  if (Array.isArray(body) && body[0] === ';') {
+    const out = [';']
+    let args = null
+    for (const stmt of body.slice(1)) {
+      if (args == null && isSuperCall(stmt)) { args = stmt.slice(2); continue }
+      out.push(stmt)
+    }
+    return { args, body: out.length === 1 ? null : out.length === 2 ? out[1] : out }
+  }
+  return { args: null, body }
 }
 
 // Object shorthand methods and arrow-valued properties both parse as `=>`.
@@ -616,7 +646,8 @@ function lowerObjectLiteralThis(args) {
 function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
 
 function lowerClass(name, heritage, body) {
-  if (heritage != null) jzifyError('`class … extends …` is not supported yet — flatten the hierarchy or compose explicitly')
+  if (heritage != null && typeof heritage !== 'string')
+    jzifyError('dynamic `class … extends …` heritage is not supported yet')
   let ctorParams = null, ctorBody = null
   const methods = [], fields = []
   for (const it of classBodyItems(body)) {
@@ -639,6 +670,8 @@ function lowerClass(name, heritage, body) {
     if (it[0] === 'static') jzifyError('`static` class members are not supported yet')
     jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
   }
+  if (heritage != null && (hasSuperProp(ctorBody) || methods.some(([, , mbody]) => hasSuperProp(mbody))))
+    jzifyError('`super` property access is not supported yet')
   const self = `self${classIdx++}`
   const UNDEF = []                                  // jessie's node for `undefined`
   // Object literal: every declared field (its initializer inline when it doesn't
@@ -652,10 +685,29 @@ function lowerClass(name, heritage, body) {
   for (const [mname, mparams, mbody] of methods)
     litProps.push([':', mname, transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
-  const stmts = [['let', ['=', self, lit]]]
+  let params = ctorParams ?? ['()', null]
+  const stmts = []
+  if (heritage != null) {
+    const split = splitCtorSuper(ctorBody)
+    ctorBody = split.body
+    const defaultArgs = ctorParams == null
+      ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => `superArg${classIdx}_${i}`)
+      : null
+    const baseArgs = split.args ?? (defaultArgs ? [defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]] : paramList(ctorParams))
+    stmts.push(['let', ['=', self, ['()', heritage, ...baseArgs.map(transform)]]])
+    for (const [fname, init] of fields)
+      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(init, self)) : UNDEF])
+    for (const [mname, mparams, mbody] of methods)
+      stmts.push(['=', ['.', self, mname], transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
+    if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
+  } else {
+    stmts.push(['let', ['=', self, lit]])
+  }
   // `this`-dependent field initializers run, in declaration order, before the ctor.
-  for (const [fname, init] of deferred)
-    stmts.push(['=', ['.', self, fname], transform(renameThis(init, self))])
+  if (heritage == null) {
+    for (const [fname, init] of deferred)
+      stmts.push(['=', ['.', self, fname], transform(renameThis(init, self))])
+  }
   if (ctorBody != null) {
     let cb = transform(renameThis(ctorBody, self))
     if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
@@ -663,7 +715,7 @@ function lowerClass(name, heritage, body) {
     else if (cb != null) stmts.push(cb)
   }
   stmts.push(['return', self])
-  return ['=>', arrowParams(ctorParams ?? ['()', null]), ['{}', [';', ...stmts]]]
+  return ['=>', arrowParams(params), ['{}', [';', ...stmts]]]
 }
 
 const handlers = {
