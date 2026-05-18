@@ -12,7 +12,7 @@
  * @module math
  */
 
-import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop } from '../src/ir.js'
+import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { emitter } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
@@ -44,7 +44,6 @@ export default (ctx) => {
   // Helpers: all math ops take f64 and return f64. Args go through ToNumber
   // (toNumF64) — ECMA Math methods coerce each argument, so null→0, undefined→NaN.
   const f = (op, a) => typed([op, toNumF64(a, emit(a))], 'f64')
-  const f2 = (op, a, b) => typed([op, toNumF64(a, emit(a)), toNumF64(b, emit(b))], 'f64')
   // floor/ceil/trunc/round are no-ops on integer-valued operands. When the
   // arg is a local whose every def is integer-valued (intCertain lattice),
   // skip the wasm op and just hand back the operand cast to f64. Same elision
@@ -111,23 +110,28 @@ export default (ctx) => {
   ctx.core.emit['math.floor'] = a => fInt('f64.floor', a)
   ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
   ctx.core.emit['math.trunc'] = a => fInt('f64.trunc', a)
-  ctx.core.emit['math.min'] = (a, b, ...rest) => {
-    if (a === undefined) return typed(['f64.const', Infinity], 'f64')
-    // Spread: Math.min(...arr) — iterate array to find min
-    if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce('f64.min', a[1], Infinity))
-    if (b === undefined) return canon(typed(['f64.min', toNumF64(a, emit(a)), ['f64.const', Infinity]], 'f64'))
-    let r = f2('f64.min', a, b)
-    for (const x of rest) r = typed(['f64.min', r, toNumF64(x, emit(x))], 'f64')
-    return canon(r)
+  // Math.min/max fold their operands with a wasm op. f64.min/max PROPAGATE a
+  // NaN but never MINT one, so `canon` is needed only when an operand could
+  // itself be NaN. An operand provably never is when it's an intCertain local/
+  // slot, a non-NaN numeric literal, or an i32-typed carrier (`x|0`, compares,
+  // lengths). When every operand qualifies, drop `canon` — erasing its cost
+  // from the common integer-clamp idiom Math.min(idx, len) / Math.max(x|0, lo).
+  const neverNaN = (src, v) =>
+    isIntCertain(src) || (typeof src === 'number' && src === src) ||
+    (v.type === 'i32' && v.ptrKind == null) || (isLit(v) && litVal(v) === litVal(v))
+  const minmax = (op, ident) => (a, b, ...rest) => {
+    if (a === undefined) return typed(['f64.const', ident], 'f64')
+    // Spread: Math.min(...arr) — array contents unknown, keep canon
+    if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce(op, a[1], ident))
+    const src = b === undefined ? [a] : [a, b, ...rest]
+    const ev = src.map(x => emit(x))
+    let r = typed([op, toNumF64(src[0], ev[0]),
+      b === undefined ? ['f64.const', ident] : toNumF64(src[1], ev[1])], 'f64')
+    for (let i = 2; i < src.length; i++) r = typed([op, r, toNumF64(src[i], ev[i])], 'f64')
+    return src.every((s, i) => neverNaN(s, ev[i])) ? r : canon(r)
   }
-  ctx.core.emit['math.max'] = (a, b, ...rest) => {
-    if (a === undefined) return typed(['f64.const', -Infinity], 'f64')
-    if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce('f64.max', a[1], -Infinity))
-    if (b === undefined) return canon(typed(['f64.max', toNumF64(a, emit(a)), ['f64.const', -Infinity]], 'f64'))
-    let r = f2('f64.max', a, b)
-    for (const x of rest) r = typed(['f64.max', r, toNumF64(x, emit(x))], 'f64')
-    return canon(r)
-  }
+  ctx.core.emit['math.min'] = minmax('f64.min', Infinity)
+  ctx.core.emit['math.max'] = minmax('f64.max', -Infinity)
   // f64.nearest is roundTiesToEven; JS Math.round is roundTiesToward+∞. They agree
   // everywhere except exact half-integers n+0.5 with n even (nearest→n, JS→n+1).
   // Detect that one case — `nearest(x) === x - 0.5` — and bump by one. (The −0.5→−0
