@@ -372,8 +372,15 @@ function shouldSkip(content, rel = '') {
     // to one id, so distinct-literal object-identity tests are out of model.
     if (rel.endsWith('/S7.8.5_A4.2.js') || rel.endsWith('/inequality.js'))
       return 'regex literal object identity outside compile-time-id model'
-    // jz's regex engine: no named capture groups, no u-flag unicode/surrogate semantics.
-    if (rel.includes('/named-groups/')) return 'named capture groups unsupported by jz regex engine'
+    // jz supports ordinary named capture groups, but not the full named-group
+    // grammar surface: named backreferences, duplicate-name alternatives,
+    // unicode identifier names, or syntax-error conformance cases.
+    if (rel.includes('/named-groups/')) {
+      if (rel.includes('/invalid-')) return 'named capture group syntax errors outside current regex parser scope'
+      if (rel.includes('/duplicate-')) return 'duplicate named capture groups unsupported'
+      if (rel.endsWith('-u.js') || rel.includes('/unicode-')) return 'unicode regex group names unsupported'
+      if (codeContent.includes('\\k<')) return 'named backreferences unsupported'
+    }
     if (/\/regexp\/u-[^/]*\.js$/.test(rel)) return 'u-flag unicode/surrogate regex semantics unsupported'
   }
   // The `RegExp` constructor/global isn't exposed by jz — regex is literal-only.

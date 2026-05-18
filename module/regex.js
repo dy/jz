@@ -10,14 +10,31 @@
 import { typed, asF64, asI64, UNDEF_NAN, mkPtrIR, temp, tempI32 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
+import { includeModule } from '../src/autoload.js'
 
 // Build IR that constructs a match array: [full, cap1, cap2, ...]
 // strLocal, msLocal, meLocal are local names (i32 for ms/me, f64 for str).
 // Captures read from globals $__re_g${i}_start / _end. -1 → undefined.
-const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
+const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => {
   const N = nGroups + 1
   inc('__alloc', '__mkptr', '__str_slice')
   const arr = tempI32('mka')
+  const arrPtr = temp('mkap')
+  const captures = []
+  const named = []
+  for (let i = 1; i <= nGroups; i++) {
+    captures[i] = [tempI32('mkgs'), tempI32('mkge')]
+    if (groupNames[i]) named.push([i, groupNames[i]])
+  }
+  if (named.length) {
+    includeModule('collection')
+    inc('__hash_new_small', '__hash_set', '__dyn_set')
+  }
+  const captureValue = i => ['if', ['result', 'f64'],
+    ['i32.lt_s', ['local.get', `$${captures[i][0]}`], ['i32.const', 0]],
+    ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
+    ['else', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
+      ['local.get', `$${captures[i][0]}`], ['local.get', `$${captures[i][1]}`]]]]
   const stmts = [
     ['local.set', `$${arr}`, ['call', '$__alloc', ['i32.const', 8 + N * 8]]],
     ['i32.store', ['local.get', `$${arr}`], ['i32.const', N]],
@@ -27,14 +44,30 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
         ['local.get', `$${msLocal}`], ['local.get', `$${meLocal}`]]],
   ]
   for (let i = 1; i <= nGroups; i++) {
-    stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8 + i * 8]],
-      ['if', ['result', 'f64'],
-        ['i32.lt_s', ['global.get', `$__re_g${i}_start`], ['i32.const', 0]],
-        ['then', ['f64.const', `nan:${UNDEF_NAN}`]],
-        ['else', ['call', '$__str_slice', ['i64.reinterpret_f64', ['local.get', `$${strLocal}`]],
-          ['global.get', `$__re_g${i}_start`], ['global.get', `$__re_g${i}_end`]]]]])
+    stmts.push(['local.set', `$${captures[i][0]}`, ['global.get', `$__re_g${i}_start`]])
+    stmts.push(['local.set', `$${captures[i][1]}`, ['global.get', `$__re_g${i}_end`]])
   }
-  stmts.push(mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]]))
+  for (let i = 1; i <= nGroups; i++) {
+    stmts.push(['f64.store', ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8 + i * 8]],
+      captureValue(i)])
+  }
+  stmts.push(['local.set', `$${arrPtr}`, mkPtrIR(PTR.ARRAY, 0, ['i32.add', ['local.get', `$${arr}`], ['i32.const', 8]])])
+  if (named.length) {
+    const groups = temp('mkg')
+    stmts.push(['local.set', `$${groups}`, ['call', '$__hash_new_small']])
+    for (const [i, name] of named) {
+      stmts.push(['local.set', `$${groups}`,
+        ['f64.reinterpret_i64', ['call', '$__hash_set',
+          ['i64.reinterpret_f64', ['local.get', `$${groups}`]],
+          asI64(emit(['str', name])),
+          ['i64.reinterpret_f64', captureValue(i)]]]])
+    }
+    stmts.push(['drop', ['call', '$__dyn_set',
+      ['i64.reinterpret_f64', ['local.get', `$${arrPtr}`]],
+      asI64(emit(['str', 'groups'])),
+      ['i64.reinterpret_f64', ['local.get', `$${groups}`]]]])
+  }
+  stmts.push(['local.get', `$${arrPtr}`])
   return ['block', ['result', 'f64'], ...stmts]
 }
 
@@ -43,9 +76,9 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups) => {
 const PIPE = 124, STAR = 42, PLUS = 43, QUEST = 63, DOT = 46,
   LBRACK = 91, RBRACK = 93, LPAREN = 40, RPAREN = 41,
   LBRACE = 123, RBRACE = 125, CARET = 94, DOLLAR = 36,
-  BSLASH = 92, DASH = 45, COLON = 58, EQUAL = 61, EXCL = 33, LT = 60
+  BSLASH = 92, DASH = 45, COLON = 58, EQUAL = 61, EXCL = 33, LT = 60, GT = 62
 
-let src, idx, groupNum
+let src, idx, groupNum, groupNames
 
 const cur = () => src.charCodeAt(idx),
   peek = () => src[idx],
@@ -55,12 +88,13 @@ const cur = () => src.charCodeAt(idx),
 
 /** Parse regex pattern → AST */
 export const parseRegex = (pattern, flags = '') => {
-  src = pattern; idx = 0; groupNum = 0
+  src = pattern; idx = 0; groupNum = 0; groupNames = []
   let ast = parseAlt()
   if (!eof()) perr('Unexpected ' + peek())
   if (typeof ast === 'string') ast = ['seq', ast]
   if (flags) ast.flags = flags
   ast.groups = groupNum
+  if (groupNames.length) ast.groupNames = groupNames
   return ast
 }
 
@@ -154,6 +188,7 @@ const parseEscape = () => {
   skip()
   const c = peek()
   if (c >= '1' && c <= '9') { skip(); return ['\\' + c] }
+  if (c === 'k' && src.charCodeAt(idx + 1) === LT) perr('Named backreference unsupported')
   if ('dDwWsS'.includes(c)) { skip(); return ['\\' + c] }
   if (c === 'b' || c === 'B') { skip(); return ['\\' + c] }
   return parseEscapeChar()
@@ -172,7 +207,7 @@ const parseEscapeChar = () => {
 
 const parseGroup = () => {
   skip()
-  let type = '()', groupId = null
+  let type = '()', groupId = null, groupName = null
   if (cur() === QUEST) {
     skip(); const c = cur()
     if (c === COLON) { skip(); type = '(?:)' }
@@ -182,12 +217,32 @@ const parseGroup = () => {
       skip(); const c2 = cur()
       if (c2 === EQUAL) { skip(); type = '(?<=)' }
       else if (c2 === EXCL) { skip(); type = '(?<!)' }
-      else perr('Invalid group syntax')
+      else { groupName = parseGroupName(); groupId = ++groupNum }
     } else perr('Invalid group syntax')
   } else groupId = ++groupNum
   const inner = parseAlt()
   cur() === RPAREN || perr('Unclosed ('); skip()
+  if (groupName) groupNames[groupId] = groupName
   return groupId ? [type, inner, groupId] : [type, inner]
+}
+
+const isGroupNameStart = c =>
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 36 || c === 95
+
+const isGroupNameContinue = c => isGroupNameStart(c) || (c >= 48 && c <= 57)
+
+const parseGroupName = () => {
+  const start = idx
+  isGroupNameStart(cur()) || perr('Invalid group name')
+  skip()
+  while (!eof() && cur() !== GT) {
+    isGroupNameContinue(cur()) || perr('Invalid group name')
+    skip()
+  }
+  cur() === GT || perr('Unclosed group name')
+  const name = src.slice(start, idx)
+  skip()
+  return name
 }
 
 
@@ -663,7 +718,7 @@ export default (ctx) => {
     __str_to_buf: ['__str_byteLen', '__char_at'],
   })
 
-  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map() }
+  ctx.runtime.regex = { count: 0, vars: new Map(), compiled: new Map(), groups: new Map(), groupNames: new Map() }
 
   // SSO → heap normalizer: returns data offset (i32) for direct byte access.
   // Heap STRING: aux bit SSO_BIT is 0 → offset already points at bytes.
@@ -700,6 +755,7 @@ export default (ctx) => {
       }
     }
     ctx.runtime.regex.groups.set(id, ast.groups || 0)
+    ctx.runtime.regex.groupNames.set(id, ast.groupNames || [])
     ctx.core.stdlib[funcName] = compileRegex(ast, funcName)
 
     // Search wrapper: tries match at each position, returns (match_start, match_end) via locals
@@ -760,6 +816,7 @@ export default (ctx) => {
     const id = resolveRegex(obj)
     if (id == null) err('regex.exec requires a known regex')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
+    const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     const s = temp('re'), ms = tempI32('rems'), me = tempI32('reme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -767,7 +824,7 @@ export default (ctx) => {
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
-        ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
+        ['else', buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
   }
 
   // === Regex instance properties ===
@@ -845,6 +902,7 @@ export default (ctx) => {
                   ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
     }
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
+    const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     const s = temp('sm'), ms = tempI32('smms'), me = tempI32('smme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -852,7 +910,7 @@ export default (ctx) => {
         ['call', `$__regex_search_${id}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]]]]],
       ['if', ['result', 'f64'], ['i32.lt_s', ['local.get', `$${ms}`], ['i32.const', 0]],
         ['then', ['f64.const', 0]],
-        ['else', buildMatchArr(s, ms, me, nGroups)]]], 'f64')
+        ['else', buildMatchArr(s, ms, me, nGroups, groupNames)]]], 'f64')
   }
 
   // str.replace(/re/, repl) → replaced string
