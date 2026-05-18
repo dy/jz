@@ -29,6 +29,7 @@ import {
   isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
   containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
   containsKnownTypedArrayIndex, smallConstForTripCount, isTerminator,
+  inBoundsCharCodeAt,
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
 } from './analyze.js'
 import {
@@ -657,6 +658,51 @@ export function emitDecl(...inits) {
 }
 
 /**
+ * Copy a spread source's elements into a destination array.
+ *
+ * `dest` is the destination data-base i32 local; `posLocal` the element index to
+ * start writing at — advanced by the source length on exit. An ARRAY source is a
+ * contiguous block of f64 NaN-boxes, so it copies with a single `memory.copy`; a
+ * string/typed source needs a per-element decode. The source's *type* is
+ * loop-invariant — it cannot change while the spread runs — so when it is not
+ * statically known it is resolved exactly once (one `__ptr_type`) and branched,
+ * never re-checked per element. Returns a list of IR instructions.
+ */
+function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
+  const srcI64 = () => ['i64.reinterpret_f64', ['local.get', `$${srcLocal}`]]
+  const destAddr = idx => ['i32.add', ['local.get', `$${dest}`], ['i32.shl', idx, ['i32.const', 3]]]
+  const arrCopy = () => (inc('__ptr_offset'),
+    ['memory.copy', destAddr(['local.get', `$${posLocal}`]),
+      ['call', '$__ptr_offset', srcI64()],
+      ['i32.shl', ['local.get', `$${srcLenLocal}`], ['i32.const', 3]]])
+  const scalarLoop = () => {
+    const sidx = `${T}sidx${ctx.func.uniq++}`
+    ctx.func.locals.set(sidx, 'i32')
+    const loopId = ctx.func.uniq++
+    const elem = ctx.module.modules['string']
+      ? ['if', ['result', 'f64'],
+          ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.STRING]],
+          ['then', (inc('__str_idx'), ['call', '$__str_idx', srcI64(), ['local.get', `$${sidx}`]])],
+          ['else', (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])]]
+      : (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])
+    return ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
+      ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${srcLenLocal}`]]],
+      ['f64.store', destAddr(['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${sidx}`]]), elem],
+      ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
+      ['br', `$loop${loopId}`]]]
+  }
+  const advance = ['local.set', `$${posLocal}`,
+    ['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${srcLenLocal}`]]]
+  if (staticVT === VAL.ARRAY) return [arrCopy(), advance]
+  if (staticVT === VAL.STRING || staticVT === VAL.TYPED) return [scalarLoop(), advance]
+  inc('__ptr_type')
+  return [['if',
+    ['i32.eq', ['call', '$__ptr_type', srcI64()], ['i32.const', PTR.ARRAY]],
+    ['then', arrCopy()],
+    ['else', scalarLoop()]], advance]
+}
+
+/**
  * Build an array from items, handling ['__spread', expr] markers.
  * Split into sections (normal arrays and spreads), then copy all into result.
  */
@@ -690,9 +736,12 @@ export function buildArrayWithSpreads(items) {
     sections.push({ type: 'array', items: currentArray })
   }
 
-  if (sections.length === 1) {
-    const sec = sections[0]
-    return emit(sec.type === 'array' ? ['[', ...sec.items] : sec.expr)
+  // A single all-normal section is a plain literal — defer to the `[` emitter.
+  // A single *spread* section is NOT shortcut to `emit(sec.expr)`: that would
+  // alias the source, but `[...x]` must yield a fresh array. It falls through
+  // to the alloc + emitSpreadCopy path below, which copies.
+  if (sections.length === 1 && sections[0].type === 'array') {
+    return emit(['[', ...sections[0].items])
   }
 
   const len = tempI32('len')
@@ -700,35 +749,39 @@ export function buildArrayWithSpreads(items) {
   const out = allocPtr({ type: 1, len: ['local.get', `$${len}`], tag: 'arr' })
   const result = out.local
 
-  const ir = [
-    ['local.set', `$${len}`, ['i32.const', 0]],
-  ]
+  const ir = []
+  inc('__len')
 
-  inc('__len', '__ptr_offset')
+  // Pass 1 — evaluate every section IN SOURCE ORDER into temps. JS spread keeps
+  // strict left-to-right order: a later spread whose source mutates an earlier
+  // element's input must still observe the pre-mutation value. Array items
+  // become per-item f64 temps; spreads become a ptr temp + a cached __len.
   for (const sec of sections) {
-    if (sec.type === 'spread') {
+    if (sec.type === 'array') {
+      sec.itemLocals = []
+      for (let i = 0; i < sec.items.length; i++) {
+        const it = `${T}ai${ctx.func.uniq++}`
+        ctx.func.locals.set(it, 'f64')
+        sec.itemLocals.push(it)
+        ir.push(['local.set', `$${it}`, asF64(emit(sec.items[i]))])
+      }
+    } else {
       sec.local = `${T}sp${ctx.func.uniq++}`
       ctx.func.locals.set(sec.local, 'f64')
       sec.lenLocal = `${T}spl${ctx.func.uniq++}`
       ctx.func.locals.set(sec.lenLocal, 'i32')
-      sec.val = valTypeOf(sec.expr)
-      // ARRAY-known source: hoist data base and inline len/load (skip per-iter dispatch).
-      if (sec.val === VAL.ARRAY && !multiCount(sec.expr)) {
-        sec.baseLocal = `${T}spb${ctx.func.uniq++}`
-        ctx.func.locals.set(sec.baseLocal, 'i32')
-      }
+      // A materialized multi-value is not a statically-typed pointer — let
+      // emitSpreadCopy resolve its kind at runtime via its one-time __ptr_type branch.
+      sec.val = multiCount(sec.expr) ? undefined : valTypeOf(sec.expr)
       const n = multiCount(sec.expr)
       ir.push(['local.set', `$${sec.local}`, n ? materializeMulti(sec.expr) : asF64(emit(sec.expr))])
-      if (sec.baseLocal) {
-        ir.push(['local.set', `$${sec.baseLocal}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
-        ir.push(['local.set', `$${sec.lenLocal}`, ['i32.load', ['i32.sub', ['local.get', `$${sec.baseLocal}`], ['i32.const', 8]]]])
-      } else {
-        // Cache __len once per spread; reused below for total-len sum and inner copy bound.
-        ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
-      }
+      // Cache __len once per spread; reused below for total-len sum and the copy.
+      ir.push(['local.set', `$${sec.lenLocal}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]]])
     }
   }
 
+  // Pass 2 — total length (array sections statically sized, spreads cached above).
+  ir.push(['local.set', `$${len}`, ['i32.const', 0]])
   for (const sec of sections) {
     if (sec.type === 'array') {
       ir.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', sec.items.length]]])
@@ -737,41 +790,20 @@ export function buildArrayWithSpreads(items) {
     }
   }
 
+  // Pass 3 — allocate exact, then store the pre-evaluated temps.
   ir.push(out.init, ['local.set', `$${pos}`, ['i32.const', 0]])
-
   for (const sec of sections) {
     if (sec.type === 'array') {
-      for (let i = 0; i < sec.items.length; i++) {
+      for (const it of sec.itemLocals) {
         ir.push(
           ['f64.store',
             ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-            asF64(emit(sec.items[i]))],
+            ['local.get', `$${it}`]],
           ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]]
         )
       }
     } else {
-      const slen = sec.lenLocal, sidx = `${T}sidx${ctx.func.uniq++}`
-      ctx.func.locals.set(sidx, 'i32')
-      const loopId = ctx.func.uniq++
-      const elemLoad = sec.baseLocal
-        ? ['f64.load', ['i32.add', ['local.get', `$${sec.baseLocal}`], ['i32.shl', ['local.get', `$${sidx}`], ['i32.const', 3]]]]
-        : ctx.module.modules['string']
-          ? ['if', ['result', 'f64'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]]], ['i32.const', PTR.STRING]],
-            ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])],
-            ['else', (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])]]
-          : (inc('__typed_idx'), ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${sec.local}`]], ['local.get', `$${sidx}`]])
-      ir.push(
-        ['local.set', `$${sidx}`, ['i32.const', 0]],
-        ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
-          ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${slen}`]]],
-          ['f64.store',
-            ['i32.add', ['local.get', `$${result}`], ['i32.shl', ['local.get', `$${pos}`], ['i32.const', 3]]],
-            elemLoad],
-          ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
-          ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
-          ['br', `$loop${loopId}`]]]
-      )
+      ir.push(...emitSpreadCopy(result, pos, sec.local, sec.lenLocal, sec.val))
     }
   }
 
@@ -2056,6 +2088,14 @@ export const emitter = {
     if (Array.isArray(callee) && callee[0] === '.') {
       const [, obj, method] = callee
 
+      // charCodeAt with a statically in-bounds index — emit the i32
+      // (OOB-impossible) contract directly; the generic path keeps the
+      // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
+      if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
+          && ctx.abi.string?.ops?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee))
+        return typed(ctx.abi.string.ops.charCodeAt(
+          asF64(emit(obj)), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+
       // Function property call: fn.prop(args) → direct call to fn$prop.
       // Skipped when the property was reassigned (wrapper composition) — then
       // it is a mutable slot and must be read dynamically before the call.
@@ -2115,22 +2155,14 @@ export const emitter = {
           ctx.func.locals.set(si, 'i32'); ctx.func.locals.set(base, 'i32')
 
           const objIsArr = lookupValType(objArg) === VAL.ARRAY
-          // Spread source: if statically known ARRAY, inline len/load via hoisted srcBase
-          // (skip per-iteration __arr_idx call + dispatch).
-          const srcVT = valTypeOf(spreadExpr)
-          const srcIsArr = !multiCount(spreadExpr) && srcVT === VAL.ARRAY
-          const srcBase = srcIsArr ? `${T}psb${ctx.func.uniq++}` : null
-          if (srcIsArr) ctx.func.locals.set(srcBase, 'i32')
+          // A materialized multi-value is not a statically-typed pointer — let
+          // emitSpreadCopy resolve its kind once at runtime.
+          const srcVT = multiCount(spreadExpr) ? undefined : valTypeOf(spreadExpr)
           const n = multiCount(spreadExpr)
           const ir = []
           ir.push(['local.set', `$${o}`, asF64(emit(objArg))])
           ir.push(['local.set', `$${sa}`, n ? materializeMulti(spreadExpr) : asF64(emit(spreadExpr))])
-          if (srcIsArr) {
-            ir.push(['local.set', `$${srcBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
-            ir.push(['local.set', `$${sl}`, ['i32.load', ['i32.sub', ['local.get', `$${srcBase}`], ['i32.const', 8]]]])
-          } else {
-            ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
-          }
+          ir.push(['local.set', `$${sl}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]])
           // Old length: inline as `i32.load (off-8)` if obj is known ARRAY (matches .push handler).
           if (objIsArr) {
             ir.push(['local.set', `$${ol}`,
@@ -2143,20 +2175,9 @@ export const emitter = {
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]]])
           // base captured AFTER grow (grow may relocate the array).
           ir.push(['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${o}`]]]])
-          // Tight store loop.
-          ir.push(['local.set', `$${si}`, ['i32.const', 0]])
-          const loopId = ctx.func.uniq++
-          const srcLoad = srcIsArr
-            ? ['f64.load', ['i32.add', ['local.get', `$${srcBase}`], ['i32.shl', ['local.get', `$${si}`], ['i32.const', 3]]]]
-            : asF64(emit(['[]', sa, si]))
-          ir.push(['block', `$break${loopId}`, ['loop', `$continue${loopId}`,
-            ['br_if', `$break${loopId}`, ['i32.ge_u', ['local.get', `$${si}`], ['local.get', `$${sl}`]]],
-            ['f64.store',
-              ['i32.add', ['local.get', `$${base}`],
-                ['i32.shl', ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${si}`]], ['i32.const', 3]]],
-              srcLoad],
-            ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
-            ['br', `$continue${loopId}`]]])
+          // Bulk-copy the spread: an ARRAY source is a contiguous f64 block → memory.copy.
+          ir.push(['local.set', `$${si}`, ['local.get', `$${ol}`]])
+          ir.push(...emitSpreadCopy(base, si, sa, sl, srcVT))
           // Single set_len for the full spread.
           ir.push(['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${o}`]],
             ['i32.add', ['local.get', `$${ol}`], ['local.get', `$${sl}`]]])

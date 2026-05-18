@@ -9,7 +9,7 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr } from '../src/ir.js'
-import { emit, materializeMulti } from '../src/emit.js'
+import { emit, buildArrayWithSpreads } from '../src/emit.js'
 import { valTypeOf, lookupValType, lookupNotString, VAL, extractParams, updateRep, staticPropertyKey, staticObjectProps, inlineArraySid } from '../src/analyze.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, PTR, LAYOUT } from '../src/ctx.js'
@@ -570,17 +570,24 @@ export default (ctx) => {
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
   // forwarding follow. On the rare grow path the base is recomputed after relocation.
   ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
-    (local $base i32) (local $p f64)
+    (local $base i32) (local $p f64) (local $oldLen i32) (local $k i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.lt_s (local.get $i) (i32.const 0))
       (then (return (local.get $p))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
-    (if (i32.ge_u (local.get $i)
-                  (i32.load (i32.sub (local.get $base) (i32.const 8))))
+    (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
+    (if (i32.ge_u (local.get $i) (local.get $oldLen))
       (then
         (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
         (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))
-        (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $i) (i32.const 1)))))
+        (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $i) (i32.const 1)))
+        ;; gap slots [oldLen, i) are holes — fill with undefined, not zero
+        (local.set $k (local.get $oldLen))
+        (block $fdone (loop $fill
+          (br_if $fdone (i32.ge_u (local.get $k) (local.get $i)))
+          (i64.store (i32.add (local.get $base) (i32.shl (local.get $k) (i32.const 3))) (i64.const ${UNDEF_NAN}))
+          (local.set $k (i32.add (local.get $k) (i32.const 1)))
+          (br $fill)))))
     (f64.store
       (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3)))
       (local.get $val))
@@ -626,53 +633,11 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'], ...body], 'f64')
     }
 
-    const minCap = Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)
-    const a = allocArray(0, Math.max(elems.length, minCap))
-    const out = temp('sa'), pos = tempI32('sp')
-    inc('__arr_set_idx_ptr')
-
-    const body = [
-      ...a.setup,
-      ['local.set', `$${out}`, a.ptr],
-      ['local.set', `$${pos}`, ['i32.const', 0]],
-    ]
-
-    for (const e of elems) {
-      if (Array.isArray(e) && e[0] === '...') {
-        const src = temp('ss'), slen = tempI32('sl'), si = tempI32('si')
-        const id = ctx.func.uniq++
-        const spreadVal = multiCount(e[1]) ? materializeMulti(e[1]) : asF64(emit(e[1]))
-        const srcVT = valTypeOf(e[1])
-        const spreadItem = srcVT === VAL.ARRAY
-          ? (inc('__arr_idx_known'), ['call', '$__arr_idx_known', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
-          : srcVT === VAL.STRING
-            ? (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
-            : ctx.module.modules['string']
-              ? ['if', ['result', 'f64'],
-                ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${src}`]]], ['i32.const', PTR.STRING]],
-                ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])],
-                ['else', (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])]]
-              : (['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${src}`]], ['local.get', `$${si}`]])
-
-        body.push(
-          ['local.set', `$${src}`, spreadVal],
-          ['local.set', `$${slen}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]],
-          ['local.set', `$${si}`, ['i32.const', 0]],
-          ['block', `$brk${id}`, ['loop', `$loop${id}`,
-            ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${si}`], ['local.get', `$${slen}`]]],
-            ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], spreadItem]],
-            ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]],
-            ['local.set', `$${si}`, ['i32.add', ['local.get', `$${si}`], ['i32.const', 1]]],
-            ['br', `$loop${id}`]]])
-      } else {
-        body.push(
-          ['local.set', `$${out}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${out}`]], ['local.get', `$${pos}`], asF64(emit(e))]],
-          ['local.set', `$${pos}`, ['i32.add', ['local.get', `$${pos}`], ['i32.const', 1]]])
-      }
-    }
-
-    body.push(['local.get', `$${out}`])
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
+    // Spread literal: buildArrayWithSpreads pre-sums the total length, allocates
+    // exact, and bulk-copies ARRAY sources with a single memory.copy — vs the
+    // per-element __arr_set_idx_ptr grow loop. Normalise the parser's `['...', x]`.
+    return buildArrayWithSpreads(elems.map(e =>
+      Array.isArray(e) && e[0] === '...' ? ['__spread', e[1]] : e))
   }
 
   // === Index read ===

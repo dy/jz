@@ -170,11 +170,13 @@ export default (ctx) => {
   // Updated by optimizeModule() when data segment exceeds 1024 bytes.
   ctx.scope.globals.set('__heap_start', '(global $__heap_start (mut i32) (i32.const 1024))')
 
-  // Use memory[1020] for the heap pointer when shared, OR when alloc:false:
-  // without the `_alloc` export the JS-side adapter (memory.String etc) falls back
-  // to its own bump allocator at memory[1020], so wasm-side __alloc must read/write
-  // the same address or they'd silently overwrite each other's allocations.
-  if (ctx.memory.shared || ctx.transform.alloc === false) {
+  // Shared memory keeps the heap pointer in linear memory (memory[1020]):
+  // wasm globals are per-instance, so threads sharing one memory must share one
+  // pointer cell. Non-shared memory (incl. alloc:false) uses the `$__heap`
+  // global — exported so the JS-side adapter (memory.String etc) bumps the same
+  // pointer. Storing it in memory would collide with the static data section
+  // whenever the data exceeds 1020 bytes.
+  if (ctx.memory.shared) {
     // Heap offset stored at memory[1020] (i32), just before heap start at 1024.
     // We still want to grow memory when running out of pages — without growth a
     // host-run binary traps on the first allocation that exceeds the initial
@@ -197,8 +199,9 @@ export default (ctx) => {
     ctx.core.stdlib['__clear'] = `(func $__clear
       (i32.store (i32.const 1020) (i32.const 1024)))`
   } else {
-    // Own memory: heap offset in a global, auto-grow when needed
-    ctx.scope.globals.set('__heap', '(global $__heap (mut i32) (i32.const 1024))')
+    // Own memory: heap offset in a global, auto-grow when needed. Exported so
+    // the JS-side adapter (alloc:false, no `_alloc` export) shares the pointer.
+    ctx.scope.globals.set('__heap', '(global $__heap (export "__heap") (mut i32) (i32.const 1024))')
     // Bump allocator with geometric growth. Growing one page at a time turns a
     // long-running embedding (e.g. watr called thousands of times) into O(n²) —
     // each memory.grow may relocate and copy the whole heap. So when we must
@@ -479,9 +482,15 @@ export default (ctx) => {
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
   }
 
-  function emitDynGetAnyTyped(base, key, vt) {
-    inc('__dyn_get_any_t')
+  function emitDynGetAnyTyped(base, key, vt, prop) {
     const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    // Constant string key: fold the FNV hash at compile time and call the
+    // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
+    if (typeof prop === 'string') {
+      inc('__dyn_get_any_t_h')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]], 'f64')
+    }
+    inc('__dyn_get_any_t')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
   }
 
@@ -580,7 +589,7 @@ export default (ctx) => {
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
         if (ctx.transform.host === 'wasi') return emitDynGetExprTyped(va, key, vt, prop)
         ctx.features.external = true
-        return emitDynGetAnyTyped(va, key, vt)
+        return emitDynGetAnyTyped(va, key, vt, prop)
       }
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get', asI64(va), key]], 'f64')
@@ -710,6 +719,20 @@ export default (ctx) => {
     return emitPropAccess(emit(obj), obj, prop)
   }
 
+  // Optional-chain short-circuit: store the receiver/callee into temp `$t`
+  // once, evaluate `thenIR` when it is non-nullish, else yield `undefined`.
+  // local.set + local.get (never a local.tee feeding the guard) because
+  // notNullish inlines an isNullish check — (i32.or (i64.eq X NULL)
+  // (i64.eq X UNDEF)) — that duplicates its operand, so a tee'd
+  // side-effecting value would run twice.
+  const optionalGuard = (t, va, thenIR) =>
+    typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, va],
+      ['if', ['result', 'f64'],
+        notNullish(typed(['local.get', `$${t}`], 'f64')),
+        ['then', thenIR],
+        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+
   // Optional chaining: obj?.prop → null if obj is null, else obj.prop
   ctx.core.emit['?.'] = (obj, prop) => {
     const t = temp()
@@ -736,7 +759,7 @@ export default (ctx) => {
             // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
             access = ctx.transform.host === 'wasi'
               ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-              : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType)
+              : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
           } else {
             inc('__hash_get', '__str_hash', '__str_eq')
             access = ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
@@ -750,15 +773,7 @@ export default (ctx) => {
         }
       }
     }
-    // Use local.set + local.get (not local.tee inside guard) because isNullish
-    // inlines the null/undefined check as (i32.or (i64.eq X NULL) (i64.eq X UNDEF)),
-    // which duplicates X — a local.tee(block(call $sideEffect)) would run twice.
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, va],
-      ['if', ['result', 'f64'],
-        notNullish(typed(['local.get', `$${t}`], 'f64')),
-        ['then', access],
-        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+    return optionalGuard(t, va, access)
   }
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
@@ -775,15 +790,7 @@ export default (ctx) => {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
     }
-    // Use local.set + local.get (not local.tee inside guard) because isNullish
-    // inlines the null/undefined check as (i32.or (i64.eq X NULL) (i64.eq X UNDEF)),
-    // which duplicates X — a local.tee(block(call $sideEffect)) would run twice.
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, va],
-      ['if', ['result', 'f64'],
-        notNullish(typed(['local.get', `$${t}`], 'f64')),
-        ['then', asF64(ctx.core.emit['[]'](t, idx))],
-        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+    return optionalGuard(t, va, asF64(ctx.core.emit['[]'](t, idx)))
   }
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
@@ -802,14 +809,7 @@ export default (ctx) => {
         const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
         if (vt) updateRep(t, { val: vt })
         const callResult = methodEmit(t, ...args)
-        // Use local.set + local.get (not local.tee inside guard) because isNullish
-        // inlines the null/undefined check which duplicates the expression.
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${t}`, va],
-          ['if', ['result', 'f64'],
-            notNullish(typed(['local.get', `$${t}`], 'f64')),
-            ['then', asF64(callResult)],
-            ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+        return optionalGuard(t, va, asF64(callResult))
       }
     }
     const t = temp()
@@ -834,14 +834,7 @@ export default (ctx) => {
     } else {
       callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
     }
-    // Use local.set + local.get (not local.tee inside guard) because isNullish
-    // inlines the null/undefined check which duplicates the expression.
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, va],
-      ['if', ['result', 'f64'],
-        notNullish(typed(['local.get', `$${t}`], 'f64')),
-        ['then', asF64(callResult)],
-        ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
+    return optionalGuard(t, va, asF64(callResult))
   }
 
   // Statically boolean-typed operands: `Boolean(x)`, logical-not, and the
