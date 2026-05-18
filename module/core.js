@@ -46,7 +46,10 @@ export default (ctx) => {
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
     ;; → same bits). Failing universal-NaN test catches NaN===NaN→false. Saves the NaN-check
-    ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string').
+    ;; pair (4 f64.eq) on the hottest case in watr (op === 'literal-string'). A number-NaN is
+    ;; *only ever* the canonical NAN_BITS here: math ops canonicalize at the source (the
+    ;; canon helper in module/math.js), so a non-canonical 0xFFF8.. pattern can only be a
+    ;; negative BigInt carrier — bit-identical to itself and correctly equal.
     (if (result i32) (i64.eq (local.get $a) (local.get $b))
       (then (i64.ne (local.get $a) (i64.const ${NAN_BITS})))
       (else
