@@ -251,6 +251,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // SRoA flat-object bindings — `let o = {...}` dissolved into `o#i` field
   // locals. Consumed by the codegen flat hooks (emitDecl, `.`/`[]` read+write).
   ctx.func.flatObjects = block ? analyzeBody(body).flatObjects : new Map()
+  // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
+  // Consumed by emitDecl to lower the initializer to a SLICE_BIT view.
+  ctx.func.sliceViews = block ? analyzeBody(body).sliceViews : new Set()
   // Usage-based shape inference (STRING / ARRAY) for params not already typed
   // by paramReps. Descends into nested closures so a param used in a definite
   // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
@@ -304,6 +307,7 @@ function analyzeFuncForEmit(func, programFacts) {
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
     flatObjects: new Map(ctx.func.flatObjects),
+    sliceViews: new Set(ctx.func.sliceViews),
     typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
     localReps: cloneRepMap(ctx.func.localReps),
   }
@@ -330,6 +334,7 @@ function emitFunc(func, funcFacts, programFacts) {
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
   ctx.func.flatObjects = new Map(funcFacts.flatObjects)
+  ctx.func.sliceViews = new Set(funcFacts.sliceViews)
   ctx.func.localReps = cloneRepMap(funcFacts.localReps)
   ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
 

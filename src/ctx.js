@@ -28,6 +28,9 @@ export const LAYOUT = {
   NAN_PREFIX: 0x7FF8,      // top 13 bits of any NaN-shape pointer
   NAN_PREFIX_BITS: 0x7FF8000000000000n, // pre-shifted for i64 OR
   SSO_BIT: 0x4000,         // STRING aux bit 14: 1=inline (≤4 ASCII chars in offset), 0=heap
+  SLICE_BIT: 0x2000,       // STRING aux bit 13: 1=view (no length header — len in aux[12:0],
+                           //   offset points into a parent buffer), 0=own heap string.
+  SLICE_LEN_MASK: 0x1FFF,  // aux[12:0] — view length (≤8191; larger slices fall back to copy)
 }
 
 // === Tagged-pointer type codes ===

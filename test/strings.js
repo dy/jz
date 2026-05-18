@@ -218,6 +218,153 @@ test('string: .slice no args', () => {
   is(run(`export let f = () => "hello".slice().length`).f(), 5)
 })
 
+// === .slice token-views (no-copy) ===
+// A non-escaping `let t = s.slice(...)` binding lowers to a view (SLICE_BIT
+// pointer into the parent buffer) — no byte copy. The view only fires when the
+// receiver is provably a string and the binding provably never escapes.
+
+test('slice-view: fires for non-escaping local-string slice', () => {
+  const wat = compile(`export let f = () => {
+    let s = 'hello world'
+    let t = s.slice(0, 5)
+    return t === 'hello' ? 1 : 0
+  }`, { wat: true })
+  ok(wat.includes('__str_slice_view'), 'non-escaping slice should lower to a view')
+  is(run(`export let f = () => {
+    let s = 'hello world'
+    let t = s.slice(0, 5)
+    return t === 'hello' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: length + charCodeAt on a view', () => {
+  is(run(`export let f = () => {
+    let s = 'abcdefghij'
+    let t = s.slice(2, 7)
+    return t.length * 100 + t.charCodeAt(0)
+  }`).f(), 5 * 100 + 'c'.charCodeAt(0))
+})
+
+test('slice-view: negative indices', () => {
+  is(run(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(-3, -1)
+    return t === 'ef' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: empty and out-of-range slices', () => {
+  is(run(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(3, 3)
+    return t.length
+  }`).f(), 0)
+  is(run(`export let f = () => {
+    let s = 'abc'
+    let t = s.slice(0, 100)
+    return t === 'abc' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: view of a view', () => {
+  is(run(`export let f = () => {
+    let s = 'abcdefghij'
+    let t = s.slice(1, 9)
+    let u = t.slice(2, 5)
+    return u === 'def' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: slice of a long heap string', () => {
+  is(run(`export let f = () => {
+    let s = 'abcdefghijklmnopqrstuvwxyz0123456789'
+    let t = s.slice(10, 20)
+    return t === 'klmnopqrst' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: concat operand keeps view (read-only use)', () => {
+  const wat = compile(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return ('X' + t) === 'Xbcd' ? 1 : 0
+  }`, { wat: true })
+  ok(wat.includes('__str_slice_view'), 'a + operand is a read-only use — view stays')
+  is(run(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return ('X' + t) === 'Xbcd' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: escaping slice copies — returned binding', () => {
+  const wat = compile(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return t
+  }`, { wat: true })
+  ok(!wat.includes('__str_slice_view'), 'a returned slice escapes — must copy')
+  is(run(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return t
+  }`).f(), 'bcd')
+})
+
+test('slice-view: escaping slice copies — passed as argument', () => {
+  const wat = compile(`let id = (x) => x
+  export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return id(t) === 'bcd' ? 1 : 0
+  }`, { wat: true })
+  ok(!wat.includes('__str_slice_view'), 'a slice passed to a call escapes — must copy')
+  is(run(`let id = (x) => x
+  export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    return id(t) === 'bcd' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: escaping slice copies — reassigned binding', () => {
+  const wat = compile(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    t = 'x'
+    return t === 'x' ? 1 : 0
+  }`, { wat: true })
+  ok(!wat.includes('__str_slice_view'), 'a reassigned binding is not a stable view')
+  is(run(`export let f = () => {
+    let s = 'abcdefg'
+    let t = s.slice(1, 4)
+    t = 'x'
+    return t === 'x' ? 1 : 0
+  }`).f(), 1)
+})
+
+test('slice-view: fires for a provably-string function parameter', () => {
+  const wat = compile(`let helper = (s) => {
+    let t = s.slice(1, 4)
+    return t === 'bcd' ? 1 : 0
+  }
+  export let f = () => helper('abcdefg')`, { wat: true })
+  ok(wat.includes('__str_slice_view'), 'string-typed param receiver should lower to a view')
+  is(run(`let helper = (s) => {
+    let t = s.slice(1, 4)
+    return t === 'bcd' ? 1 : 0
+  }
+  export let f = () => helper('abcdefg')`).f(), 1)
+})
+
+test('slice-view: no view when receiver type is unknown', () => {
+  const wat = compile(`export let f = (s) => {
+    let t = s.slice(1, 4)
+    return t === 'bcd' ? 1 : 0
+  }`, { wat: true })
+  ok(!wat.includes('__str_slice_view'), 'unprovable string receiver must stay on the safe path')
+})
+
 // === .substring ===
 
 test('string: .substring basic', () => {

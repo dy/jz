@@ -544,9 +544,28 @@ export function emitDecl(...inits) {
         }
       }
     }
+    // No-copy slice view: `let t = s.slice(...)` whose result scanSliceViews
+    // proved never escapes — lower the initializer to a SLICE_BIT view instead
+    // of a copying slice. Everything downstream treats `t` as an ordinary
+    // string. Gated here (not in the analysis) on a statically-known STRING
+    // receiver — param types are settled only by emit time — and on plain-local
+    // carriers (boxed/global escape); any miss falls back to the copying slice.
+    let viewInit = null
+    if (ctx.func.sliceViews?.has(name) && !ctx.func.boxed.has(name) && !isGlobal(name)
+        && Array.isArray(init) && init[0] === '()'
+        && Array.isArray(init[1]) && init[1][0] === '.' && init[1][2] === 'slice') {
+      const recv = init[1][1]
+      const recvVt = typeof recv === 'string' ? keyValType(recv) : valTypeOf(recv)
+      if (recvVt === VAL.STRING) {
+        const raw = init[2]
+        const sa = raw == null ? [] : Array.isArray(raw) && raw[0] === ',' ? raw.slice(1) : [raw]
+        viewInit = ctx.core.emit['.string:slice#view'](recv, sa[0], sa[1])
+      }
+    }
+
     const isObjLit = Array.isArray(init) && init[0] === '{}'
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
-    const val = emit(init)
+    const val = viewInit || emit(init)
     if (isObjLit) ctx.schema.targetStack.pop()
     // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
     // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
