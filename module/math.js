@@ -65,6 +65,22 @@ export default (ctx) => {
   // as the original null/undefined sentinel after decode.
   const call = (name, ...args) => typed(['call', `$${name}`, ...args.map(a => toNumF64(a, emit(a)))], 'f64')
 
+  // Canonicalize a possibly-NaN f64 result. A wasm arithmetic op that mints a
+  // fresh NaN (f64.sqrt of a negative, f64.min/max with a NaN operand) leaves
+  // the sign bit nondeterministic — x86 yields the negative NaN 0xFFF8.., ARM
+  // the positive 0x7FF8... jz's carrier reserves 0x7FF8.. as THE number-NaN;
+  // a negative-NaN number is bit-identical to a negative BigInt and corrupts
+  // untyped === / typeof. So fold any NaN back to canonical where one is born.
+  const canon = (node) => {
+    const t = temp('cn')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, node],
+      ['select',
+        ['f64.const', 'nan'],
+        ['local.get', `$${t}`],
+        ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]]], 'f64')
+  }
+
   // Constants
   ctx.core.emit['math.PI'] = () => typed(['f64.const', Math.PI], 'f64')
   ctx.core.emit['math.E'] = () => typed(['f64.const', Math.E], 'f64')
@@ -87,8 +103,10 @@ export default (ctx) => {
       ['local.get', `$${acc}`]], 'f64')
   }
 
-  // Built-in WASM ops
-  ctx.core.emit['math.sqrt'] = a => f('f64.sqrt', a)
+  // Built-in WASM ops. sqrt/min/max mint a fresh NaN (sqrt of a negative, min/max
+  // with a NaN operand) whose sign is platform-nondeterministic — `canon` folds it
+  // back to the canonical pattern. abs/floor/ceil/trunc never produce a new NaN.
+  ctx.core.emit['math.sqrt'] = a => canon(f('f64.sqrt', a))
   ctx.core.emit['math.abs'] = a => f('f64.abs', a)
   ctx.core.emit['math.floor'] = a => fInt('f64.floor', a)
   ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
@@ -96,19 +114,19 @@ export default (ctx) => {
   ctx.core.emit['math.min'] = (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', Infinity], 'f64')
     // Spread: Math.min(...arr) — iterate array to find min
-    if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.min', a[1], Infinity)
-    if (b === undefined) return typed(['f64.min', toNumF64(a, emit(a)), ['f64.const', Infinity]], 'f64')
+    if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce('f64.min', a[1], Infinity))
+    if (b === undefined) return canon(typed(['f64.min', toNumF64(a, emit(a)), ['f64.const', Infinity]], 'f64'))
     let r = f2('f64.min', a, b)
     for (const x of rest) r = typed(['f64.min', r, toNumF64(x, emit(x))], 'f64')
-    return r
+    return canon(r)
   }
   ctx.core.emit['math.max'] = (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', -Infinity], 'f64')
-    if (!b && Array.isArray(a) && a[0] === '...') return emitArrayReduce('f64.max', a[1], -Infinity)
-    if (b === undefined) return typed(['f64.max', toNumF64(a, emit(a)), ['f64.const', -Infinity]], 'f64')
+    if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce('f64.max', a[1], -Infinity))
+    if (b === undefined) return canon(typed(['f64.max', toNumF64(a, emit(a)), ['f64.const', -Infinity]], 'f64'))
     let r = f2('f64.max', a, b)
     for (const x of rest) r = typed(['f64.max', r, toNumF64(x, emit(x))], 'f64')
-    return r
+    return canon(r)
   }
   // f64.nearest is roundTiesToEven; JS Math.round is roundTiesToward+∞. They agree
   // everywhere except exact half-integers n+0.5 with n even (nearest→n, JS→n+1).
@@ -440,7 +458,7 @@ export default (ctx) => {
       (then
         (local.set $abs_x (f64.abs (local.get $x)))
         (if (f64.eq (local.get $abs_x) (f64.const 1.0))
-          (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))
+          (then (return (f64.const nan))))
         (if (i32.eq (f64.gt (local.get $abs_x) (f64.const 1.0))
                     (f64.gt (local.get $y) (f64.const 0.0)))
           (then (return (f64.const inf)))
@@ -499,7 +517,7 @@ export default (ctx) => {
           (else (return (f64.const 0.0))))))
     ;; x < 0, non-integer finite y -> NaN
     (if (f64.lt (local.get $x) (f64.const 0.0))
-      (then (return (f64.div (f64.const 0.0) (f64.const 0.0)))))
+      (then (return (f64.const nan))))
     (call $math.exp (f64.mul (local.get $y) (call $math.log (local.get $x)))))`
 
   // fdlibm atan: 4-region argument reduction onto |r| ≤ tan(π/16), then an
@@ -641,6 +659,9 @@ export default (ctx) => {
   ctx.core.stdlib['math.atanh'] = `(func $math.atanh (param $x f64) (result f64)
     ;; Preserve sign of zero: atanh(±0) = ±0.
     (if (f64.eq (local.get $x) (f64.const 0.0)) (then (return (local.get $x))))
+    ;; ±Infinity → NaN. Without this the (1+x)/(1-x) ratio is Inf/Inf, whose
+    ;; sign-nondeterministic arithmetic NaN would escape non-canonical on x86.
+    (if (f64.eq (f64.abs (local.get $x)) (f64.const inf)) (then (return (f64.const nan))))
     (f64.mul (f64.const 0.5) (call $math.log (f64.div (f64.add (f64.const 1.0) (local.get $x)) (f64.sub (f64.const 1.0) (local.get $x))))))`
 
   ctx.core.stdlib['math.cbrt'] = `(func $math.cbrt (param $x f64) (result f64)
