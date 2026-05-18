@@ -5,22 +5,29 @@
  *   node test/test262.js                  # run all applicable tests
  *   node test/test262.js --quick          # run first 100 per category
  *   node test/test262.js --filter=String  # only run String tests
+ *   node test/test262.js --jobs=32        # worker count (default: CPU count)
  *
  * Requires: test262 checkout at ./test262 (auto-cloned if missing).
  *
  * Strategy: scan tracked test262/test/language/ areas, attempt compile+run each
  * test, categorize as pass/fail/skip, and report pass coverage against the full
  * language and full test262 denominators.
+ *
+ * Execution is parallel: the main thread collects the work list, then fans it
+ * out round-robin to a pool of worker_threads (each with its own jz instance).
+ * Worker count: --jobs=N or JZ_TEST262_JOBS env, default availableParallelism().
  */
 import { readdirSync, statSync, readFileSync, existsSync } from 'fs'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
+import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
+import { availableParallelism } from 'os'
 
 const ROOT = join(import.meta.dirname, '..')
 const TEST262 = join(import.meta.dirname, 'test262')
 
-// Ensure test262 repo exists
-if (!existsSync(TEST262)) {
+// Ensure test262 repo exists (main thread only — workers inherit the checkout).
+if (isMainThread && !existsSync(TEST262)) {
   console.log('Cloning test262 (this may take a minute)...')
   execSync('git clone --depth 1 https://github.com/tc39/test262.git ' + TEST262, { stdio: 'inherit' })
 }
@@ -163,6 +170,7 @@ const isClassTest = (rel) => /\/(expressions|statements)\/class\//.test(rel)
 // Quick mode: limit tests per subdirectory
 const QUICK = process.argv.includes('--quick')
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
+const JOBS_ARG = Number(process.argv.find(a => a.startsWith('--jobs='))?.split('=')[1])
 const MAX_PER_DIR = QUICK ? 50 : Infinity
 
 // Collect test files
@@ -677,12 +685,8 @@ function runTest(src, options = {}) {
   }
 }
 
-// Main
-const results = { pass: 0, fail: 0, skip: 0 }
-const fails = []
+// Test directory layout — shared by main-thread collection and worker execution.
 const testDir = join(TEST262, 'test', 'language')
-const languageTest262Files = countJs(testDir)
-const allTest262Files = countJs(join(TEST262, 'test'))
 
 // Expand TRACKED_LANGUAGE_DIRS so large dirs (expressions/, statements/) get
 // per-child progress output instead of one giant batch.
@@ -722,72 +726,136 @@ function* filesUnder(rootDir, opts = {}) {
   yield* walk(rootDir)
 }
 
-for (const subdir of DIRS) {
-  const flatOnly = subdir.endsWith('/.')
-  const cleanSubdir = flatOnly ? subdir.slice(0, -2) : subdir
-  const dir = join(testDir, cleanSubdir)
-  if (!existsSync(dir)) { console.log(`  skipping ${subdir}/ (not found)`); continue }
-  if (FILTER && !subdir.includes(FILTER)) continue
+// ─── Work collection (main thread) ──────────────────────────────────────────
+// Walk the tracked dirs once, applying dir-level skips and the --quick cap, and
+// produce a flat work list — one entry per test file. Content-level skip
+// classification and compile/run happen later, in parallel workers.
+function collectWork() {
+  const work = []                       // { file, rel, subdir }
+  const dirSkip = Object.create(null)   // subdir -> dir-level skip count
+  for (const subdir of DIRS) {
+    const flatOnly = subdir.endsWith('/.')
+    const cleanSubdir = flatOnly ? subdir.slice(0, -2) : subdir
+    const dir = join(testDir, cleanSubdir)
+    if (!existsSync(dir)) { console.log(`  skipping ${subdir}/ (not found)`); continue }
+    if (FILTER && !subdir.includes(FILTER)) continue
 
-  let count = 0
-  let dirPass = 0, dirFail = 0, dirSkip = 0
-  for (const file of filesUnder(dir, { flatOnly })) {
-    if (count >= MAX_PER_DIR) break
-    const rel = relative(TEST262, file)
-    // Skip entire directories for unsupported features
-    if (rel.includes('dynamic-import') || rel.includes('import.meta') ||
-      rel.includes('export-expname') || rel.includes('import-attributes') ||
-      rel.includes('top-level-await') ||
-      rel.includes('instn-resolve-') || rel.includes('eval-rqstd-')) { results.skip++; dirSkip++; count++; continue }
-
-    try {
-      const src = readFileSync(file, 'utf-8')
-      const skip = shouldSkip(src, rel)
-      if (skip) { results.skip++; dirSkip++; count++; continue }
-
-      const assertHarness = needsAssertHarness(src, rel)
-      const { status, error } = runTest(src, { assertHarness })
-      results[status]++
-      if (status === 'pass') dirPass++
-      else if (status === 'fail') dirFail++
-      else dirSkip++
+    let count = 0
+    for (const file of filesUnder(dir, { flatOnly })) {
+      if (count >= MAX_PER_DIR) break
       count++
-
-      if (status === 'fail') {
-        fails.push(`${rel}: ${error}`)
+      const rel = relative(TEST262, file)
+      // Whole-feature directories jz does not implement — skipped without reading.
+      if (rel.includes('dynamic-import') || rel.includes('import.meta') ||
+        rel.includes('export-expname') || rel.includes('import-attributes') ||
+        rel.includes('top-level-await') ||
+        rel.includes('instn-resolve-') || rel.includes('eval-rqstd-')) {
+        dirSkip[subdir] = (dirSkip[subdir] || 0) + 1
+        continue
       }
-    } catch {
-      results.skip++
-      dirSkip++
-      count++
+      work.push({ file, rel, subdir })
     }
   }
-  console.log(`  ${subdir}/: ${count} tests (pass=${dirPass} fail=${dirFail} skip=${dirSkip})`)
+  return { work, dirSkip }
 }
 
-const total = results.pass + results.fail + results.skip
-
-console.log(`\n── Results ──`)
-console.log(`  Pass:          ${results.pass}`)
-console.log(`  Fail:          ${results.fail}`)
-console.log(`  Skip:          ${results.skip}`)
-console.log(`  Tracked files: ${total}/${languageTest262Files} language JS files`)
-
-const languageCoverage = languageTest262Files ? (results.pass / languageTest262Files * 100).toFixed(1) : '0.0'
-const overallCoverage = allTest262Files ? (results.pass / allTest262Files * 100).toFixed(1) : '0.0'
-console.log(`\n  Language coverage (pass / language JS files): ${languageCoverage}% (${results.pass}/${languageTest262Files})`)
-console.log(`  Overall test262 coverage (pass / all JS files): ${overallCoverage}% (${results.pass}/${allTest262Files})`)
-
-if (fails.length) {
-  console.log(`\n── Sample failures ──`)
-  fails.forEach(f => console.log(`  ✗ ${f}`))
+// ─── Worker: classify + compile/run an assigned slice of the work list ──────
+// Pure given its inputs (jz resets all state per call), so a worker's tallies
+// are identical to running the same files sequentially.
+function runChunk(items) {
+  const perDir = Object.create(null)
+  const fails = []
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0 })
+  for (const { file, rel, subdir } of items) {
+    const d = dirOf(subdir)
+    try {
+      const src = readFileSync(file, 'utf-8')
+      if (shouldSkip(src, rel)) { d.skip++; continue }
+      const { status, error } = runTest(src, { assertHarness: needsAssertHarness(src, rel) })
+      d[status]++
+      if (status === 'fail') fails.push(`${rel}: ${error}`)
+    } catch {
+      d.skip++
+    }
+  }
+  return { perDir, fails }
 }
 
-// CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
-// non-zero if pass count drops below the baseline. Skipped in --quick mode
-// (which only runs a subset, so its pass count isn't comparable).
-const baseline = Number(process.env.JZ_TEST262_BASELINE)
-if (!QUICK && Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
-  console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
-  process.exit(1)
+if (!isMainThread) {
+  // Spawned worker: run the assigned slice and report tallies back.
+  parentPort.postMessage(runChunk(workerData.items))
+} else {
+  // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
+  const languageTest262Files = countJs(testDir)
+  const allTest262Files = countJs(join(TEST262, 'test'))
+  const { work, dirSkip } = collectWork()
+
+  // One worker per core by default; override with --jobs=N or JZ_TEST262_JOBS.
+  const jobs = Math.max(1, Math.min(
+    JOBS_ARG || Number(process.env.JZ_TEST262_JOBS) || availableParallelism(),
+    work.length || 1))
+
+  // Round-robin split: spreads heavy dirs (class/, expressions/) evenly so no
+  // single worker draws the whole slow tail.
+  const chunks = Array.from({ length: jobs }, () => [])
+  work.forEach((item, i) => chunks[i % jobs].push(item))
+
+  console.log(`Running ${work.length} tests across ${jobs} worker${jobs > 1 ? 's' : ''}...`)
+  const t0 = Date.now()
+
+  const chunkResults = await Promise.all(chunks.map(items => new Promise((resolve, reject) => {
+    const w = new Worker(import.meta.filename, { workerData: { items } })
+    w.once('message', resolve)
+    w.once('error', reject)
+    w.once('exit', code => code === 0 || reject(new Error(`worker exited with code ${code}`)))
+  })))
+
+  // Merge worker tallies with the dir-level skips counted during collection.
+  const perDir = Object.create(null)
+  const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0 })
+  for (const subdir in dirSkip) dirOf(subdir).skip += dirSkip[subdir]
+  const fails = []
+  for (const { perDir: wd, fails: wf } of chunkResults) {
+    for (const subdir in wd) {
+      const d = dirOf(subdir)
+      d.pass += wd[subdir].pass
+      d.fail += wd[subdir].fail
+      d.skip += wd[subdir].skip
+    }
+    fails.push(...wf)
+  }
+
+  const results = { pass: 0, fail: 0, skip: 0 }
+  for (const subdir of DIRS) {
+    const d = perDir[subdir]
+    if (!d) continue
+    results.pass += d.pass; results.fail += d.fail; results.skip += d.skip
+    console.log(`  ${subdir}/: ${d.pass + d.fail + d.skip} tests (pass=${d.pass} fail=${d.fail} skip=${d.skip})`)
+  }
+  const total = results.pass + results.fail + results.skip
+
+  console.log(`\n── Results ── (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+  console.log(`  Pass:          ${results.pass}`)
+  console.log(`  Fail:          ${results.fail}`)
+  console.log(`  Skip:          ${results.skip}`)
+  console.log(`  Tracked files: ${total}/${languageTest262Files} language JS files`)
+
+  const languageCoverage = languageTest262Files ? (results.pass / languageTest262Files * 100).toFixed(1) : '0.0'
+  const overallCoverage = allTest262Files ? (results.pass / allTest262Files * 100).toFixed(1) : '0.0'
+  console.log(`\n  Language coverage (pass / language JS files): ${languageCoverage}% (${results.pass}/${languageTest262Files})`)
+  console.log(`  Overall test262 coverage (pass / all JS files): ${overallCoverage}% (${results.pass}/${allTest262Files})`)
+
+  if (fails.length) {
+    console.log(`\n── Sample failures ──`)
+    fails.sort().forEach(f => console.log(`  ✗ ${f}`))
+  }
+
+  // CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
+  // non-zero if pass count drops below the baseline. Skipped in --quick mode
+  // (which only runs a subset, so its pass count isn't comparable).
+  const baseline = Number(process.env.JZ_TEST262_BASELINE)
+  if (!QUICK && Number.isFinite(baseline) && baseline > 0 && results.pass < baseline) {
+    console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+    process.exit(1)
+  }
 }

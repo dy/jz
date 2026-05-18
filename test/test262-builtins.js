@@ -4,18 +4,26 @@
  * Usage:
  *   node test/test262-builtins.js
  *   node test/test262-builtins.js --filter=Math/random
+ *   node test/test262-builtins.js --jobs=32
  *
  * Strategy: run curated built-ins functionality tests and explicitly skip
  * descriptor/prototype/runtime-shape tests until those semantics are in scope.
+ *
+ * Execution: the work list is split round-robin across a pool of worker
+ * threads (one per core by default; override with --jobs=N or JZ_TEST262_JOBS).
+ * Each worker has its own module registry, and jz resets all state per call,
+ * so a worker's tallies are identical to running the same files sequentially.
  */
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
+import { Worker, isMainThread, workerData, parentPort } from 'worker_threads'
+import { availableParallelism } from 'os'
 
 const ROOT = join(import.meta.dirname, '..')
 const TEST262 = join(import.meta.dirname, 'test262')
 
-if (!existsSync(TEST262)) {
+if (isMainThread && !existsSync(TEST262)) {
   console.log('Cloning test262 (this may take a minute)...')
   execSync('git clone --depth 1 https://github.com/tc39/test262.git ' + TEST262, { stdio: 'inherit' })
 }
@@ -584,6 +592,7 @@ const FUNCTIONAL_TESTS = new Set([
 ])
 
 const FILTER = process.argv.find(a => a.startsWith('--filter='))?.split('=')[1]
+const JOBS_ARG = Number(process.argv.find(a => a.startsWith('--jobs='))?.split('=')[1])
 
 const NUMBER_CONSTANT_TESTS = new Set([
   'built-ins/Number/MAX_VALUE/value.js',
@@ -811,37 +820,49 @@ function runTest(src) {
   }
 }
 
-const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
-const fails = []
-const skips = new Map()
-const xfails = new Map()
-const xpasses = []
 const builtinsDir = join(TEST262, 'test', 'built-ins')
-const allBuiltinsFiles = countJs(builtinsDir)
 
-for (const subpath of TRACKED_BUILTIN_PATHS) {
-  if (FILTER && !subpath.includes(FILTER) && !FILTER.includes(subpath)) continue
-  const dir = join(builtinsDir, subpath)
-  if (!existsSync(dir)) { console.log(`  skipping ${subpath}/ (not found)`); continue }
+// ─── Work collection (main thread) ──────────────────────────────────────────
+// Walk the tracked built-in paths once, applying the --filter, and produce a
+// flat work list — one entry per test file. Content-level skip classification
+// and compile/run happen later, in parallel workers.
+function collectWork() {
+  const work = []   // { file, rel, subpath }
+  for (const subpath of TRACKED_BUILTIN_PATHS) {
+    if (FILTER && !subpath.includes(FILTER) && !FILTER.includes(subpath)) continue
+    const dir = join(builtinsDir, subpath)
+    if (!existsSync(dir)) { console.log(`  skipping ${subpath}/ (not found)`); continue }
+    for (const file of walk(dir)) {
+      const rel = relative(join(TEST262, 'test'), file)
+      if (FILTER && !rel.includes(FILTER)) continue
+      work.push({ file, rel, subpath })
+    }
+  }
+  return work
+}
 
-  let count = 0
-  for (const file of walk(dir)) {
-    const rel = relative(join(TEST262, 'test'), file)
-    if (FILTER && !rel.includes(FILTER)) continue
-
+// ─── Worker: classify + compile/run an assigned slice of the work list ──────
+// Pure given its inputs (jz resets all state per call), so a worker's tallies
+// are identical to running the same files sequentially.
+function runChunk(items) {
+  const perPath = Object.create(null)
+  const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
+  const fails = []
+  const skips = new Map()
+  const xfails = new Map()
+  const xpasses = []
+  for (const { file, rel, subpath } of items) {
+    perPath[subpath] = (perPath[subpath] || 0) + 1
     try {
       const src = readFileSync(file, 'utf-8')
       const skip = shouldSkip(src, rel)
       if (skip) {
         results.skip++
         skips.set(skip, (skips.get(skip) || 0) + 1)
-        count++
         continue
       }
 
       const { status, error } = runTest(src)
-      count++
-
       const xfReason = expectedFailReason(rel)
       if (status === 'fail' && xfReason) {
         results.xfail++
@@ -855,60 +876,110 @@ for (const subpath of TRACKED_BUILTIN_PATHS) {
     } catch {
       results.skip++
       skips.set('read/runner error', (skips.get('read/runner error') || 0) + 1)
-      count++
+    }
+  }
+  return { perPath, results, fails, skips, xfails, xpasses }
+}
+
+if (!isMainThread) {
+  // Spawned worker: run the assigned slice and report tallies back.
+  parentPort.postMessage(runChunk(workerData.items))
+} else {
+  // ─── Main: collect work, fan out to a worker pool, aggregate ──────────────
+  const allBuiltinsFiles = countJs(builtinsDir)
+  const work = collectWork()
+
+  // One worker per core by default; override with --jobs=N or JZ_TEST262_JOBS.
+  const jobs = Math.max(1, Math.min(
+    JOBS_ARG || Number(process.env.JZ_TEST262_JOBS) || availableParallelism(),
+    work.length || 1))
+
+  // Round-robin split: spreads heavy paths (Math/, DataView/) evenly so no
+  // single worker draws the whole slow tail.
+  const chunks = Array.from({ length: jobs }, () => [])
+  work.forEach((item, i) => chunks[i % jobs].push(item))
+
+  console.log(`Running ${work.length} tests across ${jobs} worker${jobs > 1 ? 's' : ''}...`)
+  const t0 = Date.now()
+
+  const chunkResults = await Promise.all(chunks.map(items => new Promise((resolve, reject) => {
+    const w = new Worker(import.meta.filename, { workerData: { items } })
+    w.once('message', resolve)
+    w.once('error', reject)
+    w.once('exit', code => code === 0 || reject(new Error(`worker exited with code ${code}`)))
+  })))
+
+  // Merge worker tallies.
+  const results = { pass: 0, fail: 0, xfail: 0, skip: 0 }
+  const perPath = Object.create(null)
+  const fails = []
+  const skips = new Map()
+  const xfails = new Map()
+  const xpasses = []
+  for (const r of chunkResults) {
+    results.pass += r.results.pass
+    results.fail += r.results.fail
+    results.xfail += r.results.xfail
+    results.skip += r.results.skip
+    for (const p in r.perPath) perPath[p] = (perPath[p] || 0) + r.perPath[p]
+    fails.push(...r.fails)
+    for (const [k, v] of r.skips) skips.set(k, (skips.get(k) || 0) + v)
+    for (const [k, v] of r.xfails) xfails.set(k, (xfails.get(k) || 0) + v)
+    xpasses.push(...r.xpasses)
+  }
+
+  for (const subpath of TRACKED_BUILTIN_PATHS) {
+    if (perPath[subpath]) console.log(`  ${subpath}/: ${perPath[subpath]} tests`)
+  }
+
+  const total = results.pass + results.fail + results.xfail + results.skip
+  const coverage = allBuiltinsFiles ? (results.pass / allBuiltinsFiles * 100).toFixed(2) : '0.00'
+
+  console.log(`\n── Built-ins results ── (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+  console.log(`  Pass:          ${results.pass}`)
+  console.log(`  Fail:          ${results.fail}`)
+  console.log(`  Xfail:         ${results.xfail}  (ran, expected to fail — out-of-scope feature)`)
+  console.log(`  Skip:          ${results.skip}`)
+  console.log(`  Tracked files: ${total}/${allBuiltinsFiles} built-ins JS files`)
+  console.log(`\n  Built-ins coverage (pass / built-ins JS files): ${coverage}% (${results.pass}/${allBuiltinsFiles})`)
+
+  if (skips.size) {
+    console.log(`\n── Skip reasons ──`)
+    for (const [reason, count] of [...skips.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${count} ${reason}`)
     }
   }
 
-  console.log(`  ${subpath}/: ${count} tests`)
-}
-
-const total = results.pass + results.fail + results.xfail + results.skip
-const coverage = allBuiltinsFiles ? (results.pass / allBuiltinsFiles * 100).toFixed(2) : '0.00'
-
-console.log(`\n── Built-ins results ──`)
-console.log(`  Pass:          ${results.pass}`)
-console.log(`  Fail:          ${results.fail}`)
-console.log(`  Xfail:         ${results.xfail}  (ran, expected to fail — out-of-scope feature)`)
-console.log(`  Skip:          ${results.skip}`)
-console.log(`  Tracked files: ${total}/${allBuiltinsFiles} built-ins JS files`)
-console.log(`\n  Built-ins coverage (pass / built-ins JS files): ${coverage}% (${results.pass}/${allBuiltinsFiles})`)
-
-if (skips.size) {
-  console.log(`\n── Skip reasons ──`)
-  for (const [reason, count] of [...skips.entries()].sort((a, b) => b[1] - a[1])) {
-    console.log(`  ${count} ${reason}`)
+  if (xfails.size) {
+    console.log(`\n── Expected failures (out of scope) ──`)
+    for (const [reason, count] of [...xfails.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${count} ${reason}`)
+    }
   }
-}
 
-if (xfails.size) {
-  console.log(`\n── Expected failures (out of scope) ──`)
-  for (const [reason, count] of [...xfails.entries()].sort((a, b) => b[1] - a[1])) {
-    console.log(`  ${count} ${reason}`)
+  if (xpasses.length) {
+    console.log(`\n── Unexpected passes — prune from EXPECTED_FAIL_FILES ──`)
+    xpasses.sort().forEach(f => console.log(`  ✓ ${f}`))
   }
-}
 
-if (xpasses.length) {
-  console.log(`\n── Unexpected passes — prune from EXPECTED_FAIL_FILES ──`)
-  xpasses.forEach(f => console.log(`  ✓ ${f}`))
-}
-
-if (fails.length) {
-  console.log(`\n── Failures (in-scope — should be 0) ──`)
-  fails.forEach(f => console.log(`  x ${f}`))
-}
-
-// CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
-// non-zero if pass count drops below the baseline, or if any *in-scope* test
-// fails. Out-of-scope fails are bucketed as `xfail` and do not gate; a non-zero
-// `fail` is therefore a genuine regression or an unlisted out-of-scope test.
-const baseline = Number(process.env.JZ_TEST262_BASELINE)
-if (Number.isFinite(baseline) && baseline > 0) {
-  if (results.pass < baseline) {
-    console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
-    process.exit(1)
+  if (fails.length) {
+    console.log(`\n── Failures (in-scope — should be 0) ──`)
+    fails.sort().forEach(f => console.log(`  x ${f}`))
   }
-  if (results.fail > 0) {
-    console.error(`\nFAIL: ${results.fail} in-scope failure(s) — fix, or add to EXPECTED_FAIL_* if out of scope`)
-    process.exit(1)
+
+  // CI gating: when JZ_TEST262_BASELINE is set (e.g. in GitHub Actions), exit
+  // non-zero if pass count drops below the baseline, or if any *in-scope* test
+  // fails. Out-of-scope fails are bucketed as `xfail` and do not gate; a non-zero
+  // `fail` is therefore a genuine regression or an unlisted out-of-scope test.
+  const baseline = Number(process.env.JZ_TEST262_BASELINE)
+  if (Number.isFinite(baseline) && baseline > 0) {
+    if (results.pass < baseline) {
+      console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
+      process.exit(1)
+    }
+    if (results.fail > 0) {
+      console.error(`\nFAIL: ${results.fail} in-scope failure(s) — fix, or add to EXPECTED_FAIL_* if out of scope`)
+      process.exit(1)
+    }
   }
 }
