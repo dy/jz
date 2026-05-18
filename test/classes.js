@@ -168,6 +168,48 @@ test('named class expression static method sees inner name', () => {
   is(run(), 12)
 })
 
-test('rejects `extends`', () => rejects(`class B {} class A extends B {} export let run = () => 1`, /extends/))
+test('class extends: constructor super and inherited method', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x }
+    }
+    class Derived extends Base {
+      constructor(x) { super(x); this.y = 5 }
+      sum() { return this.value() + this.y }
+    }
+    export let run = () => new Derived(7).sum()
+  `)
+  is(run(), 12)
+})
+
+test('class extends: default constructor forwards args', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x }
+    }
+    class Derived extends Base {
+      twice() { return this.value() * 2 }
+    }
+    export let run = () => new Derived(9).twice()
+  `)
+  is(run(), 18)
+})
+
+test('class extends: inherited helper used by derived method', () => {
+  const { run } = compile(`
+    class Adapter {
+      extract(item) { return item.qty + 1 }
+    }
+    class ProductAdapter extends Adapter {
+      total(item) { return this.extract(item) * 10 }
+    }
+    export let run = () => new ProductAdapter().total({qty: 4})
+  `)
+  is(run(), 50)
+})
+
+test('rejects `super` property access', () => rejects(`class B { x(){ return 1 } } class A extends B { x(){ return super.x() } } export let run = () => 1`, /super/))
 test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export let run = () => 1`, /getter/))
 test('rejects setters', () => rejects(`class A { set x(v){ } } export let run = () => 1`, /setter|accessor/))
