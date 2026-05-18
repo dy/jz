@@ -93,6 +93,13 @@ test('regex: groups', () => {
   is(parseRegex('(a)+'), ['+', ['()', 'a', 1]])
 })
 
+test('regex: named capture groups', () => {
+  const ast = parseRegex('(?<word>\\w+)')
+  is(ast, ['()', ['+', ['\\w']], 1])
+  is(ast.groups, 1)
+  is(ast.groupNames[1], 'word')
+})
+
 test('regex: nested groups', () => {
   is(parseRegex('((a))'), ['()', ['()', 'a', 2], 1])
   is(parseRegex('(a(b)c)'), ['()', ['seq', 'a', ['()', 'b', 2], 'c'], 1])
@@ -350,9 +357,19 @@ test('regex: regex.exec()', async () => {
   is(await evaluate('/xyz/.exec("abc")'), 0)
 })
 
+test('regex: regex.exec() named capture groups', async () => {
+  is(evalStr('/^(?<kind>\\w+)-(?<id>\\d+)$/.exec("item-42").groups.kind'), 'item')
+  is(evalStr('/^(?<kind>\\w+)-(?<id>\\d+)$/.exec("item-42").groups.id'), '42')
+  is(await evaluate('/(?<a>a).|(?<x>x)/.exec("ab").groups.x'), undefined)
+})
+
 test('regex: str.match(regex)', async () => {
   is(evalStr('"hello world".match(/world/)[0]'), 'world')
   is(await evaluate('"hello".match(/xyz/)'), 0)
+})
+
+test('regex: str.match(regex) named capture groups', () => {
+  is(evalStr('"item:abc-123".match(/^item:(?<slug>[\\w-]+)$/).groups.slug'), 'abc-123')
 })
 
 // ============================================================================
