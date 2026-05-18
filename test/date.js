@@ -92,6 +92,10 @@ test('Date UTC getters', () => {
   same(r[7], 123)
 })
 
+test('Date UTC full year compile includes transitive date helpers', () => {
+  ok(jz.compile('export let f = () => new Date(0).getUTCFullYear()'))
+})
+
 test('Date UTC getters: NaN date', () => {
   const r = run(`export let f = () => {
     let d = new Date(NaN)
