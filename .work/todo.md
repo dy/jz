@@ -1,7 +1,7 @@
 ## jz — execution plan
 
-Status (2026-05-17): unit **1690 / 1690**, test262 language **1407 / 0 fail**,
-builtins **701 / 0 fail / 62 xfail**. Every step keeps zero regressions
+Status (2026-05-18): unit **1701 / 21 watr-bug xfail**, test262 language
+**1418 / 0 fail**, builtins **719 / 0 fail**. Every step keeps zero regressions
 (`npm test` / `npm run test262` / `npm run test262:builtins`), commits
 atomically by file name, and bumps `JZ_TEST262_BASELINE` in
 `.github/workflows/test262.yml` the same commit a count moves.
@@ -65,12 +65,89 @@ NOT a test262 lever — there are no in-scope builtins fails for it to convert.
 * [ ] **Beat AS on mandelbrot / interference / game-of-life.** Measure the gap,
   identify hot ops, lower. mandelbrot sits at the wasm-v1 algorithmic floor (no
   scalar `fma`) — proposal-blocked.
-* [ ] **Induction-variable strength reduction.** `p += K*8` instead of
-  recomputing `base + i*K*8` each iteration — a general loop optimization that
-  would close `structInline`'s residual `aos` gap (0.94 → ~0.76 ms, hand-WAT).
-* [ ] **F.1 — `for-in` over known-schema unrolling.** Verify it fires for
-  watr's `SECTION` / `KIND` / `INSTR` / `DEFTYPE` constants
-  (`prepare.js:1339-1346`).
+* [x] **Induction-variable strength reduction** — investigated end-to-end and
+  REJECTED (2026-05-18). A `strengthReduceIV` WAT pass was implemented, passed
+  all 1722 tests, then A/B-benchmarked perf-NEUTRAL: V8 TurboFan already
+  strength-reduces, and `aos` is memory-bound so the address arithmetic is free.
+  The "0.94 → 0.76 hand-WAT" premise above was wrong — IVSR does not close the
+  `aos` gap. The real residual is **6-vs-3 redundant `f64.load`s** (`p.x/p.y/p.z`
+  each loaded twice); the sound fix is memory scalar-replacement gated on an
+  alias proof — see "Generality track" Step 4 below. Pass fully reverted.
+* [x] **F.1 — `for-in` over known-schema unrolling** — fixed: the unroll now
+  carries a loop frame; pushed (`b716b22`).
+
+#### Generality track — escape/points-to substrate → devirt · SROA · strings
+
+**Goal.** Compile real jessie/subscript as-written — no developer accommodation,
+no hand-written `$parse.space = …` aliasing — and beat V8 on parser-like
+workloads. The user constraint is absolute: *guarantees, not speculations*.
+Every transform below fires only under a static proof; absent the proof, jz
+emits plain safe codegen. Correctness is unconditional; speed is
+provably-best-effort.
+
+**Step 1 — unify escape + points-to into one substrate.** jz already has four
+disqualify-based escape analyses, each re-walking the body with its own
+candidate/blacklist sets, each answering a near-identical question:
+- `analyzeBody`'s `escapes` map (`analyze.js:842`) — per-allocation escape bool.
+- `scanFlatObjects` (`analyze.js:656`) — object-literal SRoA eligibility.
+- `analyzeStructInline` (`analyze.js:2234`) — whole-program `Array<S>` inlining.
+- `unboxablePtrs` (`analyze.js:1806`) — fresh / non-null / non-aliased ptr vet.
+
+They are fragments of one analysis. Unify into a single allocation-site
+escape + points-to pass: for each site (`{}`, `[]`, `=>`, `new X`) compute
+(a) escape, (b) the points-to set (which locals/fields reach it), (c) alias /
+reassign / capture facts. The four consumers above read this rather than
+re-deriving it — DRY, and each new consumer (Steps 2–4) becomes a *reader*, not
+another walker.
+
+**Step 2 — devirtualization + object / dict / function-namespace SRoA.**
+- *Devirtualization.* A binding the substrate proves holds exactly one
+  statically-known non-escaping arrow → direct call → inline candidate.
+- [x] *Function-namespace SRoA.* `parse.space = …; parse.token = …` on a
+  non-escaping function value dissolves the property table into flat module
+  globals; `parse.space` reads become `global.get`. **Landed `9b538d7`** —
+  `analyzeFuncNamespaces` (escape proof) + `flattenFuncNamespaces` (plan,
+  pre-inlining): reassigned (`multiProp`) slot → f64 module global
+  (`$parse⟨T⟩space`), single-write-only-called slot → drop the dead `__dyn_set`
+  (emit already direct-calls it). Escaping / computed-indexed namespaces keep
+  the dynamic path. ns-repro fixture: 105 KB → 45 KB WAT, all `__dyn_*` gone.
+  *Remaining:* the SROA'd slot still calls via `call_indirect` — fine for a
+  genuinely-reassigned pointer; a devirt of the *last* statically-known write
+  would need a dominance/no-read-before-write proof (deferred to the Step-1
+  substrate). Object/dict-literal SROA below is the next slice.
+- [x] *Object / dict SRoA, extended.* `scanFlatObjects` (analyze.js) now has a
+  Pass 1.5 that collects monotonic field extensions: a literal-key write
+  `o.newProp = …` / `o['newProp'] = …` on a non-escaping object-literal
+  candidate becomes an extra flat field (`o#k` local, initialized to `undefined`
+  at the decl so a read-before-write matches JS). The field universe stays
+  statically closed — Pass 2 still disqualifies on any computed-key / off-schema
+  access and `delete` — so every surviving candidate is genuinely monotonically
+  extended. Emit's flat read/write hooks were already generic over `names`; only
+  the decl init learned the `values[j] === undefined` extension sentinel. Tests
+  in `test/optimizer.js` (escape-analysis block).
+
+**Step 3 — tighten strings (general, not host-gated).**
+- *Slices.* A scanned token is `(buffer, offset, len)` — no copy. This is the
+  dominant parser allocation; eliminating it is the main lever for beating V8.
+- *Interning.* Compile-time literal interning + a scanned-identifier intern
+  table so equal identifiers share one carrier and compare by pointer.
+- *No-alloc scan path.* `s[i] === '\\'` already wants a charcode compare with no
+  SSO materialization — workstream **B / #6** below; fold in here.
+- The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
+  `host: 'js'` variant — orthogonal to the above, lands independently.
+
+**Step 4 — memory scalar-replacement (closes the `aos` gap).** Carr & Kennedy
+register promotion / load-store motion: a memory cell read or written several
+times is held in a scalar local — load once, store once. jz already has the
+codegen (`cseScalarLoad`, `src/optimize.js`) but it is **disabled** — it CSE'd
+loads across aliasing stores and miscompiled the metacircular `watr.wasm`. The
+missing piece is exactly the Step-1 substrate: re-enable `cseScalarLoad` gated
+on points-to proving the loaded base cannot alias the stored bases (for `aos`:
+`rows` ∌ `xs`/`ys`/`zs`). Closes the 6-vs-3 redundant-load gap (~0.87 → ~0.70
+ms, hand-WAT parity).
+
+Order is the user's: Step 1 → 2 → 3 → 4. Each step is independently shippable
+and keeps zero regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
@@ -138,6 +215,7 @@ below — that section's workstream list is canonical.
 * [ ] All AssemblyScript tests
 * [ ] Warn/error on hitting memory limits
 * [ ] Know all fails of test262 in face and cleanly either jzify or error, don't fail unknowingly
+* [ ] Tighten tests (coverage) - randomly change features and see if tests break.
 
 ### Imports & jzify
 
