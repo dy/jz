@@ -115,7 +115,22 @@ function hoistVars(node, names) {
   if (op === ';') {
     const out = [op]
     for (let i = 1; i < node.length; i++) {
-      const c = hoistVars(node[i], names)
+      const child = node[i]
+      // A direct scope-child `var f = <arrow>` keeps its decl shape (→ a single
+      // `let f = arrow`) instead of splitting into a hoisted `let f` + later
+      // assignment. `var` and `let` are equivalent at a direct statement
+      // position, and the single-decl form is what top-level-function
+      // recognition keys on — bundlers (esbuild &c.) emit `var` for every
+      // module binding, so without this every bundled function would degrade
+      // to a closure value (and hit MAX_CLOSURE_ARITY). Redeclarations are
+      // collapsed downstream by the binding-dedup pass.
+      if (Array.isArray(child) && child[0] === 'var' && child.length === 2 &&
+          Array.isArray(child[1]) && child[1][0] === '=' && typeof child[1][1] === 'string' &&
+          Array.isArray(child[1][2]) && child[1][2][0] === '=>') {
+        out.push(['let', ['=', child[1][1], hoistVars(child[1][2], names)]])
+        continue
+      }
+      const c = hoistVars(child, names)
       if (c != null) out.push(c)
     }
     if (out.length === 1) return null
@@ -745,16 +760,16 @@ function foldStaticExportHelpers(ast) {
 
   const defPropAliases = new Set()
   for (const stmt of body) {
-    if (Array.isArray(stmt) && stmt[0] === '=' && typeof stmt[1] === 'string' && isObjectDefineProperty(stmt[2]))
-      defPropAliases.add(stmt[1])
+    const b = bindingOf(stmt)
+    if (b && isObjectDefineProperty(b[1])) defPropAliases.add(b[0])
   }
   if (!defPropAliases.size) return ast
 
   const helperNames = new Set()
   for (const stmt of body) {
-    if (Array.isArray(stmt) && stmt[0] === '=' && typeof stmt[1] === 'string' &&
-        Array.isArray(stmt[2]) && stmt[2][0] === '=>' && containsDefinePropertyCall(stmt[2], defPropAliases))
-      helperNames.add(stmt[1])
+    const b = bindingOf(stmt)
+    if (b && Array.isArray(b[1]) && b[1][0] === '=>' && containsDefinePropertyCall(b[1], defPropAliases))
+      helperNames.add(b[0])
   }
   if (!helperNames.size) return ast
 
@@ -783,12 +798,28 @@ function isObjectDefineProperty(node) {
   return Array.isArray(node) && node[0] === '.' && node[1] === 'Object' && node[2] === 'defineProperty'
 }
 
+/** Unwrap an esbuild module binding to `[name, init]`. After hoistVars, a binding
+ *  reaches this pass either split into a bare `['=', name, init]` (RHS hoisted out
+ *  as a separate `let name;`) or kept as a single `['let', ['=', name, init]]` decl
+ *  (arrow RHS — see the `;` handler in hoistVars). The fold keys on name/init,
+ *  so it must see through both shapes. */
+function bindingOf(stmt) {
+  if (!Array.isArray(stmt)) return null
+  if (stmt[0] === '=' && typeof stmt[1] === 'string') return [stmt[1], stmt[2]]
+  if ((stmt[0] === 'let' || stmt[0] === 'const' || stmt[0] === 'var') && stmt.length === 2 &&
+      Array.isArray(stmt[1]) && stmt[1][0] === '=' && typeof stmt[1][1] === 'string')
+    return [stmt[1][1], stmt[1][2]]
+  return null
+}
+
 function isDefPropAliasAssign(stmt, aliases) {
-  return Array.isArray(stmt) && stmt[0] === '=' && aliases.has(stmt[1]) && isObjectDefineProperty(stmt[2])
+  const b = bindingOf(stmt)
+  return b != null && aliases.has(b[0]) && isObjectDefineProperty(b[1])
 }
 
 function isExportHelperAssign(stmt, helpers) {
-  return Array.isArray(stmt) && stmt[0] === '=' && helpers.has(stmt[1])
+  const b = bindingOf(stmt)
+  return b != null && helpers.has(b[0])
 }
 
 function containsDefinePropertyCall(node, aliases) {
