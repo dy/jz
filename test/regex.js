@@ -234,6 +234,35 @@ test('regex: module-level variable test()', () => {
   is(r.exports.f(m.String('xyz')), 0)
 })
 
+test('regex: RegExp constructor accepts const string expressions', () => {
+  const r = jz(`
+    const prefix = "ab"
+    const flags = "i"
+    const re = new RegExp("^" + prefix + "c$", flags)
+    export let f = () => re.test("ABC") * 10 + re.test("xbc")
+  `)
+  is(r.exports.f(), 10)
+})
+
+test('regex: RegExp constructor folds template with const array join', () => {
+  const r = jz(`
+    export let f = () => {
+      const codes = ["PB", "PC"]
+      const re = new RegExp(\`^(\${codes.join("|")})$\`)
+      return re.test("PB") * 10 + re.test("PX")
+    }
+  `)
+  is(r.exports.f(), 10)
+})
+
+test('regex: RegExp constructor folds jzified var string assignment', () => {
+  const r = jz(`
+    var source = "cat|dog"
+    export let f = () => new RegExp(source).test("dog")
+  `, { jzify: true })
+  is(r.exports.f(), 1)
+})
+
 test('regex: anchors', async () => {
   is(await evaluate('/^hello/.test("hello world")'), 1)
   is(await evaluate('/^world/.test("hello world")'), 0)
