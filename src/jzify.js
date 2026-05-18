@@ -27,6 +27,7 @@ export default function jzify(ast) {
   argsIdx = 0
   doIdx = 0
   classIdx = 0
+  objThisIdx = 0
   // Hoist module-level vars: any `var x` inside nested blocks bubbles up.
   const names = new Set()
   ast = hoistVars(ast, names)
@@ -433,6 +434,10 @@ function prependParamDecls(decl, body) {
 }
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
+// A method body from jessie is a bare statement / `;`-sequence — wrap it in a
+// `{}` block so the `=>` handler treats it as a function body, not an expression
+// (an unwrapped `;`-seq arrow body produces malformed IR).
+const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
 
 // === class lowering ===
 //
@@ -457,6 +462,7 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
 // `static` members, getters/setters, computed/private-via-`#` member names are
 // kept as the literal key string `#name` (jz allows it).
 let classIdx = 0
+let objThisIdx = 0
 
 const classBodyItems = (body) =>
   body == null ? [] : Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
@@ -471,6 +477,58 @@ function renameThis(node, to) {
   if (node[0] === '.' || node[0] === '?.') return [node[0], renameThis(node[1], to), node[2]]
   if (node[0] === ':') return [node[0], node[1], renameThis(node[2], to)]
   return node.map(n => renameThis(n, to))
+}
+
+function usesThis(node) {
+  if (node === 'this') return true
+  if (!Array.isArray(node)) return false
+  if (node[0] === 'function' || node[0] === 'class') return false
+  if (node[0] === '.' || node[0] === '?.') return usesThis(node[1])
+  if (node[0] === ':') return usesThis(node[2])
+  return node.some(usesThis)
+}
+
+// Object shorthand methods and arrow-valued properties both parse as `=>`.
+// Stay conservative: only statement-shaped bodies are receiver methods here;
+// expression-bodied arrows keep their lexical `this` and remain unsupported.
+const OBJ_METHOD_BODY_OPS = new Set([';', 'return', 'if', 'for', 'for-in', 'for-of',
+  'while', 'do', 'switch', 'throw', 'try', 'break', 'continue'])
+
+function objectLiteralProps(args) {
+  const raw = args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
+  return raw.filter(p => p != null)
+}
+
+function isStatementBody(body) {
+  return Array.isArray(body) && OBJ_METHOD_BODY_OPS.has(body[0])
+}
+
+function objectMethodUsesThis(prop) {
+  if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return false
+  const value = prop[2]
+  if (!Array.isArray(value)) return false
+  if (value[0] === '=>' && isStatementBody(value[2])) return usesThis(value[2])
+  return false
+}
+
+function lowerObjectLiteralThis(args) {
+  const props = objectLiteralProps(args)
+  if (props.length === 0 || !props.some(objectMethodUsesThis)) return null
+  if (!props.every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return null
+
+  const self = `obj${objThisIdx++}`
+  const litProps = props.map(p => {
+    const value = p[2]
+    if (objectMethodUsesThis(p)) {
+      return [':', p[1], transform(['=>', value[1], block(renameThis(value[2], self))])]
+    }
+    return [':', p[1], transform(value)]
+  })
+  const lit = ['{}', litProps.length === 1 ? litProps[0] : [',', ...litProps]]
+  return ['()', ['()', ['=>', null, ['{}', [';',
+    ['let', ['=', self, lit]],
+    ['return', self]
+  ]]]], null]
 }
 
 function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
@@ -501,11 +559,6 @@ function lowerClass(name, heritage, body) {
   }
   const self = `self${classIdx++}`
   const UNDEF = []                                  // jessie's node for `undefined`
-  // A class member body from jessie is a bare statement / `;`-sequence — wrap it
-  // in a `{}` block so the `=>` handler treats it as a function body, not an
-  // expression (an unwrapped `;`-seq arrow body produces malformed IR).
-  const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
-  const usesThis = n => n === 'this' || (Array.isArray(n) && n[0] !== 'function' && n[0] !== 'class' && n.some(usesThis))
   // Object literal: every declared field (its initializer inline when it doesn't
   // touch `this`, else `undefined` and assigned below), every method as its
   // self-capturing arrow. Declaring all fields up front fixes the object shape.
@@ -677,6 +730,9 @@ const handlers = {
   // statement op), we re-wrap the collapsed result in `[';', ...]` so prepare.js keeps
   // routing the `{}` through the block branch instead of mistaking it for `{ expr }`.
   '{}'(...args) {
+    const loweredObject = lowerObjectLiteralThis(args)
+    if (loweredObject) return loweredObject
+
     return ['{}', ...args.map((a, i) => {
       const t = transformScope(a) ?? a
       if (i !== 0 || a == null) return t

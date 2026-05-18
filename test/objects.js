@@ -799,6 +799,40 @@ test('semicolon before leading-paren IIFE after object initializer', () => {
   is(exports._run(), 7)
 })
 
+test('jzify: object method shorthand captures receiver as this', () => {
+  const exports = run(`export let _run = () => {
+    const box = {
+      value: 7,
+      inc(n) { this.value = this.value + n; return this.value }
+    }
+    return box.inc(5) + box.value
+  }`, { jzify: true })
+  is(exports._run(), 24)
+})
+
+test('jzify: object method can call sibling method through this', () => {
+  const exports = run(`export let _run = () => {
+    const calc = {
+      value: 3,
+      add(n) { this.value = this.value + n; return this },
+      double() { return this.add(this.value).value }
+    }
+    return calc.double()
+  }`, { jzify: true })
+  is(exports._run(), 6)
+})
+
+test('jzify: object arrow property keeps lexical this unsupported', () => {
+  let msg = ''
+  try {
+    compile(`export let _run = () => {
+      const box = { value: 1, read: () => this.value }
+      return box.read()
+    }`, { jzify: true })
+  } catch (e) { msg = e.message }
+  ok(msg.includes('`this` not supported'), 'lexical arrow this is not receiver-bound')
+})
+
 // Computed property names — static keys map to fixed-shape slots; dynamic
 // computed keys lower to dict-side stores; effectful coercion runs and the
 // coerced key is the resolved property name. (test262 ObjectLiteral cases)
