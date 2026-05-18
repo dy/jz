@@ -21,10 +21,11 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 language suite
         env:
-          # Baseline (as of last green main, 2026-05-16): 1407 passes / 0 fails / 21973 skips.
+          # Baseline (as of last green main, 2026-05-18): 1417 passes / 1 fail / 21962 skips.
+          # The 1 fail (labeled break across a for-in loop) is a known limitation;
+          # the runner gates only on pass count, so it stays green while pass >= baseline.
           # If you intentionally add or skip tests, bump this number in the same commit.
-          # The runner exits non-zero if pass count drops below the baseline.
-          JZ_TEST262_BASELINE: 1407
+          JZ_TEST262_BASELINE: 1417
         run: npm run test262
 
   test262-builtins:
@@ -47,10 +48,10 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 built-ins suite
         env:
-          # Baseline (as of last green main, 2026-05-17): 701 passes / 0 in-scope
-          # fails / 62 xfail (out-of-scope: BigInt, Symbol, RegExp exec, …).
+          # Baseline (as of last green main, 2026-05-18): 719 passes / 0 in-scope
+          # fails / 63 xfail (out-of-scope: BigInt, Symbol, RegExp exec, …).
           # The runner gates on pass < baseline AND any in-scope fail > 0; an
           # out-of-scope fail must be added to EXPECTED_FAIL_* in the runner.
           # Lift this baseline when fixes land.
-          JZ_TEST262_BASELINE: 701
+          JZ_TEST262_BASELINE: 719
         run: npm run test262:builtins
