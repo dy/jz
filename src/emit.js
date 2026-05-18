@@ -1923,8 +1923,24 @@ export const emitter = {
   },
 
   'while': (cond, body) => emitter['for'](null, cond, null, body),
-  'break': () => [...emitFinalizers(), ['br', loopTop().brk]],
-  'continue': () => [...emitFinalizers(), ['br', loopTop().loop]],
+  'label': (name, body) => {
+    const brk = `$label${ctx.func.uniq++}`
+    ctx.func.stack.push({ label: name, brk })
+    const result = ['block', brk, ...emitFlat(body)]
+    ctx.func.stack.pop()
+    return result
+  },
+  'break': (label) => {
+    const target = label == null
+      ? loopTop().brk
+      : ctx.func.stack.findLast(frame => frame.label === label)?.brk
+    if (!target) err(`break label '${label}' is not in scope`)
+    return [...emitFinalizers(), ['br', target]]
+  },
+  'continue': (label) => {
+    if (label != null) err(`continue label '${label}' is not supported`)
+    return [...emitFinalizers(), ['br', loopTop().loop]]
+  },
 
   // === Call ===
 

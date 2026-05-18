@@ -844,6 +844,7 @@ const handlers = {
   'instanceof': () => err('instanceof not supported: use typeof'),
   'with': () => err('`with` not supported: deprecated'),
   ':': () => err('labeled statements not supported'),
+  'label'(name, body) { return ['label', name, prep(body)] },
   'var': () => err('`var` not supported: use let/const'),
   'function': () => err('`function` not supported: use arrow functions'),
 
