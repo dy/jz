@@ -107,6 +107,83 @@ function staticStringArrayValues(expr) {
   return out
 }
 
+function immediateStaticStringExpr(node) {
+  const lit = stringValue(node)
+  if (lit != null) return lit
+  if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
+  if (!Array.isArray(node)) return null
+  const [op, ...args] = node
+  if (op === '+') {
+    const a = immediateStaticStringExpr(args[0])
+    const b = immediateStaticStringExpr(args[1])
+    return a != null && b != null ? a + b : null
+  }
+  if (op === '`') {
+    let out = ''
+    for (const part of args) {
+      const s = immediateStaticStringExpr(part)
+      if (s == null) return null
+      out += s
+    }
+    return out
+  }
+  return null
+}
+
+function immediateStaticStringArrayValues(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '[]' || expr.length !== 2) return null
+  const raw = Array.isArray(expr[1]) && expr[1][0] === ',' ? expr[1].slice(1) : [expr[1]]
+  const out = []
+  for (const item of raw) {
+    const s = immediateStaticStringExpr(item)
+    if (s == null) return null
+    out.push(s)
+  }
+  return out
+}
+
+function eachTopLevelStatement(node, fn) {
+  if (Array.isArray(node) && node[0] === ';') {
+    for (let i = 1; i < node.length; i++) fn(node[i])
+  } else {
+    fn(node)
+  }
+}
+
+function collectAssignmentWrites(node, writes) {
+  if (!Array.isArray(node)) return
+  const [op, lhs] = node
+  if (op === '=' && typeof lhs === 'string') writes.set(lhs, (writes.get(lhs) || 0) + 1)
+  if ((op === '++' || op === '--') && typeof lhs === 'string') writes.set(lhs, (writes.get(lhs) || 0) + 1)
+  for (let i = 1; i < node.length; i++) collectAssignmentWrites(node[i], writes)
+}
+
+function collectTopLevelStaticAssignments(node, facts) {
+  if (!Array.isArray(node)) return
+  if (node[0] === ',') {
+    for (let i = 1; i < node.length; i++) collectTopLevelStaticAssignments(node[i], facts)
+    return
+  }
+  if (node[0] !== '=' || typeof node[1] !== 'string') return
+  const str = immediateStaticStringExpr(node[2])
+  const arr = immediateStaticStringArrayValues(node[2])
+  if (str != null || arr) facts.set(node[1], { str, arr })
+}
+
+function seedStaticGlobalAssignments(node) {
+  // jzify hoists function declarations ahead of `var` initializer assignments.
+  // Seed one-write static globals before preparing those function bodies so
+  // compile-time-only consumers (for example `new RegExp(`${PART}`)`) can still
+  // resolve the same constants they would see after module initialization.
+  const writes = new Map()
+  const facts = new Map()
+  collectAssignmentWrites(node, writes)
+  eachTopLevelStatement(node, stmt => collectTopLevelStaticAssignments(stmt, facts))
+  for (const [name, fact] of facts) {
+    if (writes.get(name) === 1) bindStaticGlobal(name, fact.str, fact.arr)
+  }
+}
+
 function stringArrayValues(expr) {
   if (!Array.isArray(expr) || expr[0] !== '[' || expr.length === 1) return null
   const out = []
@@ -248,6 +325,7 @@ export default function prepare(node) {
   includeModule('core')
   normalizeIdents(node)
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
+  seedStaticGlobalAssignments(node)
   const ast = prep(node)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
