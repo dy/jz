@@ -270,6 +270,18 @@ test('regex: RegExp constructor folds jzified var string assignment', () => {
   is(r.exports.f(), 1)
 })
 
+test('regex: RegExp constructor folds jzified hoisted var template parts', () => {
+  const r = jz(`
+    var left = "cat"
+    var right = "dog"
+    function matches(value) {
+      return new RegExp(\`^(\${left}|\${right})$\`, "i").test(value)
+    }
+    export let f = () => matches("DOG") * 10 + matches("bird")
+  `, { jzify: true })
+  is(r.exports.f(), 10)
+})
+
 test('regex: anchors', async () => {
   is(await evaluate('/^hello/.test("hello world")'), 1)
   is(await evaluate('/^world/.test("hello world")'), 0)
