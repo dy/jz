@@ -25,9 +25,9 @@
  */
 
 import { ctx } from './ctx.js'
-import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, extractParams, intLiteralValue } from './analyze.js'
+import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue } from './analyze.js'
 import { includeModule } from './autoload.js'
-import { MAX_CLOSURE_ARITY } from './ir.js'
+import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
 import narrowSignatures, { specializeBimorphicTyped, refineDynKeys } from './narrow.js'
 
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
@@ -1768,6 +1768,89 @@ const unboxConstTypedGlobals = () => {
   }
 }
 
+/**
+ * Function-namespace scalar replacement + devirtualization.
+ *
+ * A property of a user function compiles, by default, as a dynamic object: each
+ * `f.prop` write is a `__dyn_set` into a closure-keyed hash side-table, each
+ * read a `__dyn_get`. But a function's property table can never be observed by
+ * the host (the host receives only the callable; the table lives in jz linear
+ * memory), so jz sees every `f.prop` site — the slot is a closed, fully-known
+ * cell. Per property of a non-escaping namespace:
+ *
+ *   - reassigned (`multiProp`) slot → dissolve into a plain f64 module global:
+ *     `__dyn_get/__dyn_set` → `global.get/global.set`. The indirect call stays
+ *     (a genuinely reassigned function pointer needs `call_indirect`). Pure
+ *     storage relocation: the global inits to `UNDEF_WAT`, exactly mirroring
+ *     "key never set → __dyn_get yields undefined".
+ *   - written once to its lifted `$f$prop` function and only ever *called*
+ *     (never read as a value) → the `__dyn_set` is dead: emit already lowers
+ *     `f.prop()` to a direct `call $f$prop`. Drop the write entirely.
+ *
+ * Disqualified namespaces (`f` escapes as a bare value / is computed-indexed —
+ * an alias could reach the table) keep the dynamic path. Together these can
+ * eliminate the `__dyn_*` machinery from a namespace-only program outright.
+ */
+const flattenFuncNamespaces = (ast) => {
+  if (!ctx.func.multiProp?.size) return false
+  const ns = analyzeFuncNamespaces(ast)
+  if (!ns.size) return false
+  // f → Map<prop, decision>; decision is { global } (SROA) or { drop } (dead
+  // write to an only-called single-write slot).
+  const flat = new Map()
+  for (const [f, info] of ns) {
+    if (info.disq) continue
+    let decide
+    const plan = (prop, d) => { if (!decide) flat.set(f, decide = new Map()); decide.set(prop, d) }
+    for (const prop of info.props) {
+      if (ctx.func.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
+      const w = info.writes.get(prop)
+      // Single write of the lifted `$f$prop`, never read as a value → drop it.
+      if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}` && !info.valRead.has(prop))
+        plan(prop, { drop: true })
+    }
+  }
+  if (!flat.size) return false
+  for (const decide of flat.values())
+    for (const d of decide.values())
+      if (d.global && !ctx.scope.globals.has(d.global)) {
+        ctx.scope.globals.set(d.global, `(global $${d.global} (mut f64) ${UNDEF_WAT})`)
+        ctx.scope.globalTypes.set(d.global, 'f64')
+      }
+  const decisionFor = (obj, prop) =>
+    typeof obj === 'string' && typeof prop === 'string' && flat.has(obj)
+      ? flat.get(obj).get(prop) : undefined
+  const isEmptySeq = (n) => Array.isArray(n) && n.length === 1 && n[0] === ';'
+  const rewrite = (node) => {
+    if (!Array.isArray(node)) return node
+    const op = node[0]
+    if (op === '.' || op === '?.') {
+      const d = decisionFor(node[1], node[2])
+      if (d?.global) return d.global  // drop-decisions leave reads/calls alone
+    }
+    if (op === '=' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
+      const d = decisionFor(node[1][1], node[1][2])
+      if (d?.global) return ['=', d.global, rewrite(node[2])]
+      if (d?.drop) return [';']  // dead write — emit nothing
+    }
+    const out = [op]
+    // Filter dropped writes out of statement sequences (an empty `[';']` left in
+    // a body would lower to an unrenderable node).
+    for (let i = 1; i < node.length; i++) {
+      const c = rewrite(node[i])
+      if (op === ';' && isEmptySeq(c)) continue
+      out.push(c)
+    }
+    return out
+  }
+  const newAst = rewrite(ast)
+  ast.length = 0
+  for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
+  for (const fn of ctx.func.list)
+    if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
+  return true
+}
+
 const materializeAutoBoxSchemas = (programFacts) => {
   if (!ctx.schema.register) return
   for (const [name, props] of programFacts.propMap) {
@@ -1828,6 +1911,10 @@ export default function plan(ast) {
   unboxConstTypedGlobals()
 
   let programFacts = collectProgramFacts(ast)
+  // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
+  // globals before inlining/narrowing, so all downstream passes see plain
+  // globals instead of the dynamic property machinery.
+  if (flattenFuncNamespaces(ast)) programFacts = collectProgramFacts(ast)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
   // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
   // replacement (`scalarize*`) is *not* gated on `sourceInline`: callers turn it on
