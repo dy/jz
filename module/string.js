@@ -47,6 +47,7 @@ export default (ctx) => {
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
     __str_encode: ['__str_byteLen', '__str_copy'],
+    __encodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr'],
     __to_str: ['__ftoa', '__static_str', '__str_join', '__mkptr'],
     __str_byteLen: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
@@ -1217,6 +1218,56 @@ export default (ctx) => {
       r = typed(['call', '$__str_concat_raw', asI64(r), asI64(one(codes[i]))], 'f64')
     }
     return r
+  }
+
+  ctx.core.stdlib['__encodeURIComponent'] = `(func $__encodeURIComponent (param $val i64) (result f64)
+    (local $str i64) (local $slen i32) (local $base i32) (local $out i32)
+    (local $i i32) (local $j i32) (local $c i32) (local $hi i32) (local $lo i32)
+    (local.set $str (call $__to_str (local.get $val)))
+    (local.set $slen (call $__str_byteLen (local.get $str)))
+    (if (i32.eqz (local.get $slen))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    (local.set $base (call $__alloc (i32.add (i32.const 4) (i32.mul (local.get $slen) (i32.const 3)))))
+    (local.set $out (i32.add (local.get $base) (i32.const 4)))
+    (block $done (loop $loop
+      (br_if $done (i32.ge_u (local.get $i) (local.get $slen)))
+      (local.set $c (call $__char_at (local.get $str) (local.get $i)))
+      (if (i32.or
+            (i32.or
+              (i32.or
+                (i32.and (i32.ge_u (local.get $c) (i32.const 65)) (i32.le_u (local.get $c) (i32.const 90)))
+                (i32.and (i32.ge_u (local.get $c) (i32.const 97)) (i32.le_u (local.get $c) (i32.const 122))))
+              (i32.and (i32.ge_u (local.get $c) (i32.const 48)) (i32.le_u (local.get $c) (i32.const 57))))
+            (i32.or
+              (i32.or
+                (i32.or (i32.eq (local.get $c) (i32.const 45)) (i32.eq (local.get $c) (i32.const 95)))
+                (i32.or (i32.eq (local.get $c) (i32.const 46)) (i32.eq (local.get $c) (i32.const 33))))
+              (i32.or
+                (i32.or (i32.eq (local.get $c) (i32.const 126)) (i32.eq (local.get $c) (i32.const 42)))
+                (i32.or
+                  (i32.eq (local.get $c) (i32.const 39))
+                  (i32.or (i32.eq (local.get $c) (i32.const 40)) (i32.eq (local.get $c) (i32.const 41)))))))
+        (then
+          (i32.store8 (i32.add (local.get $out) (local.get $j)) (local.get $c))
+          (local.set $j (i32.add (local.get $j) (i32.const 1))))
+        (else
+          (local.set $hi (i32.shr_u (local.get $c) (i32.const 4)))
+          (local.set $lo (i32.and (local.get $c) (i32.const 15)))
+          (i32.store8 (i32.add (local.get $out) (local.get $j)) (i32.const 37))
+          (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 1)))
+            (i32.add (local.get $hi) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $hi) (i32.const 9)))))
+          (i32.store8 (i32.add (local.get $out) (i32.add (local.get $j) (i32.const 2)))
+            (i32.add (local.get $lo) (select (i32.const 55) (i32.const 48) (i32.gt_u (local.get $lo) (i32.const 9)))))
+          (local.set $j (i32.add (local.get $j) (i32.const 3)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $loop)))
+    (i32.store (local.get $base) (local.get $j))
+    (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $out)))`
+
+  ctx.core.emit['encodeURIComponent'] = (value) => {
+    inc('__encodeURIComponent')
+    const input = value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))
+    return typed(['call', '$__encodeURIComponent', input], 'f64')
   }
 
   // .at(i) → charAt with negative index support
