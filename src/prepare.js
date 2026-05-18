@@ -1248,6 +1248,17 @@ const handlers = {
         args[0] = end === 2 ? args[0][1] : args[0].slice(0, end)
       }
     }
+    // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
+    // argument whose value is the last comma operand. The parser keeps it wrapped
+    // (`['()', [',', …]]`); prep would strip the grouping, leaving a bare comma
+    // that emit can no longer tell apart from an arg list and splats into N args.
+    // With ≥2 args an outer arg-list comma already nests it — only the sole-arg
+    // case loses the distinction. Re-nest it under a 1-element arg-list comma.
+    if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === '()' && args[0].length === 2) {
+      const ungroup = n => Array.isArray(n) && n[0] === '()' && n.length === 2 ? ungroup(n[1]) : n
+      const core = ungroup(args[0])
+      if (Array.isArray(core) && core[0] === ',') args = [[',', args[0]]]
+    }
     const preppedArgs = args.filter(a => a != null).map(prep)
     for (const a of preppedArgs) {
       if (typeof a === 'string' && hasFunc(a)) {
