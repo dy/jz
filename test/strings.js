@@ -18,6 +18,27 @@ test('String.fromCharCode: A', () => {
   is(run('export let f = () => String.fromCharCode(65).length').f(), 1)
 })
 
+test('encodeURIComponent: leaves unescaped characters intact', () => {
+  is(run(`export let f = () => encodeURIComponent("AZaz09-_.!~*'()")`).f(), "AZaz09-_.!~*'()")
+})
+
+test('encodeURIComponent: percent-encodes reserved and whitespace bytes', () => {
+  is(run('export let f = () => encodeURIComponent("a b?x=1&y=/")').f(), 'a%20b%3Fx%3D1%26y%3D%2F')
+})
+
+test('encodeURIComponent: percent-encodes UTF-8 bytes', () => {
+  is(run('export let f = () => encodeURIComponent("é ☃")').f(), '%C3%A9%20%E2%98%83')
+})
+
+test('encodeURIComponent: missing argument encodes undefined', () => {
+  is(run('export let f = () => encodeURIComponent()').f(), 'undefined')
+})
+
+test('encodeURIComponent: dynamic value compiles without JS host imports under WASI', () => {
+  const wat = compile('export let f = (s) => encodeURIComponent(s)', { host: 'wasi', wat: true })
+  ok(!wat.includes('(import "env"'), 'encodeURIComponent should not import JS host helpers')
+})
+
 // === + operator on strings ===
 
 test('string +: concat', () => {
