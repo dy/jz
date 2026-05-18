@@ -373,6 +373,9 @@ function canThrow(body, seen = new Set()) {
   return false
 }
 
+const isBoundName = name =>
+  ctx.func.locals?.has(name) || ctx.func.current?.params?.some(p => p.name === name)
+
 /** Emit pending `finally` cleanups for an abrupt control-flow exit.
  *  Inner cleanups run before outer cleanups. While emitting each cleanup, remove
  *  it from the active stack so `return` inside `finally` does not re-enter it. */
@@ -2408,7 +2411,7 @@ export const emitter = {
         ['i64.reinterpret_f64', arrayIR]]], 'f64');
     }
 
-    if (typeof callee === 'string' && ctx.core.emit[callee]) {
+    if (typeof callee === 'string' && ctx.core.emit[callee] && !isBoundName(callee) && !ctx.func.names.has(callee)) {
       // Pass spread args through to emitter (e.g. Math.max(...arr))
       if (parsed.hasSpread) {
         const allArgs = []
@@ -2424,7 +2427,7 @@ export const emitter = {
     }
 
     // Direct call if callee is a known top-level function
-    if (typeof callee === 'string' && ctx.func.names.has(callee) && !ctx.func.locals?.has(callee)) {
+    if (typeof callee === 'string' && ctx.func.names.has(callee) && !isBoundName(callee)) {
       const func = ctx.func.map.get(callee)
 
       // Rest param case: collect all args (including expanded spreads) into array
