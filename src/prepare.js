@@ -38,6 +38,8 @@ import {
 
 let depth = 0  // arrow nesting depth (0=top-level, >0=inside function)
 let scopes = []  // block scope stack: [{names: Set, renames: Map}]
+let staticConstScopes = []  // lexical const facts: [{strings: Map, arrays: Map}]
+let assignedStaticGlobals = null
 // Per-arrow set of names already declared anywhere in the function body. Used
 // to force a rename when the same identifier is declared in two sibling blocks
 // (else-if arms, separate { ... } chunks): without renaming, both decls lower
@@ -93,6 +95,18 @@ const stringValue = node => Array.isArray(node) && node[0] == null && typeof nod
 const flatArgs = args => args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
 const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
 
+function staticStringArrayValues(expr) {
+  if (!Array.isArray(expr) || expr[0] !== '[]' || expr.length !== 2) return null
+  const raw = Array.isArray(expr[1]) && expr[1][0] === ',' ? expr[1].slice(1) : [expr[1]]
+  const out = []
+  for (const item of raw) {
+    const s = staticStringExpr(item)
+    if (s == null) return null
+    out.push(s)
+  }
+  return out
+}
+
 function stringArrayValues(expr) {
   if (!Array.isArray(expr) || expr[0] !== '[' || expr.length === 1) return null
   const out = []
@@ -106,6 +120,63 @@ function stringArrayValues(expr) {
 function staticString(value) {
   includeForStringValue()
   return ['str', value]
+}
+
+function lookupStaticString(name) {
+  const resolved = scopes.length && isDeclared(name) ? resolveScope(name) : (ctx.scope.chain[name] || name)
+  for (let i = staticConstScopes.length - 1; i >= 0; i--) {
+    const v = staticConstScopes[i].strings.get(resolved)
+    if (v != null) return v
+  }
+  return ctx.scope.shapeStrs?.get(resolved) ?? ctx.scope.constStrs?.get(resolved) ?? null
+}
+
+function lookupStaticStringArray(name) {
+  const resolved = scopes.length && isDeclared(name) ? resolveScope(name) : (ctx.scope.chain[name] || name)
+  for (let i = staticConstScopes.length - 1; i >= 0; i--) {
+    const v = staticConstScopes[i].arrays.get(resolved)
+    if (v) return v
+  }
+  return ctx.scope.shapeStrArrays?.get(resolved) ?? null
+}
+
+function staticStringExpr(node) {
+  const lit = stringValue(node)
+  if (lit != null) return lit
+  if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
+  if (typeof node === 'string') return lookupStaticString(node)
+  if (!Array.isArray(node)) return null
+  const [op, ...args] = node
+  if (op === '+') {
+    const a = staticStringExpr(args[0])
+    const b = staticStringExpr(args[1])
+    return a != null && b != null ? a + b : null
+  }
+  if (op === '`') {
+    let out = ''
+    for (const part of args) {
+      const s = staticStringExpr(part)
+      if (s == null) return null
+      out += s
+    }
+    return out
+  }
+  if (op === '``' && Array.isArray(args[0]) && args[0][0] === '.' && args[0][1] === 'String' && args[0][2] === 'raw') {
+    let out = ''
+    for (const part of args.slice(1)) {
+      const s = staticStringExpr(part)
+      if (s == null) return null
+      out += s
+    }
+    return out
+  }
+  if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'join' && typeof args[0][1] === 'string') {
+    const arr = lookupStaticStringArray(args[0][1])
+    if (!arr) return null
+    const sep = args.length > 1 && args[1] != null ? staticStringExpr(args[1]) : ','
+    return sep != null ? arr.join(sep) : null
+  }
+  return null
 }
 
 function importMetaUrl() {
@@ -171,6 +242,8 @@ function recordModuleInitFacts(root) {
 export default function prepare(node) {
   depth = 0
   scopes = []
+  staticConstScopes = []
+  assignedStaticGlobals = new Set()
   funcLocalNames = [new Set()]
   includeModule('core')
   normalizeIdents(node)
@@ -284,6 +357,34 @@ function resolveScope(name) {
 /** Check if name is declared in any current scope level. */
 function isDeclared(name) {
   return scopes.some(s => s.has(name))
+}
+
+function pushScope(scope = new Map()) {
+  scopes.push(scope)
+  staticConstScopes.push({ strings: new Map(), arrays: new Map() })
+}
+
+function popScope() {
+  scopes.pop()
+  staticConstScopes.pop()
+}
+
+function bindStaticConst(name, str, arr) {
+  const frame = staticConstScopes.at(-1)
+  if (!frame || typeof name !== 'string') return
+  if (str != null) frame.strings.set(name, str)
+  if (arr) frame.arrays.set(name, arr)
+}
+
+function bindStaticGlobal(name, str, arr) {
+  if (typeof name !== 'string') return
+  if (str != null) (ctx.scope.shapeStrs ||= new Map()).set(name, str)
+  if (arr) (ctx.scope.shapeStrArrays ||= new Map()).set(name, arr)
+}
+
+function deleteStaticGlobal(name) {
+  ctx.scope.shapeStrs?.delete(name)
+  ctx.scope.shapeStrArrays?.delete(name)
 }
 
 const hasFunc = name => ctx.func.names.has(name)
@@ -604,7 +705,10 @@ function prepDecl(op, ...inits) {
       rest.push(declName)
       continue
     }
-    const [, name, init] = i, normed = prep(init)
+    const [, name, init] = i
+    const staticStr = op === 'const' ? staticStringExpr(init) : null
+    const staticArr = op === 'const' ? staticStringArrayValues(init) : null
+    const normed = prep(init)
 
     if (isDestructPattern(name)) {
       const tmp = `${T}d${ctx.func.uniq++}`
@@ -634,18 +738,19 @@ function prepDecl(op, ...inits) {
         scopes[scopes.length - 1].set(name, name)
       }
       if (typeof declName === 'string' && fnNames) fnNames.add(declName)
+      if (op === 'const') bindStaticConst(declName, staticStr, staticArr)
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0) {
         if (ctx.module.currentPrefix) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[name] = declName
         }
+        if (op === 'const') bindStaticGlobal(declName, staticStr, staticArr)
         if (op === 'const') {
           if (!ctx.scope.consts) ctx.scope.consts = new Set()
           ctx.scope.consts.add(declName)
-          if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
-            (ctx.scope.constStrs ||= new Map()).set(declName, normed[1])
-          const strs = stringArrayValues(normed)
+          if (staticStr != null) (ctx.scope.constStrs ||= new Map()).set(declName, staticStr)
+          const strs = staticArr || stringArrayValues(normed)
           if (strs) (ctx.scope.shapeStrArrays ||= new Map()).set(declName, strs)
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
@@ -752,7 +857,16 @@ const handlers = {
       const name = `${lhs[1]}$${lhs[2]}`
       if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
-    return ['=', prep(lhs), prep(rhs)]
+    const staticStr = staticStringExpr(rhs)
+    const staticArr = staticStringArrayValues(rhs)
+    const plhs = prep(lhs)
+    const prhs = prep(rhs)
+    if (depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs)) {
+      if (!assignedStaticGlobals.has(plhs) && (staticStr != null || staticArr)) bindStaticGlobal(plhs, staticStr, staticArr)
+      else deleteStaticGlobal(plhs)
+      assignedStaticGlobals.add(plhs)
+    }
+    return ['=', plhs, prhs]
   },
 
   // try/catch/throw
@@ -787,6 +901,8 @@ const handlers = {
   // Tagged template: tag`a${x}b` → tag(['a','b'], x)
   // Parser drops empty string segments; reinsert them to satisfy the strings.length === exprs.length + 1 invariant.
   '``'(tag, ...parts) {
+    const raw = staticStringExpr(['``', tag, ...parts])
+    if (raw != null) return staticString(raw)
     const strs = [], exprs = []
     let prev = false
     for (const p of parts) {
@@ -933,13 +1049,13 @@ const handlers = {
   // Block-scoped control flow: push scope for bodies so inner let/const shadows correctly
   'if': (cond, then, els) => {
     const c = prep(cond)
-    scopes.push(new Map()); const t = prep(then); scopes.pop()
-    if (els != null) { scopes.push(new Map()); const e = prep(els); scopes.pop(); return ['if', c, t, e] }
+    pushScope(); const t = prep(then); popScope()
+    if (els != null) { pushScope(); const e = prep(els); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
   'while': (cond, body) => {
     const c = prep(cond)
-    scopes.push(new Map()); const b = prep(body); scopes.pop()
+    pushScope(); const b = prep(body); popScope()
     return ['while', c, b]
   },
 
@@ -1022,7 +1138,7 @@ const handlers = {
     for (const n of collectParamNames(raw)) fnScope.set(n, n)
 
     depth++
-    scopes.push(fnScope)
+    pushScope(fnScope)
     funcLocalNames.push(new Set(collectParamNames(raw)))
 
     const nextParams = []
@@ -1063,7 +1179,7 @@ const handlers = {
     }
     const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
-    scopes.pop()
+    popScope()
     funcLocalNames.pop()
     depth--
     return result
@@ -1277,9 +1393,9 @@ const handlers = {
 
   // Bare block statement: push scope for let/const shadowing
   '{'(inner) {
-    scopes.push(new Map())
+    pushScope()
     const result = ['{', prep(inner)]
-    scopes.pop()
+    popScope()
     return result
   },
 
@@ -1288,9 +1404,9 @@ const handlers = {
     // Detect block body vs object literal
     if (Array.isArray(inner) && STMT_OPS.has(inner[0])) {
       // Block body: push block scope for let/const shadowing
-      scopes.push(new Map())
+      pushScope()
       const result = ['{}', prep(inner)]
-      scopes.pop()
+      popScope()
       return result
     }
 
@@ -1363,7 +1479,7 @@ const handlers = {
 
   // For loop
   'for'(head, body) {
-    scopes.push(new Map())
+    pushScope()
     let r
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
@@ -1416,7 +1532,7 @@ const handlers = {
       if (sid != null) {
         // Known schema → compile-time unrolling with string keys
         const keys = ctx.schema.list[sid]
-        if (!keys || !keys.length) { scopes.pop(); return null }
+        if (!keys || !keys.length) { popScope(); return null }
         includeForKnownKeyIteration()
         const stmts = []
         for (let i = 0; i < keys.length; i++) {
@@ -1434,7 +1550,7 @@ const handlers = {
     } else {
       r = ['for', prep(head), prep(body)]
     }
-    scopes.pop()
+    popScope()
     return r
   },
 
@@ -1493,10 +1609,10 @@ const handlers = {
     // (would require a runtime regex interpreter). Reported as build blocker #6.
     if (name === 'RegExp') {
       const literalArgs = ctorArgs.filter(a => a != null)
-      const pattern = stringValue(literalArgs[0])
+      const pattern = staticStringExpr(literalArgs[0])
       if (pattern == null)
         err('new RegExp() requires a string-literal pattern; dynamic regex construction is not supported')
-      const flags = literalArgs.length > 1 ? stringValue(literalArgs[1]) : ''
+      const flags = literalArgs.length > 1 ? staticStringExpr(literalArgs[1]) : ''
       if (flags == null)
         err('new RegExp() flags must be a string literal')
       return prep(['//', pattern, flags || undefined])
