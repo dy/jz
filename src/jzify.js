@@ -1076,12 +1076,30 @@ function collectCopyPropHelpers(body, aliases) {
   return helpers
 }
 
+function nodeContainsString(node, value) {
+  if (node === value) return true
+  if (!Array.isArray(node)) return false
+  for (const part of node) {
+    if (nodeContainsString(part, value)) return true
+  }
+  return false
+}
+
+function isEsbuildInteropHelper(node, aliases, copyHelpers) {
+  return Array.isArray(node) &&
+    node[0] === '=>' &&
+    containsAliasCall(node, aliases, 'Object.create') &&
+    containsAliasCall(node, aliases, 'Object.getPrototypeOf') &&
+    containsNamedCall(node, copyHelpers) &&
+    nodeContainsString(node, 'default') &&
+    nodeContainsString(node, '__esModule')
+}
+
 function collectInteropHelpers(body, aliases, copyHelpers) {
   const helpers = new Set()
   for (const stmt of body) {
     const b = bindingOf(stmt)
-    if (b && Array.isArray(b[1]) && b[1][0] === '=>' &&
-        (containsAliasCall(b[1], aliases, 'Object.create') || containsNamedCall(b[1], copyHelpers))) {
+    if (b && isEsbuildInteropHelper(b[1], aliases, copyHelpers)) {
       helpers.add(b[0])
     }
   }
