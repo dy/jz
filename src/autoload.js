@@ -51,6 +51,7 @@ export const CALL_MODULES = dict({
   BigUint64Array: ['core', 'typedarray'],
   parseFloat: ['number', 'string'],
   parseInt: ['number', 'string'],
+  encodeURIComponent: ['core', 'string', 'number'],
   String: ['core', 'string', 'number'],
   Number: ['number', 'string'],
   Boolean: ['number'],

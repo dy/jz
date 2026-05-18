@@ -530,6 +530,7 @@ export const GLOBALS = {
   isFinite: 'number',
   parseInt: 'number',
   parseFloat: 'number',
+  encodeURIComponent: 'encodeURIComponent',
   Error: 'Error',
   // Error subclasses: distinct names in JS, but jz doesn't carry typed error
   // info — `throw` accepts any value and stringification goes through the

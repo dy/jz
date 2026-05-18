@@ -122,6 +122,7 @@ const TRACKED_BUILTIN_PATHS = [
   'BigInt',
   'parseInt',
   'parseFloat',
+  'encodeURIComponent',
   'isFinite',
   'isNaN',
   'Infinity',
@@ -303,6 +304,16 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/String/fromCodePoint/number-is-out-of-range.js',
   'built-ins/String/fromCodePoint/return-string-value.js',
   'built-ins/String/fromCodePoint/to-number-conversions.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A3.1_T1.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A3.2_T1.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A3.2_T2.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A3.2_T3.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A3.3_T1.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A4_T1.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A4_T2.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A4_T3.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A4_T4.js',
+  'built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js',
   'built-ins/String/prototype/indexOf/S15.5.4.7_A1_T6.js',
   'built-ins/String/prototype/indexOf/S15.5.4.7_A1_T7.js',
   'built-ins/String/prototype/indexOf/S15.5.4.7_A1_T8.js',
@@ -651,6 +662,7 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
   ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],
   ['built-ins/parseFloat/S15.1.2.3_A1_T1.js', 'parseFloat(boolean) — documented divergence (boolean repr as number)'],
+  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', 'encodeURIComponent object ToPrimitive coercion — out of scope'],
 ])
 
 function expectedFailReason(rel) {
