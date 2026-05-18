@@ -67,6 +67,20 @@ test('destruct: inline arrow param nested rest pattern', () => {
   is(f(), 5)
 })
 
+test('destruct: module-scope for-of binding pattern declares generated temps', () => {
+  const { f } = jz(`
+    const groups = { a: ["A"], b: ["B", "C"] }
+    let total = 0
+    let last = ""
+    for (const [key, names] of Object.entries(groups)) {
+      total += key.length + names.length
+      for (const name of names) last = name
+    }
+    export let f = () => total + last.length
+  `, { jzify: true }).exports
+  is(f(), 6)
+})
+
 // ============================================
 // Object destructuring
 // ============================================

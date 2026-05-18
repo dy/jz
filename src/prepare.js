@@ -478,6 +478,27 @@ function scalarArrayDestruct(pattern, rhs) {
   return prep([';', ['let', ...decls], ...assigns])
 }
 
+function declareGlobal(name, user = true) {
+  if (depth !== 0 || typeof name !== 'string') return name
+  if (ctx.scope.globals.has(name)) err(`'${name}' conflicts with a compiler internal — choose a different name`)
+  ctx.scope.globals.set(name, `(global $${name} (mut f64) (f64.const 0))`)
+  if (user) ctx.scope.userGlobals.add(name)
+  return name
+}
+
+function bindingNames(pattern, out = new Set()) {
+  if (typeof pattern === 'string') out.add(pattern)
+  else if (Array.isArray(pattern)) {
+    if (pattern[0] === '...' && typeof pattern[1] === 'string') out.add(pattern[1])
+    else if (pattern[0] === '=') bindingNames(pattern[1], out)
+    else if (pattern[0] === ':') bindingNames(pattern[2], out)
+    else if (pattern[0] === '[]' || pattern[0] === '{}' || pattern[0] === ',') {
+      for (const item of pattern.slice(1)) bindingNames(item, out)
+    }
+  }
+  return out
+}
+
 function pushPatternAssign(target, valueExpr, out, decls = null) {
   if (Array.isArray(target) && target[0] === '=') {
     pushPatternAssign(target[1], ['??', valueExpr, prep(target[2])], out, decls)
@@ -608,6 +629,8 @@ function prepDecl(op, ...inits) {
 
     if (isDestructPattern(name)) {
       const tmp = `${T}d${ctx.func.uniq++}`
+      declareGlobal(tmp, false)
+      for (const n of bindingNames(name)) declareGlobal(n)
       rest.push(['=', tmp, normed])
       // Propagate schema to temp so rest destructuring can resolve it
       if (typeof normed === 'string' && ctx.schema.vars.has(normed))
