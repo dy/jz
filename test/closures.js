@@ -808,3 +808,64 @@ test('arrow block body inside another arrow returns undefined', () => {
   }`, { jzify: true })
   is(f(), 1)
 })
+
+// === Function-namespace scalar replacement (plan.js flattenFuncNamespaces) ===
+// A user function used as a property bag — `parse.space = …; parse.step = …` —
+// otherwise compiles each `f.prop` to a closure-keyed hash side-table access.
+// Since the table can never be observed by the host, jz dissolves a reassigned
+// slot into an f64 module global and drops a single-write only-called slot's
+// dead `__dyn_set`.
+
+// The esbuild/jessie dialect-override pattern: a property is reassigned, so the
+// receiver becomes a `multiProp` dynamic object. SROA must preserve last-write
+// semantics and the count side-effect.
+const nsReassign = `
+  let count = 0
+  let parse = (s) => parse.space() + parse.step()
+  parse.space = () => (count = count + 1, count)
+  parse.step = () => count + 1
+  parse.space = () => (count = count + 2, count)
+  export let run = (n) => {
+    let t = 0
+    for (let i = 0; i < n; i = i + 1) t = t + parse.space() + parse.step()
+    return t
+  }`
+
+test('func-namespace SROA: reassigned slot keeps last-write + side-effects', () => {
+  // count: 0→2→4→6; t = (2+3)+(4+5)+(6+7) = 27.
+  is(run(nsReassign).run(3), 27)
+  is(run(nsReassign).run(0), 0)
+  is(run(nsReassign).run(1), 5)
+})
+
+test('func-namespace SROA: dynamic property machinery is eliminated', () => {
+  const w = wat(nsReassign)
+  ok(!/__dyn_set/.test(w), 'no __dyn_set — reassigned slot dissolved to a global')
+  ok(!/__dyn_get/.test(w), 'no __dyn_get — every f.prop access is a global/direct call')
+})
+
+test('func-namespace SROA: single-write only-called slot direct-calls, no table', () => {
+  // `lex.next` is written once and only ever called → emit direct-calls
+  // $lex$next and the dead __dyn_set write is dropped.
+  const src = `
+    let lex = (s) => lex.next()
+    lex.next = () => 7
+    export let f = () => lex.next() + lex.next()`
+  is(run(src).f(), 14)
+  const w = wat(src)
+  ok(!/__dyn_set/.test(w), 'no __dyn_set for a single-write only-called slot')
+})
+
+test('func-namespace SROA: escaping namespace keeps the dynamic path correct', () => {
+  // `api` escapes via a bare-value alias — the property table could be reached
+  // through the alias, so flattening is disqualified; correctness must hold.
+  const src = `
+    let api = (s) => 0
+    api.hit = () => 1
+    api.hit = () => 2
+    export let f = () => {
+      let alias = api
+      return alias.hit()
+    }`
+  is(runHost(src).f(), 2)
+})
