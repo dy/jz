@@ -142,6 +142,15 @@ test('comma: side effects', () => {
   is(run('export let f = () => { let i = 0; i++, i++; return i }').f(), 2)
 })
 
+test('comma: parenthesized comma-expression is a single argument', () => {
+  // `g((1, 2, 7))` is ONE argument whose value is the last comma operand —
+  // not a 3-argument call. The grouping must survive prep/emit.
+  is(run('let g = (x) => x + 1; export let f = () => g((1, 2, 7))').f(), 8)
+  is(run('let g = (x) => x + 1; export let f = () => g(((1, 2, 7)))').f(), 8)
+  // A grouped comma alongside ordinary args stays distinct from the arg list.
+  is(run('let g = (a, b) => a + b; export let f = () => g(100, (1, 2, 7))').f(), 107)
+})
+
 // === BigInt ===
 
 test('bigint: literal + Number()', () => {
