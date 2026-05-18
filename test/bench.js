@@ -68,15 +68,18 @@ const SPEED_GEOMEAN_MAX = { v8: 1.0, as: 1.0, porf: 1.10 }
 
 // ── Native-C parity pins (jz wasm vs `clang -O3`) ────────────────────────────
 // The headline guarantee: jz emits native-grade code. Measured geomean jz/C ≈
-// 0.98× on the bench corpus — jz beats clang -O3 on poly/mat4/aos/tokenizer/sort
-// and ties mandelbrot. `near` = jz trails native and the gap is structural, not
+// 0.98× on the bench corpus — jz beats clang -O3 on poly/mat4/tokenizer/sort and
+// ties mandelbrot/aos. `near` = jz trails native and the gap is structural, not
 // a codegen regression: biquad is wasm-v1 ISA-bound (no scalar `fma` — hand-WAT
 // ties it too), json is string-carrier bound. Tolerances are wider than the V8
 // pins: `clang` runs in a separate process, so its medians carry more harness
-// noise (callback/json/crc32 are stabilised via the recheck loop below).
+// noise (aos/callback/json/crc32 are stabilised via the recheck loop below).
+// aos is a `tie`, not a `win`: clang -O3 holds a ~6-7% edge on the AoS kernel —
+// the jz hot loop is byte-identical to when this gate was first pinned, so the
+// honest claim is parity (jz/C ≈ 1.06), not a win.
 const NATIVE = {
   callback: 'tie',  mat4: 'win',     poly: 'win',  biquad: 'near',
-  mandelbrot: 'tie', bitwise: 'tie', tokenizer: 'win', aos: 'win',
+  mandelbrot: 'tie', bitwise: 'tie', tokenizer: 'win', aos: 'tie',
   json: 'near',     sort: 'win',     crc32: 'tie', watr: 'na',
 }
 const NATIVE_TOL = { win: 1.05, tie: 1.20, near: 1.50 }
@@ -153,7 +156,7 @@ const runs = parseBenchOutput(speedOut)
 // happened to land on the single bench.mjs invocation above.
 const median = xs => [...xs].sort((a, b) => a - b)[xs.length >> 1]
 const recheckTargets = `v8,jz${natAvailable ? ',nat' : ''}`
-for (const id of ['watr', 'sort', 'crc32', 'callback', 'json']) {
+for (const id of ['watr', 'sort', 'crc32', 'callback', 'json', 'aos']) {
   if (!speedCases.includes(id) || !runs[id]?.v8 || !runs[id]?.jz) continue
   const s = { v8: [runs[id].v8.medianUs], jz: [runs[id].jz.medianUs] }
   if (runs[id].nat) s.nat = [runs[id].nat.medianUs]
