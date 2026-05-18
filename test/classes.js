@@ -133,7 +133,41 @@ test('collection-named method on a direct `new` chain', () => {
   is(run(), 1107)   // (10+1)*100 + 7
 })
 
+test('class static field and method', () => {
+  const { run } = compile(`
+    class Counter {
+      static start = 10
+      static make() { return new Counter(Counter.start) }
+      constructor(n) { this.n = n }
+      value() { return this.n }
+    }
+    export let run = () => Counter.make().value()
+  `)
+  is(run(), 10)
+})
+
+test('class static method uses this as class binding', () => {
+  const { run } = compile(`
+    class Counter {
+      static start = 10
+      static next() { return this.start + 1 }
+    }
+    export let run = () => Counter.next()
+  `)
+  is(run(), 11)
+})
+
+test('named class expression static method sees inner name', () => {
+  const { run } = compile(`
+    let Counter = class _Counter {
+      static start = 10
+      static next() { return _Counter.start + 2 }
+    }
+    export let run = () => Counter.next()
+  `)
+  is(run(), 12)
+})
+
 test('rejects `extends`', () => rejects(`class B {} class A extends B {} export let run = () => 1`, /extends/))
-test('rejects `static`', () => rejects(`class A { static n = 5 } export let run = () => 1`, /static/))
 test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export let run = () => 1`, /getter/))
 test('rejects setters', () => rejects(`class A { set x(v){ } } export let run = () => 1`, /setter|accessor/))
