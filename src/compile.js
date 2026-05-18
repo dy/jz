@@ -422,7 +422,14 @@ function emitFunc(func, funcFacts, programFacts) {
     // I: Skip trailing fallback when last statement is return (unreachable code)
     const lastStmt = stmts.at(-1)
     const endsWithReturn = lastStmt && (lastStmt[0] === 'return' || lastStmt[0] === 'return_call')
-    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...stmts, ...(endsWithReturn ? [] : sig.results.map(t => [`${t}.const`, 0])))
+    // Implicit fall-through return is `undefined` per JS spec, not 0 — same as
+    // the closure path below. A reachable fall-through forces an f64 result
+    // (it must carry undefined); concretely-typed results keep the `.const 0`
+    // form since they can only be reached via explicit typed returns.
+    const fallthrough = endsWithReturn ? []
+      : sig.results.length === 1 && sig.results[0] === 'f64' ? [undefExpr()]
+      : sig.results.map(t => [`${t}.const`, 0])
+    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...stmts, ...fallthrough)
   } else if (multi && body[0] === '[') {
     const values = body.slice(1).map(e => asF64(emit(e)))
     collectCharDecompInits()
