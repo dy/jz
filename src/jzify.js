@@ -73,14 +73,10 @@ function hoistVars(node, names) {
     }
     return [op, lhs, hoistVars(node[2], names)]
   }
-  // Labeled statement: subscript joins a labeled compound statement's head and
-  // body with a synthetic '=>' (`label: while (c) body` parses as
-  // [':', label, [':', 'while', ['=>', ['()', c], body]]]). Normalize that to a
-  // real ['while'|'for'|'if', …] node first, so the '=>' branch below does not
-  // mistake the join for an arrow-function scope and hoist the loop body's
-  // `var`s only as far as the loop instead of the enclosing function.
+  // Labeled statement: recurse into the body so its `var`s hoist to the
+  // enclosing function, not stop at the label.
   if (op === ':' && typeof node[1] === 'string') {
-    return [':', node[1], hoistVars(normalizeLabeledBody(node[2]), names)]
+    return [':', node[1], hoistVars(node[2], names)]
   }
   if (op === '=' && Array.isArray(node[1]) && node[1][0] === 'var' && typeof node[1][1] === 'string' && node[1].length === 2) {
     names.add(node[1][1])
@@ -258,25 +254,6 @@ function transformScope(node) {
     const hoisted = [], rest = []
     for (let i = 0; i < args.length; i++) {
       const stmt = args[i]
-      // Workaround for subscript parser ASI bug: multiline named IIFE
-      // `(function name(){...})();` is parsed as two statements when there are
-      // newlines inside the function body. Reconstruct the single-statement IIFE
-      // so the () handler can desugar it correctly.
-      if (Array.isArray(stmt) && stmt[0] === '()' &&
-          Array.isArray(stmt[1]) && stmt[1][0] === 'function' && stmt[1][1] &&
-          i + 1 < args.length && Array.isArray(args[i + 1]) && args[i + 1][0] === '()') {
-        const merged = ['()', ['()', stmt[1]], args[i + 1][1] ?? null]
-        const t = transform(merged)
-        if (t != null) {
-          if (Array.isArray(t) && t[0] === ';') {
-            for (const s of t.slice(1)) { if (s != null) rest.push(s) }
-          } else {
-            rest.push(t)
-          }
-        }
-        i++
-        continue
-      }
       // Statement-form named function declaration: hoist directly (skip expression handler)
       if (Array.isArray(stmt) && stmt[0] === 'function' && stmt[1]) {
         hoisted.push(hoistFnDecl(stmt[1], stmt[2], stmt[3]))
@@ -371,22 +348,6 @@ const JZ_BLOCK_OPS = new Set([';', 'let', 'const', 'var', 'return', 'if', 'for',
   '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '>>=', '<<=', '>>>=', '||=', '&&=', '??=',
   '++', '--', '()', 'function', 'class', 'import', 'export', 'label'])
 const LABEL_BODY_OPS = new Set([';', 'if', 'for', 'for-in', 'for-of', 'while', 'do', 'switch', 'try', 'throw'])
-
-function normalizeLabeledBody(node) {
-  if (!Array.isArray(node)) return node
-  // subscript parses `label: if (c) { body }` as
-  // `[':', label, [':', 'if', ['=>', ['()', c], body]]]`.
-  if (node[0] === ':' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>') {
-    const op = node[1]
-    const params = node[2][1]
-    const body = node[2][2]
-    const head = Array.isArray(params) && params[0] === '()' ? params[1] : params
-    if (op === 'if') return ['if', head, body]
-    if (op === 'while') return ['while', head, body]
-    if (op === 'for') return ['for', head, body]
-  }
-  return node
-}
 
 /** Statically discriminate `x instanceof Ctor` when the LHS's syntactic shape
  *  already pins down its runtime type. Returns true/false or null (unknown).
@@ -808,22 +769,11 @@ const handlers = {
   },
 
   ':'(label, body) {
-    const stmt = normalizeLabeledBody(body)
-    if (typeof label === 'string' && Array.isArray(stmt) && LABEL_BODY_OPS.has(stmt[0]))
-      return ['label', label, transform(stmt)]
+    if (typeof label === 'string' && Array.isArray(body) && LABEL_BODY_OPS.has(body[0]))
+      return ['label', label, transform(body)]
   },
 
   '='(lhs, rhs) {
-    // Chained property assignment: a.x = a.y = v → a.y = v; a.x = v
-    if (Array.isArray(lhs) && lhs[0] === '.' && Array.isArray(rhs) && rhs[0] === '=') {
-      const targets = []
-      let cur = ['=', lhs, rhs]
-      while (Array.isArray(cur) && cur[0] === '=') { targets.push(cur[1]); cur = cur[2] }
-      const val = transform(cur)
-      const stmts = []
-      for (let i = targets.length - 1; i >= 0; i--) stmts.push(['=', transform(targets[i]), val])
-      return stmts.length === 1 ? stmts[0] : [';', ...stmts]
-    }
     if (isDestructurePat(lhs)) return ['=', transformPattern(lhs), transform(rhs)]
   },
 

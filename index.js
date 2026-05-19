@@ -46,7 +46,7 @@ import { ctx, reset, err } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'
 import { emitter } from './src/emit.js'
-import { optimizeFunc, resolveOptimize } from './src/optimize.js'
+import { optimizeFunc, collectVolatileGlobals, resolveOptimize } from './src/optimize.js'
 import jzify from './src/jzify.js'
 import {
   memory as enhanceMemory, instantiate as instantiateRuntime,
@@ -165,8 +165,10 @@ jz.memory = enhanceMemory
  * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
  *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
  *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
- *   - `true` / `2` (default): all current passes (watr CSE/DCE/inline + every jz pass).
- *   - `3`: reserved for future aggressive passes (currently == 2).
+ *   - `true` / `2` (default): every stable jz pass + watr in 'light' mode — all
+ *     watr passes except inlining (`inline` / `inlineOnce`).
+ *   - `3`: level 2 + full watr (inlining on) + larger array/hash initial caps
+ *     (`arrayMinCap`, `hashSmallInitCap`).
  *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
@@ -393,7 +395,9 @@ const jzCompileInner = (code, opts = {}) => {
     // Build global name→type map from ctx.scope.globalTypes for promoteGlobals
     const globalTypesMap = ctx.scope.globalTypes ? new Map([...ctx.scope.globalTypes].map(([k, v]) => [`$${k}`, v])) : null
     time('watrReopt', () => {
-      for (const node of optimized) if (Array.isArray(node) && node[0] === 'func') optimizeFunc(node, postCfg, globalTypesMap)
+      const funcs = optimized.filter(node => Array.isArray(node) && node[0] === 'func')
+      const volatileGlobals = collectVolatileGlobals(funcs)
+      for (const node of funcs) optimizeFunc(node, postCfg, globalTypesMap, volatileGlobals)
     })
   }
   try {

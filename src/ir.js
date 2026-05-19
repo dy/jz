@@ -596,6 +596,9 @@ export function readVar(name) {
                        : typed(['f64.const', rep.intConst], 'f64')
   }
   const node = typed(['local.get', `$${name}`], t)
+  // Proven uint32 accumulator local — a later asF64 must widen with
+  // convert_i32_u (the i32 bit pattern is an unsigned value), not _s.
+  if (t === 'i32' && rep?.unsigned) node.unsigned = true
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
     const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)

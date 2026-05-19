@@ -4,14 +4,14 @@
  * JZ CLI - Command-line interface for JZ compiler
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs'
-import { dirname, resolve, join } from 'path'
+import { readFileSync, writeFileSync } from 'fs'
+import { resolve } from 'path'
 import { pathToFileURL } from 'url'
-import { execFileSync } from 'child_process'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from './index.js'
 import jzifyFn from './src/jzify.js'
 import { codegen } from './src/codegen.js'
+import { resolveModuleGraph } from './src/resolve.js'
 import { createRequire } from 'module'
 
 const jzRequire = createRequire(import.meta.url)
@@ -149,72 +149,9 @@ async function handleCompile(args) {
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 
-  const code = readFileSync(inputFile, 'utf8')
-
   // Resolve imports — canonicalize every specifier to an absolute path so the
-  // same physical file always produces one module instance. Two relative
-  // specifiers from different importers (e.g. `'../../parse.js'` from a feature
-  // module and `'./parse.js'` from the entry) would otherwise hit prepare.js
-  // as separate modules with separate exports / mangling prefixes — and any
-  // module-level state (like a shared `lookup` registry) would split in two.
-  const dir = dirname(resolve(inputFile))
-  const modules = {}              // keyed by canonical absolute path
-  const seenPaths = new Set()
-  const pkgImports = {}           // pkg.imports spec → absolute path
-
-  const pkgFile = join(dir, 'package.json')
-  if (existsSync(pkgFile)) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
-      if (pkg.imports) for (const [spec, path] of Object.entries(pkg.imports)) {
-        pkgImports[spec] = resolve(dir, path)
-      }
-    } catch {}
-  }
-
-  // Matches both `import` and `export ... from` statements (statement position).
-  // Lazy `[^'"]*?` consumes whatever sits between the keyword and the first quote.
-  const importRe = /^\s*(?:import|export)\s+[^'"]*?['"]([^'"]+)['"]/gm
-  const resolveBareModule = (specifier, fromDir) => execFileSync(
-    process.execPath,
-    ['--input-type=module', '-e', 'process.stdout.write(import.meta.resolve(process.argv[1]))', specifier],
-    { cwd: fromDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-  ).trim()
-  const resolveAbsPath = (specifier, fromDir) => {
-    if (pkgImports[specifier]) return pkgImports[specifier]
-    if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      const full = resolve(fromDir, specifier)
-      if (existsSync(full)) return full
-      if (existsSync(full + '.js')) return full + '.js'
-      return null
-    }
-    if (resolveNode) {
-      try {
-        const resolved = resolveBareModule(specifier, fromDir)
-        if (resolved.startsWith('file:')) return new URL(resolved).pathname
-      } catch {}
-    }
-    return null
-  }
-  const rewriteImports = (src, fromDir) => src.replace(importRe, (match, spec) => {
-    const abs = resolveAbsPath(spec, fromDir)
-    if (!abs) return match
-    const q = match[match.lastIndexOf(spec) - 1]
-    return match.slice(0, match.lastIndexOf(spec) - 1) + q + abs + q
-  })
-  const resolveModule = (specifier, fromDir) => {
-    const abs = resolveAbsPath(specifier, fromDir)
-    if (!abs || seenPaths.has(abs)) return
-    seenPaths.add(abs)
-    let src; try { src = readFileSync(abs, 'utf8') } catch { return }
-    modules[abs] = rewriteImports(src, dirname(abs))
-    let m; importRe.lastIndex = 0
-    while ((m = importRe.exec(src)) !== null) resolveModule(m[1], dirname(abs))
-  }
-  let m; importRe.lastIndex = 0
-  while ((m = importRe.exec(code)) !== null) resolveModule(m[1], dir)
-  // Rewrite the entry too so its imports use the same canonical keys.
-  const codeRewritten = rewriteImports(code, dir)
+  // same physical file always produces one module instance (see src/resolve.js).
+  const { code: codeRewritten, modules } = resolveModuleGraph(inputFile, { resolveNode })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
   // .jz = strict (no auto-transform), .js = auto-jzify

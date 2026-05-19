@@ -1223,14 +1223,15 @@ export default (ctx) => {
       mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT | 1, ['local.get', `$${t}`])], 'f64')
   }
 
-  // .charCodeAt(i) → integer char code (0..255 for ASCII bytes — unsigned, always
-  // representable as i32). Returning i32 directly lets `let c = s.charCodeAt(i)`
-  // stay on the i32 ABI: chained comparisons (`c >= 48 && c <= 57`), bit-ops, and
-  // `c - 48` arithmetic skip the per-iteration f64 widen + i32 trunc round-trip.
-  // OOB returns 0 (NUL byte). __char_at bounds-checks both SSO and heap paths
-  // so a tokenizer loop reading past the end terminates on the 0 sentinel.
+  // .charCodeAt(i) → JS-spec char code: the UTF-16 code unit at `i`, or NaN
+  // when `i` is out of range (`i < 0 || i >= length`). Result is f64 because
+  // NaN is not representable as i32 — an i32 `0` sentinel for OOB silently
+  // miscompiles any reader that distinguishes 0 from NaN, e.g. the parser hot
+  // loop `while ((cc = s.charCodeAt(i++)) <= 32) {}` would never terminate
+  // (`0 <= 32` is true, `NaN <= 32` is false). The narrower may re-narrow the
+  // result to i32 where it can prove the index in-bounds.
   ctx.core.emit['.charCodeAt'] = (str, idx) =>
-    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx), 'i32')
+    typed(ctx.abi.string.ops.charCodeAt(asF64(emit(str)), asI32(emit(idx)), ctx, true), 'f64')
 
   // String.fromCharCode(code) → 1-char SSO string
   ctx.core.emit['String'] = (value) => {

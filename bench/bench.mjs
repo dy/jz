@@ -2,9 +2,10 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
+import { resolveModuleGraph } from '../src/resolve.js'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -148,14 +149,25 @@ const watrModuleSources = () => ({
 })
 
 const compileJzHost = c => {
-  const code = readFileSync(c.js, 'utf8')
   const isWatr = c.id === 'watr'
-  const wasm = compile(code, {
-    jzify: isWatr,
-    modules: {
+  // Cases that pull in a real multi-file library (jessie parser) resolve their
+  // whole relative-import graph to canonical absolute-path keys — same as the
+  // CLI — then swap the real benchlib for the env.logResult-patched host build.
+  const isGraph = c.id === 'jessie'
+  let code, modules
+  if (isGraph) {
+    ;({ code, modules } = resolveModuleGraph(c.js))
+    modules[resolve(LIB, 'benchlib.js')] = benchlibHostSource()
+  } else {
+    code = readFileSync(c.js, 'utf8')
+    modules = {
       '../_lib/benchlib.js': benchlibHostSource(),
       ...(isWatr ? watrModuleSources() : {}),
-    },
+    }
+  }
+  const wasm = compile(code, {
+    jzify: isWatr || isGraph,
+    modules,
     imports: {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },

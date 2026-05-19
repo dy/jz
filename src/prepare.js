@@ -970,31 +970,31 @@ const handlers = {
       expandDestruct(lhs, tmp, stmts, decls)
       return prep([';', ['let', ...decls], ...stmts])
     }
-    // Parser ambiguity: }[pattern] = rhs mis-parsed as subscript when it's stmt; [pattern] = rhs
-    // Detect: ['[]', stmtExpr, commaExpr] with spread in comma → split into stmt + destructuring
-    if (Array.isArray(lhs) && lhs[0] === '[]' && lhs.length === 3) {
-      const hasSpr = n => Array.isArray(n) && (n[0] === '...' || n.some(hasSpr))
-      if (hasSpr(lhs[2])) {
-        const preStmt = lhs[1]
-        const pattern = ['[]', lhs[2]]
-        return prep([';', preStmt, ['=', pattern, rhs]])
-      }
-    }
     // Function property assignment: fn.prop = arrow → extract as top-level function fn$prop.
     // A property can be reassigned — esbuild/jessie wrapper-composition does
     // `p.s = ...; var old = p.s; p.s = () => old()...`. Each assignment extracts
     // its own top-level function; the property holds whichever was assigned last,
     // and an earlier snapshot keeps pointing at the prior one. Collide → fresh name.
+    // The base resolves through the scope chain first so an *imported* function
+    // (mangled to `_mod$fn`) is recognised the same as a local one — the
+    // subscript parser's plugin model mutates `parse.step` etc. across modules,
+    // and a reassignment in module B must mark module A's call sites mutable.
     if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
-      && hasFunc(lhs[1]) && Array.isArray(rhs) && rhs[0] === '=>') {
-      let name = `${lhs[1]}$${lhs[2]}`
-      // Reassignment → the property is mutable; record it so `fn.prop()` calls
-      // emit a dynamic property read + indirect call instead of a direct call.
-      if (ctx.func.names.has(name)) {
-        ctx.func.multiProp.add(`${lhs[1]}.${lhs[2]}`)
-        do name = `${lhs[1]}$${lhs[2]}$${ctx.func.uniq++}`; while (ctx.func.names.has(name))
+      && Array.isArray(rhs) && rhs[0] === '=>') {
+      const fnBase = ctx.scope.chain[lhs[1]] || lhs[1]
+      if (hasFunc(fnBase)) {
+        let name = `${fnBase}$${lhs[2]}`
+        // Reassignment → the property is mutable; record it so `fn.prop()` calls
+        // emit a dynamic property read + indirect call instead of a direct call.
+        if (ctx.func.names.has(name)) {
+          ctx.func.multiProp.add(`${fnBase}.${lhs[2]}`)
+          do name = `${fnBase}$${lhs[2]}$${ctx.func.uniq++}`; while (ctx.func.names.has(name))
+        }
+        // Build the target `.` node directly from the resolved base — re-`prep`ing
+        // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure
+        // materialization block), which is not a valid assignment target.
+        if (defFunc(name, prep(rhs))) return ['=', ['.', fnBase, lhs[2]], name]
       }
-      if (defFunc(name, prep(rhs))) return ['=', prep(lhs), name]
     }
     const staticStr = staticStringExpr(rhs)
     const staticArr = staticStringArrayValues(rhs)
@@ -1056,18 +1056,14 @@ const handlers = {
   },
 
   // Tagged template: tag`a${x}b` → tag(['a','b'], x)
-  // Parser drops empty string segments; reinsert them to satisfy the strings.length === exprs.length + 1 invariant.
   '``'(tag, ...parts) {
     const raw = staticStringExpr(['``', tag, ...parts])
     if (raw != null) return staticString(raw)
     const strs = [], exprs = []
-    let prev = false
     for (const p of parts) {
-      const isStr = Array.isArray(p) && p[0] == null && typeof p[1] === 'string'
-      if (isStr) { strs.push(p); prev = true }
-      else { if (!prev) strs.push([null, '']); exprs.push(p); prev = false }
+      if (Array.isArray(p) && p[0] == null && typeof p[1] === 'string') strs.push(p)
+      else exprs.push(p)
     }
-    if (!prev) strs.push([null, ''])
     const arr = strs.length === 1 ? ['[]', strs[0]] : ['[]', [',', ...strs]]
     const callArgs = exprs.length === 0 ? arr : [',', arr, ...exprs]
     return prep(['()', tag, callArgs])
@@ -1501,16 +1497,6 @@ const handlers = {
       callee = prep(callee)
     }
 
-    // Drop trailing-comma sentinel inside a comma group: `f(a, b,)` parses as
-    // ['()', 'f', [',', a, b, null]] — without trimming, the trailing null
-    // becomes a [, 0] literal and inflates arguments.length.
-    if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') {
-      let end = args[0].length
-      while (end > 1 && args[0][end - 1] == null) end--
-      if (end < args[0].length) {
-        args[0] = end === 2 ? args[0][1] : args[0].slice(0, end)
-      }
-    }
     // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
     // argument whose value is the last comma operand. The parser keeps it wrapped
     // (`['()', [',', …]]`); prep would strip the grouping, leaving a bare comma
@@ -1580,12 +1566,8 @@ const handlers = {
 
     includeForObjectLiteral()
     if (inner == null) return ['{}']
-    // Drop trailing-comma artifacts: subscript represents `{a:1, b,}` as
-    // `[",", [":","a",1], "b", null]` — the trailing `null` would prep to a
-    // literal-0 entry, leaving the literal carrying a phantom slot and
-    // shifting any subsequent slot-position resolution.
     const items = Array.isArray(inner) && inner[0] === ','
-      ? inner.slice(1).filter(p => p != null)
+      ? inner.slice(1)
       : [inner]
 
     // Computed keys: `{[k]: v}` where `k` isn't compile-time foldable. jz's
@@ -1765,16 +1747,6 @@ const handlers = {
 
   // new - auto-import modules, resolve constructors
   'new'(ctor, ...args) {
-    // Parser quirk: `new X(a).m(b)` parses as ['new',['()',['.',['()','X',a],'m'],b]]
-    // instead of the spec-correct ['()',['.',['new',['()','X',a]],'m'],b].
-    // Push `new` down past the trailing method-call chain so the constructor
-    // form is recognized correctly.
-    if (Array.isArray(ctor) && ctor[0] === '()' && Array.isArray(ctor[1]) && ctor[1][0] === '.') {
-      const [, dot, ...methodArgs] = ctor
-      const [, innerCall, methodName] = dot
-      const newExpr = ['new', innerCall, ...args]
-      return prep(['()', ['.', newExpr, methodName], ...methodArgs])
-    }
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
     if (name === 'Date' && ctorArgs.length === 1 && ctorArgs[0] == null) ctorArgs = []

@@ -38,27 +38,33 @@ const envFuncNames = (mod) =>
     .filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
 
 // ── Allocator wiring ────────────────────────────────────────────────────────
-// Heap pointer lives at byte 1020 (same convention as wasm-side allocator).
-// 8-byte aligned bump on JS side; wasm `_alloc` takes over if exported.
+// Heap pointer: the exported `$__heap` global when the module has one (non-shared
+// memory), else memory[1020] (shared memory — globals are per-instance, so
+// threads must share a pointer cell in linear memory). 8-byte aligned bump on
+// the JS side; wasm `_alloc` takes over if exported.
 
 const HEAP_PTR_ADDR = 1020
 const HEAP_START = 1024
 
-const makeJsAllocator = (mem) => {
+const makeJsAllocator = (mem, heapGlobal) => {
   const dv = () => new DataView(mem.buffer)
+  const getPtr = heapGlobal ? () => heapGlobal.value : () => dv().getInt32(HEAP_PTR_ADDR, true)
+  const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP_PTR_ADDR, v, true)
+  // Rewind target: the global's post-static-init value, else the fixed start.
+  const base = heapGlobal ? heapGlobal.value : HEAP_START
   const alloc = (bytes) => {
-    let d = dv(), p = d.getInt32(HEAP_PTR_ADDR, true)
-    const aligned = (p + 7) & ~7
+    const aligned = (getPtr() + 7) & ~7
     const next = aligned + bytes
-    if (next > mem.buffer.byteLength) {
+    if (next > mem.buffer.byteLength)
       mem.grow(Math.ceil((next - mem.buffer.byteLength) / 65536))
-      d = dv()  // buffer was detached by grow
-    }
-    d.setInt32(HEAP_PTR_ADDR, next, true)
+    setPtr(next)
     return aligned
   }
-  const reset = () => dv().setInt32(HEAP_PTR_ADDR, HEAP_START, true)
+  const reset = () => setPtr(base)
+  // The global is initialized by wasm at module load; only the memory cell needs
+  // a JS-side nudge in case it underflows the heap start.
   const initHeapPtr = () => {
+    if (heapGlobal) return
     const d = dv()
     if (d.getInt32(HEAP_PTR_ADDR, true) < HEAP_START) d.setInt32(HEAP_PTR_ADDR, HEAP_START, true)
   }
@@ -201,9 +207,9 @@ export const memory = (src) => {
 
   const dv = () => new DataView(mem.buffer)
 
-  // Allocator scaffold (heap-ptr at byte 1020, 8-byte aligned bump fallback).
-  // Wasm `_alloc` takes over when the module exports it; `_clear`/jsReset rewinds.
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem)
+  // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
+  // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr } = makeJsAllocator(mem, wasmExports?.__heap)
   let alloc = wasmExports?._alloc || jsAlloc
   initHeapPtr()
 

@@ -247,13 +247,17 @@ function analyzeFuncForEmit(func, programFacts) {
   // inferred VAL.TYPED, so the cached widths reflect the pre-narrow state.
   // Re-walk now with reps in place.
   invalidateLocalsCache(body)
-  ctx.func.locals = block ? analyzeBody(body).locals : new Map()
+  const bodyFacts = block ? analyzeBody(body) : null
+  ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
+  // Proven uint32 accumulator locals — readVar tags reads `.unsigned` so the
+  // f64 round-trip widens with convert_i32_u (not _s).
+  if (bodyFacts?.unsignedLocals) for (const n of bodyFacts.unsignedLocals) updateRep(n, { unsigned: true })
   // SRoA flat-object bindings — `let o = {...}` dissolved into `o#i` field
   // locals. Consumed by the codegen flat hooks (emitDecl, `.`/`[]` read+write).
-  ctx.func.flatObjects = block ? analyzeBody(body).flatObjects : new Map()
+  ctx.func.flatObjects = bodyFacts ? bodyFacts.flatObjects : new Map()
   // No-copy slice views — `let t = s.slice(...)` bindings proven non-escaping.
   // Consumed by emitDecl to lower the initializer to a SLICE_BIT view.
-  ctx.func.sliceViews = block ? analyzeBody(body).sliceViews : new Set()
+  ctx.func.sliceViews = bodyFacts ? bodyFacts.sliceViews : new Set()
   // Usage-based shape inference (STRING / ARRAY) for params not already typed
   // by paramReps. Descends into nested closures so a param used in a definite
   // shape only inside an inner arrow (e.g. parseLevel's `str` capture in watr)
@@ -386,12 +390,15 @@ function emitFunc(func, funcFacts, programFacts) {
 
   // Default params: ES spec says default applies only when arg is `undefined`
   // (or missing). `null`, `0`, `false`, etc. all skip the default.
+  // Emitted here (registers any `charCodeAt` decomposition the default's
+  // initializer triggers) but keyed by param name — final ordering vs the
+  // charDecomp prologue is resolved in `collectParamInits` below.
   const defaults = func.defaults || {}
-  const defaultInits = []
+  const defaultInits = new Map()
   for (const [pname, defVal] of Object.entries(defaults)) {
     const p = sig.params.find(p => p.name === pname)
     const t = p?.type || 'f64'
-    defaultInits.push(
+    defaultInits.set(pname,
       ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
         ['then', ['local.set', `$${pname}`, t === 'f64' ? asF64(emit(defVal)) : asI32(emit(defVal))]]])
   }
@@ -424,19 +431,30 @@ function emitFunc(func, funcFacts, programFacts) {
 
   // Drain `ctx.func.charDecomp` after body emit: any param `charCodeAt` use
   // registered a decomposition request that needs a function-entry prologue
-  // initialising its three i32 locals (base / len / sso). Locals themselves
-  // were already added to `ctx.func.locals` during emit so they appear in the
-  // local-decl block below.
-  const charDecompInits = []
-  const collectCharDecompInits = () => {
-    if (!ctx.func.charDecomp) return
-    for (const dec of ctx.func.charDecomp.values())
-      charDecompInits.push(...emitCharDecompPrologue(dec))
+  // initialising its four i32 locals (base / len / sso / loadbase). Locals
+  // themselves were already added to `ctx.func.locals` during emit so they
+  // appear in the local-decl block below.
+  //
+  // Interleave with the per-param default inits in `sig.params` order so each
+  // param's prologue runs *after* that param's own default init (the prologue
+  // reads the param's final value) and *before* any later param's default
+  // init — a default like `c = op.charCodeAt(0)` must see `op`'s prologue
+  // locals already populated, else its bounds check reads len=0 and the
+  // in-bounds char wrongly decodes as the OOB NaN.
+  const collectParamInits = () => {
+    const inits = []
+    for (const p of sig.params) {
+      const di = defaultInits.get(p.name)
+      if (di) inits.push(di)
+      const dec = ctx.func.charDecomp?.get(p.name)
+      if (dec) inits.push(...emitCharDecompPrologue(dec))
+    }
+    return inits
   }
 
   if (block) {
     const stmts = emitBody(body)
-    collectCharDecompInits()
+    const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     // I: Skip trailing fallback when last statement is return (unreachable code)
     const lastStmt = stmts.at(-1)
@@ -448,18 +466,18 @@ function emitFunc(func, funcFacts, programFacts) {
     const fallthrough = endsWithReturn ? []
       : sig.results.length === 1 && sig.results[0] === 'f64' ? [undefExpr()]
       : sig.results.map(t => [`${t}.const`, 0])
-    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...stmts, ...fallthrough)
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...stmts, ...fallthrough)
   } else if (multi && body[0] === '[') {
     const values = body.slice(1).map(e => asF64(emit(e)))
-    collectCharDecompInits()
+    const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
-    fn.push(...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, ...values)
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, ...values)
   } else {
     const ir = emit(body)
-    collectCharDecompInits()
+    const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', `$${l}`, t])
     const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
-    fn.push(...defaultInits, ...boxedParamInits, ...preboxedLocalInits, ...charDecompInits, tcoTailRewrite(finalIR, sig.results[0]))
+    fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 
   // Restore schema.vars so param bindings don't leak to next function.
@@ -813,7 +831,11 @@ export default function compile(ast, profiler) {
       err(`'${name}' conflicts with a compiler internal — choose a different name`)
 
   // Pre-fold const globals: evaluate constant initializers before function compilation
-  // so functions see the correct global types (i32 vs f64).
+  // so functions see the correct global types (i32 vs f64). Covers the main module
+  // and every bundled sub-module — a sub-module's top-level `const SPACE = 32` lands
+  // in `moduleInits` (emitted from __start), not `ast`, so without this it stays a
+  // `(mut f64)` global. Folding it makes the scanner's char-code constants immutable
+  // globals V8 constant-folds at each read site.
   if (ast) {
     const evalConst = n => {
       if (typeof n === 'number') return n
@@ -832,8 +854,10 @@ export default function compile(ast, profiler) {
       if (op === '>>') return va >> vb; if (op === '>>>') return va >>> vb
       return null
     }
-    const stmts = Array.isArray(ast) && ast[0] === ';' ? ast.slice(1)
-      : Array.isArray(ast) && ast[0] === 'const' ? [ast] : []
+    const topStmts = n => Array.isArray(n) && n[0] === ';' ? n.slice(1)
+      : Array.isArray(n) && n[0] === 'const' ? [n] : []
+    const stmts = [...topStmts(ast)]
+    for (const mi of ctx.module.moduleInits || []) stmts.push(...topStmts(mi))
     for (const s of stmts) {
       if (!Array.isArray(s) || s[0] !== 'const') continue
       for (const decl of s.slice(1)) {
@@ -981,19 +1005,6 @@ export default function compile(ast, profiler) {
   }
   if (ctx.runtime.data && !ctx.memory.shared)
     sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
-  // alloc:false routes the heap pointer through memory[1020] (no $__heap global).
-  // Initialize it at module-load — otherwise the first __alloc reads 0 and overlaps
-  // allocations with the static-data / constant-pool region.  Owned memory only;
-  // for shared memory the host is responsible for init.  Emitted last so it
-  // overrides any prior segment that happened to cover bytes 1020..1023.
-  if (ctx.transform.alloc === false && !ctx.memory.shared && sec.memory.length > 0) {
-    const dataLen = ctx.runtime.data?.length || 0
-    const heapBase = dataLen > 1024 ? (dataLen + 7) & ~7 : 1024
-    const initBytes = String.fromCharCode(
-      heapBase & 0xFF, (heapBase >> 8) & 0xFF,
-      (heapBase >> 16) & 0xFF, (heapBase >> 24) & 0xFF)
-    sec.data.push(['data', ['i32.const', 1020], '"' + escBytes(initBytes) + '"'])
-  }
   // Passive segment for shared-memory string literals (copied via memory.init at runtime)
   if (ctx.runtime.strPool)
     sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
