@@ -1494,7 +1494,17 @@ const handlers = {
       includeForNumericCoercion()
       return ['u+', na]
     }
-    return ['+', prep(a), prep(b)]
+    const pa = prep(a), pb = prep(b)
+    // Compile-time fold of literal string concat. The combined bytes flow
+    // through the `str` emitter as a single literal — SSO if ≤4 ASCII (zero
+    // heap), otherwise one dataDedup entry (still cheaper than runtime
+    // __str_concat_raw + heap alloc). Bottom-up, so `'a' + 'b' + 'c'` folds
+    // left-associatively into one literal.
+    if (Array.isArray(pa) && pa[0] === 'str' && typeof pa[1] === 'string' &&
+        Array.isArray(pb) && pb[0] === 'str' && typeof pb[1] === 'string') {
+      return ['str', pa[1] + pb[1]]
+    }
+    return ['+', pa, pb]
   },
   '-'(a, b) {
     if (b === undefined) { const na = prep(a); return isLit(na) && typeof na[1] === 'number' ? [, -na[1]] : ['u-', na] }

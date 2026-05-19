@@ -787,6 +787,28 @@ export default (ctx) => {
   // allocations have happened since `a` was created (it's no longer at heap top).
   // Only emitted for own-memory mode with a $__heap global; shared memory and
   // alloc:false (which routes the heap pointer through memory[1020]) fall back.
+  // SSO-result fast path: both operands SSO and total ≤ 4 → repack inline,
+  // no alloc, no copy. Combined offset field = a's bytes | (b's bytes shifted
+  // by alen*8). New aux = SSO_BIT | total. Mode-independent (pointer arith
+  // only, no heap); fires whenever the upstream `'+'` couldn't fold at
+  // compile time (one or both operands runtime values). Critical for the
+  // identifier-style `'$' + x` / `prefix + s` patterns hot in parsers.
+  const ssoResultFast = `
+    (if (i32.and
+          (i32.and
+            (i64.ne (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+            (i64.ne (i64.and (local.get $b) (i64.const ${SSO_BIT_I64})) (i64.const 0)))
+          (i32.le_u (local.get $total) (i32.const 4)))
+      (then
+        (return (call $__mkptr
+          (i32.const ${PTR.STRING})
+          (i32.or (i32.const ${LAYOUT.SSO_BIT}) (local.get $total))
+          (i32.or
+            (i32.wrap_i64 (i64.and (local.get $a) (i64.const 0xFFFFFFFF)))
+            (i32.shl
+              (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF)))
+              (i32.shl (local.get $alen) (i32.const 3))))))))`
+
   const concatFast = !ctx.memory.shared && ctx.transform.alloc !== false ? `
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $aoff (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -890,6 +912,7 @@ export default (ctx) => {
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    ${ssoResultFast}
     ${concatFast}
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
@@ -906,6 +929,7 @@ export default (ctx) => {
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
     (if (i32.eqz (local.get $total))
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
+    ${ssoResultFast}
     ${concatFast}
     (local.set $off (call $__alloc (i32.add (i32.const 4) (local.get $total))))
     (i32.store (local.get $off) (local.get $total))
