@@ -1868,6 +1868,154 @@ const flattenFuncNamespaces = (ast) => {
   return true
 }
 
+/**
+ * Closure devirtualization.
+ *
+ * `flattenFuncNamespaces` dissolves a reassigned `f.prop` function slot into a
+ * module global, but the call through it stays a `call_indirect` on a
+ * `global.get`, dispatched via an ABI-adapting trampoline. When that global is
+ * written *only* by unconditional module-init assignments it holds, for the
+ * entire post-init program, one statically-known function — so every call
+ * through it collapses to a direct `call`: no table lookup, no trampoline, no
+ * 8-wide padding ABI, no closure type guard.
+ *
+ * A global G qualifies iff:
+ *   1. every assignment to G is an unconditional module-init statement — none in
+ *      a function body, none nested inside init control flow;
+ *   2. G's final init value resolves (through global aliases) to a top-level
+ *      function F;
+ *   3. G is never *called* by module-init code, nor by any function reachable
+ *      from it — so every call site runs strictly post-init, where G ≡ F.
+ * Devirt then only swaps an indirect call for a direct call to the very same
+ * callee: it cannot change behavior, only drop dispatch overhead. The result is
+ * recorded in `ctx.func.globalDevirt` (`Map<global, fn>`) and consumed by emit.
+ */
+const devirtGlobalCalls = (ast) => {
+  const fnNames = ctx.func.names
+  if (!fnNames?.size || !ctx.scope.globals?.size) return
+
+  // Module-init statement stream, in execution order: moduleInits run first in
+  // `$__start`, then the main module's top-level.
+  const initStmts = []
+  const flatten = (n) => {
+    if (Array.isArray(n) && n[0] === ';') for (let i = 1; i < n.length; i++) flatten(n[i])
+    else if (n != null) initStmts.push(n)
+  }
+  for (const mi of ctx.module.moduleInits || []) flatten(mi)
+  flatten(ast)
+
+  const isGlobal = (s) => typeof s === 'string' && ctx.scope.globals.has(s)
+  // `[target, rhs]` pairs for a `=` / `let` / `const` node assigning a global.
+  const writesOf = (node) => {
+    if (!Array.isArray(node)) return []
+    if (node[0] === '=' && isGlobal(node[1])) return [[node[1], node[2]]]
+    if (node[0] === 'let' || node[0] === 'const') {
+      const out = []
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && isGlobal(d[1])) out.push([d[1], d[2]])
+      }
+      return out
+    }
+    return []
+  }
+
+  // Poison a global assigned anywhere but an unconditional init statement — in a
+  // function body, or nested in init control flow. Its value is then not a
+  // fixed post-init constant.
+  const poison = new Set()
+  const scanWrites = (node, topInit) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'let' || op === 'const') {
+      // A declarator `=` is part of the declaration, not a nested assignment —
+      // poison only when the declaration itself is non-top-level.
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=') {
+          if (!topInit && isGlobal(d[1])) poison.add(d[1])
+          scanWrites(d[2], false)
+        } else scanWrites(d, false)
+      }
+      return
+    }
+    if (op === '=') {
+      if (!topInit && isGlobal(node[1])) poison.add(node[1])
+      scanWrites(node[1], false)
+      scanWrites(node[2], false)
+      return
+    }
+    for (let i = 1; i < node.length; i++) scanWrites(node[i], false)
+  }
+  for (const stmt of initStmts) scanWrites(stmt, true)
+  for (const fn of ctx.func.map.values())
+    if (fn.body && !fn.raw) scanWrites(fn.body, false)
+
+  // Resolve each global's value by a linear pass over init in execution order.
+  const env = new Map()
+  const evalFn = (rhs) =>
+    typeof rhs !== 'string' ? null
+      : fnNames.has(rhs) ? rhs
+      : env.has(rhs) ? env.get(rhs)
+      : null
+  for (const stmt of initStmts)
+    for (const [g, rhs] of writesOf(stmt)) env.set(g, evalFn(rhs))
+
+  const devirt = new Map()
+  for (const [g, fn] of env)
+    if (fn && fnNames.has(fn) && !poison.has(g)) devirt.set(g, fn)
+  if (!devirt.size) return
+
+  // Condition 3: a call through G that runs *during* init would see an
+  // intermediate value. Drop any candidate G called by init code, or by a
+  // function reachable from it.
+  //
+  // `walkStraightLine` follows only straight-line execution: a nested `=>`
+  // literal is a closure *constructed* here, not run here, so its body is
+  // skipped — an IIFE callee `(=> …)()` is the one exception, its body does
+  // run. This is what keeps operator-registration init (`binary('+', 11)`
+  // builds, but does not invoke, a parselet closure) from dragging the parser
+  // into the init-reachable set, and keeps a wrapper body's `space()` call —
+  // which fires at parse time — from counting as an init call. (Soundness
+  // rests on a closure constructed during init not also being invoked during
+  // init: true of function-slot wrappers, which are registered then called at
+  // use time.)
+  const walkStraightLine = (node, onCall) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '()') {
+      onCall(node[1])
+      if (Array.isArray(node[1]) && node[1][0] === '=>') walkStraightLine(node[1][2], onCall)
+      for (let i = 2; i < node.length; i++) walkStraightLine(node[i], onCall)
+      return
+    }
+    if (op === '=>' || op === 'function') return
+    for (let i = 1; i < node.length; i++) walkStraightLine(node[i], onCall)
+  }
+  const reachable = new Set()
+  const queue = []
+  const seedCalls = (node) => walkStraightLine(node, (c) => {
+    if (typeof c === 'string' && fnNames.has(c)) queue.push(c)
+  })
+  for (const s of initStmts) seedCalls(s)
+  while (queue.length) {
+    const f = queue.pop()
+    if (reachable.has(f)) continue
+    reachable.add(f)
+    const fn = ctx.func.map.get(f)
+    if (fn?.body && !fn.raw) seedCalls(fn.body)
+  }
+  const calledInInit = new Set()
+  const collectCalled = (node) => walkStraightLine(node, (c) => {
+    if (devirt.has(c)) calledInInit.add(c)
+  })
+  for (const s of initStmts) collectCalled(s)
+  for (const f of reachable) { const fn = ctx.func.map.get(f); if (fn?.body) collectCalled(fn.body) }
+  for (const g of calledInInit) devirt.delete(g)
+
+  if (devirt.size) ctx.func.globalDevirt = devirt
+}
+
 const materializeAutoBoxSchemas = (programFacts) => {
   if (!ctx.schema.register) return
   for (const [name, props] of programFacts.propMap) {
@@ -1932,6 +2080,9 @@ export default function plan(ast) {
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
   if (flattenFuncNamespaces(ast)) programFacts = collectProgramFacts(ast)
+  // Devirtualize calls through init-constant function globals (closure
+  // devirtualization) — must follow the SROA above, which creates the globals.
+  devirtGlobalCalls(ast)
   // The call-inlining family (`inlineHotInternalCalls` self-gates on `sourceInline`)
   // is a pure speed optimization — the un-inlined calls emit correctly. Scalar
   // replacement (`scalarize*`) is *not* gated on `sourceInline`: callers turn it on
