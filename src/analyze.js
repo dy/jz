@@ -395,6 +395,12 @@ export function valTypeOf(expr) {
       // String-returning methods
       if (['toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'trim', 'trimStart', 'trimEnd',
         'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring'].includes(method)) return VAL.STRING
+      // `charCodeAt`/`codePointAt` always yield a number (a UTF-16 code unit or
+      // NaN for an out-of-range index — both VAL.NUMBER). Without this, the f64
+      // OOB-NaN result has an unknown val-type and any reader (`+`, `-`, ...)
+      // wraps it in a runtime `__to_num` coercion, pulling the whole number↔
+      // string stdlib tree (`__ftoa`/`__str_concat`/…) for nothing.
+      if (method === 'charCodeAt' || method === 'codePointAt') return VAL.NUMBER
       if (method === 'split') return VAL.ARRAY
       // slice/concat preserve caller type (string.slice → string, array.slice → array)
       if (method === 'slice' || method === 'concat') {
@@ -1876,10 +1882,11 @@ export function exprType(expr, locals) {
   // through, instead of widening the local to f64 because exprType defaulted.
   if (op === '()') {
     if (args[0] === 'math.imul' || args[0] === 'math.clz32') return 'i32'
-    // Method calls returning i32: charCodeAt → byte (0..255). Lets tokenizer-shape
-    // hot loops keep `c` as i32 across `c >= 48 && c <= 57`, `c - 48`, etc.,
-    // skipping the f64.convert_i32_u widen at every char read.
-    if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'charCodeAt') return 'i32'
+    // charCodeAt: i32 when the index is provably in `[0, recv.length)` (an
+    // induction variable bounded by `recv.length` — OOB impossible). Otherwise
+    // f64: the JS-spec OOB result is NaN, which is not representable as i32.
+    if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'charCodeAt'
+        && inBoundsCharCodeAt(ctx).has(args[0])) return 'i32'
     // User-function call: consult the callee's narrowed result type. By the time
     // analyzeBody runs in emitFunc, narrowSignatures has set sig.results[0]='i32'
     // on every body-i32-only func. Propagating this lets `let h = userFn(...)`
@@ -2886,9 +2893,17 @@ export function analyzeFuncNamespaces(ast) {
     for (let i = 1; i < node.length; i++) visit(node[i], false)
   }
 
-  if (Array.isArray(ast) && ast[0] === ';')
-    for (let i = 1; i < ast.length; i++) visit(ast[i], true)
-  else visit(ast, true)
+  const visitTop = (n) => {
+    if (Array.isArray(n) && n[0] === ';')
+      for (let i = 1; i < n.length; i++) visit(n[i], true)
+    else visit(n, true)
+  }
+  visitTop(ast)
+  // Bundled multi-module programs keep each module's top-level statements in
+  // moduleInits, not `ast` — the `f.prop = …` writes that define a namespace
+  // live there. Walk them at init scope so writes are recorded and an escape
+  // inside init code still disqualifies.
+  for (const mi of ctx.module.moduleInits || []) visitTop(mi)
   for (const fn of ctx.func.list) if (fn.body && !fn.raw) visit(fn.body, false)
 
   return ns
@@ -3360,6 +3375,122 @@ export function smallConstForTripCount(init, cond, step) {
     (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
   )
   return stepOk ? end : null
+}
+
+// =============================================================================
+// charCodeAt in-bounds proof
+// =============================================================================
+// `String.prototype.charCodeAt` returns NaN for an out-of-range index, so the
+// generic codegen contract is an f64 result (see module/string.js). When the
+// index is the induction variable of a `for (let i = C; i < recv.length; i++)`
+// loop, every `recv.charCodeAt(i)` in the loop body is statically inside
+// `[0, recv.length)` — OOB is impossible — so the call may use the cheaper i32
+// (raw-byte) contract instead. This is a static guarantee, not a guess.
+
+/** Step expression of a `for` that increments `name` by exactly 1. */
+function isUnitIncrement(step, name) {
+  if (!Array.isArray(step)) return false
+  if (step[0] === '++' && step[1] === name) return true
+  // postfix `i++` in value position lowers to `(++i) - 1`
+  if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++'
+      && step[1][1] === name && intLiteralValue(step[2]) === 1) return true
+  return false
+}
+
+/** `let`/`const` re-declaration of `name` within `node` — does not cross `=>`
+ *  (a closure has its own scope; collection already stops at closure boundaries). */
+function redeclaresName(node, name) {
+  if (!Array.isArray(node) || node[0] === '=>') return false
+  if (node[0] === 'let' || node[0] === 'const') {
+    for (let k = 1; k < node.length; k++) {
+      const d = node[k]
+      if (d === name) return true
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
+    }
+  }
+  for (let k = 1; k < node.length; k++) if (redeclaresName(node[k], name)) return true
+  return false
+}
+
+/** Collect `recv.charCodeAt(idxVar)` callee nodes within `node`. Stops at `=>`:
+ *  a closure may run after the loop, when `idxVar` has reached `recv.length`. */
+function collectBoundedCC(node, recv, idxVar, set) {
+  if (!Array.isArray(node) || node[0] === '=>') return
+  if (node[0] === '()' && node.length === 3 && node[2] === idxVar
+      && Array.isArray(node[1]) && node[1][0] === '.'
+      && node[1][1] === recv && node[1][2] === 'charCodeAt')
+    set.add(node[1])
+  for (let k = 1; k < node.length; k++) collectBoundedCC(node[k], recv, idxVar, set)
+}
+
+/** Receiver of a `.length` expression, possibly wrapped in `(… | 0)` — the
+ *  shape `prepare` produces when it hoists a for-cond bound. */
+function lengthRecv(expr) {
+  if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
+  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length'
+      && typeof expr[1] === 'string') return expr[1]
+  return null
+}
+
+/** Flatten `let`/`const` declarations (incl. `;`-joined groups) into `out`,
+ *  mapping each declared name to its initializer expression. */
+function collectDecls(node, out) {
+  if (!Array.isArray(node)) return
+  if (node[0] === ';') { for (let k = 1; k < node.length; k++) collectDecls(node[k], out); return }
+  if (node[0] === 'let' || node[0] === 'const') {
+    for (let k = 1; k < node.length; k++) {
+      const d = node[k]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.set(d[1], d[2])
+    }
+  }
+}
+
+/** Walk `node`, recording in `set` the `charCodeAt` callee nodes proven in-bounds
+ *  by an enclosing canonical induction loop `for (let i = C; i < recv.length; i++)`.
+ *  Matches the post-`prepare` shape, where the `.length` bound is hoisted into a
+ *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). */
+function scanBoundedLoops(node, set) {
+  if (!Array.isArray(node)) return
+  if (node[0] === 'for' && node.length === 5) {
+    const [, init, cond, step, body] = node
+    let idx = null, recv = null, boundVar = null
+    if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
+      const decls = new Map()
+      collectDecls(init, decls)
+      idx = cond[1]
+      // index must be declared in `init` as `let i = C`, C an integer literal ≥ 0
+      const start = decls.has(idx) ? intLiteralValue(decls.get(idx)) : null
+      if (start == null || start < 0) idx = null
+      // bound is `recv.length`, directly or via a hoisted temp declared in `init`
+      let bound = cond[2]
+      if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
+      recv = lengthRecv(bound)
+    }
+    // step `i++`; body never writes `i`/`recv`/the bound temp (incl. via
+    // closures) and never re-declares `i`. Then every bare `i` in the body
+    // satisfies `0 ≤ C ≤ i < recv.length`.
+    if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
+        && !isReassigned(body, idx) && !isReassigned(body, recv)
+        && (boundVar == null || !isReassigned(body, boundVar))
+        && !redeclaresName(body, idx))
+      collectBoundedCC(body, recv, idx, set)
+  }
+  for (let k = 1; k < node.length; k++) scanBoundedLoops(node[k], set)
+}
+
+const NO_BOUNDED_CC = new Set()  // shared immutable empty result
+
+/** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
+ *  index argument is provably within `[0, recv.length)`. Memoised per body. */
+export function inBoundsCharCodeAt(ctx) {
+  const body = ctx.func?.body
+  if (!Array.isArray(body)) return NO_BOUNDED_CC
+  if (ctx.func._ccBody === body) return ctx.func.ccInBounds
+  const set = new Set()
+  scanBoundedLoops(body, set)
+  ctx.func.ccInBounds = set
+  ctx.func._ccBody = body
+  return set
 }
 
 /** Does `body` always exit the enclosing scope (return / throw / break / continue)? */

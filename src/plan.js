@@ -1796,11 +1796,13 @@ const flattenFuncNamespaces = (ast) => {
   if (!names?.size) return false
   // Cheap structural gate: a flattenable namespace exists only if some lifted
   // `f$prop` name's `f` is itself a function (prepare lifts every `f.prop =
-  // arrow` — multiProp slots included). No such pair → skip the AST walk.
-  let hasNs = false
-  for (const n of names) {
-    const i = n.indexOf('$')
-    if (i > 0 && names.has(n.slice(0, i))) { hasNs = true; break }
+  // arrow` — multiProp slots included). The base `f` may itself carry a module
+  // prefix (`mod$f`), so scan every `$` boundary, not just the first; a
+  // populated `multiProp` registry is itself a direct namespace witness.
+  let hasNs = ctx.func.multiProp.size > 0
+  if (!hasNs) outer: for (const n of names) {
+    for (let i = n.indexOf('$'); i > 0; i = n.indexOf('$', i + 1))
+      if (names.has(n.slice(0, i))) { hasNs = true; break outer }
   }
   if (!hasNs) return false
   const ns = analyzeFuncNamespaces(ast)
@@ -1858,6 +1860,11 @@ const flattenFuncNamespaces = (ast) => {
   for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
   for (const fn of ctx.func.list)
     if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
+  // The defining `f.prop = …` writes live in moduleInits for bundled programs —
+  // rewrite them too, or reads would resolve to an unwritten global.
+  if (ctx.module.moduleInits)
+    for (let i = 0; i < ctx.module.moduleInits.length; i++)
+      ctx.module.moduleInits[i] = rewrite(ctx.module.moduleInits[i])
   return true
 }
 
