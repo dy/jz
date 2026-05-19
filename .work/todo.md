@@ -125,18 +125,25 @@ another walker.
 - The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
   `host: 'js'` variant — orthogonal to the above, lands independently.
 
-**Step 4 — memory scalar-replacement (closes the `aos` gap).** Carr & Kennedy
-register promotion / load-store motion: a memory cell read or written several
-times is held in a scalar local — load once, store once. jz already has the
-codegen (`cseScalarLoad`, `src/optimize.js`) but it is **disabled** — it CSE'd
-loads across aliasing stores and miscompiled the metacircular `watr.wasm`. The
-missing piece is exactly the Step-1 substrate: re-enable `cseScalarLoad` gated
-on points-to proving the loaded base cannot alias the stored bases (for `aos`:
-`rows` ∌ `xs`/`ys`/`zs`). Closes the 6-vs-3 redundant-load gap (~0.87 → ~0.70
-ms, hand-WAT parity).
+**Step 4 — memory scalar-replacement (closes the `aos` gap).** [x] Landed
+`3055e4c`. Carr & Kennedy register promotion: a memory cell read several times
+is held in a scalar local — load once, reuse. `cseScalarLoad` (`src/optimize.js`)
+was disabled — it CSE'd loads across aliasing stores and miscompiled the
+metacircular `watr.wasm`. Re-enabled behind `cseSafeLoadBases` (`analyze.js`),
+an emit-side non-aliasing whitelist: a pointer local qualifies only when it is
+an unboxed pointer, bound exactly once, used solely as a `.`/`?.`/`[]` read
+receiver, and its allocation kind is disjoint from every store target's. This
+is a *standalone* gate, not the Step-1 substrate — Step 4 decoupled and shipped
+ahead of Steps 1–3. Verified on `aos`: the kernel's 6 field reads collapse to 3
+`f64.load` (the other 3 reuse coalesced temps); `jz → V8 wasm` is now **0.99 ms
+/ 0.82×** — faster than native C (1.21 ms) *and* hand-WAT (1.07 ms), beating the
+predicted ~0.70 ms hand-WAT parity target. No regressions: 1759/1759 unit,
+81/81 test:bench. Not extended beyond `f64.load` — struct numeric fields are
+always NaN-boxed f64; `i32.load`/`i64.load` header CSE would need a separate
+gate for marginal gain (skipped — not minimal).
 
-Order is the user's: Step 1 → 2 → 3 → 4. Each step is independently shippable
-and keeps zero regressions.
+Order is the user's: Step 1 → 2 → 3 → 4 (Step 4 landed early, see above). Each
+step is independently shippable and keeps zero regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
