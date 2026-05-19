@@ -66,13 +66,23 @@ cross-array-map vectorizer widening are all resolved — see Archive ›
 
 * [ ] **AoS-write vectorization.** `xs[i] = rows[i].x + …` — the *store* is
   lane-aligned but `rows[i].x` is a pointer-chase, not a contiguous `f64.load`,
-  so `vectorizeLaneLocal` cannot lift the loads. Needs gather or a struct→SoA
-  transform; the load-redundancy half is separately covered by `cseScalarLoad`
-  (Step 4). Schedule explicitly — not a vectorizer-pattern gap.
-* [ ] **i32 map-loop vectorization.** `b[i] = a[i]*2+1` over Int32Arrays stays
-  scalar: jz computes in f64 then sat-truncates, so the body mixes i32 loads
-  with f64 math. Mixed-width lifting (i32x4 ↔ f64x2, 4-vs-2 lanes) is a separate,
-  larger feature.
+  so `vectorizeLaneLocal` cannot lift the loads. Wasm-v1 has no gather op;
+  emulating gather as 2 scalar `f64.load` + lane-insert per `f64x2` is
+  break-even with scalar. The honest fix is a struct→SoA carrier (sibling to
+  `src/abi/array.js`'s `structInline`) — multi-week feature, blocked on the
+  narrower emitting SoA-eligible carrier facts. Schedule explicitly with the
+  Representation track.
+* [x] **i32 map-loop vectorization.** **Already works for idiomatic shapes.**
+  Probed 2026-05-19: `((a[i]|0) * 2 + 1) | 0` and `Math.imul(a[i], 2) + 1` over
+  Int32Arrays both vectorize today — typed-array carrier inference lowers
+  `state[i]` to direct `i32.load`/`i32.store`, watr inlines the kernel into the
+  caller's carrier scope, and the existing i32 lane vectorizer lifts the body
+  to `i32x4.*`. The only residual scalar case is plain `a[i] * 2 + 1` (no
+  `|0`), where JS semantics force f64 math + ECMAScript ToInt32-WRAP at store.
+  Wasm-v1 SIMD (and relaxed-SIMD) has only `i32x4.trunc_sat_f64x2_*_zero`
+  (saturate), not wrap — so a SIMD ToInt32 lane requires a manual modular
+  sequence that erases the speedup. Pragmatic answer: use `|0`. Closed as not
+  a real residual gap.
 
 #### Generality track — escape/points-to substrate → devirt · SROA · strings
 
