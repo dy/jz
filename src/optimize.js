@@ -104,7 +104,15 @@ const LEVEL_PRESETS = Object.freeze({
   // Net cost: ~128 B per empty array, ~144 B per per-object hash. Net win on the
   // watr.compile profile: __arr_grow ~6.7% → ~3%, and lower __ihash_get_local
   // probe depth from a denser-load global hash.
-  3: Object.freeze({ ...ALL_ON, arrayMinCap: 16, hashSmallInitCap: 8 }),
+  // L3/'speed' also turns hoistConstantPool OFF: pooling repeated `f64.const`
+  // into `(mut f64)` globals is a pure size win (~7 B/reuse) but a speed loss —
+  // a mutable global can't be constant-folded by V8 (any call may mutate it), so
+  // every use becomes a load, and promoteGlobals then snapshots the pool into
+  // `_pg` locals at each hot function's entry (register pressure in the big
+  // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
+  // constants for free. Measured −3% on jessie parse for +14% binary — exactly
+  // the size↔speed trade 'speed' exists to make.
+  3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8 }),
   // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
   balanced: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
@@ -112,8 +120,8 @@ const LEVEL_PRESETS = Object.freeze({
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
     scalarTypedLoopUnroll: 4, scalarTypedNestedUnroll: 8, scalarTypedArrayLen: 8,
   }),
-  // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning.
-  speed: Object.freeze({ ...ALL_ON, arrayMinCap: 16, hashSmallInitCap: 8 }),
+  // 'speed' === level 3: full watr (inlining on) + L3 cap/hash tuning, pool off.
+  speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8 }),
 })
 
 /**

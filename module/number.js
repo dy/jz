@@ -11,8 +11,7 @@
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
 import { emit } from '../src/emit.js'
-import { isReassigned } from '../src/analyze.js'
-import { valTypeOf, VAL } from '../src/analyze.js'
+import { isReassigned, valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
@@ -23,14 +22,40 @@ import { inc, PTR } from '../src/ctx.js'
 // produced WASM is unchanged, the source now has one place to fix.
 // Required locals (every consumer declares them):
 //   $v i64 · $i $len $c $dot $seen $sigDigits $decExp $dropped $round
-//   $exp $expNeg $expDigits i32 · $mant i64 · $result f64
+//   $exp $expNeg $expDigits $sbase i32 · $mant i64 · $result f64
+
+// In-bounds byte read for a confirmed string `$v`. `__char_at` is ~95 WASM
+// instructions — too large for V8 to inline — so a scan that calls it per
+// char pays a real call plus a redundant SSO/view/bounds dispatch every step.
+// A non-SSO string (the common case: source slices, heap strings) keeps its
+// bytes contiguous at `$v & 0xFFFFFFFF` (`$sbase`); the read collapses to one
+// `i32.load8_u`. The SSO test is loop-invariant — V8 hoists it — and the SSO
+// arm still routes through `__char_at` (its bytes are packed in the pointer).
+// Callers MUST declare `$sbase i32`, set it once after `$v` is final and a
+// confirmed string, and only pass indices proven `< $len` (`__char_at` would
+// otherwise return its OOB 0; the inline load has no such guard).
+const SBASE_INIT = '(local.set $sbase (i32.wrap_i64 (i64.and (local.get $v) (i64.const 4294967295))))'
+const chAt = idx => `(if (result i32)
+        (i64.eqz (i64.and (local.get $v) (i64.const 0x0000400000000000)))
+        (then (i32.load8_u (i32.add (local.get $sbase) ${idx})))
+        (else (call $__char_at (local.get $v) ${idx})))`
+
+// chAt for reads NOT dominated by a `$i < $len` guard. `i32.and` does not
+// short-circuit, so `(i32.and (lt_s $i $len) (… chAt …))` would still run the
+// unguarded inline load when `$i == $len`. chAtSafe restores `__char_at`'s
+// total contract (0 out of bounds), so such a site drops the now-redundant
+// outer guard and compares chAtSafe directly against the wanted byte.
+const chAtSafe = idx => `(if (result i32)
+        (i32.lt_s ${idx} (local.get $len))
+        (then ${chAt(idx)})
+        (else (i32.const 0)))`
 
 // 18-significant-digit significand → $mant; $decExp tracks the base-10 exponent
 // of dropped/fractional digits; $round defers a single round-up.
 const DEC_SIGNIFICAND = `
     (block $numDone (loop $numLoop
       (br_if $numDone (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+      (local.set $c ${chAt('(local.get $i)')})
       (if (i32.and (i32.eq (local.get $c) (i32.const 46)) (i32.eqz (local.get $dot)))
         (then
           (local.set $dot (i32.const 1))
@@ -76,21 +101,19 @@ const FINISH_SIGNIFICAND = `
 // `tail` runs inside the e/E branch — Number rejects an empty exponent ("1e")
 // as NaN, parseFloat ignores it, so each caller passes its own resolution.
 const sciExponent = (tail) => `
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.or
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 101))
-        (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 69))))
+    (local.set $c ${chAtSafe('(local.get $i)')})
+    (if (i32.or
+        (i32.eq (local.get $c) (i32.const 101))
+        (i32.eq (local.get $c) (i32.const 69)))
       (then
         (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+        (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 45))
           (then (local.set $expNeg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-        (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-          (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+        (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 43))
           (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
         (block $expDone (loop $expLoop
           (br_if $expDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (local.set $c ${chAt('(local.get $i)')})
           (br_if $expDone
             (i32.or
               (i32.lt_s (local.get $c) (i32.const 48))
@@ -554,10 +577,11 @@ export default (ctx) => {
   // whitespace code point is ≤ U+FEFF (≤ 3 bytes), and a 4-byte lead is never
   // whitespace, so it (and any non-space scalar) ends the run.
   ctx.core.stdlib['__skipws'] = `(func $__skipws (param $v i64) (param $i i32) (param $len i32) (result i32)
-    (local $b i32) (local $cp i32) (local $n i32)
+    (local $b i32) (local $cp i32) (local $n i32) (local $sbase i32)
+    ${SBASE_INIT}
     (block $done (loop $l
       (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $b (call $__char_at (local.get $v) (local.get $i)))
+      (local.set $b ${chAt('(local.get $i)')})
       (if (i32.lt_u (local.get $b) (i32.const 0x80))
         (then (local.set $cp (local.get $b)) (local.set $n (i32.const 1)))
         (else (if (i32.lt_u (local.get $b) (i32.const 0xe0))
@@ -583,7 +607,7 @@ export default (ctx) => {
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $radix i32) (local $digit i32)
+    (local $radix i32) (local $digit i32) (local $sbase i32)
     (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
@@ -605,6 +629,7 @@ export default (ctx) => {
         (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
           (then (return (f64.const nan))))))
     (local.set $len (call $__str_byteLen (local.get $v)))
+    ${SBASE_INIT}
     ;; Trim leading whitespace. An empty / all-whitespace string is +0.
     (local.set $i (call $__skipws (local.get $v) (i32.const 0) (local.get $len)))
     (if (i32.ge_s (local.get $i) (local.get $len)) (then (return (f64.const 0))))
@@ -612,9 +637,9 @@ export default (ctx) => {
     ;; precede the prefix, so it is matched before sign consumption.
     (if (i32.and
       (i32.lt_s (i32.add (local.get $i) (i32.const 1)) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 48)))
+      (i32.eq ${chAt('(local.get $i)')} (i32.const 48)))
       (then
-        (local.set $c (call $__char_at (local.get $v) (i32.add (local.get $i) (i32.const 1))))
+        (local.set $c ${chAt('(i32.add (local.get $i) (i32.const 1))')})
         (if (i32.or (i32.eq (local.get $c) (i32.const 120)) (i32.eq (local.get $c) (i32.const 88)))
           (then (local.set $radix (i32.const 16))))
         (if (i32.or (i32.eq (local.get $c) (i32.const 111)) (i32.eq (local.get $c) (i32.const 79)))
@@ -626,7 +651,7 @@ export default (ctx) => {
         (local.set $i (i32.add (local.get $i) (i32.const 2)))
         (block $ndDone (loop $ndLoop
           (br_if $ndDone (i32.ge_s (local.get $i) (local.get $len)))
-          (local.set $c (call $__char_at (local.get $v) (local.get $i)))
+          (local.set $c ${chAt('(local.get $i)')})
           ;; Decode digit; 99 sentinel for any non-[0-9a-fA-F] char so the
           ;; unsigned ">= radix" test rejects it and any out-of-base digit.
           (local.set $digit
@@ -648,16 +673,14 @@ export default (ctx) => {
         (if (i32.lt_s (local.get $i) (local.get $len)) (then (return (f64.const nan))))
         (return (local.get $result))))
     ;; Sign (StrDecimalLiteral only).
-    (if (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45))
+    (if (i32.eq ${chAt('(local.get $i)')} (i32.const 45))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+    (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 43))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     ;; "Infinity" — the only non-numeric token ToNumber accepts. The 8 letters
     ;; are packed little-endian in one i64; any mismatch, short input, or
     ;; trailing non-whitespace makes the whole string NaN.
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 73)))
+    (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 73))
       (then
         (block $infBad
           (local.set $digit (i32.const 0))
@@ -666,7 +689,7 @@ export default (ctx) => {
               (then
                 (br_if $infBad (i32.ge_s (i32.add (local.get $i) (local.get $digit)) (local.get $len)))
                 (br_if $infBad (i32.ne
-                  (call $__char_at (local.get $v) (i32.add (local.get $i) (local.get $digit)))
+                  ${chAt('(i32.add (local.get $i) (local.get $digit))')}
                   (i32.and (i32.wrap_i64 (i64.shr_u (i64.const 0x7974696e69666e49)
                     (i64.extend_i32_u (i32.shl (local.get $digit) (i32.const 3))))) (i32.const 255))))
                 (local.set $digit (i32.add (local.get $digit) (i32.const 1)))
@@ -788,7 +811,7 @@ export default (ctx) => {
     (local $t i32) (local $len i32) (local $i i32) (local $c i32) (local $neg i32)
     (local $seen i32) (local $exp i32) (local $expNeg i32) (local $expDigits i32)
     (local $dot i32) (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
-    (local $result f64) (local $f f64) (local $mant i64)
+    (local $result f64) (local $f f64) (local $mant i64) (local $sbase i32)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (local.set $t (call $__ptr_type (local.get $v)))
@@ -802,18 +825,17 @@ export default (ctx) => {
         (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
           (then (return (f64.const nan))))))
     (local.set $len (call $__str_byteLen (local.get $v)))
+    ${SBASE_INIT}
     ;; Skip leading whitespace.
     (block $ws (loop $wsl
       (br_if $ws (i32.ge_s (local.get $i) (local.get $len)))
-      (br_if $ws (i32.gt_s (call $__char_at (local.get $v) (local.get $i)) (i32.const 32)))
+      (br_if $ws (i32.gt_s ${chAt('(local.get $i)')} (i32.const 32)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $wsl)))
     ;; Sign.
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 45)))
+    (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 45))
       (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))
-    (if (i32.and (i32.lt_s (local.get $i) (local.get $len))
-      (i32.eq (call $__char_at (local.get $v) (local.get $i)) (i32.const 43)))
+    (if (i32.eq ${chAtSafe('(local.get $i)')} (i32.const 43))
       (then (local.set $i (i32.add (local.get $i) (i32.const 1)))))
     ;; Decimal significand. Keep 18 significant decimal digits, track the
     ;; base-10 exponent for skipped digits, and round once before pow10 scaling.
