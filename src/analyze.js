@@ -938,6 +938,85 @@ function scanSliceViews(body) {
 const _bodyFactsCache = new WeakMap()
 
 /**
+ * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
+ * initializer is a non-negative integer literal in [0, 2^32), every
+ * reassignment is `name = (…) >>> k` (so it always holds a canonical uint32),
+ * and every read sits inside a `>>>` (ToUint32) sink reached only through
+ * bit-faithful operators (`^ & | ~ << >> + - *`). Under those constraints the
+ * raw i32 bit pattern reproduces JS semantics exactly — every observable use is
+ * funnelled through ToUint32 — so the f64 round-trip on the hot path is pure
+ * overhead. Names that escape (closures, bare `return`, signed-sensitive
+ * operands) keep their wider type. Returns the qualifying set; callers retype
+ * `locals` to 'i32' and tag `readVar` reads `.unsigned` for convert_i32_u.
+ */
+function narrowUint32(body, locals) {
+  const TRANSPARENT = new Set(['^', '&', '|', '~', '<<', '>>', '+', '-', '*'])
+  const initLit = new Set()   // names with a valid u32-literal initializer
+  const disq = new Set()      // names disqualified by an unsafe occurrence
+  const seen = new Set()
+  const isU32Lit = e => {
+    const v = typeof e === 'number' ? e
+      : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
+    return Number.isInteger(v) && v >= 0 && v < 4294967296
+  }
+  const isAssignOp = op => op[op.length - 1] === '=' &&
+    op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>='
+  const banNames = n => {
+    if (typeof n === 'string') disq.add(n)
+    else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
+  }
+  const walk = (node, underShr, inClosure) => {
+    if (typeof node === 'string') { if (inClosure) disq.add(node); return }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (typeof op !== 'string') {
+      for (let i = 1; i < node.length; i++) walk(node[i], false, inClosure)
+      return
+    }
+    if (op === '=>') { for (let i = 1; i < node.length; i++) walk(node[i], false, true); return }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+          const nm = d[1]
+          if (seen.has(nm) || inClosure || !isU32Lit(d[2])) disq.add(nm)
+          else initLit.add(nm)
+          seen.add(nm)
+          walk(d[2], false, inClosure)
+        } else if (typeof d === 'string') { disq.add(d); seen.add(d) }
+        else if (Array.isArray(d) && d[0] === '=') { banNames(d[1]); walk(d[2], false, inClosure) }
+      }
+      return
+    }
+    if ((op === '++' || op === '--') && typeof node[1] === 'string') { disq.add(node[1]); return }
+    if (isAssignOp(op)) {
+      const lhs = node[1]
+      if (typeof lhs === 'string') {
+        if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) disq.add(lhs)
+      } else banNames(lhs)
+      walk(node[2], false, inClosure)
+      return
+    }
+    const childShr = op === '>>>' ? true : TRANSPARENT.has(op) ? underShr : false
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (typeof c === 'string') { if (inClosure || !childShr) disq.add(c) }
+      else walk(c, childShr, inClosure)
+    }
+  }
+  walk(body, false, false)
+  const result = new Set()
+  for (const nm of initLit) {
+    if (disq.has(nm)) continue
+    const t = locals.get(nm)
+    if (t !== 'i32' && t !== 'f64') continue
+    locals.set(nm, 'i32')
+    result.add(nm)
+  }
+  return result
+}
+
+/**
  * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
  * Callers that need to extend (e.g. add params to locals) must clone explicitly
  * before mutating. Slice reads via `analyzeBody(body).<slice>`.
@@ -1304,6 +1383,7 @@ export function analyzeBody(body) {
   const prevTypedOverlay = ctx.func.localTypedElemsOverlay
   ctx.func.localValTypesOverlay = valTypes
   ctx.func.localTypedElemsOverlay = typedElems
+  let unsignedLocals
   try {
     walk(body)
 
@@ -1370,6 +1450,12 @@ export function analyzeBody(body) {
     }
     recheck(body)
   }
+
+  // Narrow proven uint32 accumulator locals to unsigned i32. Runs post-widen so
+  // a local already demoted to f64 above (e.g. compared against an f64) is
+  // reconsidered with final types — and stays f64, since a relational compare
+  // is a non-transparent read that disqualifies narrowing anyway.
+  unsignedLocals = narrowUint32(body, locals)
 } finally {
     ctx.func.localValTypesOverlay = prevOverlay
     ctx.func.localTypedElemsOverlay = prevTypedOverlay
@@ -1389,7 +1475,7 @@ export function analyzeBody(body) {
   // Consumed by emitDecl, which lowers the initializer to a SLICE_BIT view.
   const sliceViews = doSchemas ? scanSliceViews(body) : new Set()
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews }
+  const result = { locals, valTypes, arrElemSchemas, arrElemValTypes, typedElems, escapes, flatObjects, sliceViews, unsignedLocals }
   _bodyFactsCache.set(body, result)
   return result
 }
@@ -1862,10 +1948,25 @@ export function exprType(expr, locals) {
   // Always i32
   if (['>', '<', '>=', '<=', '==', '!=', '!', '&', '|', '^', '~', '<<', '>>', '>>>'].includes(op)) return 'i32'
   // Preserve i32 if both operands i32
-  if (['+', '-', '*', '%'].includes(op)) {
+  if (op === '+' || op === '-' || op === '%') {
     const ta = exprType(args[0], locals)
     const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
     return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
+  }
+  // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully
+  // only while the exact product is f64-exact. Stay i32 when both operands are
+  // i32 *and* the product provably fits: a fully-static product checked
+  // directly, otherwise a literal operand small enough that |literal|·2^31 ≤
+  // 2^53 (mirrors emit.js `mulFitsI32` — keeps `i*4` i32, widens `h*16777619`).
+  if (op === '*') {
+    const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
+    if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
+    const small = e => {
+      const v = staticValue(e)
+      return v !== NO_VALUE && typeof v === 'number' && Math.abs(v) <= 0x400000
+    }
+    return small(args[0]) || small(args[1]) ? 'i32' : 'f64'
   }
   // Unary preserves type
   if (op === 'u-' || op === 'u+') return exprType(args[0], locals)

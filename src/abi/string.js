@@ -109,6 +109,38 @@ const allocLocalI32 = (ctx, tag) => {
   return name
 }
 
+const _isLeaf = (n) => Array.isArray(n) &&
+  (n[0] === 'local.get' || n[0] === 'global.get' ||
+   n[0] === 'i32.const' || n[0] === 'i64.const' ||
+   n[0] === 'f64.const' || n[0] === 'f32.const')
+
+/** Per-use cheap form of `charCodeAt` against a pre-decomposed param receiver
+ *  (shape 1): a bounds check plus a 2-arm SSO/heap byte select reading the four
+ *  i32 decode locals in `dec`. The index is referenced three times, so a
+ *  side-effecting `iI32` is spilled to a scratch local first — leaves are safe
+ *  to duplicate. `oobNan` picks the OOB contract / result type exactly as in
+ *  the generic path. */
+function emitDecompCharRead(dec, iI32, ctx, oobNan) {
+  const rt = oobNan ? 'f64' : 'i32'
+  let idx = iI32, spill = null
+  if (!_isLeaf(iI32)) { spill = allocLocalI32(ctx, 'ci'); idx = ['local.get', `$${spill}`] }
+  const ssoByteExpr = ['i32.and',
+    ['i32.shr_u', ['local.get', `$${dec.base}`], ['i32.shl', idx, ['i32.const', 3]]],
+    ['i32.const', 0xFF]]
+  const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], idx]]
+  const ccByte = ['if', ['result', 'i32'],
+    ['local.get', `$${dec.sso}`],
+    ['then', ssoByteExpr],
+    ['else', heapByteExpr]]
+  const use = ['if', ['result', rt],
+    ['i32.ge_u', idx, ['local.get', `$${dec.len}`]],
+    ['then', oobNan ? ['f64.const', 'nan:0x7FF8000000000000'] : ['i32.const', 0]],
+    ['else', oobNan ? ['f64.convert_i32_u', ccByte] : ccByte]]
+  return spill
+    ? ['block', ['result', rt], ['local.set', `$${spill}`, iI32], use]
+    : use
+}
+
 /** Emit the function-entry decomposition prologue for the param-fast-path
  *  shape of `charCodeAt`. Decodes the f64 NaN-box once per call into three i32
  *  scratch locals (`base`, `len`, `sso`) recorded in `dec`. Per-iter
@@ -172,10 +204,10 @@ export const sso = {
       return ['call', '$__str_byteLen', ssoI64(sF64)]
     },
 
-    /** Char code at index i. Receiver: f64 slot carrier; index: i32. Returns
-     *  i32 — 0 for out-of-bounds (NUL byte). Keeps tokenizer hot loops on the
-     *  i32 ABI (no per-iteration f64 widen/truncate). User code that wants
-     *  JS-spec NaN-for-OOB can guard with an explicit length check.
+    /** Char code at index i. Receiver: f64 slot carrier; index: i32. The
+     *  `oobNan` flag picks the out-of-bounds contract (see the param comment
+     *  below): `false` ⇒ i32 result, `0` for OOB (raw-byte primitive);
+     *  `true` ⇒ f64 result, NaN for OOB (JS-spec `String.prototype.charCodeAt`).
      *
      *  Two emission shapes, picked at the call site:
      *
@@ -210,7 +242,19 @@ export const sso = {
      *  `src/compile.js#emitFunc` — it drains `ctx.func.charDecomp` after the
      *  body emit completes and splices an init block between the boxed-param
      *  inits and the user statements. */
-    charCodeAt: (sF64, iI32, ctx) => {
+    charCodeAt: (sF64, iI32, ctx, oobNan = false) => {
+      // `oobNan` selects the out-of-bounds semantics and result type:
+      //   - false (default): OOB → `i32.const 0`, result i32 — the raw-byte
+      //     primitive used by the `buf += s[i]` append-byte fast path.
+      //   - true: OOB → numeric NaN, result f64 — the JS-spec `charCodeAt`
+      //     contract (`pos < 0 || pos >= length` ⇒ NaN). The parser hot loop
+      //     `while ((cc = s.charCodeAt(i++)) <= 32)` relies on `NaN <= 32`
+      //     being false to terminate; an i32 `0` would loop forever.
+      // A fresh OOB node per use — IR nodes must not be structurally shared
+      // (later passes mutate in place).
+      const mkOob = () => oobNan ? ['f64.const', 'nan:0x7FF8000000000000'] : ['i32.const', 0]
+      const rt = oobNan ? 'f64' : 'i32'
+      const widen = b => oobNan ? ['f64.convert_i32_u', b] : b
       // Shape 1: receiver is a `local.get` of a non-boxed function parameter.
       // The decomposition is correct only when the parameter's value can't
       // change after entry — boxed params are stored in heap cells and read
@@ -249,23 +293,7 @@ export const sso = {
             dec = { base, len, sso, loadbase, param: name }
             ctx.func.charDecomp.set(name, dec)
           }
-          // Two nested ifs: bounds check (predicted taken) and SSO/heap split
-          // (predicted heap for tokenizer-shape loops where strings are long).
-          // The inner if lets V8 entirely skip the SSO-byte arithmetic when
-          // taking the heap path — a `select` would force both formulations
-          // to execute on the assumption the CMOV is cheaper than the branch.
-          const ssoByteExpr = ['i32.and',
-            ['i32.shr_u', ['local.get', `$${dec.base}`], ['i32.shl', iI32, ['i32.const', 3]]],
-            ['i32.const', 0xFF]]
-          const heapByteExpr = ['i32.load8_u', ['i32.add', ['local.get', `$${dec.loadbase}`], iI32]]
-          return ['if', ['result', 'i32'],
-            ['i32.ge_u', iI32, ['local.get', `$${dec.len}`]],
-            ['then', ['i32.const', 0]],
-            ['else',
-              ['if', ['result', 'i32'],
-                ['local.get', `$${dec.sso}`],
-                ['then', ssoByteExpr],
-                ['else', heapByteExpr]]]]
+          return emitDecompCharRead(dec, iI32, ctx, oobNan)
         }
       }
 
@@ -309,25 +337,25 @@ export const sso = {
       const ssoByte = ['i32.and',
         ['i32.shr_u', offExpr(), ['i32.mul', getIdx(), ['i32.const', 8]]],
         ['i32.const', 0xFF]]
-      const ssoBranch = ['if', ['result', 'i32'],
+      const ssoBranch = ['if', ['result', rt],
         ['i32.ge_u', getIdx(), ssoLen],
-        ['then', ['i32.const', 0]],
-        ['else', ssoByte]]
+        ['then', mkOob()],
+        ['else', widen(ssoByte)]]
       const heapLen = ['i32.load', ['i32.sub', offExpr(), ['i32.const', 4]]]
       const heapByte = ['i32.load8_u', ['i32.add', offExpr(), getIdx()]]
-      const heapBranch = ['if', ['result', 'i32'],
+      const heapBranch = ['if', ['result', rt],
         ['i32.lt_u', offExpr(), ['i32.const', 4]],
-        ['then', ['i32.const', 0]],
-        ['else', ['if', ['result', 'i32'],
+        ['then', mkOob()],
+        ['else', ['if', ['result', rt],
           ['i32.ge_u', getIdx(), heapLen],
-          ['then', ['i32.const', 0]],
-          ['else', heapByte]]]]
-      const dispatch = ['if', ['result', 'i32'],
+          ['then', mkOob()],
+          ['else', widen(heapByte)]]]]
+      const dispatch = ['if', ['result', rt],
         ['i64.ne', ['i64.and', getPtr(), ['i64.const', ssoBitI64()]], ['i64.const', 0]],
         ['then', ssoBranch],
         ['else', heapBranch]]
       if (sLeaf && iLeaf) return dispatch
-      const preface = ['block', ['result', 'i32']]
+      const preface = ['block', ['result', rt]]
       if (!sLeaf) preface.push(['local.set', `$${ptrName}`, ptrI64Expr])
       if (!iLeaf) preface.push(['local.set', `$${idxName}`, iI32])
       preface.push(dispatch)

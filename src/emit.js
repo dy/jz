@@ -99,6 +99,17 @@ const emitNeg = (a) => {
 const foldConst = (va, vb, fn, guard) =>
   isLit(va) && isLit(vb) && (!guard || guard(litVal(vb))) ? emitNum(fn(litVal(va), litVal(vb))) : null
 
+// JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
+// Those agree under a ToInt32/ToUint32 sink (and as plain numbers) while the
+// exact product stays f64-exact, i.e. |product| <= 2^53. Two i32 operands can
+// reach 2^62, so `i32.mul` is sound only when one side is a literal small
+// enough that, against the full i32 range (2^31) of the other, the product
+// holds within 2^53 — i.e. |literal| <= 2^22. Keeps index arithmetic (`i*4`,
+// `row*16`) on `i32.mul` while routing hash-mix-scale products to `f64.mul`.
+const mulFitsI32 = (va, vb) =>
+  (isLit(va) && Math.abs(litVal(va)) <= 0x400000) ||
+  (isLit(vb) && Math.abs(litVal(vb)) <= 0x400000)
+
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 export function emitTypeofCmp(a, b, cmpOp) {
   let typeofExpr, code
@@ -630,7 +641,7 @@ export function emitDecl(...inits) {
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
     } else {
-      coerced = localType === 'f64' ? asF64(val) : asI32(val)
+      coerced = localType === 'f64' ? asF64(val) : val.type === 'i32' ? val : toI32(val)
     }
     if (!(isLit(coerced) && coerced[1] === 0 && !Object.is(coerced[1], -0) && !ctx.func.stack.length))
       result.push(['local.set', `$${name}`, coerced])
@@ -1602,7 +1613,7 @@ export const emitter = {
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
     if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
-    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.mul', va, vb], 'i32')
+    if (isI32Num(va) && isI32Num(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
     return typed(['f64.mul', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '/': (a, b) => {

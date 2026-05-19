@@ -259,6 +259,15 @@ const methodEvidence = (body, names) => {
         }
       }
     }
+    // Runtime type-discrimination — `typeof x`, `Array.isArray(x)` — proves the
+    // binding is polymorphic: the body itself branches on its tag. Narrowing it
+    // to a single pointer kind erases the very tag the check reads (`typeof`
+    // would fold to a constant, `Array.isArray` likewise), miscompiling a
+    // soundly-mixed caller. Force `conflict` so the param stays boxed.
+    if (op === 'typeof' && typeof node[1] === 'string' && scope.has(node[1]))
+      evidence.set(node[1], 'conflict')
+    if (op === '()' && node[1] === 'Array.isArray' && typeof node[2] === 'string' && scope.has(node[2]))
+      evidence.set(node[2], 'conflict')
     if (op === '=' && typeof node[1] === 'string' && scope.has(node[1])) {
       const name = node[1]
       const vt = valTypeOf(node[2])
