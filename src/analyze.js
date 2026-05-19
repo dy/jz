@@ -651,6 +651,14 @@ function ternaryCtorOfRhs(rhs) {
  * re-walks. The classification logic is the union of those walks; a use-kind
  * exists for every distinction at least one consumer needs.
  *
+ * Deliberately NOT a consumer: `analyzeBody`'s `escapes` map. It looks like a
+ * fourth escape analysis but is not — it is context-sensitive *taint* over
+ * value-expression positions (member access short-circuits, a static index
+ * does not escape but a dynamic one does), woven into the main typing walk it
+ * shares with six other facts. Re-expressing it here would need `BARE` split
+ * by enclosing construct (a plain `name;` statement vs `return name`) and a
+ * second traversal — adding a walk, not removing one. It stays where it is.
+ *
  * Returns `Map<name, { decls, initRhs, uses }>` for every name the body
  * `let`/`const`-declares. `uses` is a `UseRecord[]`; a record is
  * `{ kind, key?, optional?, computed?, compound?, nullCmp?, callee?, argIndex? }`.
