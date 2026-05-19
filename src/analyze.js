@@ -698,6 +698,16 @@ function scanBindingUses(body) {
   // Static string key of a `[]` index node, else null (computed).
   const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : null
 
+  // A child sitting in a value position. A bare string there is a real use —
+  // `walk` alone silently drops non-array children, so every value-position
+  // child (let-rhs, assign-rhs, call/index args, closure body, …) must route
+  // through here or its use goes unrecorded (a latent miscompile: the binding
+  // looks unused and an optimization fires unsoundly).
+  const val = (child, inClosure) => {
+    if (typeof child === 'string') use(child, inClosure ? USE.CAPTURE : USE.BARE)
+    else walk(child, inClosure)
+  }
+
   // Classify the target of an assignment-like node (`=`, compound, `++`, `--`).
   const assignTarget = (t, compound) => {
     if (typeof t === 'string') { use(t, USE.REASSIGN); return }
@@ -710,7 +720,7 @@ function scanBindingUses(body) {
     if (o === '[]' && typeof t[1] === 'string') {
       const k = litKey(t[2])
       use(t[1], USE.MEMBER_W, { key: k, computed: k == null, compound })
-      if (t[2] != null) walk(t[2])
+      if (t[2] != null) val(t[2])
       return
     }
     walk(t)                                     // some other LHS shape — generic
@@ -721,7 +731,7 @@ function scanBindingUses(body) {
     const op = node[0]
     if (typeof op !== 'string') return          // literal node `[null, value]`
     if (op === 'str') return                    // string literal
-    if (op === '=>') { for (let i = 1; i < node.length; i++) walk(node[i], true); return }
+    if (op === '=>') { for (let i = 1; i < node.length; i++) val(node[i], true); return }
 
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -734,7 +744,7 @@ function scanBindingUses(body) {
           } else {
             walk(lhs, inClosure)                // pattern — computed keys/defaults are real uses
           }
-          walk(rhs, inClosure)
+          val(rhs, inClosure)
         } else walk(d, inClosure)
       }
       return
@@ -750,14 +760,14 @@ function scanBindingUses(body) {
     }
 
     // === precise classification (outside any closure) ===
-    if (ASSIGN_OPS.has(op)) { assignTarget(node[1], op !== '='); walk(node[2]); return }
+    if (ASSIGN_OPS.has(op)) { assignTarget(node[1], op !== '='); val(node[2]); return }
     if (op === '++' || op === '--') { assignTarget(node[1], true); return }
     if (op === 'delete') {
       const t = node[1]
       if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') && typeof t[1] === 'string') {
         use(t[1], USE.DELETE_MEMBER)
-        if (t[0] === '[]' && t[2] != null) walk(t[2])
-      } else walk(t)
+        if (t[0] === '[]' && t[2] != null) val(t[2])
+      } else val(t)
       return
     }
     if (op === '.' || op === '?.') {
@@ -771,8 +781,13 @@ function scanBindingUses(body) {
       const recv = node[1], k = litKey(node[2])
       if (typeof recv === 'string') use(recv, USE.MEMBER_R, { key: k, optional: false, computed: k == null })
       else walk(recv)
-      if (node[2] != null) walk(node[2])
+      if (node[2] != null) val(node[2])
       return
+    }
+    if (op === ':') {                           // object property `{k:v}` / labeled statement
+      if (Array.isArray(node[1])) walk(node[1]) // computed key `{[expr]:v}` — a real use
+      val(node[2])                              // property value (or the labeled statement)
+      return                                    // string node[1] = plain key / label — not a use
     }
     if (op === 'return') {
       const e = node[1]
@@ -789,7 +804,7 @@ function scanBindingUses(body) {
         const args = (Array.isArray(argNode) && argNode[0] === ',') ? argNode.slice(1) : [argNode]
         for (let ai = 0; ai < args.length; ai++) {
           const a = args[ai]
-          if (Array.isArray(a) && a[0] === '...') { walk(a[1]); continue }
+          if (Array.isArray(a) && a[0] === '...') { val(a[1]); continue }
           if (typeof a === 'string') use(a, USE.CALL_ARG, { callee: typeof callee === 'string' ? callee : null, argIndex: ai })
           else walk(a)
         }
@@ -818,11 +833,11 @@ function scanBindingUses(body) {
       else walk(c)
       return
     }
-    if (op === 'if' || op === 'while' || op === '?:') {
+    if (op === 'if' || op === 'while' || op === '?') {
       const c = node[1]
       if (typeof c === 'string') use(c, USE.BOOL_TEST)
       else walk(c)
-      for (let i = 2; i < node.length; i++) walk(node[i])
+      for (let i = 2; i < node.length; i++) val(node[i])
       return
     }
 
