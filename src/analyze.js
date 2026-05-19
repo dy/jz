@@ -870,168 +870,64 @@ function scanBindingUses(body) {
  * any object walk (keys/values/entries/assign/spread/JSON/for-in/dyn), so the
  * transform is additive and sound. Conservative: any doubt → not flat.
  *
+ * A policy over `scanBindingUses`: the shared traversal classifies every
+ * mention; this scan keeps a binding only if its initializer is a self-
+ * contained static literal and every use is an in-schema literal-key access.
+ *
  * Returns `Map<name, {names, values}>` — the literal's parallel prop arrays.
  * Field `i` of binding `o` lives in WASM local `o#${i}` (`#` cannot occur in a
  * jz identifier, so the name is collision-free).
  */
 function scanFlatObjects(body) {
   const cand = new Map()                 // name → {names, values}
-  const dead = new Set()
-  const declCount = new Map()
 
-  const isLitStr = (k) => Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string'
-  const inSchema = (name, prop) => cand.get(name)?.names.includes(prop)
-  const CMP = new Set(['==', '===', '!=', '!==', '<=', '>='])
-  const isCompound = (op) =>
-    typeof op === 'string' && op !== '=' && op !== '=>' && op.endsWith('=') && !CMP.has(op)
-
-  // `name` referenced anywhere as a value (skips `:`/`.` property-name slots).
-  const mentions = (node, name) => {
+  // A binding referenced as a value inside `node` (skips `:`/`.` property-name
+  // slots). Used only to reject a self-referential initializer — a literal
+  // whose own field values mention the binding is not a self-contained object.
+  const referencesName = (node, name) => {
     if (typeof node === 'string') return node === name
     if (!Array.isArray(node)) return false
     const op = node[0]
     if (op === 'str') return false
-    if (op === ':') return mentions(node[2], name)
-    if (op === '.' || op === '?.') return mentions(node[1], name)
-    for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
+    if (op === ':') return referencesName(node[2], name)
+    if (op === '.' || op === '?.') return referencesName(node[1], name)
+    for (let i = 1; i < node.length; i++) if (referencesName(node[i], name)) return true
     return false
   }
 
-  // Pass 1 — collect `let/const name = {staticLiteral}` candidates (skip closures).
-  const collect = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const a = node[i]
-        if (typeof a === 'string') { declCount.set(a, (declCount.get(a) || 0) + 1); continue }
-        if (!Array.isArray(a) || a[0] !== '=') { collect(a); continue }
-        if (typeof a[1] === 'string') {
-          declCount.set(a[1], (declCount.get(a[1]) || 0) + 1)
-          const rhs = a[2]
-          if (Array.isArray(rhs) && rhs[0] === '{}') {
-            const props = staticObjectProps(rhs.slice(1))
-            if (props && new Set(props.names).size === props.names.length && !cand.has(a[1]))
-              cand.set(a[1], props)
-          }
-        }
-        collect(a[2])
-      }
-      return
-    }
-    for (let i = 1; i < node.length; i++) collect(node[i])
-  }
-  collect(body)
+  for (const [name, s] of scanBindingUses(body)) {
+    // Candidate: exactly one `let/const name = {staticLiteral}` decl, unique
+    // keys, and an initializer that does not reference the binding itself.
+    if (s.decls !== 1 || !Array.isArray(s.initRhs) || s.initRhs[0] !== '{}') continue
+    const props = staticObjectProps(s.initRhs.slice(1))
+    if (!props || new Set(props.names).size !== props.names.length) continue
+    if (props.values.some(v => referencesName(v, name))) continue
 
-  // Drop names declared more than once and self-referential initializers.
-  for (const [n, c] of declCount) if (c > 1) cand.delete(n)
-  for (const [n, props] of cand) {
-    if (props.values.some(v => mentions(v, n))) cand.delete(n)
-  }
-  if (!cand.size) return cand
+    // Schema = literal keys ∪ plain literal-key member writes. Such a write
+    // monotonically extends the static field universe (the new field reads
+    // `undefined` until the write runs, exactly as JS does); the schema stays
+    // closed because any computed/off-schema access disqualifies below.
+    const schema = new Set(props.names)
+    for (const u of s.uses)
+      if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null)
+        schema.add(u.key)
 
-  // Pass 1.5 — monotonic field extension. Real code extends static objects
-  // (`o.newProp = …`); SRoA must not bail on that. A literal-key write to a
-  // candidate adds a flat field — initialized to `undefined` at the decl, so a
-  // read that runs before the write yields `undefined` exactly as JS does.
-  // The field universe stays statically closed: Pass 2 still disqualifies the
-  // candidate on any computed-key or off-schema access, so the literal keys
-  // plus the keys collected here are exhaustive. (`delete` also disqualifies,
-  // so every surviving candidate is genuinely monotonically extended.)
-  const collectExtension = (node) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === '=') {
-      const lhs = node[1]
-      if (Array.isArray(lhs) && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
-        const key = lhs[0] === '.' && typeof lhs[2] === 'string' ? lhs[2]
-          : lhs[0] === '[]' && isLitStr(lhs[2]) ? lhs[2][1] : null
-        if (key != null) {
-          const c = cand.get(lhs[1])
-          if (!c.names.includes(key)) { c.names.push(key); c.values.push(undefined) }
-        }
-      }
-    }
-    for (let i = 1; i < node.length; i++) collectExtension(node[i])
-  }
-  collectExtension(body)
+    // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
+    // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
+    // computed/off-schema key, reassignment, compound or `delete` member write,
+    // `++`/`--`, call arg, closure capture, bare ref — leaves the object live.
+    const flat = s.uses.every(u =>
+      (u.kind === USE.MEMBER_R && !u.optional && !u.computed && schema.has(u.key)) ||
+      (u.kind === USE.MEMBER_W && !u.compound && !u.computed && schema.has(u.key)))
+    if (!flat) continue
 
-  // Pass 2 — verify every occurrence is a safe literal-key access.
-  const visitChild = (c) => {
-    if (typeof c === 'string') { if (cand.has(c)) dead.add(c); return }
-    verify(c)
+    // Materialize the parallel {names, values}: literal props first, then each
+    // extension field (value `undefined`), in first-write order.
+    const names = props.names.slice(), values = props.values.slice()
+    for (const k of schema)
+      if (!names.includes(k)) { names.push(k); values.push(undefined) }
+    cand.set(name, { names, values })
   }
-  function verify(node) {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'str') return
-    if (op === '=>') {                       // closure capture — any mention disqualifies
-      for (const n of cand.keys()) if (mentions(node, n)) dead.add(n)
-      return
-    }
-    if (op === ':') { visitChild(node[2]); return }
-    if (op === '.' || op === '?.') {
-      const o = node[1], p = node[2]
-      if (typeof o === 'string' && cand.has(o)) {
-        if (!(op === '.' && typeof p === 'string' && inSchema(o, p))) dead.add(o)
-      } else visitChild(o)
-      return                                 // p is a property name, never a ref
-    }
-    if (op === '[]') {
-      const o = node[1], k = node[2]
-      if (typeof o === 'string' && cand.has(o)) {
-        if (!(isLitStr(k) && inSchema(o, k[1]))) dead.add(o)
-      } else visitChild(o)
-      if (k != null) visitChild(k)
-      return
-    }
-    if (op === '=') {
-      const lhs = node[1]
-      if (typeof lhs === 'string') { if (cand.has(lhs)) dead.add(lhs) }
-      else if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
-        if (!(typeof lhs[2] === 'string' && inSchema(lhs[1], lhs[2]))) dead.add(lhs[1])
-      }
-      else if (Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && cand.has(lhs[1])) {
-        const k = lhs[2]
-        if (!(isLitStr(k) && inSchema(lhs[1], k[1]))) dead.add(lhs[1])
-        if (k != null) visitChild(k)
-      }
-      else visitChild(lhs)
-      visitChild(node[2])
-      return
-    }
-    if (op === '++' || op === '--' || isCompound(op)) {
-      const t = node[1]
-      if (typeof t === 'string') { if (cand.has(t)) dead.add(t) }
-      else if (Array.isArray(t) && (t[0] === '.' || t[0] === '[]') &&
-               typeof t[1] === 'string' && cand.has(t[1])) dead.add(t[1])
-      else visitChild(t)
-      for (let i = 2; i < node.length; i++) visitChild(node[i])
-      return
-    }
-    if (op === 'delete') {
-      const t = node[1]
-      if (Array.isArray(t) && (t[0] === '.' || t[0] === '[]') &&
-          typeof t[1] === 'string' && cand.has(t[1])) dead.add(t[1])
-      else visitChild(t)
-      return
-    }
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const a = node[i]
-        if (typeof a === 'string') continue
-        if (Array.isArray(a) && a[0] === '=') {
-          if (typeof a[1] !== 'string') visitChild(a[1])
-          visitChild(a[2])
-        } else visitChild(a)
-      }
-      return
-    }
-    for (let i = 1; i < node.length; i++) visitChild(node[i])
-  }
-  verify(body)
-
-  for (const n of dead) cand.delete(n)
   return cand
 }
 
