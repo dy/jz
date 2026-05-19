@@ -2094,10 +2094,7 @@ export function exprType(expr, locals) {
  * Returns Map<name, VAL> of locals to unbox.
  */
 export function unboxablePtrs(body, locals, boxed) {
-  const candidates = new Set()
-  const disqualified = new Set()
   const valOf = name => ctx.func.localReps?.get(name)?.val
-
   const UNBOXABLE_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.DATE])
 
   // RHS must produce a fresh, non-null pointer of the declared VAL kind.
@@ -2157,76 +2154,23 @@ export function unboxablePtrs(body, locals, boxed) {
     }
     return false
   }
-  const isNullishLit = (expr) =>
-    expr === 'null' || expr === 'undefined' ||
-    (Array.isArray(expr) && expr[0] == null &&
-      (expr[1] === null || expr[1] === undefined))
-
-  function collect(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (const a of args) {
-        if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
-        const name = a[1]
-        const vt = valOf(name)
-        if (!UNBOXABLE_KINDS.has(vt)) continue
-        if (locals.get(name) !== 'f64') continue
-        if (boxed?.has(name)) continue
-        if (!isFreshInit(a[2], vt)) continue
-        candidates.add(name)
-      }
-    }
-    for (const a of args) collect(a)
-  }
-
-  const NULL_CMP_OPS = new Set(['==', '!=', '===', '!=='])
-
-  function check(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && candidates.has(args[0])) {
-      if (op !== '=') disqualified.add(args[0])
-      // Initial `let x = {…}` arrives here too as op='='; the `let` pass already vetted it.
-      // A later `x = …` in the same body is a re-assignment — disqualify unless it's the init.
-      // We detect by tracking count: if we see '=' twice for the same name, disqualify.
-    }
-    if ((op === '++' || op === '--') && typeof args[0] === 'string' && candidates.has(args[0]))
-      disqualified.add(args[0])
-    if (NULL_CMP_OPS.has(op)) {
-      for (let i = 0; i < 2; i++) {
-        const side = args[i], other = args[1 - i]
-        if (typeof side === 'string' && candidates.has(side) && isNullishLit(other)) disqualified.add(side)
-      }
-    }
-    for (const a of args) check(a)
-  }
-
-  // Count bare `=` assignments per candidate. Init `let x = …` is NOT parsed as `['=', x, …]`
-  // at the statement level — it's inside `['let', ['=', x, …]]`. A standalone `['=', x, …]`
-  // at statement level IS a reassignment.
-  const assignCount = new Map()
-  function countAssigns(node, inLet) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === '=' && !inLet && typeof args[0] === 'string' && candidates.has(args[0])) {
-      assignCount.set(args[0], (assignCount.get(args[0]) || 0) + 1)
-    }
-    const childInLet = op === 'let' || op === 'const'
-    for (const a of args) countAssigns(a, childInLet)
-  }
-
-  collect(body)
-  check(body)
-  countAssigns(body, false)
-
-  for (const [name, count] of assignCount) if (count > 0) disqualified.add(name)
-
+  // A policy over `scanBindingUses`: an UNBOXABLE-kind `let/const` local with a
+  // fresh-pointer initializer stays unboxable unless some use forbids it. The
+  // only forbidding uses are a reassignment (`=`/compound/`++`/`--`) or a
+  // null/undefined comparison (an unboxed pointer has no nullish NaN form).
+  // Closure captures do not disqualify — a capture-*mutated* local is already
+  // in `boxed`, and a capture-*read* leaves the pointer in its own slot.
   const result = new Map()
-  for (const name of candidates) if (!disqualified.has(name)) result.set(name, valOf(name))
+  for (const [name, s] of scanBindingUses(body)) {
+    const vt = valOf(name)
+    if (!UNBOXABLE_KINDS.has(vt)) continue
+    if (locals.get(name) !== 'f64') continue
+    if (boxed?.has(name)) continue
+    if (!isFreshInit(s.initRhs, vt)) continue
+    const ok = s.uses.every(u =>
+      u.kind !== USE.REASSIGN && !(u.kind === USE.COMPARE && u.nullCmp))
+    if (ok) result.set(name, vt)
+  }
   return result
 }
 
