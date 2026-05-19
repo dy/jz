@@ -58,11 +58,12 @@ NOT a test262 lever — there are no in-scope builtins fails for it to convert.
 
 ### Live work
 
-#### Perf — native-gap audit (residual SIMD widening only)
+#### Perf — native-gap audit (carrier-blocked only)
 
-test262 language tail (5→0), the crc32 / mandelbrot audits, and the f64
-cross-array-map vectorizer widening are all resolved — see Archive ›
-"test262 language tail + native-gap audit (2026-05-19)". What stays open:
+test262 language tail (5→0), the crc32 / mandelbrot audits, the f64
+cross-array-map vectorizer widening, and the i32 map-loop audit are all
+resolved — see Archive › "test262 language tail + native-gap audit
+(2026-05-19)" and Archive › "i32 map-loop audit (2026-05-19)". What stays open:
 
 * [ ] **AoS-write vectorization.** `xs[i] = rows[i].x + …` — the *store* is
   lane-aligned but `rows[i].x` is a pointer-chase, not a contiguous `f64.load`,
@@ -72,17 +73,6 @@ cross-array-map vectorizer widening are all resolved — see Archive ›
   `src/abi/array.js`'s `structInline`) — multi-week feature, blocked on the
   narrower emitting SoA-eligible carrier facts. Schedule explicitly with the
   Representation track.
-* [x] **i32 map-loop vectorization.** **Already works for idiomatic shapes.**
-  Probed 2026-05-19: `((a[i]|0) * 2 + 1) | 0` and `Math.imul(a[i], 2) + 1` over
-  Int32Arrays both vectorize today — typed-array carrier inference lowers
-  `state[i]` to direct `i32.load`/`i32.store`, watr inlines the kernel into the
-  caller's carrier scope, and the existing i32 lane vectorizer lifts the body
-  to `i32x4.*`. The only residual scalar case is plain `a[i] * 2 + 1` (no
-  `|0`), where JS semantics force f64 math + ECMAScript ToInt32-WRAP at store.
-  Wasm-v1 SIMD (and relaxed-SIMD) has only `i32x4.trunc_sat_f64x2_*_zero`
-  (saturate), not wrap — so a SIMD ToInt32 lane requires a manual modular
-  sequence that erases the speedup. Pragmatic answer: use `|0`. Closed as not
-  a real residual gap.
 
 #### Generality track — escape/points-to substrate → devirt · SROA · strings
 
@@ -97,10 +87,15 @@ Step 3's allocation-elimination work landed — slice views, literal interning,
 no-alloc `s[i] === 'X'` charcode compare, no-alloc substring-eq fusion. See
 Archive › "Generality track — Step 3". What stays open:
 
-* [ ] **Runtime scanned-identifier intern table.** Equal *dynamic* identifiers
-  share one carrier and compare by pointer (today only literals intern via
-  `dataDedup`). Standalone feature; needs a runtime hash structure and a
-  parser-emit pattern that routes scanned identifiers through it.
+* [x] **Runtime scanned-identifier intern table.** Audited 2026-05-19 against
+  real workload (`subscript/parse.js`, `feature/comment.js`, `bench/jessie`):
+  every `substr`/`substring` is *inline* with `===`/`!==`, which the
+  substring-eq peephole (Step 3) already covers no-alloc. There is no
+  `let id = src.substr(...); if (id === "x") else if (id === "y")` pattern in
+  any current corpus. Building a runtime hash table + parser-emit rewrite
+  without a workload that measures the win is speculation ahead of consumer
+  (CLAUDE.md: forbidden). **Closed — re-open only if a real bench/codebase
+  shows the bound-then-multi-compare pattern as a hot path.**
 
 The `jsstring` carrier (under `host: 'js'`) lives in the Representation track
 below — orthogonal to the above and host-gated.
@@ -411,8 +406,28 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   STRING-vs-? arm. `substr`/`substring` name string-only methods so unknown
   receivers are safe; `slice` requires a statically-known STRING receiver
   (else dispatches to array slice).
+* [x] **Runtime scanned-identifier intern table — declined as speculative.**
+  Audited real workload (`subscript/parse.js:73,98,150`,
+  `subscript/feature/comment.js:16,19`, `bench/jessie`): every
+  `substr`/`substring`/`slice` is inline with `===`/`!==` already, which the
+  substring-eq peephole above covers no-alloc. No `let id = src.substr(...);
+  if (id === "x") else if (id === "y")` pattern in any current corpus. Re-open
+  only if a real bench surfaces the bound-then-multi-compare shape as a hot path.
 
-What stays open: runtime scanned-identifier intern table — see Live work.
+### i32 map-loop audit (2026-05-19)
+
+* [x] **Idiomatic i32 map-loops already vectorize.** Probed `((a[i]|0) * 2 + 1)
+  | 0` and `Math.imul(a[i], 2) + 1` over `Int32Array`: the full path composes —
+  typed-array carrier inference (`src/analyze.js` `typedElem`, `module/typedarray.js`
+  `.typed:[]` / `.typed:[]=`) lowers `state[i]` to direct `i32.load`/`i32.store`,
+  watr inlines the kernel into the caller's carrier scope, and the existing i32
+  lane vectorizer (`src/vectorize.js`) lifts the body to `i32x4.*`.
+* [x] **Plain `a[i] * 2 + 1` (no `|0`) stays scalar — by spec.** JS forces f64
+  math and ECMAScript ToInt32 (modular wrap) at the store. Wasm-v1 SIMD ships
+  only `i32x4.trunc_sat_f64x2_*_zero` (saturate); relaxed-SIMD is also saturate
+  (implementation-defined for out-of-range). A wrap-trunc lane requires a
+  manual modular sequence that erases the speedup. Pragmatic answer: use `|0`.
+  Not a residual jz codegen gap.
 
 ### Generality track — Steps 1, 2, 4 (2026-05-19)
 
