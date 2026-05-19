@@ -86,16 +86,22 @@ Steps 1, 2, and 4 have landed — see Archive › "Generality track — Steps 1,
 4". What stays open is Step 3.
 
 **Step 3 — tighten strings (general, not host-gated).**
-- *Slices.* A scanned token is `(buffer, offset, len)` — no copy. This is the
-  dominant parser allocation; eliminating it is the main lever for beating V8.
-- *Interning.* Compile-time literal interning + a scanned-identifier intern
-  table so equal identifiers share one carrier and compare by pointer.
-- *No-alloc scan path.* `s[i] === '\\'` already wants a charcode compare with no
-  SSO materialization — workstream **B / #6** below; fold in here.
+- *Slices.* ✅ A scanned token is `(buffer, offset, len)` — `__str_slice_view`
+  / `SLICE_BIT` returns a no-copy view when escape analysis proves the result
+  never outlives its parent buffer.
+- *Interning.* Literal interning ✅ (`dataDedup` / `strPoolDedup`). The runtime
+  scanned-identifier intern table (equal *dynamic* identifiers share one
+  carrier, compare by pointer) is still open — a standalone feature.
+- *No-alloc scan path.* ✅ `s[i] === '\\'` → charcode compare, no SSO alloc
+  (`emitSingleCharIndexCmp`). ✅ `<str>.{substr,substring,slice}(…) === <other>`
+  → `emitSubstringEqCmp` fuses to `__str_{substring,slice}_eq`, clamping +
+  byte-comparing the range in place with zero allocation — kills the transient
+  substring on the parser keyword-scan hot path.
 - The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
   `host: 'js'` variant — orthogonal to the above, lands independently.
 
-Order is the user's: Step 1 → 2 → 3 → 4. Only Step 3 remains; each step is
+Order is the user's: Step 1 → 2 → 3 → 4. Step 3's allocation-elimination work
+has landed; only the runtime identifier-intern table remains open. Each step is
 independently shippable and keeps zero regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)

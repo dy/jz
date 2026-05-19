@@ -61,6 +61,9 @@ export default (ctx) => {
     __str_idx: [],
     __str_eq: ['__char_at', '__str_byteLen'],
     __str_cmp: ['__char_at', '__str_byteLen'],
+    __str_range_eq: ['__char_at', '__str_byteLen'],
+    __str_substring_eq: ['__str_byteLen', '__str_range_eq'],
+    __str_slice_eq: ['__str_byteLen', '__str_range_eq'],
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
     __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset'],
     __str_encode: ['__str_byteLen', '__str_copy'],
@@ -451,6 +454,83 @@ export default (ctx) => {
         (local.set $start (local.get $end))
         (local.set $end (local.get $tmp))))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`
+
+  // === WAT: fused substring-equality ===
+  //
+  // `<str>.{substr,substring,slice}(...) === <other>` consumed only by the
+  // equality materialises a transient substring (an __alloc + byte copy) just
+  // to feed __eq. emit.js's emitSubstringEqCmp peepholes that pair to these
+  // helpers, which clamp the range exactly like __str_substring / __str_slice
+  // then byte-compare it against `other` in place — zero allocation. Motivating
+  // hot path: the parser keyword scan, `cur.substr(i,l) === keyword`.
+  //
+  // __str_range_eq assumes the receiver is a STRING (every substring method
+  // returns one) and type-checks only `other`, mirroring __eq's STRING-vs-?
+  // arm: a genuine number never equals a string, and a NaN-boxed non-STRING
+  // never does either (jz `==` is strict).
+  ctx.core.stdlib['__str_range_eq'] = `(func $__str_range_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
+    (local $n i32) (local $i i32) (local $fb f64)
+    ;; A genuine number reinterprets to a non-NaN f64 (equals itself) — never a string.
+    (local.set $fb (f64.reinterpret_i64 (local.get $other)))
+    (if (f64.eq (local.get $fb) (local.get $fb))
+      (then (return (i32.const 0))))
+    ;; NaN-boxed but not STRING-tagged ⇒ not a string ⇒ not equal.
+    (if (i32.ne
+          (i32.wrap_i64 (i64.and (i64.shr_u (local.get $other) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
+          (i32.const ${PTR.STRING}))
+      (then (return (i32.const 0))))
+    (local.set $n (i32.sub (local.get $end) (local.get $start)))
+    (if (i32.lt_s (local.get $n) (i32.const 0))
+      (then (local.set $n (i32.const 0))))
+    (if (i32.ne (local.get $n) (call $__str_byteLen (local.get $other)))
+      (then (return (i32.const 0))))
+    (block $done (loop $next
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (if (i32.ne
+            (call $__char_at (local.get $ptr) (i32.add (local.get $start) (local.get $i)))
+            (call $__char_at (local.get $other) (local.get $i)))
+        (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (i32.const 1))`
+
+  // Clamp mirrors __str_substring (negatives floor to 0, swap when start>end).
+  ctx.core.stdlib['__str_substring_eq'] = `(func $__str_substring_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
+    (local $len i32) (local $tmp i32)
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.const 0))))
+    (if (i32.lt_s (local.get $end) (i32.const 0))
+      (then (local.set $end (i32.const 0))))
+    (if (i32.gt_s (local.get $start) (local.get $len))
+      (then (local.set $start (local.get $len))))
+    (if (i32.gt_s (local.get $end) (local.get $len))
+      (then (local.set $end (local.get $len))))
+    (if (i32.gt_s (local.get $start) (local.get $end))
+      (then
+        (local.set $tmp (local.get $start))
+        (local.set $start (local.get $end))
+        (local.set $end (local.get $tmp))))
+    (call $__str_range_eq (local.get $ptr) (local.get $start) (local.get $end) (local.get $other)))`
+
+  // Clamp mirrors __str_slice (negatives count from the end; __str_range_eq
+  // floors a negative span to an empty match).
+  ctx.core.stdlib['__str_slice_eq'] = `(func $__str_slice_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
+    (local $len i32)
+    (local.set $len (call $__str_byteLen (local.get $ptr)))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.add (local.get $len) (local.get $start)))))
+    (if (i32.lt_s (local.get $end) (i32.const 0))
+      (then (local.set $end (i32.add (local.get $len) (local.get $end)))))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.const 0))))
+    (if (i32.gt_s (local.get $start) (local.get $len))
+      (then (local.set $start (local.get $len))))
+    (if (i32.lt_s (local.get $end) (i32.const 0))
+      (then (local.set $end (i32.const 0))))
+    (if (i32.gt_s (local.get $end) (local.get $len))
+      (then (local.set $end (local.get $len))))
+    (call $__str_range_eq (local.get $ptr) (local.get $start) (local.get $end) (local.get $other)))`
 
   // Hoist SSO/heap dispatch for hay and ndl out of the inner byte loop. Inner
   // loop becomes (load8_u OR sso byte-extract) per side — no per-byte calls.
