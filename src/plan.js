@@ -1340,6 +1340,11 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   }
 
   const candidates = new Map()
+  // Forwarders — a candidate whose body calls one of its own parameters.
+  // Inlining one replaces that parameter with the call-site argument; when the
+  // argument is a known function name the resulting indirect call collapses to
+  // a direct `call` (devirtualization).
+  const forwarders = new Set()
   for (const func of ctx.func.list) {
     if (func.exported || func.raw || !func.body || func.rest || programFacts.valueUsed.has(func.name)) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
@@ -1384,6 +1389,9 @@ const inlineHotInternalCalls = (programFacts, ast) => {
     // stays at generic f64 ABI with __typed_idx dispatch instead of i32 + f64.load.
     // Keeping the factory as a callable function preserves the call-site type fact.
     if (scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('new.'))) continue
+    const paramNames = new Set((func.sig?.params || []).map(p => p.name))
+    if (paramNames.size && scanBody(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
+      forwarders.add(func.name)
     candidates.set(func.name, func)
   }
   if (!candidates.size) return false
@@ -1400,10 +1408,12 @@ const inlineHotInternalCalls = (programFacts, ast) => {
   const exportedCandidates = new Map()
   for (const [name, func] of candidates) {
     const sites = sitesByCallee.get(name)
-    if (hasFixedTypedArraySites(func, sites) &&
-        !sites.some(site => site.callerFunc?.exported && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))) {
-      exportedCandidates.set(name, func)
-    }
+    const fixedSiteExported = hasFixedTypedArraySites(func, sites) &&
+      !sites.some(site => site.callerFunc?.exported && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))
+    // Forwarders cross into an exported caller too: the tier-up rationale that
+    // keeps candidates out of exports concerns relocated loop kernels, not
+    // these tiny leaves — and inlining one devirtualizes a closure dispatch.
+    if (fixedSiteExported || forwarders.has(name)) exportedCandidates.set(name, func)
   }
   for (const func of ctx.func.list) {
     if (!func.body || func.raw) continue
