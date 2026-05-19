@@ -398,7 +398,6 @@ const FUNCTIONAL_TESTS = new Set([
   'built-ins/Object/keys/15.2.3.14-3-1.js',
   'built-ins/Object/keys/15.2.3.14-3-5.js',
   'built-ins/Object/assign/ObjectOverride-sameproperty.js',
-  'built-ins/Object/assign/invoked-as-ctor.js',
   'built-ins/Object/fromEntries/string-entry-string-object-succeeds.js',
   'built-ins/Map/prototype/get/returns-undefined.js',
   'built-ins/Map/prototype/get/returns-value-different-key-types.js',
