@@ -439,3 +439,35 @@ when*. Read it before adding a new consumer.
 * Edge compute (EdgeJS, CF Workers, Deno) — these communities are actively looking for ways to write WASM without learning Rust or C.
 * Game jams / JS13K — the 1-2 kB WASM output is competitive with hand-optimized JS for size categories.
 * Porffor community — they've already done the education work. jz is a different point in the design space (faster output, stricter subset).
+
+## [ ] Optimization principle — minimal theoretical WASM, or no value
+
+> *"Nothing takes place in the universe in which some rule of maximum or minimum does not appear."* — Euler
+> *"Premature optimization is the root of all evil."* — Knuth
+
+**The bet.** jz's whole value is the *guarantee* that, for every JS syntax
+construct / pattern / design case, it emits the **simplest, most minimal
+theoretical WASM** for it — wasm a careful hand-writer would produce, or better
+(branch hints, SIMD, whole-program devirt). If jz only *ties* V8, there is no
+reason to choose it: a tie is a loss. So the metric is concrete and binary:
+**jessie.wasm (parser only) must beat jessie.js under warmed-up V8.**
+
+**Per-construct, not per-program.** The unit of optimization is the *construct*
+(a loop, an indexed read, a tail call, an allocation), never a benchmark. Fixing
+the minimal lowering of a construct helps every program. Tuning one benchmark's
+shape helps nothing. Never overburden emitted wasm out of complacency — every
+extra instruction on a hot path must justify itself.
+
+**Method discipline (this is where we kept failing).** Do NOT grind by statically
+reading the WAT and fixing what is *easy to see*. That is premature optimization
+— it aims at the visible, not the hot. **Profile first** (`node --prof` attributes
+ticks to wasm functions by name; map via `.work/funcmap.json`), find the hot 20%,
+then audit *those* functions' WAT against "minimal theoretical wasm" with numbers.
+A fix that can't be tied to a profiled cost is speculation.
+
+**Allowed levers** (all must stay sound — guarantees, never speculation; the
+developer adjusts nothing):
+  - safe jzify transforms that simplify code shape before lowering
+  - WASM/watr branch hints, native tail calls, SIMD where provable
+  - whole-program devirtualization, SRoA, const-fold, i32/f64 narrowing
+  - README *performance hints* — documentation only, advisory, never required
