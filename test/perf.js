@@ -884,7 +884,13 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
     `${name}: expected ${expected}±${tol} bytes, got ${actual}`)
 })
 
-golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 4644)
+// Baseline 4644→5216: __to_num/__skipws/__parseFloat scan a confirmed non-SSO
+// string with an inline i32.load8_u fast path (chAt) instead of always calling
+// the ~95-instr __char_at helper; chAtSafe keeps the OOB-safe contract where a
+// read isn't already bounds-guarded. Costs stdlib bytes, speeds up Number()/
+// parseFloat string parsing — off the jessie parse path (parse emits no
+// __char_at calls). Deliberate size↔speed trade.
+golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5216)
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 7789)
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
