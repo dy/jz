@@ -82,15 +82,8 @@ workloads. The user constraint is absolute: *guarantees, not speculations*.
 Every transform fires only under a static proof; absent the proof, jz emits
 plain safe codegen. Correctness is unconditional; speed is provably-best-effort.
 
-Step 1 (use-summary substrate), Step 4 (memory scalar-replacement), and the
-Step-2 function-namespace / object-dict SROA slices have landed — see Archive ›
-"Generality track — Steps 1, 4, Step-2 SROA slices". What stays open:
-
-**Step 2 — devirtualization (remaining Step-2 slice).** A binding the
-`scanBindingUses` substrate proves holds exactly one statically-known
-non-escaping arrow → direct call → inline candidate. The SROA'd-namespace slot
-still calls via `call_indirect`; devirt of the *last* statically-known write
-needs a dominance / no-read-before-write proof on the Step-1 substrate.
+Steps 1, 2, and 4 have landed — see Archive › "Generality track — Steps 1, 2,
+4". What stays open is Step 3.
 
 **Step 3 — tighten strings (general, not host-gated).**
 - *Slices.* A scanned token is `(buffer, offset, len)` — no copy. This is the
@@ -102,8 +95,8 @@ needs a dominance / no-read-before-write proof on the Step-1 substrate.
 - The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
   `host: 'js'` variant — orthogonal to the above, lands independently.
 
-Order is the user's: Step 1 → 2 → 3 → 4. Each step is independently shippable
-and keeps zero regressions.
+Order is the user's: Step 1 → 2 → 3 → 4. Only Step 3 remains; each step is
+independently shippable and keeps zero regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
@@ -397,7 +390,7 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   cross-array map loops now emit `f64x2`; tests in `test/simd.js`. AoS-write and
   i32 mixed-width remain — see Live work › "native-gap audit".
 
-### Generality track — Steps 1, 4, Step-2 SROA slices (2026-05-19)
+### Generality track — Steps 1, 2, 4 (2026-05-19)
 
 * [x] **Step 1 — use-summary substrate** (`a11578f`..`88bdb52`). The original
   "four escape analyses, fragments of one analysis" framing was partly
@@ -418,6 +411,22 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   monotonic literal-key field extensions (`o.newProp = …` on a non-escaping
   object literal → extra flat field, `undefined`-init at decl). Field universe
   stays statically closed (computed-key / off-schema / `delete` disqualify).
+* [x] **Step 2 — devirtualization** (`31253b6`). Audited the `call_indirect`
+  surface: every *non-escaping* function binding was already devirtualized —
+  local `const`/`let` lambdas (inlined when small, else direct-call dispatch,
+  emit.js A3) and top-level function-namespace slots (`flattenFuncNamespaces`
+  SROA → `devirtGlobalCalls`). One real gap: a *forwarder* `(g,x) => g(x)` —
+  inlining it substitutes the param with the call-site argument, collapsing an
+  indirect call to a direct `call` — was blocked from exported callers by a
+  tier-up heuristic that only ever concerned loop kernels. `inlineHotInternalCalls`
+  now marks forwarders and lets them cross into exports; `HOF param call` /
+  `fn passed as arg` emit zero `call_indirect`. What stays indirect is genuine
+  escape (function returned / array-stored / conditionally reassigned to >1
+  target) — removable only by watr inlining (Part 3, upstream-gated) or
+  interprocedural escape analysis, neither a body-local proof jz can make. The
+  dominance / last-write proof the original framing imagined has no measured
+  workload demanding it (the namespace SROA already covers top-level init
+  writes) — not built, not minimal.
 * [x] **Step 4 — memory scalar-replacement** (`3055e4c`). Carr & Kennedy
   register promotion behind `cseSafeLoadBases` (`analyze.js`), an emit-side
   non-aliasing whitelist (unboxed pointer, bound once, read-receiver-only,
