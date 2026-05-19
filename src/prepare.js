@@ -918,6 +918,119 @@ function prepDecl(op, ...inits) {
   return rest.length ? [op, ...rest] : null
 }
 
+// --- `'()'` call-handler helpers --------------------------------------------
+// The call handler is a thin dispatcher: it tries the compile-time folds
+// below (each gated by callee shape, so at most one fires), then resolves the
+// callee, then assembles the call. Each helper moves one concern out of line.
+
+// `import.meta.resolve("spec")` → the resolved URL as a static string.
+function foldImportMetaResolve(callee, args) {
+  if (!isImportMetaProp(callee, 'resolve')) return undefined
+  const callArgs = flatArgs(args).filter(a => a != null)
+  if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument')
+  const spec = stringValue(callArgs[0])
+  if (spec == null) err('`import.meta.resolve` supports only string literal arguments')
+  return staticString(resolveImportMeta(spec))
+}
+
+// String-callee constructor / named-builtin folds: `Array(n)` and the `CTORS`
+// set redirect to the `new` handler; `BigInt64Array`/`BigUint64Array` build a
+// direct module call. `includeForNamedCall` is probed for every string callee
+// — that probe is also how a module-backed builtin gets its modules included.
+// Returns the replacement IR, or `undefined` for an ordinary call.
+function dispatchConstructorCall(callee, args) {
+  if (typeof callee !== 'string') return undefined
+  if (callee === 'Array') {
+    const callArgs = flatArgs(args).filter(a => a != null)
+    if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
+  }
+  if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
+  if (includeForNamedCall(callee) && (callee === 'BigInt64Array' || callee === 'BigUint64Array'))
+    return ['()', callee, ...args.filter(a => a != null).map(prep)]
+  return undefined
+}
+
+// Compile-time namespace introspection on a `obj.prop(...)` callee:
+// `Array.isArray(NS)` on a bare builtin global folds to `false` (a namespace
+// value is never an array); `NS.hasOwnProperty("member")` on a builtin
+// namespace folds to a literal — no runtime namespace object. Returns the
+// folded literal IR, or `undefined` when nothing folds.
+function foldNamespaceIntrospection(callee, args) {
+  if (!Array.isArray(callee) || callee[0] !== '.') return undefined
+  const [, obj, prop] = callee
+  if (obj === 'Array' && prop === 'isArray') {
+    const cargs = flatArgs(args).filter(a => a != null)
+    const a0 = cargs.length === 1 ? cargs[0] : null
+    if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
+      return [, 0]
+  }
+  if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
+    const mod = ctx.scope.chain[obj]
+    if (mod && !mod.includes('.') && hasModule(mod)) {
+      const cargs = flatArgs(args).filter(a => a != null)
+      const member = cargs.length === 1 ? stringValue(cargs[0]) : null
+      // Include the module so its emit keys (the namespace's member set) are
+      // registered; unreferenced emitters/data dead-strip in compile.
+      if (member != null) { includeModule(mod); return [, namespaceHasOwn(mod, obj, member) ? 1 : 0] }
+    }
+  }
+  return undefined
+}
+
+// Resolve a callee to its lowered form, triggering module autoloads along the
+// way: a bare identifier through the scope chain, an `obj.prop` member call
+// through host imports / named-call / generic-method / namespace tables, and
+// any other expression through `prep` (a callable runtime value).
+function resolveCallee(callee, args) {
+  if (typeof callee === 'string') {
+    const local = scopes.length && isDeclared(callee)
+    const resolved = local ? null : ctx.scope.chain[callee]
+    if (local) return resolveScope(callee)
+    if (resolved?.includes('.')) return resolved
+    if (resolved && hasFunc(resolved)) return resolved
+    if (resolved && !resolved.includes('.')) {
+      if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
+      return callee
+    }
+    if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
+      includeForCallableValue()
+    return callee
+  }
+  if (Array.isArray(callee) && callee[0] === '.') {
+    const [, obj, prop] = callee
+    const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
+    if (key && ctx.module.hostImports?.[obj]?.[prop]) {
+      const spec = ctx.module.hostImports[obj][prop]
+      const alias = `${obj}$${prop}`
+      addHostImport(obj, prop, alias, spec)
+      return alias
+    }
+    if (key && includeForNamedCall(key)) return key
+    if (includeForGenericMethod(prop)) return prep(callee)
+    const mod = ctx.scope.chain[obj]
+    if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod))
+      return (includeModule(mod), mod + '.' + prop)
+    return prep(callee)
+  }
+  includeForCallableValue()
+  return prep(callee)
+}
+
+// A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
+// argument whose value is the last comma operand. The parser keeps it wrapped
+// (`['()', [',', …]]`); prep would strip the grouping, leaving a bare comma
+// that emit can no longer tell apart from an arg list and splats into N args.
+// With ≥2 args an outer arg-list comma already nests it — only the sole-arg
+// case loses the distinction. Re-nest it under a 1-element arg-list comma.
+function renestSoleCommaArg(args) {
+  if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === '()' && args[0].length === 2) {
+    const ungroup = n => Array.isArray(n) && n[0] === '()' && n.length === 2 ? ungroup(n[1]) : n
+    const core = ungroup(args[0])
+    if (Array.isArray(core) && core[0] === ',') return [[',', args[0]]]
+  }
+  return args
+}
+
 const handlers = {
   // Spread operator: [...expr] in arrays, f(...args) in calls, {...obj} in objects
   '...'(expr) {
@@ -1416,98 +1529,18 @@ const handlers = {
 '()'(callee, ...args) {
     // Grouping: (expr) → ['()', expr] with no args. Call: f() → ['()', 'f', null] with null arg.
     if (args.length === 0) return prep(callee)
+    if (typeof callee === 'string' && PROHIBITED[callee]) err(PROHIBITED[callee])
 
-    if (isImportMetaProp(callee, 'resolve')) {
-      const callArgs = flatArgs(args).filter(a => a != null)
-      if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument')
-      const spec = stringValue(callArgs[0])
-      if (spec == null) err('`import.meta.resolve` supports only string literal arguments')
-      return staticString(resolveImportMeta(spec))
-    }
+    // Compile-time folds: the callee names something resolvable now. Each fold
+    // is gated by callee shape, so at most one of the three fires.
+    const folded = foldImportMetaResolve(callee, args)
+      ?? dispatchConstructorCall(callee, args)
+      ?? foldNamespaceIntrospection(callee, args)
+    if (folded !== undefined) return folded
 
-    const hasRealArgs = args.some(a => a != null)
+    callee = resolveCallee(callee, args)
+    args = renestSoleCommaArg(args)
 
-    if (typeof callee === 'string') {
-      if (PROHIBITED[callee]) err(PROHIBITED[callee])
-      if (callee === 'Array') {
-        const callArgs = flatArgs(args).filter(a => a != null)
-        if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
-      }
-      if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
-
-      if (includeForNamedCall(callee)) {
-        if (callee === 'BigInt64Array' || callee === 'BigUint64Array') {
-          return ['()', callee, ...args.filter(a => a != null).map(prep)]
-        }
-      }
-
-      const local = scopes.length && isDeclared(callee)
-      const resolved = local ? null : ctx.scope.chain[callee]
-      if (local) callee = resolveScope(callee)
-      else if (resolved?.includes('.')) callee = resolved
-      else if (resolved && hasFunc(resolved)) callee = resolved
-      else if (resolved && !resolved.includes('.')) {
-        if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
-      }
-      else if (depth > 0 && !resolved && !ctx.func.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`)) {
-        includeForCallableValue()
-      }
-    } else if (Array.isArray(callee) && callee[0] === '.') {
-      const [, obj, prop] = callee
-      // `Array.isArray(NS)` on a bare builtin global folds to false — a
-      // namespace/constructor value is never an array.
-      if (obj === 'Array' && prop === 'isArray') {
-        const cargs = flatArgs(args).filter(a => a != null)
-        const a0 = cargs.length === 1 ? cargs[0] : null
-        if (typeof a0 === 'string' && GLOBALS[a0] && !(scopes.length && isDeclared(a0)) && !hasFunc(a0))
-          return [, 0]
-      }
-      // Compile-time namespace introspection: `NS.hasOwnProperty("member")` on
-      // a builtin namespace folds to a literal — no runtime namespace object.
-      if (prop === 'hasOwnProperty' && typeof obj === 'string' && !(scopes.length && isDeclared(obj))) {
-        const mod = ctx.scope.chain[obj]
-        if (mod && !mod.includes('.') && hasModule(mod)) {
-          const cargs = flatArgs(args).filter(a => a != null)
-          const member = cargs.length === 1 ? stringValue(cargs[0]) : null
-          // Include the module so its emit keys (the namespace's member set)
-          // are registered; unreferenced emitters/data dead-strip in compile.
-          if (member != null) { includeModule(mod); return [, namespaceHasOwn(mod, obj, member) ? 1 : 0] }
-        }
-      }
-      const key = typeof obj === 'string' && typeof prop === 'string' ? `${obj}.${prop}` : null
-      if (key && ctx.module.hostImports?.[obj]?.[prop]) {
-        const spec = ctx.module.hostImports[obj][prop]
-        const alias = `${obj}$${prop}`
-        addHostImport(obj, prop, alias, spec)
-        callee = alias
-      } else if (key && includeForNamedCall(key)) {
-        callee = key
-      } else if (includeForGenericMethod(prop)) {
-        callee = prep(callee)
-      } else {
-        const mod = ctx.scope.chain[obj]
-        if (typeof obj === 'string' && mod && !mod.includes('.') && hasModule(mod)) {
-          callee = (includeModule(mod), mod + '.' + prop)
-        } else {
-          callee = prep(callee)
-        }
-      }
-    } else {
-      includeForCallableValue()
-      callee = prep(callee)
-    }
-
-    // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE
-    // argument whose value is the last comma operand. The parser keeps it wrapped
-    // (`['()', [',', …]]`); prep would strip the grouping, leaving a bare comma
-    // that emit can no longer tell apart from an arg list and splats into N args.
-    // With ≥2 args an outer arg-list comma already nests it — only the sole-arg
-    // case loses the distinction. Re-nest it under a 1-element arg-list comma.
-    if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === '()' && args[0].length === 2) {
-      const ungroup = n => Array.isArray(n) && n[0] === '()' && n.length === 2 ? ungroup(n[1]) : n
-      const core = ungroup(args[0])
-      if (Array.isArray(core) && core[0] === ',') args = [[',', args[0]]]
-    }
     const preppedArgs = args.filter(a => a != null).map(prep)
     for (const a of preppedArgs) {
       if (typeof a === 'string' && hasFunc(a)) {
