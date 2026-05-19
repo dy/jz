@@ -280,6 +280,71 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   return typed(['block', ['result', 'i32'], ...prelude, finish(cmp)], 'i32')
 }
 
+// `<str>.{substr,substring,slice}(...) === <other>` whose substring is consumed
+// only by the equality: materialising it (an __alloc + byte copy) is pure waste.
+// Fuse to __str_{substring,slice}_eq, which clamp the range like the method then
+// byte-compare it against `other` in place. Sibling to emitSingleCharIndexCmp,
+// tried at the same `==`/`!=` sites. Motivating hot path: the parser keyword
+// scan, `cur.substr(i,l) === keyword`.
+function emitSubstringEqCmp(a, b, negate = false) {
+  // Post-prepare a multi-arg call keeps its args as one comma list; a single
+  // arg sits bare. Normalise either (and a flat tail, defensively) to a list.
+  const callInfo = node => {
+    if (!Array.isArray(node) || node[0] !== '()') return null
+    const callee = node[1]
+    if (!Array.isArray(callee) || callee[0] !== '.') return null
+    const method = callee[2]
+    if (method !== 'substr' && method !== 'substring' && method !== 'slice') return null
+    let args = node.slice(2)
+    if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') args = args[0].slice(1)
+    while (args.length && args[args.length - 1] == null) args = args.slice(0, -1)
+    return { recv: callee[1], method, args }
+  }
+
+  let info = callInfo(a), other = b, callIsLeft = true
+  if (!info) { info = callInfo(b); other = a; callIsLeft = false }
+  if (!info) return null
+  const { recv, method, args } = info
+  if (args.length > 2) return null
+  if (!ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
+
+  // The receiver must be a string. `substr`/`substring` name string-only methods,
+  // so an unknown receiver is safe — the normal `.substr`/`.substring` emitter
+  // assumes a string too. `slice` is also Array.prototype.slice — require a
+  // statically-known STRING there. A known non-string receiver bails always.
+  const vt = resolveValType(recv, valTypeOf, lookupValType)
+  if (vt && vt !== VAL.STRING) return null
+  if (method === 'slice' && vt !== VAL.STRING) return null
+
+  const helper = method === 'slice' ? '__str_slice_eq' : '__str_substring_eq'
+  inc(helper)
+
+  // Absent end → byteLen: pass i32 max — every clamp arm floors it to the length.
+  const TO_END = ['i32.const', 0x7FFFFFFF]
+  let startIR, endIR
+  if (method === 'substr' && args[1] != null) {
+    // substr's 2nd arg is a length: end = start + length, so start reads twice.
+    const s = tempI32('subS')
+    startIR = ['local.tee', `$${s}`, args[0] == null ? ['i32.const', 0] : asI32(emit(args[0]))]
+    endIR = ['i32.add', ['local.get', `$${s}`], asI32(emit(args[1]))]
+  } else {
+    startIR = args[0] == null ? ['i32.const', 0] : asI32(emit(args[0]))
+    endIR = args[1] == null ? TO_END : asI32(emit(args[1]))
+  }
+
+  const finish = expr => negate ? ['i32.eqz', expr] : expr
+
+  if (callIsLeft)
+    return typed(finish(['call', `$${helper}`, asI64(emit(recv)), startIR, endIR, asI64(emit(other))]), 'i32')
+
+  // `other` is the source-left operand — evaluate it first to preserve order.
+  const o = temp('subO')
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${o}`, asF64(emit(other))],
+    finish(['call', `$${helper}`, asI64(emit(recv)), startIR, endIR,
+      ['i64.reinterpret_f64', ['local.get', `$${o}`]]])], 'i32')
+}
+
 // === Flow-sensitive type refinement ===
 // Map typeof code (from resolveTypeof in prepare.js) → VAL kind. Undef/boolean/object have no
 // single VAL refinement, so they're excluded. String/number/function do.
@@ -1640,6 +1705,8 @@ export const emitter = {
   '==': (a, b) => {
     const charCmp = emitSingleCharIndexCmp(a, b)
     if (charCmp) return charCmp
+    const subCmp = emitSubstringEqCmp(a, b)
+    if (subCmp) return subCmp
     // JS loose nullish equality: x == null / x == undefined.
     // If the non-literal side has a known non-null VAL type, fold to 0.
     if (isNullishLit(a)) {
@@ -1676,6 +1743,8 @@ export const emitter = {
   '!=': (a, b) => {
     const charCmp = emitSingleCharIndexCmp(a, b, true)
     if (charCmp) return charCmp
+    const subCmp = emitSubstringEqCmp(a, b, true)
+    if (subCmp) return subCmp
     if (isNullishLit(a)) {
       if (valTypeOf(b)) return emitNum(1)
       return typed(['i32.eqz', isNullish(asF64(emit(b)))], 'i32')
