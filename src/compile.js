@@ -204,14 +204,34 @@ function captureFuncInspect(func, facts, programFacts) {
   }
 }
 
-function enterFunc(func) {
+// Reset per-function emit-frame state — the single source of frame entry.
+// `emitFunc`, `analyzeFuncForEmit`, and `emitClosureBody` all route through
+// here. Top-level funcs start `uniq` at 0; closures pass a higher base so
+// their synthetic labels can't collide with the parent frame's.
+function enterFunc(sig, body, { uniq = 0, directClosures = null } = {}) {
   ctx.func.stack = []
-  ctx.func.uniq = 0
-  ctx.func.current = func.sig
-  ctx.func.body = func.body
-  ctx.func.directClosures = null
+  ctx.func.uniq = uniq
+  ctx.func.current = sig
+  ctx.func.body = body
+  ctx.func.directClosures = directClosures
   ctx.func.localProps = null
   ctx.func.charDecomp = null
+}
+
+// Allocate + null-init a heap cell for every boxed local that isn't seeded
+// from an incoming param/capture value. Registers the cell as an i32 local
+// and marks the name preboxed; `isSeeded(name)` skips the already-seeded.
+function emitPreboxedLocalInits(isSeeded) {
+  const inits = []
+  for (const [name, cell] of ctx.func.boxed) {
+    if (isSeeded(name)) continue
+    ctx.func.locals.set(cell, 'i32')
+    ctx.func.preboxed.add(name)
+    inits.push(
+      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
+      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
+  }
+  return inits
 }
 
 function analyzeFuncForEmit(func, programFacts) {
@@ -219,7 +239,7 @@ function analyzeFuncForEmit(func, programFacts) {
   if (func.raw) return null
 
   const { name, body, sig } = func
-  enterFunc(func)
+  enterFunc(sig, body)
 
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
@@ -340,7 +360,7 @@ function emitFunc(func, funcFacts, programFacts) {
   const multi = sig.results.length > 1
   const _reps = paramReps.get(name)
 
-  enterFunc(func)
+  enterFunc(sig, body)
   const block = funcFacts.block
   ctx.func.locals = new Map(funcFacts.locals)
   ctx.func.boxed = new Map(funcFacts.boxed)
@@ -405,7 +425,6 @@ function emitFunc(func, funcFacts, programFacts) {
 
   // Box params that are mutably captured: allocate cell, copy param value
   const boxedParamInits = []
-  const preboxedLocalInits = []
   ctx.func.preboxed = new Set()
   const paramNames = new Set(sig.params.map(p => p.name))
   for (const p of sig.params) {
@@ -420,14 +439,8 @@ function emitFunc(func, funcFacts, programFacts) {
         ['f64.store', ['local.get', `$${cell}`], asF64(lget)])
     }
   }
-  for (const [name, cell] of ctx.func.boxed) {
-    if (paramNames.has(name)) continue
-    ctx.func.locals.set(cell, 'i32')
-    ctx.func.preboxed.add(name)
-    preboxedLocalInits.push(
-      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
-  }
+  // Remaining boxed locals (non-params) get a fresh null-init cell.
+  const preboxedLocalInits = emitPreboxedLocalInits(name => paramNames.has(name))
 
   // Drain `ctx.func.charDecomp` after body emit: any param `charCodeAt` use
   // registered a decomposition request that needs a function-entry prologue
@@ -598,23 +611,24 @@ function emitClosureBody(cb) {
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
   const parentBoxedCaptures = new Set(cb.boxed || [])
   ctx.func.preboxed = new Set()
-  ctx.func.stack = []
-  ctx.func.uniq = Math.max(ctx.func.uniq, 100) // avoid label collisions
   // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a
   // statement list directly — wrap into a block body so the multi-stmt path
   // runs (otherwise emit returns an untyped list and asF64 wraps it with
   // `f64.convert_i32_s`, yielding invalid WAT).
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
-  ctx.func.body = cb.body
-  // Seed direct-call dispatch for captured const-bound closures (A3 across capture boundary).
-  // closure.make snapshotted the parent's directClosures for each capture; here we restore
-  // them so calls to a captured `peek` lower to `call $closureN` instead of call_indirect.
-  ctx.func.directClosures = cb.directClosures ? new Map(cb.directClosures) : null
   // Uniform convention: (env f64, argc i32, a0..a{width-1} f64) → f64
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const paramDecls = [{ name: '__env', type: 'f64' }, { name: '__argc', type: 'i32' }]
   for (let i = 0; i < W; i++) paramDecls.push({ name: `__a${i}`, type: 'f64' })
-  ctx.func.current = { params: paramDecls, results: ['f64'] }
+  // Enter the closure frame. uniq ≥ 100 keeps synthetic labels from colliding
+  // with the parent. directClosures: closure.make snapshotted the parent's
+  // direct-call map for each capture, so a call to a captured const closure
+  // still lowers to `call $closureN` instead of call_indirect (A3 across the
+  // capture boundary).
+  enterFunc({ params: paramDecls, results: ['f64'] }, cb.body, {
+    uniq: Math.max(ctx.func.uniq, 100),
+    directClosures: cb.directClosures ? new Map(cb.directClosures) : null,
+  })
 
   const fn = ['func', `$${cb.name}`]
   fn.push(['param', '$__env', 'f64'])
@@ -687,15 +701,10 @@ function emitClosureBody(cb) {
     ctx.func.locals.set(ctx.func.boxed.get(name), 'i32')
     ctx.func.preboxed.add(name)
   }
-  const preboxedLocalInits = []
-  for (const [name, cell] of ctx.func.boxed) {
-    if (boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name)) continue
-    ctx.func.locals.set(cell, 'i32')
-    ctx.func.preboxed.add(name)
-    preboxedLocalInits.push(
-      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
-  }
+  // Boxed locals that aren't captures or params get a fresh null-init cell;
+  // captures/params already carry their incoming value.
+  const preboxedLocalInits = emitPreboxedLocalInits(name =>
+    boxedCaptureNames.has(name) || boxedValueCaptureNames.has(name) || boxedParamNames.has(name))
 
   // Insert locals (captures + params + declared)
   // Build default-param initializer IR before local declarations are emitted:
