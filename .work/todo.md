@@ -82,36 +82,25 @@ workloads. The user constraint is absolute: *guarantees, not speculations*.
 Every transform fires only under a static proof; absent the proof, jz emits
 plain safe codegen. Correctness is unconditional; speed is provably-best-effort.
 
-Steps 1, 2, and 4 have landed — see Archive › "Generality track — Steps 1, 2,
-4". What stays open is Step 3.
+Steps 1, 2, 4 landed — see Archive › "Generality track — Steps 1, 2, 4".
+Step 3's allocation-elimination work landed — slice views, literal interning,
+no-alloc `s[i] === 'X'` charcode compare, no-alloc substring-eq fusion. See
+Archive › "Generality track — Step 3". What stays open:
 
-**Step 3 — tighten strings (general, not host-gated).**
-- *Slices.* ✅ A scanned token is `(buffer, offset, len)` — `__str_slice_view`
-  / `SLICE_BIT` returns a no-copy view when escape analysis proves the result
-  never outlives its parent buffer.
-- *Interning.* Literal interning ✅ (`dataDedup` / `strPoolDedup`). The runtime
-  scanned-identifier intern table (equal *dynamic* identifiers share one
-  carrier, compare by pointer) is still open — a standalone feature.
-- *No-alloc scan path.* ✅ `s[i] === '\\'` → charcode compare, no SSO alloc
-  (`emitSingleCharIndexCmp`). ✅ `<str>.{substr,substring,slice}(…) === <other>`
-  → `emitSubstringEqCmp` fuses to `__str_{substring,slice}_eq`, clamping +
-  byte-comparing the range in place with zero allocation — kills the transient
-  substring on the parser keyword-scan hot path.
-- The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
-  `host: 'js'` variant — orthogonal to the above, lands independently.
+* [ ] **Runtime scanned-identifier intern table.** Equal *dynamic* identifiers
+  share one carrier and compare by pointer (today only literals intern via
+  `dataDedup`). Standalone feature; needs a runtime hash structure and a
+  parser-emit pattern that routes scanned identifiers through it.
 
-Order is the user's: Step 1 → 2 → 3 → 4. Step 3's allocation-elimination work
-has landed; only the runtime identifier-intern table remains open. Each step is
-independently shippable and keeps zero regressions.
+The `jsstring` carrier (under `host: 'js'`) lives in the Representation track
+below — orthogonal to the above and host-gated.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
 consumer. Full design under "Boundary protocol and internal representation"
-below — that section's workstream list is canonical.
-* [~] **Carrier-bundle dispatch for numbers.** Phase E/E3 already make the
-  per-site `i32` | `f64` choice on `node.type`; a `ctx.abi.number.ops` table
-  would re-encode a working 1-bit choice with one consumer. Revisit only if a
-  third number carrier appears. (Step 4 audit.)
+below — that section's workstream list is canonical. (Number-carrier dispatch
+was already audited and shelved — see Archive › "Execution plan — Phase 0 +
+Steps 1–6", Step 4.)
 * [ ] **`jsstring` carrier.** 9-item checklist in `src/abi/string.js`, gated on
   `host: 'js'`. Today `jsstring` is exported but the default bundle binds
   string → `sso`.
@@ -395,6 +384,25 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   in `src/vectorize.js`, wired into `tryVectorize` + `tryReduceVectorize`. f64
   cross-array map loops now emit `f64x2`; tests in `test/simd.js`. AoS-write and
   i32 mixed-width remain — see Live work › "native-gap audit".
+
+### Generality track — Step 3 (2026-05-19)
+
+* [x] **Slice views.** `__str_slice_view` / `SLICE_BIT` returns a no-copy view
+  into the parent buffer when escape analysis proves the slice never outlives
+  it; falls back to copy for SSO parents or oversized lengths.
+* [x] **Literal interning.** `dataDedup` / `strPoolDedup` pool string-literal
+  data segments — equal literals share one offset, compare by pointer.
+* [x] **`s[i] === 'X'` no-alloc charcode compare** (`emitSingleCharIndexCmp`).
+* [x] **`<str>.{substr,substring,slice}(…) === <other>` no-alloc** (`8b74dce`).
+  `emitSubstringEqCmp` peepholes the call-↔-value pair to `__str_{substring,
+  slice}_eq`, which clamp the range exactly like the method then byte-compare
+  it against `other` in place. `__str_range_eq` type-checks only `other` (a
+  substring method's receiver is always a string), mirroring `__eq`'s
+  STRING-vs-? arm. `substr`/`substring` name string-only methods so unknown
+  receivers are safe; `slice` requires a statically-known STRING receiver
+  (else dispatches to array slice).
+
+What stays open: runtime scanned-identifier intern table — see Live work.
 
 ### Generality track — Steps 1, 2, 4 (2026-05-19)
 
