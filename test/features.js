@@ -414,6 +414,29 @@ test('jzify: supports bare Array(n) length constructor', () => {
   is(exports.make(4), 4)
 })
 
+test('jzify: lowers bare multi-arg Array call to array literal', () => {
+  const exports = runJzify(`export let _run = () => {
+    let a = Array(4, 5, 6)
+    return a.length + a[0] + a[1] + a[2]
+  }`)
+  is(exports._run(), 18)
+})
+
+test('jzify: lowers multi-arg new Array call to array literal', () => {
+  const exports = runJzify(`export let _run = () => {
+    let a = new Array(7, 8)
+    return a.length + a[0] + a[1]
+  }`)
+  is(exports._run(), 17)
+})
+
+test('jzify: preserves property access on new Array result', () => {
+  const exports = runJzify(`export let _run = () =>
+    new Array(7, 8).length
+  `)
+  is(exports._run(), 2)
+})
+
 test('jzify: lowers destructured arrow params with expression object body', () => {
   const exports = runJzify(`export let _run = () =>
     [[1, 2]].map(([a, b]) => ({ sum: a + b }))[0].sum

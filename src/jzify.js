@@ -711,9 +711,23 @@ function lowerClass(name, heritage, body) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
+// Array(a, b, …) / new Array(a, b, …) → array literal [a, b, …]; Array() → [].
+// The single-argument Array(n) is a length constructor (n holes), not a
+// literal — return null there so the caller keeps it as a constructor call.
+function lowerArrayConstructor(arg) {
+  if (arg == null) return ['[]', null]
+  if (Array.isArray(arg) && arg[0] === ',' && arg.length > 2)
+    return ['[]', [',', ...arg.slice(1).map(transform)]]
+  return null
+}
+
 const handlers = {
   // Named IIFE: (function name(p){b})(a) → let name = arrow; name(a)
   '()'(callee, ...rest) {
+    if (callee === 'Array') {
+      const lit = lowerArrayConstructor(rest[0])
+      if (lit) return lit
+    }
     if (Array.isArray(callee) && callee[0] === '()' && Array.isArray(callee[1]) && callee[1][0] === 'function' && callee[1][1]) {
       const [, name, params, body] = callee[1]
       const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
@@ -804,8 +818,9 @@ const handlers = {
 
   // new → call (keep TypedArrays)
   'new'(ctor, ...cargs) {
-    if (Array.isArray(ctor) && ctor[0] === '()' && Array.isArray(ctor[1]) && ctor[1][0] === '.') {
-      return ['()', ['.', transform(['new', ctor[1][1]]), ctor[1][2]], ...ctor.slice(2).map(transform)]
+    if (Array.isArray(ctor) && ctor[0] === '()' && ctor[1] === 'Array') {
+      const lit = lowerArrayConstructor(ctor[2])
+      if (lit) return lit
     }
     const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
     if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp')) return ['new', transform(ctor), ...cargs.map(transform)]
