@@ -131,6 +131,7 @@ assert.throws = (expected, fn, msg) => {
   try { fn() } catch (e) { threw = 1 }
   if (!threw) throw msg
 }
+;
 `
 
 function needsAssertHarness(content, rel = '') {

@@ -90,7 +90,7 @@ function hoistVars(node, names) {
   if (op === 'for') {
     const head = node[1]
     let h2
-    const normalizedHead = normalizeForDeclHead(head, names)
+    const normalizedHead = normalizeForDeclHead(head, names) || normalizeForCommaHead(head, names)
     if (normalizedHead) {
       h2 = normalizedHead
     } else if (Array.isArray(head) && head[0] === 'var' && Array.isArray(head[1]) &&
@@ -210,16 +210,37 @@ function prependDecls(body, names) {
 }
 
 function normalizeForDeclHead(head, names) {
-  if (!Array.isArray(head) || (head[0] !== 'var' && head[0] !== 'let' && head[0] !== 'const') || head.length !== 2) return null
+  if (!Array.isArray(head) || (head[0] !== 'var' && head[0] !== 'let' && head[0] !== 'const')) return null
   const kind = head[0]
-  const expr = head[1]
-  if (!Array.isArray(expr)) return null
-  if (expr.length >= 3 && Array.isArray(expr[1]) &&
-      (expr[1][0] === 'in' || expr[1][0] === 'of') && typeof expr[1][1] === 'string') {
-    const iter = expr[1]
-    return [iter[0], normalizeForDecl(kind, iter[1], names), hoistVars([expr[0], iter[2], ...expr.slice(2)], names)]
+  if (head.length === 2) {
+    const expr = head[1]
+    if (!Array.isArray(expr)) return null
+    if (expr.length >= 3 && Array.isArray(expr[1]) &&
+        (expr[1][0] === 'in' || expr[1][0] === 'of') && typeof expr[1][1] === 'string') {
+      const iter = expr[1]
+      return [iter[0], normalizeForDecl(kind, iter[1], names), hoistVars([expr[0], iter[2], ...expr.slice(2)], names)]
+    }
+    return null
+  }
+  // Comma Expression in a for-in/of head: subscript parses with no for-head
+  // context, so `for (let x in A, B)` becomes a multi-declarator `let` whose
+  // tail declarators are really the rest of a comma Expression. Fold them back
+  // into the iterated source so the comma operator evaluates them in order.
+  if (head.length > 2 && Array.isArray(head[1]) &&
+      (head[1][0] === 'in' || head[1][0] === 'of') && typeof head[1][1] === 'string') {
+    const iter = head[1]
+    return [iter[0], normalizeForDecl(kind, iter[1], names), hoistVars([',', iter[2], ...head.slice(2)], names)]
   }
   return null
+}
+
+// Bare-LHS counterpart of the above: `for (x in A, B)` (no declaration) parses
+// as a comma expression whose first operand is the for-in/of head.
+function normalizeForCommaHead(head, names) {
+  if (!Array.isArray(head) || head[0] !== ',' || head.length < 3) return null
+  const iter = head[1]
+  if (!Array.isArray(iter) || (iter[0] !== 'in' && iter[0] !== 'of') || typeof iter[1] !== 'string') return null
+  return [iter[0], iter[1], hoistVars([',', iter[2], ...head.slice(2)], names)]
 }
 
 function normalizeForDecl(kind, name, names) {
@@ -299,16 +320,25 @@ function transformScope(node) {
  * wins; a later redeclaration keeps only its initializer, as a plain assignment.
  */
 function dedupeRedecls(stmts) {
-  const nameOf = s => Array.isArray(s) && (s[0] === 'let' || s[0] === 'const' || s[0] === 'var')
-    ? (typeof s[1] === 'string' ? s[1]
-      : Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' ? s[1][1] : null)
-    : null
+  // Per-declarator name — bare `x` or `['=', x, init]`; null for patterns.
+  const declName = d => typeof d === 'string' ? d
+    : Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[1] : null
   const seen = new Set(), out = []
   for (const s of stmts) {
-    const n = nameOf(s)
-    if (n == null) { out.push(s); continue }
-    if (seen.has(n)) { if (Array.isArray(s[1]) && s[1][0] === '=') out.push(['=', s[1][1], s[1][2]]); continue }
-    seen.add(n); out.push(s)
+    if (!Array.isArray(s) || (s[0] !== 'let' && s[0] !== 'const' && s[0] !== 'var')) { out.push(s); continue }
+    // Walk every declarator: a multi-name bare `let` (the var-hoist
+    // `prependDecls` output) can carry a name already bound by a hoisted
+    // function `const`. Keep only fresh declarators; a redeclaration with an
+    // initializer survives as a plain assignment.
+    const keep = [s[0]], reassign = []
+    for (let i = 1; i < s.length; i++) {
+      const d = s[i], n = declName(d)
+      if (n == null) { keep.push(d); continue }
+      if (seen.has(n)) { if (Array.isArray(d) && d[0] === '=') reassign.push(['=', d[1], d[2]]) }
+      else { seen.add(n); keep.push(d) }
+    }
+    if (keep.length > 1) out.push(keep)
+    for (const r of reassign) out.push(r)
   }
   return out
 }

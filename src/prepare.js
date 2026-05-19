@@ -1560,7 +1560,9 @@ const handlers = {
       const inner = args[0]
       includeForArrayLiteral()
       if (inner == null) return ['[']
-      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); if (items.length && items[items.length - 1] === null) items.pop(); return ['[', ...items.map(item => item == null ? [, undefined] : prep(item))] }
+      // jessie consumes the trailing comma itself; every remaining `null` in the
+      // element list is a genuine elision (`[,]` → length 1, `[1,,]` → length 2).
+      if (Array.isArray(inner) && inner[0] === ',') { const items = inner.slice(1); return ['[', ...items.map(item => item == null ? [, undefined] : prep(item))] }
       return ['[', prep(inner)]
     }
     if (typeof args[0] === 'string' && ctx.module.namespaces?.[args[0]]) {
