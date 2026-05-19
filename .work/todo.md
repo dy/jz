@@ -79,50 +79,18 @@ cross-array-map vectorizer widening are all resolved — see Archive ›
 **Goal.** Compile real jessie/subscript as-written — no developer accommodation,
 no hand-written `$parse.space = …` aliasing — and beat V8 on parser-like
 workloads. The user constraint is absolute: *guarantees, not speculations*.
-Every transform below fires only under a static proof; absent the proof, jz
-emits plain safe codegen. Correctness is unconditional; speed is
-provably-best-effort.
+Every transform fires only under a static proof; absent the proof, jz emits
+plain safe codegen. Correctness is unconditional; speed is provably-best-effort.
 
-**Step 1 — unify the disqualify-based eligibility scans onto one substrate.**
-[x] Landed `a11578f`..`88bdb52`. The original framing ("four escape analyses,
-fragments of one analysis") turned out partly illusory — investigating it was
-the real work:
-- `scanFlatObjects`, `scanSliceViews`, `unboxablePtrs` *were* three genuinely
-  redundant standalone body re-walks, each with its own candidate/blacklist
-  sets answering "how is this `let`/`const` binding used".
-- `analyzeBody`'s `escapes` map is **not** a fourth instance — it is context-
-  sensitive *taint* over value-expression positions, woven into the main typing
-  walk it shares with six other facts; separating it would *add* a traversal.
-- `analyzeStructInline` is whole-program and runs *post-representation* — a
-  different pass at a different stage, not a body-local eligibility scan.
+Step 1 (use-summary substrate), Step 4 (memory scalar-replacement), and the
+Step-2 function-namespace / object-dict SROA slices have landed — see Archive ›
+"Generality track — Steps 1, 4, Step-2 SROA slices". What stays open:
 
-So the honest unification is narrower than "one points-to pass": a per-binding
-**use-summary** substrate, `scanBindingUses` (`analyze.js`). One traversal
-classifies every mention of each binding into a closed use-kind taxonomy
-(`USE.*`); the three real consumers become *policies* — subset predicates over
-the summary — instead of independent walks. ~6 body traversals collapse to 1.
-`escapes` and `analyzeStructInline` deliberately stay separate (boundary
-documented in the `scanBindingUses` doc comment). New Step 2–4 consumers that
-ask a use-classification question become readers; ones that need taint or
-whole-program facts do not. Verified: 1759/1759 unit, 81/81 test:bench,
-test262 1429/719 baselines held, bench parity + checksums unchanged.
-
-**Step 2 — devirtualization + object / dict / function-namespace SRoA.**
-- *Devirtualization (open — the remaining Step-2 slice).* A binding the
-  substrate proves holds exactly one statically-known non-escaping arrow →
-  direct call → inline candidate. The SROA'd-namespace slot below still calls
-  via `call_indirect`; devirt of the *last* statically-known write needs a
-  dominance / no-read-before-write proof on the Step-1 substrate.
-- [x] *Function-namespace SRoA* — landed `9b538d7`. `analyzeFuncNamespaces`
-  (escape proof) + `flattenFuncNamespaces` dissolve `parse.space = …` property
-  tables on a non-escaping function value into f64 module globals; reads become
-  `global.get`. Escaping / computed-indexed namespaces keep the dynamic path.
-  ns-repro: 105 KB → 45 KB WAT, all `__dyn_*` gone.
-- [x] *Object / dict SRoA, extended* — `scanFlatObjects` Pass 1.5 admits
-  monotonic literal-key field extensions: `o.newProp = …` on a non-escaping
-  object literal becomes an extra flat field (`o#k`, `undefined`-init at decl).
-  Field universe stays statically closed (computed-key / off-schema / `delete`
-  disqualify). Tests in `test/optimizer.js` (escape-analysis block).
+**Step 2 — devirtualization (remaining Step-2 slice).** A binding the
+`scanBindingUses` substrate proves holds exactly one statically-known
+non-escaping arrow → direct call → inline candidate. The SROA'd-namespace slot
+still calls via `call_indirect`; devirt of the *last* statically-known write
+needs a dominance / no-read-before-write proof on the Step-1 substrate.
 
 **Step 3 — tighten strings (general, not host-gated).**
 - *Slices.* A scanned token is `(buffer, offset, len)` — no copy. This is the
@@ -134,27 +102,8 @@ test262 1429/719 baselines held, bench parity + checksums unchanged.
 - The `jsstring` carrier (9-item checklist, `src/abi/string.js`) is the
   `host: 'js'` variant — orthogonal to the above, lands independently.
 
-**Step 4 — memory scalar-replacement (closes the `aos` gap).** [x] Landed
-`3055e4c`. Carr & Kennedy register promotion: a memory cell read several times
-is held in a scalar local — load once, reuse. `cseScalarLoad` (`src/optimize.js`)
-was disabled — it CSE'd loads across aliasing stores and miscompiled the
-metacircular `watr.wasm`. Re-enabled behind `cseSafeLoadBases` (`analyze.js`),
-an emit-side non-aliasing whitelist: a pointer local qualifies only when it is
-an unboxed pointer, bound exactly once, used solely as a `.`/`?.`/`[]` read
-receiver, and its allocation kind is disjoint from every store target's. This
-is a *standalone* gate, not the Step-1 substrate — Step 4 decoupled and shipped
-ahead of Steps 1–3. Verified on `aos`: the kernel's 6 field reads collapse to 3
-`f64.load` (the other 3 reuse coalesced temps); `jz → V8 wasm` is now **0.99 ms
-/ 0.82×** — faster than native C (1.21 ms) *and* hand-WAT (1.07 ms), beating the
-predicted ~0.70 ms hand-WAT parity target. No regressions: 1759/1759 unit,
-81/81 test:bench. Not extended beyond `f64.load` — struct numeric fields are
-always NaN-boxed f64; `i32.load`/`i64.load` header CSE would need a separate
-gate for marginal gain (skipped — not minimal).
-
-Order is the user's: Step 1 → 2 → 3 → 4. Steps 1 and 4 have landed; Step 2 has
-its function-namespace and object/dict SROA slices in, with devirtualization
-still open; Step 3 is open. Each step is independently shippable and keeps zero
-regressions.
+Order is the user's: Step 1 → 2 → 3 → 4. Each step is independently shippable
+and keeps zero regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
@@ -447,6 +396,34 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   in `src/vectorize.js`, wired into `tryVectorize` + `tryReduceVectorize`. f64
   cross-array map loops now emit `f64x2`; tests in `test/simd.js`. AoS-write and
   i32 mixed-width remain — see Live work › "native-gap audit".
+
+### Generality track — Steps 1, 4, Step-2 SROA slices (2026-05-19)
+
+* [x] **Step 1 — use-summary substrate** (`a11578f`..`88bdb52`). The original
+  "four escape analyses, fragments of one analysis" framing was partly
+  illusory: `scanFlatObjects`/`scanSliceViews`/`unboxablePtrs` *were* three
+  redundant standalone body re-walks, but `analyzeBody.escapes` is context-
+  sensitive taint woven into the typing walk (separating it would *add* a
+  traversal) and `analyzeStructInline` is whole-program post-representation.
+  Honest unification: `scanBindingUses` (`analyze.js`) — one traversal
+  classifies every binding mention into a closed `USE.*` taxonomy; the three
+  real consumers became *policies* (subset predicates). ~6 body traversals → 1.
+  `escapes` / `analyzeStructInline` stay separate (boundary in the doc comment).
+* [x] **Step 2 — function-namespace SROA** (`9b538d7`). `analyzeFuncNamespaces`
+  + `flattenFuncNamespaces` dissolve `parse.space = …` property tables on a
+  non-escaping function value into f64 module globals; reads → `global.get`.
+  Escaping / computed-indexed namespaces keep the dynamic path. ns-repro
+  105 KB → 45 KB WAT, all `__dyn_*` gone.
+* [x] **Step 2 — object/dict SROA extended.** `scanFlatObjects` Pass 1.5 admits
+  monotonic literal-key field extensions (`o.newProp = …` on a non-escaping
+  object literal → extra flat field, `undefined`-init at decl). Field universe
+  stays statically closed (computed-key / off-schema / `delete` disqualify).
+* [x] **Step 4 — memory scalar-replacement** (`3055e4c`). Carr & Kennedy
+  register promotion behind `cseSafeLoadBases` (`analyze.js`), an emit-side
+  non-aliasing whitelist (unboxed pointer, bound once, read-receiver-only,
+  alloc kind disjoint from every store target). `aos`: 6 field reads → 3
+  `f64.load`; `jz → V8 wasm` 0.99 ms / 0.82× — faster than native C (1.21 ms)
+  and hand-WAT (1.07 ms). Standalone gate, not the Step-1 substrate.
 
 ### Execution plan — Phase 0 + Steps 1–6 (resolved 2026-05-17)
 
