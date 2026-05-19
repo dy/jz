@@ -83,20 +83,29 @@ Every transform below fires only under a static proof; absent the proof, jz
 emits plain safe codegen. Correctness is unconditional; speed is
 provably-best-effort.
 
-**Step 1 — unify escape + points-to into one substrate.** jz already has four
-disqualify-based escape analyses, each re-walking the body with its own
-candidate/blacklist sets, each answering a near-identical question:
-- `analyzeBody`'s `escapes` map (`analyze.js:842`) — per-allocation escape bool.
-- `scanFlatObjects` (`analyze.js:656`) — object-literal SRoA eligibility.
-- `analyzeStructInline` (`analyze.js:2234`) — whole-program `Array<S>` inlining.
-- `unboxablePtrs` (`analyze.js:1806`) — fresh / non-null / non-aliased ptr vet.
+**Step 1 — unify the disqualify-based eligibility scans onto one substrate.**
+[x] Landed `a11578f`..`88bdb52`. The original framing ("four escape analyses,
+fragments of one analysis") turned out partly illusory — investigating it was
+the real work:
+- `scanFlatObjects`, `scanSliceViews`, `unboxablePtrs` *were* three genuinely
+  redundant standalone body re-walks, each with its own candidate/blacklist
+  sets answering "how is this `let`/`const` binding used".
+- `analyzeBody`'s `escapes` map is **not** a fourth instance — it is context-
+  sensitive *taint* over value-expression positions, woven into the main typing
+  walk it shares with six other facts; separating it would *add* a traversal.
+- `analyzeStructInline` is whole-program and runs *post-representation* — a
+  different pass at a different stage, not a body-local eligibility scan.
 
-They are fragments of one analysis. Unify into a single allocation-site
-escape + points-to pass: for each site (`{}`, `[]`, `=>`, `new X`) compute
-(a) escape, (b) the points-to set (which locals/fields reach it), (c) alias /
-reassign / capture facts. The four consumers above read this rather than
-re-deriving it — DRY, and each new consumer (Steps 2–4) becomes a *reader*, not
-another walker.
+So the honest unification is narrower than "one points-to pass": a per-binding
+**use-summary** substrate, `scanBindingUses` (`analyze.js`). One traversal
+classifies every mention of each binding into a closed use-kind taxonomy
+(`USE.*`); the three real consumers become *policies* — subset predicates over
+the summary — instead of independent walks. ~6 body traversals collapse to 1.
+`escapes` and `analyzeStructInline` deliberately stay separate (boundary
+documented in the `scanBindingUses` doc comment). New Step 2–4 consumers that
+ask a use-classification question become readers; ones that need taint or
+whole-program facts do not. Verified: 1759/1759 unit, 81/81 test:bench,
+test262 1429/719 baselines held, bench parity + checksums unchanged.
 
 **Step 2 — devirtualization + object / dict / function-namespace SRoA.**
 - *Devirtualization (open — the remaining Step-2 slice).* A binding the
@@ -142,8 +151,10 @@ predicted ~0.70 ms hand-WAT parity target. No regressions: 1759/1759 unit,
 always NaN-boxed f64; `i32.load`/`i64.load` header CSE would need a separate
 gate for marginal gain (skipped — not minimal).
 
-Order is the user's: Step 1 → 2 → 3 → 4 (Step 4 landed early, see above). Each
-step is independently shippable and keeps zero regressions.
+Order is the user's: Step 1 → 2 → 3 → 4. Steps 1 and 4 have landed; Step 2 has
+its function-namespace and object/dict SROA slices in, with devirtualization
+still open; Step 3 is open. Each step is independently shippable and keeps zero
+regressions.
 
 #### Representation track — deferred-by-design (blocked on narrower carrier facts)
 The narrower must emit non-default carrier facts before any of this has a
