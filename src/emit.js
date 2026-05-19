@@ -2064,6 +2064,13 @@ export const emitter = {
 
     const parsed = parseArgs(argList)
 
+    // Closure devirtualization: a callee that is a module global proven (by
+    // plan.js) to hold one statically-known function for the whole post-init
+    // program rewrites to that function — the known-top-level-function branch
+    // below then emits a direct `call`, dropping the indirect/trampoline path.
+    if (typeof callee === 'string' && ctx.func.globalDevirt?.has(callee))
+      callee = ctx.func.globalDevirt.get(callee)
+
     // Optional method call: obj?.method(args) — null if obj is nullish, else
     // obj.method(args). The parser shapes this as ['()', ['?.', obj, method], args],
     // distinct from the regular method call's ['.', obj, method] callee. Receiver
