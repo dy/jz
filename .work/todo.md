@@ -1,10 +1,12 @@
 ## jz — execution plan
 
-Status (2026-05-18): unit **1701 / 21 watr-bug xfail**, test262 language
-**1418 / 0 fail**, builtins **719 / 0 fail**. Every step keeps zero regressions
-(`npm test` / `npm run test262` / `npm run test262:builtins`), commits
-atomically by file name, and bumps `JZ_TEST262_BASELINE` in
-`.github/workflows/test262.yml` the same commit a count moves.
+Status (2026-05-19): unit **1757 pass**, test262 language **1423 pass / 5 fail**
+(language runner gates `pass < baseline` only — baseline 1419 — so the 5 fails
+are visible, not build-breaking), builtins **719 pass / 0 fail**. Every step
+keeps zero regressions (`npm test` / `npm run test262` /
+`npm run test262:builtins`), commits atomically by file name, and bumps
+`JZ_TEST262_BASELINE` in `.github/workflows/test262.yml` the same commit a
+count moves.
 
 > **State (2026-05-17).** Phase 0 (declarative reorg) and Steps 1–6 are all
 > resolved — done, redirected, or descoped — and compressed into Archive ›
@@ -58,6 +60,18 @@ NOT a test262 lever — there are no in-scope builtins fails for it to convert.
 
 ### Live work
 
+#### Correctness — test262 language tail (5 fails, non-gating)
+* [ ] **5 language fails** (2026-05-19, baseline 1419 tolerates 3 — 2 are new):
+  - `statements/for-in/head-decl-expr.js` — `internal: Cannot read properties
+    of null (reading 'type')` — jz crashes on a for-in head form; an internal
+    crash, not a clean error. Likely fallout from for-loop head normalization.
+  - `statements/for-in/head-expr-expr.js` — fails (`undefined`).
+  - `block-scope/leave/for-loop-block-let-declaration-only-shadows-outer-parameter-value-1.js`
+  - `expressions/array/11.1.4-0.js` (`a.length`)
+  - `statements/function/S13_A19_T2.js`
+  Triage each: fix in jzify, or classify out-of-scope with a skip rule. An
+  internal crash must at minimum become a clean error.
+
 #### Perf — native-gap audit
 * [ ] **crc32 vs native.** Audit wasm output against `gcc -O3` / `clang -O3` /
   `rustc -C opt-level=3`. Candidate: SIMD `i32x4` lowering vs the scalar
@@ -65,16 +79,12 @@ NOT a test262 lever — there are no in-scope builtins fails for it to convert.
 * [ ] **Beat AS on mandelbrot / interference / game-of-life.** Measure the gap,
   identify hot ops, lower. mandelbrot sits at the wasm-v1 algorithmic floor (no
   scalar `fma`) — proposal-blocked.
-* [x] **Induction-variable strength reduction** — investigated end-to-end and
-  REJECTED (2026-05-18). A `strengthReduceIV` WAT pass was implemented, passed
-  all 1722 tests, then A/B-benchmarked perf-NEUTRAL: V8 TurboFan already
-  strength-reduces, and `aos` is memory-bound so the address arithmetic is free.
-  The "0.94 → 0.76 hand-WAT" premise above was wrong — IVSR does not close the
-  `aos` gap. The real residual is **6-vs-3 redundant `f64.load`s** (`p.x/p.y/p.z`
-  each loaded twice); the sound fix is memory scalar-replacement gated on an
-  alias proof — see "Generality track" Step 4 below. Pass fully reverted.
-* [x] **F.1 — `for-in` over known-schema unrolling** — fixed: the unroll now
-  carries a loop frame; pushed (`b716b22`).
+* [ ] **jz SIMD codegen for the x86 native gap.** callback/aos/tokenizer trail
+  `clang -O3` on x86 CI because clang SSE2-auto-vectorizes against jz's scalar
+  wasm-v1 — `vectorizeLaneLocal` does not engage on these shapes. Widen the
+  vectorizer's pattern set so map/AoS-write loops emit `f64x2`. SIMD is jz's
+  headline lever over plain V8. (See Archive › IVSR/F.1 for the closed `aos`
+  load-redundancy thread.)
 
 #### Generality track — escape/points-to substrate → devirt · SROA · strings
 
@@ -101,30 +111,21 @@ re-deriving it — DRY, and each new consumer (Steps 2–4) becomes a *reader*, 
 another walker.
 
 **Step 2 — devirtualization + object / dict / function-namespace SRoA.**
-- *Devirtualization.* A binding the substrate proves holds exactly one
-  statically-known non-escaping arrow → direct call → inline candidate.
-- [x] *Function-namespace SRoA.* `parse.space = …; parse.token = …` on a
-  non-escaping function value dissolves the property table into flat module
-  globals; `parse.space` reads become `global.get`. **Landed `9b538d7`** —
-  `analyzeFuncNamespaces` (escape proof) + `flattenFuncNamespaces` (plan,
-  pre-inlining): reassigned (`multiProp`) slot → f64 module global
-  (`$parse⟨T⟩space`), single-write-only-called slot → drop the dead `__dyn_set`
-  (emit already direct-calls it). Escaping / computed-indexed namespaces keep
-  the dynamic path. ns-repro fixture: 105 KB → 45 KB WAT, all `__dyn_*` gone.
-  *Remaining:* the SROA'd slot still calls via `call_indirect` — fine for a
-  genuinely-reassigned pointer; a devirt of the *last* statically-known write
-  would need a dominance/no-read-before-write proof (deferred to the Step-1
-  substrate). Object/dict-literal SROA below is the next slice.
-- [x] *Object / dict SRoA, extended.* `scanFlatObjects` (analyze.js) now has a
-  Pass 1.5 that collects monotonic field extensions: a literal-key write
-  `o.newProp = …` / `o['newProp'] = …` on a non-escaping object-literal
-  candidate becomes an extra flat field (`o#k` local, initialized to `undefined`
-  at the decl so a read-before-write matches JS). The field universe stays
-  statically closed — Pass 2 still disqualifies on any computed-key / off-schema
-  access and `delete` — so every surviving candidate is genuinely monotonically
-  extended. Emit's flat read/write hooks were already generic over `names`; only
-  the decl init learned the `values[j] === undefined` extension sentinel. Tests
-  in `test/optimizer.js` (escape-analysis block).
+- *Devirtualization (open — the remaining Step-2 slice).* A binding the
+  substrate proves holds exactly one statically-known non-escaping arrow →
+  direct call → inline candidate. The SROA'd-namespace slot below still calls
+  via `call_indirect`; devirt of the *last* statically-known write needs a
+  dominance / no-read-before-write proof on the Step-1 substrate.
+- [x] *Function-namespace SRoA* — landed `9b538d7`. `analyzeFuncNamespaces`
+  (escape proof) + `flattenFuncNamespaces` dissolve `parse.space = …` property
+  tables on a non-escaping function value into f64 module globals; reads become
+  `global.get`. Escaping / computed-indexed namespaces keep the dynamic path.
+  ns-repro: 105 KB → 45 KB WAT, all `__dyn_*` gone.
+- [x] *Object / dict SRoA, extended* — `scanFlatObjects` Pass 1.5 admits
+  monotonic literal-key field extensions: `o.newProp = …` on a non-escaping
+  object literal becomes an extra flat field (`o#k`, `undefined`-init at decl).
+  Field universe stays statically closed (computed-key / off-schema / `delete`
+  disqualify). Tests in `test/optimizer.js` (escape-analysis block).
 
 **Step 3 — tighten strings (general, not host-gated).**
 - *Slices.* A scanned token is `(buffer, offset, len)` — no copy. This is the
@@ -711,6 +712,13 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 
 ### Completed perf / cleanup wins
 
+* [x] Induction-variable strength reduction — investigated, REJECTED
+  (2026-05-18). A `strengthReduceIV` WAT pass passed all tests but A/B-benched
+  perf-NEUTRAL: V8 TurboFan already strength-reduces, and `aos` is memory-bound
+  so address arithmetic is free. The real `aos` residual is 6-vs-3 redundant
+  `f64.load`s — memory scalar-replacement (Generality Step 4), not IVSR. Reverted.
+* [x] F.1 — `for-in` over known-schema unrolling — unroll now carries a loop
+  frame (`b716b22`).
 * [x] Trampoline arity bug — uniform closure-table width (`ctx.closure.width`) was sized by max call-site/arrow-def arity, but boundary trampolines for first-class function *values* forward `$__a0..$__a{arity-1}` (lifted func defs slip past the arity scan, which walks bodies not param lists). An arity-3 function used only via a 1-arg indirect call emitted `(local.get $__a2)` against a 2-param trampoline → `Unknown local $__a2` at assemble time. Fix in `resolveClosureWidth`: also `max` over `programFacts.valueUsed` funcs' `sig.params.length`. + test pin in `test/closures.js`.
 * [x] Lazy `__length` dispatch
 * [x] Specialize `console.log(template literal)` — flatten concat chain to per-part writes
