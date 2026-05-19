@@ -833,7 +833,7 @@ function scanBindingUses(body) {
       else walk(c)
       return
     }
-    if (op === 'if' || op === 'while' || op === '?') {
+    if (op === 'if' || op === 'while' || op === '?:') {  // `prepare` normalizes `?` → `?:`
       const c = node[1]
       if (typeof c === 'string') use(c, USE.BOOL_TEST)
       else walk(c)
