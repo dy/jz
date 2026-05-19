@@ -167,8 +167,9 @@ jz.memory = enhanceMemory
  *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *   - `true` / `2` (default): every stable jz pass + watr in 'light' mode — all
  *     watr passes except inlining (`inline` / `inlineOnce`).
- *   - `3`: level 2 + full watr (inlining on) + larger array/hash initial caps
- *     (`arrayMinCap`, `hashSmallInitCap`).
+ *   - `3` / `'speed'`: level 2 + full watr (inlining on) + larger array/hash
+ *     initial caps (`arrayMinCap`, `hashSmallInitCap`); trades size for speed by
+ *     turning `hoistConstantPool` off (inline `f64.const` over mutable globals).
  *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
