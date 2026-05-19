@@ -382,10 +382,13 @@ test('arity err: closure call with 9 args', () => {
 })
 
 test('arity err: top-level func with 9 params used as value', () => {
+  // `big` stored into an array — a genuine non-devirtualizable escape, so the
+  // closure ABI is unavoidable and the arity ceiling must fire. (Passing it
+  // straight to a forwarder no longer suffices: inlineHotInternalCalls inlines
+  // the forwarder and the call devirtualizes to a direct `call $big`.)
   throws(
     `let big = (a,b,c,d,e,f,g,h,i) => a
-    let apply = (fn) => fn(1,2,3,4,5,6,7,8)
-    export let f = () => apply(big)`,
+    export let f = () => { let arr = [big]; return arr[0](1,2,3,4,5,6,7,8) }`,
     'MAX_CLOSURE_ARITY',
     'top-level func with 9 params used as value should error'
   )
