@@ -389,18 +389,52 @@ function firstAccess(node, name) {
 }
 
 /**
- * Match an address expression `(i32.add base (i32.shl (local.get IND) (i32.const K)))`,
- * with optional outer `(local.tee $A ...)`. Stride 1 fallback: `(i32.add base (local.get IND))`.
+ * Match the index-offset operand of a lane address — the part that scales the
+ * induction variable inside `(i32.add base OFFSET)`. OFFSET is one of:
+ *   (i32.shl (local.get IND) (i32.const K))            → strideLog2 K
+ *   (local.get IND)                                    → strideLog2 0
+ *   (local.tee $T <either of the above>)               → records $T
+ *   (local.get $T)  where $T is a recorded offset-tee  → that tee's strideLog2
+ *
+ * The tee'd form arises from CSE: a map loop `b[i] = f(a[i])` over two distinct
+ * base pointers shares one `i << K` offset (`(local.tee $T (i32.shl i K))` in
+ * the first address, `(local.get $T)` in the second). `offsetTees` (Map
+ * name→strideLog2) carries that across calls.
+ *
+ * Returns { strideLog2, teeName?: string } or null.
+ */
+function matchLaneOffset(off, ind, offsetTees) {
+  if (isArr(off) && off[0] === 'local.get' && typeof off[1] === 'string' &&
+      offsetTees && offsetTees.has(off[1])) {
+    return { strideLog2: offsetTees.get(off[1]), teeName: null }
+  }
+  let teeName = null
+  let n = off
+  if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+  // (i32.shl (local.get ind) (i32.const K))
+  if (isArr(n) && n[0] === 'i32.shl' && n.length === 3 && isLocalGet(n[1], ind)) {
+    const k = constNum(n[2])
+    if (k != null && k >= 0 && k <= 3) return { strideLog2: k, teeName }
+  }
+  // (local.get ind) — stride 1
+  if (isLocalGet(n, ind)) return { strideLog2: 0, teeName }
+  return null
+}
+
+/**
+ * Match an address expression `(i32.add base OFFSET)`, with optional outer
+ * `(local.tee $A ...)`. OFFSET is matched by matchLaneOffset (which also
+ * accepts a CSE'd `(local.tee $T (i32.shl ind K))` / `(local.get $T)` pair).
  * Also accepts `(local.get $A)` when $A is a previously-recorded address tee.
  *
- * Returns { strideLog2, base, teeName?: string, viaLocal?: string } or null.
+ * Returns { strideLog2, base, teeName?, offsetTeeName?, viaLocal? } or null.
  *   `strideLog2` = K for i32.shl form, 0 for plain add form.
  *   `base` is the loop-invariant base subtree.
  */
-function matchLaneAddr(addr, ind, addrLocals) {
+function matchLaneAddr(addr, ind, addrLocals, offsetTees) {
   let teeName = null
   let n = addr
-  // (local.get $A) where $A holds a previously-tee'd lane-address.
+  // (local.get $A) where $A holds a previously-tee'd FULL lane-address.
   if (isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' && addrLocals && addrLocals.has(n[1])) {
     const e = addrLocals.get(n[1])
     return { strideLog2: e.strideLog2, base: e.base, teeName: null, viaLocal: n[1] }
@@ -411,14 +445,40 @@ function matchLaneAddr(addr, ind, addrLocals) {
   }
   if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
   const a = n[1], b = n[2]
-  // case 1: (i32.add base (i32.shl (local.get ind) (i32.const K)))
-  if (isArr(b) && b[0] === 'i32.shl' && b.length === 3 && isLocalGet(b[1], ind)) {
-    const k = constNum(b[2])
-    if (k != null && k >= 0 && k <= 3) return { strideLog2: k, base: a, teeName }
+  const off = matchLaneOffset(b, ind, offsetTees)
+  if (!off) return null
+  return { strideLog2: off.strideLog2, base: a, teeName, offsetTeeName: off.teeName }
+}
+
+/**
+ * A scalar i32 local that is ONLY ever assigned a lane offset — `(i32.shl ind K)`
+ * (or bare `ind` for stride 0) — is a CSE'd offset shared across base pointers.
+ * Returns the consistent strideLog2, or null if any write to it diverges.
+ * This soundness check backs every `(local.get $T)` resolved via `offsetTees`.
+ */
+function _offsetLocalStride(body, name, ind) {
+  let stride = null, found = false, ok = true
+  function walk(n) {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
+      found = true
+      const v = n[2]
+      let k = null
+      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3 && isLocalGet(v[1], ind)) {
+        k = constNum(v[2])
+        if (k == null || k < 0 || k > 3) ok = false
+      } else if (isLocalGet(v, ind)) {
+        k = 0
+      } else ok = false
+      if (k != null) {
+        if (stride == null) stride = k
+        else if (stride !== k) ok = false
+      }
+    }
+    for (let i = 1; i < n.length; i++) walk(n[i])
   }
-  // case 2: (i32.add base (local.get ind)) — stride 1
-  if (isLocalGet(b, ind)) return { strideLog2: 0, base: a, teeName }
-  return null
+  for (const s of body) walk(s)
+  return found && ok ? stride : null
 }
 
 // ---- Recognize a (block (loop)) pair --------------------------------------
@@ -486,6 +546,9 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   // both validates the load's address AND records NAME so the matching store's
   // `(local.get NAME)` is accepted as the same lane address.
   const addrLocals = new Map()
+  // Offset tees: name → strideLog2. A CSE'd `i << K` shared across base
+  // pointers (map loops over distinct arrays). Soundness re-checked post-scan.
+  const offsetTees = new Map()
 
   function scanForLoadsStores(node, parent, pi) {
     if (!isArr(node)) return true
@@ -497,10 +560,11 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
       } else if (LOAD_OPS[op] !== laneType) {
         return false
       }
-      const m = matchLaneAddr(node[1], incVar, addrLocals)
+      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== stride) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'load' })
       return true
     }
@@ -508,10 +572,11 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
       const sty = STORE_OPS[op]
       if (laneType != null && sty !== laneType) return false
       if (laneType == null) { laneType = sty; stride = LANE_INFO[laneType].stride }
-      const m = matchLaneAddr(node[1], incVar, addrLocals)
+      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== stride) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadStoreSites.push({ parent, idx: pi, kind: 'store' })
       // Recurse into VALUE child (idx 2) — it's data, not address.
       if (!scanForLoadsStores(node[2], node, 2)) return false
@@ -521,10 +586,13 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
     // `(local.set $a (i32.add base (i32.shl i 2)))` as a standalone stmt) —
     // record so a later `(local.get $a)` resolves.
     if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string' && node.length === 3) {
-      const valM = matchLaneAddr(['local.tee', node[1], node[2]], incVar, addrLocals)
+      const valM = matchLaneAddr(['local.tee', node[1], node[2]], incVar, addrLocals, offsetTees)
       if (valM && valM.teeName) {
         addrLocals.set(valM.teeName, { strideLog2: valM.strideLog2, base: valM.base })
       }
+      // Standalone offset compute: `(local.set $t (i32.shl i K))`.
+      const offM = matchLaneOffset(node[2], incVar, offsetTees)
+      if (offM) offsetTees.set(node[1], offM.strideLog2)
     }
     // Recurse into all children
     for (let i = 1; i < node.length; i++) {
@@ -537,6 +605,12 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   }
   if (!laneType) return null  // no memory ops — vectorizing buys nothing
   if (loadStoreSites.length === 0) return null
+
+  // Soundness gate for offset-tee resolution: every `(local.get $T)` we
+  // accepted as `i << K` is only valid if EVERY write of $T is that offset.
+  for (const [name, k] of offsetTees) {
+    if (_offsetLocalStride(body, name, incVar) !== k) return null
+  }
 
   // Classify all locals referenced in body.
   // - induction var (incVar): exempt
@@ -571,7 +645,7 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
       // Discriminate lane-data vs address-tee. Address tees hold i32 addresses,
       // not vector data. We classify by checking the local's declared type.
       const decl = fnLocals.get(name)
-      if (decl === 'i32' && _isAddressLocal(body, name, incVar)) {
+      if (decl === 'i32' && (offsetTees.has(name) || _isAddressLocal(body, name, incVar))) {
         localKind.set(name, 'addr')
       } else {
         localKind.set(name, 'lane')
@@ -710,16 +784,18 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const laneType = reduceEntry.laneType
   const stride = LANE_INFO[laneType].stride
   const addrLocals = new Map()
+  const offsetTees = new Map()
   let loadCount = 0
   function scanExpr(node) {
     if (!isArr(node)) return true
     const op = node[0]
     if (LOAD_OPS[op]) {
       if (LOAD_OPS[op] !== laneType) return false
-      const m = matchLaneAddr(node[1], incVar, addrLocals)
+      const m = matchLaneAddr(node[1], incVar, addrLocals, offsetTees)
       if (!m) return false
       if ((1 << m.strideLog2) !== stride) return false
       if (m.teeName) addrLocals.set(m.teeName, { strideLog2: m.strideLog2, base: m.base })
+      if (m.offsetTeeName) offsetTees.set(m.offsetTeeName, m.strideLog2)
       loadCount++
       return true
     }
@@ -731,6 +807,10 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   }
   if (!scanExpr(exprNode)) return null
   if (loadCount === 0) return null
+  // Soundness gate for offset-tee resolution (see tryVectorize).
+  for (const [name, k] of offsetTees) {
+    if (_offsetLocalStride([exprNode], name, incVar) !== k) return null
+  }
 
   // Classify locals referenced in EXPR. Anything not the induction var or an
   // address-tee is invariant (we forbade local.set/tee in scanExpr).
@@ -744,10 +824,11 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const localKind = new Map()
   for (const name of referenced) {
     if (name === incVar) continue
-    if (addrLocals.has(name)) { localKind.set(name, 'addr'); continue }
+    if (addrLocals.has(name) || offsetTees.has(name)) { localKind.set(name, 'addr'); continue }
     localKind.set(name, 'invariant')
   }
   for (const name of addrLocals.keys()) localKind.set(name, 'addr')
+  for (const name of offsetTees.keys()) localKind.set(name, 'addr')
 
   const ctx = { laneType, incVar, localKind, newLanedLocals: new Map(), fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)

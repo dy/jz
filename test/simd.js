@@ -349,6 +349,43 @@ test('vectorize: i32 shift lane-local lifts (a[i] = a[i] << 1)', () => {
   ok(hasV128(wat(src, SIMD_OPT)), 'expected v128 ops')
 })
 
+test('vectorize: f64 map loop across two arrays lifts (b[i] = f(a[i]))', () => {
+  // Map between DISTINCT base pointers: the `i << 3` offset is CSE'd into one
+  // local shared by the load and store address. Recognizer must see through
+  // that offset-tee, not just the same-array in-place form.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      const b = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i * 1.5 - 3.0
+      for (let i = 0; i < N; i++) b[i] = a[i] * 2.0 + 1.0
+      let s = 0.0
+      for (let i = 0; i < N; i++) s = s + b[i]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/v128\.load|f64x2\./.test(wat(src, SIMD_OPT)), 'expected f64x2 ops for the cross-array map')
+})
+
+test('vectorize: f64 cross-array map tail correctness (N not a multiple of LANES)', () => {
+  // N=1023 — odd, exercises the f64x2 (2-lane) remainder via the scalar tail.
+  const src = `
+    export const main = () => {
+      const N = 1023
+      const a = new Float64Array(N)
+      const b = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i * 0.5 + 1.0
+      for (let i = 0; i < N; i++) b[i] = a[i] * a[i] - 2.0
+      let s = 0.0
+      for (let i = 0; i < N; i++) s = s + b[i]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+})
+
 test('vectorize: tail correctness when N is not a multiple of LANES', () => {
   // N=1023 (i32x4 → 4 lanes; 1023 % 4 = 3 → tail of 3 elems)
   const src = `
