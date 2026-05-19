@@ -642,6 +642,206 @@ function ternaryCtorOfRhs(rhs) {
 // narrowing; narrowReturnArrayElems clears entries between fixpoint iters.
 
 /**
+ * Per-binding use-summary — the substrate the representation analyses share.
+ *
+ * One traversal classifies every mention of each `let`/`const` binding into a
+ * closed taxonomy of use-kinds (`USE.*`). The eligibility analyses below
+ * (`scanFlatObjects`, `scanSliceViews`, `unboxablePtrs`) are then *policies* —
+ * subset predicates over this summary — rather than three independent body
+ * re-walks. The classification logic is the union of those walks; a use-kind
+ * exists for every distinction at least one consumer needs.
+ *
+ * Returns `Map<name, { decls, initRhs, uses }>` for every name the body
+ * `let`/`const`-declares. `uses` is a `UseRecord[]`; a record is
+ * `{ kind, key?, optional?, computed?, compound?, nullCmp?, callee?, argIndex? }`.
+ *
+ * Scoping: decls are collected only outside closures (a `let` inside a nested
+ * `=>` is a different scope), but uses ARE collected inside closures — every
+ * mention there becomes a `CAPTURE`, which every policy treats as
+ * disqualifying. A binding shadowed by an inner closure decl is conservatively
+ * still flagged `CAPTURE`; sound, since it only ever forfeits an optimization.
+ *
+ * Order-independent: uses bucket by name, so a mention before its decl is fine.
+ */
+const USE = {
+  MEMBER_R: 1,       // receiver of a `.`/`?.`/`[]` READ   — {key, optional, computed}
+  MEMBER_W: 2,       // base of a `.`/`[]` WRITE           — {key, computed, compound}
+  REASSIGN: 3,       // `=`(non-init) / `++` / `--` / compound-assign of the name
+  CALL_ARG: 4,       // passed as a call argument          — {callee, argIndex}
+  CALL_CALLEE: 5,    // invoked: `name(...)`
+  RETURN: 6,         // `return name`
+  CAPTURE: 7,        // mentioned inside a nested `=>`
+  COMPARE: 8,        // operand of a comparison            — {nullCmp}
+  CONCAT: 9,         // operand of `+`
+  BOOL_TEST: 10,     // operand of `!`/`typeof`/`void`, or an `if`/`while`/`?:` test
+  DELETE_MEMBER: 11, // `delete name.member`
+  BARE: 12,          // any other value position — the conservative catch-all
+}
+const _bindingUsesCache = new WeakMap()
+const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
+const _isNullishLit = (e) =>
+  e === 'null' || e === 'undefined' ||
+  (Array.isArray(e) && e[0] == null && (e[1] === null || e[1] === undefined))
+
+function scanBindingUses(body) {
+  const hit = _bindingUsesCache.get(body)
+  if (hit) return hit
+
+  const summary = new Map()                    // name → { decls, initRhs, uses }
+  const slot = (name) => {
+    let s = summary.get(name)
+    if (!s) { s = { decls: 0, initRhs: undefined, uses: [] }; summary.set(name, s) }
+    return s
+  }
+  const use = (name, kind, extra) => slot(name).uses.push(extra ? { kind, ...extra } : { kind })
+
+  // Static string key of a `[]` index node, else null (computed).
+  const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : null
+
+  // Classify the target of an assignment-like node (`=`, compound, `++`, `--`).
+  const assignTarget = (t, compound) => {
+    if (typeof t === 'string') { use(t, USE.REASSIGN); return }
+    if (!Array.isArray(t)) return
+    const o = t[0]
+    if ((o === '.' || o === '?.') && typeof t[1] === 'string') {
+      use(t[1], USE.MEMBER_W, { key: typeof t[2] === 'string' ? t[2] : null, computed: false, compound })
+      return
+    }
+    if (o === '[]' && typeof t[1] === 'string') {
+      const k = litKey(t[2])
+      use(t[1], USE.MEMBER_W, { key: k, computed: k == null, compound })
+      if (t[2] != null) walk(t[2])
+      return
+    }
+    walk(t)                                     // some other LHS shape — generic
+  }
+
+  function walk(node, inClosure) {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (typeof op !== 'string') return          // literal node `[null, value]`
+    if (op === 'str') return                    // string literal
+    if (op === '=>') { for (let i = 1; i < node.length; i++) walk(node[i], true); return }
+
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (typeof d === 'string') { if (!inClosure) slot(d).decls++; continue }
+        if (Array.isArray(d) && d[0] === '=') {
+          const lhs = d[1], rhs = d[2]
+          if (typeof lhs === 'string') {
+            if (!inClosure) { const s = slot(lhs); s.decls++; if (s.initRhs === undefined) s.initRhs = rhs }
+          } else {
+            walk(lhs, inClosure)                // pattern — computed keys/defaults are real uses
+          }
+          walk(rhs, inClosure)
+        } else walk(d, inClosure)
+      }
+      return
+    }
+
+    if (inClosure) {                            // every mention here is a CAPTURE
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (typeof c === 'string') use(c, USE.CAPTURE)
+        else walk(c, true)
+      }
+      return
+    }
+
+    // === precise classification (outside any closure) ===
+    if (ASSIGN_OPS.has(op)) { assignTarget(node[1], op !== '='); walk(node[2]); return }
+    if (op === '++' || op === '--') { assignTarget(node[1], true); return }
+    if (op === 'delete') {
+      const t = node[1]
+      if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') && typeof t[1] === 'string') {
+        use(t[1], USE.DELETE_MEMBER)
+        if (t[0] === '[]' && t[2] != null) walk(t[2])
+      } else walk(t)
+      return
+    }
+    if (op === '.' || op === '?.') {
+      const recv = node[1]
+      if (typeof recv === 'string')
+        use(recv, USE.MEMBER_R, { key: typeof node[2] === 'string' ? node[2] : null, optional: op === '?.', computed: false })
+      else walk(recv)
+      return                                    // node[2] is the property name
+    }
+    if (op === '[]') {
+      const recv = node[1], k = litKey(node[2])
+      if (typeof recv === 'string') use(recv, USE.MEMBER_R, { key: k, optional: false, computed: k == null })
+      else walk(recv)
+      if (node[2] != null) walk(node[2])
+      return
+    }
+    if (op === 'return') {
+      const e = node[1]
+      if (typeof e === 'string') use(e, USE.RETURN)
+      else walk(e)
+      return
+    }
+    if (op === '()') {
+      const callee = node[1]
+      if (typeof callee === 'string') use(callee, USE.CALL_CALLEE)
+      else walk(callee)
+      const argNode = node[2]
+      if (argNode != null) {
+        const args = (Array.isArray(argNode) && argNode[0] === ',') ? argNode.slice(1) : [argNode]
+        for (let ai = 0; ai < args.length; ai++) {
+          const a = args[ai]
+          if (Array.isArray(a) && a[0] === '...') { walk(a[1]); continue }
+          if (typeof a === 'string') use(a, USE.CALL_ARG, { callee: typeof callee === 'string' ? callee : null, argIndex: ai })
+          else walk(a)
+        }
+      }
+      return
+    }
+    if (_CMP_OPS.has(op) && node.length === 3) {
+      for (let i = 1; i <= 2; i++) {
+        const side = node[i]
+        if (typeof side === 'string') use(side, USE.COMPARE, { nullCmp: _isNullishLit(node[3 - i]) })
+        else walk(side)
+      }
+      return
+    }
+    if (op === '+') {
+      for (let i = 1; i < node.length; i++) {
+        const c = node[i]
+        if (typeof c === 'string') use(c, USE.CONCAT)
+        else walk(c)
+      }
+      return
+    }
+    if (op === '!' || op === 'typeof' || op === 'void') {
+      const c = node[1]
+      if (typeof c === 'string') use(c, USE.BOOL_TEST)
+      else walk(c)
+      return
+    }
+    if (op === 'if' || op === 'while' || op === '?:') {
+      const c = node[1]
+      if (typeof c === 'string') use(c, USE.BOOL_TEST)
+      else walk(c)
+      for (let i = 2; i < node.length; i++) walk(node[i])
+      return
+    }
+
+    // generic — every string child is a BARE value use
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (typeof c === 'string') use(c, USE.BARE)
+      else walk(c)
+    }
+  }
+
+  walk(body, false)
+
+  for (const [name, s] of summary) if (s.decls === 0) summary.delete(name)
+  _bindingUsesCache.set(body, summary)
+  return summary
+}
+
+/**
  * SRoA eligibility scan — which `let/const o = {staticLiteral}` bindings can
  * have their fields dissolved into plain WASM locals (`flat` carrier): no heap
  * alloc, no field load/store, `o.prop` becomes `local.get`.
@@ -842,70 +1042,24 @@ function scanFlatObjects(body) {
  *
  * Returns `Set<name>` of view-eligible binding names.
  */
+// Permitted use-kinds for a slice view — the value is read synchronously and
+// never persisted past the function. `MEMBER_R`/`MEMBER_W` cover any `.`/`[]`
+// receiver; `COMPARE` any comparison; `CONCAT`/`BOOL_TEST` the copy / test
+// positions. Any other kind (reassign, call arg, return, capture, bare alias)
+// escapes and disqualifies the binding.
+const _SLICE_VIEW_OK = new Set([USE.MEMBER_R, USE.MEMBER_W, USE.COMPARE, USE.CONCAT, USE.BOOL_TEST])
+
 function scanSliceViews(body) {
   const isSliceCall = (n) =>
     Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
     && n[1][0] === '.' && n[1][2] === 'slice'
 
-  // Pass 1 — collect `let/const t = X.slice(...)`; remember each decl `=` node
-  // so Pass 2 does not mistake the binding for a reassignment.
-  const cand = new Set()
-  const declOf = new Map()                 // name → its `['=', name, sliceCall]` node
-  const declCount = new Map()
-  const collect = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const a = node[i]
-        if (typeof a === 'string') { declCount.set(a, (declCount.get(a) || 0) + 1); continue }
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') {
-          declCount.set(a[1], (declCount.get(a[1]) || 0) + 1)
-          if (isSliceCall(a[2])) { cand.add(a[1]); declOf.set(a[1], a) }
-          collect(a[2])
-        } else collect(a)
-      }
-      return
-    }
-    for (let i = 1; i < node.length; i++) collect(node[i])
+  const views = new Set()
+  for (const [name, s] of scanBindingUses(body)) {
+    if (s.decls !== 1 || !isSliceCall(s.initRhs)) continue
+    if (s.uses.every(u => _SLICE_VIEW_OK.has(u.kind))) views.add(name)
   }
-  collect(body)
-  // A name declared more than once is ambiguous — drop it.
-  for (const [n, c] of declCount) if (c > 1) cand.delete(n)
-  if (!cand.size) return cand
-
-  // Pass 2 — escape check. Each occurrence of a candidate must sit in a
-  // whitelisted non-escaping position; any other mention disqualifies it.
-  const SAFE_CMP = new Set(['===', '!==', '==', '!=', '<', '>', '<=', '>='])
-  const safeAt = (parentOp, k) => {
-    if ((parentOp === '.' || parentOp === '?.') && k === 1) return true  // member receiver
-    if (parentOp === '[]' && k === 1) return true                        // indexed object
-    if (SAFE_CMP.has(parentOp)) return true                              // comparison operand
-    if (parentOp === '+') return true                                    // concat / numeric — copies
-    if (parentOp === '!' || parentOp === 'typeof' || parentOp === 'void') return true
-    if ((parentOp === 'if' || parentOp === 'while' || parentOp === 'do-while') && k === 1) return true
-    if (parentOp === '?:' && k === 1) return true                        // ternary condition only
-    return false
-  }
-  const walk = (node, inClosure) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    const closured = inClosure || op === '=>'
-    for (let k = 1; k < node.length; k++) {
-      const child = node[k]
-      if (typeof child === 'string') {
-        if (!cand.has(child)) continue
-        if (inClosure) { cand.delete(child); continue }                     // captured → escapes
-        if (op === '=' && k === 1 && declOf.get(child) === node) continue   // the binding itself
-        if (!safeAt(op, k)) cand.delete(child)
-        continue
-      }
-      walk(child, closured)
-    }
-  }
-  walk(body, false)
-  return cand
+  return views
 }
 
 /**
