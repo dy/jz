@@ -1,12 +1,10 @@
 ## jz — execution plan
 
-Status (2026-05-19): unit **1757 pass**, test262 language **1423 pass / 5 fail**
-(language runner gates `pass < baseline` only — baseline 1419 — so the 5 fails
-are visible, not build-breaking), builtins **719 pass / 0 fail**. Every step
-keeps zero regressions (`npm test` / `npm run test262` /
-`npm run test262:builtins`), commits atomically by file name, and bumps
-`JZ_TEST262_BASELINE` in `.github/workflows/test262.yml` the same commit a
-count moves.
+Status (2026-05-19): unit **1759 pass**, test262 language **1429 pass / 0 fail**
+(baseline 1429), builtins **719 pass / 0 fail**. Every step keeps zero
+regressions (`npm test` / `npm run test262` / `npm run test262:builtins`),
+commits atomically by file name, and bumps `JZ_TEST262_BASELINE` in
+`.github/workflows/test262.yml` the same commit a count moves.
 
 > **State (2026-05-17).** Phase 0 (declarative reorg) and Steps 1–6 are all
 > resolved — done, redirected, or descoped — and compressed into Archive ›
@@ -60,31 +58,21 @@ NOT a test262 lever — there are no in-scope builtins fails for it to convert.
 
 ### Live work
 
-#### Correctness — test262 language tail (5 fails, non-gating)
-* [ ] **5 language fails** (2026-05-19, baseline 1419 tolerates 3 — 2 are new):
-  - `statements/for-in/head-decl-expr.js` — `internal: Cannot read properties
-    of null (reading 'type')` — jz crashes on a for-in head form; an internal
-    crash, not a clean error. Likely fallout from for-loop head normalization.
-  - `statements/for-in/head-expr-expr.js` — fails (`undefined`).
-  - `block-scope/leave/for-loop-block-let-declaration-only-shadows-outer-parameter-value-1.js`
-  - `expressions/array/11.1.4-0.js` (`a.length`)
-  - `statements/function/S13_A19_T2.js`
-  Triage each: fix in jzify, or classify out-of-scope with a skip rule. An
-  internal crash must at minimum become a clean error.
+#### Perf — native-gap audit (residual SIMD widening only)
 
-#### Perf — native-gap audit
-* [ ] **crc32 vs native.** Audit wasm output against `gcc -O3` / `clang -O3` /
-  `rustc -C opt-level=3`. Candidate: SIMD `i32x4` lowering vs the scalar
-  table-driven loop. (The `aos` half of this ask was closed by `structInline`.)
-* [ ] **Beat AS on mandelbrot / interference / game-of-life.** Measure the gap,
-  identify hot ops, lower. mandelbrot sits at the wasm-v1 algorithmic floor (no
-  scalar `fma`) — proposal-blocked.
-* [ ] **jz SIMD codegen for the x86 native gap.** callback/aos/tokenizer trail
-  `clang -O3` on x86 CI because clang SSE2-auto-vectorizes against jz's scalar
-  wasm-v1 — `vectorizeLaneLocal` does not engage on these shapes. Widen the
-  vectorizer's pattern set so map/AoS-write loops emit `f64x2`. SIMD is jz's
-  headline lever over plain V8. (See Archive › IVSR/F.1 for the closed `aos`
-  load-redundancy thread.)
+test262 language tail (5→0), the crc32 / mandelbrot audits, and the f64
+cross-array-map vectorizer widening are all resolved — see Archive ›
+"test262 language tail + native-gap audit (2026-05-19)". What stays open:
+
+* [ ] **AoS-write vectorization.** `xs[i] = rows[i].x + …` — the *store* is
+  lane-aligned but `rows[i].x` is a pointer-chase, not a contiguous `f64.load`,
+  so `vectorizeLaneLocal` cannot lift the loads. Needs gather or a struct→SoA
+  transform; the load-redundancy half is separately covered by `cseScalarLoad`
+  (Step 4). Schedule explicitly — not a vectorizer-pattern gap.
+* [ ] **i32 map-loop vectorization.** `b[i] = a[i]*2+1` over Int32Arrays stays
+  scalar: jz computes in f64 then sat-truncates, so the body mixes i32 loads
+  with f64 math. Mixed-width lifting (i32x4 ↔ f64x2, 4-vs-2 lanes) is a separate,
+  larger feature.
 
 #### Generality track — escape/points-to substrate → devirt · SROA · strings
 
@@ -410,6 +398,37 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 ---
 
 ## Archive
+
+### test262 language tail + native-gap audit (2026-05-19)
+
+* [x] **5 language fails → 0** (language suite 1423→1429, baseline bumped).
+  Three codegen defects + one harness boundary fix — `fix:` commit `117fbd0`:
+  - comma Expression in a for-in/of head (`for (x in A, B)`) — `jzify.js`
+    `normalizeForDeclHead` generalized + new `normalizeForCommaHead` fold the
+    trailing operands back into the iterated source; internal crash eliminated.
+  - `[,]` / `[1,,]` array elisions — `prepare.js` `'[]'` over-trimmed a trailing
+    `null`; jessie already consumes the trailing comma, so every residual `null`
+    is a genuine hole. Trim removed.
+  - `dedupeRedecls` read only the first name of a multi-name bare `let`, leaking
+    a redeclaration when a hoisted function `const` shared the name. Now walks
+    every declarator.
+  - `test262.js` ASSERT_HARNESS terminated with `;` — works around a subscript
+    ASI bug (no semicolon after an arrow block body before `(`). Upstream
+    subscript bug — repro belongs in plan Part 1.
+* [x] **crc32 vs native** — wasm-v1 floor. jz 11.95 ms = 1.12× clang -O3, beats
+  V8 (13.34 ms). Native's edge is the SSE4.2 `crc32` hardware instruction; SIMD
+  folding needs carryless multiply (`clmul`, a separate wasm proposal). The CRC
+  accumulator is strictly loop-carried — `vectorizeLaneLocal` correctly declines.
+  No jz codegen change available; scalar table-driven is optimal.
+* [x] **mandelbrot vs AS** — wasm-v1 algorithmic floor (no scalar `fma`),
+  proposal-blocked. (`interference` / `game-of-life` are not in the bench suite.)
+* [x] **f64 cross-array-map vectorization** — `optimize:` commit `b3bd828`.
+  `vectorizeLaneLocal` now sees through the CSE'd offset-tee a map `b[i]=f(a[i])`
+  over two base pointers produces (`(local.tee $T (i32.shl i K))` then
+  `(local.get $T)`). New `matchLaneOffset` + `_offsetLocalStride` soundness gate
+  in `src/vectorize.js`, wired into `tryVectorize` + `tryReduceVectorize`. f64
+  cross-array map loops now emit `f64x2`; tests in `test/simd.js`. AoS-write and
+  i32 mixed-width remain — see Live work › "native-gap audit".
 
 ### Execution plan — Phase 0 + Steps 1–6 (resolved 2026-05-17)
 
