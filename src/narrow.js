@@ -16,6 +16,7 @@ import {
   exprType, findMutations, hasBareReturn,
   invalidateLocalsCache, invalidateValTypesCache, isBlockBody, alwaysReturns,
   narrowReturnArrayElems, observeProgramSlots, returnExprs, staticObjectProps,
+  scanBoundedLoops,
   typedElemAux, typedElemCtor, ctorFromElemAux, valTypeOf,
 } from './analyze.js'
 import {
@@ -735,6 +736,149 @@ export default function narrowSignatures(programFacts, ast) {
   // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
   // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
   applyI32ParamSpecialization(paramReps, valueUsed, { skipTyped: true })
+
+  // J: jsstring boundary opt-in — for exported funcs with a string param whose
+  // every use is mappable to a wasm:js-string builtin, flip the param's wasm
+  // slot from f64 (nanbox SSO carrier) to externref so the JS host passes the
+  // native string directly. Zero copy, zero transcoding. See applyJsstringBoundaryCarrier.
+  if (jsstringEnabled()) applyJsstringBoundaryCarrier(paramReps, valueUsed)
+}
+
+/** Gate the jsstring opt-in: enabled by default for JS hosts; disabled under
+ *  WASI (env imports unavailable) or when explicitly opted out via the
+ *  `optimize: { jsstring: false }` knob (used by side-by-side benchmarks). */
+function jsstringEnabled() {
+  if (ctx.transform.host === 'wasi') return false
+  if (ctx.transform.optimize?.jsstring === false) return false
+  return true
+}
+
+/** Phase J standalone: runs even when `canSkipWholeProgramNarrowing` short-circuits
+ *  the main narrow pass. The check is body-local and export-boundary-only, so call-
+ *  site lattice isn't needed; just guard on host and run the use-scan. */
+export function applyJsstringBoundaryCarrierStandalone(programFacts) {
+  if (!jsstringEnabled()) return
+  applyJsstringBoundaryCarrier(new Map(), programFacts.valueUsed)
+}
+
+// ── jsstring boundary carrier ───────────────────────────────────────────────
+//
+// Mappable use of an exported string param:
+//   - `s.length`               → wasm:js-string.length
+//   - `s.charCodeAt(idx)`      → wasm:js-string.charCodeAt — but ONLY when the
+//                                index is provably in-bounds (scanBoundedLoops).
+//                                The builtin traps on OOB; JS semantics return
+//                                NaN. The only way to preserve JS semantics with
+//                                zero overhead is to refuse non-bounded use.
+// Anything else (concat, indexing `s[i]`, regex, hash key, passing to a non-
+// externref param, reassignment, closure capture, `==` with anything, …) is a
+// fallback trigger and disqualifies the param.
+
+const JSS_OK_PROPS = new Set(['length', 'charCodeAt'])
+
+/**
+ * Decide whether `name` (an exported func's STRING-shaped param) can flow
+ * through the boundary as `externref`. Walk the body once: every leaf
+ * occurrence of `name` must be the receiver of `.length` (always safe) or
+ * `.charCodeAt` whose callee node lives in `safeCC` (provably bounded).
+ * Reassignment / `++` / `--` / closure capture all reject conservatively.
+ *
+ * Returns `{ ok, stringDiscriminating }` — `stringDiscriminating` is true iff
+ * we saw at least one string-only use (`.charCodeAt`); the caller uses this
+ * to gate on whether the body actually proves the param is a string, since
+ * `.length` alone is polymorphic across string/array/typed-array.
+ */
+function paramAllUsesJsstringMappable(body, name, safeCC) {
+  if (body == null) return { ok: false, stringDiscriminating: false }
+  let ok = true
+  let stringDiscriminating = false
+  const walk = (node) => {
+    if (!ok) return
+    if (typeof node === 'string') {
+      // A bare reference to the param outside an eligible `[., name, prop]`
+      // callee slot is a fallback trigger — the param escaped to a non-
+      // mappable use.
+      if (node === name) ok = false
+      return
+    }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') {
+      // Nested arrow may shadow `name` with its own param; if it doesn't, any
+      // capture of the outer `name` is an escape we can't track — reject.
+      const params = node[1]
+      const shadowed = Array.isArray(params)
+        ? params.some(p => (typeof p === 'string' && p === name) ||
+                           (Array.isArray(p) && p[1] === name))
+        : params === name
+      if (!shadowed) ok = false
+      return
+    }
+    if ((op === '=' || op === '+=' || op === '-=' || op === '*=' || op === '/=' ||
+         op === '%=' || op === '&=' || op === '|=' || op === '^=' ||
+         op === '>>=' || op === '<<=' || op === '>>>=' ||
+         op === '||=' || op === '&&=' || op === '??=' ||
+         op === '++' || op === '--') && node[1] === name) {
+      ok = false
+      return
+    }
+    if (op === '.' && node[1] === name && JSS_OK_PROPS.has(node[2])) {
+      // .length is always safe but polymorphic across string/array/typed.
+      // .charCodeAt is only safe when the loop-bounds analysis proves the
+      // index in-bounds (this dotted callee node is exactly the one collected
+      // by scanBoundedLoops) — but it IS string-discriminating.
+      if (node[2] === 'length') return
+      if (safeCC.has(node)) { stringDiscriminating = true; return }
+      ok = false
+      return
+    }
+    // For `['()', callee, ...args]` with callee = ['.', name, 'charCodeAt'],
+    // `name` is in the callee receiver slot (validated by the branch above).
+    // The `.length` case is just a member read — no `()` wrapping.
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  return { ok, stringDiscriminating }
+}
+
+function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
+  for (const func of ctx.func.list) {
+    if (func.raw || !func.exported) continue
+    if (!func.body) continue
+    if (func.rest) continue                          // rest position stays packed-array
+    if (valueUsed.has(func.name)) continue           // value-used → callers may pass non-string
+    // Pre-compute the in-bounds .charCodeAt callee nodes once per body.
+    const safeCC = new Set()
+    scanBoundedLoops(func.body, safeCC)
+    const reps = paramReps.get(func.name)
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const p = func.sig.params[k]
+      if (p.type !== 'f64' || p.ptrKind != null) continue
+      // String-literal defaults (`s = ''`, `s = 'default'`) are both string-
+      // discrimination proof AND substituted JS-side by the interop wrapper —
+      // see `jz:extparam` def field. Non-string defaults still disqualify:
+      // the wasm side has no way to materialise an arbitrary externref default
+      // at boundary-check time without a host import.
+      const defVal = func.defaults?.[p.name]
+      if (defVal != null && !isLiteralStr(defVal)) continue
+      const { ok: usesOk, stringDiscriminating } = paramAllUsesJsstringMappable(func.body, p.name, safeCC)
+      if (!usesOk) continue
+      const r = reps?.get(k)
+      // Skip if any rep says non-STRING (`r.val` set to ARRAY/TYPED at any
+      // call site rules out jsstring).
+      if (r && r.val != null && r.val !== VAL.STRING) continue
+      // Discrimination signal: either a string-discriminating body use
+      // (`.charCodeAt`), a call-site proof (`r.val === STRING`), or an
+      // explicit string-literal default (the source intent declaration).
+      const hasStringDefault = defVal != null && isLiteralStr(defVal)
+      if (!stringDiscriminating && r?.val !== VAL.STRING && !hasStringDefault) continue
+      p.type = 'externref'
+      p.jsstring = true
+      // Record the literal default so compile.js can omit wasm-side substitution
+      // (the JS-side interop wrapper applies the default on `undefined`).
+      if (hasStringDefault) p.jsstringDefault = defVal[1]
+    }
+  }
 }
 
 /**

@@ -515,6 +515,24 @@ export const wrap = (memSrc, inst) => {
     try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p), r: e.r }) }
     catch { /* ignore */ }
   }
+  // externref-param exports: positions where the wasm side takes an externref
+  // (e.g. jsstring boundary opt-in). JS values at these positions pass through
+  // unchanged — no `mem.wrapVal` (would NaN-box into f64, defeating the point).
+  // `def` (optional) maps idx → default-string for jsstring params whose
+  // default substitution happens JS-side (the wasm side never sees null).
+  const extExp = new Map()
+  const extBytes = customSection(mod, 'jz:extparam')
+  if (extBytes) {
+    try {
+      for (const e of JSON.parse(td.decode(extBytes))) {
+        const idx = new Set(e.p)
+        // Hang the defaults off the Set as a property so call-sites that only
+        // check membership stay unchanged; the slow path reads `extInfo.def`.
+        if (e.d) idx.def = new Map(Object.entries(e.d).map(([k, v]) => [Number(k), v]))
+        extExp.set(e.name, idx)
+      }
+    } catch { /* ignore */ }
+  }
 
   const mem = memory(memSrc)
   const lastErrBits = realInst.exports.__jz_last_err_bits
@@ -536,17 +554,36 @@ export const wrap = (memSrc, inst) => {
   // indices; r = result is i64. Numeric (f64) positions pass through unchanged.
   const adaptArgs = (a, p) => p.size === 0 ? a : a.map((x, i) => p.has(i) ? f64ToI64(x) : x)
   const adaptRet = (ret, r) => r ? i64ToF64(ret) : ret
+  // Externref positions skip mem.wrapVal — the raw JS value (string, object,
+  // …) flows through as externref. mem.wrapVal would NaN-box it.
+  const wrapArg = (ext, i, x) => ext?.has(i) ? x : mem.wrapVal(x)
 
   // Arity-specialized wrapper: rest-spread + .map() + .apply() costs ~85ns/call
   // on hot loops (mandelbrot benchmark: 51ms wrapped vs 35ms direct over 200K
   // calls). Generating positional `function(a0, a1, ...)` via Function lets V8
   // fully inline the WASM call. Falls back to the spread-form wrapper if the
   // Function constructor is unavailable (CSP) or arity is unusually large.
-  const makeFastWrapper = (fn, len, p, r, decode_, wrap_) => {
+  // `ext` is a Set of externref param positions — those slots skip wrap/coerce
+  // and pass the JS value directly (jsstring carrier: JS string → externref).
+  // `ext.def` (optional Map idx→string) carries jsstring-literal defaults that
+  // are substituted JS-side when the caller passes `undefined`.
+  const makeFastWrapper = (fn, len, p, r, decode_, wrap_, ext) => {
     const params = [], wrapped = []
+    const defs = ext?.def
+    const defArgs = [], defNames = []
     for (let i = 0; i < len; i++) {
       const a = `a${i}`
       params.push(a)
+      if (ext?.has(i)) {
+        if (defs?.has(i)) {
+          const dn = `def${i}`
+          defNames.push(dn); defArgs.push(defs.get(i))
+          wrapped.push(`(${a} === undefined ? ${dn} : ${a})`)
+        } else {
+          wrapped.push(a)
+        }
+        continue
+      }
       const w = wrap_ ? `wrap_(${a})` : `coerce(${a})`
       wrapped.push(p.has(i) ? `f64ToI64(${w})` : w)
     }
@@ -555,8 +592,8 @@ export const wrap = (memSrc, inst) => {
     const body = `return function(${params.join(',')}) {\n` +
       `  try { return decode_(${retExpr}) } catch (e) { decodeThrown(e) }\n` +
       `}`
-    return new Function('fn', 'wrap_', 'coerce', 'decode_', 'f64ToI64', 'i64ToF64', 'decodeThrown', body)(
-      fn, wrap_, coerce, decode_, f64ToI64, i64ToF64, decodeThrown)
+    return new Function('fn', 'wrap_', 'coerce', 'decode_', 'f64ToI64', 'i64ToF64', 'decodeThrown', ...defNames, body)(
+      fn, wrap_, coerce, decode_, f64ToI64, i64ToF64, decodeThrown, ...defArgs)
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -565,15 +602,19 @@ export const wrap = (memSrc, inst) => {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const sig = i64Exp.get(name)
       const p = sig?.p || EMPTY_SET, r = sig?.r || 0
+      const ext = extExp.get(name)
       const len = fn.length
       try {
-        exports[name] = makeFastWrapper(fn, len, p, r, decode, null)
+        exports[name] = makeFastWrapper(fn, len, p, r, decode, null, ext)
         continue
       } catch { /* CSP fallback */ }
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          const wasmArgs = adaptArgs(args.map(coerce), p)
+          const wasmArgs = adaptArgs(args.map((x, i) => {
+            if (!ext?.has(i)) return coerce(x)
+            return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
+          }), p)
           return decode(adaptRet(fn(...wasmArgs), r))
         } catch (e) { decodeThrown(e) }
       }
@@ -587,8 +628,12 @@ export const wrap = (memSrc, inst) => {
       const fixed = restFuncs.get(name)
       const sig = i64Exp.get(name)
       const p = sig?.p || EMPTY_SET, r = sig?.r || 0
+      const ext = extExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(x => mem.wrapVal(x))
+        const a = args.slice(0, fixed).map((x, i) => {
+          if (!ext?.has(i)) return mem.wrapVal(x)
+          return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
+        })
         while (a.length < fixed) a.push(UNDEF_NAN)
         a.push(mem.Array(args.slice(fixed)))
         try {
@@ -601,15 +646,19 @@ export const wrap = (memSrc, inst) => {
     } else if (typeof fn === 'function') {
       const sig = i64Exp.get(name)
       const p = sig?.p || EMPTY_SET, r = sig?.r || 0
+      const ext = extExp.get(name)
       const len = fn.length
       try {
-        exports[name] = makeFastWrapper(fn, len, p, r, memRead, memWrapVal)
+        exports[name] = makeFastWrapper(fn, len, p, r, memRead, memWrapVal, ext)
         continue
       } catch { /* CSP fallback */ }
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         try {
-          const boxed = args.map(x => mem.wrapVal(x))
+          const boxed = args.map((x, i) => {
+            if (!ext?.has(i)) return mem.wrapVal(x)
+            return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
+          })
           const ret = fn.apply(null, adaptArgs(boxed, p))
           return mem.read(adaptRet(ret, r))
         } catch (error) {
@@ -729,10 +778,60 @@ const installDefaultEnvImports = (mod, imports, state) => {
   }
 }
 
+// JS-side polyfills for `wasm:js-string` builtins. Used when the engine does
+// NOT honor `new WebAssembly.Module(buf, { builtins: ['js-string'] })` — older
+// V8, Hermes, JSC pre-18.4, etc. With native builtins the engine inlines
+// these calls to direct string accesses; with the polyfill each call is a
+// wasm→JS hop (still correct, just no boundary win).
+const JSS_POLYFILL = {
+  length:     (s) => s.length,
+  charCodeAt: (s, i) => s.charCodeAt(i),
+}
+
+// Probe once: does this engine honor the `{ builtins: ['js-string'] }` option
+// on WebAssembly.Module? Compiles a tiny module that imports a wasm:js-string
+// fn; if instantiation succeeds with no imports object, native is available.
+let jssNativeProbed = false
+let jssNativeSupported = false
+const jssProbeNative = () => {
+  if (jssNativeProbed) return jssNativeSupported
+  jssNativeProbed = true
+  try {
+    // Minimal module: (module (import "wasm:js-string" "length" (func (param externref) (result i32))))
+    const bytes = new Uint8Array([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,        // header
+      0x01, 0x06, 0x01, 0x60, 0x01, 0x6f, 0x01, 0x7f,        // type: (externref)→i32
+      0x02, 0x18, 0x01,                                       // import section
+      0x0f, ...new TextEncoder().encode('wasm:js-string'),    // mod name
+      0x06, ...new TextEncoder().encode('length'),            // name
+      0x00, 0x00,                                             // kind=func, type=0
+    ])
+    const mod = new WebAssembly.Module(bytes, { builtins: ['js-string'] })
+    new WebAssembly.Instance(mod, {})
+    jssNativeSupported = true
+  } catch {
+    jssNativeSupported = false
+  }
+  return jssNativeSupported
+}
+
 const buildImports = (mod, opts, state) => {
   const { needsWasi, wasiImports } = linkWasi(mod, opts)
   const imports = wasiImports || {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
+
+  // `wasm:js-string` polyfills — only attach when native builtins aren't honored
+  // by this engine. With `{ builtins: ['js-string'] }` the import slots are
+  // already filled by the engine; supplying a JS function would error or just
+  // be ignored. Without native support, polyfill the names this module imports.
+  if (!jssProbeNative()) {
+    for (const imp of WebAssembly.Module.imports(mod)) {
+      if (imp.module === 'wasm:js-string' && JSS_POLYFILL[imp.name]) {
+        if (!imports['wasm:js-string']) imports['wasm:js-string'] = {}
+        imports['wasm:js-string'][imp.name] = JSS_POLYFILL[imp.name]
+      }
+    }
+  }
 
   // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz
   // values. Args/return ride i64 across the boundary (Step 2c) so V8 cannot
@@ -814,7 +913,21 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 export const instantiate = (wasm, opts = {}) => {
   const state = prepareInterop(opts)
   opts.extMap = state.extMap
-  const mod = wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
+  // Prefer native `wasm:js-string` builtins when the engine honors the option.
+  // The option is silently accepted by V8 17+/Safari 18.4+; older engines that
+  // don't recognize it either throw or ignore it — try-fallback handles both.
+  let mod
+  if (wasm instanceof WebAssembly.Module) {
+    mod = wasm
+  } else if (jssProbeNative()) {
+    try {
+      mod = new WebAssembly.Module(wasm, { builtins: ['js-string'] })
+    } catch {
+      mod = new WebAssembly.Module(wasm)
+    }
+  } else {
+    mod = new WebAssembly.Module(wasm)
+  }
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)

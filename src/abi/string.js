@@ -490,43 +490,37 @@ export const jsstring = {
   imports: ['length', 'charCodeAt', 'concat', 'fromCharCode', 'substring',
             'codePointAt', 'compare', 'test', 'intoCharCodeArray', 'fromCharCodeArray'],
 
-  // Op hooks — string operations the compiler routes through ctx.abi.string.
-  // Populated incrementally as items 1–9 in the checklist land. Each op
-  // receives externref-typed slot carriers and emits a `call` to its
-  // wasm:js-string import. Empty today; the default-bundle entry for
-  // `'nanbox+jsstring'` in `src/abi/index.js` still points at `sso` until
-  // these are real.
+  // Op hooks — string operations routed through this carrier. Inputs are
+  // already externref-typed (the param/local that carries the value); outputs
+  // are i32 (`length`, `charCodeAt`) or (for future ops) externref again.
+  // Each op registers its builtin import via `ctx.core.jsstring.add(name)`;
+  // `compile.js` drains the set into `(import "wasm:js-string" …)` nodes.
   ops: {
-    // byteLen: (sExtRef, ctx) => {
-    //   ctx.core.imports.add('wasm:js-string', 'length')
-    //   return ['call', '$__jss_length', sExtRef]
-    // },
-    // charCodeAt: (sExtRef, iI32, ctx) => {
-    //   ctx.core.imports.add('wasm:js-string', 'charCodeAt')
-    //   return ['call', '$__jss_charCodeAt', sExtRef, iI32]
-    // },
-    // eq: (aExtRef, bExtRef, ctx) => {
-    //   ctx.core.imports.add('wasm:js-string', 'compare')
-    //   return ['i32.eqz', ['call', '$__jss_compare', aExtRef, bExtRef]]
-    // },
-    // cmp: (aExtRef, bExtRef, ctx) => {
-    //   ctx.core.imports.add('wasm:js-string', 'compare')
-    //   return ['call', '$__jss_compare', aExtRef, bExtRef]
-    // },
-    // concat: (aExtRef, bExtRef, ctx) => {
-    //   ctx.core.imports.add('wasm:js-string', 'concat')
-    //   return ['call', '$__jss_concat', aExtRef, bExtRef]
-    // },
-    // concatRaw is identical to concat here — `wasm:js-string.concat` doesn't
-    // do ToString coercion; both sides are already strings by typing.
-    // concatRaw: (aExtRef, bExtRef, ctx) =>
-    //   ctx.core.imports.add('wasm:js-string', 'concat') ||
-    //   ['call', '$__jss_concat', aExtRef, bExtRef],
-  },
+    /** Byte length. Receiver: externref. Returns i32 — caller widens to f64
+     *  if it needs JS-spec `.length` (a number for the JS-visible export). */
+    byteLen: (sExt, ctx) => {
+      ctx.core.jsstring.add('length')
+      return ['call', '$__jss_length', sExt]
+    },
 
-  // No peephole — string ops don't share the nanbox layout's reinterpret/
-  // wrap surface, so there's nothing carrier-specific to fold. (`nanboxF64`
-  // keeps its peephole; carriers that don't need one simply don't expose it.)
+    /** Char code at index i. Receiver: externref; index: i32. Returns i32.
+     *  `wasm:js-string.charCodeAt` traps on OOB — callers must only use this
+     *  shape under an in-bounds proof (analyze.js `inBoundsCharCodeAt`). The
+     *  generic OOB-NaN contract is still handled via the SSO fallback (which
+     *  doesn't apply when the receiver is externref — see core.js dispatch). */
+    charCodeAt: (sExt, iI32, ctx) => {
+      ctx.core.jsstring.add('charCodeAt')
+      return ['call', '$__jss_charCodeAt', sExt, iI32]
+    },
+  },
+}
+
+// Signatures for the `wasm:js-string` imports this carrier emits. Indexed by
+// builtin name (the bare key drained from `ctx.core.jsstring`); `compile.js`
+// builds the `(import …)` node from this table.
+export const JSS_IMPORT_SIGS = {
+  length:       { params: ['externref'],            result: 'i32' },
+  charCodeAt:   { params: ['externref', 'i32'],     result: 'i32' },
 }
 
 // Default carrier — picked when narrower has no stronger evidence. Reached

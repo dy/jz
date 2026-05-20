@@ -148,6 +148,10 @@ export function reset(proto, globals) {
     extImports: new Set(),  // __ext_* helpers actually emitted as env imports —
                             // pullStdlib() removes them from `includes` after wiring,
                             // so post-compile auditors (host: 'wasi') read this instead.
+    jsstring: new Set(),    // `wasm:js-string` builtin names referenced by emitted code.
+                            // Drained at module-assembly time into `(import "wasm:js-string" "name" …)`
+                            // nodes; host wires JS-side polyfills via interop's
+                            // env builder for engines without builtin support.
   }
 
 

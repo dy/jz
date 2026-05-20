@@ -418,6 +418,13 @@ export default (ctx) => {
    *  `undefined` semantics on non-pointer .length (the binding writes through xs[i]
    *  / xs.length, so reaching .length with a non-pointer is unreachable in practice). */
   function emitLengthAccess(va, vt, notString = false) {
+    // jsstring carrier: receiver is an externref slot (boundary param tagged
+    // `jsstring` by narrow.js phase J). Route to the `wasm:js-string` length
+    // builtin directly — no SSO unbox, zero copy.
+    if (va?.type === 'externref') {
+      ctx.core.jsstring.add('length')
+      return typed(['f64.convert_i32_s', ['call', '$__jss_length', va]], 'f64')
+    }
     if (vt === VAL.ARRAY || vt === VAL.SET || vt === VAL.MAP) {
       const off = ptrOffsetIR(va, vt)
       return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', off, ['i32.const', 8]]]], 'f64')
@@ -697,7 +704,11 @@ export default (ctx) => {
       const rep = typeof obj === 'string' ? repOf(obj) : null
       const vt = rep ? rep.val : valTypeOf(obj)
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
-      return emitLengthAccess(asF64(emit(obj)), vt, notString)
+      // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
+      // dispatch to `wasm:js-string.length` instead of forcing through f64.
+      const recv = emit(obj)
+      if (recv?.type === 'externref') return emitLengthAccess(recv, vt, notString)
+      return emitLengthAccess(asF64(recv), vt, notString)
     }
 
     // Type-specific property emitter (`.regex:source`, …) — the property-read

@@ -83,6 +83,7 @@ export const PASS_NAMES = [
   'vectorizeLaneLocal',       // SIMD-128 lift for lane-pure typed-array loops
   'arenaRewind',              // per-call heap rewind for no-arg scalar allocator kernels
   'treeshake',
+  'jsstring',                 // boundary opt-in: flip exported string params to externref
 ]
 
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))

@@ -166,7 +166,7 @@ For full TC39 conformance use [porffor](https://github.com/CanadaHonk/porffor); 
 <br>
 
 
-Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary:
+Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary. (For exported functions whose string param is used only as a string — `.length` / bounded `.charCodeAt` — the boundary skips the memory copy entirely; see *How do strings cross the boundary?* below.)
 
 > [!WARNING] jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
 > `memory.Object({ x: 3, y: 4 })` expects the same key order as the jz source `{ x, y }`.
@@ -212,6 +212,54 @@ Template interpolation handles most of this automatically — strings, arrays, n
 ```js
 jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
 ```
+
+</details>
+
+<details>
+<summary><strong>How do strings cross the boundary? Can a JS string pass through without copying?</strong></summary>
+
+<br>
+
+Strings have **two boundary carriers**. The compiler picks per export-param:
+
+| carrier | when | what crosses | per-call cost |
+|---|---|---|---|
+| **f64 / SSO** (default) | every parameter unless the narrower can prove the param is used purely as a string | a NaN-boxed `f64` pointing at UTF-8 bytes written into wasm linear memory; ≤4 ASCII chars inline in the NaN payload (SSO) | one `_alloc` + memcpy per call |
+| **externref / `wasm:js-string`** | exported-fn param uses only `.length` and bounded `.charCodeAt(i)`, isn't reassigned or captured, doesn't escape into non-builtin calls, *and* (a) at least one `.charCodeAt` use or (b) call-site evidence proves STRING or (c) a string-literal default (`s = ''`) declares intent | the JS string itself, by reference | **zero** — `.length`/`.charCodeAt` lower to [`wasm:js-string`](https://github.com/WebAssembly/js-string-builtins/blob/main/proposals/js-string-builtins/Overview.md) builtins the engine inlines |
+
+The opt-in fires automatically when the use pattern is provable. `--wat` shows it as `(param $s externref)` on the inner function. A small per-export custom section (`jz:extparam`) tells interop which arg slots skip NaN-boxing.
+
+```js
+const { exports } = jz`
+  // Opt-in fires: .charCodeAt in a bounded for-loop discriminates string.
+  export let sum = (s) => {
+    let n = 0
+    for (let i = 0; i < s.length; i++) n += s.charCodeAt(i)
+    return n
+  }
+
+  // Opt-in fires: 's = ""' default declares string intent — flips even
+  // though .length alone is otherwise polymorphic across string/array.
+  export let len = (s = '') => s.length
+
+  // Opt-in declines: '+' isn't a builtin; param escapes into the f64 op.
+  export let label = (s) => s + ' (ok)'
+`
+
+exports.sum('hello')         // 532  — JS string passed by reference
+exports.len()                // 0    — default substituted JS-side
+exports.label('test')        // 'test (ok)' — memory-backed string, as before
+```
+
+**Why .length-only doesn't flip by default.** `.length` reads from arrays and typed arrays too. `f(42)` returns `undefined` (number has no `.length`); `f([1,2,3])` returns `3`. Flipping `.length`-only to `wasm:js-string.length` would trap on non-strings — the f64/SSO carrier keeps that tolerant polymorphism. A `.charCodeAt` use, a STRING-proving call site, or an explicit `s = ''` default lifts the conservatism.
+
+**Why bounded loops matter.** JS `'ab'.charCodeAt(99)` returns `NaN`; `wasm:js-string.charCodeAt` **traps**. The narrower walks for-loops to prove `i < s.length` before flipping. Unbounded reads stay on the f64 carrier.
+
+**Engines.** Native `wasm:js-string` lands in V8 17+ (Chrome 134+, Node 25+ via the `{ builtins: ['js-string'] }` Module option), Safari 18.4+, Firefox behind a flag. `jz/interop` probes the engine and either passes the option for native inlining or attaches a JS polyfill (`(s) => s.length`, `(s, i) => s.charCodeAt(i)`). Either way the boundary string-copy is saved; the polyfill blunts only the per-char loop speedup.
+
+**Opt-out.** `optimize: { jsstring: false }` keeps every param on the f64 carrier — useful for engines that mishandle the builtins option, or for comparing the two in a bench.
+
+**Bench.** Run `node bench/jsstring/bench-jsstring.mjs` for paired-compilation numbers on the current engine (typical Node 25 result: `.length` 20–5000× faster, `.charCodeAt`-loop 1.3–10× faster as string size grows from 8 to 8192 chars).
 
 </details>
 

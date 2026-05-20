@@ -3567,7 +3567,7 @@ function collectDecls(node, out) {
  *  by an enclosing canonical induction loop `for (let i = C; i < recv.length; i++)`.
  *  Matches the post-`prepare` shape, where the `.length` bound is hoisted into a
  *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). */
-function scanBoundedLoops(node, set) {
+export function scanBoundedLoops(node, set) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
