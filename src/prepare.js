@@ -607,7 +607,11 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// FIXME: can we jzify some of these?
+// Strict-jz prohibitions. `class` and `arguments` are *also* listed here but
+// only reach this point when jzify is off — jzify lowers `class` to a factory
+// arrow and rewrites `arguments` to a rest param before prepare runs. The
+// remainder (`with`, `this`, `super`, `yield`, `eval`) have no safe lowering
+// and stay errors in both modes.
 const PROHIBITED = { 'with': '`with` not supported', 'class': '`class` not supported', 'yield': '`yield` not supported',
   'this': '`this` not supported: use explicit parameter',
   'super': '`super` not supported: no class inheritance',

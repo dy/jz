@@ -1,112 +1,27 @@
 ## jz — execution plan
 
-Status (2026-05-20): unit **1769 pass**, test262 language **1429 pass / 0 fail**
-(baseline 1429), builtins **719 pass / 0 fail**. Every step keeps zero
-regressions (`npm test` / `npm run test262` / `npm run test262:builtins`),
-commits atomically by file name, and bumps `JZ_TEST262_BASELINE` in
-`.github/workflows/test262.yml` the same commit a count moves.
+#### Perf
 
-> **State (2026-05-17).** Phase 0 (declarative reorg) and Steps 1–6 are all
-> resolved — done, redirected, or descoped — and compressed into Archive ›
-> "Execution plan — Phase 0 + Steps 1–6". The object layout carrier landed;
-> `src/abi/array.js` landed with `taggedLinear` + the `structInline` SRoA
-> carrier (closes the `aos` native-gap, 1.13 → 0.94 ms). What remains is one
-> coherent representation/perf track: every item is blocked on the *same*
-> prerequisite — a narrower that emits non-default carrier facts. Building the
-> seam before that consumer exists is abstraction ahead of its consumer
-> (CLAUDE.md: forbidden). `structInline` is the first such consumer but is
-> self-contained — it does not unblock the number/string carrier dispatch.
-> The live list below is what is genuinely open: perf-gap audits, the deferred
-> representation track, and product/measurement asks.
+* [ ] **Auto AoS→SoA carrier.** `xs[i] = rows[i].x + …` — load is a
+  pointer-chase, store lane-aligned; wasm-v1 has no gather. Honest fix is a
+  struct→SoA carrier (sibling to `src/abi/array.js`'s `structInline`),
+  blocked on the narrower emitting SoA-eligible carrier facts. Multi-week,
+  cross-cutting (touches every array consumer). Deferred until a real
+  workload demands it. Hand-written SoA already vectorizes — Archive ›
+  "opts.host user surface + custom sections reference + SoA boundary pin
+  (2026-05-20)".
 
-### Scope boundary — what jz is, and is NOT
+#### Representation
 
-jz compiles **distilled JS → low-level performant numeric WASM**. It is *not* a
-general JS engine; test262 pass count is a correctness check on the in-scope
-subset, never a coverage target. Chasing the full builtins corpus would pull jz
-toward a runtime it deliberately does not ship. **Off-value, will NOT be done:**
-BigInt (beyond minimal), the Symbol registry / well-known symbols, resizable
-ArrayBuffer + DataView, dynamic RegExp, cross-realm (`$262`), `JSON.rawJSON`.
-Documented as deviations in README ("Where does jz differ from JavaScript?").
-
-The 96 builtins "fails" (2026-05-17) were audited test-by-test and are RESOLVED
-(commit ea1ce43). Every one is out-of-scope-by-design or architecture-blocked —
-there was no genuine in-scope leaf-emitter tail. The runner now splits them:
-- **34 → skip** — compile-time unresolved references (`'JSON'` / `'$262'` /
-  `'Date.prototype'` / `'ArrayBuffer'` / … is not in scope): feature absent,
-  classified by `runTest`'s skip classifier (`'is not in scope'`).
-- **62 → xfail** — tests that compile and run but assert-fail on an out-of-scope
-  feature (BigInt, Symbol primitives, JSON replacer/toJSON, resizable
-  ArrayBuffer, dynamic RegExp exec) or a documented divergence (boolean repr as
-  number, slot-order Set). Enumerated in `EXPECTED_FAIL_*` in the runner; a
-  listed file that starts passing reports as `xpass` so the list cannot rot.
-- **0 → fail** — `fail` now counts only in-scope correctness; CI gates `fail > 0`
-  as well as `pass < baseline`, so any future genuine regression breaks the build.
-
-The earlier "~37 out-of-scope / modest in-scope tail" estimate was wrong on both
-counts: the in-scope tail is empty and the out-of-scope set is the whole 96.
-Phase 0 (declarative spine) remains valid as a *structural* refactor, but it is
-NOT a test262 lever — there are no in-scope builtins fails for it to convert.
-
-> **Unifying insight.** "Declarative" = *uniform signature* + *dependencies-as-data*.
-> `prepare.js` mappers already have it: every mapper is a pure `node → node`, the
-> dict *is* the dispatch. `stdlibDeps` already has it: stdlib→stdlib edges are a
-> data table, not imperative `inc()` calls. Emitters do **not**: they are impure
-> closures that call `inc()` and mutate `ctx.features` inline, so there is no
-> table to read, generate, or fold over. Phase 0 extends the two patterns that
-> already work to the layer that doesn't.
-
-### Live work
-
-#### Perf — native-gap audit (carrier-blocked only)
-
-test262 language tail (5→0), the crc32 / mandelbrot audits, the f64
-cross-array-map vectorizer widening, and the i32 map-loop audit are all
-resolved — see Archive › "test262 language tail + native-gap audit
-(2026-05-19)" and Archive › "i32 map-loop audit (2026-05-19)". What stays open:
-
-* [ ] **AoS-write vectorization.** `xs[i] = rows[i].x + …` — the *store* is
-  lane-aligned but `rows[i].x` is a pointer-chase, not a contiguous `f64.load`,
-  so `vectorizeLaneLocal` cannot lift the loads. Wasm-v1 has no gather op;
-  emulating gather as 2 scalar `f64.load` + lane-insert per `f64x2` is
-  break-even with scalar. The honest fix is a struct→SoA carrier (sibling to
-  `src/abi/array.js`'s `structInline`) — multi-week feature, blocked on the
-  narrower emitting SoA-eligible carrier facts. Schedule explicitly with the
-  Representation track.
-
-#### Generality track — escape/points-to substrate → devirt · SROA · strings
-
-**Goal.** Compile real jessie/subscript as-written — no developer accommodation,
-no hand-written `$parse.space = …` aliasing — and beat V8 on parser-like
-workloads. The user constraint is absolute: *guarantees, not speculations*.
-Every transform fires only under a static proof; absent the proof, jz emits
-plain safe codegen. Correctness is unconditional; speed is provably-best-effort.
-
-Steps 1, 2, 4 landed — see Archive › "Generality track — Steps 1, 2, 4".
-Step 3's allocation-elimination work landed — slice views, literal interning,
-no-alloc `s[i] === 'X'` charcode compare, no-alloc substring-eq fusion. See
-Archive › "Generality track — Step 3". The runtime scanned-identifier intern
-table was audited and closed as speculative — see Archive › "Generality
-track — Step 3".
-
-The `jsstring` carrier (under `host: 'js'`) lives in the Representation track
-below — orthogonal to the above and host-gated.
-
-#### Representation track — deferred-by-design (blocked on narrower carrier facts)
-The narrower must emit non-default carrier facts before any of this has a
-consumer. Full design under "Boundary protocol and internal representation"
-below — that section's workstream list is canonical. (Number-carrier dispatch
-was already audited and shelved — see Archive › "Execution plan — Phase 0 +
-Steps 1–6", Step 4.)
-* [x] **`jsstring` carrier — boundary opt-in landed (2026-05-20).** See Archive ›
-  "jsstring boundary carrier (2026-05-20)". Remaining (deferred): propagate the
-  externref carrier past the *export* boundary into internal STRING locals so
-  parsers like jessie can carry `src` end-to-end without memory-backed copies —
-  blocked on narrower converging carrier facts across the call graph (fixpoint,
-  not just leaf exports). Plus a boundary string cache in interop.js as an
-  orthogonal SSO improvement for repeat-same-string workloads.
-* [ ] **`opts.host` user surface** (`js` / `wasi` / `gc`) — the one ABI knob
-  users need; design under "Boundary protocol" below.
+* [ ] **jsstring carrier — internal-STRING-locals flow.** Propagate
+  externref past the export boundary into internal STRING locals so parsers
+  carry `src` end-to-end without memory-backed copies. Blocked on the
+  narrower converging carrier facts across the call graph (fixpoint, not
+  just leaf exports). Archive › "jsstring boundary carrier (2026-05-20)"
+  covers the landed leaf-export work.
+* [ ] **Boundary string cache in interop.js.** Cache `mem.wrapVal(s)` by
+  string identity so repeat-same-string workloads amortize the UTF-8
+  transcode — orthogonal SSO improvement.
 
 #### Product / measurement (needs a measurement+product session, not a compiler edit)
 * [ ] **Bench cols — `jz.speed` vs `jz.size`.** Second harness pass with a
@@ -115,23 +30,20 @@ Steps 1–6", Step 4.)
   integrations, competitive benches; decide whether AS test parity is worth the
   porting cost.
 
-#### Misc
-* [~] **`prepare.js:371` FIXME.** Cosmetic (the `class`/`arguments` note is
-  stale — both are already lowered by jzify). Deferred — `prepare.js` carries
-  the user's uncommitted work; touch the comment only once that lands.
-
 ### Deferred — NOT minimal, schedule explicitly
-- Insertion-order Set/Map — open-addressing table iterates slot-order; ES mandates
-  insertion order. Needs a per-entry `seq` field or a sibling order list.
+- Insertion-order Set/Map — open-addressing table iterates slot-order; ES
+  mandates insertion order. Needs a per-entry `seq` field or a sibling order
+  list. Currently enumerated as a documented divergence in
+  `test/test262-builtins.js` xfail list.
 - Boolean type — a distinct runtime atom (NaN-boxed ATOM id), NOT a number-op
-  carrier; independent of Step 4. Invasive: touches truthiness / typeof /
-  coercion / comparison. Fixes `String(true)`, `typeof`, `parseInt(true)` — real
-  test262 movement. (The earlier "cheap after Step 4" note was wrong.)
-- mandelbrot vs AS — wasm-v1 floor (no scalar FMA), proposal-blocked. `crc32`
-  (SIMD `i32x4` lowering) is the live perf target instead.
-- Intl, Date locale surface, component model, threads, memory64, WebGPU — Future.
-- Ship: pick ONE undeniable use case (floatbeat playground — DSP kernels are jz's
-  proven strength per the EdgeJS archive). Product call.
+  carrier. Invasive: touches truthiness / coercion / comparison. `typeof true`
+  already returns `'boolean'`; remaining gaps are `String(true) → '1'` (should
+  be `'true'`), `parseInt(true) → 1` (should be `NaN`), `true === 1 → true`
+  (should be `false`).
+- Intl, Date locale surface, component model, threads, memory64, WebGPU —
+  Future.
+- Ship: pick ONE undeniable use case (floatbeat playground — DSP kernels are
+  jz's proven strength per the EdgeJS archive). Product call.
 
 ### Ship something real
 
@@ -354,6 +266,47 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 ---
 
 ## Archive
+
+### opts.host user surface + custom sections reference + SoA boundary pin (2026-05-20)
+
+Cleanup pass on the `opts.host` knob and a pinned boundary for SIMD
+vectorization. No new feature surface — the work made existing behaviour
+visible and irreversible.
+
+* [x] **`host: 'gc'` reserved-mode error** (`index.js:315`). Distinct error
+  text so users see it as planned-future, not unknown-garbage: "reserved for
+  a planned wasm-gc backend, not yet implemented. Use 'js' (default …) or
+  'wasi' (standalone runtimes — no env imports)."
+* [x] **wasi tolerance comment** (`src/emit.js:2563`). Documents that the
+  silent `undefExpr()` fallthrough for unknown receivers under `host: 'wasi'`
+  is by-design — `test/wasi.js` cases 235 and 245 pin it explicitly so
+  polymorphic source can target both modes from one source. `strict: true`
+  is the documented fail-fast opt-in.
+* [x] **README — host modes**. Existing `host: 'js'` / `'wasi'` FAQ extended
+  with the `gc` reservation note and a pointer to `strict: true` for users
+  who want the wasi unknown-receiver path to error instead of no-op.
+* [x] **README — custom sections reference** (new FAQ). First public
+  documentation of the four sections jz emits: `jz:schema` (rehydration
+  shapes), `jz:rest` (rest-param fixed counts), `jz:i64exp` (per-export
+  i64-ABI map for NaN-canonicalization dodging), `jz:extparam` (externref
+  param positions + JS-side defaults — written by the jsstring carrier).
+  Names declared stable; binary layouts declared internal.
+* [x] **SoA vectorization — README FAQ + tests** (`test/simd.js`,
+  `README.md`). Documents the supported shapes (same-array, cross-array,
+  SoA-3 / SoA-4 separate typed arrays per field) and the unsupported AoS
+  interleaved shape with the mechanical migration path. Three new tests:
+  SoA-3 fused map lifts to `f64x2`; SoA-4 RGBA luminance blend lifts; AoS-
+  stride-2 must NOT lift (parity intact) — pins the boundary so future
+  changes can't accidentally promise AoS without a real struct-splitting
+  carrier. Counterpoint to the still-open Live-work AoS-write bullet, which
+  remains the multi-week deferred carrier.
+
+**Skipped deliberately:** a `jz:host` feature-stamp custom section. `interop.js`
+already detects required features from imports (`wasi_snapshot_preview1`,
+`env`, `wasm:js-string`); the extra surface adds no consumer value and would
+become permanent maintenance debt.
+
+tests: 1769 → 1772 pass (+3); commit `06b0e69`.
 
 ### jsstring boundary carrier (2026-05-20)
 
