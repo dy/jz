@@ -1,6 +1,6 @@
 ## jz — execution plan
 
-Status (2026-05-19): unit **1759 pass**, test262 language **1429 pass / 0 fail**
+Status (2026-05-20): unit **1759 pass**, test262 language **1429 pass / 0 fail**
 (baseline 1429), builtins **719 pass / 0 fail**. Every step keeps zero
 regressions (`npm test` / `npm run test262` / `npm run test262:builtins`),
 commits atomically by file name, and bumps `JZ_TEST262_BASELINE` in
@@ -85,17 +85,9 @@ plain safe codegen. Correctness is unconditional; speed is provably-best-effort.
 Steps 1, 2, 4 landed — see Archive › "Generality track — Steps 1, 2, 4".
 Step 3's allocation-elimination work landed — slice views, literal interning,
 no-alloc `s[i] === 'X'` charcode compare, no-alloc substring-eq fusion. See
-Archive › "Generality track — Step 3". What stays open:
-
-* [x] **Runtime scanned-identifier intern table.** Audited 2026-05-19 against
-  real workload (`subscript/parse.js`, `feature/comment.js`, `bench/jessie`):
-  every `substr`/`substring` is *inline* with `===`/`!==`, which the
-  substring-eq peephole (Step 3) already covers no-alloc. There is no
-  `let id = src.substr(...); if (id === "x") else if (id === "y")` pattern in
-  any current corpus. Building a runtime hash table + parser-emit rewrite
-  without a workload that measures the win is speculation ahead of consumer
-  (CLAUDE.md: forbidden). **Closed — re-open only if a real bench/codebase
-  shows the bound-then-multi-compare pattern as a hot path.**
+Archive › "Generality track — Step 3". The runtime scanned-identifier intern
+table was audited and closed as speculative — see Archive › "Generality
+track — Step 3".
 
 The `jsstring` carrier (under `host: 'js'`) lives in the Representation track
 below — orthogonal to the above and host-gated.
@@ -358,6 +350,50 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 ---
 
 ## Archive
+
+### watr 4.6.9 upgrade — drop 'light' mode workaround (2026-05-20)
+
+* [x] **'light' watr mode removed** (`a26ea84`). L2 was running a curated watr
+  subset (`inline / inlineOnce / coalesce` all off) since 4.6.4 to dodge two
+  upstream miscompiles:
+  - **W1a** — `inlineOnce` dropped a single-call helper's bare-`local.get`
+    body (root-node `walkPost` return value discarded; substitution lost).
+  - **W1b** — `coalesceLocals` merged a zero-dependent local into a residue-
+    carrying slot when `inlineOnce`'s `needsReset` zero-init ran before
+    `propagate`'s cleanup sweep. Trigger: `/a.+b/.test("ab")`.
+
+  watr 4.6.9 ships fixes for both. L2 now runs the full watr default pipeline
+  (treeshake / dedupe / dedupTypes / coalesce / propagate / packData / fold /
+  peephole / vacuum / mergeBlocks / brif / loopify / inlineOnce / …). `inline`
+  stays off per watr's own default — opt-in only; can duplicate bodies. L3 no
+  longer needs an "inlining bonus" — its preset reads truthfully as L2 + larger
+  array/hash initial caps + `hoistConstantPool` off.
+
+* [x] **jz csePureExpr snapId — high-water mark, not first gap** (`fed07f8`).
+  watr's full `coalesceLocals` removes redundant locals, so the surviving
+  `$__pe<N>` set is non-contiguous; the old first-gap allocator picked an
+  already-live id and triggered "Duplicate local $__pe20" on mat4. Fixed by
+  scanning all surviving cse-pure-expr locals for a high-water mark.
+
+* [x] **17 codegen-shape tests rewired to `optimize: { watr: false }`**.
+  Tests in `test/{types,closures,features,feature-gating,optimizer,inference}.js`
+  verify jz's compile-time decisions (slot-type dispatch, narrowed return
+  types, closure-unbox declarations, escape-analysis allocations, LICM snap
+  locals, sourceInline skip-into-export, charCodeAt i32 propagation, …) — not
+  watr's downstream cleanup. With full watr running at L2, `inlineOnce` would
+  fold non-exported helpers into their lone caller and `treeshake` would erase
+  them, so a `(func $mk …)` regex no longer matched. Probe call sites now opt
+  out of watr explicitly, making the intent visible at each call.
+
+* [x] **Subscript / watr dead-code workarounds dropped** (`8ef4b46`, `4f9e64a`):
+  trailing-null pop in `'()'` emit (closed by subscript 10.4.13's S12 fix) and
+  the W5 unsigned-hex `i64.const` dance (closed by watr 4.6.8 handling signed
+  hex strings directly). Workaround tag in `prepare.js` 1768–1777 (S2 `new`
+  precedence) and the IIFE/labeled-stmt patches in `jzify.js` remain — gated
+  on the next subscript release.
+
+bumps: `subscript 10.4.12 → 10.4.13`, `watr 4.6.8 → 4.6.9`.
+tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 
 ### test262 language tail + native-gap audit (2026-05-19)
 
