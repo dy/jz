@@ -256,6 +256,8 @@ export function reset(proto, globals) {
     strPool: null,         // shared-memory: accumulated raw bytes of string literals (no length prefix)
     strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
+    userThrows: false,  // user wrote `throw`/`try`/`catch`/`finally` — keep runtime declared
+                        // even when all throws are dead-code-eliminated (JS-side ABI contract).
   }
 
   ctx.memory = {
