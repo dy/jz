@@ -2754,10 +2754,11 @@ export function emit(node, expect) {
   if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
     return nullExpr()
   if (typeof node === 'bigint') {
-    // Wrap to unsigned i64 range — emit as positive hex so downstream BigInt() parsers
-    // (e.g. watr's optimize.js getConst) don't choke on "-0x..." strings.
-    const n = node & 0xFFFFFFFFFFFFFFFFn
-    return typed(['f64.reinterpret_i64', ['i64.const', '0x' + n.toString(16)]], 'f64')
+    // Truncate to 64 bits — `BigInt.asUintN(64, …)` semantics, same as the
+    // explicit mask `node & 0xFFFFFFFFFFFFFFFFn`. Decimal form (vs. the prior
+    // unsigned-hex dance) is enough now that watr's optimize.js getConst
+    // handles signed strings correctly (4.6.8 W5 fix).
+    return typed(['f64.reinterpret_i64', ['i64.const', BigInt.asUintN(64, node).toString()]], 'f64')
   }
   if (typeof node === 'number') return emitNum(node)
   if (typeof node === 'string') {
