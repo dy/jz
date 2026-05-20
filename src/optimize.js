@@ -1065,8 +1065,16 @@ export function csePureExpr(fn) {
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
 
+  // High-water mark across ALL surviving `$__pe<N>` locals, not the first gap.
+  // A prior csePureExpr run + watr.coalesce can leave non-contiguous numbering
+  // (e.g. $__pe0,$__pe1,$__pe5,$__pe20 — coalesce removed the merged ones); picking
+  // the first gap (2) then allocating sequentially would collide on $__pe5 / $__pe20.
   let snapId = 0
-  while (fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === `$__pe${snapId}`)) snapId++
+  for (const n of fn) {
+    if (!Array.isArray(n) || n[0] !== 'local' || typeof n[1] !== 'string') continue
+    const m = /^\$__pe(\d+)$/.exec(n[1])
+    if (m) { const k = +m[1]; if (k >= snapId) snapId = k + 1 }
+  }
   const newLocals = []
 
   const COMMUTATIVE = new Set(['f64.mul', 'f64.add', 'i32.mul', 'i32.add', 'i32.and', 'i32.or', 'i32.xor', 'i64.mul', 'i64.add', 'i64.and', 'i64.or', 'i64.xor'])
