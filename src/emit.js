@@ -2123,8 +2123,6 @@ export const emitter = {
     let argList = Array.isArray(callArgs)
       ? (callArgs[0] === ',' ? callArgs.slice(1) : [callArgs])
       : callArgs ? [callArgs] : []
-    // Trailing comma in call: parser emits a trailing null sentinel — drop it
-    while (argList.length && argList[argList.length - 1] == null) argList.pop()
 
     // Helper: expand spread arguments into flat list of normal arguments + spread markers
     // Returns { normal: [...], spreads: [(pos, expr), ...] }
