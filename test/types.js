@@ -30,7 +30,12 @@ function run(code, opts) {
 
 // jz()-based — needed by slot/typed-narrow tests that use full host wiring.
 const runHost = (code) => jz(code).exports
-const wat = (src) => jz.compile(src, { wat: true })
+// Codegen-shape tests inspect jz's pre-watr structure (helper-function names,
+// per-local types, runtime dispatch calls). watr's `inlineOnce` + `treeshake`
+// dissolve non-exported helpers into their lone caller and erase them, so the
+// `(func $mk …)` regex no longer matches. Compile without watr's post-pass to
+// inspect what jz actually emits.
+const wat = (src) => jz.compile(src, { wat: true, optimize: { watr: false } })
 const fnBody = (w, name) => {
   const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
   const m = w.match(re)

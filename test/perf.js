@@ -693,10 +693,10 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
     './util.js':        watrSrc('util.js'),
   }
   const watrJs = readFileSync(new URL('../node_modules/watr/watr.js', import.meta.url), 'utf8')
-  // optimize: 'speed' — full watr (inlining included) + max scalar unroll. The
-  // default L2 'light' set skips inline/inlineOnce; for this micro-pin we want
-  // the strictest possible wasm output to give the 1.5× threshold the most
-  // headroom against CI-machine variance.
+  // optimize: 'speed' — max scalar unroll on top of the full L2 watr pipeline.
+  // L2 already runs watr's inlineOnce + coalesce; 'speed' adds the nested-unroll
+  // tunings that buy this micro-pin the most CI-variance headroom for its 1.5×
+  // threshold.
   // memory: 4096 — pre-allocate 256MB so the bench loop's bump-allocator growth
   // never triggers memory.grow during measurement (prior `memoryPages` key was
   // a silent no-op; jz reads `memory` for the page count shorthand).

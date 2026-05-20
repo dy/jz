@@ -694,12 +694,15 @@ test('closure-unbox: captured by inner closure still works', () => {
 })
 
 test('closure-unbox: codegen — local declared as i32', () => {
-  const w = wat(`
+  // Inspect jz's pre-watr structure: `(local $g i32)` is the closure-unbox
+  // decision recorded by jz; watr's coalesceLocals/inlineOnce would dissolve
+  // the standalone `$g` slot into the surrounding frame.
+  const w = jz.compile(`
     export let f = (n) => {
       let g = (x) => x + n
       return g(1)
     }
-  `)
+  `, { wat: true, optimize: { watr: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   ok(/\(local \$g i32\)/.test(body), '$g declared as i32 (closure unboxed)')

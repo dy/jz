@@ -60,6 +60,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
   // `inc` must *escape* (passed to `keep`) so it stays a real closure that
   // mutates the captured `i` via a heap cell — otherwise inlineLocalLambdas
   // would splice it away and `i` would just be a plain wasm local.
+  // Inspect jz output without watr — `coalesceLocals` would rename `$__sc<N>`.
   const wat = jz.compile(`
     const keep = (f) => f
     export const main = () => {
@@ -70,7 +71,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
       inc()
       return s | 0
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\$__sc\d+/.test(wat), 'expected hoisted snap local')
 })
 
@@ -196,13 +197,15 @@ test('escape analysis: bracket-key extension scalarizes', () => {
 })
 
 test('escape analysis: extended object that escapes still heap allocates', () => {
+  // Inspect jz output without watr — `inlineOnce`+`treeshake` may erase the
+  // `__alloc_hdr` import once the allocating helper has been fused inline.
   const wat = jz.compile(`
     export const main = (x) => {
       const obj = { a: x }
       obj.b = x + 1
       return obj
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'escaping extended object must stay materialized')
 })
 
@@ -212,7 +215,7 @@ test('escape analysis: returned object still heap allocates', () => {
       const obj = { a: x }
       return obj
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'returned object must remain materialized')
 })
 
@@ -223,7 +226,7 @@ test('escape analysis: call-passed object still heap allocates', () => {
       const obj = { a: x }
       return get(obj)
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\(call \$__alloc_hdr\b/.test(wat), 'call-passed object must remain materialized')
 })
 
@@ -491,7 +494,10 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
     mm(iters | 0)
     return out[0] + out[5] + out[10] + out[15] + a[0] + a[5]
   }
-  const wat = jz.compile(src, { wat: true })
+  // Inspect jz's sourceInline + cross-function scalar replacement. Run watr's
+  // inlining out — otherwise `inlineOnce` reshapes `$main` and confuses the
+  // function-boundary regex below.
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
   const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
   ok(!/\(call \$multiplyMany\b/.test(mainWat), 'fixed typed-array callee should inline into exported caller')
   ok(!/\$__alloc\b/.test(mainWat), 'cross-function scalar replacement should remove fixed typed-array allocations')
@@ -753,7 +759,10 @@ test('sourceInline: does NOT inline ordinary hot loop into exported entry', () =
       return hot(4) | 0
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  // jz's sourceInline declines (skip-into-export rule); but watr's `inlineOnce`
+  // is single-callsite based and would happily inline `hot` itself. Disable
+  // watr to verify jz's own decision.
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
   ok(/\(call \$hot\b/.test(wat), 'expected call kept inside exported entry (skip-into-export rule)')
   const { main } = run(src)
   is(main(), 10)
@@ -824,6 +833,7 @@ test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop'
   // `let c = s.charCodeAt(i)` should leave $c as i32 and the digit accumulator
   // (`number * 10 + (c - 48)`) should be pure i32 — no __to_num, no
   // i64.trunc_sat_f64_s, no f64.convert_i32_u of the char code.
+  // Inspect jz's type decisions before watr `coalesceLocals` renames `$c`.
   const wat = jz.compile(`
     export const main = (s) => {
       let n = 0
@@ -833,7 +843,7 @@ test('charCodeAt: returns i32 — no f64 widen/truncate in tokenizer-shape loop'
       }
       return n | 0
     }
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   ok(/\(local \$c i32\)/.test(wat), 'expected $c declared as i32')
   is((wat.match(/\(call \$__to_num/g) || []).length, 0)
   is((wat.match(/i64\.trunc_sat_f64_s/g) || []).length, 0)
@@ -925,12 +935,12 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   }
   is(resolveOptimize(0).watr, false)
   is(resolveOptimize(0).treeshake, false)
-  // Default (level 2) runs watr in 'light' mode — every pass except `inline` /
-  // `inlineOnce`. Most of the size win, no regex-split / codegen-shape breakage.
-  is(resolveOptimize(2).watr, 'light')
+  // Default (level 2) runs the full watr pipeline (inlineOnce + coalesce on;
+  // `inline` stays off per watr's own default).
+  is(resolveOptimize(2).watr, true)
   is(resolveOptimize(2).sourceInline, true)
   is(resolveOptimize(2).nestedSmallConstForUnroll, 'auto')
-  // Level 3 turns watr on fully (adds inlining) plus aggressive nested-unroll.
+  // Level 3 keeps watr on, plus aggressive nested-unroll.
   is(resolveOptimize(3).watr, true)
   is(resolveOptimize(3).sourceInline, true)
   is(resolveOptimize(3).nestedSmallConstForUnroll, true)
@@ -948,7 +958,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(o.treeshake, false)
   is(resolveOptimize({ level: 3, nestedSmallConstForUnroll: 'auto' }).nestedSmallConstForUnroll, 'auto')
   // undefined: default = level 2
-  is(resolveOptimize(undefined).watr, 'light')
+  is(resolveOptimize(undefined).watr, true)
   is(resolveOptimize(undefined).sourceInline, true)
   is(resolveOptimize(undefined).nestedSmallConstForUnroll, 'auto')
   // string aliases

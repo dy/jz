@@ -5,7 +5,12 @@ import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
 import { compile } from '../index.js'
 
-const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
+// Feature gating asks: did jz pull this stdlib in? watr's `inlineOnce` +
+// `treeshake` then folds + erases helpers whose only caller has been inlined,
+// so a presence-check on `(func $__set_add)` would conflate "jz didn't pull
+// the stdlib" with "watr inlined & GC'd it." Compile without watr's post-pass.
+const wat = (code, opts = {}) =>
+  compile(code, { ...opts, wat: true, optimize: { ...opts.optimize, watr: false } })
 const hasImport = (w, name) => new RegExp(`\\(import [^)]*"${name}"`).test(w)
 const hasDef = (w, name) => new RegExp(`\\(func \\$${name}\\b`).test(w)
 const hasCall = (w, name) => new RegExp(`\\(call \\$${name}\\b`).test(w)
