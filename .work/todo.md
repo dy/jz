@@ -35,11 +35,23 @@
   mandates insertion order. Needs a per-entry `seq` field or a sibling order
   list. Currently enumerated as a documented divergence in
   `test/test262-builtins.js` xfail list.
-- Boolean type — a distinct runtime atom (NaN-boxed ATOM id), NOT a number-op
-  carrier. Invasive: touches truthiness / coercion / comparison. `typeof true`
-  already returns `'boolean'`; remaining gaps are `String(true) → '1'` (should
-  be `'true'`), `parseInt(true) → 1` (should be `NaN`), `true === 1 → true`
-  (should be `false`).
+- Boolean ATOM tag (in wasm-v1 NaN-box) — `true`/`false` carried as two new
+  NaN tags (`TRUE_NAN` / `FALSE_NAN`), siblings of the existing `NULL_NAN` /
+  `UNDEF_NAN` atoms. Not wasm-gc — wasm-gc has no native typed-boolean either
+  (`i31ref(0)` doesn't discriminate from `0` the number, same atom-tag problem
+  in different syntax). `typeof true` already returns `'boolean'`; remaining
+  gaps are `String(true) → '1'` (should be `'true'`), `parseInt(true) → 1`
+  (should be `NaN`), `true === 1 → true` (should be `false`). Scope: ~2-3
+  days, ~30-50 coercion sites in `src/emit.js` / `module/string.js` /
+  `module/number.js` learn the new tags before falling through to number
+  handling. Defer until a real workload surfaces boolean stringification /
+  mixed boolean-number comparison as a correctness bug.
+- wasm-gc backend (`host: 'gc'`) — orthogonal future track. Replaces the
+  manual NaN-box + linear-memory allocator with engine GC + typed refs across
+  the whole compiler. Multi-month backend rewrite; benefits are memory-model
+  / externref-bridge / debugging, NOT a fix for boolean discrimination (which
+  the ATOM-tag bullet above resolves in wasm-v1). Currently reserved as a
+  compile-time error in `index.js:315`; documented in README.
 - Intl, Date locale surface, component model, threads, memory64, WebGPU —
   Future.
 - Ship: pick ONE undeniable use case (floatbeat playground — DSP kernels are
