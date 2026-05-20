@@ -733,54 +733,53 @@ export default (ctx) => {
         ['then', thenIR],
         ['else', ['f64.const', `nan:${UNDEF_NAN}`]]]], 'f64')
 
-  // Optional chaining: obj?.prop → null if obj is null, else obj.prop
-  ctx.core.emit['?.'] = (obj, prop) => {
+  // Receiver-evaluate-once: allocate a fresh hoist-temp `$t`, emit `value` into
+  // it, then call `useFn(t)` to build the consumer IR — wrapping both in an
+  // optionalGuard so the consumer runs only when `$t` is non-nullish. Used by
+  // `?.` / `?.[]` / `?.()` whose receiver is read twice (the nullish check and
+  // the dispatched access) but must evaluate once. Rep-seeding for the temp,
+  // when the receiver's value-type drives downstream dispatch, lives inside
+  // the useFn callback so it runs before the consumer IR consults reps.
+  const evalOnce = (value, useFn) => {
     const t = temp()
-    const va = asF64(emit(obj))
+    const va = asF64(emit(value))
+    return optionalGuard(t, va, useFn(t))
+  }
+
+  // Optional chaining: obj?.prop → null if obj is null, else obj.prop
+  ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = rep ? rep.val : valTypeOf(obj)
-    let access
     if (prop === 'length') {
       const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
-      access = emitLengthAccess(['local.get', `$${t}`], vt, notString)
-    } else {
-      const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
-      if (propIdx >= 0) access = emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
-      else {
-        if (typeof obj === 'string') {
-          const objType = lookupValType(obj)
-          if (usesDynProps(objType)) {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-          } else if (objType === VAL.HASH) {
-            access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
-          } else if (objType == null) {
-            // Unknown receiver — in WASI mode use typed dispatch (no PTR.EXTERNAL values).
-            // In JS host mode use __dyn_get_any_t but don't force features.external here
-            // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
-            access = ctx.transform.host === 'wasi'
-              ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-              : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
-          } else {
-            inc('__hash_get', '__str_hash', '__str_eq')
-            access = ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
-          }
-        } else {
-          if (valTypeOf(obj) === VAL.HASH) {
-            access = emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
-          } else {
-            access = emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj), prop)
-          }
-        }
-      }
+      return emitLengthAccess(['local.get', `$${t}`], vt, notString)
     }
-    return optionalGuard(t, va, access)
-  }
+    const propIdx = typeof obj === 'string' ? ctx.schema.find(obj, prop) : -1
+    if (propIdx >= 0) return emitSchemaSlotRead(['local.get', `$${t}`], propIdx)
+    if (typeof obj === 'string') {
+      const objType = lookupValType(obj)
+      if (usesDynProps(objType))
+        return emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
+      if (objType === VAL.HASH)
+        return emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
+      if (objType == null)
+        // Unknown receiver — in WASI mode use typed dispatch (no PTR.EXTERNAL values).
+        // In JS host mode use __dyn_get_any_t but don't force features.external here
+        // since ?.prop short-circuits on nullish (EXTERNAL arm is dead unless already on).
+        return ctx.transform.host === 'wasi'
+          ? emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
+          : emitDynGetAnyTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), objType, prop)
+      inc('__hash_get', '__str_hash', '__str_eq')
+      return ['f64.reinterpret_i64', ['call', '$__hash_get', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', prop]))]]
+    }
+    if (valTypeOf(obj) === VAL.HASH)
+      return emitHashGetLocalConst(['local.get', `$${t}`], asI64(emit(['str', prop])), prop)
+    return emitDynGetExprTyped(['local.get', `$${t}`], asI64(emit(['str', prop])), valTypeOf(obj), prop)
+  })
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]
   // Cache base in temp, propagate valType so []'s type dispatch works
-  ctx.core.emit['?.[]'] = (arr, idx) => {
-    const t = temp()
-    const va = asF64(emit(arr))
+  ctx.core.emit['?.[]'] = (arr, idx) => evalOnce(arr, (t) => {
     // Emit-time rep seed on fresh `?.[]` hoist-temp (lifecycle: analysis-vs-emit).
     // Propagate source type to temp so [] dispatch (string, typed, etc.) works
     // when the inner `ctx.core.emit['[]'](t, idx)` re-enters dispatch.
@@ -790,8 +789,8 @@ export default (ctx) => {
       if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
       ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
     }
-    return optionalGuard(t, va, asF64(ctx.core.emit['[]'](t, idx)))
-  }
+    return asF64(ctx.core.emit['[]'](t, idx))
+  })
 
   // Optional call: fn?.(...args) → null if fn is null, else call fn
   ctx.core.emit['?.()'] = (callee, ...args) => {
@@ -803,38 +802,36 @@ export default (ctx) => {
       const methodEmit = ctx.core.emit[`.${callee[2]}`]
       if (methodEmit) {
         const recv = callee[1]
-        const t = temp()
-        const va = asF64(emit(recv))
-        // Emit-time rep seed on fresh `?.()` recv-temp so methodEmit's dispatch fast-paths fire.
-        const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
-        if (vt) updateRep(t, { val: vt })
-        const callResult = methodEmit(t, ...args)
-        return optionalGuard(t, va, asF64(callResult))
+        return evalOnce(recv, (t) => {
+          // Emit-time rep seed on fresh `?.()` recv-temp so methodEmit's dispatch fast-paths fire.
+          const vt = typeof recv === 'string' ? repOf(recv)?.val : valTypeOf(recv)
+          if (vt) updateRep(t, { val: vt })
+          return asF64(methodEmit(t, ...args))
+        })
       }
     }
-    const t = temp()
-    const va = asF64(emit(callee))
-    // If nullish → return NULL_NAN, else call via fn.call
     if (!ctx.closure.call) err('Optional call requires fn module')
-    // Spread args: mirror the regular `()` emitter — reconstruct the args array
-    // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without
-    // this, the raw `['...', expr]` node falls through to the bare spread emitter
-    // and errors as "Spread (...) can only be used in function/method calls".
-    let callResult
-    const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
-    if (hasSpread) {
-      const normal = [], spreads = []
-      for (const a of args) {
-        if (Array.isArray(a) && a[0] === '...') spreads.push({ pos: normal.length, expr: a[1] })
-        else normal.push(a)
+    return evalOnce(callee, (t) => {
+      // Spread args: mirror the regular `()` emitter — reconstruct the args array
+      // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without
+      // this, the raw `['...', expr]` node falls through to the bare spread emitter
+      // and errors as "Spread (...) can only be used in function/method calls".
+      const hasSpread = args.some(a => Array.isArray(a) && a[0] === '...')
+      let callResult
+      if (hasSpread) {
+        const normal = [], spreads = []
+        for (const a of args) {
+          if (Array.isArray(a) && a[0] === '...') spreads.push({ pos: normal.length, expr: a[1] })
+          else normal.push(a)
+        }
+        const combined = reconstructArgsWithSpreads(normal, spreads)
+        const arrayIR = buildArrayWithSpreads(combined)
+        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true)
+      } else {
+        callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
       }
-      const combined = reconstructArgsWithSpreads(normal, spreads)
-      const arrayIR = buildArrayWithSpreads(combined)
-      callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), [arrayIR], true)
-    } else {
-      callResult = ctx.closure.call(typed(['local.get', `$${t}`], 'f64'), args)
-    }
-    return optionalGuard(t, va, asF64(callResult))
+      return asF64(callResult)
+    })
   }
 
   // Statically boolean-typed operands: `Boolean(x)`, logical-not, and the
