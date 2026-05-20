@@ -312,7 +312,8 @@ const jzCompileInner = (code, opts = {}) => {
   if (opts.noTailCall) ctx.transform.noTailCall = true
   if (opts.strict) ctx.transform.strict = true
   if (opts.host) {
-    if (opts.host !== 'js' && opts.host !== 'wasi') err(`Invalid host '${opts.host}'. Expected 'js' or 'wasi'.`)
+    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop) or 'wasi' (standalone runtimes — no env imports).`)
+    if (opts.host !== 'js' && opts.host !== 'wasi') err(`Invalid host '${opts.host}'. Expected 'js' (default) or 'wasi'.`)
     ctx.transform.host = opts.host
   }
   if (opts.alloc === false) ctx.transform.alloc = false

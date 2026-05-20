@@ -2560,6 +2560,10 @@ export const emitter = {
       // Unknown callee - assume external method
       if (ctx.transform.strict)
         err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
+      // Under wasi there is no host `__ext_call` — the call lowers to a
+      // no-op returning `undefined`. This is by-design so polymorphic code
+      // can target js and wasi from one source; users who want fail-fast
+      // pass `strict: true` (handled above).
       if (ctx.transform.host === 'wasi') return undefExpr()
       inc('__ext_call')
       ctx.features.external = true
