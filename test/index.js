@@ -38,6 +38,7 @@ const TESTS = [
   'semantic-invariants',
   'differential',
   'parser-bugs',
+  'jsstring',
 ]
 
 const argFilters = process.argv.slice(2)

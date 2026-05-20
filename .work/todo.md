@@ -1,6 +1,6 @@
 ## jz — execution plan
 
-Status (2026-05-20): unit **1759 pass**, test262 language **1429 pass / 0 fail**
+Status (2026-05-20): unit **1769 pass**, test262 language **1429 pass / 0 fail**
 (baseline 1429), builtins **719 pass / 0 fail**. Every step keeps zero
 regressions (`npm test` / `npm run test262` / `npm run test262:builtins`),
 commits atomically by file name, and bumps `JZ_TEST262_BASELINE` in
@@ -98,9 +98,13 @@ consumer. Full design under "Boundary protocol and internal representation"
 below — that section's workstream list is canonical. (Number-carrier dispatch
 was already audited and shelved — see Archive › "Execution plan — Phase 0 +
 Steps 1–6", Step 4.)
-* [ ] **`jsstring` carrier.** 9-item checklist in `src/abi/string.js`, gated on
-  `host: 'js'`. Today `jsstring` is exported but the default bundle binds
-  string → `sso`.
+* [x] **`jsstring` carrier — boundary opt-in landed (2026-05-20).** See Archive ›
+  "jsstring boundary carrier (2026-05-20)". Remaining (deferred): propagate the
+  externref carrier past the *export* boundary into internal STRING locals so
+  parsers like jessie can carry `src` end-to-end without memory-backed copies —
+  blocked on narrower converging carrier facts across the call graph (fixpoint,
+  not just leaf exports). Plus a boundary string cache in interop.js as an
+  orthogonal SSO improvement for repeat-same-string workloads.
 * [ ] **`opts.host` user surface** (`js` / `wasi` / `gc`) — the one ABI knob
   users need; design under "Boundary protocol" below.
 
@@ -281,7 +285,7 @@ Each step closes one class of dynamic-fallback emit. Representation work only ru
 
 * [x] **SSO flow-through.** Short-literal strings (≤4 ASCII) live SSO-encoded already, but concat results widen to heap pointers immediately. Where the result also fits SSO, keep it inline. Saves a heap alloc per intermediate. **Landed 2026-05-19:** two-tier fix — (a) compile-time literal+literal concat folds into a single literal in `src/prepare.js` `'+'` handler (bottom-up so `'a'+'b'+'c'` folds left-associatively); (b) runtime `__str_concat` / `__str_concat_raw` now branch to an SSO-repack fast path before the heap-alloc tail when both operands are SSO and total ≤ 4 (`module/string.js` `ssoResultFast` template). Probe `.work/sso-runtime-probe.mjs` confirms 1000× `cat2("ab","cd")` keeps `__heap` pinned at `0x410`; heap path still fires for total > 4. All 1759 tests + bench tests pass.
 
-* [ ] **JS String Builtins specialization** (under `host: 'js'`). When a string binding's evidence is "only operated on via `wasm:js-string`-mappable ops" (`length`, `charCodeAt`, `concat`, `substring`, `fromCharCode`), the narrower picks the `jsstring` carrier from `src/abi/string.js`. The 9-item compiler-wide checklist in that file's docstring is the implementation plan: externref-typed locals, slot coercer, boundary wrappers, import channel, literals, mutating-fast-path gating, cross-carrier interop, carrier-aware nullish, host wiring. Per-site framing makes it incremental: one proven-engine-string binding flips to externref without dragging the whole module. **Surveyed 2026-05-19 — scoped at 1–2 weeks, no current consumer:** scaffold is real (`src/abi/string.js:480-530` `jsstring` export with `slotTypes:['externref']`, `imports:[...]`, commented-out ops table); 9 dependency-ordered checklist items in the docstring spell out the work. Items 2, 3, 4 alone (externref locals; emit returns externref for STRING nodes; boundary wrapper slot-type swap) touch every site that types a string local — closures, params, refinements, destructuring — and every `emit(strNode)`/`asF64(emit(strNode))` call site (dozens). Item 6 (gating mutating fast paths like `__str_append_byte`) requires per-carrier opt-out across the existing SSO peephole/append-byte paths. Item 8 (carrier-aware nullish) touches the `?.length`/`?.charCodeAt` emit chain. **Engine-feature gate**: `wasm:js-string` is V8 17+, Safari 18.4+, Firefox-with-flag; default `host: 'wasi'` users get nothing. **Defer** until a workload demands it: jz's string-heavy users (watr compiler, subscript parser) run fine on the current SSO carrier with the SSO flow-through win just shipped — the marginal win of engine-native string ops doesn't justify the refactor without a measured pain point. Re-evaluate when (a) a user adopts `host: 'js'` and complains about string overhead, or (b) the engine-feature support matrix simplifies (Firefox un-flags). The scaffold preserves the option without locking in any user-visible commitment.
+* [x] **JS String Builtins specialization — boundary opt-in landed (2026-05-20).** See Archive › "jsstring boundary carrier (2026-05-20)". Per-export-param flip to externref + `wasm:js-string.length`/`charCodeAt` lowering, guarded by a use-pattern proof (string-discriminating evidence, no escape, no reassignment, bounded `.charCodeAt`). Internal-STRING-locals carrier flow (the deeper item once envisaged here) remains deferred — covered by the Live-work "jsstring carrier" bullet above as the next layer (call-graph carrier propagation), distinct from the per-export work just shipped.
 
 #### What ships internally vs externally
 
@@ -350,6 +354,70 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 ---
 
 ## Archive
+
+### jsstring boundary carrier (2026-05-20)
+
+The `jsstring` carrier from `src/abi/string.js` is now wired end-to-end as a
+**per-export-param boundary opt-in**. Eligible exports take their string param
+as `externref` (zero-copy JS-string pass-through) instead of the f64/SSO carrier
+(per-call UTF-8 transcode into wasm memory).
+
+* [x] **Narrower phase J — `applyJsstringBoundaryCarrier`** (`src/narrow.js`).
+  Per export, per param, flip `p.type` from `f64` to `externref` *only if* every
+  use is `wasm:js-string`-builtin-mappable AND at least one use proves the param
+  is a string. Proof sources, any of: (a) a `.charCodeAt` use (string-only
+  method), (b) call-site rep evidence `VAL.STRING`, (c) string-literal default
+  `s = ''` (declared intent). Rejects: reassignment / `++` / `--`, closure
+  capture, escape into non-builtin calls, unbounded `.charCodeAt` (would trap
+  where JS returns `NaN`). Standalone entry point exported for
+  `canSkipWholeProgramNarrowing` short-circuit. Gated by `jsstringEnabled()` —
+  off under `host: 'wasi'`, off when `optimize.jsstring === false`.
+  `scanBoundedLoops` exported from `src/analyze.js` for the in-bounds proof.
+* [x] **Builtin import channel** (`ctx.core.jsstring: new Set()` in `src/ctx.js`).
+  Drained at module-assembly into `(import "wasm:js-string" "<name>" …)` nodes
+  with `JSS_IMPORT_SIGS` from `src/abi/string.js`. The set tracks only the
+  builtin names actually used by this module.
+* [x] **Lowering** — `module/core.js` `emitLengthAccess` dispatches on
+  `va?.type === 'externref'` → `(call $__jss_length va)`; the call site reads
+  `emit(obj)` *before* `asF64` so the externref type isn't stripped.
+  `src/emit.js` in-bounds `.charCodeAt` dispatch checks `recv?.type === 'externref'`
+  → `(call $__jss_charCodeAt recv idx)`.
+* [x] **Boundary wrapper + custom section** (`src/compile.js`). Boundary wrapper
+  takes `(param externref)` for flipped slots; the wrapping i64/f64 ABI dance
+  is skipped on those slots. A `jz:extparam` JSON custom section records, per
+  export name, the indices `p:[…]` whose carrier is externref, plus optional
+  `d:{idx:'str'}` for JS-side defaults so the wasm side never sees a null
+  externref. Default-param init loop in `emitFunc` skips the `=== undefined`
+  branch for jsstring params (substitution moves to the JS-side wrapper).
+* [x] **interop.js boundary wiring**. Reads `jz:extparam`; for marked indices
+  the wrapper writes `(${a} === undefined ? ${dn} : ${a})` directly, skipping
+  `mem.wrapVal` (which would NaN-box the JS string). Native `wasm:js-string`
+  detected by a one-time probe: if `new WebAssembly.Module(buf, { builtins:
+  ['js-string'] })` instantiates with no imports, the engine handles the
+  builtins itself (V8 17+ / Node 25+ / Safari 18.4+); otherwise a JS polyfill
+  (`(s) => s.length`, `(s, i) => s.charCodeAt(i)`) is attached.
+* [x] **Opt-out flag** — `optimize.jsstring: false` ([src/optimize.js] PASS_NAMES
+  + the `jsstringEnabled()` gate in narrow.js) keeps every param on the
+  f64/SSO carrier. Used for paired benches and engines that mishandle the
+  builtins option.
+* [x] **Tests — 10 / 22 assertions** ([test/jsstring.js]). Covers: opt-in fires
+  on bounded `.charCodeAt`+`.length`; runtime correctness sums char codes
+  through externref; `.length`-only stays polymorphic (number → undefined);
+  unbounded `.charCodeAt` declines (trap-safety); reassignment / closure
+  capture / `s + 'x'` escape all decline; string-literal default fires the
+  opt-in even without `.charCodeAt`; JS-side default substitution on
+  `undefined`; numeric default doesn't trigger.
+* [x] **Bench** — `bench/jsstring/bench-jsstring.mjs` paired-compilation
+  baseline. On Node 25.9 native, `.length(s)` opt-in is 22× faster at 8 chars,
+  154× at 256, 5510× at 8192 — boundary-copy elimination dominates. `.sum(s)`
+  (`.charCodeAt` loop) is 10.5× / 1.5× / 1.3× faster across the same sizes —
+  win compresses as per-char work begins to dominate. Jessie section
+  documents the correct-rejection case (param escapes into `parse()` — not a
+  builtin — both compilations byte-identical, ~1.0× ratio confirms no
+  side-effect).
+* [x] **README** — new FAQ "How do strings cross the boundary?" with the
+  two-carrier table, opt-in trigger matrix, engine support, opt-out flag, and
+  bench pointer.
 
 ### watr 4.6.9 upgrade — drop 'light' mode workaround (2026-05-20)
 

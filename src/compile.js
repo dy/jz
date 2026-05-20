@@ -36,7 +36,7 @@ import {
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from './optimize.js'
 import { emit, emitter, emitFlat, emitBody } from './emit.js'
-import { emitCharDecompPrologue } from './abi/string.js'
+import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from './abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64,
   NULL_NAN, UNDEF_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, nullExpr, undefExpr,
@@ -417,6 +417,11 @@ function emitFunc(func, funcFacts, programFacts) {
   const defaultInits = new Map()
   for (const [pname, defVal] of Object.entries(defaults)) {
     const p = sig.params.find(p => p.name === pname)
+    // jsstring-carrier params with string-literal defaults skip wasm-side
+    // substitution — the interop wrapper applies the default JS-side (the
+    // value rides through `jz:extparam`). The wasm side never sees a null
+    // externref so no `ref.is_null` branch is needed.
+    if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
     defaultInits.set(pname,
       ['if', isUndef(typed(['local.get', `$${pname}`], 'f64')),
@@ -533,6 +538,7 @@ function synthesizeBoundaryWrappers() {
     // actually crosses the boundary (param.ptrKind set, or result with
     // sig.ptrKind set). Numeric narrowing (i32 trunc-sat / convert) keeps f64
     // so callers seeing the raw export get a plain Number for numerics.
+    // jsstring params bypass both i64 and f64 — they flow as externref end-to-end.
     const paramI64 = sig.params.map(p => p.ptrKind != null)
     const resultI64 = sig.ptrKind != null
     // Inline `(export ...)` attribute only when the func decl carried the
@@ -544,10 +550,15 @@ function synthesizeBoundaryWrappers() {
     const wrapNode = func.exported
       ? ['func', `$${name}$exp`, ['export', `"${name}"`]]
       : ['func', `$${name}$exp`]
-    sig.params.forEach((p, i) => wrapNode.push(['param', `$${p.name}`, paramI64[i] ? 'i64' : 'f64']))
+    sig.params.forEach((p, i) => {
+      const t = p.jsstring ? 'externref' : (paramI64[i] ? 'i64' : 'f64')
+      wrapNode.push(['param', `$${p.name}`, t])
+    })
     wrapNode.push(['result', resultI64 ? 'i64' : 'f64'])
     const args = sig.params.map((p, i) => {
       const get = ['local.get', `$${p.name}`]
+      // jsstring: externref flows through unchanged — inner func also takes externref.
+      if (p.jsstring) return get
       if (p.ptrKind != null) {
         // ptrKind: i64 carrier carries NaN-box bits → wrap to i32 offset
         return ['i32.wrap_i64', get]
@@ -569,6 +580,16 @@ function synthesizeBoundaryWrappers() {
     wrapNode.push(resultI64 ? ['i64.reinterpret_f64', body] : body)
     func._exportUsesI64 = resultI64 || paramI64.some(Boolean)
     func._exportI64Sig = { params: paramI64, result: resultI64 }
+    // Track externref param positions so interop.js can pass JS values
+    // raw (skipping `mem.wrapVal`) at those slots. Today this only fires
+    // for `jsstring`-tagged params; future externref carriers wire here too.
+    // `extParams` is per-slot: false (non-ext) | { def: '...' }-bearing object
+    // for jsstring params with a JS-side default substitution.
+    const extParams = sig.params.map(p => {
+      if (!p.jsstring) return false
+      return p.jsstringDefault != null ? { def: p.jsstringDefault } : true
+    })
+    if (extParams.some(Boolean)) func._exportExtParams = extParams
     wrappers.push(wrapNode)
   }
   return wrappers
@@ -919,10 +940,28 @@ export default function compile(ast, profiler) {
   }
   compilePendingClosures()
 
+  // `wasm:js-string` imports — drained from `ctx.core.jsstring`, one
+  // `(import …)` per builtin referenced by emitted code. Engines with
+  // js-string-builtins support intercept the namespace; engines without
+  // fall back to JS-side polyfills wired in interop.js. The import nodes
+  // precede user imports so the host providing them sees them first.
+  const jssImports = []
+  if (ctx.core.jsstring?.size) {
+    for (const name of ctx.core.jsstring) {
+      const sig = JSS_IMPORT_SIGS[name]
+      if (!sig) continue  // unknown builtin — silently skip (defensive)
+      const funcNode = ['func', `$__jss_${name}`,
+        ...sig.params.map(t => ['param', t]),
+        ['result', sig.result],
+      ]
+      jssImports.push(['import', '"wasm:js-string"', `"${name}"`, funcNode])
+    }
+  }
+
   // Build module sections — named slots, assembled at the end (no index bookkeeping)
   const sec = {
     extStdlib: [],  // external stdlib (imports that must precede all other imports)
-    imports: [...ctx.module.imports],
+    imports: [...jssImports, ...ctx.module.imports],
     types: [],      // function types for call_indirect
     memory: [],     // memory declaration
     data: [],       // data segment (filled after emit)
@@ -1070,6 +1109,30 @@ export default function compile(ast, profiler) {
   }
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // Custom section: per-export externref param positions. interop.js reads
+  // this to pass JS arguments straight through at those positions (no
+  // `mem.wrapVal`, no SSO encoding). Format: { name, p, d? } where p lists
+  // 0-based externref param indices and d (optional) is a map idx→default
+  // string for jsstring-carrier params whose default-substitution happens
+  // JS-side. Empty list emits nothing.
+  const extExports = []
+  for (const f of ctx.func.list) {
+    if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportExtParams) continue
+    const p = []
+    const d = {}
+    f._exportExtParams.forEach((b, i) => {
+      if (!b) return
+      p.push(i)
+      if (typeof b === 'object' && b.def != null) d[i] = b.def
+    })
+    if (!p.length) continue
+    const entry = { name: '', p }
+    if (Object.keys(d).length) entry.d = d
+    for (const exportName of exportNamesOf(f.name)) extExports.push({ ...entry, name: exportName })
+  }
+  if (extExports.length)
+    sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }
   for (const [name, val] of Object.entries(ctx.func.exports)) {

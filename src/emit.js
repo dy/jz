@@ -2177,9 +2177,18 @@ export const emitter = {
       // (OOB-impossible) contract directly; the generic path keeps the
       // f64/NaN JS-spec result. See analyze.js inBoundsCharCodeAt.
       if (method === 'charCodeAt' && !parsed.hasSpread && parsed.normal.length === 1
-          && ctx.abi.string?.ops?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee))
+          && ctx.abi.string?.ops?.charCodeAt && inBoundsCharCodeAt(ctx).has(callee)) {
+        const recv = emit(obj)
+        // jsstring carrier: receiver is an externref boundary param. Route to
+        // `wasm:js-string.charCodeAt` directly — the in-bounds proof rules out
+        // the OOB trap the builtin would otherwise raise.
+        if (recv?.type === 'externref') {
+          ctx.core.jsstring.add('charCodeAt')
+          return typed(['call', '$__jss_charCodeAt', recv, asI32(emit(parsed.normal[0]))], 'i32')
+        }
         return typed(ctx.abi.string.ops.charCodeAt(
-          asF64(emit(obj)), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+          asF64(recv), asI32(emit(parsed.normal[0])), ctx, false), 'i32')
+      }
 
       // Function property call: fn.prop(args) → direct call to fn$prop.
       // Skipped when the property was reassigned (wrapper composition) — then
