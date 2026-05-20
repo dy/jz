@@ -127,11 +127,13 @@ test('extractRefinements: post-typeof-string early-return narrows notString', ()
 test('paramReps val: consistent ARRAY callers fold to direct header read', () => {
   // Both callers pass array literals → val=ARRAY consensus → callee's
   // `.length` becomes a direct memory load of the header word (no helper).
+  // Inspect jz output without watr — `inlineOnce` would fuse `$lenOf` away,
+  // erasing the helper-resolved header-load and leaving the test ambiguous.
   const wat = jz.compile(`
     const lenOf = (xs) => xs.length
     export const a = () => lenOf([1, 2, 3])
     export const b = () => lenOf([4, 5, 6, 7])
-  `, { wat: true })
+  `, { wat: true, optimize: { watr: false } })
   is(count(wat, /\$__length\b/g), 0)
   is(count(wat, /\$__len\b/g), 0)
   // Body should contain a direct header load (i32.load over __ptr_offset - 8).

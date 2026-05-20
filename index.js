@@ -165,11 +165,11 @@ jz.memory = enhanceMemory
  * @param {boolean|number|object} [opts.optimize] - Optimization level/config.
  *   - `false` / `0`: nothing. Fastest compile, largest output (live coding).
  *   - `1`: encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
- *   - `true` / `2` (default): every stable jz pass + watr in 'light' mode — all
- *     watr passes except inlining (`inline` / `inlineOnce`).
- *   - `3` / `'speed'`: level 2 + full watr (inlining on) + larger array/hash
- *     initial caps (`arrayMinCap`, `hashSmallInitCap`); trades size for speed by
- *     turning `hoistConstantPool` off (inline `f64.const` over mutable globals).
+ *   - `true` / `2` (default): every stable jz pass + full watr (inlineOnce +
+ *     coalesce on; `inline` stays off per watr's own default).
+ *   - `3` / `'speed'`: level 2 + larger array/hash initial caps (`arrayMinCap`,
+ *     `hashSmallInitCap`) + `hoistConstantPool` off (inline `f64.const` over
+ *     mutable globals); trades size for speed.
  *   - `{ level?: 0|1|2|3, watr?: bool, hoistAddrBase?: bool, ... }`: per-pass
  *     overrides on top of the chosen level. See PASS_NAMES in src/optimize.js.
  * @param {object} [opts.profile] - Optional mutable profile sink populated with
@@ -369,23 +369,9 @@ const jzCompileInner = (code, opts = {}) => {
   const cfg = ctx.transform.optimize
   // watr's `loopify` collapses the `(block $brk (loop … (br_if $brk !cond) … (br $loop)))`
   // idiom into `(loop … (if cond …))` — sound, but destroys the exact shape jz's
-  // post-watr vectorizer scans for. Disable loopify when vectorize is going to run.
-  //
-  // watr config:
-  //   true / 'full' → all default passes (includes `inlineOnce` / `inline` / `coalesce`)
-  //   'light'       → everything except inlining + coalesce. Default at level 2.
-  //                   `inlineOnce` reshapes codegen the way slot-type / LICM tests scan for,
-  //                   and miscompiles regex `split(/\s+/)`. `coalesceLocals` on its own (i.e.
-  //                   without the cleanup that follows inlining) breaks `/a.+b/.test("ab")`
-  //                   — likely a stale alias the post-inline propagate sweep normally tidies
-  //                   up at L3. Dropping both still keeps treeshake / dedupe / dedupTypes /
-  //                   propagate / packData / fold / peephole / vacuum / mergeBlocks / brif /
-  //                   loopify / offset / unbranch / identity / strength / globals etc.
-  //   false         → skip watr entirely (level 0/1).
-  let watrOpts
-  if (cfg.watr === 'light') watrOpts = { inline: false, inlineOnce: false, coalesce: false, loopify: !cfg.vectorizeLaneLocal }
-  else if (cfg.vectorizeLaneLocal) watrOpts = { loopify: false }
-  else watrOpts = true
+  // post-watr vectorizer scans for. Disable loopify when vectorize is going to run;
+  // otherwise hand watr its full default pass set (inlineOnce + coalesce on, inline off).
+  const watrOpts = cfg.vectorizeLaneLocal ? { loopify: false } : true
   const optimized = cfg.watr ? time('watrOptimize', () => watrOptimize(module, watrOpts)) : module
   // Final peephole pass: watrOptimize's inliner can re-introduce rebox/unbox at boundaries
   // (e.g. inlined closure body's `i32.wrap_i64 (i64.reinterpret_f64 __env)` next to caller's

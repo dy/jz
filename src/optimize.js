@@ -45,12 +45,12 @@ const UNDEF_BITS = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHI
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
  *   1 — encoding-compactness only (treeshake + sortLocalsByUse + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
- *   2 — default. All stable jz passes + watr in 'light' mode (everything except
- *       `inline` / `inlineOnce`). 'light' delivers most of the size win
- *       (treeshake / dedupe / dedupTypes / coalesce / propagate / packData / fold /
- *       peephole / vacuum / mergeBlocks / brif / loopify / …) at essentially zero
- *       net compile cost — the smaller wasm makes watrCompile downstream faster.
- *   3 — level 2 + full watr (adds inlining) + aggressive experimental tunings.
+ *   2 — default. All stable jz passes + full watr (treeshake / dedupe / dedupTypes /
+ *       coalesce / propagate / packData / fold / peephole / vacuum / mergeBlocks /
+ *       brif / loopify / inlineOnce / …). `inline` stays off (watr's own default —
+ *       opt-in only; can duplicate bodies).
+ *   3 — level 2 + larger array/hash initial caps + `hoistConstantPool` off
+ *       (inline `f64.const` over mutable globals); trades size for speed.
  *
  * String aliases (the size↔speed tradeoff lives entirely in the unroll/scalar
  * knobs; watr is on for all three):
@@ -90,13 +90,11 @@ const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
   1: Object.freeze({ ...ALL_OFF, treeshake: true, sortLocalsByUse: true, fusedRewrite: true }),
-  // Default (level 2 / 'balanced'): every stable pass + watr in 'light' mode.
-  // 'light' = all watr passes except inlining (`inline` / `inlineOnce`). Inlining is
-  // skipped at L2 because it breaks regex-split semantics (watr 4.6.4) and reshapes
-  // codegen tests that assert on pre-inline function structure. The remaining passes
-  // (treeshake/dedupe/dedupTypes/coalesce/propagate/packData/fold/peephole/...) still
-  // deliver most of watr's size win at essentially zero compile cost.
-  2: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
+  // Default (level 2 / 'balanced'): every stable pass + full watr. Pre-4.6.9 had to
+  // force 'light' mode here (inline / inlineOnce / coalesce all off) to dodge the
+  // W1a/W1b miscompiles; watr 4.6.9 fixes both, and the L2 default now runs the full
+  // watr pipeline. `inline` stays off by watr's own default — opt-in only.
+  2: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
   // L3/'speed' trades a bit of heap headroom for fewer __arr_grow / __hash growth
   // cycles. arrayMinCap=16 means `[]` and `new Array()` skip the first two doublings
   // (0→2→4→8→16); hashSmallInitCap=8 keeps per-object __dyn_props at the same load
@@ -114,7 +112,7 @@ const LEVEL_PRESETS = Object.freeze({
   // the size↔speed trade 'speed' exists to make.
   3: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8 }),
   // 'balanced' = level 2; 'size' tightens scalar/unroll caps; 'speed' = level 3.
-  balanced: Object.freeze({ ...ALL_ON, watr: 'light', nestedSmallConstForUnroll: 'auto' }),
+  balanced: Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto' }),
   size: Object.freeze({
     ...ALL_ON,
     smallConstForUnroll: false, nestedSmallConstForUnroll: false, vectorizeLaneLocal: false,
@@ -146,11 +144,9 @@ export function resolveOptimize(opt) {
     for (const n of PASS_NAMES) {
       if (!(n in opt)) continue
       const v = opt[n]
-      // Preserve sentinel values that downstream resolution depends on:
-      //   nestedSmallConstForUnroll: 'auto' (heuristic at emit time)
-      //   watr: 'light' (curated subset — see index.js watrOpts)
+      // Preserve sentinel value `nestedSmallConstForUnroll: 'auto'`
+      // (resolved by a heuristic at emit time).
       if (n === 'nestedSmallConstForUnroll' && v === 'auto') out[n] = 'auto'
-      else if (n === 'watr' && v === 'light') out[n] = 'light'
       else out[n] = !!v
     }
     // Preserve non-pass tuning keys (e.g. plan.js thresholds)

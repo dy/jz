@@ -247,11 +247,14 @@ test('Map: set + get', () => {
 })
 
 test('Map: literal numeric get uses prehashed lookup', () => {
+  // Inspect jz's pre-watr structure: jz emits `__map_get_h` when the key is a
+  // literal it can prehash. watr's `inlineOnce` then folds the call body into
+  // the caller — disable watr to assert the dispatch decision survives.
   const wat = compile(`export let f = () => {
     let m = new Map()
     m = m.set(1, 100)
     return m.get(1)
-  }`, { wat: true })
+  }`, { wat: true, optimize: { watr: false } })
   ok(/\((return_call|call) \$__map_get_h\b/.test(wat))
   ok(!/\(call \$__map_get\s/.test(wat))
 })
