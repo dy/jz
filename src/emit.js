@@ -1105,7 +1105,7 @@ export const emitter = {
   },
 
   'throw': expr => {
-    ctx.runtime.throws = true
+    ctx.runtime.throws = ctx.runtime.userThrows = true
     const thrown = temp()
     return typed(['block',
       ['local.set', `$${thrown}`, asF64(emit(expr))],
@@ -1116,7 +1116,7 @@ export const emitter = {
   'catch': (body, errName, handler) => {
     if (!canThrow(body)) return emitFlat(body)
 
-    ctx.runtime.throws = true
+    ctx.runtime.throws = ctx.runtime.userThrows = true
     const id = ctx.func.uniq++
     ctx.func.locals.set(errName, 'f64')
     const prev = ctx.func.inTry; ctx.func.inTry = true
@@ -1142,7 +1142,7 @@ export const emitter = {
       return [...bodyIR, ...cleanupIR]
     }
 
-    ctx.runtime.throws = true
+    ctx.runtime.throws = ctx.runtime.userThrows = true
     const id = ctx.func.uniq++
     const errLocal = temp('err')
     const parentStack = ctx.func.finallyStack || []

@@ -125,7 +125,10 @@ const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
 const asWasmPath = c => join(caseBuild(c), `${c.id}.as.wasm`)
 
 const compileJz = c => {
-  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+  // `jz-wasmtime` / `jz-w2c` consume the wasm standalone — no JS host. Lower
+  // `console.log` / `performance.now` to WASI Preview 1 so the module's
+  // imports are all satisfiable by wasmtime / wasm-rt without per-target shims.
+  execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
 const benchlibHostSource = () => {

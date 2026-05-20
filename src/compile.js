@@ -150,6 +150,28 @@ const ensureThrowRuntime = (sec) => {
     sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
 }
 
+// Drop the $__jz_err tag + __jz_last_err_bits globals when optimization
+// eliminated every actual throw site. ensureThrowRuntime runs before
+// optimizeModule so dead-throw analysis can see the tag/global as live; once
+// opt has finished, an unused tag still forces consumers (wasmtime, wasm2c) to
+// enable the exceptions proposal just to parse the module. User-written
+// throw/try/catch/finally is an ABI contract (JS-side may inspect
+// __jz_last_err_bits), so `userThrows` keeps the runtime declared regardless;
+// the prune fires only when `throws` was set purely by stdlib pattern matching
+// or compiler-internal coercion sites.
+const pruneUnusedThrowRuntime = (sec) => {
+  if (!ctx.runtime.throws || ctx.runtime.userThrows) return
+  const hasThrow = (n) => Array.isArray(n) && (n[0] === 'throw' || n.some(hasThrow))
+  for (const arr of [sec.funcs, sec.stdlib, sec.start])
+    for (const f of arr) if (hasThrow(f)) return
+  sec.tags = sec.tags.filter(t => !(Array.isArray(t) &&
+    ((t[0] === 'tag' && t[1] === '$__jz_err') ||
+     (t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))))
+  sec.globals = sec.globals.filter(g => !(Array.isArray(g) &&
+    g[0] === 'global' && g[1] === '$__jz_last_err_bits'))
+  ctx.scope.globals.delete('__jz_last_err_bits')
+}
+
 // === Module compilation ===
 
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, { ...v }])) : null
@@ -1160,6 +1182,8 @@ export default function compile(ast, profiler) {
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
     { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals }
   )
+
+  pruneUnusedThrowRuntime(sec)
 
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
