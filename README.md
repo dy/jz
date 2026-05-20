@@ -504,6 +504,35 @@ The compiled `.wasm` uses at most one import namespace:
 - `env` — JS-host services (default). Auto-wired by the `jz()` runtime.
 - `wasi_snapshot_preview1` — standard WASI Preview 1. Run natively on wasmtime/wasmer/deno.
 
+`host: 'gc'` is reserved for a planned wasm-gc backend and currently errors at
+compile time — naming it explicitly so future code that targets it doesn't read
+as a typo. Pair `host: 'wasi'` with `strict: true` if you want dynamic
+`obj[k]` / unknown-receiver calls to fail at compile time on the JS path too.
+
+</details>
+
+<details>
+<summary><strong>What custom sections does jz emit?</strong></summary>
+
+<br>
+
+jz embeds four small WebAssembly custom sections so the JS-side interop layer
+can wire boundary ABIs without re-parsing the source. They are inert for
+non-JS hosts (wasmtime/wasmer ignore unknown customs), and `interop.js` reads
+them once at instantiate-time.
+
+| Section | Purpose |
+|---|---|
+| `jz:schema` | Object schemas for exported records. Compact varint format so the JS side can rehydrate plain objects from boundary writes without per-call shape inference. |
+| `jz:rest` | Per-export rest-parameter info (`{ name, fixed }`). Tells JS how many fixed args precede the rest array so the wrapper packs the tail correctly — covers aliased re-exports too. |
+| `jz:i64exp` | Per-export i64-ABI map (`{ name, p:[i64 param indices], r:0|1 }`). Marks the slots where the boundary wrapper passes NaN-boxed pointers as i64 (dodging V8's NaN canonicalization) instead of f64. |
+| `jz:extparam` | Per-export externref-param positions (`{ name, p:[…], d?:{idx:default} }`). Lists the args that skip NaN-boxing entirely — the jsstring carrier writes here, and `d` carries default values for params with `= ''` syntax. |
+
+You generally don't need to touch these; they're documented so external
+tools (linkers, custom JS loaders, devtools) can read them safely. Names are
+stable; binary layouts are not — re-derive from the latest `interop.js` if you
+parse them yourself.
+
 </details>
 
 <details>
@@ -535,6 +564,44 @@ import { valTypeOf, VAL } from '../src/analyze.js'
 
 </details>
 
+
+<details>
+<summary><strong>How do I get my array loops to vectorize?</strong></summary>
+
+<br>
+
+The lane-local vectorizer (`vectorizeLaneLocal`, on at default `optimize: 2`)
+lifts inner loops of shape `for (let i=0;i<N;i++) arr[i] = f(arr[i], …)` to
+SIMD-128, provided the body is lane-pure (k-th lane output depends only on
+k-th lane inputs). Reductions like `s = s + arr[i]` and bitwise XOR
+hashes also lift.
+
+What lifts:
+
+- Same-array in-place: `a[i] = a[i] * 2`
+- Cross-array map: `b[i] = a[i] * k + c` (distinct base pointers, shared `i << K` offset)
+- **SoA (structure-of-arrays)**: separate `xs`/`ys`/`zs` typed arrays, accessed
+  in one loop with the same induction var — `zs[i] = xs[i]*a + ys[i]*b`. Up
+  to 4 base pointers per inner loop verified by tests.
+- Reductions: `s = s + a[i]`, `h = h ^ a[i]`, `h = h | a[i]`, `h = h & a[i]`.
+
+What does **not** lift (today):
+
+- **AoS (array-of-structures)**: interleaved `a[i*3]`, `a[i*3+1]`, … in one
+  buffer. The stride exceeds the lane width so loads aren't contiguous —
+  the recognizer correctly refuses. **Migration path: split the buffer into
+  one typed array per field** (the SoA shape above) before the hot loop.
+  No compiler-side AoS→SoA conversion is planned; the rewrite is mechanical
+  and the layout choice is yours.
+- Loop-carried scalars (`s ^= s << 13`), stencils (`a[i] = a[i] + a[i-1]`),
+  unbounded loops, mixed lane types in one body.
+
+Inspect with `--wat`: a successful lift adds a `$__simd_loop<N>` prefix
+block ahead of the original scalar loop (which becomes the tail). If you
+don't see it, the recognizer bailed on one of the rules — usually a
+loop-carried local or a non-`(base + i<<K)` address.
+
+</details>
 
 <details>
 <summary><strong>Isn't implicit inference evil?</strong></summary>

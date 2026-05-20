@@ -402,6 +402,73 @@ test('vectorize: tail correctness when N is not a multiple of LANES', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
+// ---- hand-written SoA shape (3+ arrays, same induction var) --------------
+// Documents the supported migration path: code that already separates fields
+// into distinct typed arrays (xs / ys / zs … rather than one interleaved
+// AoS buffer) vectorizes today without any compiler-side struct splitting.
+
+test('vectorize: SoA-3 fused map zs[i] = xs[i]*a + ys[i]*b', () => {
+  // Three distinct bases, one CSE'd `i << 3` offset shared across all
+  // load/store addresses — the offset-tee path lifts cleanly.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const xs = new Float64Array(N)
+      const ys = new Float64Array(N)
+      const zs = new Float64Array(N)
+      for (let i = 0; i < N; i++) { xs[i] = i * 0.25; ys[i] = i * 0.5 + 1.0 }
+      for (let i = 0; i < N; i++) zs[i] = xs[i] * 3.0 + ys[i] * 2.0
+      let s = 0.0
+      for (let i = 0; i < N; i++) s = s + zs[i]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/f64x2\./.test(wat(src, SIMD_OPT)), 'expected f64x2 ops for the SoA-3 fused map')
+})
+
+test('vectorize: SoA-4 channel blend (rgba luminance)', () => {
+  // Four base pointers in the inner loop — common image-processing shape.
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const r = new Float64Array(N)
+      const g = new Float64Array(N)
+      const b = new Float64Array(N)
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) { r[i] = i * 0.01; g[i] = i * 0.02; b[i] = i * 0.03 }
+      for (let i = 0; i < N; i++) a[i] = r[i] * 0.299 + g[i] * 0.587 + b[i] * 0.114
+      let s = 0.0
+      for (let i = 0; i < N; i++) s = s + a[i]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(/f64x2\./.test(wat(src, SIMD_OPT)), 'expected f64x2 ops for the SoA-4 blend')
+})
+
+// ---- AoS counterpart documents the boundary ------------------------------
+// Interleaved {x,y,…} in one buffer reads as `a[i*stride + offset]` —
+// strided, not contiguous, so the recognizer can't lift to v128.load. This
+// negative test pins the boundary so future changes don't accidentally
+// promise AoS support without a real struct-splitting carrier.
+
+test('vectorize: AoS-interleaved stride>1 does NOT lift (parity intact)', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N * 2)
+      for (let i = 0; i < N; i++) { a[i*2] = i; a[i*2+1] = i + 1 }
+      for (let i = 0; i < N; i++) a[i*2] = a[i*2] * 2.0
+      let s = 0.0
+      for (let i = 0; i < N; i++) s = s + a[i*2]
+      return s
+    }
+  `
+  is(runVec(src, SIMD_OPT).main(), runVec(src).main())
+  ok(!/\$__simd_loop\d+/.test(wat(src, SIMD_OPT)), 'AoS strided access should not lift to SIMD')
+})
+
 // ---- negative cases ------------------------------------------------------
 
 test('vectorize: loop-carried scalar (s ^= s << 13) must NOT lift', () => {
