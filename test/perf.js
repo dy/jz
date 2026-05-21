@@ -947,11 +947,16 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // __char_at calls). Deliberate size↔speed trade.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5216)
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 7789)
-// 3719→1844: `s[i]` with a known-NUMBER index (the loop counter) is provably a
-// non-string key, so the runtime `__is_str_key` dispatch is dead — its string-key
-// arm was the sole `__dyn_get` reference, so dropping it tree-shakes the entire
-// dynamic-property/hashing subtree (~18 stdlib fns) a numeric-index parser never
-// needs. See module/array.js index-read `keyType !== VAL.NUMBER` guard.
+// 3719→6736: this parser reads chars from an untyped string receiver and does
+// `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
+// `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
+// `keyType !== VAL.NUMBER` guard) — a shrink in isolation. (2) The relational ops
+// emit a runtime string-vs-number dispatch when one operand is untyped and the
+// other a string literal (emit.js cmpOp): previously they compiled to an f64
+// compare of NaN-boxed string bits — always false — so the parser silently
+// returned 0. Correct codegen pulls in `__str_cmp` (lexicographic three-way) plus
+// `__to_num` (string ToNumber) and their transitive stdlib, which dominates. The
+// growth is the cost of the parser actually working.
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''
@@ -960,7 +965,7 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 1844)
+}`, 6736)
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0

@@ -134,6 +134,59 @@ test('string < via variables', () => {
   is(f(), 1)
 })
 
+// === mixed untyped/string-literal ordering ===
+// When one operand is a known string literal and the other has no static type
+// (e.g. a char read from an untyped string receiver), cmpOp can't pick lex-vs-
+// numeric at compile time. Pre-fix it fell into the f64 path and compared the
+// unknown side's NaN-boxed string bits as a float — always false — so `s[i] >= '0'`
+// silently returned 0 and digit parsers broke. cmpOp now emits a runtime
+// __is_str_key dispatch on the untyped side: string ⇒ __str_cmp three-way, else
+// ToNumber both. Matches JS: relational is lexicographic only when both sides are
+// strings, otherwise it ToNumbers both.
+
+test('untyped char vs string literal: lexicographic when runtime value is a string', () => {
+  // 'a' (97) >= '0' (48) lexicographically → true; the read comes off an untyped param.
+  is(run('export let f = (s) => s[0] >= "0"').f('a'), 1)
+  is(run('export let f = (s) => s[0] >= "0"').f('7'), 1)
+})
+
+test('isDigit on untyped char: && of two mixed relational compares', () => {
+  const { f } = run('export let f = (s) => { let c = s[0]; return c >= "0" && c <= "9" }')
+  is(f('5'), 1)
+  is(f('x'), 0) // 'x'(120) <= '9'(57) is false
+})
+
+test('mixed relational dispatches on the runtime operand type, not the static one', () => {
+  // Same function, two arg types: number → ToNumber both (10>=9 true);
+  // string → lexicographic ('10' vs '9': '1'<'9' → false). One emit, both JS-correct.
+  const { f } = run('export let f = (x) => x >= "9"')
+  is(f(10), 1)
+  is(f('10'), 0)
+})
+
+test('untyped number vs string literal: ToNumbers both sides', () => {
+  const { f } = run('export let f = (x) => x >= "0"')
+  is(f(7), 1)   // 7 >= 0
+  is(f(-5), 0)  // -5 >= 0 is false
+})
+
+test('digit parser over untyped string receiver returns the parsed number', () => {
+  // The closure-heavy parser from perf.js golden — depends on `c >= '0' && c <= '9'`
+  // working on chars off an untyped receiver. Pre-fix it returned 0 for every input.
+  const { f } = run(`export let f = (s) => {
+    let i = 0, n = s.length
+    let peek = () => i < n ? s[i] : ""
+    let next = () => { let c = peek(); i++; return c }
+    let isDigit = (c) => c >= "0" && c <= "9"
+    let total = 0
+    while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
+    return total
+  }`)
+  is(f('1234'), 1234)
+  is(f('a12b3'), 123)
+  is(f(''), 0)
+})
+
 // === localeCompare ===
 // Byte-wise variant — not locale-aware. Returns -1/0/1.
 
