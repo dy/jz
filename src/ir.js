@@ -65,7 +65,9 @@ export const asF64 = n => {
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
   if (n.type === 'i64') return typed(['f64.reinterpret_i64', n], 'f64')
-  if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n[1]], 'f64')
+  // A `.unsigned` const carries its uint32 value as a signed i32 bit pattern, so
+  // widen via `>>> 0` (e.g. -1 → 4294967295); a plain const copies through verbatim.
+  if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n.unsigned ? n[1] >>> 0 : n[1]], 'f64')
   return typed([n.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', n], 'f64')
 }
 
@@ -596,9 +598,11 @@ export function readVar(name) {
                        : typed(['f64.const', rep.intConst], 'f64')
   }
   const node = typed(['local.get', `$${name}`], t)
-  // Proven uint32 accumulator local — a later asF64 must widen with
-  // convert_i32_u (the i32 bit pattern is an unsigned value), not _s.
-  if (t === 'i32' && rep?.unsigned) node.unsigned = true
+  // Proven uint32 accumulator local (narrowUint32): a later asF64 must widen with
+  // convert_i32_u (the i32 bit pattern is an unsigned value), not _s. `.wrapSafe`
+  // marks it as the always-ToUint32-sunk kind so the arithmetic widening guards
+  // keep it on the i32 path — wrapping is its intended semantics, not a leak.
+  if (t === 'i32' && rep?.unsigned) { node.unsigned = true; node.wrapSafe = true }
   if (rep?.ptrKind != null) {
     node.ptrKind = rep.ptrKind
     const aux = rep.ptrAux ?? ctx.schema.idOf?.(name)

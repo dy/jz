@@ -33,6 +33,7 @@ const TESTS = [
   'watr',
   'optimizer',
   'inference',
+  'unsigned',
   'perf',
   'timers',
   'semantic-invariants',
