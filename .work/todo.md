@@ -168,11 +168,18 @@ there — do not build a separate warning.
 
 #### Fix structurally (jz invented the gap — audit, then close)
 
-* [ ] **i32 narrow range-safety (`no-loss-of-precision`).** Invariant: never narrow an
-  *implicit* binding to i32 without a proven range bound; ambiguous → f64 (README
-  already promises this). Explicit `x|0` wraps exactly like JS — not a divergence,
-  leave it. *Likely already held* by the narrower's f64 default — verify and add a test
-  pin, not a warning. Owner: `src/narrow.js`, `src/analyze.js:1958-2099` `exprType`.
+* [x] **i32 narrow range-safety (`no-loss-of-precision`).** *Verified held* — pinned, no
+  code change. Audit confirmed the narrower only picks i32 on an i32 *signal* (i32-literal
+  init + i32-only operands / `x|0` / bitwise / Int32Array read); a binding fed by any
+  non-i32 source (f64 param, division, array elems > 2^31) stays NaN-boxed f64 with the
+  exact value — the README "ambiguous → f64, never a wrong type" promise. The converse —
+  an accumulator with *unanimous* i32 signals wrapping mod 2^32 past 2^31 — is the
+  deliberate i32 value-model trade (the same feature behind `i32x4` SIMD reductions and
+  scalar-i32 digit parsers, `test/optimizer.js`), **not** an ambiguity bug: the code's own
+  literals chose i32, so widening it would gut the narrowing feature. A blanket
+  "widen unguarded self-accumulators to f64" pass was prototyped and rejected — it broke
+  the SIMD-reduction and tokenizer i32 tests. Pinned (both directions) in
+  `test/inference.js` ("i32 range-safety: …"). Owner: `src/analyze.js` `exprType`.
 * [ ] **switch fallthrough / default (`no-fallthrough`).** Audit jzify's `switch`
   lowering for fallthrough + missing-`default` fidelity. Correctness lives in the
   lowering; a warning would admit the lowering is incomplete. Owner: `src/jzify.js`.

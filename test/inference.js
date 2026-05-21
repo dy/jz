@@ -394,3 +394,45 @@ test('inference runtime sanity: notString + intConst + arrElemSchema', () => {
   // (1 + 10 + 100) * 3 = 333
   is(main(), 333)
 })
+
+// ──────────────────────────────────────────────────────────── i32 narrow range-safety
+
+// jz narrows a local to i32 only on an i32 *signal* — an i32-literal init plus
+// i32-only operands (or `x|0`, bitwise, Int32Array reads). A binding fed by any
+// non-i32 source is *ambiguous* and stays NaN-boxed f64: the README promise
+// "ambiguous → f64, never a wrong type". These pin that the f64 default actually
+// holds where it must, so a future over-eager narrower can't silently 32-bit-wrap
+// an accumulator that grows past 2^31.
+//
+// The converse — an accumulator with *unanimous* i32 signals (i32 init + i32
+// steps / Int32Array elements) stays i32 and wraps mod 2^32 past 2^31 — is the
+// deliberate i32 value-model trade, the same feature that lets integer reductions
+// auto-vectorize (`i32x4`) and digit parsers stay scalar-i32. It is *not* an
+// ambiguity bug: the code's own literals chose i32. See test/optimizer.js
+// ("auto-vectorize via i32x4 SIMD", "no f64 widen/truncate in tokenizer-shape loop").
+
+test('i32 range-safety: ambiguous accumulator defaults to f64 (no silent 2^31 wrap)', () => {
+  // Each accumulator is fed by a non-i32 source and pushed past 2^31. The f64
+  // default keeps the exact value; an i32 narrowing here would wrap (e.g. 1e10
+  // → 1410065408). No `| 0` anywhere — the source type alone must decide.
+  const { fParam, fDiv, fBig } = run(`
+    export const fParam = (step) => { let s = 0; for (let i = 0; i < 100000; i++) s += step; return s }
+    export const fDiv = () => { let s = 0; for (let i = 1; i < 5; i++) s += 1e10 / i; return s }
+    export const fBig = () => { let a = [3e9, 3e9, 3e9, 3e9]; let s = 0; for (let i = 0; i < 4; i++) s += a[i]; return s }
+  `)
+  is(fParam(100000), 1e10)                                  // f64 param step
+  is(fDiv(), 1e10 / 1 + 1e10 / 2 + 1e10 / 3 + 1e10 / 4)     // division → f64
+  is(fBig(), 12e9)                                          // elems > 2^31 → f64 array
+})
+
+test('i32 range-safety: f64-fed accumulator declared f64 in WAT (never i32-narrowed)', () => {
+  // Type-level proof the ambiguous binding never narrows: the accumulator local
+  // is f64 and updated with f64.add — not i32.add.
+  const wat = jz.compile(`
+    export const sum = (step) => { let s = 0; for (let i = 0; i < 10; i++) s += step; return s }
+  `, { wat: true, optimize: { watr: false } })
+  const body = wat.match(/\(func \$sum[\s\S]*?^  \)/m)[0]
+  ok(/\(local \$s f64\)/.test(body), 'f64-fed accumulator must stay f64')
+  ok(/local\.set \$s\s*\(f64\.add/.test(body), 'accumulation into $s must use f64.add')
+  ok(/\(local \$i i32\)/.test(body), 'the i32-bounded counter still narrows independently')
+})
