@@ -83,15 +83,15 @@ test('string +: known string operands skip generic toString helper', () => {
 })
 
 test('string ==: compares by value', () => {
-  is(run('export let f = () => "module" == "module"').f(), 1)
+  is(run('export let f = () => "module" == "module"').f(), true)
 })
 
 test('string ==: concatenated string compares by value', () => {
-  is(run('export let f = () => { let s = "mod" + "ule"; return s == "module" }').f(), 1)
+  is(run('export let f = () => { let s = "mod" + "ule"; return s == "module" }').f(), true)
 })
 
 test('string !=: different contents compare unequal', () => {
-  is(run('export let f = () => "module" != "memory"').f(), 1)
+  is(run('export let f = () => "module" != "memory"').f(), true)
 })
 
 // === string ordering: < > <= >= ===
@@ -100,30 +100,30 @@ test('string !=: different contents compare unequal', () => {
 // through __str_cmp's three-way result.
 
 test('string <: lex order', () => {
-  is(run('export let f = () => "a" < "b"').f(), 1)
-  is(run('export let f = () => "b" < "a"').f(), 0)
-  is(run('export let f = () => "a" < "a"').f(), 0)
+  is(run('export let f = () => "a" < "b"').f(), true)
+  is(run('export let f = () => "b" < "a"').f(), false)
+  is(run('export let f = () => "a" < "a"').f(), false)
 })
 
 test('string >: lex order', () => {
-  is(run('export let f = () => "b" > "a"').f(), 1)
-  is(run('export let f = () => "a" > "b"').f(), 0)
+  is(run('export let f = () => "b" > "a"').f(), true)
+  is(run('export let f = () => "a" > "b"').f(), false)
 })
 
 test('string <=: includes equality', () => {
-  is(run('export let f = () => "a" <= "a"').f(), 1)
-  is(run('export let f = () => "a" <= "b"').f(), 1)
-  is(run('export let f = () => "b" <= "a"').f(), 0)
+  is(run('export let f = () => "a" <= "a"').f(), true)
+  is(run('export let f = () => "a" <= "b"').f(), true)
+  is(run('export let f = () => "b" <= "a"').f(), false)
 })
 
 test('string <: shared prefix, shorter sorts first', () => {
-  is(run('export let f = () => "app" < "apple"').f(), 1)
-  is(run('export let f = () => "apple" < "app"').f(), 0)
+  is(run('export let f = () => "app" < "apple"').f(), true)
+  is(run('export let f = () => "apple" < "app"').f(), false)
 })
 
 test('string <: empty sorts before non-empty', () => {
-  is(run('export let f = () => "" < "a"').f(), 1)
-  is(run('export let f = () => "a" < ""').f(), 0)
+  is(run('export let f = () => "" < "a"').f(), true)
+  is(run('export let f = () => "a" < ""').f(), false)
 })
 
 test('string < via variables', () => {
@@ -131,7 +131,7 @@ test('string < via variables', () => {
     let x = "banana"; let y = "cherry"
     return x < y
   }`)
-  is(f(), 1)
+  is(f(), true)
 })
 
 // === mixed untyped/string-literal ordering ===
@@ -146,28 +146,28 @@ test('string < via variables', () => {
 
 test('untyped char vs string literal: lexicographic when runtime value is a string', () => {
   // 'a' (97) >= '0' (48) lexicographically → true; the read comes off an untyped param.
-  is(run('export let f = (s) => s[0] >= "0"').f('a'), 1)
-  is(run('export let f = (s) => s[0] >= "0"').f('7'), 1)
+  is(run('export let f = (s) => s[0] >= "0"').f('a'), true)
+  is(run('export let f = (s) => s[0] >= "0"').f('7'), true)
 })
 
 test('isDigit on untyped char: && of two mixed relational compares', () => {
   const { f } = run('export let f = (s) => { let c = s[0]; return c >= "0" && c <= "9" }')
-  is(f('5'), 1)
-  is(f('x'), 0) // 'x'(120) <= '9'(57) is false
+  is(f('5'), true)
+  is(f('x'), false) // 'x'(120) <= '9'(57) is false
 })
 
 test('mixed relational dispatches on the runtime operand type, not the static one', () => {
   // Same function, two arg types: number → ToNumber both (10>=9 true);
   // string → lexicographic ('10' vs '9': '1'<'9' → false). One emit, both JS-correct.
   const { f } = run('export let f = (x) => x >= "9"')
-  is(f(10), 1)
-  is(f('10'), 0)
+  is(f(10), true)
+  is(f('10'), false)
 })
 
 test('untyped number vs string literal: ToNumbers both sides', () => {
   const { f } = run('export let f = (x) => x >= "0"')
-  is(f(7), 1)   // 7 >= 0
-  is(f(-5), 0)  // -5 >= 0 is false
+  is(f(7), true)   // 7 >= 0
+  is(f(-5), false)  // -5 >= 0 is false
 })
 
 test('digit parser over untyped string receiver returns the parsed number', () => {

@@ -1,5 +1,9 @@
 ## jz — execution plan
 
+#### Community
+
+#### Monetization
+
 #### Perf
 
 * [ ] **Auto AoS→SoA carrier.** `xs[i] = rows[i].x + …` — load is a
@@ -61,6 +65,7 @@ everywhere.
 * [ ] **CHIP-8 emulator core** — integer dispatch = jz's floor; mirrors AS wasmBoy
 * [ ] **QOI codec** (~300 readable lines) — competes with surma's 904 B hand-WAT on *size*; ties to color-space
 * [ ] (later) FFT spectrogram; dithering/convolution filters
+* [ ] zzfx
 
 #### Flagship + the one compounding "make-world-know" move
 * [ ] **Floatbeat playground** (already roadmapped → promote to flagship) — type a formula, hear music, AudioWorklet, compiled live; vibecoder + audio + live-coding proof in one
@@ -92,23 +97,14 @@ the honest differentiator and a genuine gap.
   mandates insertion order. Needs a per-entry `seq` field or a sibling order
   list. Currently enumerated as a documented divergence in
   `test/test262-builtins.js` xfail list.
-- Boolean ATOM tag (in wasm-v1 NaN-box) — `true`/`false` carried as two new
-  NaN tags (`TRUE_NAN` / `FALSE_NAN`), siblings of the existing `NULL_NAN` /
-  `UNDEF_NAN` atoms. Not wasm-gc — wasm-gc has no native typed-boolean either
-  (`i31ref(0)` doesn't discriminate from `0` the number, same atom-tag problem
-  in different syntax). `typeof true` already returns `'boolean'`; remaining
-  gaps are `String(true) → '1'` (should be `'true'`), `parseInt(true) → 1`
-  (should be `NaN`), `true === 1 → true` (should be `false`). Scope: ~2-3
-  days, ~30-50 coercion sites in `src/emit.js` / `module/string.js` /
-  `module/number.js` learn the new tags before falling through to number
-  handling. Defer until a real workload surfaces boolean stringification /
-  mixed boolean-number comparison as a correctness bug.
 - wasm-gc backend (`host: 'gc'`) — orthogonal future track. Replaces the
   manual NaN-box + linear-memory allocator with engine GC + typed refs across
   the whole compiler. Multi-month backend rewrite; benefits are memory-model
-  / externref-bridge / debugging, NOT a fix for boolean discrimination (which
-  the ATOM-tag bullet above resolves in wasm-v1). Currently reserved as a
-  compile-time error in `index.js:315`; documented in README.
+  / externref-bridge / debugging, NOT a fix for boolean discrimination (the
+  landed boolean carrier, Archive › "Real-boolean carrier", resolves that in
+  wasm-v1; wasm-gc has no native typed-boolean either — `i31ref(0)` doesn't
+  discriminate from `0` the number, same atom-tag problem in different syntax).
+  Currently reserved as a compile-time error in `index.js:315`; documented in README.
 - Intl, Date locale surface, component model, threads, memory64, WebGPU —
   Future.
 - Ship: pick ONE undeniable use case (floatbeat playground — DSP kernels are
@@ -165,9 +161,10 @@ half is a soft channel — today jz has only hard `err()` rejection (`src/prepar
 the gap — a representation choice, an inference decision, or a lowering simplification
 (close it; a warning there is the compiler confessing it punted). It stays a *warning
 / opt-in trade* only when the gap is an omitted runtime mechanism that is the whole
-point of "no runtime, no GC". The boolean carrier (Deferred › "Boolean ATOM tag") is
-the exemplar: it *removes* the `typeof`/`String(true)` divergence instead of narrating
-it. `typeof`-on-boolean is therefore subsumed there — do not build a separate warning.
+point of "no runtime, no GC". The boolean carrier (Archive › "Real-boolean carrier")
+is the exemplar: it *removed* the `typeof`/`String(true)` divergence instead of
+narrating it. `typeof`/`String`/`JSON.stringify`-on-boolean are therefore subsumed
+there — do not build a separate warning.
 
 #### Fix structurally (jz invented the gap — audit, then close)
 
@@ -253,6 +250,43 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 ---
 
 ## Archive
+
+### Real-boolean carrier (2026-05-21)
+
+`true`/`false` carry as the cheap `0`/`1` i32 internally — branches and arithmetic
+pay nothing, exactly as before. A real boolean is materialized **lazily, only where
+boolean-ness is observed**: `typeof`, `String`, `JSON.stringify`, and the host
+boundary. The carrier is the existing NaN-box ATOM family (`FALSE_NAN` aux=4 /
+`TRUE_NAN` aux=5, siblings of `NULL_NAN`/`UNDEF_NAN`); `4 | truthbit` boxes, decoded
+at the boundary like `null`/strings. No `memory.Boolean` wrapper, no wasm-gc — the
+atom tags discriminate in wasm-v1 (wasm-gc's `i31ref(0)` wouldn't anyway).
+
+* [x] **Lazy boxing at the export boundary** (`src/compile.js:608`
+  `boolBoxIR(typed(callIR, …))`, `isBoundaryWrapped` ← `func.valResult === VAL.BOOL`).
+  The inner `$f` keeps the `f64.convert_i32_s` 0/1 carrier; only the `$f$exp` thunk
+  reboxes (`__mkptr(0, 4 | __is_truthy(…), 0)`) and is marked `"r":1` in `jz:i64exp`.
+  Number-returning exports emit no i64exp entry — zero footprint off the boolean path.
+* [x] **`decode` learns the two atoms** (`interop.js:146-155`) — `0x7FF80004 → false`,
+  `0x7FF80005 → true`, beside the existing null/undefined arms. Module-private; the
+  host export wrapper applies it. Host→jz booleans still coerce to 0/1 via `wrapVal`.
+* [x] **Observation sites classify BOOL** (`src/analyze.js` `valTypeOf`): `!`, all
+  relational/equality operators, `in`, `instanceof`, `Boolean()` → `VAL.BOOL`;
+  `narrowBoolResults()` infers `valResult` on the narrowing-skip leaf path
+  (`plan.js` `canSkipWholeProgramNarrowing`). `typeof`/`String`/`JSON.stringify`
+  already observe the atom (truthy chain + `isBoolAtom`, `src/ir.js`).
+* [x] **IR** (`src/ir.js`) — `BOOL_ATOM_BASE=4`, `FALSE_NAN`/`TRUE_NAN`, `boolBoxIR`
+  (materialize from 0/1, used only at the boundary), `unboxBoolIR`, `isBoolAtom`.
+* [x] **Tests — `test/booleans.js` (15 tests / 40 assertions)** pin: boundary decode
+  for comparisons/equality/`!`/`Boolean()`/literals; `typeof`/`String`/`JSON.stringify`
+  observation; branch & arithmetic positions stay the cheap carrier (codegen pin via
+  `jz:i64exp` absence); host→jz 0/1 coercion; and the two honest gaps —
+  value-preserving `&&`/`||` and bare container reads cross as 1/0. Carrier-only flips
+  (1→true, 0→false; value never changed) propagated across errors/statements/strings/
+  unsigned/types/symbols/destruct/features/number-methods.
+* [x] **README** — "Booleans carry as numbers, surface as booleans" rewritten from
+  the old "planned" note to the shipped behaviour, with the two documented limits.
+
+Supersedes the former Deferred › "Boolean ATOM tag" entry. Suite: 1813 → 1828 pass.
 
 
 #### Product / measurement (needs a measurement+product session, not a compiler edit)

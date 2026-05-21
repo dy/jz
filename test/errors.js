@@ -214,15 +214,15 @@ test('runtime: ternary reassignment does not keep stale array type', () => {
 })
 
 test('runtime: loose null equality matches undefined', () => {
-  is(jz('export let f = (x) => x == null').exports.f(undefined), 1)
-  is(jz('export let f = (x) => x == null').exports.f(null), 1)
-  is(jz('export let f = (x) => x == null').exports.f(0), 0)
+  is(jz('export let f = (x) => x == null').exports.f(undefined), true)
+  is(jz('export let f = (x) => x == null').exports.f(null), true)
+  is(jz('export let f = (x) => x == null').exports.f(0), false)
 })
 
 test('runtime: loose null inequality excludes undefined/null', () => {
-  is(jz('export let f = (x) => x != null').exports.f(undefined), 0)
-  is(jz('export let f = (x) => x != null').exports.f(null), 0)
-  is(jz('export let f = (x) => x != null').exports.f(1), 1)
+  is(jz('export let f = (x) => x != null').exports.f(undefined), false)
+  is(jz('export let f = (x) => x != null').exports.f(null), false)
+  is(jz('export let f = (x) => x != null').exports.f(1), true)
 })
 
 // Constructor/namespace validation deferred to emit/modules

@@ -48,6 +48,7 @@ import {
   slotAddr, elemLoad, elemStore, arrayLoop, allocPtr,
   multiCount, loopTop, flat, reconstructArgsWithSpreads,
   valKindToPtr, findBodyStart, tcoTailRewrite,
+  boolBoxIR,
   I32_MIN, I32_MAX,
 } from './ir.js'
 import plan from './plan.js'
@@ -129,6 +130,9 @@ const timePhase = (profiler, name, fn) => profiler ? profiler.time(name, fn) : f
 const isBoundaryWrapped = (func) => {
   if (!isExported(func) || func.raw || func.sig.results.length !== 1) return false
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
+  // A boolean result rides the 0/1 number carrier internally; the export thunk
+  // boxes it to the TRUE_NAN/FALSE_NAN atom so the host sees a real boolean.
+  if (func.valResult === VAL.BOOL) return true
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null)
 }
 
@@ -562,7 +566,11 @@ function synthesizeBoundaryWrappers() {
     // so callers seeing the raw export get a plain Number for numerics.
     // jsstring params bypass both i64 and f64 — they flow as externref end-to-end.
     const paramI64 = sig.params.map(p => p.ptrKind != null)
-    const resultI64 = sig.ptrKind != null
+    // A VAL.BOOL result is boxed to a NaN-box atom here, so it crosses as i64
+    // (same carrier as a pointer result), even though the inner func returns the
+    // plain 0/1 number carrier.
+    const resultBool = func.valResult === VAL.BOOL && sig.ptrKind == null
+    const resultI64 = sig.ptrKind != null || resultBool
     // Inline `(export ...)` attribute only when the func decl carried the
     // inline-export keyword (`export function foo`). For re-exports
     // (`function foo; export { foo as bar }`) the `name` is the *internal*
@@ -594,6 +602,10 @@ function synthesizeBoundaryWrappers() {
     if (sig.ptrKind != null) {
       const ptrType = valKindToPtr(sig.ptrKind)
       body = mkPtrIR(ptrType, sig.ptrAux ?? 0, callIR)
+    } else if (resultBool) {
+      // boolBoxIR's truthy extraction depends on the carrier type, so the bare
+      // call node must declare it (f64 0/1, or i32 when the result narrowed).
+      body = boolBoxIR(typed(callIR, sig.results[0]))   // 0/1 carrier → TRUE_NAN/FALSE_NAN atom
     } else if (sig.results[0] === 'i32') {
       body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]
     } else {

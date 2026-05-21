@@ -9,8 +9,8 @@
  */
 
 import { typed, asF64, asI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT } from '../src/ir.js'
-import { emit } from '../src/emit.js'
-import { T } from '../src/analyze.js'
+import { emit, emitBoolStr } from '../src/emit.js'
+import { T, valTypeOf, VAL } from '../src/analyze.js'
 import { err, inc, PTR, LAYOUT } from '../src/ctx.js'
 import { strHashLiteral } from './collection.js'
 
@@ -1141,6 +1141,11 @@ ${localDecls}
   ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
     const folded = foldStringify(x, replacer, space)
     if (folded !== undefined) return folded
+    // Scalar boolean: the working-rep is the 0/1 number carrier, so the runtime
+    // tag-walker would emit "0"/"1". A boolean's JSON is the bare word
+    // true/false — exactly emitBoolStr. Guard on `replacer == null`: a replacer
+    // function may rewrite the top-level value, in which case fall to runtime.
+    if (replacer == null && valTypeOf(x) === VAL.BOOL) return emitBoolStr(x)
     inc('__stringify')
     const spaceIR = asI64(space == null ? undefExpr() : emit(space))
     return typed(['call', '$__stringify', asI64(emit(x)), spaceIR], 'f64')

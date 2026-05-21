@@ -41,7 +41,7 @@ import {
   truthyIR, toBoolFromEmitted, isPostfix,
   isGlobal, isConst, keyValType, usesDynProps, needsDynShadow,
   temp, tempI32, tempI64, allocPtr,
-  boxedAddr, readVar, writeVar, isNullish,
+  boxedAddr, readVar, writeVar, isNullish, isBoolAtom,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -136,6 +136,10 @@ export function emitTypeofCmp(a, b, cmpOp) {
   const eq = cmpOp === 'eq'
 
   if (code === -1) {
+    // A VAL.BOOL value rides in the f64 0/1 carrier, so it would pass the
+    // `v===v` number test — but it is typeof "boolean", not "number".
+    if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL)
+      return typed(['i32.const', eq ? 0 : 1], 'i32')
     return typed(eq
       ? ['f64.eq', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]]
       : ['f64.ne', ['local.tee', `$${t}`, va], ['local.get', `$${t}`]], 'i32')
@@ -152,7 +156,12 @@ export function emitTypeofCmp(a, b, cmpOp) {
     return typed(eq ? check : ['i32.eqz', check], 'i32')
   }
   if (code === -4) {
-    return typed(['i32.const', eq ? 0 : 1], 'i32')
+    // boolean. Statically VAL.BOOL → true; any other known type → false.
+    const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
+    if (vt) return typed(['i32.const', (vt === VAL.BOOL) === eq ? 1 : 0], 'i32')
+    // Unknown static type: boolean iff the carrier is a boxed-boolean atom.
+    const isBool = isBoolAtom(['local.tee', `$${t}`, va])
+    return typed(eq ? isBool : ['i32.eqz', isBool], 'i32')
   }
   if (code === -5) {
     inc('__ptr_type')
@@ -190,6 +199,12 @@ export function emitTypeofCmp(a, b, cmpOp) {
   }
   return null
 }
+
+/** Stringify a VAL.BOOL operand to "true"/"false" (f64 string pointer). The
+ *  boolean rides the cheap 0/1 carrier, so we runtime-select between the two
+ *  interned literals; a constant operand folds to a single literal downstream. */
+export const emitBoolStr = (node) =>
+  typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(node))], 'f64')
 
 const CMP_SET = new Set(['>', '<', '>=', '<=', '==', '!=', '!'])
 const isCmp = n => Array.isArray(n) && CMP_SET.has(n[0])
@@ -950,6 +965,13 @@ export function emitBody(node) {
   return out
 }
 
+// A VAL.BOOL value rides the cheap 0/1 numeric carrier, and `ToNumber(bool)` is
+// exactly that carrier — so for relational / loose-equality coercion a boolean
+// behaves identically to a number. Normalize it before the type-directed compare
+// dispatch (the BOOL fact still drives typeof / String / boundary boxing; only
+// these arithmetic-shaped operators read it as numeric).
+const numericVal = vt => vt === VAL.BOOL ? VAL.NUMBER : vt
+
 /** Comparison op factory with constant folding. */
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const va = emit(a), vb = emit(b)
@@ -961,8 +983,8 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // (always false), so without this the spec-correct `"a" < "b"` returns 0.
   // Route both-STRING operands through __str_cmp's three-way result, then apply
   // the same i32 sign op as numeric (lt_s/gt_s/le_s/ge_s vs 0).
-  const vta = resolveValType(a, valTypeOf, lookupValType)
-  const vtb = resolveValType(b, valTypeOf, lookupValType)
+  const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
+  const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
   if (vta === VAL.BIGINT || vtb === VAL.BIGINT) {
     const op = bigintUnsignedBound(a) || bigintUnsignedBound(b) ? i32op.replace('_s', '_u') : i32op
     return typed([`i64.${op}`, asI64(va), asI64(vb)], 'i32')
@@ -1654,8 +1676,11 @@ export const emitter = {
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       // An OBJECT operand coerces via ToPrimitive(string) at compile time —
       // __str_concat's runtime __to_str cannot invoke a user-defined toString.
-      const ea = vtA === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(a, emit(a))], 'f64') : asF64(emit(a))
-      const eb = vtB === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(b, emit(b))], 'f64') : asF64(emit(b))
+      // A BOOL operand renders "true"/"false" rather than its 0/1 carrier.
+      const strOperand = (vt, n) => vt === VAL.OBJECT ? typed(['f64.reinterpret_i64', toStrI64(n, emit(n))], 'f64')
+        : vt === VAL.BOOL ? emitBoolStr(n) : asF64(emit(n))
+      const ea = strOperand(vtA, a)
+      const eb = strOperand(vtB, b)
       return typed(ctx.abi.string.ops.concat(ea, eb, ctx), 'f64')
     }
     if (vtA === VAL.BIGINT || vtB === VAL.BIGINT)
@@ -1778,8 +1803,8 @@ export const emitter = {
     // of the other side: jz's `==` is strict (prepare.js:868), and every NaN-boxed pointer
     // reinterprets to a quiet NaN (0x7FF8… prefix) so f64.eq with any normal float is false.
     // Catches `closureVar === 34` in jzified hot loops where the unknown side has no VAL.
-    const vta = resolveValType(a, valTypeOf, lookupValType)
-    const vtb = resolveValType(b, valTypeOf, lookupValType)
+    const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
+    const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
     if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb)
     if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va)
     if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.eq', asF64(va), asF64(vb)], 'i32')
@@ -1809,8 +1834,8 @@ export const emitter = {
     const tc = emitTypeofCmp(a, b, 'ne'); if (tc) return tc
     const va = emit(a), vb = emit(b)
     if (va.type === 'i32' && vb.type === 'i32') return typed(['i32.ne', va, vb], 'i32')
-    const vta = resolveValType(a, valTypeOf, lookupValType)
-    const vtb = resolveValType(b, valTypeOf, lookupValType)
+    const vta = numericVal(resolveValType(a, valTypeOf, lookupValType))
+    const vtb = numericVal(resolveValType(b, valTypeOf, lookupValType))
     if (vta === VAL.NUMBER && needsLooseEqualityToNumber(b, vtb)) return looseNumberEq(va, b, vb, true)
     if (vtb === VAL.NUMBER && needsLooseEqualityToNumber(a, vta)) return looseNumberEq(vb, a, va, true)
     if (vta === VAL.NUMBER || vtb === VAL.NUMBER) return typed(['f64.ne', asF64(va), asF64(vb)], 'i32')
@@ -1834,7 +1859,9 @@ export const emitter = {
     if (v.ptrKind != null) return typed(['i32.eqz', v], 'i32')
     // Known pointer-kinded operand: `!x` is just `x is nullish` (null/undefined).
     // Excludes STRING — empty string '' is a valid (non-null) pointer but is falsy.
-    const vt = resolveValType(a, valTypeOf, lookupValType)
+    // VAL.BOOL rides the 0/1 numeric carrier (not a pointer), so normalize it to
+    // NUMBER and let it fall to the truthy path — `!false` must be `true`.
+    const vt = numericVal(resolveValType(a, valTypeOf, lookupValType))
     if (vt && vt !== VAL.NUMBER && vt !== VAL.BIGINT && vt !== VAL.STRING) {
       return isNullish(asF64(v))
     }
@@ -2822,8 +2849,11 @@ export function emit(node, expect) {
     if (node.loc != null) ctx.error.loc = node.loc
   }
   if (node == null) return null
-  if (node === true) return typed(['i32.const', 1], 'i32')
-  if (node === false) return typed(['i32.const', 0], 'i32')
+  // Boolean literals carry VAL.BOOL for type observation (valTypeOf reads the
+  // AST), but their working representation is the plain number 0/1 — identical
+  // codegen to the pre-carrier `[, 1]`/`[, 0]` folding, so no perf is paid.
+  if (node === true) return emitNum(1)
+  if (node === false) return emitNum(0)
   if (typeof node === 'symbol') // JZ_NULL sentinel → null NaN
     return nullExpr()
   if (typeof node === 'bigint') {

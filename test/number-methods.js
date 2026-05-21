@@ -113,7 +113,7 @@ test('Number: String(42)', () => {
 })
 
 test('String: no argument returns empty string', () => {
-  is(run(`export let f = () => String() === ''`).f(), 1)
+  is(run(`export let f = () => String() === ''`).f(), true)
 })
 
 test('String: nullish, string, and number coercion', () => {

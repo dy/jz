@@ -861,7 +861,9 @@ export default (ctx) => {
   // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
   ctx.core.emit['typeof'] = (a) => {
     if (valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
-    if (isBoolExpr(a)) return emit(['str', 'boolean'])
+    // VAL.BOOL covers boolean literals, comparisons, `!` and bindings inferred
+    // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
+    if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
       ctx.runtime.typeofStrs = ['number', 'undefined', 'string', 'function', 'symbol', 'object']
       for (const s of ctx.runtime.typeofStrs)

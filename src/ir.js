@@ -64,7 +64,14 @@ export const asF64 = n => {
   if (n == null) err(`compiler internal: expected emitted IR value in ${ctx.func.current?.name || '<module>'}, got empty value`)
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
-  if (n.type === 'i64') return typed(['f64.reinterpret_i64', n], 'f64')
+  if (n.type === 'i64') {
+    // Cancel the reinterpret round-trip at construction: reinterpret is bit-preserving
+    // both ways, so f64.reinterpret_i64(i64.reinterpret_f64(X)) === X. Folding here keeps
+    // the pair out of the IR entirely (smaller tree for every downstream pass) instead of
+    // letting fusedRewrite untangle it post-emit.
+    if (Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1])) return typed(n[1], 'f64')
+    return typed(['f64.reinterpret_i64', n], 'f64')
+  }
   // A `.unsigned` const carries its uint32 value as a signed i32 bit pattern, so
   // widen via `>>> 0` (e.g. -1 → 4294967295); a plain const copies through verbatim.
   if (n[0] === 'i32.const' && typeof n[1] === 'number') return typed(['f64.const', n.unsigned ? n[1] >>> 0 : n[1]], 'f64')
@@ -86,8 +93,13 @@ export const asI32 = n => {
 /** Coerce node to i32 offset for a ptr-narrowed return / store. Same-kind unboxed
  *  ptr passes through; otherwise extract low 32 bits from the NaN-boxed f64
  *  (NOT trunc — that would convert numerically). */
-export const asPtrOffset = (n, ptrKind) =>
-  n.ptrKind === ptrKind ? n : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(n)]], 'i32')
+export const asPtrOffset = (n, ptrKind) => {
+  if (n.ptrKind === ptrKind) return n
+  const f = asF64(n)
+  // Peel the inner reinterpret round-trip before wrapping: i64.reinterpret_f64(f64.reinterpret_i64(Y)) === Y.
+  const bits = Array.isArray(f) && f[0] === 'f64.reinterpret_i64' && Array.isArray(f[1]) ? f[1] : ['i64.reinterpret_f64', f]
+  return typed(['i32.wrap_i64', bits], 'i32')
+}
 
 /** Coerce emitted IR to a target WASM param type ('i32' | 'i64' | 'f64'). */
 export const asParamType = (n, t) => t === 'i32' ? asI32(n) : t === 'i64' ? asI64(n) : asF64(n)
@@ -130,29 +142,70 @@ export const toI32 = n => {
 }
 
 /** Extract i64 from BigInt-as-f64. */
-export const asI64 = n => typed(['i64.reinterpret_f64', asF64(n)], 'i64')
+export const asI64 = n => {
+  const f = asF64(n)
+  // Cancel reinterpret round-trip: i64.reinterpret_f64(f64.reinterpret_i64(Y)) === Y.
+  if (Array.isArray(f) && f[0] === 'f64.reinterpret_i64' && Array.isArray(f[1])) return typed(f[1], 'i64')
+  return typed(['i64.reinterpret_f64', f], 'i64')
+}
 
 /** Wrap i64 result back to BigInt-as-f64. */
-export const fromI64 = n => typed(['f64.reinterpret_i64', n], 'f64')
+export const fromI64 = n => {
+  // Cancel reinterpret round-trip: f64.reinterpret_i64(i64.reinterpret_f64(X)) === X.
+  if (Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1])) return typed(n[1], 'f64')
+  return typed(['f64.reinterpret_i64', n], 'f64')
+}
 
 // === Nullish sentinels ===
 
 /** Reserved atoms (PTR.ATOM tag, offset=0).
  *    aux=1 → null      (NULL_NAN)
  *    aux=2 → undefined (UNDEF_NAN)
+ *    aux=4 → false     (FALSE_NAN)
+ *    aux=5 → true      (TRUE_NAN)
  *  See module/symbol.js for the broader reserved-atom-id scheme.
  *  Distinct from 0, NaN, and all pointers. Triggers default params.
  *  At the JS boundary, null and undefined preserve their identity for interop. */
 export const NULL_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 export const UNDEF_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (2n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+/** Boxed-boolean carrier. `false`/`true` are reserved atoms — materialized only
+ *  where boolean identity is observed (typeof/String/JSON/host boundary); in
+ *  branch/arithmetic position booleans stay raw i32/f64 0/1. The atomId encodes
+ *  the truth value in its low bit (4=false, 5=true), so `aux & 1` recovers 0/1
+ *  and `4 | bit` boxes it — see boolBoxIR / unboxBoolIR. */
+export const BOOL_ATOM_BASE = 4
+export const FALSE_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (4n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+export const TRUE_NAN = '0x' + (LAYOUT.NAN_PREFIX_BITS | (5n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
 /** WAT-template-ready sentinel expressions for use in stdlib template strings.
  *  `f64.const nan:0xHEX` is 3 bytes shorter than `f64.reinterpret_i64 (i64.const ...)`. */
 export const NULL_WAT = `(f64.const nan:${NULL_NAN})`
 export const UNDEF_WAT = `(f64.const nan:${UNDEF_NAN})`
 export const NULL_IR = ['f64.const', `nan:${NULL_NAN}`]
 export const UNDEF_IR = ['f64.const', `nan:${UNDEF_NAN}`]
+export const FALSE_IR = ['f64.const', `nan:${FALSE_NAN}`]
+export const TRUE_IR = ['f64.const', `nan:${TRUE_NAN}`]
 export const nullExpr = () => typed(NULL_IR, 'f64')
 export const undefExpr = () => typed(UNDEF_IR.slice(), 'f64')
+
+/** Materialize the boxed-boolean carrier from a 0/1-valued expression. The atom
+ *  is `BOOL_ATOM_BASE | bit`, so boxing is one `i32.or` then an ATOM mkptr; when
+ *  the input folds to a constant 0/1 we emit the `f64.const nan:` literal directly.
+ *  Used only at observation/escape sites — never in branch or arithmetic position. */
+export function boolBoxIR(e) {
+  const i = truthyIR(e)
+  if (Array.isArray(i) && i[0] === 'i32.const') return typed((i[1] ? TRUE_IR : FALSE_IR).slice(), 'f64')
+  return mkPtrIR(['i32.const', PTR.ATOM], ['i32.or', ['i32.const', BOOL_ATOM_BASE], i], ['i32.const', 0])
+}
+
+/** Recover the 0/1 i32 value of a known boxed-boolean f64 expression: `aux & 1`. */
+export function unboxBoolIR(f64expr) {
+  if (Array.isArray(f64expr) && f64expr[0] === 'f64.const') {
+    const bits = typeof f64expr[1] === 'string' ? f64expr[1].replace(/^nan:/, '') : null
+    if (bits === TRUE_NAN) return typed(['i32.const', 1], 'i32')
+    if (bits === FALSE_NAN) return typed(['i32.const', 0], 'i32')
+  }
+  return typed(['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', f64expr], ['i64.const', String(LAYOUT.AUX_SHIFT)]]], ['i32.const', 1]], 'i32')
+}
 
 // === Constants ===
 
@@ -499,11 +552,18 @@ export function truthyIR(e) {
     if (e[0] === 'f64.const' && typeof e[1] === 'number') {
       return typed(['i32.const', (e[1] !== 0 && !Number.isNaN(e[1])) ? 1 : 0], 'i32')
     }
+    // Fold NaN-boxed sentinel literals in `f64.const nan:0x...` form (boolean
+    // atoms, null/undefined): TRUE → 1, everything else nullish/false → 0.
+    if (e[0] === 'f64.const' && typeof e[1] === 'string' && e[1].startsWith('nan:')) {
+      const bits = e[1].slice(4)
+      if (bits === TRUE_NAN) return typed(['i32.const', 1], 'i32')
+      if (bits === FALSE_NAN || bits === UNDEF_NAN || bits === NULL_NAN) return typed(['i32.const', 0], 'i32')
+    }
     // Fold NaN-boxed pointer literals: UNDEF/NULL/canonical-NaN sentinels are falsy;
     // all other NaN-boxed pointers (SSO strings, heap ptrs, etc.) are truthy.
     if (e[0] === 'f64.reinterpret_i64' && Array.isArray(e[1]) && e[1][0] === 'i64.const') {
       const bits = String(e[1][1])
-      const FALSY = new Set([UNDEF_NAN, NULL_NAN, '0x7FF8000000000000', '0x7FFA400000000000'])
+      const FALSY = new Set([UNDEF_NAN, NULL_NAN, FALSE_NAN, '0x7FF8000000000000', '0x7FFA400000000000'])
       return typed(['i32.const', FALSY.has(bits) ? 0 : 1], 'i32')
     }
     // Fresh pointer constructors never produce nullish. Treat as always truthy.
@@ -706,6 +766,23 @@ export const isUndef = (f64expr) => {
     }
   }
   return typed(['i64.eq', ['i64.reinterpret_f64', f64expr], ['i64.const', UNDEF_NAN]], 'i32')
+}
+
+/** Mask that clears the boolean atom's truth bit, mapping TRUE_NAN→FALSE_NAN.
+ *  `(bits & BOOL_ATOM_MASK) === FALSE_NAN` recognizes both in one i64.and+i64.eq. */
+const BOOL_ATOM_MASK = '0x' + BigInt.asUintN(64, ~(1n << BigInt(LAYOUT.AUX_SHIFT))).toString(16).toUpperCase().padStart(16, '0')
+
+/** Check if f64 expr is a boxed-boolean atom (TRUE_NAN or FALSE_NAN). Returns i32.
+ *  Single-eval: masks the truth bit and compares to FALSE_NAN once. */
+export const isBoolAtom = (f64expr) => {
+  if (f64expr.ptrKind != null) return typed(['i32.const', 0], 'i32')
+  if (Array.isArray(f64expr) && f64expr[0] === 'f64.const' && String(f64expr[1]).startsWith('nan:')) {
+    const b = String(f64expr[1]).slice(4)
+    return typed(['i32.const', (b === TRUE_NAN || b === FALSE_NAN) ? 1 : 0], 'i32')
+  }
+  return typed(['i64.eq',
+    ['i64.and', ['i64.reinterpret_f64', f64expr], ['i64.const', BOOL_ATOM_MASK]],
+    ['i64.const', FALSE_NAN]], 'i32')
 }
 
 // === Array layout helpers — routed through the array carrier (abi/array.js) ===

@@ -781,6 +781,31 @@ export function applyJsstringBoundaryCarrierStandalone(programFacts) {
   applyJsstringBoundaryCarrier(new Map(), programFacts.valueUsed)
 }
 
+/**
+ * Body-local boolean-result inference. `narrowValResults` is the general (any
+ * VAL.*) pass, but it lives inside whole-program narrowing, which is skipped for
+ * trivial leaf modules (no call sites). A boolean result is the one kind whose
+ * internal carrier (the 0/1 number) differs from its host-boundary carrier (the
+ * TRUE_NAN/FALSE_NAN atom), so an exported `(a) => a > 2` still needs its boundary
+ * box even on the skip path. This pass only ever *sets* valResult = VAL.BOOL, so
+ * it is safe to run unconditionally — pointer/array/number results are untouched.
+ */
+export function narrowBoolResults() {
+  for (const func of ctx.func.list) {
+    if (func.raw || func.valResult || !func.body || func.sig.results.length !== 1) continue
+    const body = func.body
+    const isBlock = isBlockBody(body)
+    if (isBlock && hasBareReturn(body)) continue
+    const exprs = returnExprs(body)
+    if (!exprs.length) continue
+    const localValTypes = isBlock ? analyzeBody(body).valTypes : null
+    const vt = e => typeof e === 'string'
+      ? (localValTypes?.get(e) || ctx.scope.globalValTypes?.get(e) || null)
+      : valTypeOf(e)
+    if (exprs.every(e => vt(e) === VAL.BOOL)) func.valResult = VAL.BOOL
+  }
+}
+
 // ── jsstring boundary carrier ───────────────────────────────────────────────
 //
 // Mappable use of an exported string param:

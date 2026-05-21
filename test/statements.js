@@ -171,7 +171,7 @@ test('bigint: BigInt64Array reads remain BigInt-typed', () => {
     const arr = new BigInt64Array(buf)
     arr[0] = BigInt('0x7fffffffffffffff')
     return arr[0] === BigInt('0x7fffffffffffffff')
-  }`).exports.f(), 1)
+  }`).exports.f(), true)
 })
 
 test('bigint: bitwise', () => {
@@ -198,7 +198,7 @@ test('bigint: BigInt.asUintN', () => {
 })
 
 test('bigint: typeof recognizes BigInt values', () => {
-  is(jz('export let f = () => typeof BigInt("1") === "bigint"').exports.f(), 1)
+  is(jz('export let f = () => typeof BigInt("1") === "bigint"').exports.f(), true)
 })
 
 test('bigint: same-kind ternary preserves BigInt type', () => {
@@ -206,13 +206,13 @@ test('bigint: same-kind ternary preserves BigInt type', () => {
 })
 
 test('bigint: typeof guard works through internal function parameter', () => {
-  is(jz('const isBig = n => typeof n === "bigint"; export let f = () => isBig(BigInt("1"))').exports.f(), 1)
+  is(jz('const isBig = n => typeof n === "bigint"; export let f = () => isBig(BigInt("1"))').exports.f(), true)
 })
 
 test('bigint: compares full unsigned 64-bit bounds', () => {
-  is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), 0)
-  is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), 1)
-  is(jz('export let f = () => -1n < 0n').exports.f(), 1)
+  is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
+  is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
+  is(jz('export let f = () => -1n < 0n').exports.f(), true)
 })
 
 // === Number/Error builtins ===
@@ -655,15 +655,15 @@ test('null keyword returns null', () => {
 
 test('null and undefined are both nullish inside jz', () => {
   const r = jz('export let f = (x) => x == null')
-  is(r.exports.f(null), 1)
-  is(r.exports.f(undefined), 1)
-  is(r.exports.f(0), 0)
+  is(r.exports.f(null), true)
+  is(r.exports.f(undefined), true)
+  is(r.exports.f(0), false)
 })
 
 test('null === undefined: both nullish, == and === treat them equal', () => {
   // jz merges === → ==; null and undefined are both nullish so compare equal
   const r = jz('export let f = () => null === undefined')
-  is(r.exports.f(), 1)
+  is(r.exports.f(), true)
 })
 
 test('?? triggers on null/undefined', () => {
@@ -716,23 +716,23 @@ test('for...of: early return', () => {
 // === typeof string comparisons ===
 
 test('typeof: number check', () => {
-  is(run('export let f = (x) => typeof x === "number"').f(42), 1)
-  is(run('export let f = () => typeof "hello" === "number"').f(), 0)
+  is(jz('export let f = (x) => typeof x === "number"').exports.f(42), true)
+  is(jz('export let f = () => typeof "hello" === "number"').exports.f(), false)
 })
 
 test('typeof: string check', () => {
-  is(run('export let f = () => typeof "hello" === "string"').f(), 1)
-  is(run('export let f = () => typeof 42 === "string"').f(), 0)
+  is(jz('export let f = () => typeof "hello" === "string"').exports.f(), true)
+  is(jz('export let f = () => typeof 42 === "string"').exports.f(), false)
 })
 
 test('typeof: undefined check', () => {
-  is(run('export let f = () => typeof null === "undefined"').f(), 1)
-  is(run('export let f = () => typeof 1 === "undefined"').f(), 0)
+  is(jz('export let f = () => typeof null === "undefined"').exports.f(), true)
+  is(jz('export let f = () => typeof 1 === "undefined"').exports.f(), false)
 })
 
 test('=== alias for ==', () => {
-  is(run('export let f = (a, b) => a === b').f(3, 3), 1)
-  is(run('export let f = (a, b) => a !== b').f(3, 4), 1)
+  is(jz('export let f = (a, b) => a === b').exports.f(3, 3), true)
+  is(jz('export let f = (a, b) => a !== b').exports.f(3, 4), true)
 })
 
 test('for...in: count keys', () => {

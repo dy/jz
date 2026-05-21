@@ -236,9 +236,6 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   ['test/language/expressions/new/S11.2.2_A3_T5.js', 'new on non-constructor: no runtime TypeError'],
   ['test/language/expressions/property-accessors/S11.2.1_A3_T4.js', 'property access on null/undefined: no runtime TypeError'],
   ['test/language/expressions/property-accessors/S11.2.1_A3_T5.js', 'property access on null/undefined: no runtime TypeError'],
-  // Booleans are erased to f64 — no boolean→string coercion / typeof.
-  ['test/language/expressions/concatenation/S9.8_A3_T2.js', 'boolean→string coercion (boolean type erased to f64)'],
-  ['test/language/types/boolean/S8.3_A1_T2.js', 'typeof boolean (boolean type erased to f64)'],
   // Loose equality between a denormal-number string and number.
   ['test/language/expressions/does-not-equals/S11.9.2_A5.3.js', 'string<->number loose equality of denormal'],
   ['test/language/expressions/equals/S11.9.1_A5.3.js', 'string<->number loose equality of denormal'],

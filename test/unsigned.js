@@ -90,17 +90,17 @@ test('`%` with an unsigned operand uses true uint32 value (not signed rem)', () 
 // ────────────────────────────────────────── relational comparison with unsigned
 
 test('relational comparisons treat an unsigned operand by its true magnitude', () => {
-  is(run('export let main = (x) => (x >>> 0) < 5').main(-1), 0)   // 4294967295 < 5 → false
-  is(run('export let main = (x) => (x >>> 0) > 5').main(-1), 1)
-  is(run('export let main = (x) => (x >>> 0) <= 5').main(-1), 0)
-  is(run('export let main = (x) => (x >>> 0) >= 5').main(-1), 1)
-  is(run('export let main = (x) => 5 < (x >>> 0)').main(-1), 1)   // unsigned on the right
-  is(run('let u = (x) => x >>> 0; export let main = (x) => u(x) < 5').main(-1), 0)
+  is(run('export let main = (x) => (x >>> 0) < 5').main(-1), false)   // 4294967295 < 5 → false
+  is(run('export let main = (x) => (x >>> 0) > 5').main(-1), true)
+  is(run('export let main = (x) => (x >>> 0) <= 5').main(-1), false)
+  is(run('export let main = (x) => (x >>> 0) >= 5').main(-1), true)
+  is(run('export let main = (x) => 5 < (x >>> 0)').main(-1), true)   // unsigned on the right
+  is(run('let u = (x) => x >>> 0; export let main = (x) => u(x) < 5').main(-1), false)
 })
 
 test('relational comparisons on small unsigned values still correct', () => {
-  is(run('export let main = (x) => (x >>> 0) < 5').main(3), 1)
-  is(run('export let main = (x) => (x >>> 0) > 5').main(3), 0)
+  is(run('export let main = (x) => (x >>> 0) < 5').main(3), true)
+  is(run('export let main = (x) => (x >>> 0) > 5').main(3), false)
 })
 
 // ───────────────────────────────────────────── constant folding of unsigned
@@ -115,8 +115,8 @@ test('arithmetic / comparison over a constant uint32 is spec-correct', async () 
   is(await evaluate('(-1 >>> 0) + 1'), 4294967296)
   is(await evaluate('(-1 >>> 0) * 2'), 8589934590)
   is(await evaluate('(-1 >>> 0) % 7'), 3)
-  is(await evaluate('(-1 >>> 0) < 5'), 0)
-  is(await evaluate('(-1 >>> 0) >= 4294967295'), 1)
+  is(await evaluate('(-1 >>> 0) < 5'), false)
+  is(await evaluate('(-1 >>> 0) >= 4294967295'), true)
   is(await evaluate('(8 >>> 1) + 1'), 5) // small const folds normally
 })
 
@@ -131,9 +131,9 @@ test('signed i32 operands keep their fast-path semantics', async () => {
   is(run('export let main = (x) => (x | 0) + 1').main(5), 6)
   is(run('export let main = (x) => (x | 0) * 2').main(5), 10)
   is(run('export let main = (x) => (x | 0) % 7').main(9), 2)
-  is(run('export let main = (x) => (x | 0) < 5').main(3), 1)
-  is(await evaluate('3 < 5'), 1)
-  is(await evaluate('(-1 | 0) < 5'), 1) // signed -1 < 5
+  is(run('export let main = (x) => (x | 0) < 5').main(3), true)
+  is(await evaluate('3 < 5'), true)
+  is(await evaluate('(-1 | 0) < 5'), true) // signed -1 < 5
 })
 
 // ───────────────────────────────────────────── KNOWN LIMITATION (not yet fixed)

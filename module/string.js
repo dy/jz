@@ -13,7 +13,7 @@
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64 } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit, emitBoolStr } from '../src/emit.js'
 import { valTypeOf, VAL } from '../src/analyze.js'
 import { inc, emitter, PTR, LAYOUT } from '../src/ctx.js'
 
@@ -1269,10 +1269,15 @@ export default (ctx) => {
     return result
   }
 
+  // A VAL.BOOL part rides the 0/1 carrier, so __to_str would render "1"/"0".
+  // emitBoolStr selects the interned "true"/"false" literal (constant-folded
+  // when the operand is known); every other part goes through __to_str.
+  const partStrI64 = (p) => valTypeOf(p) === VAL.BOOL ? asI64(emitBoolStr(p)) : toStrI64(p, emit(p))
+
   ctx.core.emit['strcat'] = (...parts) => {
     inc('__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy')
     if (!parts.length) return mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
-    if (parts.length === 1) return typed(['f64.reinterpret_i64', toStrI64(parts[0], emit(parts[0]))], 'f64')
+    if (parts.length === 1) return typed(['f64.reinterpret_i64', partStrI64(parts[0])], 'f64')
 
     const vals = parts.map(() => temp('s'))
     const lens = parts.map(() => tempI32('sl'))
@@ -1282,7 +1287,7 @@ export default (ctx) => {
     const ir = []
 
     for (let i = 0; i < parts.length; i++) {
-      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', toStrI64(parts[i], emit(parts[i]))]])
+      ir.push(['local.set', `$${vals[i]}`, ['f64.reinterpret_i64', partStrI64(parts[i])]])
       ir.push(['local.set', `$${lens[i]}`, ['call', '$__str_byteLen', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]]]])
     }
     ir.push(['local.set', `$${total}`, ['i32.const', 0]])
@@ -1341,6 +1346,7 @@ export default (ctx) => {
   ctx.core.emit['String'] = (value) => {
     if (value === undefined) return emit(['str', ''])
     if (valTypeOf(value) === VAL.STRING) return emit(value)
+    if (valTypeOf(value) === VAL.BOOL) return emitBoolStr(value)
     if (valTypeOf(value) === VAL.NUMBER) {
       inc('__ftoa')
       return typed(['call', '$__ftoa', asF64(emit(value)), ['i32.const', 0], ['i32.const', 0]], 'f64')
