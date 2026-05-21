@@ -132,9 +132,12 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
- Rejected with a clear message:
-`super.x` property access, getters/setters, dynamic `extends` heritage, and
-computed member names.
+`jzify` class support includes instance/static fields and methods, `new`,
+`this`, simple and expression `extends` heritage, `super.method(...)`, private
+`#name` fields, and constant string computed member names.
+
+Rejected with a clear message:
+full `super.x` property reads, getters/setters, dynamic computed member names.
 
 ## FAQ
 
@@ -143,156 +146,38 @@ computed member names.
 
 <br>
 
-jz compiles a **distilled JS subset to static WASM** — it is not a JavaScript engine and does not chase full TC39 semantics. `Valid jz = valid JS` means jz source always parses and runs as JS; it does **not** promise byte-identical results for the cases below. `--wat` shows exactly what was emitted.
+`Valid jz = valid JS` means jz source always parses and runs as JS — but jz compiles to *static* WASM, so a few behaviors diverge from V8. `--wat` shows exactly what was emitted. (For what's out of scope entirely, see the *Not supported* box above; for moving values across the boundary, see [Interop](#interop).)
 
-**Out of scope — by design, not unfinished.** Each needs a runtime jz deliberately does not ship; the compiler errors instead of emitting something slow:
-
-- Dynamic execution & reflection — `eval`, `Function`, `with`, `import()`, `Proxy`, `Reflect`, `WeakMap`/`WeakSet`, property descriptors, accessors.
-- Concurrency — `async`/`await`, `Promise`, generators, iterators.
-- General-runtime surface a numeric / DSP / parser kernel never touches — `Intl`, realms, resizable `ArrayBuffer`, `DataView`, dynamic `RegExp` patterns, the `Symbol` registry and most well-known symbols, the full `BigInt` surface. A few of these have partial static support; the rest will not be added — that is what keeps the output close to hand-written WAT.
-
-**Behavioral divergences — valid jz whose result differs from V8.** Tracked, narrowing over time:
-
-- **Booleans are numbers.** `true`/`false` compile to `1`/`0`. `typeof` is recovered statically where a boolean can be proven, but a boolean carried through an untyped binding reports `"number"`, `String(true)` is `"1"`, and `parseInt(true)` is `1`. A real-boolean carrier is planned.
-- **Objects are fixed-layout schemas** — key set and order fixed at the literal, `delete` rejected, `memory.Object({...})` must match the source key order.
+- **Booleans are numbers.** `true`/`false` compile to `1`/`0`. `typeof` recovers `"boolean"` where it can be proven statically, but a boolean carried through an untyped binding reports `"number"`, `String(true)` is `"1"`, `parseInt(true)` is `1`. A real-boolean carrier is planned.
+- **Objects are fixed-layout schemas** — key set and order fixed at the literal; `delete` is rejected; `memory.Object({…})` must match the source key order.
 - **Errors are untagged** — `throw` carries a value, not a typed `Error`; `e instanceof TypeError` does not discriminate.
 - **`Set`/`Map` iterate slot order**, not insertion order.
-- **Memory is not reclaimed** automatically — see *How does memory work?*.
+- **Memory is not reclaimed automatically** — see *How does memory work?* below.
 
 For full TC39 conformance use [porffor](https://github.com/CanadaHonk/porffor); jz trades completeness for low-level numeric performance by design.
 
 </details>
 
 <details>
-<summary><strong>How to pass data between JS and WASM?</strong></summary>
-<!-- FIXME: not very precise question - how to pass non-numbers -->
+<summary><strong>Can I use npm packages or existing JS libraries?</strong></summary>
 
 <br>
 
+Only code that fits the jz subset. There's no runtime, so packages touching the DOM, `async`/`Promise`, the network, or Node APIs won't compile — but pure numeric/algorithmic source does.
 
-Numbers pass directly as f64, arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `inst.memory` provides read/write across the boundary. (For exported functions whose string param is used only as a string — `.length` / bounded `.charCodeAt` — the boundary skips the memory copy entirely; see *How do strings cross the boundary?* below.)
+- **Relative imports** (`./math.js`) bundle at compile time — see *Can I split code across files?* below.
+- **Bare specifiers** (`import { x } from "pkg"`) resolve through Node module resolution only with the `--resolve` CLI flag, or by passing the source yourself via `{ modules }`. The package's source still has to be valid jz.
 
-> [!WARNING] jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-> `memory.Object({ x: 3, y: 4 })` expects the same key order as the jz source `{ x, y }`.
-> `{ y: 4, x: 3 }` with reversed keys will produce wrong values.
-
-```js
-const { exports, memory } = jz`
-  export let greet = (s) => s.length
-  export let sum = (a) => a.reduce((s, x) => s + x, 0)
-  export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
-  export let rgb = (c) => [c, c * 0.5, c * 0.2]
-  export let process = (buf) => buf.map(x => x * 2)
-`
-
-// JS → WASM (write)
-memory.String('hello')               // → string pointer
-memory.Array([1, 2, 3])              // → array pointer
-memory.Float64Array([1.0, 2.0])      // → typed array pointer
-memory.Int32Array([10, 20, 30])      // all typed array constructors available
-
-// ⚠ Objects: keys and order must match the jz source declaration.
-// jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
-// If the jz source declares `{ x, y }`, you must pass `{ x, y }` in that order.
-memory.Object({ x: 3, y: 4 })       // → object pointer
-
-// Strings/arrays inside objects are auto-wrapped to pointers:
-memory.Object({ name: 'jz', count: 3 })  // name auto-wrapped via memory.String
-
-// Call with pointers
-exports.greet(memory.String('hello'))          // 5
-exports.sum(memory.Array([1, 2, 3]))           // 6
-exports.dist(memory.Object({ x: 3, y: 4 }))   // 5
-
-// direct JS array return
-exports.rgb(100)      // [100, 50, 20]
-
-// read pointer value
-memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
-```
-
-Template interpolation handles most of this automatically — strings, arrays, numbers, and numeric objects are marshaled for you:
-
-```js
-jz`export let f = () => ${'hello'}.length + ${[1,2,3]}[0] + ${{x: 5, y: 10}}.x`
-```
+jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecosystem.
 
 </details>
 
 <details>
-<summary><strong>How do strings cross the boundary? Can a JS string pass through without copying?</strong></summary>
+<summary><strong>Can I split code across files?</strong></summary>
 
 <br>
 
-Strings have **two boundary carriers**. The compiler picks per export-param:
-
-| carrier | when | what crosses | per-call cost |
-|---|---|---|---|
-| **f64 / SSO** (default) | every parameter unless the narrower can prove the param is used purely as a string | a NaN-boxed `f64` pointing at UTF-8 bytes written into wasm linear memory; ≤4 ASCII chars inline in the NaN payload (SSO) | one `_alloc` + memcpy per call |
-| **externref / `wasm:js-string`** | exported-fn param uses only `.length` and bounded `.charCodeAt(i)`, isn't reassigned or captured, doesn't escape into non-builtin calls, *and* (a) at least one `.charCodeAt` use or (b) call-site evidence proves STRING or (c) a string-literal default (`s = ''`) declares intent | the JS string itself, by reference | **zero** — `.length`/`.charCodeAt` lower to [`wasm:js-string`](https://github.com/WebAssembly/js-string-builtins/blob/main/proposals/js-string-builtins/Overview.md) builtins the engine inlines |
-
-The opt-in fires automatically when the use pattern is provable. `--wat` shows it as `(param $s externref)` on the inner function. A small per-export custom section (`jz:extparam`) tells interop which arg slots skip NaN-boxing.
-
-```js
-const { exports } = jz`
-  // Opt-in fires: .charCodeAt in a bounded for-loop discriminates string.
-  export let sum = (s) => {
-    let n = 0
-    for (let i = 0; i < s.length; i++) n += s.charCodeAt(i)
-    return n
-  }
-
-  // Opt-in fires: 's = ""' default declares string intent — flips even
-  // though .length alone is otherwise polymorphic across string/array.
-  export let len = (s = '') => s.length
-
-  // Opt-in declines: '+' isn't a builtin; param escapes into the f64 op.
-  export let label = (s) => s + ' (ok)'
-`
-
-exports.sum('hello')         // 532  — JS string passed by reference
-exports.len()                // 0    — default substituted JS-side
-exports.label('test')        // 'test (ok)' — memory-backed string, as before
-```
-
-**Why .length-only doesn't flip by default.** `.length` reads from arrays and typed arrays too. `f(42)` returns `undefined` (number has no `.length`); `f([1,2,3])` returns `3`. Flipping `.length`-only to `wasm:js-string.length` would trap on non-strings — the f64/SSO carrier keeps that tolerant polymorphism. A `.charCodeAt` use, a STRING-proving call site, or an explicit `s = ''` default lifts the conservatism.
-
-**Why bounded loops matter.** JS `'ab'.charCodeAt(99)` returns `NaN`; `wasm:js-string.charCodeAt` **traps**. The narrower walks for-loops to prove `i < s.length` before flipping. Unbounded reads stay on the f64 carrier.
-
-**Engines.** Native `wasm:js-string` lands in V8 17+ (Chrome 134+, Node 25+ via the `{ builtins: ['js-string'] }` Module option), Safari 18.4+, Firefox behind a flag. `jz/interop` probes the engine and either passes the option for native inlining or attaches a JS polyfill (`(s) => s.length`, `(s, i) => s.charCodeAt(i)`). Either way the boundary string-copy is saved; the polyfill blunts only the per-char loop speedup.
-
-**Opt-out.** `optimize: { jsstring: false }` keeps every param on the f64 carrier — useful for engines that mishandle the builtins option, or for comparing the two in a bench.
-
-**Bench.** Run `node bench/jsstring/bench-jsstring.mjs` for paired-compilation numbers on the current engine (typical Node 25 result: `.length` 20–5000× faster, `.charCodeAt`-loop 1.3–10× faster as string size grows from 8 to 8192 chars).
-
-</details>
-
-<details>
-<summary><strong>How does template interpolation work?</strong></summary>
-
-<br>
-
-Numbers and booleans inline directly into source. Strings, arrays, and objects are serialized as jz source literals and compiled at compile time — no post-instantiation allocation, no getter overhead:
-
-```js
-jz`export let f = () => ${'hello'}.length`              // 5 — string compiled as literal
-jz`export let f = () => ${[10, 20, 30]}[1]`             // 20 — array compiled as literal
-jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3 — object compiled as literal
-
-// Nested values work too
-jz`export let f = () => ${{label: 'origin', x: 0, y: 0}}.label.length`  // 6
-```
-
-Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
-
-</details>
-
-<details>
-<summary><strong>Does it support ES module imports?</strong></summary>
-<!-- FIXME: It's not ES module imports, it's just imports syntax -->
-<br>
-
-Yes — standard ES `import` syntax is bundled at compile-time into a single WASM.
+Yes. Standard `import`/`export` syntax is bundled at compile time into a single WASM — no runtime module resolution.
 
 ```js
 const { exports } = jz(
@@ -301,119 +186,7 @@ const { exports } = jz(
 )
 ```
 
-Transitive imports work (main → math → utils → …). Circular imports error at compile time. Output is always one WASM binary — no runtime resolution.
-
-**CLI** resolves filesystem imports automatically.
-
-```sh
-jz main.jz -o main.wasm    # reads ./math.jz, ./utils.jz automatically
-```
-
-**Browser**: fetch sources yourself, pass via `{ modules }`. The compiler stays synchronous and pure — no I/O.
-
-```js
-// Transitive bundling — all merged into one WASM
-const { exports } = jz(mainSrc, { modules: {
-  './math.jz': 'import { sq } from "./utils.jz"; export let dist = (x, y) => (sq(x) + sq(y)) ** 0.5',
-  // Fetch sources yourself, pass them in
-  './utils.jz': await fetch('./util.jz').then(r => r.text())
-} })
-```
-
-</details>
-
-<details>
-<summary><strong>How to run a produced <code>.wasm</code> without jz?</strong></summary>
-
-<br>
-
-Ship the `.wasm` and the small host-side bridge that knows the value encoding. jz publishes the bridge under the `jz/interop` subpath — it has no dependency on the compiler, parser, or watr (only `wasi.js`), so bundlers tree-shake the compiler out entirely.
-
-```sh
-jz program.js -o program.wasm    # compile once, anywhere
-```
-
-```js
-// In production: no compiler shipped, just the wasm + the interop bridge.
-import { instantiate } from 'jz/interop'
-import wasmBytes from './program.wasm'   // bundler-specific; or fetch(...)
-
-const { exports, memory } = instantiate(wasmBytes)
-exports.greet(memory.String('hello'))    // marshal works the same as compile-time
-```
-
-`instantiate(wasm, opts?)` accepts `Uint8Array`, `ArrayBuffer`, or a pre-built `WebAssembly.Module`. The returned `{ exports, memory, instance, module }` is identical to what the `jz(src)` template tag returns — same `memory.String/Array/Object/...` constructors, same `memory.read(ptr)` decoder, same handling of `imports` / shared `memory` / WASI.
-
-The bridge encodes values as **NaN-boxed `f64`** with bump-allocated heap blobs. One boundary codec per binary — a jz wasm picks its host shape at compile time, the JS host that loads it knows which variant it asked for. Internal representation (whether a number lives as a flat `i32`, an SSO string stays inline, an object packs its fields) is analysis-driven and per-site, never a user-pickable preset.
-<!-- FIXME: elaborate/provide a way without jz, some contract -->
-</details>
-
-<details>
-<summary><strong>How do I pass values from the host to jz?</strong></summary>
-<!-- FIXME: the question is too similar to the first one -->
-
-<br>
-
-Any host namespace — functions, constants, custom objects — wires in via the `imports` option. jz extracts what's needed via `Object.getOwnPropertyNames`, so non-enumerable built-ins (`Math.sin`, `Date.now`) work automatically:
-
-```js
-// Custom function
-const { exports } = jz(
-  'import { log } from "host"; export let f = (x) => { log(x); return x }',
-  { imports: { host: { log: console.log } } }
-)
-
-// Whole namespace — sin, cos, sqrt, PI, etc. all auto-wired
-const { exports } = jz(
-  'import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
-  { imports: { math: Math } }
-)
-
-// Date static methods
-const { exports } = jz(
-  'import { now } from "date"; export let f = () => now()',
-  { imports: { date: Date } }
-)
-
-// window / globalThis
-const { exports } = jz(
-  'import { parseInt } from "window"; export let f = () => parseInt("42")',
-  { imports: { window: globalThis } }
-)
-```
-
-For per-call data (numbers, strings, arrays, objects, typed arrays), see *How to pass data between JS and WASM?* above — pointers via `memory.String`/`memory.Array`/`memory.Object` or template interpolation.
-
-</details>
-
-<details>
-<summary><strong>Can two modules share data?</strong></summary>
-
-<br>
-
-Yes — `jz.memory()` creates a shared memory that modules compile into. Schemas accumulate automatically, so objects created in one module are readable by another:
-
-```js
-const memory = jz.memory()
-
-const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
-const b = jz('export let read = (o) => o.x + o.y', { memory })
-
-// Object from module a, processed by module b — same memory, merged schemas
-b.exports.read(a.exports.make())  // 30
-
-// Read from JS too — memory knows all schemas
-memory.read(a.exports.make())  // {x: 10, y: 20}
-
-// Write from JS before any compilation
-memory.String('hello')      // → NaN-boxed pointer
-memory.Array([1, 2, 3])     // → NaN-boxed pointer
-```
-
-`jz.memory()` returns an actual `WebAssembly.Memory` (monkey-patched with `.read()`, `.String()`, `.Array()`, `.Object()`, `.write()`, etc). You can also pass an existing memory: `jz.memory(new WebAssembly.Memory({ initial: 4 }))` patches and returns the same object. Passing raw `WebAssembly.Memory` to `{ memory }` auto-wraps it.
-
-Modules sharing a memory share a single bump allocator — see *How does memory work?* below. Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
-
+Transitive imports work (main → math → utils → …); circular imports error at compile time. The **CLI** resolves filesystem imports automatically (`jz main.jz -o main.wasm` reads `./math.jz` etc.). In the **browser**, fetch sources yourself and pass them via `{ modules }` — the compiler stays synchronous and pure, no I/O.
 
 </details>
 
@@ -422,219 +195,68 @@ Modules sharing a memory share a single bump allocator — see *How does memory 
 
 <br>
 
-jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward. No free list, no GC, no per-object header overhead beyond `[len][cap]`. Bytes 0–1023 are reserved (data segment + heap-pointer slot at byte 1020); the heap starts at byte 1024 and grows the WASM memory automatically when full.
+jz uses a **bump allocator**: every heap value (string, array, object, typed array) bumps a single pointer forward — no free list, no GC. The heap starts at byte 1024 and grows the WASM memory automatically when full.
 
-This means **memory is never reclaimed implicitly** — long-running programs that allocate per call will grow without bound. The fix is to reset the heap pointer between independent batches:
+So **memory is never reclaimed implicitly** — a long-running program that allocates per call grows without bound. Reset the heap pointer between independent batches:
 
 ```js
-const { exports, memory } = jz`
-  export let process = (n) => {
-    let xs = []
-    for (let i = 0; i < n; i++) xs.push(i * 2)
-    return xs.reduce((s, x) => s + x, 0)
-  }
-`
-
 for (let i = 0; i < 1000; i++) {
   const sum = exports.process(100)   // allocates an array each call
   memory.reset()                     // drop everything; heap ptr → 1024
 }
 ```
 
-After `memory.reset()` all previously returned pointers are invalid — read what you need first, then reset.
-
-For finer control, allocate manually: `memory.alloc(bytes)` returns a raw offset using the same bump pointer. Pure scalar modules (no strings/arrays/objects) are compiled without the allocator at all — no `_alloc`, no `_clear`, no memory section.
-
-**Non-JS hosts** (wasmtime, wasmer, deno, EdgeJS, embedded WASM) get the same allocator via two exports:
-
-```
-(func $_alloc (param $bytes i32) (result i32))   ;; returns heap offset
-(func $_clear)                                    ;; rewinds heap pointer to 1024
-```
-
-`memory.reset()` and `memory.alloc()` are JS-side aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The pointer crossing the WASM boundary is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Call `_clear()` between batches to reclaim. Strip both with `compile(code, { alloc: false })` if you only call functions and never marshal heap values across the boundary.
+After `memory.reset()` all previously returned pointers are invalid — read what you need first, then reset. For finer control, `memory.alloc(bytes)` returns a raw offset on the same pointer. Pure scalar modules (no heap values) compile without the allocator at all. The low-level export/encoding contract is in [Interop](#interop).
 
 </details>
 
 <details>
-<summary><strong>How do I run compiled WASM outside the browser?</strong></summary>
-<!-- FIXME: kind-of similar to prev question how to run WASM without JZ -->
+<summary><strong>How do I see and control inferred types?</strong></summary>
+
 <br>
 
-```sh
-jz program.js -o program.wasm
+Inference is mechanical and visible — not hidden. It reads the same signals a human reader does: literals, operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignment flow. The chosen types appear in `--wat`; ambiguous cases fall back to NaN-boxed **f64** — a safe default, never a wrong type.
 
-# Run with any WASM runtime
-wasmtime program.wasm     # WASI support built in
-wasmer run program.wasm
-deno run program.wasm
-```
-
-Pure numeric modules have no imports and instantiate with standard
-`WebAssembly.Module` / `WebAssembly.Instance`, which is the right shape for JS hosts such as EdgeJS. Compile once at startup or build time, then reuse the module; do not compile JZ source per request.
-
-Two host modes select how runtime services lower:
-
-```js
-jz.compile(code)                      // host: 'js' (default) — env.* imports
-jz.compile(code, { host: 'wasi' })    // wasi_snapshot_preview1.* imports
-```
-
-`host: 'js'` (default) — `console.log`/`Date.now`/`performance.now` import from `env.*` and the JS host (`jz()` runtime) wires them automatically. Host-side stringification means jz drops `__ftoa`/`__write_*`/`__to_str` from the binary.
-
-`host: 'wasi'` — `console.log` compiles to WASI `fd_write`, clocks to
-`clock_time_get`. Output runs natively on wasmtime/wasmer/deno. In JS hosts, the small `jz/wasi` polyfill is auto-applied; pass `{ write(fd, text) {…} }` to capture stdout/stderr. `host: 'wasi'` errors at compile time if a program would emit `env.__ext_*` (dynamic dispatch into the JS host) — annotate the receiver or stay on `host: 'js'`.
+To pin a type, write code that implies it: `x | 0` keeps `x` an i32; an `s = ''` default declares a string param. You don't annotate storage — **valid jz = valid JS**, so there's no parallel type syntax to learn. (JSDoc `@type` is planned as an advisory hint but not yet enforced.) Annotations never make code faster; they only sharpen what inference already sees.
 
 </details>
 
 <details>
-<summary><strong>What host features are supported?</strong></summary>
+<summary><strong>Is it production-ready?</strong></summary>
 
 <br>
 
-| JS API | `host: 'js'` (default) | `host: 'wasi'` |
-|---|---|---|
-| `console.log()` | `env.print(val: i64, fd: i32, sep: i32)` — host stringifies | WASI `fd_write` (fd=1), space-separated, newline appended |
-| `console.warn`/`error` | same, fd=2 | WASI `fd_write` (fd=2) |
-| `Date.now()` | `env.now(0) -> f64` (epoch ms) | `clock_time_get` (realtime) |
-| `performance.now()` | `env.now(1) -> f64` (monotonic ms) | `clock_time_get` (monotonic) |
-| `setTimeout`/`clearTimeout` | `env.setTimeout(cb, delay, repeat) -> f64` / `env.clearTimeout(id) -> f64` — host schedules; fires via exported `__invoke_closure` | WASM timer queue + `__timer_tick` (or blocking `__timer_loop` on wasmtime) |
-| `setInterval`/`clearInterval` | same `env.setTimeout` (repeat=1) / `env.clearTimeout` | WASM timer queue + `__timer_tick` |
-| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
+It's **experimental** (`0.4.0`) — the compiler API and option names may still change. What's stable is the *output*: jz emits deterministic WASM, gated on every push by test262, a differential fuzzer (`test/differential.js` runs jz-compiled wasm against the same source as plain JS), and the size/speed bench.
 
-The compiled `.wasm` uses at most one import namespace:
-
-- none — pure scalar/compute modules. Instantiate directly with standard WebAssembly APIs.
-- `env` — JS-host services (default). Auto-wired by the `jz()` runtime.
-- `wasi_snapshot_preview1` — standard WASI Preview 1. Run natively on wasmtime/wasmer/deno.
-
-`host: 'gc'` is reserved for a planned wasm-gc backend and currently errors at
-compile time — naming it explicitly so future code that targets it doesn't read
-as a typo. Pair `host: 'wasi'` with `strict: true` if you want dynamic
-`obj[k]` / unknown-receiver calls to fail at compile time on the JS path too.
+The robust way to depend on jz today: compile to `.wasm` at build time, commit the binary, and load it through the dependency-free [`jz/interop`](#interop) bridge — your app then rides on the WASM, not on the compiler's evolving API.
 
 </details>
 
 <details>
-<summary><strong>What custom sections does jz emit?</strong></summary>
+<summary><strong>Why jz over Porffor or AssemblyScript?</strong></summary>
 
 <br>
 
-jz embeds four small WebAssembly custom sections so the JS-side interop layer
-can wire boundary ABIs without re-parsing the source. They are inert for
-non-JS hosts (wasmtime/wasmer ignore unknown customs), and `interop.js` reads
-them once at instantiate-time.
-
-| Section | Purpose |
-|---|---|
-| `jz:schema` | Object schemas for exported records. Compact varint format so the JS side can rehydrate plain objects from boundary writes without per-call shape inference. |
-| `jz:rest` | Per-export rest-parameter info (`{ name, fixed }`). Tells JS how many fixed args precede the rest array so the wrapper packs the tail correctly — covers aliased re-exports too. |
-| `jz:i64exp` | Per-export i64-ABI map (`{ name, p:[i64 param indices], r:0|1 }`). Marks the slots where the boundary wrapper passes NaN-boxed pointers as i64 (dodging V8's NaN canonicalization) instead of f64. |
-| `jz:extparam` | Per-export externref-param positions (`{ name, p:[…], d?:{idx:default} }`). Lists the args that skip NaN-boxing entirely — the jsstring carrier writes here, and `d` carries default values for params with `= ''` syntax. |
-
-You generally don't need to touch these; they're documented so external
-tools (linkers, custom JS loaders, devtools) can read them safely. Names are
-stable; binary layouts are not — re-derive from the latest `interop.js` if you
-parse them yourself.
-
-</details>
-
-<details>
-<summary><strong>How do I add custom operators / extend the stdlib?</strong></summary>
-<!-- FIXME: worth elaborating about inference maybe, leading to inference question? -->
-<br>
-
-jz's emitter table (`ctx.core.emit`) maps AST operators → WASM IR generators. Module files in `module/` register handlers on it. To add your own:
-
-```js
-import { emitter } from './src/emit.js'
-import { typed } from './src/ir.js'
-
-// Register a custom operator: my.double(x) → x * 2
-emitter['my.double'] = (x) => {
-  return ['f64.mul', ['f64.const', 2], typed(x, 'f64')]
-}
-```
-
-The naming convention follows the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. See any file in `module/` for the full pattern — each exports a function that receives `ctx` and registers emitters, stdlib, globals, or helpers.
-
-Inside a runtime module, import directly from the layer you need:
-
-```js
-import { emit } from '../src/emit.js'
-import { asF64, temp } from '../src/ir.js'
-import { valTypeOf, VAL } from '../src/analyze.js'
-```
-
-</details>
-
-
-<details>
-<summary><strong>How do I get my array loops to vectorize?</strong></summary>
-
-<br>
-
-The lane-local vectorizer (`vectorizeLaneLocal`, on at default `optimize: 2`)
-lifts inner loops of shape `for (let i=0;i<N;i++) arr[i] = f(arr[i], …)` to
-SIMD-128, provided the body is lane-pure (k-th lane output depends only on
-k-th lane inputs). Reductions like `s = s + arr[i]` and bitwise XOR
-hashes also lift.
-
-What lifts:
-
-- Same-array in-place: `a[i] = a[i] * 2`
-- Cross-array map: `b[i] = a[i] * k + c` (distinct base pointers, shared `i << K` offset)
-- **SoA (structure-of-arrays)**: separate `xs`/`ys`/`zs` typed arrays, accessed
-  in one loop with the same induction var — `zs[i] = xs[i]*a + ys[i]*b`. Up
-  to 4 base pointers per inner loop verified by tests.
-- Reductions: `s = s + a[i]`, `h = h ^ a[i]`, `h = h | a[i]`, `h = h & a[i]`.
-
-What does **not** lift (today):
-
-- **AoS (array-of-structures)**: interleaved `a[i*3]`, `a[i*3+1]`, … in one
-  buffer. The stride exceeds the lane width so loads aren't contiguous —
-  the recognizer correctly refuses. **Migration path: split the buffer into
-  one typed array per field** (the SoA shape above) before the hot loop.
-  No compiler-side AoS→SoA conversion is planned; the rewrite is mechanical
-  and the layout choice is yours.
-- Loop-carried scalars (`s ^= s << 13`), stencils (`a[i] = a[i] + a[i-1]`),
-  unbounded loops, mixed lane types in one body.
-
-Inspect with `--wat`: a successful lift adds a `$__simd_loop<N>` prefix
-block ahead of the original scalar loop (which becomes the tail). If you
-don't see it, the recognizer bailed on one of the rules — usually a
-loop-carried local or a non-`(base + i<<K)` address.
-
-</details>
-
-<details>
-<summary><strong>Isn't implicit inference evil?</strong></summary>
-<!-- FIXME: too defensive question/answer, possibly belongs in philosophy. Maybe better reframe as own inference hints? -->
-<br>
-
-The "explicit > implicit" reflex assumes inference is hidden, fragile, or coercive. jz inference is none of those — the rules are mechanical (name, literals, operators, member access, `typeof`, assignment flow, JSDoc), the chosen types are visible in `--wat` output, and ambiguous cases fall back to NaN-boxed f64: a safe default, never a wrong type.
-
-Type annotations (eg. TypeScript) do two different jobs in one syntax:
-
-1. **Hints to the compiler** about storage (`let x: number = 5`). That's compiler internals leakage into syntax — inference reads operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignments the way a human reader does. The annotation duplicates what's already in the code.
-2. **Contracts at module boundaries** (`function f(id: UserId): User | null`). Legitimate — but a *documentation* concern, not a *language* concern.
-
-jz keeps the split clean: inference handles storage, JSDoc handles contracts. **Valid jz = valid JS** — no parallel type system to learn. Annotations don't make code faster; they sharpen what the compiler can already infer.
+Pick **jz** when you want to write plain JS, ship tiny WASM, and get native-class numeric/DSP performance — and your code fits the subset. Pick **[porffor](https://github.com/CanadaHonk/porffor)** when you need full TC39 (it implements the spec progressively). Pick **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** if you're happy writing a typed TypeScript dialect. See [Alternatives](#alternatives) for the full comparison.
 
 </details>
 
 <details>
 <summary><strong>Can I compile jz to C?</strong></summary>
-<!-- FIXME: add info about efficiency, results, also wasm-opt -->
+
 <br>
 
 Yes, via [wasm2c](https://github.com/WebAssembly/wabt/blob/main/wasm2c) or [w2c2](https://github.com/turbolent/w2c2):
 
 ```sh
 jz program.js -o program.wasm
-wasm2c program.wasm -o program.c
-cc program.c -o program
+wasm-opt -O3 program.wasm -o program.opt.wasm   # trims redundant locals/loads first
+wasm2c program.opt.wasm -o program.c
+cc -O3 program.c -o program
 ```
+
+The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C — beating V8 on 19 of 21 bench cases on an M4 Max. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
+
 </details>
 
 
@@ -684,6 +306,198 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 <!-- FIXME: needs to be updated -->
 
 `npm run test:bench` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
+
+</details>
+
+<details>
+<summary><strong>Making array loops vectorize</strong></summary>
+
+<br>
+
+The lane-local vectorizer (on at default `optimize: 2`) lifts inner loops of shape `for (let i=0;i<N;i++) arr[i] = f(arr[i], …)` to SIMD-128 when the body is lane-pure (the k-th output depends only on the k-th inputs).
+
+**Lifts:** in-place maps (`a[i] = a[i] * 2`), cross-array maps (`b[i] = a[i] * k + c`), **structure-of-arrays** (`zs[i] = xs[i]*a + ys[i]*b`, up to 4 base pointers), and reductions (`s += a[i]`, `h ^= a[i]`, `|`, `&`).
+
+**Doesn't lift:** **array-of-structures** (interleaved `a[i*3]`, `a[i*3+1]` — stride exceeds lane width; split into one typed array per field), loop-carried scalars (`s ^= s << 13`), stencils (`a[i] = a[i] + a[i-1]`), unbounded loops, mixed lane types in one body.
+
+Check with `--wat`: a successful lift adds a `$__simd_loop<N>` block ahead of the scalar tail. No block means the recognizer bailed — usually a loop-carried local or a non-`(base + i<<K)` address.
+
+</details>
+
+
+## Interop
+
+How values cross the JS↔WASM boundary, and how to ship and run the compiled `.wasm`. Everything is encoded as **NaN-boxed `f64`** with bump-allocated heap blobs — one boundary codec per binary, chosen at compile time.
+
+### Passing data in and out
+
+Numbers pass directly as f64; arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `memory` reads and writes them across the boundary.
+
+```js
+const { exports, memory } = jz`
+  export let greet = (s) => s.length
+  export let dist = (p) => (p.x * p.x + p.y * p.y) ** 0.5
+  export let rgb = (c) => [c, c * 0.5, c * 0.2]
+  export let process = (buf) => buf.map(x => x * 2)
+`
+
+// JS → WASM (write)
+memory.String('hello')          // → string pointer
+memory.Array([1, 2, 3])         // → array pointer
+memory.Float64Array([1, 2])     // → typed array pointer (all TypedArray ctors available)
+memory.Object({ x: 3, y: 4 })   // → object pointer (see warning)
+
+// Call with pointers
+exports.greet(memory.String('hello'))        // 5
+exports.dist(memory.Object({ x: 3, y: 4 }))  // 5
+exports.rgb(100)                              // [100, 50, 20] — direct JS array return
+memory.read(exports.process(memory.Float64Array([1, 2, 3])))  // Float64Array [2, 4, 6]
+```
+
+> [!WARNING] jz objects are fixed-layout schemas (like C structs), not dynamic key bags.
+> `memory.Object({ x: 3, y: 4 })` must use the same key order as the jz source `{ x, y }` — reversed keys produce wrong values. Strings/arrays inside objects are auto-wrapped to pointers.
+
+### Template interpolation
+
+Interpolated values are baked into the source at compile time — no post-instantiation allocation, no getter overhead. Numbers and booleans inline directly; strings, arrays, and objects compile as jz literals:
+
+```js
+jz`export let f = () => ${'hello'}.length`               // 5
+jz`export let f = () => ${[10, 20, 30]}[1]`              // 20
+jz`export let f = () => ${{name: 'jz', count: 3}}.count` // 3
+```
+
+Functions are imported as host calls. Non-serializable values (host objects, class instances) fall back to post-instantiation getters automatically.
+
+### Calling host functions
+
+Any host namespace — functions, constants, custom objects — wires in via the `imports` option. jz extracts names via `Object.getOwnPropertyNames`, so non-enumerable built-ins (`Math.sin`, `Date.now`) work automatically:
+
+```js
+// Custom function
+jz('import { log } from "host"; export let f = (x) => { log(x); return x }',
+   { imports: { host: { log: console.log } } })
+
+// Whole namespace — sin, cos, PI, … all auto-wired
+jz('import { sin, PI } from "math"; export let f = () => sin(PI / 2)',
+   { imports: { math: Math } })
+
+// globalThis works too
+jz('import { parseInt } from "window"; export let f = () => parseInt("42")',
+   { imports: { window: globalThis } })
+```
+
+### Host features & runtime services
+
+Two host modes select how runtime services lower. `host: 'js'` (default) imports small `env.*` services that `jz()` auto-wires; `host: 'wasi'` emits WASI Preview 1 for wasmtime/wasmer/deno.
+
+| JS API | `host: 'js'` (default) | `host: 'wasi'` |
+|---|---|---|
+| `console.log()` | `env.print(val, fd, sep)` — host stringifies | WASI `fd_write` (fd=1), space-separated, newline |
+| `console.warn`/`error` | same, fd=2 | WASI `fd_write` (fd=2) |
+| `Date.now()` | `env.now(0) → f64` (epoch ms) | `clock_time_get` (realtime) |
+| `performance.now()` | `env.now(1) → f64` (monotonic ms) | `clock_time_get` (monotonic) |
+| `setTimeout`/`setInterval` | `env.setTimeout(cb, delay, repeat)` — host schedules; fires via `__invoke_closure` | WASM timer queue + `__timer_tick` |
+| dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
+
+The compiled `.wasm` uses at most one import namespace: **none** (pure scalar/compute — instantiate directly with standard WebAssembly APIs), **`env`** (JS-host services, default, auto-wired by `jz()`), or **`wasi_snapshot_preview1`** (standard WASI Preview 1, runs natively on wasmtime/wasmer/deno). `host: 'gc'` is reserved for a planned wasm-gc backend and errors today. Pair `host: 'wasi'` with `strict: true` to also fail dynamic `obj[k]`/unknown-receiver calls at compile time on the JS path.
+
+### Sharing memory across modules
+
+`jz.memory()` creates a shared memory that modules compile into. Schemas accumulate, so objects created in one module are readable by another:
+
+```js
+const memory = jz.memory()
+const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
+const b = jz('export let read = (o) => o.x + o.y', { memory })
+
+b.exports.read(a.exports.make())  // 30 — same memory, merged schemas
+memory.read(a.exports.make())     // {x: 10, y: 20} — JS reads it too
+```
+
+`jz.memory()` returns a real `WebAssembly.Memory` patched with `.read()`/`.String()`/`.Array()`/`.Object()`/`.write()`. Pass an existing one to wrap it: `jz.memory(new WebAssembly.Memory({ initial: 4 }))`. Modules sharing a memory share one bump allocator. Use `.instance.exports` for raw pointers, `.exports` for the JS-wrapped surface.
+
+### Shipping & running the `.wasm`
+
+Compile once, then run the binary anywhere — the compiler need not ship.
+
+**JS host, no compiler.** `jz/interop` is a dependency-free bridge (only `wasi.js`) that knows the value encoding, so bundlers tree-shake the compiler, parser, and watr out entirely:
+
+```js
+import { instantiate } from 'jz/interop'
+import wasmBytes from './program.wasm'   // bundler-specific; or fetch(...)
+
+const { exports, memory } = instantiate(wasmBytes)
+exports.greet(memory.String('hello'))    // marshal works exactly as at compile time
+```
+
+`instantiate(wasm, opts?)` accepts `Uint8Array`, `ArrayBuffer`, or a prebuilt `WebAssembly.Module` and returns the same `{ exports, memory, instance, module }` shape as the `jz(src)` tag — same `memory.String/Array/Object/...` constructors, same `memory.read(ptr)` decoder.
+
+**Native runtimes.** Compile with `host: 'wasi'` and run on any WASM runtime:
+
+```sh
+jz program.js --host wasi -o program.wasm
+wasmtime program.wasm     # also `wasmer run` / `deno run`
+```
+
+Pure numeric modules have no imports and instantiate with standard `WebAssembly.Module`/`Instance` — the right shape for JS hosts such as EdgeJS. Compile at startup or build time and reuse the module; don't compile jz source per request.
+
+**Memory ABI (non-JS hosts).** The allocator is exposed as two exports:
+
+```
+(func $_alloc (param $bytes i32) (result i32))   ;; returns heap offset
+(func $_clear)                                    ;; rewinds heap pointer to 1024
+```
+
+`memory.alloc()`/`memory.reset()` are JS aliases for these. Headers vary by type: strings store `[len:i32]` + utf8 bytes (offset = `_alloc(4+n) + 4`); arrays / typed arrays / objects store `[len:i32, cap:i32]` + payload (offset = `_alloc(8+bytes) + 8`). The boundary pointer is the f64 NaN-box `0x7FF8 << 48 | type << 47 | aux << 32 | offset` — see [`src/host.js`](src/host.js) for type codes and the canonical encoders. Strip both exports with `compile(code, { alloc: false })` if you only call functions and never marshal heap values across the boundary.
+
+<details>
+<summary><strong>Zero-copy strings</strong></summary>
+
+<br>
+
+Strings have two boundary carriers; the compiler picks per export-param:
+
+| carrier | when | what crosses | per-call cost |
+|---|---|---|---|
+| **f64 / SSO** (default) | every param unless the narrower can prove it is used purely as a string | a NaN-boxed `f64` → UTF-8 bytes in linear memory; ≤4 ASCII chars inline in the NaN payload (SSO) | one `_alloc` + memcpy |
+| **externref / `wasm:js-string`** | param uses only `.length`/bounded `.charCodeAt(i)`, isn't reassigned/captured/escaped, *and* has either a `.charCodeAt` use, call-site STRING evidence, or a `s = ''` default | the JS string itself, by reference | **zero** — lowers to [`wasm:js-string`](https://github.com/WebAssembly/js-string-builtins/blob/main/proposals/js-string-builtins/Overview.md) builtins the engine inlines |
+
+```js
+const { exports } = jz`
+  // Opt-in fires: .charCodeAt in a bounded loop discriminates string.
+  export let sum = (s) => { let n = 0; for (let i = 0; i < s.length; i++) n += s.charCodeAt(i); return n }
+  // Opt-in fires: 's = ""' default declares string intent.
+  export let len = (s = '') => s.length
+  // Opt-in declines: '+' isn't a builtin; param escapes into the f64 op.
+  export let label = (s) => s + ' (ok)'
+`
+exports.sum('hello')   // 532 — JS string passed by reference
+exports.len()          // 0   — default substituted JS-side
+exports.label('test')  // 'test (ok)' — memory-backed string, as before
+```
+
+`.length`-only doesn't flip by default because `.length` also reads arrays and typed arrays — keeping it on f64 preserves that tolerant polymorphism (flipping would trap on non-strings). Bounded loops matter because `wasm:js-string.charCodeAt` **traps** out of range where JS returns `NaN`; the narrower proves `i < s.length` before flipping.
+
+Native `wasm:js-string` lands in V8 17+ (Chrome 134+, Node 25+ via the `{ builtins: ['js-string'] }` Module option), Safari 18.4+, Firefox behind a flag. `jz/interop` probes the engine and either passes the option for native inlining or attaches a JS polyfill — either way the boundary string-copy is saved. Opt out with `optimize: { jsstring: false }`. Bench: `node bench/jsstring/bench-jsstring.mjs`.
+
+</details>
+
+<details>
+<summary><strong>Custom sections</strong></summary>
+
+<br>
+
+jz embeds four small WebAssembly custom sections so the JS interop layer can wire boundary ABIs without re-parsing the source. They're inert for non-JS hosts (wasmtime/wasmer ignore unknown customs); `interop.js` reads them once at instantiate-time. You don't need to touch them — they're documented so external tools (linkers, custom loaders, devtools) can read them safely.
+
+| Section | Purpose |
+|---|---|
+| `jz:schema` | Object schemas for exported records — JS rehydrates plain objects from boundary writes without per-call shape inference. |
+| `jz:rest` | Per-export rest-parameter info (`{ name, fixed }`) — tells JS how many fixed args precede the rest array so the wrapper packs the tail correctly (covers aliased re-exports). |
+| `jz:i64exp` | Per-export i64-ABI map — marks slots where pointers cross as i64 (dodging V8's NaN canonicalization) instead of f64. |
+| `jz:extparam` | Per-export externref-param positions — args that skip NaN-boxing (the jsstring carrier writes here), with `d` carrying `= ''` defaults. |
+
+Names are stable; binary layouts are not — re-derive from the latest `interop.js` if you parse them yourself.
 
 </details>
 
