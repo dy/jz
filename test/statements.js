@@ -730,9 +730,15 @@ test('typeof: undefined check', () => {
   is(jz('export let f = () => typeof 1 === "undefined"').exports.f(), false)
 })
 
-test('=== alias for ==', () => {
+test('=== is strict (no coercion on statically-typed operands)', () => {
+  // Same-type operands behave like ==.
   is(jz('export let f = (a, b) => a === b').exports.f(3, 3), true)
   is(jz('export let f = (a, b) => a !== b').exports.f(3, 4), true)
+  // A statically-known type mismatch folds to false with no coercion — unlike
+  // loose ==, which would coerce. (`true == 1` is true; `true === 1` is false.)
+  is(jz('export let f = () => true === 1').exports.f(), false)
+  is(jz('export let f = () => "1" === 1').exports.f(), false)
+  is(jz('export let f = () => 1 !== true').exports.f(), true)
 })
 
 test('for...in: count keys', () => {

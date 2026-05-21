@@ -381,3 +381,23 @@ test('typeof: string heap', async () => {
   const { exports: { f } } = await jz('export let f = () => { let s = "hello world"; return typeof s }')
   is(f(), 'string')
 })
+
+// A destructured binding must carry the same type tag as the element it bound.
+// Regression: `let [, idx] = arr` lost the type tag, so `typeof idx` returned
+// 'undefined' even though the value coerced fine — while `arr[1]` was correct.
+// Surfaced in watr's `let [, idx] = nodes.shift(); typeof idx === 'string'`
+// type resolution, producing spurious "Type mismatch" compile errors.
+test('typeof: destructured string binding', async () => {
+  const { exports: { f } } = await jz(`export let f = () => { let arr = ['type', '\$name']; let [, idx] = arr; return typeof idx }`)
+  is(f(), 'string')
+})
+
+test('typeof: destructured matches indexed', async () => {
+  const { exports: { f } } = await jz(`export let f = () => {
+    let arr = ['type', '\$name']
+    let [, d] = arr
+    let i = arr[1]
+    return (typeof d) === (typeof i) ? 'match' : 'mismatch'
+  }`)
+  is(f(), 'match')
+})

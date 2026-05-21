@@ -659,7 +659,7 @@ const EXPECTED_FAIL_FILES = new Map([
   // String
   ['built-ins/String/fromCharCode/touint16-tonumber-throws-bigint.js', 'BigInt-arg ToNumber throw — out of scope'],
   ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
-  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'boolean arg ToString coercion not wired — documented divergence'],
+  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'String(object) is JSON-ish, not "[object Object]" — documented divergence (boolean/number/null/undefined/array needles all coerce correctly)'],
   // Array
   ['built-ins/Array/from/elements-added-after.js', 'live iterator protocol — out of scope'],
   ['built-ins/Array/prototype/concat/create-ctor-non-object.js', 'Symbol.species constructor lookup — out of scope'],
@@ -674,10 +674,8 @@ const EXPECTED_FAIL_FILES = new Map([
   // Set
   ['built-ins/Set/prototype/add/preserves-insertion-order.js', 'Set iterates slot order, not insertion order — documented divergence'],
   // parseInt / parseFloat
-  ['built-ins/parseInt/S15.1.2.2_A1_T1.js', 'parseInt(boolean) arg ToString coercion not wired — documented divergence'],
   ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
   ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],
-  ['built-ins/parseFloat/S15.1.2.3_A1_T1.js', 'parseFloat(boolean) arg ToString coercion not wired — documented divergence'],
   ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', 'encodeURIComponent object ToPrimitive coercion — out of scope'],
 ])
 

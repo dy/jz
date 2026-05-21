@@ -10,7 +10,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64 } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit, emitBoolStr } from '../src/emit.js'
 import { isReassigned, valTypeOf, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
@@ -850,12 +850,18 @@ export default (ctx) => {
     ${POW10_SCALE}
     (if (result f64) (local.get $neg) (then (f64.neg (local.get $result))) (else (local.get $result))))`
 
+  // ToString(arg) for the string-input builtins. A statically-known boolean must
+  // render as "true"/"false" (spec step 1: ToString) before parsing — otherwise
+  // its 0/1 carrier bits are fed to the parser as if a string pointer. Other types
+  // (string already, number/object ToPrimitive) stay out of scope per the runner.
+  const strInputI64 = (x) => valTypeOf(x) === VAL.BOOL ? asI64(emitBoolStr(x)) : asI64(emit(x))
+
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     needParseInt()
     // Radix is coerced ToNumber then ToInt32 (modular wrap; NaN/±∞→0) per spec —
     // a raw trunc would turn a string radix into garbage and Infinity into maxint.
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
-    return typed(['call', '$__parseInt', asI64(emit(x)), radixIR], 'f64')
+    return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
   }
   ctx.core.emit['parseInt'] = ctx.core.emit['Number.parseInt']
   const addImportOnce = (ctx, mod, name, fn) => {
@@ -870,10 +876,10 @@ export default (ctx) => {
   ctx.core.emit['Number.parseFloat'] = (x) => {
     if (ctx.transform.host === 'wasi') {
       inc('__parseFloat')
-      return typed(['call', '$__parseFloat', asI64(emit(x))], 'f64')
+      return typed(['call', '$__parseFloat', strInputI64(x)], 'f64')
     }
     needParseFloat()
-    return typed(['call', '$__parseFloat', asI64(emit(x))], 'f64')
+    return typed(['call', '$__parseFloat', strInputI64(x)], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']
 

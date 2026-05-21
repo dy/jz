@@ -923,9 +923,12 @@ const handlers = {
     return transformSwitch(disc, clean)
   },
 
-  // == → ===, != → !== (with prototype identity folding)
-  '=='(a, b) { return isProto(a) || isProto(b) ? 1 : ['===', transform(a), transform(b)] },
-  '!='(a, b) { return isProto(a) || isProto(b) ? 0 : ['!==', transform(a), transform(b)] },
+  // Equality keeps the JS loose/strict distinction (jz core now lowers both):
+  // `==`/`!=` stay loose, `===`/`!==` stay strict. A comparison against a prototype
+  // object (e.g. `x.constructor === Object`) folds to a boolean — jz has no
+  // prototype objects, so identity against one is decided statically.
+  '=='(a, b) { return isProto(a) || isProto(b) ? 1 : ['==', transform(a), transform(b)] },
+  '!='(a, b) { return isProto(a) || isProto(b) ? 0 : ['!=', transform(a), transform(b)] },
   '==='(a, b) { if (isProto(a) || isProto(b)) return 1 },
   '!=='(a, b) { if (isProto(a) || isProto(b)) return 0 },
 

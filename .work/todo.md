@@ -251,6 +251,44 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 
 ## Archive
 
+### Strict `===` + arg-position ToString (2026-05-21)
+
+Follow-on to the boolean carrier: closed the equality and ToString gaps it
+exposed.
+
+* [x] **Un-conflate `===`/`!==` from loose `==`/`!=`.** Strict for
+  statically-typed operands — a proven type mismatch folds to `false`/`true`
+  with **no coercion** (`true === 1` is `false`, `"1" === 1` is `false`),
+  unlike `==`. Same-type operands behave as before. `prepStrictEq` +
+  `emitStrictEq`/`STRICT_PRIM` (src/prepare.js, src/emit.js); jzify keeps the
+  loose/strict distinction (src/jzify.js). Untyped-dynamic operands stay a
+  documented gap (the `null === undefined` unification too).
+* [x] **Root-cause fixes surfaced by the above.** (1) `OP_MODULES` now maps
+  `===`/`!==` → `['core','string']` (src/autoload.js) so the string module
+  registers `__str_eq` when only strict ops appear — was
+  `internal: stdlib '__str_eq' was requested but never registered`. (2)
+  Destructuring registers each binding name in the arrow's local scope
+  (src/prepare.js `prepDecl`), and a bare-identifier source destructures
+  without a copy temp — so `let [,x]=strs; typeof x` resolves `'string'`
+  instead of mis-folding to `'undefined'` (it was invisible to
+  `isUnresolvableBareIdent`). Pinned by 2 new `test/destruct.js` tests.
+* [x] **Boolean→ToString in argument position.** `parseInt`/`parseFloat`
+  render a statically-known boolean as `"true"/"false"` before parsing
+  (`strInputI64`, module/number.js); `String.indexOf`/`includes` coerce a
+  BOOL needle the same way and an OBJECT needle via compile-time
+  ToPrimitive(string) (`searchArg`, module/string.js). All reuse the existing
+  `emitBoolStr`.
+* [x] **test262 builtins 719 → 721** — `parseInt(boolean)` /
+  `parseFloat(boolean)` unskipped (were fed the 0/1 carrier). Baseline bumped
+  in `.github/workflows/test262.yml`. `indexOf/searchstring-tostring.js` stays
+  xfail for one reason only: `String({})` is JSON-ish `"{}"`, not
+  `"[object Object]"` — all other needle types (bool/number/null/undefined/
+  array) now pass.
+
+Suites: unit 1830 pass / 0 fail / 1 skip; test262 language 1431 / 0; builtins
+721 / 0. README boolean/FAQ prose untouched (no new divergence — these are
+correctness fixes).
+
 ### Real-boolean carrier (2026-05-21)
 
 `true`/`false` carry as the cheap `0`/`1` i32 internally — branches and arithmetic

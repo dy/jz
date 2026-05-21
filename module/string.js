@@ -1143,9 +1143,12 @@ export default (ctx) => {
     return asI32(toNumF64(node, emit(node)))
   }
 
-  // An OBJECT search arg coerces via ToPrimitive(string) at compile time;
-  // __str_indexof's internal __to_str cannot invoke a user-defined toString.
+  // ToString(searchString) per spec step 3. __str_indexof's internal __to_str
+  // covers string/number/null/undefined needles, but two cases need help here:
+  // a BOOL rides the 0/1 carrier (→ "0"/"1" not "true"/"false"), and an OBJECT
+  // needs compile-time ToPrimitive(string) (__to_str can't invoke user toString).
   const searchArg = (search) =>
+    valTypeOf(search) === VAL.BOOL ? asI64(emitBoolStr(search)) :
     valTypeOf(search) === VAL.OBJECT ? toStrI64(search, emit(search)) : asI64(emit(search))
 
   ctx.core.emit['.string:indexOf'] = (str, search, from) => {

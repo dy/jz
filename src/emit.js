@@ -972,6 +972,38 @@ export function emitBody(node) {
 // these arithmetic-shaped operators read it as numeric).
 const numericVal = vt => vt === VAL.BOOL ? VAL.NUMBER : vt
 
+// Primitive value-type classes for strict-equality type-mismatch folding. Two
+// operands of different known classes — when at least one is a primitive — can
+// never be `===` (number/boolean/string/bigint don't cross-coerce under `===`).
+// Two *reference* kinds (array vs object, …) fall through to the shared ref-eq
+// path instead, which already resolves distinct pointers to `false`.
+const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
+
+/**
+ * Strict `===`/`!==`. Unlike loose `==`, no coercion: a statically-known type
+ * mismatch folds to a constant (`true === 1` → false, `"1" === 1` → false). When
+ * the types match — or one side is statically unknown — the result is bit-for-bit
+ * identical to loose `==` on same-type operands, so we delegate to it.
+ *
+ * Two carrier-level limitations remain (documented gaps, not regressions):
+ *  • booleans and numbers share the 0/1 carrier, so `1 === trueDynamic` can only
+ *    be told apart when the boolean's type is statically known;
+ *  • jz unifies `null` and `undefined` into one NaN-boxed sentinel, so
+ *    `null === undefined` is `true` (same as `==`).
+ */
+function emitStrictEq(a, b, negate) {
+  // `typeof x === 'type'` (prepare rewrote the literal to a numeric code) — typeof
+  // always yields a string, so strict and loose agree; reuse the loose lowering.
+  const tc = emitTypeofCmp(a, b, negate ? 'ne' : 'eq'); if (tc) return tc
+  // Known, differing primitive classes can never be strictly equal.
+  const rawA = resolveValType(a, valTypeOf, lookupValType)
+  const rawB = resolveValType(b, valTypeOf, lookupValType)
+  if (rawA && rawB && rawA !== rawB && (STRICT_PRIM.has(rawA) || STRICT_PRIM.has(rawB)))
+    return emitNum(negate ? 1 : 0)
+  // Same type (or dynamic-unknown): identical bits to loose `==`/`!=`.
+  return emitter[negate ? '!=' : '=='](a, b)
+}
+
 /** Comparison op factory with constant folding. */
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const va = emit(a), vb = emit(b)
@@ -1845,6 +1877,8 @@ export const emitter = {
     inc('__eq')
     return typed(['i32.eqz', ['call', '$__eq', asI64(va), asI64(vb)]], 'i32')
   },
+  '===': (a, b) => emitStrictEq(a, b, false),
+  '!==': (a, b) => emitStrictEq(a, b, true),
   '<':  cmpOp('lt_s', 'lt', (a, b) => a < b),
   '>':  cmpOp('gt_s', 'gt', (a, b) => a > b),
   '<=': cmpOp('le_s', 'le', (a, b) => a <= b),
