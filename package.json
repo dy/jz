@@ -1,7 +1,7 @@
 {
   "name": "jz",
   "version": "0.4.0",
-  "description": "Modern functional JS compiling to WASM",
+  "description": "Functional JS subset compiling to WASM",
   "main": "index.js",
   "type": "module",
   "exports": {

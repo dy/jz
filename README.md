@@ -63,7 +63,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 
 | Option | Use |
 |---|---|
-| `jzify: true` | Accept broader JS patterns such as `var`, `function`, `switch`, `arguments`, `==`, and `undefined` by lowering them to the JZ subset. |
+| `jzify: true` | Accept broader JS patterns such as `var`, `function`, `switch`, `arguments`, `==`, `undefined`, and `class` (see *Not supported* below for the class subset) by lowering them to the JZ subset. The CLI auto-enables this for `.js` files. |
 | `modules: { specifier: source }` | Bundle static ES imports into one WASM module. CLI import resolution does this from files automatically. |
 | `imports: { mod: host }` | Wire host namespaces/functions used by `import { fn } from "mod"`; functions may be plain JS functions or `{ fn, returns }` specs. |
 | `memory` | Pass `memory: N` to create owned memory with `N` initial pages, or pass `memory: jz.memory()` / `WebAssembly.Memory` to share memory across modules. |
@@ -126,11 +126,16 @@ JZ is a strict functional JS subset. Built-in `jzify` transform extends support 
 └────────────────────────────────────────────────────────────────────────┘
 Not supported
   async/await  Promise  function*  yield
-  this  class  super  extends  delete  labels
-  eval  Function  with  Proxy  Reflect  WeakMap  WeakSet
+  delete  labels  eval  Function  with
+  Proxy  Reflect  WeakMap  WeakSet
   import()  DOM  fetch  Intl  Node APIs
 ```
-<!-- FIXME: can we support classes via jzify? -->
+
+`class` lowers to the core subset under `jzify: true` (and via the CLI for `.js`
+files): fields, constructor, methods, `new`, `this`, `extends`, `super(…)`,
+`static` members, and private `#fields`. Rejected with a clear message:
+`super.x` property access, getters/setters, dynamic `extends` heritage, and
+computed member names.
 
 ## FAQ
 

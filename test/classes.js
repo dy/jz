@@ -1,7 +1,9 @@
-// `class` lowering (jzify): constructor + instance fields + methods + `new` + `this`.
+// `class` lowering (jzify): constructor + instance fields + methods + `new` + `this`,
+// plus `extends`, `super(…)`, `static` members, and private `#fields`.
 // Classes are pure desugaring — an instance is a plain object, methods are
 // per-instance arrows capturing it, `this` is renamed to that object, `new C(a)`
-// becomes `C(a)`. No `extends`/`super`/`static`/getters/setters (rejected).
+// becomes `C(a)`. Rejected: `super.x` property access, getters/setters,
+// dynamic `extends` heritage, computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
