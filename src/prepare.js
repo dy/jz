@@ -520,21 +520,34 @@ function namespaceHasOwn(mod, name, member) {
 }
 function resolveTypeof(node) {
   const [op, a, b] = node
+  // `typeof` always yields a string, so `==`/`===` (and `!=`/`!==`) are
+  // equivalent here — both collapse to the same type check.
+  const eqLike = op === '==' || op === '==='
   // typeof x == 'string' → type check
   if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null && typeof b[1] === 'string') {
     const known = staticTypeofString(a[1])
-    if (known != null) return [, op === '==' ? known === b[1] : known !== b[1]]
+    if (known != null) return [, eqLike ? known === b[1] : known !== b[1]]
     const code = TYPEOF_MAP[b[1]]
     if (code != null) return [op, ['typeof', a[1]], [, code]]
   }
   // 'string' == typeof x
   if (Array.isArray(b) && b[0] === 'typeof' && Array.isArray(a) && a[0] == null && typeof a[1] === 'string') {
     const known = staticTypeofString(b[1])
-    if (known != null) return [, op === '==' ? known === a[1] : known !== a[1]]
+    if (known != null) return [, eqLike ? known === a[1] : known !== a[1]]
     const code = TYPEOF_MAP[a[1]]
     if (code != null) return [op, ['typeof', b[1]], [, code]]
   }
   return node
+}
+
+// Prepare a strict `===`/`!==`. resolveTypeof may fold `typeof x === 'type'` to a
+// literal or rewrite it to a numeric-code compare; either way we prep the result's
+// operands directly. The strict op stays intact (no collapse to loose `==`) so
+// emit can apply the no-coercion type-mismatch fold.
+function prepStrictEq(op, a, b) {
+  const r = resolveTypeof([op, a, b])
+  if (r[0] !== op) return prep(r)            // folded to a literal — re-prep is safe
+  return [op, prep(r[1]), prep(r[2])]        // keep strict op; prep operands only
 }
 
 const cloneNode = (node) => {
@@ -844,14 +857,33 @@ function prepDecl(op, ...inits) {
     const normed = prep(init)
 
     if (isDestructPattern(name)) {
+      // Register each binding both as a module global (depth 0) and in the
+      // current arrow's local scope (depth ≠ 0). Without the local registration
+      // the name is invisible to `isUnresolvableBareIdent`, so a later
+      // `typeof x` would mis-fold to 'undefined' (spec §13.5.3) before emit ever
+      // sees the binding — see the bare-hoisted-decl branch above for the same fix.
+      const fnNames = funcLocalNames[funcLocalNames.length - 1]
+      for (const n of bindingNames(name)) {
+        declareGlobal(n)
+        if (depth !== 0 && typeof n === 'string') {
+          if (fnNames) fnNames.add(n)
+          if (scopes.length > 0) scopes[scopes.length - 1].set(n, n)
+        }
+      }
+      // A bare-identifier source needs no temp: reads are idempotent and
+      // side-effect-free, so we destructure straight off it. This keeps each
+      // element's static type tag (e.g. `let [, x] = strs` resolves `x` to the
+      // same STRING that `strs[1]` would) — a copy temp drops the array's
+      // element-type shape and `typeof x` would degrade to 'undefined'.
+      if (typeof normed === 'string') {
+        expandDestruct(name, normed, rest)
+        continue
+      }
       const tmp = `${T}d${ctx.func.uniq++}`
       declareGlobal(tmp, false)
-      for (const n of bindingNames(name)) declareGlobal(n)
       rest.push(['=', tmp, normed])
       // Propagate schema to temp so rest destructuring can resolve it
-      if (typeof normed === 'string' && ctx.schema.vars.has(normed))
-        ctx.schema.vars.set(tmp, ctx.schema.vars.get(normed))
-      else if (Array.isArray(normed) && normed[0] === '{}') {
+      if (Array.isArray(normed) && normed[0] === '{}') {
         const p = normed.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
         if (p.length) ctx.schema.vars.set(tmp, ctx.schema.register(p))
       }
@@ -1310,9 +1342,13 @@ const handlers = {
     err(`Unknown module '${mod}'. Provide it via { modules: { '${mod}': source } } or { imports: { '${mod}': {...} } }`)
   },
 
-  // === is == in jz (all comparisons are strict). Also handle typeof x === 'type' patterns.
-  '==='(a, b) { return prep(resolveTypeof(['==', a, b])) },
-  '!=='(a, b) { return prep(resolveTypeof(['!=', a, b])) },
+  // `===`/`!==` keep strict semantics (no coercion); emit folds a statically-known
+  // type mismatch to false and otherwise shares the loose `==`/`!=` same-type path.
+  // resolveTypeof still collapses `typeof x === 'type'` to a compile-time check.
+  // Prep operands directly (not via `prep` on the node) so the strict op survives
+  // to emit instead of re-dispatching this handler forever.
+  '==='(a, b) { return prepStrictEq('===', a, b) },
+  '!=='(a, b) { return prepStrictEq('!==', a, b) },
 
   // Statements
   ';': (...stmts) => [';', ...stmts.map(prep).filter(x => x != null)],

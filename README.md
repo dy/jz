@@ -131,12 +131,7 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
-`jzify` class support includes instance/static fields and methods, `new`,
-`this`, simple and expression `extends` heritage, `super.method(...)`, private
-`#name` fields, and constant string computed member names.
-
-Rejected with a clear message:
-full `super.x` property reads, getters/setters, dynamic computed member names.
+`jzify` covers most class syntax — fields, methods, `new`, `this`, `extends`, `super.method()`, `#private`, constant computed member names. Getters/setters, bare `super.x` reads, and dynamic computed names are rejected with a clear message.
 
 ## FAQ
 
@@ -147,7 +142,7 @@ full `super.x` property reads, getters/setters, dynamic computed member names.
 
 `Valid jz = valid JS` means jz source always parses and runs as JS — but jz compiles to *static* WASM, so a handful of behaviors diverge from V8. These are deliberate trades, not unfinished corners: each one is what keeps the output close to hand-written WAT. `--wat` shows exactly what was emitted. (For what's out of scope entirely — `eval`, `async`, `Proxy`, … — see the *Not supported* box above; for moving values across the boundary, see [Interop](#interop).)
 
-- **Booleans carry as numbers, surface as booleans.** Internally `true`/`false` are the cheap `1`/`0` i32 — branches and arithmetic pay nothing. Where boolean-ness is *observed*, a real boolean is materialized lazily: `typeof (x > 0)` is `"boolean"`, `String(true)` is `"true"`, `JSON.stringify([true])` is `"[true]"`, and an exported `a < b` hands the host JS `true` (NaN-boxed atom, decoded at the boundary like `null`/strings). The carrier only appears where the type is statically provable, so a boolean produced by value-preserving `&&`/`||`, or read bare from an untyped container and returned, may still cross as `1`/`0`.
+- **A boolean can surface as `1`/`0` at the host boundary.** `typeof`, `String`, `JSON.stringify`, and a directly-returned comparison all hand back a real boolean — but a boolean produced by value-preserving `&&`/`||`, or read bare from an untyped container, crosses as the numeric carrier `1`/`0`.
 - **Objects are fixed-layout schemas** — key set and order fixed at the literal; `delete` is rejected; `memory.Object({…})` must match the source key order.
 - **Errors are untagged** — `throw` carries a value, not a typed `Error`; `e instanceof TypeError` does not discriminate.
 - **`Set`/`Map` iterate slot order**, not insertion order.
@@ -323,12 +318,7 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 
 `npm run test:bench` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
 
-</details>
-
-<details>
-<summary><strong>Making array loops vectorize</strong></summary>
-
-<br>
+#### Making array loops vectorize
 
 The lane-local vectorizer (on at default `optimize: 2`) lifts inner loops of shape `for (let i=0;i<N;i++) arr[i] = f(arr[i], …)` to SIMD-128 when the body is lane-pure (the k-th output depends only on the k-th inputs).
 
@@ -347,7 +337,7 @@ How values cross the JS↔WASM boundary, and how to ship and run the compiled `.
 
 ### Passing data in and out
 
-Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); strings, larger arrays, objects, and typed arrays stay heap-resident, and `memory` reads and writes them across the boundary.
+Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); everything else stays heap-resident behind a pointer.
 
 ```js
 const { exports, memory } = jz`
@@ -416,7 +406,7 @@ Two host modes select how runtime services lower. `host: 'js'` (default) imports
 | `setTimeout`/`setInterval` | `env.setTimeout(cb, delay, repeat)` — host schedules; fires via `__invoke_closure` | WASM timer queue + `__timer_tick` |
 | dynamic `obj.method()` | `env.__ext_call` (JS resolves) | error at compile time |
 
-The compiled `.wasm` uses at most one import namespace: **none** (pure scalar/compute — instantiate directly with standard WebAssembly APIs), **`env`** (JS-host services, default, auto-wired by `jz()`), or **`wasi_snapshot_preview1`** (standard WASI Preview 1, runs natively on wasmtime/wasmer/deno). `host: 'gc'` is reserved for a planned wasm-gc backend and errors today. Pair `host: 'wasi'` with `strict: true` to also fail dynamic `obj[k]`/unknown-receiver calls at compile time on the JS path.
+The compiled `.wasm` carries at most one import namespace — none, `env`, or `wasi_snapshot_preview1` — matching the mode above. `host: 'gc'` is reserved for a planned wasm-gc backend and errors today; pair `host: 'wasi'` with `strict: true` to also fail dynamic `obj[k]`/unknown-receiver calls at compile time.
 
 ### Sharing memory across modules
 

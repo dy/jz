@@ -49,10 +49,12 @@ jobs:
         run: git clone --depth 1 https://github.com/tc39/test262.git test/test262
       - name: Run test262 built-ins suite
         env:
-          # Baseline (as of last green main, 2026-05-18): 719 passes / 0 in-scope
+          # Baseline (as of last green main, 2026-05-21): 721 passes / 0 in-scope
           # fails / 63 xfail (out-of-scope: BigInt, Symbol, RegExp exec, …).
           # The runner gates on pass < baseline AND any in-scope fail > 0; an
           # out-of-scope fail must be added to EXPECTED_FAIL_* in the runner.
+          # 2026-05-21: +2 — boolean→ToString in argument position unskips
+          # parseInt(boolean) and parseFloat(boolean) (formerly fed the 0/1 carrier).
           # Lift this baseline when fixes land.
-          JZ_TEST262_BASELINE: 719
+          JZ_TEST262_BASELINE: 721
         run: npm run test262:builtins

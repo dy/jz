@@ -36,6 +36,8 @@ export const OP_MODULES = {
   'in': ['core', 'collection', 'string'],
   '==': ['core', 'string'],
   '!=': ['core', 'string'],
+  '===': ['core', 'string'],
+  '!==': ['core', 'string'],
   'typeof': ['core', 'string'],
   '[': ['core', 'array'],
   '{': ['core', 'object', 'string', 'collection'],
