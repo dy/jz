@@ -172,7 +172,7 @@ jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecos
 </details>
 
 <details>
-<summary><strong>Can use import/export to split code?</strong></summary>
+<summary><strong>Can I use import/export to split code?</strong></summary>
 
 <br>
 
