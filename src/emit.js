@@ -970,6 +970,28 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   if (vta === VAL.STRING && vtb === VAL.STRING) {
     return typed([`i32.${i32op}`, ctx.abi.string.ops.cmp(asF64(va), asF64(vb), ctx), ['i32.const', 0]], 'i32')
   }
+  // Exactly one operand is a known string; the other has no static type, so it
+  // may hold a string pointer at runtime (e.g. `c >= '0'` where `c` came from
+  // `s[i]` on an untyped receiver). JS relational compare is lexicographic only
+  // when *both* sides are strings, else it ToNumbers both. The f64 path below
+  // would compare the unknown side's NaN-boxed string bits as a float (NaN ⇒
+  // always false), so dispatch at runtime on the unknown side: string → __str_cmp
+  // three-way; else ToNumber both. Mirrors `+`'s __is_str_key string dispatch.
+  // Gated on a *known-string* counterpart, so numeric loops (`i < n`) never pay
+  // the check — comparing against a string literal signals string intent.
+  if (((vta === VAL.STRING && vtb == null) || (vtb === VAL.STRING && vta == null)) && ctx.abi.string?.ops?.cmp) {
+    const unkIsA = vta == null
+    const ta = temp('cmp'), tb = temp('cmp')
+    inc('__is_str_key')
+    const getA = typed(['local.get', `$${ta}`], 'f64'), getB = typed(['local.get', `$${tb}`], 'f64')
+    const check = ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.get', `$${unkIsA ? ta : tb}`]]]
+    const strCmp = [`i32.${i32op}`, ctx.abi.string.ops.cmp(getA, getB, ctx), ['i32.const', 0]]
+    const numCmp = [`f64.${f64op}`, toNumF64(a, getA), toNumF64(b, getB)]
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${ta}`, asF64(va)],
+      ['local.set', `$${tb}`, asF64(vb)],
+      ['if', ['result', 'i32'], check, ['then', strCmp], ['else', numCmp]]], 'i32')
+  }
   if (vta === VAL.DATE || vtb === VAL.DATE) {
     const dateNum = (node, v, vt) => {
       if (vt !== VAL.DATE) return toNumF64(node, v)
