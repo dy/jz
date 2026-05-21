@@ -29,6 +29,7 @@ export default function jzify(ast) {
   classIdx = 0
   objThisIdx = 0
   staticClassIdx = 0
+  classBaseIdx = 0
   // Hoist module-level vars: any `var x` inside nested blocks bubbles up.
   const names = new Set()
   ast = hoistVars(ast, names)
@@ -537,12 +538,13 @@ const block = b => Array.isArray(b) && b[0] === '{}' ? b : ['{}', b]
 // when the derived constructor is implicit — then applies D's own fields and
 // methods over it.
 //
-// Out of scope (rejected with a clear message): `super.foo` property access,
-// dynamic `extends` heritage, getters/setters, computed member names. Private
+// Out of scope (rejected with a clear message): full `super.foo` property
+// semantics, getters/setters, non-constant computed member names. Private
 // `#name` members are kept as the literal key string `#name` (jz allows it).
 let classIdx = 0
 let objThisIdx = 0
 let staticClassIdx = 0
+let classBaseIdx = 0
 const DEFAULT_DERIVED_CTOR_ARITY = 8
 
 const classBodyItems = (body) =>
@@ -572,11 +574,56 @@ function usesThis(node) {
 function hasSuperProp(node) {
   if (!Array.isArray(node)) return false
   if ((node[0] === '.' || node[0] === '?.') && node[1] === 'super') return true
+  if (node[0] === '[]' && node[1] === 'super') return true
   return node.some(hasSuperProp)
 }
 
 function isSuperCall(node) {
   return Array.isArray(node) && node[0] === '()' && node[1] === 'super'
+}
+
+function literalStringKey(node) {
+  return Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
+}
+
+function constStringKey(node) {
+  if (typeof node === 'string') return node
+  const lit = literalStringKey(node)
+  if (lit != null) return lit
+  if (Array.isArray(node) && node[0] === '[]') return literalStringKey(node[1])
+  return null
+}
+
+function superMethodName(callee) {
+  if (!Array.isArray(callee)) return null
+  if ((callee[0] === '.' || callee[0] === '?.') && callee[1] === 'super') return callee[2]
+  if (callee[0] === '[]' && callee[1] === 'super') return literalStringKey(callee[2])
+  return null
+}
+
+function collectSuperMethodCalls(node, out = new Set()) {
+  if (!Array.isArray(node)) return out
+  if (node[0] === 'function' || node[0] === 'class') return out
+  if (node[0] === '()') {
+    const name = superMethodName(node[1])
+    if (name) out.add(name)
+  }
+  for (const n of node) collectSuperMethodCalls(n, out)
+  return out
+}
+
+function rewriteSuperMethodCalls(node, baseMethodVars) {
+  if (!Array.isArray(node)) return node
+  if (node[0] === 'function' || node[0] === 'class') return node
+  if (node[0] === '()') {
+    const name = superMethodName(node[1])
+    if (name) {
+      const fn = baseMethodVars.get(name)
+      if (!fn) jzifyError(`super.${name} is not available on the base class`)
+      return ['()', fn, ...node.slice(2).map(n => rewriteSuperMethodCalls(n, baseMethodVars))]
+    }
+  }
+  return node.map(n => rewriteSuperMethodCalls(n, baseMethodVars))
 }
 
 function splitCtorSuper(body) {
@@ -644,45 +691,69 @@ function lowerObjectLiteralThis(args) {
 function jzifyError(msg) { throw new Error(`jzify: ${msg}`) }
 
 function lowerClass(name, heritage, body) {
-  if (heritage != null && typeof heritage !== 'string')
-    jzifyError('dynamic `class … extends …` heritage is not supported yet')
   let ctorParams = null, ctorBody = null
   const methods = [], fields = [], statics = []
   for (const it of classBodyItems(body)) {
     if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
     if (!Array.isArray(it)) continue
+    const bareFieldName = constStringKey(it)
+    if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
     if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
-      if (typeof it[1] !== 'string') jzifyError('computed class member names are not supported')
-      if (it[1] === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
-      else methods.push([it[1], it[2][1], it[2][2]])
+      const key = constStringKey(it[1])
+      if (key == null) jzifyError('non-constant computed class member names are not supported')
+      if (key === 'constructor') { ctorParams = it[2][1]; ctorBody = it[2][2] }
+      else methods.push([key, it[2][1], it[2][2]])
       continue
     }
     if (it[0] === '=') {
       const lhs = it[1]
       if (Array.isArray(lhs) && lhs[0] === 'static') {
-        if (typeof lhs[1] !== 'string') jzifyError('computed static class fields are not supported')
-        statics.push([lhs[1], it[2]])
+        const key = constStringKey(lhs[1])
+        if (key == null) jzifyError('non-constant computed static class fields are not supported')
+        statics.push([key, it[2]])
         continue
       }
-      if (typeof lhs !== 'string') jzifyError('computed/destructured class fields are not supported')
-      fields.push([lhs, it[2]])
+      const key = constStringKey(lhs)
+      if (key == null) jzifyError('non-constant computed/destructured class fields are not supported')
+      fields.push([key, it[2]])
       continue
+    }
+    if (it[0] === 'static') {
+      const key = constStringKey(it[1])
+      if (key != null) {
+        statics.push([key, null])
+        continue
+      }
     }
     if (it[0] === 'static' && typeof it[1] === 'string') {
       statics.push([it[1], null])
       continue
     }
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && Array.isArray(it[1][2]) && it[1][2][0] === '=>') {
-      if (typeof it[1][1] !== 'string') jzifyError('computed static class member names are not supported')
-      statics.push([it[1][1], it[1][2], true])
+      const key = constStringKey(it[1][1])
+      if (key == null) jzifyError('non-constant computed static class member names are not supported')
+      statics.push([key, it[1][2], true])
       continue
     }
     if (it[0] === 'get' || it[0] === 'set') jzifyError('class getters/setters are not supported — jz objects have no accessors')
     if (it[0] === 'static') jzifyError('`static` class members are not supported yet')
     jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
   }
-  if (heritage != null && (hasSuperProp(ctorBody) || methods.some(([, , mbody]) => hasSuperProp(mbody))))
-    jzifyError('`super` property access is not supported yet')
+  const superMethods = heritage == null ? new Set() : new Set([
+    ...collectSuperMethodCalls(ctorBody),
+    ...fields.flatMap(([, init]) => init == null ? [] : [...collectSuperMethodCalls(init)]),
+    ...methods.flatMap(([, , mbody]) => [...collectSuperMethodCalls(mbody)])
+  ])
+  if (heritage != null) {
+    const dummySuperVars = new Map([...superMethods].map((k, i) => [k, `super_${i}`]))
+    const unsupportedSuperProp = node => node != null && hasSuperProp(rewriteSuperMethodCalls(node, dummySuperVars))
+    if (
+      unsupportedSuperProp(ctorBody) ||
+      fields.some(([, init]) => unsupportedSuperProp(init)) ||
+      methods.some(([, , mbody]) => unsupportedSuperProp(mbody))
+    )
+      jzifyError('`super` property access is not supported yet')
+  }
   const self = `self${classIdx++}`
   const UNDEF = []                                  // jessie's node for `undefined`
   // Object literal: every declared field (its initializer inline when it doesn't
@@ -697,6 +768,8 @@ function lowerClass(name, heritage, body) {
     litProps.push([':', mname, transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
   let params = ctorParams ?? ['()', null]
+  const dynamicBase = heritage != null && typeof heritage !== 'string'
+  const baseRef = heritage == null ? null : dynamicBase ? `base${classBaseIdx++}` : heritage
   const stmts = []
   if (heritage != null) {
     const split = splitCtorSuper(ctorBody)
@@ -705,11 +778,19 @@ function lowerClass(name, heritage, body) {
       ? Array.from({ length: DEFAULT_DERIVED_CTOR_ARITY }, (_, i) => `superArg${classIdx}_${i}`)
       : null
     const baseArgs = split.args ?? (defaultArgs ? [defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]] : paramList(ctorParams))
-    stmts.push(['let', ['=', self, ['()', heritage, ...baseArgs.map(transform)]]])
+    stmts.push(['let', ['=', self, ['()', baseRef, ...baseArgs.map(transform)]]])
+    const superMethodVars = new Map()
+    let superIdx = 0
+    for (const mname of superMethods) {
+      const v = `super${classIdx}_${superIdx++}`
+      superMethodVars.set(mname, v)
+      stmts.push(['let', ['=', v, ['.', self, mname]]])
+    }
     for (const [fname, init] of fields)
-      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(init, self)) : UNDEF])
+      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars), self)) : UNDEF])
     for (const [mname, mparams, mbody] of methods)
-      stmts.push(['=', ['.', self, mname], transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
+      stmts.push(['=', ['.', self, mname], transform(['=>', mparams ?? ['()', null], block(renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self))])])
+    ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
     stmts.push(['let', ['=', self, lit]])
@@ -727,10 +808,12 @@ function lowerClass(name, heritage, body) {
   }
   stmts.push(['return', self])
   const factory = ['=>', arrowParams(params), ['{}', [';', ...stmts]]]
-  if (statics.length === 0) return factory
+  if (!dynamicBase && statics.length === 0) return factory
 
   const cls = name || `class${staticClassIdx++}`
-  const staticStmts = [['let', ['=', cls, factory]]]
+  const staticStmts = []
+  if (dynamicBase) staticStmts.push(['let', ['=', baseRef, transform(heritage)]])
+  staticStmts.push(['let', ['=', cls, factory]])
   for (const [sname, value, isMethod] of statics) {
     const rhs = isMethod
       ? transform(['=>', value[1], block(renameThis(value[2], cls))])

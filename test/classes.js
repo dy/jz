@@ -2,8 +2,8 @@
 // plus `extends`, `super(…)`, `static` members, and private `#fields`.
 // Classes are pure desugaring — an instance is a plain object, methods are
 // per-instance arrows capturing it, `this` is renamed to that object, `new C(a)`
-// becomes `C(a)`. Rejected: `super.x` property access, getters/setters,
-// dynamic `extends` heritage, computed member names.
+// becomes `C(a)`. Rejected: full `super.x` property semantics, getters/setters,
+// non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
@@ -148,6 +148,48 @@ test('class static field and method', () => {
   is(run(), 10)
 })
 
+test('class constant computed instance field lowers to fixed key', () => {
+  const { run } = compile(`
+    class Box {
+      ["value"] = 41
+      inc() { this.value = this.value + 1; return this.value }
+    }
+    export let run = () => new Box().inc()
+  `)
+  is(run(), 42)
+})
+
+test('class constant computed instance method lowers to fixed key', () => {
+  const { run } = compile(`
+    class Box {
+      ["value"]() { return 42 }
+    }
+    export let run = () => new Box().value()
+  `)
+  is(run(), 42)
+})
+
+test('class constant computed static field lowers to fixed key', () => {
+  const { run } = compile(`
+    class Counter {
+      static ["start"] = 10
+      static next() { return Counter.start + 1 }
+    }
+    export let run = () => Counter.next()
+  `)
+  is(run(), 11)
+})
+
+test('class constant computed static method lowers to fixed key', () => {
+  const { run } = compile(`
+    class Counter {
+      static ["next"]() { return 12 }
+    }
+    export let run = () => Counter.next()
+  `)
+  is(run(), 12)
+})
+
 test('class static method uses this as class binding', () => {
   const { run } = compile(`
     class Counter {
@@ -212,6 +254,83 @@ test('class extends: inherited helper used by derived method', () => {
   is(run(), 50)
 })
 
-test('rejects `super` property access', () => rejects(`class B { x(){ return 1 } } class A extends B { x(){ return super.x() } } export let run = () => 1`, /super/))
+test('class extends: expression heritage member is evaluated once', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x + 1 }
+    }
+    let ns = { Base }
+    class Derived extends ns.Base {
+      value() { return super.value() * 2 }
+    }
+    export let run = () => new Derived(5).value()
+  `)
+  is(run(), 12)
+})
+
+test('class extends: call-expression heritage is evaluated once', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x + 1 }
+    }
+    let picks = 0
+    let pick = () => { picks++; return Base }
+    class Derived extends pick() {
+      value() { return super.value() + picks }
+    }
+    export let run = () => new Derived(5).value() * 10 + picks
+  `)
+  is(run(), 71)
+})
+
+test('class extends: super.method call dispatches to base implementation', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x + 1 }
+    }
+    class Derived extends Base {
+      value() { return super.value() * 2 }
+    }
+    export let run = () => new Derived(5).value()
+  `)
+  is(run(), 12)
+})
+
+test('class extends: super.method call from constructor', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x + 1 }
+    }
+    class Derived extends Base {
+      constructor(x) { super(x); this.y = super.value() * 3 }
+      value() { return this.y }
+    }
+    export let run = () => new Derived(4).value()
+  `)
+  is(run(), 15)
+})
+
+test('class extends: super["method"] call dispatches to base implementation', () => {
+  const { run } = compile(`
+    class Base {
+      constructor(x) { this.x = x }
+      value() { return this.x + 1 }
+    }
+    class Derived extends Base {
+      value() { return super["value"]() * 4 }
+    }
+    export let run = () => new Derived(2).value()
+  `)
+  is(run(), 12)
+})
+
+test('rejects `super` property read', () => rejects(`class B { x(){ return 1 } } class A extends B { y(){ return super.x } } export let run = () => 1`, /super/))
+test('rejects dynamic super member call', () => rejects(`class B { x(){ return 1 } } class A extends B { y(k){ return super[k]() } } export let run = () => 1`, /super/))
 test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export let run = () => 1`, /getter/))
 test('rejects setters', () => rejects(`class A { set x(v){ } } export let run = () => 1`, /setter|accessor/))
+test('rejects dynamic computed class fields', () => rejects(`let key = "x"; class A { [key] = 1 } export let run = () => 1`, /computed/))
+test('rejects dynamic computed class methods', () => rejects(`let key = "x"; class A { [key]() { return 1 } } export let run = () => 1`, /computed/))
