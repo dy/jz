@@ -722,6 +722,29 @@ export default (ctx) => {
       if (tpEmitter && tpEmitter.length <= 1) return tpEmitter(obj)
     }
 
+    // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
+    // property shadows. On a heap receiver carrying a dynamic-prop sidecar
+    // (array/typed/object), reading `obj.valueOf`/`obj.toString` must return an
+    // assigned override when present, else the inherited builtin. Without this,
+    // the arity-1 builtin emitter below (returns the receiver) masks the
+    // override; the method-call path in src/emit.js mirrors this check.
+    if ((prop === 'valueOf' || prop === 'toString') && ctx.closure.call &&
+        (ptVt === VAL.ARRAY || ptVt === VAL.TYPED || ptVt === VAL.OBJECT)) {
+      const builtin = ctx.core.emit[`.${ptVt}:${prop}`] || ctx.core.emit[`.${prop}`]
+      if (builtin && builtin.length <= 1) {
+        const o = temp('vo'), p = temp('vp')
+        inc('__dyn_get_expr', '__ptr_type')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${o}`, asF64(emit(obj))],
+          ['local.set', `$${p}`, ['f64.reinterpret_i64',
+            ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], asI64(emit(['str', prop]))]]],
+          ['if', ['result', 'f64'],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${p}`]]], ['i32.const', PTR.CLOSURE]],
+            ['then', ['local.get', `$${p}`]],
+            ['else', asF64(builtin(o))]]], 'f64')
+      }
+    }
+
     // Module-registered property emitter (.size, etc.)
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]

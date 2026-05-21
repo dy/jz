@@ -483,6 +483,49 @@ test('Regression: imported function returning array with props keeps numeric ind
   is(result[3], 1)
 })
 
+// A custom `valueOf` assigned to an array must override the default when invoked.
+// Regression surfaced in watr: `str()` attaches `bytes.valueOf = () => s` to a byte
+// array so `string.const` can recover the original string via `.valueOf()`, and
+// `normalize` distinguishes string-byte-arrays from sub-expressions via
+// `arr.valueOf !== Array.prototype.valueOf`. jz ignored the assignment — calling
+// `arr.valueOf()` returned the array itself — so `string.const`'s operand was
+// misread as an opcode ("Unknown instruction 104").
+test('valueOf: custom override on array is invoked', () => {
+  const { f } = runHost(`export let f = () => {
+    let a = [1, 2]
+    a.valueOf = () => 'hi'
+    return a.valueOf()
+  }`)
+  is(f(), 'hi')
+})
+
+test('valueOf: custom override differs from the original method', () => {
+  const { f } = runHost(`export let f = () => {
+    let a = [1, 2]
+    let original = a.valueOf
+    a.valueOf = () => 'hi'
+    return a.valueOf === original ? 'unchanged' : 'overridden'
+  }`)
+  is(f(), 'overridden')
+})
+
+// An assigned `valueOf` must be visible when READ as a bare reference, not only
+// when invoked — and on a receiver whose static type is unknown (a function
+// param), not only a known-array local. This is the exact discriminator watr's
+// `normalize` uses: `parts[0].valueOf !== Array.prototype.valueOf`, where
+// `parts[0]` is an array element (unknown type). jz returns the inherited builtin
+// for the bare read, so the comparison is wrongly false and `string.const`'s
+// string operand is misread as an opcode ("Unknown instruction 104"). The
+// override is honored on the call path but not on the reference-read path.
+test('valueOf: custom override is visible as a bare reference (unknown-typed receiver)', () => {
+  const { f } = runHost(`
+    const mk = () => { let a = [104, 105]; a.valueOf = () => 'hi'; return a }
+    const cmp = (x) => x.valueOf !== Array.prototype.valueOf
+    export let f = () => cmp(mk())
+  `)
+  is(f(), true)
+})
+
 test('Regression: computed array receiver for indexing evaluates once', () => {
   const { test } = runHost(`
     export let test = () => {
