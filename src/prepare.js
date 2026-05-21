@@ -421,7 +421,7 @@ export default function prepare(node) {
 
 // Named constants → numeric literals
 export const JZ_NULL = Symbol('null')
-const CONSTANTS = { 'true': 1, 'false': 0, 'null': JZ_NULL, 'undefined': JZ_NULL }
+const CONSTANTS = { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_NULL }
 // NaN/Infinity stay as special f64 values in emit()
 const F64_CONSTANTS = { 'NaN': NaN, 'Infinity': Infinity }
 
@@ -573,8 +573,11 @@ function prep(node) {
   if (Array.isArray(node)) includeForOp(node[0])
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
-  if (node === true) return [, 1]
-  if (node === false) return [, 0]
+  // Keep boolean identity (was folded to 1/0). The working representation is
+  // still i32/f64 0/1 — emit lowers the raw boolean — but valTypeOf now reads
+  // VAL.BOOL off the literal, so typeof/String/JSON/host boundary stay faithful.
+  if (node === true) return [, true]
+  if (node === false) return [, false]
   if (!Array.isArray(node)) {
     if (typeof node === 'string') {
       if (node in CONSTANTS) return [, CONSTANTS[node]]

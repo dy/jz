@@ -40,6 +40,7 @@ const TESTS = [
   'differential',
   'parser-bugs',
   'jsstring',
+  'booleans',
 ]
 
 const argFilters = process.argv.slice(2)

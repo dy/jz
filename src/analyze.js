@@ -106,6 +106,13 @@ export const VAL = {
   OBJECT: 'object', HASH: 'hash', SET: 'set', MAP: 'map',
   CLOSURE: 'closure', TYPED: 'typed', REGEX: 'regex',
   BIGINT: 'bigint', BUFFER: 'buffer', DATE: 'date',
+  // BOOL is a *type fact* only: the working representation stays i32/f64 0/1
+  // (so branches, arithmetic and the optimizer are untouched). The boxed-atom
+  // carrier (TRUE_NAN/FALSE_NAN, see src/ir.js) is materialized lazily, only at
+  // observation/escape sites — `typeof`, `String`, `JSON.stringify`, the host
+  // return boundary — where boolean identity must survive. Everywhere else a
+  // VAL.BOOL value is just a 0/1 number, so no perf is paid for the distinction.
+  BOOL: 'boolean',
 }
 
 /**
@@ -236,18 +243,26 @@ export const lookupNotString = name => {
 export function valTypeOf(expr) {
   if (expr == null) return null
   if (typeof expr === 'number') return VAL.NUMBER
+  if (typeof expr === 'boolean') return VAL.BOOL
   if (typeof expr === 'bigint') return VAL.BIGINT
   if (typeof expr === 'string') return lookupValType(expr)
   if (!Array.isArray(expr)) return null
 
   const [op, ...args] = expr
   if (op == null) {
-    // Literal forms: [] = undefined, [null, null] = null, [null, n] = number/bigint
+    // Literal forms: [] = undefined, [null, null] = null, [null, n] = number/bigint, [, bool] = boolean
     if (args.length === 0) return null              // undefined literal
     if (args[0] == null) return null                // null literal
+    if (typeof args[0] === 'boolean') return VAL.BOOL
     if (typeof args[0] === 'symbol') return null    // prepared null sentinel
     return typeof args[0] === 'bigint' ? VAL.BIGINT : VAL.NUMBER
   }
+
+  // Boolean-result operators: relational/equality compares and logical-not always
+  // yield a boolean. (`&&`/`||` are value-preserving, not boolean — excluded.)
+  if (op === '!' || op === '<' || op === '<=' || op === '>' || op === '>=' ||
+      op === '==' || op === '!=' || op === '===' || op === '!==' || op === 'in' || op === 'instanceof')
+    return VAL.BOOL
 
   if (op === '[') return VAL.ARRAY
   if (op === 'str' || op === 'strcat') return VAL.STRING
@@ -348,6 +363,7 @@ export function valTypeOf(expr) {
       // typed-array subview — see module/typedarray.js `new.DataView`.
       if (callee.startsWith('new.')) return VAL.TYPED
       if (callee === 'String.fromCharCode' || callee === 'String') return VAL.STRING
+      if (callee === 'Boolean') return VAL.BOOL
       if (callee === 'BigInt' || callee === 'BigInt.asIntN' || callee === 'BigInt.asUintN') return VAL.BIGINT
       if (callee === 'JSON.parse') {
         const src = jsonConstString(args[1])

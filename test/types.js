@@ -176,11 +176,13 @@ test('bitwise: numeric fast path emits no __to_num call', () => {
 // === Named constants ===
 
 test('constant: true', () => {
-  is(run('export let f = () => true').f(), 1)
+  // Real-boolean carrier: the inner function keeps the cheap 0/1 i32 carrier;
+  // the export thunk reboxes to the TRUE_NAN atom so the host decodes `true`.
+  is(runHost('export let f = () => true').f(), true)
 })
 
 test('constant: false', () => {
-  is(run('export let f = () => false').f(), 0)
+  is(runHost('export let f = () => false').f(), false)
 })
 
 test('constant: null', () => {
@@ -244,7 +246,8 @@ test('typeof: undefined', () => {
 })
 
 test('typeof: boolean true (compile-time fold)', () => {
-  // Booleans NaN-box as f64 → runtime typeof returns 'number'. Prepare folds literal to 'boolean'.
+  // Literal `typeof true` folds to 'boolean' in prepare; a runtime boolean is
+  // observed via the carrier (`typeof (x>0)` → 'boolean', see test/booleans.js).
   is(jz('export let f = () => typeof true').exports.f(), 'boolean')
 })
 
@@ -253,7 +256,7 @@ test('typeof: boolean false (compile-time fold)', () => {
 })
 
 test('typeof: comparison still works', () => {
-  is(jz('export let f = (x) => typeof x === "number"').exports.f(5), 1)
+  is(jz('export let f = (x) => typeof x === "number"').exports.f(5), true)
 })
 
 // === Unary + ===

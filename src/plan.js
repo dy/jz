@@ -28,7 +28,7 @@ import { ctx } from './ctx.js'
 import { T, VAL, ASSIGN_OPS, analyzeBody, invalidateLocalsCache, staticObjectProps, staticPropertyKey, typedElemCtor, typedElemAux, updateGlobalRep, collectProgramFacts, analyzeFuncNamespaces, extractParams, intLiteralValue } from './analyze.js'
 import { includeModule } from './autoload.js'
 import { MAX_CLOSURE_ARITY, UNDEF_WAT } from './ir.js'
-import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone } from './narrow.js'
+import narrowSignatures, { specializeBimorphicTyped, refineDynKeys, applyJsstringBoundaryCarrierStandalone, narrowBoolResults } from './narrow.js'
 
 const CONTROL_TRANSFER = new Set(['return', 'throw', 'break', 'continue'])
 const LOOP_OPS = new Set(['for', 'while', 'do', 'do-while'])
@@ -2117,8 +2117,10 @@ export default function plan(ast) {
   if (canSkipWholeProgramNarrowing(programFacts)) {
     // Phase J (jsstring boundary opt-in) is body-local and call-site-independent;
     // run it even when the rest of narrowing is skipped so simple `export let
-    // f = (s) => s.length` still flips to externref.
+    // f = (s) => s.length` still flips to externref. Likewise the boolean-result
+    // fact, so `export let f = (a) => a > 2` boxes its boundary atom.
     applyJsstringBoundaryCarrierStandalone(programFacts)
+    narrowBoolResults()
     return programFacts
   }
 

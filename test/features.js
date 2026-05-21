@@ -74,11 +74,11 @@ test('spread: [...a, 99]', () => {
 })
 
 test('in: array numeric index exists', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let list = [7]
     return 0 in list
-  }`)
-  is(f(), 1)
+  }`).exports
+  is(f(), true)
 })
 
 test('in: array alias table resolves numeric membership', () => {
@@ -92,13 +92,13 @@ test('in: array alias table resolves numeric membership', () => {
 })
 
 test('spread: preserves left-to-right evaluation order', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let idx = "$>"
     let side = () => { idx = 0/0; return [] }
     let code = [[idx, [], []], ...side()]
     return code[0][0] === "$>"
-  }`)
-  is(f(), 1)
+  }`).exports
+  is(f(), true)
 })
 
 test('for-in: compile-time unroll clones body per key', () => {
@@ -330,11 +330,11 @@ test('instanceof jzify: Array.isArray rejects non-array', () => {
 })
 
 test('instanceof jzify: Object → typeof === object', () => {
-  const { f } = runJzify(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let x = {}
     return x instanceof Object
-  }`)
-  is(f(), 1)
+  }`, { jzify: true }).exports
+  is(f(), true)
 })
 
 test('instanceof jzify: Object rejects primitives', () => {
@@ -353,9 +353,9 @@ test('instanceof jzify: Float64Array → typeof === object', () => {
 })
 
 test('instanceof jzify: unknown constructor falls back to typeof === object', () => {
-  const { f } = runJzify(`export let f = (x) => x instanceof MyClass`)
-  is(f({}), 1)
-  is(f(42), 0)
+  const { f } = jz(`export let f = (x) => x instanceof MyClass`, { jzify: true }).exports
+  is(f({}), true)
+  is(f(42), false)
 })
 
 test('instanceof jzify: nested expression', () => {

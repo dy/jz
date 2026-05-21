@@ -133,6 +133,11 @@ export const f64ToI64 = _bi64.f64ToI64
 // Distinct from 0, JS NaN (payload=0), and all pointers.
 _u32[1] = 0x7FF80001; _u32[0] = 0; export const NULL_NAN = _f64[0]
 _u32[1] = 0x7FF80002; _u32[0] = 0; export const UNDEF_NAN = _f64[0]
+// Boxed-boolean atoms (type=0, offset=0): aux=4 → false, aux=5 → true. The
+// low aux bit is the truth value; only exported scalars cross as these — the
+// inner 0/1 number carrier never escapes the wasm boundary.
+_u32[1] = 0x7FF80004; _u32[0] = 0; export const FALSE_NAN = _f64[0]
+_u32[1] = 0x7FF80005; _u32[0] = 0; export const TRUE_NAN = _f64[0]
 
 // Coerce JS null/undefined → NaN-boxed sentinels for WASM boundary
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v
@@ -144,6 +149,8 @@ const decode = v => {
   if (_u32[0] !== 0) return v
   if (_u32[1] === 0x7FF80001) return null
   if (_u32[1] === 0x7FF80002) return undefined
+  if (_u32[1] === 0x7FF80004) return false
+  if (_u32[1] === 0x7FF80005) return true
   return v
 }
 
@@ -359,6 +366,8 @@ export const memory = (src) => {
     if (t === 0 && off === 0) {
       if (a === 1) return null
       if (a === 2) return undefined
+      if (a === 4) return false
+      if (a === 5) return true
     }
     if (t === 11 && this._extMap) return this._extMap[off]
     if (t === 1) {  // ARRAY

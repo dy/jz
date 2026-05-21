@@ -12,41 +12,41 @@ function run(code) {
 // === Basic Symbol creation ===
 
 test('Symbol: unique per call', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let s1 = Symbol('x')
     let s2 = Symbol('x')
     return s1 == s2  // same name, different calls — should be different
-  }`)
+  }`).exports
   // Note: Symbols are compared by bit-equality, different call sites = different pointers
-  is(f(), 0)  // false — not equal
+  is(f(), false)  // not equal
 })
 
 test('Symbol: self-equality', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let s = Symbol('test')
     return s == s
-  }`)
-  is(f(), 1)  // true
+  }`).exports
+  is(f(), true)
 })
 
 // === Symbol.for interning ===
 
 test('Symbol.for: reuses same interned atom', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let s1 = Symbol.for('shared')
     let s2 = Symbol.for('shared')
     return s1 == s2
-  }`)
-  is(f(), 1)  // true — same name interned = same atom
+  }`).exports
+  is(f(), true)  // same name interned = same atom
 })
 
 test('Symbol.for: different names are different', () => {
-  const { f } = run(`export let f = () => {
+  const { f } = jz(`export let f = () => {
     let s1 = Symbol.for('name1')
     let s2 = Symbol.for('name2')
     return s1 == s2
-  }`)
-  is(f(), 0)  // false
+  }`).exports
+  is(f(), false)
 })
 
 // === typeof Symbol ===
