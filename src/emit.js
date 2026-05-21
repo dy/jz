@@ -59,6 +59,14 @@ let _expect = null
 // instead route through ToNumber (`toNumF64`), which performs ToPrimitive.
 const isI32Num = (v) => v.type === 'i32' && v.ptrKind == null
 
+// An operand whose uint32 value can be *observed as a JS number* — a `>>>`
+// result, an `unsignedResult` call, or an unsigned i32.const. Its magnitude can
+// exceed signed-i32 range, so wrapping i32 arithmetic would corrupt it; widen to
+// f64 instead. A `.wrapSafe` operand is also unsigned but is a `narrowUint32`
+// accumulator read proven to be re-truncated by a `>>>` (ToUint32) sink at every
+// use — wrapping is exactly its intended semantics, so it stays on the i32 path.
+const widensUnsigned = (v) => v.unsigned && !v.wrapSafe
+
 const FIRST_CLASS_UNARY_MATH = {
   'math.abs': 'f64.abs',
   'math.sqrt': 'f64.sqrt',
@@ -96,8 +104,13 @@ const emitNeg = (a) => {
 }
 
 /** Try constant-folding binary arith: returns emitNum(result) or null. */
+// `.unsigned` literals carry a uint32 value whose i32 `litVal` is its *signed* bit
+// pattern (e.g. `-1` for 4294967295), so folding them through `fn` numerically would
+// be wrong. Bail to the runtime path — the arithmetic handlers widen unsigned operands
+// to f64 (convert_i32_u), reproducing the JS-spec result.
 const foldConst = (va, vb, fn, guard) =>
-  isLit(va) && isLit(vb) && (!guard || guard(litVal(vb))) ? emitNum(fn(litVal(va), litVal(vb))) : null
+  isLit(va) && isLit(vb) && !va.unsigned && !vb.unsigned && (!guard || guard(litVal(vb)))
+    ? emitNum(fn(litVal(va), litVal(vb))) : null
 
 // JS `*` is an f64 multiply; `i32.mul` yields only the exact product mod 2^32.
 // Those agree under a ToInt32/ToUint32 sink (and as plain numbers) while the
@@ -940,7 +953,10 @@ export function emitBody(node) {
 /** Comparison op factory with constant folding. */
 const cmpOp = (i32op, f64op, fn) => (a, b) => {
   const va = emit(a), vb = emit(b)
-  if (isLit(va) && isLit(vb)) return emitNum(fn(litVal(va), litVal(vb)) ? 1 : 0)
+  // Skip the const-fold for `.unsigned` operands: `litVal` is the signed bit pattern
+  // (-1, not 4294967295), so folding the order would be wrong. Fall through to the
+  // f64 widen path below, which converts each operand by its own signedness.
+  if (isLit(va) && isLit(vb) && !va.unsigned && !vb.unsigned) return emitNum(fn(litVal(va), litVal(vb)) ? 1 : 0)
   // String compare: NaN-boxed string pointers compare as NaN under f64.lt/gt
   // (always false), so without this the spec-correct `"a" < "b"` returns 0.
   // Route both-STRING operands through __str_cmp's three-way result, then apply
@@ -968,11 +984,17 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     return typed([`f64.${f64op}`, toNumF64(a, va), asF64(vb)], 'i32')
   if (vta === VAL.NUMBER && needsRelationalToNumber(b, vtb))
     return typed([`f64.${f64op}`, asF64(va), toNumF64(b, vb)], 'i32')
-  const ai = intConstValue(a), bi = intConstValue(b)
-  if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
-  if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
-  return va.type === 'i32' && vb.type === 'i32'
-    ? typed([`i32.${i32op}`, va, vb], 'i32') : typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
+  // An `.unsigned` i32 operand ([0, 2^32)) can't share a signed i32 compare with a
+  // possibly-signed one: mixed sign inverts the order (3 < 0xFFFFFFFF unsigned, but
+  // 3 > -1 signed). Widen to f64, where asF64 converts each operand by its own
+  // signedness (convert_i32_u for unsigned, _s otherwise) to its true numeric value.
+  if (!va.unsigned && !vb.unsigned) {
+    const ai = intConstValue(a), bi = intConstValue(b)
+    if (va.type === 'i32' && bi != null) return typed([`i32.${i32op}`, va, ['i32.const', bi]], 'i32')
+    if (vb.type === 'i32' && ai != null) return typed([`i32.${i32op}`, ['i32.const', ai], vb], 'i32')
+    if (va.type === 'i32' && vb.type === 'i32') return typed([`i32.${i32op}`, va, vb], 'i32')
+  }
+  return typed([`f64.${f64op}`, asF64(va), asF64(vb)], 'i32')
 }
 
 function needsRelationalToNumber(expr, vt) {
@@ -1643,7 +1665,10 @@ export const emitter = {
     // still be null/undefined/pointer — numeric `+` performs ToNumber like `-`/`*`.
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
     if (isLit(va) && litVal(va) === 0) return toNumF64(b, vb)
-    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.add', va, vb], 'i32')
+    // An `.unsigned` operand is a uint32 (range [0, 2^32)); JS `+` is a float
+    // op whose result can exceed i32, so `i32.add` would wrap (4294967295+1→0).
+    // Widen to f64 — never wrap — matching spec. Only `>>>0`/`|0`/imul wrap.
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.add', va, vb], 'i32')
     return typed(['f64.add', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '-': (a, b) => {
@@ -1656,7 +1681,9 @@ export const emitter = {
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
-    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.sub', va, vb], 'i32')
+    // Unsigned uint32 operand: JS `-` is float (can go negative / exceed i32),
+    // so avoid the wrapping i32.sub fast-path. See `+` above.
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb)) return typed(['i32.sub', va, vb], 'i32')
     return typed(['f64.sub', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   'u+': a => {
@@ -1678,7 +1705,9 @@ export const emitter = {
     if (isLit(va) && litVal(va) === 1) return toNumF64(b, vb)
     if (isLit(vb) && litVal(vb) === 0) return isLit(va) ? vb : typed(['block', ['result', vb.type], va, 'drop', vb], vb.type)
     if (isLit(va) && litVal(va) === 0) return isLit(vb) ? va : typed(['block', ['result', va.type], vb, 'drop', va], va.type)
-    if (isI32Num(va) && isI32Num(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
+    // `.unsigned` operand is a uint32 ([0, 2^32)); its product can exceed i32, so
+    // `i32.mul` would wrap ((2^32-1)*2 → -2). Widen to f64 — see `+` above.
+    if (isI32Num(va) && isI32Num(vb) && !widensUnsigned(va) && !widensUnsigned(vb) && mulFitsI32(va, vb)) return typed(['i32.mul', va, vb], 'i32')
     return typed(['f64.mul', toNumF64(a, va), toNumF64(b, vb)], 'f64')
   },
   '/': (a, b) => {
@@ -1697,7 +1726,9 @@ export const emitter = {
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
     // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
     if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
-    if (isI32Num(va) && isI32Num(vb)) return typed(['i32.rem_s', va, vb], 'i32')
+    // `.unsigned` operand: `i32.rem_s` reads the uint32 as a negative signed value
+    // ((2^32-1)%7 → rem_s(-1,7) = -1, not 3). Widen to f64 — see `+` above.
+    if (isI32Num(va) && isI32Num(vb) && !va.unsigned && !vb.unsigned) return typed(['i32.rem_s', va, vb], 'i32')
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },
   // === Comparisons (always i32 result) ===
@@ -1971,8 +2002,17 @@ export const emitter = {
     return typed([`i32.${fn}`, toI32(ca), toI32(cb)], 'i32')
   }])),
   '>>>': (a, b) => {
-    const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a >>> b)
-    if (_f) return _f
+    const va = emit(a), vb = emit(b)
+    if (isLit(va) && isLit(vb)) {
+      const r = litVal(va) >>> litVal(vb) // JS uint32 result ∈ [0, 2^32)
+      // ≥ 2^31 doesn't fit signed i32: materialize the wrapped bits as an i32 const
+      // tagged `.unsigned` so `asF64` lifts via `convert_i32_u`. Emitting `f64.const r`
+      // here (the old foldConst path) would `trunc_sat_f64_s`-saturate to INT32_MAX
+      // when the enclosing function narrows to an i32 result. Values < 2^31 fold to a
+      // plain i32 const (signed == unsigned, stays foldable downstream).
+      if (r >= 0x80000000) { const node = typed(['i32.const', r | 0], 'i32'); node.unsigned = true; return node }
+      return emitNum(r)
+    }
     // F: Mark unsigned so `asF64` lifts via `f64.convert_i32_u` (preserving the
     // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
     // signed for negative-high-bit s values, flipping sign and breaking the

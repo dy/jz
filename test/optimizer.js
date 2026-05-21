@@ -1537,3 +1537,47 @@ test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
   ok(!wat.includes('f64.floor'), 'Math.floor elided via local→slot intCertain transit')
   is(run(src).main(5.9), 5)
 })
+
+// ───────────────────────────────────────── pass semantic-preservation pins
+// Each pins one optimizer pass against a class of value-corrupting regression.
+// Behavioural (run + assert), since the failure mode is a wrong runtime value.
+
+test('dropDeadZeroInit: -0.0 initializer is preserved (not coerced to +0)', () => {
+  // -0 and +0 share an i64/f64 zero bit pattern under `===`, but `1/-0` is
+  // -Infinity. The dead-zero-init drop must exclude -0.0 (Object.is guard).
+  is(run('export let main = () => { let x = -0.0; return 1 / x }').main(), -Infinity)
+  is(run('export let main = () => { let x = 0.0; return 1 / x }').main(), Infinity)
+})
+
+test('dropDeadZeroInit: i64 0n zero-init survives into later arithmetic', () => {
+  // BigInt locals init to `i64.const 0`; the i32/f64 zero-init dropper must not
+  // touch the i64 slot. Returned via Number() (raw BigInt return is out of surface).
+  is(run('export let main = () => { let x = 0n; return Number(x + 5n) }').main(), 5)
+})
+
+test('specializeBimorphicTyped: one callee at both f64 and i32 sites stays correct', () => {
+  // `add` is reached with float args from one export and int args from another;
+  // specialization must not let either site read the other’s ABI.
+  const ex = run(`
+    let add = (a, b) => a + b
+    export let f = () => add(1.5, 2.5)
+    export let i = () => add(3, 4)
+  `)
+  is(ex.f(), 4)
+  is(ex.i(), 7)
+})
+
+test('deadStoreElim: a store whose value is read later must not be eliminated', () => {
+  // a[0]=7 is read into x before being overwritten; eliminating it would drop x.
+  is(run('export let main = () => { let a = [0, 0]; a[0] = 7; let x = a[0]; a[0] = 9; return x + a[0] }').main(), 16)
+})
+
+test('arenaRewind: an allocation that is returned must persist (no rewind)', () => {
+  // `mk` allocates an array and returns it; arena rewind must not reclaim it
+  // before the caller reads the elements.
+  const ex = run(`
+    let mk = () => { let a = [1, 2, 3]; return a }
+    export let main = () => { let a = mk(); return a[0] + a[1] + a[2] }
+  `)
+  is(ex.main(), 6)
+})

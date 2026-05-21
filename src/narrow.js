@@ -221,8 +221,20 @@ function resetParamWasmFacts(paramReps) {
  * Phase E: numeric result narrowing.
  *
  * For every narrowable func whose body returns only i32-typed expressions,
- * narrow sig.results[0] to 'i32'. `(x >>> 0)` tails flip sig.unsignedResult so
+ * narrow sig.results[0] to 'i32'. An *unsigned* tail flips sig.unsignedResult so
  * the call-site rebox uses f64.convert_i32_u and preserves [0, 2^32) range.
+ * A tail is unsigned when it is a top-level `(x >>> 0)` OR a call to a function
+ * already narrowed `unsignedResult` — the latter propagates the flag through
+ * helper chains (`const u = x => (x|0)>>>0; const main = x => u(x)`), which a
+ * literal-`>>>`-only check would miss, reboxing main's result signed and
+ * silently turning `4294967295` into `-1`.
+ *
+ * Sign must be consistent across *all* tails: the same i32 bit pattern maps to
+ * two different JS numbers under signed vs unsigned conversion, so a function
+ * mixing signed (`x|0`) and unsigned (`x>>>0`) tails cannot be reboxed with a
+ * single boundary flag. Such functions are left at f64 — the body then converts
+ * each tail with its own sign. (Pre-fix, a top-level `>>>` next to a signed tail
+ * narrowed unsigned and corrupted the signed branch.)
  *
  * Fixpoint: a call to another narrowed func contributes i32; iterate until
  * stable so chains of i32-only helpers all narrow together. exprType already
@@ -234,6 +246,12 @@ function resetParamWasmFacts(paramReps) {
  * the narrowable filter.
  */
 function narrowI32Results(funcs) {
+  // A return tail is unsigned-valued when it is a top-level `>>>` or a call to
+  // a function already proven unsignedResult. Other i32 tails are signed.
+  const isUnsignedTail = (e) => Array.isArray(e) && (
+    e[0] === '>>>' ||
+    (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true)
+  )
   let changed = true
   while (changed) {
     changed = false
@@ -243,16 +261,18 @@ function narrowI32Results(funcs) {
       if (isBlockBody(body) && hasBareReturn(body)) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
-      const anyUnsigned = exprs.some(e => Array.isArray(e) && e[0] === '>>>')
       const savedCurrent = ctx.func.current
       ctx.func.current = func.sig
       const locals = isBlockBody(body) ? analyzeBody(body).locals : new Map()
       for (const p of func.sig.params) if (!locals.has(p.name)) locals.set(p.name, p.type)
       const allI32 = exprs.every(e => exprType(e, locals) === 'i32')
+      const anyUnsigned = exprs.some(isUnsignedTail)
+      const allUnsigned = exprs.every(isUnsignedTail)
       ctx.func.current = savedCurrent
-      if (allI32) {
+      // Narrow only when sign is consistent (all-signed or all-unsigned tails).
+      if (allI32 && (!anyUnsigned || allUnsigned)) {
         func.sig.results = ['i32']
-        if (anyUnsigned) func.sig.unsignedResult = true
+        if (allUnsigned) func.sig.unsignedResult = true
         changed = true
       }
     }

@@ -1950,6 +1950,17 @@ export function analyzeIntCertain(body) {
   }
 }
 
+// A directly-uint32 expression: `x >>> 0` (zero-fill shift) or a call to a function
+// already proven `unsignedResult`. Such a value lives in i32 but ranges [0, 2^32),
+// so signed i32 ops on it are wrong — exprType widens its arithmetic to f64 to
+// match emit (which reboxes via `f64.convert_i32_u`). Unsignedness through a local
+// assignment is intentionally not tracked here — kept in lockstep with narrow.js's
+// `isUnsignedTail`, so emit and exprType agree (no trunc_sat saturation).
+const isUnsignedI32Expr = (e) => Array.isArray(e) && (
+  e[0] === '>>>' ||
+  (e[0] === '()' && typeof e[1] === 'string' && ctx.func.map?.get(e[1])?.sig?.unsignedResult === true)
+)
+
 /**
  * Infer expression result type from AST (without emitting).
  * Used to determine local variable types before compilation.
@@ -2024,7 +2035,12 @@ export function exprType(expr, locals) {
   if (op === '+' || op === '-' || op === '%') {
     const ta = exprType(args[0], locals)
     const tb = args[1] != null ? exprType(args[1], locals) : ta // unary: inherit
-    return ta === 'i32' && tb === 'i32' ? 'i32' : 'f64'
+    if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    // A uint32 operand ([0, 2^32)) makes the result exceed signed i32 range, so
+    // emit widens to f64 (see emit.js `+`/`-`/`%`). exprType must agree — else
+    // narrowing the result back to i32 would trunc_sat-saturate the f64 to INT32_MAX.
+    if (isUnsignedI32Expr(args[0]) || (args[1] != null && isUnsignedI32Expr(args[1]))) return 'f64'
+    return 'i32'
   }
   // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully
   // only while the exact product is f64-exact. Stay i32 when both operands are
@@ -2034,6 +2050,8 @@ export function exprType(expr, locals) {
   if (op === '*') {
     const ta = exprType(args[0], locals), tb = exprType(args[1], locals)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    // uint32 operand: product can exceed i32; emit widens to f64 (see emit.js `*`).
+    if (isUnsignedI32Expr(args[0]) || isUnsignedI32Expr(args[1])) return 'f64'
     if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
     const small = e => {
       const v = staticValue(e)

@@ -402,6 +402,45 @@ test('vectorize: tail correctness when N is not a multiple of LANES', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
+test('vectorize: i32x4 small-N boundary sweep (0,1,LANES,LANES±1) vs JS oracle', () => {
+  // i32x4 → 4 lanes. Sweep N around the lane boundary to flush prologue/epilogue
+  // off-by-ones. The map (`a[i] ^= mask`) vectorizes; the reduction stays scalar,
+  // so a sequential JS oracle is an exact comparator. Empty N=0 must be a clean no-op.
+  for (const N of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16]) {
+    const src = `
+      export const main = () => {
+        const a = new Int32Array(${N})
+        for (let i = 0; i < ${N}; i++) a[i] = (i * 17) | 0
+        for (let i = 0; i < ${N}; i++) a[i] = (a[i] ^ 0x5a5a5a5a) | 0
+        let h = 0
+        for (let i = 0; i < ${N}; i++) h = (h ^ a[i]) | 0
+        return h | 0
+      }`
+    let h = 0
+    for (let i = 0; i < N; i++) h = (h ^ (((i * 17) | 0) ^ 0x5a5a5a5a)) | 0
+    is(runVec(src, SIMD_OPT).main(), h | 0, `N=${N}`)
+  }
+})
+
+test('vectorize: f64x2 small-N boundary sweep (0,1,2,3) vs JS oracle', () => {
+  // f64x2 → 2 lanes. Values are exact in f64 at this scale, so `is` holds.
+  for (const N of [0, 1, 2, 3, 5]) {
+    const src = `
+      export const main = () => {
+        const a = new Float64Array(${N})
+        const b = new Float64Array(${N})
+        for (let i = 0; i < ${N}; i++) a[i] = i * 0.5 + 1.0
+        for (let i = 0; i < ${N}; i++) b[i] = a[i] * 2.0 + 1.0
+        let s = 0.0
+        for (let i = 0; i < ${N}; i++) s = s + b[i]
+        return s
+      }`
+    let s = 0
+    for (let i = 0; i < N; i++) s = s + ((i * 0.5 + 1.0) * 2.0 + 1.0)
+    is(runVec(src, SIMD_OPT).main(), s, `N=${N}`)
+  }
+})
+
 // ---- hand-written SoA shape (3+ arrays, same induction var) --------------
 // Documents the supported migration path: code that already separates fields
 // into distinct typed arrays (xs / ys / zs … rather than one interleaved

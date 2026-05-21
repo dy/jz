@@ -570,6 +570,30 @@ test('codegen: loop counter widens to f64 when compared to f64 param', () => {
   ok(wat.includes('(local $i f64)'), 'loop counter i should be f64 when compared to f64 param')
 })
 
+test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)', () => {
+  // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
+  // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.
+  // The mix must compile to i32.add/xor/shl — never f64 — else the loop pays a
+  // convert_i32_u round-trip per op. (Regression: a uint32-widening guard once
+  // fired on these `.unsigned` reads, emitting f64.add/convert on the hot path.)
+  // An i32 loop bound (`n | 0`) keeps the counter i32, so the only legal f64 op
+  // is the single convert_i32_u that reboxes the uint32 result at the boundary.
+  const wat = compile(`
+    export let hash = (n) => {
+      let h = 2166136261
+      for (let i = 0; i < (n | 0); i = i + 1) {
+        h = (h ^ i) >>> 0
+        h = (h + (h << 1) + (h << 4)) >>> 0
+      }
+      return h >>> 0
+    }`, { wat: true })
+  const n = (re) => (wat.match(re) || []).length
+  is(n(/f64\.add/g), 0, 'no f64.add on the accumulator hot path')
+  is(n(/f64\.mul/g), 0, 'no f64.mul on the accumulator hot path')
+  is(n(/f64\.convert/g), 1, 'only the return-boundary convert_i32_u widens')
+  ok(n(/i32\.xor/g) >= 1 && n(/i32\.shl/g) >= 1, 'mix uses i32 bitwise ops')
+})
+
 test('codegen: pure scalar function — minimal binary', () => {
   const wasm = compile('export let add = (a, b) => a + b')
   // Pure scalar: no arrays, strings, objects. Should be tiny.
@@ -662,10 +686,25 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
   }
   is(walk(), jsWalk())
 
-  const N = 5000
-  const jsTime = bench(jsWalk, N)
-  const wasmTime = bench(walk, N)
-  console.log(`  json walk x${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
+  // Median of batched samples — total-time bench at this scale (5000×~1.5µs
+  // per call) is dominated by GC pauses and bump-allocator memory.grow on
+  // slow CI hardware; on a recent run WASM measured 7.8ms vs JS 6.3ms while
+  // local probes sit at 0.85× ratio. Aggressive warmup tiers up TurboFan;
+  // median across 21 batched samples damps outliers below the 1.2× pin.
+  const BATCH = 5000
+  const jsRun = () => { for (let i = 0; i < BATCH; i++) jsWalk() }
+  const wasmRun = () => { for (let i = 0; i < BATCH; i++) walk() }
+  for (let i = 0; i < 5; i++) { jsRun(); wasmRun() }
+  const sample = (fn, n) => {
+    const xs = new Array(n)
+    for (let i = 0; i < n; i++) { const t = performance.now(); fn(); xs[i] = performance.now() - t }
+    xs.sort((a, b) => a - b)
+    return xs[n >> 1]
+  }
+  const N = 21
+  const jsTime = sample(jsRun, N)
+  const wasmTime = sample(wasmRun, N)
+  console.log(`  json walk x${BATCH} median of ${N}: JS ${jsTime.toFixed(1)}ms, WASM ${wasmTime.toFixed(1)}ms, ratio ${(jsTime / wasmTime).toFixed(2)}x`)
   ok(wasmTime < jsTime * 1.2, `json walk: WASM ${wasmTime.toFixed(1)}ms should be < JS ${jsTime.toFixed(1)}ms * 1.2`)
 })
 
