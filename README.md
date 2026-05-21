@@ -164,7 +164,7 @@ For full TC39 conformance use [porffor](https://github.com/CanadaHonk/porffor); 
 
 Only code that fits the jz subset. There's no runtime, so packages touching the DOM, `async`/`Promise`, the network, or Node APIs won't compile — but pure numeric/algorithmic source does.
 
-- **Relative imports** (`./math.js`) bundle at compile time — see *Can I split code across files?* below.
+- **Relative imports** (`./dep.js`) bundle at compile time.
 - **Bare specifiers** (`import { x } from "pkg"`) resolve through Node module resolution only with the `--resolve` CLI flag, or by passing the source yourself via `{ modules }`. The package's source still has to be valid jz.
 
 jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecosystem.
@@ -172,7 +172,7 @@ jz is for compiling *your* numeric/DSP/parser code, not for running the npm ecos
 </details>
 
 <details>
-<summary><strong>Can I split code across files?</strong></summary>
+<summary><strong>Can use import/export to split code?</strong></summary>
 
 <br>
 
