@@ -23,16 +23,6 @@
   string identity so repeat-same-string workloads amortize the UTF-8
   transcode — orthogonal SSO improvement.
 
-#### Product / measurement (needs a measurement+product session, not a compiler edit)
-* [ ] **Bench cols — `jz.speed` vs `jz.size`.** Second harness pass with a
-  size-target so the table shows the speed/size trade explicitly.
-* [x] **AS ecosystem audit.** Done → [.work/ecosystem-audit.md](ecosystem-audit.md).
-  Verdict: **don't port AS's test suite** (it asserts a different language;
-  test262 + differential fuzzer + bench gate are the right targets). DO mine AS's
-  showcase compute kernels (path tracer, emulator core, codec, hash) into
-  `bench/`/`examples/`. AS's real traction is blockchain — out of jz's scope,
-  don't follow. Sequenced reach plan below.
-
 ### Ecosystem & reach — sequenced (from `.work/ecosystem-audit.md`)
 
 Ordered by value × leverage × effort. The lens: **valid jz = valid JS** ⇒ the
@@ -386,6 +376,16 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
 ---
 
 ## Archive
+
+
+#### Product / measurement (needs a measurement+product session, not a compiler edit)
+* [x] **AS ecosystem audit.** Done → [.work/ecosystem-audit.md](ecosystem-audit.md).
+  Verdict: **don't port AS's test suite** (it asserts a different language;
+  test262 + differential fuzzer + bench gate are the right targets). DO mine AS's
+  showcase compute kernels (path tracer, emulator core, codec, hash) into
+  `bench/`/`examples/`. AS's real traction is blockchain — out of jz's scope,
+  don't follow. Sequenced reach plan below.
+
 
 ### opts.host user surface + custom sections reference + SoA boundary pin (2026-05-20)
 

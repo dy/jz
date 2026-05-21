@@ -294,11 +294,12 @@ Handler names follow the AST path: `Math.sin` → `math.sin`, `arr.push` → `.p
 | [sort](bench/sort/sort.js) | 5.96ms<br>1.6kB | 11.13ms<br>1.6kB | fails | 10.22ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
 | [crc32](bench/crc32/crc32.js) | 12.12ms<br>1.2kB | 13.43ms<br>1.8kB | 80.76ms<br>3.1kB | 12.19ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
-| **geomean** (jz/target speed) | 1.00× | 0.52× | 0.34× | 0.52× | — | 0.96× | — | — | — | — |
+
 
 _Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64); the **geomean** row is the gated cross-case jz/target ratio from `test/bench.js`._
+
 Geomean size: jz **0.86× AS**. jz wasm runs at `clang -O3` speed — native-C parity at geomean 0.96× — and `test/bench.js` gates every figure so a regression fails CI.
-`optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff lever.
+
 
 <details>
 <summary><strong>Optimizations</strong></summary>
