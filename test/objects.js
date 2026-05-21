@@ -384,6 +384,17 @@ test('Regression: object literal trailing comma feeding cross-fn destruct', () =
   `).f(), 1)
 })
 
+// ECMA-262 keeps one property per name; a repeated key overwrites the earlier
+// initializer. jz folds the duplicates into a single schema slot holding the last
+// value — never two slots, never the first write.
+test('Regression: duplicate object-literal keys — last write wins, single slot', () => {
+  is(run(`export let f = () => ({a: 1, a: 2}).a`).f(), 2)
+  is(run(`export let f = () => ({a: 1, b: 2, a: 3}).a`).f(), 3)
+  is(run(`export let f = () => ({a: 1, b: 2, a: 3}).b`).f(), 2)
+  is(run(`export let f = () => { let o = { x: 1, x: 2, x: 3 }; return o.x }`).f(), 3)
+  is(run(`export let f = () => Object.keys({a: 1, a: 2}).length`).f(), 1)
+})
+
 // `.prop` on an anonymous object literal must read its declared slot. Without
 // schema resolution from the literal's AST, the access fell through to
 // __dyn_get_expr, which probes the off-16 propsPtr — fresh OBJECT literals

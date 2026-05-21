@@ -294,6 +294,37 @@ test('** operator (power)', async () => {
   is(await evaluate('10 ** 0'), 1)
 })
 
+test('Math.pow / ** — constant-integer-exponent fold (bit-identical, stdlib-free)', async () => {
+  // A constant integer exponent lowers to inline square-and-multiply instead of a
+  // $math.pow call — bit-identical to the runtime integer fast path (proven below
+  // against the non-folding runtime-exponent path), and pulling no stdlib.
+  const m = run(`
+    export let ref = (x, e) => x ** e
+    export let p2 = (x) => x ** 2
+    export let p3 = (x) => x ** 3
+    export let p6 = (x) => x ** 6
+    export let p8 = (x) => x ** 8
+    export let pm2 = (x) => x ** -2
+    export let p0 = (x) => x ** 0
+    export let p1 = (x) => x ** 1
+  `)
+  is(m.p2(3), 9); is(m.p3(2), 8); is(m.p6(2), 64); is(m.p8(2), 256)
+  is(m.pm2(2), 0.25); is(m.p0(7), 1); is(m.p1(5), 5)
+  // Sign falls out of the f64 sign bit: even→positive, odd→signed; −0 survives.
+  is(m.p3(-2), -8); is(m.p2(-2), 4)
+  ok(Object.is(m.p3(-0), -0)); ok(Object.is(m.p2(-0), 0))
+  // Every awkward operand matches the runtime $math.pow exactly (NaN/±Inf/±0/subnormal).
+  for (const x of [0, -0, 1.1, -1.1, 3.14159, 1e150, NaN, Infinity, -Infinity, Number.MIN_VALUE]) {
+    for (const [fn, n] of [[m.p2, 2], [m.p3, 3], [m.p6, 6], [m.p8, 8], [m.pm2, -2]])
+      ok(Object.is(fn(x), m.ref(x, n)), `x=${x} n=${n}`)
+  }
+  // When every pow use folds, the math.pow/exp/log stdlib is gone entirely.
+  const wat = compile(`export let f = (x) => x ** 2 + x ** 3`, { wat: true })
+  ok(!/\(func \$math\.pow/.test(wat), 'math.pow stdlib elided')
+  ok(!/\(func \$math\.exp/.test(wat), 'math.exp stdlib elided')
+  ok(!/\(func \$math\.log/.test(wat), 'math.log stdlib elided')
+})
+
 test('Math.cbrt', async () => {
   almost(await evaluate('Math.cbrt(8)'), 2, 1e-6)
   almost(await evaluate('Math.cbrt(27)'), 3, 1e-6)

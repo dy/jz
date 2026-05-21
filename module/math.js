@@ -12,7 +12,7 @@
  * @module math
  */
 
-import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal } from '../src/ir.js'
+import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit } from '../src/emit.js'
 import { emitter } from '../src/ctx.js'
 import { repOf } from '../src/analyze.js'
@@ -182,8 +182,56 @@ export default (ctx) => {
   ctx.core.emit['math.log10'] = emitter(['math.log10'], a => call('math.log10', a))
   ctx.core.emit['math.log1p'] = emitter(['math.log1p'], a => call('math.log1p', a))
 
-  // Power
-  ctx.core.emit['math.pow'] = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
+  // Power. Constant-integer-exponent `Math.pow(x,n)` / `x ** n` (|n| ≤ POW_FOLD_MAX)
+  // lower to inline square-and-multiply instead of a $math.pow call. The fold is
+  // bit-identical to $math.pow's integer fast path: that path runs the same LSB-first
+  // square-and-multiply, and an f64 product's magnitude is the rounded product of the
+  // operand magnitudes regardless of sign — so multiplying the *signed* base reproduces
+  // both the exact bits and the result sign (negative iff x<0 ∧ n odd, which is exactly
+  // its `neg_base`). A program whose only pow use is folded then never pulls the
+  // math.pow/exp/log stdlib. `**`'s exponent is parsed as a bare number (incl. negatives).
+  const POW_FOLD_MAX = 8
+  const get = name => ['local.get', `$${name}`]
+  const constInt = b => {
+    const v = typeof b === 'number' ? b
+      : (Array.isArray(b) && b.length === 2 && b[0] == null && typeof b[1] === 'number') ? b[1]
+      : null
+    return v != null && Number.isInteger(v) ? v : null
+  }
+  const foldPow = (a, n) => {
+    const baseIR = toNumF64(a, emit(a))
+    // pow(x,0) === 1 for every x (NaN/±0/±Inf included). Keep the base's side
+    // effects (a call, a throwing valueOf), discard its value, yield 1.
+    if (n === 0) return isPureIR(baseIR)
+      ? typed(['f64.const', 1], 'f64')
+      : typed(['block', ['result', 'f64'], ['drop', baseIR], ['f64.const', 1]], 'f64')
+    const b = temp('pw')
+    const stmts = [['local.set', `$${b}`, baseIR]]
+    // square-and-multiply, LSB-first — mirrors $math.pow's loop association exactly,
+    // so the rounding tree (and thus the last bit) matches.
+    let sq = b, res = null, minted = false
+    for (let m = Math.abs(n); m > 0; m >>= 1) {
+      if (m & 1) {
+        if (res === null) res = sq                 // lowest set bit: result := this square (skip ×1)
+        else { const r = temp('pw'); stmts.push(['local.set', `$${r}`, ['f64.mul', get(res), get(sq)]]); res = r; minted = true }
+      }
+      if (m >> 1) { const s = temp('pw'); stmts.push(['local.set', `$${s}`, ['f64.mul', get(sq), get(sq)]]); sq = s; minted = true }
+    }
+    let result = get(res)
+    if (n < 0) { result = ['f64.div', ['f64.const', 1], result]; minted = true }   // y<0 → reciprocal, as $math.pow does
+    // A NaN minted by f64.mul/div has a platform-nondeterministic sign; jz's value
+    // model requires the one canonical number-NaN, so `canon` folds it back. Skip when
+    // the base provably can't be NaN (same test min/max uses) or when no op was minted
+    // (|n|=1 hands the base straight through, already canonical).
+    const inner = typed(['block', ['result', 'f64'], ...stmts, result], 'f64')
+    return (minted && !neverNaN(a, baseIR)) ? canon(inner) : inner
+  }
+  const powCall = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
+  ctx.core.emit['math.pow'] = (a, b) => {
+    const n = constInt(b)
+    return n !== null && Math.abs(n) <= POW_FOLD_MAX ? foldPow(a, n) : powCall(a, b)
+  }
+  ctx.core.emit['math.pow'].deps = powCall.deps   // metadata parity (tabulation/analysis)
   ctx.core.emit['**'] = ctx.core.emit['math.pow']
   ctx.core.emit['math.cbrt'] = emitter(['math.cbrt'], a => call('math.cbrt', a))
   ctx.core.emit['math.hypot'] = emitter(['math.hypot'], (a, b, ...rest) => {
