@@ -509,21 +509,20 @@ test('valueOf: custom override differs from the original method', () => {
   is(f(), 'overridden')
 })
 
-// An assigned `valueOf` must be visible when READ as a bare reference, not only
-// when invoked — and on a receiver whose static type is unknown (a function
-// param), not only a known-array local. This is the exact discriminator watr's
-// `normalize` uses: `parts[0].valueOf !== Array.prototype.valueOf`, where
-// `parts[0]` is an array element (unknown type). jz returns the inherited builtin
-// for the bare read, so the comparison is wrongly false and `string.const`'s
-// string operand is misread as an opcode ("Unknown instruction 104"). The
-// override is honored on the call path but not on the reference-read path.
-test('valueOf: custom override is visible as a bare reference (unknown-typed receiver)', () => {
+// An assigned `valueOf` override must win over the builtin even when the receiver
+// is an ARRAY ELEMENT (`arr[0]`), not only a known-array local or a function param
+// (both already handled). This is watr's `parts[0].valueOf()` shape, where
+// `parts = node.slice(1)`. The committed override fix keys off the receiver's
+// static type (vt === ARRAY|TYPED|OBJECT); an element read carries no such type, so
+// the builtin runs and returns the receiver array — making `string.const` misread
+// its string operand as an opcode ("Unknown instruction 104"). jz returns the
+// receiver `[104,105]` here instead of the override's `'hi'`.
+test('valueOf: override wins on an array-element receiver', () => {
   const { f } = runHost(`
     const mk = () => { let a = [104, 105]; a.valueOf = () => 'hi'; return a }
-    const cmp = (x) => x.valueOf !== Array.prototype.valueOf
-    export let f = () => cmp(mk())
+    export let f = () => { let arr = [mk()]; return arr[0].valueOf() }
   `)
-  is(f(), true)
+  is(f(), 'hi')
 })
 
 test('Regression: computed array receiver for indexing evaluates once', () => {

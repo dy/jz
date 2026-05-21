@@ -789,11 +789,16 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
           ['then', (inc('__str_idx'), ['call', '$__str_idx', srcI64(), ['local.get', `$${sidx}`]])],
           ['else', (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])]]
       : (inc('__typed_idx'), ['call', '$__typed_idx', srcI64(), ['local.get', `$${sidx}`]])
-    return ['block', `$break${loopId}`, ['loop', `$loop${loopId}`,
-      ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${srcLenLocal}`]]],
-      ['f64.store', destAddr(['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${sidx}`]]), elem],
-      ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
-      ['br', `$loop${loopId}`]]]
+    // Reset the counter on each entry — WASM zeroes locals once at function
+    // entry, but this loop re-executes when the spread sits inside a JS loop;
+    // a stale `sidx` (= prior srcLen) would skip the copy entirely.
+    return ['block', `$break${loopId}`,
+      ['local.set', `$${sidx}`, ['i32.const', 0]],
+      ['loop', `$loop${loopId}`,
+        ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${srcLenLocal}`]]],
+        ['f64.store', destAddr(['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${sidx}`]]), elem],
+        ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
+        ['br', `$loop${loopId}`]]]
   }
   const advance = ['local.set', `$${posLocal}`,
     ['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${srcLenLocal}`]]]
@@ -2572,17 +2577,20 @@ export const emitter = {
       }
 
       // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
-      // property shadows. On a heap receiver carrying a dynamic-prop sidecar
-      // (array/typed/object), an assigned `obj.valueOf`/`obj.toString` must win
-      // over the builtin emitter — read the sidecar and call it when it holds a
-      // closure, else fall back to the builtin. Mirrors the member-READ check in
-      // module/core.js emitPropAccess. (watr's `str()` attaches
-      // `bytes.valueOf = () => s`; `string.const` recovers it via `.valueOf()`.)
-      if ((method === 'valueOf' || method === 'toString')
-          && typeof obj === 'string' && ctx.closure.call
+      // property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
+      // the builtin emitter for any receiver that can carry a dynamic-prop
+      // sidecar — a sidecar-bearing static type (array/typed/object) OR a
+      // statically-unknown receiver (e.g. an array-element read `arr[0]`, whose
+      // type is only known at runtime). Probe the sidecar and call it when it
+      // holds a closure, else fall back to the builtin (generic when untyped:
+      // `.valueOf` returns the receiver, `.toString` runs type-aware __to_str).
+      // Parallels the member-READ check in module/core.js emitPropAccess (which
+      // stays scoped to known sidecar types). (watr's `str()` attaches
+      // `bytes.valueOf = () => s`, recovered via `.valueOf()`.)
+      if ((method === 'valueOf' || method === 'toString') && ctx.closure.call
           && !parsed.hasSpread && parsed.normal.length === 0
-          && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT)) {
-        const builtin = ctx.core.emit[`.${vt}:${method}`] || ctx.core.emit[`.${method}`]
+          && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
+        const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
         if (builtin) {
           const objTmp = temp('vobj'), propTmp = temp('vprop')
           inc('__dyn_get_expr', '__ptr_type')

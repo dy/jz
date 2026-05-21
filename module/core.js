@@ -727,7 +727,10 @@ export default (ctx) => {
     // (array/typed/object), reading `obj.valueOf`/`obj.toString` must return an
     // assigned override when present, else the inherited builtin. Without this,
     // the arity-1 builtin emitter below (returns the receiver) masks the
-    // override; the method-call path in src/emit.js mirrors this check.
+    // override. The method-call path in src/emit.js runs the parallel probe and
+    // additionally covers statically-unknown receivers (e.g. `arr[0].valueOf()`);
+    // a bare read of an unknown-type receiver can't yield a builtin-as-value
+    // here anyway, so this read path stays scoped to known sidecar types.
     if ((prop === 'valueOf' || prop === 'toString') && ctx.closure.call &&
         (ptVt === VAL.ARRAY || ptVt === VAL.TYPED || ptVt === VAL.OBJECT)) {
       const builtin = ctx.core.emit[`.${ptVt}:${prop}`] || ctx.core.emit[`.${prop}`]
