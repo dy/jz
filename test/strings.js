@@ -66,6 +66,55 @@ test('decodeURIComponent: malformed escape throws', () => {
   throws(() => mod.f())
 })
 
+// === TextEncoder ===
+
+// The Uint8Array returned by TextEncoder.encode must support indexed and spread
+// access, not just `.length`/`for-of`. Regression surfaced in watr: `str()` does
+// `bytes.push(...tenc.encode(buf))` and the export-name encoder then reads those
+// bytes by index. jz mis-typed the encode() result so indexed/spread reads were
+// f64-strided — `encode(':')[0]` yielded a denormal (bits of 58) and
+// `encode('AB')[1]` read 8 bytes ahead → 0. General Uint8Array indexing was fine;
+// only encode()'s result diverged, corrupting exotic export names (':' → 0).
+test('TextEncoder: encode result supports indexed access', () => {
+  is(run(`export let f = () => new TextEncoder().encode(':')[0]`).f(), 58)
+})
+
+test('TextEncoder: encode result indexes each byte', () => {
+  is(run(`export let f = () => {
+    let b = new TextEncoder().encode('AB')
+    return b[0] * 1000 + b[1]
+  }`).f(), 65066)
+})
+
+test('TextEncoder: spread of encode result preserves bytes', () => {
+  is(run(`export let f = () => [...new TextEncoder().encode('AB')].join(',')`).f(), '65,66')
+})
+
+// Repeated `dst.push(...tenc.encode(buf))` inside a loop with branching must keep
+// reading u8 elements. This is watr's `str()` shape: a buffer is accumulated and
+// flushed mid-loop on each escape. jz lowers the 2nd (and later) flush through the
+// element-unaware __typed_idx fallback (f64.load, stride 8), so the spread reads a
+// denormal that truncates to 0 — corrupting the byte after the first flush. The
+// first flush and a single trailing flush are fine; only repeated mid-loop flushes
+// regress. Surfaced as a literal ':' byte decoding to 0 in an exotic export name.
+test('TextEncoder: repeated mid-loop spread-flush keeps bytes (str() shape)', () => {
+  const { f } = run(`
+    const tenc = new TextEncoder()
+    const enc = (s) => {
+      let bytes = [], buf = ''
+      for (let i = 0; i < s.length; i++) {
+        let c = s[i]
+        if (c === '|') { if (buf) bytes.push(...tenc.encode(buf)); buf = ''; bytes.push(34) }
+        else buf += c
+      }
+      if (buf) bytes.push(...tenc.encode(buf))
+      return bytes.join(',')
+    }
+    export let f = () => enc('a|b|c')
+  `)
+  is(f(), '97,34,98,34,99')
+})
+
 // === + operator on strings ===
 
 test('string +: concat', () => {

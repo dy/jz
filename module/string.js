@@ -1628,6 +1628,11 @@ export default (ctx) => {
 
   ctx.core.emit['.encode'] = (obj, str) => {
     inc('__str_encode')
+    // .encode() yields a runtime PTR.TYPED/u8 array (see __mkptr above). Downstream
+    // indexing/spread dispatch through __typed_idx, whose element-unaware fallback
+    // (f64.load, stride 8) is only valid when no typed array can flow in. Enabling
+    // the feature pulls the element-aware variant — same invariant `.length` follows.
+    ctx.features.typedarray = true
     return typed(['call', '$__str_encode', asI64(emit(str))], 'f64')
   }
 
