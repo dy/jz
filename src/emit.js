@@ -2571,6 +2571,32 @@ export const emitter = {
         }
       }
 
+      // valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
+      // property shadows. On a heap receiver carrying a dynamic-prop sidecar
+      // (array/typed/object), an assigned `obj.valueOf`/`obj.toString` must win
+      // over the builtin emitter — read the sidecar and call it when it holds a
+      // closure, else fall back to the builtin. Mirrors the member-READ check in
+      // module/core.js emitPropAccess. (watr's `str()` attaches
+      // `bytes.valueOf = () => s`; `string.const` recovers it via `.valueOf()`.)
+      if ((method === 'valueOf' || method === 'toString')
+          && typeof obj === 'string' && ctx.closure.call
+          && !parsed.hasSpread && parsed.normal.length === 0
+          && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT)) {
+        const builtin = ctx.core.emit[`.${vt}:${method}`] || ctx.core.emit[`.${method}`]
+        if (builtin) {
+          const objTmp = temp('vobj'), propTmp = temp('vprop')
+          inc('__dyn_get_expr', '__ptr_type')
+          return typed(['block', ['result', 'f64'],
+            ['local.set', `$${objTmp}`, asF64(emit(obj))],
+            ['local.set', `$${propTmp}`, ['f64.reinterpret_i64',
+              ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], asI64(emit(['str', method]))]]],
+            ['if', ['result', 'f64'],
+              ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]]], ['i32.const', PTR.CLOSURE]],
+              ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [])],
+              ['else', asF64(callMethod(objTmp, builtin))]]], 'f64')
+        }
+      }
+
       // Known type → static dispatch
       if (vt && ctx.core.emit[`.${vt}:${method}`]) {
         return callMethod(obj, ctx.core.emit[`.${vt}:${method}`])
