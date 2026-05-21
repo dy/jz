@@ -832,7 +832,12 @@ export default (ctx) => {
     // Discharge analysis lives in src/infer.js (notStringEvidence source); flow-sensitive
     // notString refinements (from `if (typeof x === 'string') return ...`) overlay via lookup.
     const notString = typeof arr === 'string' && lookupNotString(arr)
-    if (useRuntimeKeyDispatch)
+    // A provably-NUMBER key can never be a string key, so the `__is_str_key`
+    // dispatch is statically dead — its numeric arm is what runs. Fall through
+    // to the direct ptr_type==STRING ? __str_idx : __typed_idx form below, which
+    // indexes with the i32 `vi` and skips the per-element f64 round-trip + call.
+    // Mirrors the `&& !keyIsNum` guard in the known-array/typed branches above.
+    if (useRuntimeKeyDispatch && keyType !== VAL.NUMBER)
       return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
         const keyI32 = asI32(typed(keyExpr, 'f64'))
         if (ctx.module.modules['string'] && !notString) {
