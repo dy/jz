@@ -5,7 +5,7 @@
 ## ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](http://npmjs.org/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![test262](https://github.com/dy/jz/actions/workflows/test262.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test262.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
 
-**JZ** (_javascript zero_) is **minimal modern functional JS subset**, compiling to WASM.<br/>
+**JZ** (_javascript zero_) is a **minimal modern functional JS subset** that compiles to WASM.<br>
 
 ```js
 import jz from 'jz'
@@ -17,8 +17,8 @@ dist(3, 4) // 5
 
 ## Why?
 
-**Write plain JS, compile to WASM** – fast, portable and long-lasting.<br>
-JZ distills the modern functional core – the "good parts" ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) – from legacy semantics, features overhead and perf quirks.
+**Write plain JS, compile to WASM** — fast, portable and long-lasting.<br>
+JZ distills modern JS to its functional core — the "good parts" ([Crockford](https://www.youtube.com/watch?v=_DKkVvOt6dk)) — without the legacy semantics, feature bloat, and perf quirks.
 
 * **Static AOT** – no runtime, no GC, no dynamic constructs.
 * **Valid jz = valid js** — test in browser, compile to wasm.
@@ -346,7 +346,7 @@ How values cross the JS↔WASM boundary, and how to ship and run the compiled `.
 
 ### Passing data in and out
 
-Numbers pass directly as f64; arrays of ≤ 8 elements return as plain JS arrays (multi-value). Strings, arrays, objects, and typed arrays are heap values — `memory` reads and writes them across the boundary.
+Arrays of ≤ 8 elements come back as plain JS arrays (WASM multi-value); strings, larger arrays, objects, and typed arrays stay heap-resident, and `memory` reads and writes them across the boundary.
 
 ```js
 const { exports, memory } = jz`
@@ -434,7 +434,7 @@ memory.read(a.exports.make())     // {x: 10, y: 20} — JS reads it too
 
 ### Shipping & running the `.wasm`
 
-Compile once, then run the binary anywhere — the compiler need not ship.
+Compile once, then run the binary anywhere.
 
 **JS host, no compiler.** `jz/interop` is a dependency-free bridge (only `wasi.js`) that knows the value encoding, so bundlers tree-shake the compiler, parser, and watr out entirely:
 
@@ -542,7 +542,7 @@ Each folder has a `build.mjs` and an `index.html` — build, then open the page.
 | Pick | When |
 |---|---|
 | **jz** | You write plain JS, want tiny WASM and native-class numeric/DSP speed, and your code fits the subset. |
-| **porffor** | You need full TC39 / spec completeness — it implements the spec progressively (test262). |
+| **porffor** | You need full TC39 / spec completeness. |
 | **AssemblyScript** | You're comfortable writing a typed TypeScript dialect for explicit low-level control. |
 | **jawsm** | You need to run standard JS *unchanged*, with GC and closures provided by a bundled WASM runtime. |
 
