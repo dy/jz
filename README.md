@@ -145,7 +145,7 @@ full `super.x` property reads, getters/setters, dynamic computed member names.
 
 <br>
 
-`Valid jz = valid JS` means jz source always parses and runs as JS — but jz compiles to *static* WASM, so a few behaviors diverge from V8. `--wat` shows exactly what was emitted. (For what's out of scope entirely, see the *Not supported* box above; for moving values across the boundary, see [Interop](#interop).)
+`Valid jz = valid JS` means jz source always parses and runs as JS — but jz compiles to *static* WASM, so a handful of behaviors diverge from V8. These are deliberate trades, not unfinished corners: each one is what keeps the output close to hand-written WAT. `--wat` shows exactly what was emitted. (For what's out of scope entirely — `eval`, `async`, `Proxy`, … — see the *Not supported* box above; for moving values across the boundary, see [Interop](#interop).)
 
 - **Booleans are numbers.** `true`/`false` compile to `1`/`0`. `typeof` recovers `"boolean"` where it can be proven statically, but a boolean carried through an untyped binding reports `"number"`, `String(true)` is `"1"`, `parseInt(true)` is `1`. A real-boolean carrier is planned.
 - **Objects are fixed-layout schemas** — key set and order fixed at the literal; `delete` is rejected; `memory.Object({…})` must match the source key order.
@@ -214,9 +214,9 @@ After `memory.reset()` all previously returned pointers are invalid — read wha
 
 <br>
 
-Inference is mechanical and visible — not hidden. It reads the same signals a human reader does: literals, operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignment flow. The chosen types appear in `--wat`; ambiguous cases fall back to NaN-boxed **f64** — a safe default, never a wrong type.
+Inference is mechanical and visible — not the hidden, fragile, coercive thing the "explicit > implicit" reflex assumes. It reads the same signals a human reader does: literals, operators (`x | 0` → i32), member access (`s.length` → string), `typeof` guards, and assignment flow. The chosen types appear in `--wat`; ambiguous cases fall back to NaN-boxed **f64** — a safe default, never a wrong type.
 
-To pin a type, write code that implies it: `x | 0` keeps `x` an i32; an `s = ''` default declares a string param. You don't annotate storage — **valid jz = valid JS**, so there's no parallel type syntax to learn. (JSDoc `@type` is planned as an advisory hint but not yet enforced.) Annotations never make code faster; they only sharpen what inference already sees.
+So there's nothing to annotate. Type annotations bundle two jobs into one syntax: hinting storage to the compiler (`let x: number` — which only duplicates what `x | 0` already tells inference) and documenting contracts at boundaries (a *docs* concern, not a *language* one). jz keeps the split clean — inference handles storage, and **valid jz = valid JS** means no parallel type system to learn. To pin a type, write code that implies it: `x | 0` keeps `x` an i32; an `s = ''` default declares a string param. (JSDoc `@type` is planned as an advisory hint, not yet enforced.) Annotations never make code faster; they only sharpen what inference already sees.
 
 </details>
 
@@ -255,6 +255,25 @@ cc -O3 program.c -o program
 ```
 
 The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C — beating V8 on 19 of 21 bench cases on an M4 Max. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
+
+</details>
+
+<details>
+<summary><strong>Can I add my own operators or stdlib methods?</strong></summary>
+
+<br>
+
+Yes — jz's emitter table (`ctx.core.emit`) maps AST operators to WASM IR generators, and the whole stdlib is just modules registering on it. Adding one is the same move the built-ins make:
+
+```js
+import { emitter } from './src/emit.js'
+import { typed } from './src/ir.js'
+
+// my.double(x) → x * 2
+emitter['my.double'] = (x) => ['f64.mul', ['f64.const', 2], typed(x, 'f64')]
+```
+
+Handler names follow the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. Any file in [`module/`](module/) is a worked template — each receives `ctx` and registers emitters, stdlib, globals, or helpers. See [CONTRIBUTING.md](CONTRIBUTING.md) for the pipeline.
 
 </details>
 
