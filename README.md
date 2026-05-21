@@ -38,6 +38,8 @@ JZ distills the modern functional core – the "good parts" ([Crockford](https:/
 
 ## Usage
 
+`npm install jz`
+
 ```js
 import jz, { compile } from 'jz'
 
@@ -72,12 +74,9 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`. Common ones
 | `strict: true` | Reject dynamic fallbacks such as unknown receiver method calls, `obj[k]`, and `for-in` instead of emitting JS-host dynamic dispatch. |
 | `alloc: false` | Omit raw allocator exports like `_alloc`/`_clear` when compiling standalone WASM that never marshals heap values across the host boundary. |
 | `wat: true` | `compile()` returns WAT text instead of a WASM binary. |
-| `profile` | Pass a mutable sink to collect compile-stage timings; set `profile.names = true` to also emit a WASM `name` section for profiler/debugger symbolication. `profileNames` remains as a legacy alias. |
+| `profile` | Pass a mutable sink to collect compile-stage timings; set `profile.names = true` to also emit a WASM `name` section for profiler/debugger symbolication. |
 
 </details>
-
-<!-- FIXME: cleanup options: strict may be not needed (it is strict by default unless jzified, no?), profileNames - remove alias, optimize string aliases must match numbers, not something custom, host also selects boundary wrapper isn't it?
- -->
 
 ## CLI
 
@@ -237,7 +236,7 @@ The robust way to depend on jz today: compile to `.wasm` at build time, commit t
 
 <br>
 
-Pick **jz** when you want to write plain JS, ship tiny WASM, and get native-class numeric/DSP performance — and your code fits the subset. Pick **[porffor](https://github.com/CanadaHonk/porffor)** when you need full TC39 (it implements the spec progressively). Pick **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** if you're happy writing a typed TypeScript dialect. See [Alternatives](#alternatives) for the full comparison.
+Pick jz for plain JS that fits the subset and tiny, native-fast numeric/DSP WASM. For full TC39, a typed TypeScript dialect, or running standard JS unchanged, see the [Alternatives](#alternatives) decision table (porffor / AssemblyScript / jawsm).
 
 </details>
 
@@ -276,12 +275,10 @@ The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flt
 | [sort](bench/sort/sort.js) | 5.96ms<br>1.6kB | 11.13ms<br>1.6kB | fails | 10.22ms<br>1.9kB | — | 8.85ms | 10.36ms | 8.84ms | 9.37ms | 5.05ms |
 | [crc32](bench/crc32/crc32.js) | 12.12ms<br>1.2kB | 13.43ms<br>1.8kB | 80.76ms<br>3.1kB | 12.19ms<br>1.4kB | — | 10.69ms | 9.30ms | 9.45ms | 9.38ms | 0.24ms |
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
+| **geomean** (jz/target speed) | 1.00× | 0.52× | 0.34× | 0.52× | — | 0.96× | — | — | — | — |
 
-_Numbers from `node bench/bench.mjs --targets=v8,jz,as` on Apple Silicon._
-Geomean speed: jz 0.41× V8, 0.40× AS, 0.32× Porffor, **0.88× native C (`clang -O3`)**.
-Geomean size: jz 0.85× AS. jz wasm runs at native speed — ahead of `clang -O3` on
-the corpus geomean — and `test/bench.js` gates it so a regression fails CI.
-<!-- FIXME: Geomean should be last row -->
+_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64); the **geomean** row is the gated cross-case jz/target ratio from `test/bench.js`._
+Geomean size: jz **0.86× AS**. jz wasm runs at `clang -O3` speed — native-C parity at geomean 0.96× — and `test/bench.js` gates every figure so a regression fails CI.
 `optimize: 'size'|'speed'|'balanced'` provides a size/speed tradeoff lever.
 
 <details>
@@ -303,7 +300,6 @@ High-impact summary behind the benchmark table, not an exhaustive list.
 | Small constant loop unroll | Required for biquad and mat4 speed; size cost is pinned. |
 | OBJECT-only ternary type propagation | Keeps bimorphic object reads on typed dynamic dispatch without broad type-risk. |
 | Benchmark checksum helper inlining | Avoids pulling generic ToNumber/string conversion into typed-array checksum binaries; mandelbrot drops from ~5.0kB to ~1.2kB. |
-<!-- FIXME: needs to be updated -->
 
 `npm run test:bench` pins every claimed V8 win, AssemblyScript win/tie, and wasm size budget. Mandelbrot is pinned as a V8 win and AssemblyScript tie, not an AS win. Unclaimed rows stay visible as todo gaps without weakening the asserted wins.
 
@@ -502,11 +498,38 @@ Names are stable; binary layouts are not — re-derive from the latest `interop.
 </details>
 
 
+## Examples
+
+Runnable browser demos in [`examples/`](examples/) — each compiles a `.js` kernel to WASM and shares a typed array with a canvas (the memory-sharing pattern from [Interop](#interop)):
+
+* [game-of-life](examples/game-of-life/) — Conway's Life writing the cell grid straight into shared pixel memory.
+* [interference](examples/interference/) — two-source wave interference field rendered per frame.
+* [mandelbrot](examples/mandelbrot/) — escape-time fractal with a precomputed color table.
+
+Each folder has a `build.mjs` and an `index.html` — build, then open the page.
+
+
 ## Alternatives
 
 * [porffor](https://github.com/CanadaHonk/porffor) — ahead-of-time JS→WASM compiler targeting full TC39 semantics. Implements the spec progressively (test262). Where jz restricts the language for performance, porffor aims for completeness.
 * [assemblyscript](https://github.com/AssemblyScript/assemblyscript) — TypeScript-subset compiling to WASM — small, performant output, but requires type annotations.
 * [jawsm](https://github.com/drogus/jawsm) — JS→WASM compiler in Rust. Compiles standard JS with a runtime that provides GC and closures in WASM.
+
+<details>
+<summary><strong>Which one to choose?</strong></summary>
+
+<br>
+
+| Pick | When |
+|---|---|
+| **jz** | You write plain JS, want tiny WASM and native-class numeric/DSP speed, and your code fits the subset. |
+| **porffor** | You need full TC39 / spec completeness — it implements the spec progressively (test262). |
+| **AssemblyScript** | You're comfortable writing a typed TypeScript dialect for explicit low-level control. |
+| **jawsm** | You need to run standard JS *unchanged*, with GC and closures provided by a bundled WASM runtime. |
+
+The axis is completeness vs. cost: jz restricts the language to emit a runtime-free, native-speed binary; the others spend size/runtime to cover more of JS.
+
+</details>
 
 ## Build with
 
