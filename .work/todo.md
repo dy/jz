@@ -13,6 +13,8 @@
 
 #### Representation
 
+Per-site carrier inference. Design & rationale: `research.md` › "Representation -> per-site, inferred". The only user knob is the boundary protocol (`opts.host`, landed). Done carriers archived below; open ones:
+
 * [ ] **jsstring carrier — internal-STRING-locals flow.** Propagate
   externref past the export boundary into internal STRING locals so parsers
   carry `src` end-to-end without memory-backed copies. Blocked on the
@@ -22,6 +24,26 @@
 * [ ] **Boundary string cache in interop.js.** Cache `mem.wrapVal(s)` by
   string identity so repeat-same-string workloads amortize the UTF-8
   transcode — orthogonal SSO improvement.
+* [ ] **Schema-object field packing** *(deferred — YAGNI, no consumer)*. Per-field
+  rep so `{count:0, name:''}` lays out `(i32, ptr)` not `(f64-tag, f64-tag)`; halves
+  struct size. Surveyed 2026-05-19: gap real, multi-day. Blocker: `src/abi/object.js`
+  carrier ops are `(base,i,val)` with no schemaId — `packed` needs the carrier API
+  widened + schemaId threaded through every dyn path (~6 modules). Build when a
+  struct-array-of-records workload demands it; benches use TypedArrays/SoA, not AoS records.
+* [ ] **Typed-array element rep** *(deferred — no workload)*. `xs=[1,2,3]` with int-only
+  writes → `Int32Array` backing not tagged-linear. Surveyed 2026-05-19: output shape
+  already proven via explicit `new Int32Array`, just not auto-selected. Blocker:
+  VAL.ARRAY→VAL.TYPED is a value-type change (consumers route through `__arr_*` vs
+  `__typed_*`) + needs a new narrower phase (int-only writes, no shape mutation, closed
+  read set). Benches opt into TypedArrays explicitly; watr/subscript don't show this shape.
+* [ ] **Closure-capture narrowing** *(deferred — regression risk > theoretical win)*.
+  Captured vars widen to nanbox at the cell even when used at one narrow type;
+  `let c=n|0; ()=>c++` round-trips i32↔f64 per access. Surveyed 2026-05-19: ~100 LOC
+  across 5 touch points (new `analyzeBoxedCellTypes` walking arrow bodies; dispatch
+  alloc/init in `emitPreboxedLocalInits`; load/store in `readVar`/`writeVar`; thread into
+  `emitClosureBody`). Bench closures capture objects/strings, not i32 — wins zero ops on
+  real hot paths; watr is closure-heavy and a regression vector. Re-evaluate on a
+  counter/accumulator-closure workload.
 
 ### Ecosystem & reach — sequenced (from `.work/ecosystem-audit.md`)
 
@@ -202,151 +224,6 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 * [ ] True metacircular bootstrap
 * [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
 
-
-### Boundary protocol and internal representation
-
-Two separable concerns, conflated by the previous "ABI presets" plan:
-
-1. **Boundary protocol** — how host code calls the `.wasm`. This is the only ABI users see.
-2. **Internal representation** — how values live inside the wasm. Analysis-driven, per-site, never user-configured.
-
-The old plan treated both as "ABI" — `opts.abi: 'nanbox' | 'flat' | 'nanbox+jsstring'` covered both knobs at once. That conflation is the root cause of every "which preset should I pick?" smell. The user choosing internal representation is a category error: the compiler has more information about each call site than the user could plausibly enumerate. Exposing the choice freezes the internal layout to whatever the user happened to pick — the opposite of "compile to the most fitting form." A person reading the source infers types from name, literals, operators, member access, control-flow guards. The compiler should do the same, and beat the user at it.
-
-#### User surface — `opts.host`
-
-The only knob the host actually needs is "how do I call this."
-
-```js
-jz.compile(src, { host: 'js' })    // default — JS host; externref strings, ref-typed exports allowed
-jz.compile(src, { host: 'wasi' })  // C-ABI shape; linear-memory strings; no engine builtins
-jz.compile(src, { host: 'gc' })    // wasm-gc; stringref, ref-typed exports
-```
-
-`opts.host` decides:
-- Which `wasm:js-string` imports may be referenced (only `js`).
-- Whether externref / ref-types are valid in export signatures (`js` yes, `wasi` no).
-- Boundary marshalling shape (single `interop.js` codec; host variant selected by feature stamp, not by file).
-
-It does **not** decide the internal layout of any value. A program compiled with `host: 'js'` still gets a flat `i32` slot wherever narrowing proves an integer; a `host: 'wasi'` program still gets nanbox-tagged f64 where analysis can't disambiguate.
-
-#### Internal representation — compiler-owned, per-site
-
-`src/abi/` — internal codegen modules with no user surface. **One file per type**, holding every carrier the compiler may pick for that type. Carriers are named exports inside; the narrower picks one per site by analysis.
-
-```
-src/abi/number.js  — nanbox-f64 (default), flat-i32, flat-f64
-src/abi/string.js  — sso (default), jsstring (host: 'js' only)
-src/abi/array.js   — tagged-linear (default), typed (Int32/Float64 backing)
-src/abi/object.js  — schema-linear with per-field rep
-```
-
-The earlier `src/abi/<type>/<rep>.js` split would have been preset-thinking smuggled in by file layout — separate files imply separate testing units, which implies user-pickable presets, which is exactly the surface we're removing. One file per type matches the actual factoring: carriers for the same type share domain knowledge (what a "number" means, which ops it supports), so they belong together. Cross-carrier helpers (slot-type coercion, op dispatch) sit next to the carriers without an artificial folder crossing.
-
-Sketch:
-
-```js
-// src/abi/number.js
-export const nanboxF64 = {
-  slotType: 'f64',
-  ops: { add: (a, b, ctx) => …, eq: …, },
-  peephole: (node) => …,
-}
-export const flatI32 = {
-  slotType: 'i32',
-  ops: { add: (a, b, ctx) => ['i32.add', a, b], … },
-}
-export const flatF64 = { slotType: 'f64', ops: { … } }
-
-// default carrier — picked when narrower has no stronger evidence
-export default nanboxF64
-```
-
-Per-site dispatch, not module-wide preset. The narrower walks the IR, tags each binding/expression with a carrier choice, codegen reads `ctx.abi.number[choice].ops.<op>` (or equivalent). A function may carry an `f64`-slot nanbox number, an `i32`-slot count, and an `externref` string in the same body — each chosen because analysis proved it, not because a preset said so.
-
-The slot-carrier contract from the existing refactor stays: each carrier's `ops.<op>` accepts slot-typed IR and emits the call/inline. Carriers are cycle-safe (no `src/*` imports), siblings inside one ~150–300-line type module.
-
-#### Analysis as the engine
-
-Per-site representation is only as good as the inference feeding it. The narrower fixpoint exists; the work is enriching its evidence sources.
-
-Type evidence, ordered by strength:
-
-1. **Literal use** — `let x = 0`, `let s = ''`, `let xs = []`. Direct.
-2. **Operator application** — `x | 0` / `x >>> 0` force i32; `x * 1.0` keeps f64; `s.charCodeAt`, `s + ''` force string.
-3. **Member access pattern** — `.length` on a thing only `+=`'d with strings; `.push` / `[i]=` on a thing only indexed by integers.
-4. **`typeof` guard** — `typeof x === 'number'` narrows on the true branch (partly handled in narrow.js).
-5. **Assignment flow** — `x = y` propagates `y`'s evidence to `x`; SSA edges already in the IR.
-6. **Comparison shape** — `x === null` proves nullable; `x === 0` rules out string.
-7. **JSDoc `@type`** — explicit hint when ambiguous. Authorial intent, not enforced contract.
-8. **Default cast** — anything still ambiguous after the fixpoint stays nanbox-tagged f64. Default is never wrong, only sometimes wider than necessary.
-
-Each step closes one class of dynamic-fallback emit. Representation work only runs once narrowing has decided a type, so better evidence → more sites take the narrow rep. Investing in narrowing compounds with every rep added later.
-
-#### Workstreams, in priority order
-
-* [x] **Narrowing investigation (primary).** Survey: `.work/narrow-survey.mjs` (per-bench counts) + `.work/narrow-watr-hotspots.mjs` (per-function). Findings: `.work/narrow-findings.md`. Headline: every numeric / typed-array bench is **already at zero fallbacks**; only `watr` (the self-hosted WAT compiler) has any — 1289 emits, 47.5 % clustered in its top 10 functions. Categorization:
-  - **A. Dynamic-keyed object with all-known keys → poisoned to HASH** (132 `__dyn_set` in `$__start`, plus the rest of the 212 `__dyn_set`). Repro: a single `o[k]` computed read on a 6-key object literal explodes 2 KB → 65 KB and turns every initialization write into `__dyn_set`. **Not a narrowing gap** — codegen-layout choice. Moves to **workstream #3**, extended scope: keep schema layout under computed-key access; dispatch the computed read over the known key set.
-  - **B. `s[i]` emits __str_idx + SSO alloc per char** (446 emits, top fallback). Each indexed read materializes a one-char SSO string even when the consumer is `=== '\\'` (charcode-equivalent). **Moves to workstream #6**, extended scope: elide SSO materialization when the consumer compares with a single-char literal.
-  - **C. Polymorphic AST-node receiver** (`cleanup(node)` where node = string | array | null). RESOLVED 2026-05-17: the `Array.isArray(node)` discriminator's facts *are* threaded across `?:` / `&&` / `||` / `if` arms (`extractRefinements`), so `node[0]` reads route through `__arr_idx_known`. The remaining gap was the *write* side — `node[i] = v` kept a dead `__is_str_key` dispatch (fixed, commit 76c09d8).
-  - **D. Heterogeneous ctx = array+object** in watr's `compile()`. Legitimate mixed identity; codegen-rep question, not narrower.
-  - **E. err()'s `text + ...` concat allocates heap** even when the result fits SSO. Folds into workstream #6.
-  - **F. `for-in` over known-schema source** (`for (let kind in SECTION)`) should unroll at compile time per `prepare.js:1339-1346` — verify it fires for watr's constants; gaps become narrow follow-ups.
-  ## Recommended narrow.js follow-ups (workstream #1 deliverable):
-  - **C.1** ~~Thread `Array.isArray(x)` facts through `?:` / `&&` / `||` arms~~ — DONE (already in `extractRefinements`; commit a2b5aec). Write-side asymmetry fixed in commit 76c09d8.
-  - **C.2** `x == null` / `x != null` flow-narrowing — DEFERRED: no nullable/notNull rep field to land the fact on; premature until flat-rep work creates a consumer.
-  - **F.1** Verify and fix `for-in` over known-schema unrolling on watr's `SECTION` / `KIND` / `INSTR` / `DEFTYPE`.
-  ## Conclusion: rebalance — the survey says narrowing handles numeric/typed-array codegen at the floor; the remaining wins on dynamic-shape code are mostly **codegen layout (#3) and SSO peephole (#6)**, not narrower gaps. Parallelize #1.C/F + #3 + #6 rather than serialize.
-
-* [x] **Per-site flat-number specialization.** Where narrowing proves a binding is integer-only or non-tag-traffic-f64, emit it as a flat slot (`i32` / bare `f64`) and skip box/unbox at every use. **Verified done-in-effect 2026-05-19.** Survey across 5 bench kernels (`crc32`, `mat4`, `bitwise`, `sort`, `biquad` — 3059 lines of function bodies) found **zero** residual `i64.reinterpret_f64`/`f64.reinterpret_i64` round-trips, **zero** `__mkptr`/`__num_box` calls, **zero** `__ptr_offset`/`__num_unbox` calls in non-export bodies. The work was achieved via direct type narrowing in `narrow.js` (Phase D param specialization → `applyI32ParamSpecialization`; Phase E i32 results → `narrowI32Results`; Phase E3 pointer results → `narrowPointerResults`; Phase G TYPED pointer ABI) + `analyzeBody` local typing in `src/analyze.js:1958-2099` (`exprType` propagates i32 through `|`, `&`, `^`, `<<`, `>>`, `>>>`, `~`, comparisons, integer `+ - * %`, `.length` on sized receivers, intCertain locals, narrowed function returns). The carrier-bundle refactor (`flatI32`/`flatF64` in `src/abi/number.js`) is **architectural sugar without behavioral benefit** — the named goal is already reached. Genuine remaining waste is closure-cell f64.store (workstream #5), not flat-binding rep.
-
-* [ ] **Schema-object field packing.** `schema-linear` today gives every field a tagged-f64 slot regardless of evidence. Threading per-field rep through the schema lets `{count: 0, name: ''}` lay out as `(i32, ptr)` instead of `(f64-tag, f64-tag)`. Halves typical struct size; identity and field-order semantics untouched. **Surveyed 2026-05-19 — gap is real, fix is multi-day:** non-exported `mk = (count, name) => ({count: count|0, name})` emits `f64.convert_i32_s + f64.store` on the intCertain slot 0 even with `count` param i32-narrowed (residual i32→f64 widen for 8-byte slot store; 2-4 ops per intCertain slot at store, matching truncs at read). `ctx.schema.slotIntCertain` / `slotTypes` evidence already exists. **Blocker:** `src/abi/object.js` carrier ops take `(base, i, val)` — no schemaId — so `packed` would require widening the carrier API + threading schemaId through every dyn path (`__dyn_get_any_t_h`, `__dyn_set_*`, `Object.values/entries/assign/keys`, `{...spread}`, JSON, `toPrimitive`). Cross-cutting touch list ~6 modules. **Defer** until a workload exercises heavy struct-array memory pressure — current benches use TypedArrays/SoA (mat4) or flat-state arrays (bitwise), not object-array-of-records. YAGNI: build when consumer exists. *(`flat`/SRoA already handles non-escaping `let o = {…}` literal binds; the residual gap is only for escaping objects with static-key access — narrower than the workstream framing suggested.)*
-
-* [ ] **Typed-array element rep.** `xs = [1, 2, 3]` where every push/store is integer becomes `Int32Array` backing instead of tagged-linear. Subsumes the manual `Int32Array.of` ergonomic; plain JS source, typed memory output. **Surveyed 2026-05-19 — gap confirmed, fix is multi-day:** today `let xs = [1, 2, 3]` emits 3× `f64.store` of static integers into 8-byte cells; `let xs = []; xs.push(i|0)` keeps `xs` as VAL.ARRAY (f64 local pointer, `__arr_*` ops, 8-byte cells). Manual `new Int32Array(n)` produces clean `i32.store` + i32-local x as expected — the *output* shape is already proved correct, just not auto-selected. **Blocker:** narrowing `xs` from VAL.ARRAY to VAL.TYPED(Int32Array) is a value-type change, not a carrier swap — every consumer (`xs.push`, `xs.length`, `xs[i] = v`, dyn `xs[k]`, spread, `Object.values`) routes through different runtime helpers (`__arr_*` vs `__typed_*`). Plus a new narrower phase needed: detect intCertain-only writes + no shape-mutating ops + closed read set. **Defer** until a workload exercises this — current benches use TypedArrays explicitly (the user already opts in); user-typed JS that benefits is e.g. parser token tables, but watr/subscript don't show this shape in profile.
-
-* [ ] **Closure-capture narrowing.** Captured variables today widen to nanbox-tagged at the cell, even when the closure body uses them at a single narrow type. Track per-cell evidence the same way bindings do; emit `i32`/`f64` cells where proven. **Surveyed 2026-05-19 — gap confirmed, scope ~100 LOC across 5 touch points:** `let count = n | 0; return () => count++` lowers to `__alloc(8)` + `f64.store cell` of `f64.convert_i32_s(n)` + closure reads/writes via `f64.load`/`f64.store` with i32↔f64 round-trips per access. Cell stays 8 bytes f64-typed. **Fix sketch:** new pass `analyzeBoxedCellTypes(body)` walking ALL writes including arrow bodies (current `analyzeIntCertain` stops at `op === '=>'` — sound for its consumers but blind to closure mutations); decide cell type per name; patch `emitPreboxedLocalInits` (`src/compile.js:224`) to dispatch alloc size + init op on cell type; patch `readVar` / `writeVar` (`src/ir.js:574, 612`) to dispatch load/store on cell type; thread `boxedCellTypes` from parent → `cb` → `emitClosureBody` (`src/compile.js:585`) so closure reads agree. **Defer** until a consumer surfaces — current benches' closures (watr's parser arrows, subscript's feature handlers) are all object/string-typed captures (not i32-intCertain), so the convert-chain elision wins zero ops on the realistic hot paths. The watr compiler is closure-heavy and a regression vector; landing this without a tightly-scoped consumer trades real risk for theoretical wins. Re-evaluate when a counter-closure / accumulator-closure-driven workload appears.
-
-* [x] **SSO flow-through.** Short-literal strings (≤4 ASCII) live SSO-encoded already, but concat results widen to heap pointers immediately. Where the result also fits SSO, keep it inline. Saves a heap alloc per intermediate. **Landed 2026-05-19:** two-tier fix — (a) compile-time literal+literal concat folds into a single literal in `src/prepare.js` `'+'` handler (bottom-up so `'a'+'b'+'c'` folds left-associatively); (b) runtime `__str_concat` / `__str_concat_raw` now branch to an SSO-repack fast path before the heap-alloc tail when both operands are SSO and total ≤ 4 (`module/string.js` `ssoResultFast` template). Probe `.work/sso-runtime-probe.mjs` confirms 1000× `cat2("ab","cd")` keeps `__heap` pinned at `0x410`; heap path still fires for total > 4. All 1759 tests + bench tests pass.
-
-* [x] **JS String Builtins specialization — boundary opt-in landed (2026-05-20).** See Archive › "jsstring boundary carrier (2026-05-20)". Per-export-param flip to externref + `wasm:js-string.length`/`charCodeAt` lowering, guarded by a use-pattern proof (string-discriminating evidence, no escape, no reassignment, bounded `.charCodeAt`). Internal-STRING-locals carrier flow (the deeper item once envisaged here) remains deferred — covered by the Live-work "jsstring carrier" bullet above as the next layer (call-graph carrier propagation), distinct from the per-export work just shipped.
-
-#### What ships internally vs externally
-
-|                  | User-visible                       | Compiler-internal                                                |
-| ---------------- | ---------------------------------- | ---------------------------------------------------------------- |
-| Boundary shape   | `opts.host` (`js` / `wasi` / `gc`) | single `interop.js` codec; host variant via feature stamp        |
-| Number carrier   | —                                  | per-site, in `src/abi/number.js`: `nanboxF64` / `flatI32` / `flatF64` |
-| String carrier   | —                                  | per-site, in `src/abi/string.js`: `sso` / `jsstring` (`host: 'js'` only) |
-| Array carrier    | —                                  | per-site, in `src/abi/array.js`: `taggedLinear` / `typed`        |
-| Object layout    | —                                  | per-field, in `src/abi/object.js`: tagged / flat / packed        |
-| Inference hints  | JSDoc `@type` (advisory)           | narrower fixpoint                                                |
-
-The `jz:abi` custom section, if kept, becomes a **feature-detection version stamp** (e.g. "ref-types required", "string-builtins required") so the host driver knows which engine features to feature-test before instantiate. It does **not** carry preset names — there are no presets to name.
-
-#### What drops from the old plan
-
-- `opts.abi` — gone. Replaced by `opts.host`.
-- `PRESETS` as any kind of surface — gone. Internal `src/abi/` modules are picked per-site by analysis, not by name. No preset table inside the compiler either; carrier choice lives in narrower facts.
-- `JZ_ABI` env flag in tests — gone. Boundary tested by varying `opts.host`; internal repr is implementation detail (assert size / IR shape, not "preset name").
-- Preset matrix testing — gone. No preset to enumerate. Internal-rep tests are properties: "after narrowing, `x | 0` lowers to an i32 slot."
-- Free-form rep maps — never existed publicly; remains an internal property of the narrower.
-
-#### Already landed (foundation; do not undo)
-
-* [x] One file per type under `src/abi/` — `src/abi/string.js` (`sso` default + `jsstring` scaffold), `src/abi/number.js` (`nanboxF64` default). Carriers are named exports inside one type module; no preset folder layout.
-* [x] Slot-carrier contract — `sso` accepts slot-typed IR, emits `i64.reinterpret_f64` inline, no `src/*` imports.
-* [x] Empty-ops scaffold — `jsstring` declares slot types, imports, and the 9-item compiler-wide checklist for real codegen.
-* [x] Routed call sites — `module/core.js` (`?.length`), `module/string.js` (`.charCodeAt`), `src/emit.js` (cmp / concat / concatRaw / append-byte) all go through `ctx.abi.string.ops`.
-* [x] Compiler-side carrier dispatch object on `ctx` (`ctx.abi.<type>.ops.<op>`); `ctx.abi.<type>` resolves to a *carrier* (named export of `src/abi/<type>.js`), not a separate file.
-* [x] Optimizer-side carrier peephole (`src/abi/number.js#nanboxF64.peephole`) — pure-WASM folds in `src/optimize.js`, carrier-specific folds inside the carrier.
-* [x] Single `interop.js` boundary codec — DRIVERS dispatch table removed; one NaN-box codec per binary; `jz/interop` subpath compiler-free (only imports `./wasi.js`).
-
-#### Open policy questions (deferred until first non-default rep emits at scale)
-
-1. **JSDoc strength.** `@type` as a hint (overridable by stronger evidence) or as a contract (refuse to widen)? Hint matches the implicit-inference philosophy; contract gives users an escape hatch for cross-module boundaries. Default: hint.
-2. **Null/undefined under flat slots.** A flat `i32` / `f64` can't carry them. Narrower must prove non-null at the binding or widen back to tagged. No new syntax.
-3. **Compound lifetime.** `__alloc` for a flat string passed to a host call — when freed? Today's `_clear`-reset arena is fine for short-lived; long-running needs a hook. Defer until a real long-running program forces it.
-4. **Cross-module ABI freezing.** Exported flat-slot signatures are part of the module's public contract even though `opts.host` is what users picked. Resolution: export signatures derive from proven types of exports' params/returns. Stable signature ⇒ write the export so its types are obvious (or annotate). The compiler does not promise stable internal rep across versions for the same source.
-
 ### REPL
 
 * [ ] Auto-convert var→let, function→arrow on paste
@@ -386,6 +263,36 @@ The `jz:abi` custom section, if kept, becomes a **feature-detection version stam
   `bench/`/`examples/`. AS's real traction is blockchain — out of jz's scope,
   don't follow. Sequenced reach plan below.
 
+
+### Representation carriers — foundation + done workstreams (2026-05-19/20)
+
+Per-site carrier inference. Design narrative (user surface, evidence ladder,
+what-ships-vs-what-drops, open policy questions) moved to `research.md` ›
+"Representation -> per-site, inferred". Open carriers stay live under `#### Representation`.
+
+* [x] **Narrowing investigation (primary).** Survey (`.work/narrow-survey.mjs`,
+  `narrow-watr-hotspots.mjs`; findings `.work/narrow-findings.md`): every numeric /
+  typed-array bench already at zero fallbacks; only watr (self-hosted WAT compiler) has
+  any — 1289 emits, 47.5 % in its top 10 funcs. Conclusion: remaining dynamic-shape wins
+  are codegen-layout + SSO-peephole, not narrower gaps. Follow-ups: C.1 (`Array.isArray`
+  facts through `?:`/`&&`/`||`) + F.1 (`for-in` known-schema unroll) landed; C.2
+  (`x==null` flow-narrowing) deferred — no nullable-rep consumer.
+* [x] **Per-site flat-number specialization.** Verified done-in-effect 2026-05-19: zero
+  `*.reinterpret_*` / `__num_box` / `__num_unbox` across 5 bench kernels (crc32, mat4,
+  bitwise, sort, biquad). Achieved by narrowing (`narrow.js` phases D param-spec, E
+  i32-results, E3 pointer-results, G TYPED ABI) + `analyze.js` `exprType` i32 propagation.
+  The `flatI32`/`flatF64` carrier-bundle refactor judged architectural sugar (no
+  behavioral benefit) — not built; named goal already reached.
+* [x] **SSO flow-through.** Landed 2026-05-19: (a) compile-time literal+literal concat
+  folds to one literal (`prepare.js` `'+'`); (b) runtime `__str_concat{,_raw}` SSO-repack
+  fast path when both operands SSO and total ≤ 4 (`module/string.js`). Probe confirms heap
+  stays pinned for repeated small concats; heap path still fires for total > 4.
+* [x] **Foundation (do not undo).** One-file-per-type `src/abi/` (`string.js` sso default +
+  jsstring scaffold; `number.js` nanboxF64); slot-carrier contract (carriers emit inline,
+  no `src/*` imports); `ctx.abi.<type>.ops.<op>` per-site dispatch; carrier peephole
+  (`nanboxF64.peephole`); single `interop.js` codec (DRIVERS table removed).
+
+(jsstring boundary carrier and `opts.host` user surface have their own dated entries below.)
 
 ### opts.host user surface + custom sections reference + SoA boundary pin (2026-05-20)
 
