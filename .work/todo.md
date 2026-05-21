@@ -176,16 +176,17 @@ there — do not build a separate warning.
 * [ ] **switch fallthrough / default (`no-fallthrough`).** Audit jzify's `switch`
   lowering for fallthrough + missing-`default` fidelity. Correctness lives in the
   lowering; a warning would admit the lowering is incomplete. Owner: `src/jzify.js`.
-* [ ] **duplicate object keys (`no-dupe-keys`).** Ensure JS last-wins → single slot in
-  the literal lowering so `{a:1,a:2}` is not a fixed-layout artifact. Escalate to a real
-  error only when dup'd keys carry *conflicting inferred types* (genuine ambiguity, not
-  a style nit). Owner: `src/prepare.js` `'{}'` handler.
-* [ ] **form normalizations → IR fold (no warning).** `Math.pow(x,2)→x*x` (integer
-  exponent), `~~x` / `parseInt(intLit)` → `i32.trunc` / const, `!!x` drop in boolean
-  position, `no-self-assign` / `no-useless-concat` / `no-useless-return` fold into
-  existing DCE/CSE. Not bugs — source forms; canonicalize silently. `**` already lowers;
-  audit which others fold and add the missing peepholes. Owner: `src/optimize.js`,
-  `src/prepare.js`.
+* [x] **duplicate object keys (`no-dupe-keys`).** Already last-wins → single slot
+  (`{a:1,a:2}.a===2`, `Object.keys` dedups). Pinned in `test/objects.js`
+  ("duplicate object-literal keys — last write wins, single slot"). Conflicting-type
+  escalation deferred — no observed need.
+* [ ] **form normalizations → IR fold (no warning).** ~~`Math.pow(x,2)→x*x`~~ **done**:
+  constant integer exponent (`|n| ≤ 8`, incl. negatives/0/1) folds to inline
+  square-and-multiply, bit-identical to `$math.pow`'s integer fast path, eliding the
+  math.pow/exp/log stdlib when it's the only pow use (`module/math.js`, pinned in
+  `test/math.js`). Remaining: `~~x` / `parseInt(intLit)` → `i32.trunc` / const, `!!x`
+  drop in boolean position, `no-self-assign` / `no-useless-concat` / `no-useless-return`
+  fold into existing DCE/CSE. Owner: `src/optimize.js`, `src/prepare.js`.
 
 #### Advisory / opt-in trade (omitted mechanism — needs the warn channel first)
 
