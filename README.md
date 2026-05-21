@@ -342,7 +342,7 @@ Check with `--wat`: a successful lift adds a `$__simd_loop<N>` block ahead of th
 
 ## Interop
 
-How values cross the JS↔WASM boundary, and how to ship and run the compiled `.wasm`. Everything is encoded as **NaN-boxed `f64`** with bump-allocated heap blobs — one boundary codec per binary, chosen at compile time.
+How values cross the JS↔WASM boundary, and how to ship and run the compiled `.wasm`. The mental model is simple: numbers pass straight through, and anything heap-allocated — strings, arrays, objects — crosses as a pointer the `memory` helper reads and writes for you. Under the hood that pointer is a **NaN-boxed `f64`** into a bump-allocated heap, one boundary codec per binary, fixed at compile time.
 
 ### Passing data in and out
 
@@ -492,7 +492,7 @@ exports.len()          // 0   — default substituted JS-side
 exports.label('test')  // 'test (ok)' — memory-backed string, as before
 ```
 
-`.length`-only doesn't flip by default because `.length` also reads arrays and typed arrays — keeping it on f64 preserves that tolerant polymorphism (flipping would trap on non-strings). Bounded loops matter because `wasm:js-string.charCodeAt` **traps** out of range where JS returns `NaN`; the narrower proves `i < s.length` before flipping.
+**Why `.length`-only doesn't flip.** `.length` also reads arrays and typed arrays, so keeping it on f64 preserves that tolerant polymorphism — flipping would trap on non-strings. **Why bounded loops matter.** `wasm:js-string.charCodeAt` **traps** out of range where JS returns `NaN`, so the narrower proves `i < s.length` before flipping.
 
 Native `wasm:js-string` lands in V8 17+ (Chrome 134+, Node 25+ via the `{ builtins: ['js-string'] }` Module option), Safari 18.4+, Firefox behind a flag. `jz/interop` probes the engine and either passes the option for native inlining or attaches a JS polyfill — either way the boundary string-copy is saved. Opt out with `optimize: { jsstring: false }`. Bench: `node bench/jsstring/bench-jsstring.mjs`.
 
