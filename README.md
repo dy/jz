@@ -111,7 +111,8 @@ JZ is a strict functional JS subset. Built-in `jzify` transform extends support 
 ┌────────────────────────────────────────────────────────────────────────┐
 │ JZify                                                                  │
 │   var  function  arguments  switch  new Foo()                          │
-│   ==  !=  instanceof  undefined                                        │
+|   class  new  this  extends  super  static  #private                   │
+│   ==  !=  instanceof  undefined                                        |
 │                                                                        │
 │ ┌────────────────────────────────────────────────────────────────────┐ │
 │ │ JZ                                                                 │ │
@@ -131,9 +132,7 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
-`class` lowers to the core subset under `jzify: true` (and via the CLI for `.js`
-files): fields, constructor, methods, `new`, `this`, `extends`, `super(…)`,
-`static` members, and private `#fields`. Rejected with a clear message:
+ Rejected with a clear message:
 `super.x` property access, getters/setters, dynamic `extends` heritage, and
 computed member names.
 
