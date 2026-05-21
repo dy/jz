@@ -378,10 +378,32 @@ Gateway from JS to low-level: WASM, WASI, native via wasm2c.
 
   ### Implications
 
-  Per-type rep modules survive as **internal** codegen modules: `abi/` →
-  `src/repr/`, dispatch per call site via analysis. `opts.abi` drops;
-  `opts.host` takes its place. jsstring becomes per-site externref
-  specialization for `host: 'js'`, not a preset.
+  Per-type rep modules survive as **internal** codegen modules: one file per
+  type under `src/abi/` (`number.js`, `string.js`, `array.js`, `object.js`),
+  each holding every carrier the narrower may pick for that type, dispatched
+  per call site via analysis (`ctx.abi.<type>.ops.<op>`). `opts.abi` drops;
+  `opts.host` (`js` / `wasi` / `gc`) takes its place. jsstring becomes per-site
+  externref specialization for `host: 'js'`, not a preset. The earlier
+  `src/abi/<type>/<rep>.js` split would have been preset-thinking smuggled in by
+  file layout — separate files imply separate testing units imply user-pickable
+  presets, the surface being removed. The `jz:abi` custom section, if kept, is a
+  feature-detection version stamp (e.g. "ref-types required"), never a preset name.
+
+  ### Open policy questions (deferred until first non-default rep emits at scale)
+
+  1. **JSDoc strength.** `@type` as a hint (overridable by stronger evidence) or
+     a contract (refuse to widen)? Hint matches implicit-inference; contract
+     gives a cross-module escape hatch. Default: hint.
+  2. **Null/undefined under flat slots.** A flat `i32`/`f64` can't carry them;
+     the narrower must prove non-null at the binding or widen back to tagged.
+  3. **Compound lifetime.** `__alloc` for a flat string passed to a host call —
+     when freed? Today's `_clear`-reset arena suits short-lived; long-running
+     needs a hook. Defer until a real long-running program forces it.
+  4. **Cross-module ABI freezing.** Exported flat-slot signatures are public
+     contract even though `opts.host` is what users picked. Export signatures
+     derive from proven types of exports' params/returns; write exports so their
+     types are obvious (or annotate). No promise of stable *internal* rep across
+     versions for the same source.
 
 ## [ ] Inference -> collect before compile
 
