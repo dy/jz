@@ -594,6 +594,22 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
   ok(n(/i32\.xor/g) >= 1 && n(/i32\.shl/g) >= 1, 'mix uses i32 bitwise ops')
 })
 
+test('codegen: unknown-receiver index with NUMBER key skips __is_str_key dispatch', () => {
+  // `a[i]` on an untyped param `a` with a known-NUMBER index (loop counter) can
+  // never be a string key — the runtime `__is_str_key` dispatch is statically
+  // dead. Without the guard it forced an f64 round-trip of `i` + a call per read
+  // (and pulled in the whole `__dyn_get` subtree via its dead string-key arm).
+  // The element read should reach __typed_idx with the raw i32 index directly.
+  const wat = compile(`
+    export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
+  `, { wat: true })
+  const fMatch = wat.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
+  const n = (re) => (fMatch.match(re) || []).length
+  is(n(/__is_str_key/g), 0, 'NUMBER key never needs the string-key dispatch')
+  is(n(/__dyn_get/g), 0, 'no dynamic-property fallback for a numeric index')
+  ok(/\$__typed_idx[\s\S]*?\(local\.get \$i\)/.test(fMatch), 'reads with the raw i32 index')
+})
+
 test('codegen: pure scalar function — minimal binary', () => {
   const wasm = compile('export let add = (a, b) => a + b')
   // Pure scalar: no arrays, strings, objects. Should be tiny.
@@ -931,6 +947,11 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // __char_at calls). Deliberate size↔speed trade.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 5216)
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 7789)
+// 3719→1844: `s[i]` with a known-NUMBER index (the loop counter) is provably a
+// non-string key, so the runtime `__is_str_key` dispatch is dead — its string-key
+// arm was the sole `__dyn_get` reference, so dropping it tree-shakes the entire
+// dynamic-property/hashing subtree (~18 stdlib fns) a numeric-index parser never
+// needs. See module/array.js index-read `keyType !== VAL.NUMBER` guard.
 golden('closure-heavy parser', `export let f = (s) => {
   let i = 0, n = s.length
   let peek = () => i < n ? s[i] : ''
@@ -939,7 +960,7 @@ golden('closure-heavy parser', `export let f = (s) => {
   let total = 0
   while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
   return total
-}`, 3719)
+}`, 1844)
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
