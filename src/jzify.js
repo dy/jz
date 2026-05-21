@@ -368,6 +368,18 @@ function functionBodyBlock(body) {
 /** Prototype identity check: X.prototype.Y */
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
 
+/** `obj.M <eq> Ctor.prototype.M` is not a real reference comparison — jz has no
+ *  prototype objects — it asks whether `obj` overrides `M`, which is exactly
+ *  `obj.hasOwnProperty('M')`. Returns that call node when the shape matches
+ *  (a member access `obj.M` against a same-named prototype method), else null. */
+const methodOverrideHasOwn = (a, b) => {
+  const proto = isProto(a) ? a : isProto(b) ? b : null
+  if (!proto) return null
+  const other = proto === a ? b : a
+  if (!Array.isArray(other) || other[0] !== '.' || other[2] !== proto[2]) return null
+  return ['()', ['.', transform(other[1]), 'hasOwnProperty'], [null, proto[2]]]
+}
+
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array',
   'ArrayBuffer','BigInt64Array','BigUint64Array','DataView'])
@@ -925,12 +937,14 @@ const handlers = {
 
   // Equality keeps the JS loose/strict distinction (jz core now lowers both):
   // `==`/`!=` stay loose, `===`/`!==` stay strict. A comparison against a prototype
-  // object (e.g. `x.constructor === Object`) folds to a boolean — jz has no
-  // prototype objects, so identity against one is decided statically.
-  '=='(a, b) { return isProto(a) || isProto(b) ? 1 : ['==', transform(a), transform(b)] },
-  '!='(a, b) { return isProto(a) || isProto(b) ? 0 : ['!=', transform(a), transform(b)] },
-  '==='(a, b) { if (isProto(a) || isProto(b)) return 1 },
-  '!=='(a, b) { if (isProto(a) || isProto(b)) return 0 },
+  // object folds to a boolean — jz has no prototype objects, so identity against one
+  // is decided statically. The one exception is `obj.M <eq> Ctor.prototype.M`: that
+  // probes whether `obj` overrides the builtin `M`, so it lowers to a runtime
+  // `obj.hasOwnProperty('M')` (equal ⇒ not overridden, unequal ⇒ overridden).
+  '=='(a, b) { const own = methodOverrideHasOwn(a, b); if (own) return ['!', own]; return isProto(a) || isProto(b) ? 1 : ['==', transform(a), transform(b)] },
+  '!='(a, b) { const own = methodOverrideHasOwn(a, b); if (own) return own; return isProto(a) || isProto(b) ? 0 : ['!=', transform(a), transform(b)] },
+  '==='(a, b) { const own = methodOverrideHasOwn(a, b); if (own) return ['!', own]; if (isProto(a) || isProto(b)) return 1 },
+  '!=='(a, b) { const own = methodOverrideHasOwn(a, b); if (own) return own; if (isProto(a) || isProto(b)) return 0 },
 
   // new → call (keep TypedArrays)
   'new'(ctor, ...cargs) {
