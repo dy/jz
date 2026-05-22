@@ -603,9 +603,15 @@ function synthesizeBoundaryWrappers() {
       const ptrType = valKindToPtr(sig.ptrKind)
       body = mkPtrIR(ptrType, sig.ptrAux ?? 0, callIR)
     } else if (resultBool) {
-      // boolBoxIR's truthy extraction depends on the carrier type, so the bare
-      // call node must declare it (f64 0/1, or i32 when the result narrowed).
-      body = boolBoxIR(typed(callIR, sig.results[0]))   // 0/1 carrier → TRUE_NAN/FALSE_NAN atom
+      // The inner func returns a clean 0/1 boolean carrier — never NaN. The i32
+      // carrier already takes truthyIR's identity path; the f64 carrier would
+      // otherwise fall through to the full __is_truthy NaN-discrimination, every
+      // arm of which is dead for a boolean. Pull the bit out with one f64.ne so
+      // boolBoxIR boxes `4|bit` straight into the TRUE_NAN/FALSE_NAN atom.
+      const carrier = sig.results[0] === 'i32'
+        ? typed(callIR, 'i32')
+        : typed(['f64.ne', callIR, ['f64.const', 0]], 'i32')
+      body = boolBoxIR(carrier)
     } else if (sig.results[0] === 'i32') {
       body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]
     } else {
