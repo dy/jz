@@ -41,7 +41,9 @@
  */
 
 import { parse } from 'subscript/feature/jessie'
-import { compile as watrCompile, print as watrPrint, optimize as watrOptimize } from "watr";
+import watrCompile from "watr/compile";
+import watrPrint from "watr/print";
+import watrOptimize from "./src/watopt.js";
 import { ctx, reset, err } from './src/ctx.js'
 import prepare, { GLOBALS } from './src/prepare.js'
 import compile from './src/compile.js'

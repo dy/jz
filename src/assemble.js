@@ -12,7 +12,7 @@
  * @module assemble
  */
 
-import { parse as parseWat } from 'watr'
+import parseWat from 'watr/parse'
 import { ctx, inc, resolveIncludes, err, PTR, LAYOUT } from './ctx.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —

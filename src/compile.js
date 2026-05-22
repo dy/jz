@@ -25,7 +25,7 @@
  * @module compile
  */
 
-import { parse as parseWat } from 'watr'
+import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT } from './ctx.js'
 import {
   T, VAL, analyzeBody,
