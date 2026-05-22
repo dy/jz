@@ -98,6 +98,17 @@ test('bool: boolean-returning export is the only boxed-result footprint', () => 
   ok(!boxesResult('export let f = (a, b) => a + b'), 'number export has no i64 result')
 })
 
+test('bool: boolean export boxes the clean carrier without __is_truthy', () => {
+  // The inner func's f64 result is a clean 0/1 carrier — never a NaN-atom — so the
+  // export thunk extracts the bit with a single f64.ne and boxes `4|bit` directly.
+  // The full __is_truthy NaN-discrimination would be dead weight on every boolean
+  // export; pin its absence so the wrapper can't silently regrow it.
+  ok(!/__is_truthy/.test(wat('export let f = (a, b) => a < b')),
+    'relational export skips the __is_truthy truthy-derivation')
+  ok(!/__is_truthy/.test(wat('export let f = (a, b) => a === b')),
+    'equality export skips the __is_truthy truthy-derivation')
+})
+
 // ============================================
 // Host → jz: a JS boolean coerces to the 0/1 carrier
 // ============================================
