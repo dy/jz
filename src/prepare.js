@@ -91,6 +91,13 @@ const addHostImport = (mod, name, alias, spec) => {
 
 const isImportMeta = node => Array.isArray(node) && node[0] === '.' && node[1] === 'import' && node[2] === 'meta'
 const isImportMetaProp = (node, prop) => Array.isArray(node) && node[0] === '.' && isImportMeta(node[1]) && node[2] === prop
+// In a pure boolean position (consumer reads only truthiness) `!!e` is exactly `e`.
+// Drop redundant double-negation; recurse so `!!!!e → e`. NOT valid for `&&`/`||`
+// operands — those are value-preserving (`!!a && b` returns `false`, not `a`).
+const stripBoolNot = c => {
+  while (Array.isArray(c) && c[0] === '!' && Array.isArray(c[1]) && c[1][0] === '!') c = c[1][1]
+  return c
+}
 const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 const flatArgs = args => args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',' ? args[0].slice(1) : args
 const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
@@ -1357,13 +1364,13 @@ const handlers = {
 
   // Block-scoped control flow: push scope for bodies so inner let/const shadows correctly
   'if': (cond, then, els) => {
-    const c = prep(cond)
+    const c = prep(stripBoolNot(cond))
     pushScope(); const t = prep(then); popScope()
     if (els != null) { pushScope(); const e = prep(els); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
   'while': (cond, body) => {
-    const c = prep(cond)
+    const c = prep(stripBoolNot(cond))
     pushScope(); const b = prep(body); popScope()
     return ['while', c, b]
   },
@@ -1555,7 +1562,7 @@ const handlers = {
   },
 
   // Ternary: parser emits '?' not '?:'
-  '?'(cond, then, els) { return ['?:', prep(cond), prep(then), prep(els)] },
+  '?'(cond, then, els) { return ['?:', prep(stripBoolNot(cond)), prep(then), prep(els)] },
 
   // ++/-- prefix vs postfix: parser sends trailing null for postfix
   // Postfix i++ = (++i) - 1: increment happens, arithmetic recovers old value
@@ -1721,6 +1728,7 @@ const handlers = {
     let r
     if (Array.isArray(head) && head[0] === ';') {
       let [, init, cond, step] = head
+      cond = stripBoolNot(cond)
       // Hoist .length / .size / .byteLength from for-condition:
       //   `i < arr.length` → `let __len = arr.length | 0; ... i < __len`
       // The `| 0` forces i32 even for unknown-typed receivers (where __length

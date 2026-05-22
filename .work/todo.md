@@ -168,32 +168,15 @@ there — do not build a separate warning.
 
 #### Fix structurally (jz invented the gap — audit, then close)
 
-* [x] **i32 narrow range-safety (`no-loss-of-precision`).** *Verified held* — pinned, no
-  code change. Audit confirmed the narrower only picks i32 on an i32 *signal* (i32-literal
-  init + i32-only operands / `x|0` / bitwise / Int32Array read); a binding fed by any
-  non-i32 source (f64 param, division, array elems > 2^31) stays NaN-boxed f64 with the
-  exact value — the README "ambiguous → f64, never a wrong type" promise. The converse —
-  an accumulator with *unanimous* i32 signals wrapping mod 2^32 past 2^31 — is the
-  deliberate i32 value-model trade (the same feature behind `i32x4` SIMD reductions and
-  scalar-i32 digit parsers, `test/optimizer.js`), **not** an ambiguity bug: the code's own
-  literals chose i32, so widening it would gut the narrowing feature. A blanket
-  "widen unguarded self-accumulators to f64" pass was prototyped and rejected — it broke
-  the SIMD-reduction and tokenizer i32 tests. Pinned (both directions) in
-  `test/inference.js` ("i32 range-safety: …"). Owner: `src/analyze.js` `exprType`.
-* [ ] **switch fallthrough / default (`no-fallthrough`).** Audit jzify's `switch`
-  lowering for fallthrough + missing-`default` fidelity. Correctness lives in the
-  lowering; a warning would admit the lowering is incomplete. Owner: `src/jzify.js`.
-* [x] **duplicate object keys (`no-dupe-keys`).** Already last-wins → single slot
-  (`{a:1,a:2}.a===2`, `Object.keys` dedups). Pinned in `test/objects.js`
-  ("duplicate object-literal keys — last write wins, single slot"). Conflicting-type
-  escalation deferred — no observed need.
-* [ ] **form normalizations → IR fold (no warning).** ~~`Math.pow(x,2)→x*x`~~ **done**:
-  constant integer exponent (`|n| ≤ 8`, incl. negatives/0/1) folds to inline
-  square-and-multiply, bit-identical to `$math.pow`'s integer fast path, eliding the
-  math.pow/exp/log stdlib when it's the only pow use (`module/math.js`, pinned in
-  `test/math.js`). Remaining: `~~x` / `parseInt(intLit)` → `i32.trunc` / const, `!!x`
-  drop in boolean position, `no-self-assign` / `no-useless-concat` / `no-useless-return`
-  fold into existing DCE/CSE. Owner: `src/optimize.js`, `src/prepare.js`.
+Done — see Archive › "Lint-inspired structural passes (2026-05-21)": i32 range-safety
+(verified held), switch fall-through (lowering rewritten to two-phase index-based),
+dupe keys (verified held), and the `Math.pow`/`~~x`/`!!x` IR folds. Remaining
+form-normalization remnants — all already *correct*, only IR-tightness is at stake:
+
+* [ ] **form-normalization remnants.** `parseInt(intLit)` → const fold; `no-self-assign`
+  (`x = x`) drop; `no-useless-concat` (`s + ""` — type-dependent, only when `s` is
+  statically STRING, else it's a meaningful ToString); `no-useless-return`. Low value /
+  DCE-adjacent; defer until one is on a hot path. Owner: `src/optimize.js`, `src/prepare.js`.
 
 #### Advisory / opt-in trade (omitted mechanism — needs the warn channel first)
 
@@ -258,6 +241,44 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 ---
 
 ## Archive
+
+### Lint-inspired structural passes — i32 / switch / dupe-keys / form folds (2026-05-21)
+
+The "fix structurally where jz invented the gap" half of the lint-inspired plan. Two
+were verified-held (pinned, no code change); two were real lowering/codegen work.
+
+* [x] **i32 narrow range-safety (`no-loss-of-precision`)** — *verified held*. The narrower
+  picks i32 only on an i32 *signal* (i32-literal init + i32-only operands / `x|0` / bitwise /
+  Int32Array read); any non-i32 source (f64 param, division, elems > 2^31) stays NaN-boxed
+  f64 with the exact value. An all-i32-signal accumulator wrapping mod 2^32 is the deliberate
+  value-model trade (powers `i32x4` SIMD reductions + scalar digit parsers), not an ambiguity
+  bug — a "widen self-accumulators" pass was prototyped and rejected (broke those tests).
+  Pinned both directions in `test/inference.js` ("i32 range-safety: …"). `src/analyze.js`.
+* [x] **switch fall-through / `default` (`no-fallthrough`)** — lowering rewritten. The old
+  if/else-if chain ran one body only; it couldn't express fall-through, stacked labels,
+  mid-list `default`, or string discriminants (string switch returned `[0,0,0]` — the
+  synthetic temp shed its STRING type and strict-`===` folded every case to `false`). New
+  `transformSwitch` is two-phase, evaluated once with no goto: (1) entry index via `===`
+  chain over labels (first match, else `default`'s index, else past-end); (2) run clauses
+  where `entry <= i`, a `break` flipping a sticky `brk` flag (`rewriteSwitchBreaks`). A
+  bare-identifier discriminant uses no temp (keeps its type); `stripTerminalSwitchBreak`
+  → `normalizeCaseBody` (keeps breaks for the flag to gate). `src/jzify.js`; 4 capability
+  pins in `test/types.js` (fall-through, stacked, default-mid, string). Parser caveat: a
+  statement on the *same line* after a `switch {…}` still fails to parse (subscript jessie
+  omits the block-boundary signal — `feature/switch.js` `switchBody` skips `}` without
+  `parse.exit`); newline-separated (normal style) parses fine. Upstream-gated.
+* [x] **duplicate object keys (`no-dupe-keys`)** — *verified held*. Last-wins → single slot
+  (`{a:1,a:2}.a===2`, `Object.keys` dedups). Pinned in `test/objects.js`.
+* [x] **form normalizations → IR fold (no warning).** `Math.pow(x,n)` constant integer
+  exponent (`|n| ≤ 8`) → inline square-and-multiply, eliding the math.pow/exp/log stdlib
+  (`module/math.js`, `test/math.js`). `~~x` → single `toI32` (the two xor-with-(-1) cancel;
+  NaN/Infinity guard lives in `toI32`, runs once — value-identical to the old double-`~`,
+  0 xors vs 2; `src/emit.js` `~`). `!!e` in pure boolean position (if/while/for-cond/`?:`,
+  *not* value-preserving `&&`/`||`) → `e`, dropping the double-`eqz` (`src/prepare.js`
+  `stripBoolNot`). Both pinned in `test/types.js` with IR-count assertions. Remnants
+  (parseInt-of-literal, self-assign, useless-concat/return) left active — low value.
+
+Suites: unit 1851 pass / 0 fail / 1 skip.
 
 ### Strict `===` + arg-position ToString (2026-05-21)
 
