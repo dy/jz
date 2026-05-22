@@ -7,19 +7,21 @@
 ### Ecosystem & reach — sequenced (from `.work/ecosystem-audit.md`)
 
 Ordered by value × leverage × effort. The lens: **valid jz = valid JS** ⇒ the
-same source runs as JS and as jz-WASM, so every demo flips one switch to show the
-speedup honestly. No other JS→WASM tool can do that. Build that toggle once, reuse
-everywhere.
+same source runs as JS and as jz-WASM, so every demo flips one switch to compare
+them honestly — show per-frame compute-ms, not a faked speedup (jz wins
+transcendental-heavy work; V8's JIT ties/wins pure-arithmetic loops). No other
+JS→WASM tool can do that same-source toggle. Build it once, reuse everywhere.
 
 #### Examples — astonishing, build next (have 3: life / interference / mandelbrot)
-* [ ] Add the **JS ⇆ jz-WASM toggle + live FPS counter** to the 3 existing demos (cheapest credibility win, reuses infra)
+* [x] Add the **JS ⇆ jz-WASM toggle + live FPS/compute-ms HUD** to the 3 existing demos — done, shared loader/HUD in `examples/lib/jzdemo.js`, all verified in browser
 * [ ] **Strange attractors** (Clifford / de Jong / Lorenz) — 2-line f64 formula × millions of iters → luminous structure; jz's exact sweet spot
 * [ ] **Software path tracer / SDF raymarcher** — "Shadertoy on the CPU, but fast"; mirrors AS as-smallpt in plain JS
 * [ ] **Reaction-diffusion (Gray-Scott) / Lenia** — per-pixel convolution per frame; Lenia looks alive
 * [ ] **Boids + simplex flow-field** — the genart canonical (mattdesl/Hobbs); particle count *is* the benchmark
 * [ ] **CHIP-8 emulator core** — integer dispatch = jz's floor; mirrors AS wasmBoy
 * [ ] **QOI codec** (~300 readable lines) — competes with surma's 904 B hand-WAT on *size*; ties to color-space
-* [ ] (later) FFT spectrogram; dithering/convolution filters
+* [x] **FFT spectrogram** — `examples/rfft/`: floatbeat tune → jz-computed split-radix RFFT → live **log/mel spectrogram** (A-weighted per IEC 61672, equal-octave log by default, mel one click away) + momentary waveform overlay + wavefont peak-hold bars + click-to-shuffle + live code panel; JS⇄jz toggle with a **linefont FPS sparkline**. The compiler's auto i32-index narrowing makes the **idiomatic** source (no `|0`) beat V8 **1.69–1.74×** on the rfft() kernel, correctness ~1e-11, 9.9 KB wasm. Done & verified (browser + `examples/rfft/bench.mjs`). The kernel keeps its `cepstrum()` export (still benchmarked); the demo just renders the spectrum now. See Archive 2026-05-22 "RFFT i32-hoist" + "auto i32-index narrowing".
+* [ ] (later) dithering/convolution filters
 * [ ] zzfx
 
 #### Flagship + the one compounding "make-world-know" move
@@ -32,7 +34,7 @@ everywhere.
 * [ ] **Dogfood own libs** — color-space / digital-filter / web-audio-api compute cores on jz (highest-trust benchmark; the "integrations as validation" item)
 * [ ] **Extism plugin path** — "author Extism plugins in plain JS"; underserved niche. (EdgeJS already landed — one point in this field)
 * [ ] **WASM-4 fantasy console** — supports AS/C/Rust/Zig/Go but **no plain-JS path**; cartridge = WASM `start`/`update` over a framebuffer = jz's shape. Fun, viral, direct AS territory
-* [ ] (later) live-coding hosts (Hydra/Strudel/p5/canvas-sketch) — jz as the compile-your-hot-loop escape hatch; prove "compiles faster than eval" and un-comment the README claim
+* [ ] (later) live-coding hosts (Hydra/Strudel/p5/canvas-sketch) — jz as the compile-your-hot-loop escape hatch. Pitch is **warm kernel speed + tiny portable wasm**, *not* cold-start: `bench:startup` (2026-05-22) measured jz cold-start 200–1400× slower than `new Function`, so the README "compiles faster than eval" line is false and stays out
 
 #### Embedded — jz → native MCU, no interpreter
 Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → flash`.
@@ -81,9 +83,15 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 * [ ] Pick ONE use case, make jz undeniable for it
 * [ ] Ship something someone uses
 * [ ] Integrations as validation: color-space converter (multi-profile), digital-filter biquad (memory profile), floatbeat playground
-* [ ] Make compile faster than js eval
+* [x] Make compile faster than js eval — **resolved: don't chase it.** `bench:startup`
+  (2026-05-22) measured jz AOT cold-start 200–1400× slower than `new Function`+first call
+  (V8 lazy-compiles bodies; jz does real AOT work up front). jz's edge is warm kernel speed
+  + tiny portable wasm, not REPL latency. (Archive 2026-05-22.)
 * [ ] Benchmarks
 * [ ] Clear, fully transparent codebase; complete docs / readme / tests / repl
+  * [ ] README FAQ: document the `** 0.5 → f64.sqrt` numeric-divergence corners
+    (`(-0)**0.5 = -0`, `(-Infinity)**0.5 = NaN`; `** -0.5` left unfolded) alongside the
+    existing "errors are untagged" / Set-Map slot-order divergence notes (Archive 2026-05-22)
 
 ### Floatbeat playground
 
@@ -138,7 +146,16 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
 ### Future
 
 * [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] **threads/atomics** — parallelism substrate for the SoA kernels jz already
+  lane-vectorizes (TurboScript's unshipped "parallel WASM", scoped 2026-05-22). jz-shaped,
+  host owns orchestration: (1) lower `Atomics.add/sub/and/or/xor/exchange/compareExchange/
+  load/store/wait/notify` on shared typed arrays → wasm atomic ops (all valid JS, map 1:1);
+  (2) `memory: { shared: true }` → emit a shared `WebAssembly.Memory` + the `(memory … shared)`
+  form (`jz.memory()` already shares across modules); (3) worker/thread spawning stays
+  host-side — same boundary discipline as I/O; jz supplies the atomic primitives + shared
+  memory, not a thread runtime. Large (emit + assemble + interop/ABI) and no demonstrated
+  demand yet — verify a real workload first (the bar that killed monomorphization). The
+  vectorizer + shared-memory substrate already exist, so this is a coherent later increment.
 * [ ] memory64 (>4GB)
 * [ ] relaxed SIMD
 * [ ] WebGPU compute shaders
@@ -162,6 +179,14 @@ Wedge: compute behind an upload / paywall / native install → run it local, fre
   workload demands it. Hand-written SoA already vectorizes — Archive ›
   "opts.host user surface + custom sections reference + SoA boundary pin
   (2026-05-20)".
+
+* [ ] **Stdlib-pull audit** *(sister to the `** 0.5 → f64.sqrt` fold, Archive 2026-05-22)*.
+  Walk `module/*.js` for builtins that emit a polyfill (exp/log/poly approximations, helper
+  calls) where wasm-v1 has a native instruction or a cheap inline fold — the sqrt fold showed
+  the headline `dist` example was paying ~1.0 kB for an exp/log call the hardware does in one
+  op. For each, fold to the native op when the argument shape allows; gate on the builtin
+  actually appearing in a kernel (don't pre-lower the unused). Size+speed on one axis, like the
+  sqrt win. Owner: `module/math.js` (+ siblings), `test/math.js`.
 
 #### Representation
 
@@ -256,6 +281,148 @@ ESLint's "use Y instead" *message* style (jzify already does this), don't re-imp
 ---
 
 ## Archive
+
+### Auto i32-index narrowing — the hoist idiom becomes a compiler pass (2026-05-22)
+
+Supersedes "RFFT i32-hoist" below. The prior push made jz beat V8 by hand-hoisting
+`let n = N | 0` into each kernel — a leaky abstraction (forces users to rewrite
+idiomatic code for speed). Generalized it into the analyzer so **unmodified** source
+gets the same i32 indexing.
+
+* [x] **`collectI32SafeIndexVars` (src/analyze.js).** In `analyzeBody`'s widen pass, a
+  counter compared against an f64 bound normally widens to f64 (overflow safety). Now
+  exempted when it's an **affine component of a fully-i32 array index**: a valid wasm32
+  byte-offset must fit i32 and an affine index is monotone in the counter, so the counter
+  is provably i32-range — the exact guarantee the manual `|0` asserted. Kept i32 → direct
+  indexing, no per-access `trunc_sat`; the compare coerces the counter instead. Transitive
+  **back-propagation** over affine assignment/step edges (`let i0 = ix`, `i0 += id`) carries
+  the proof through nested-loop index seeding (FFT butterflies). The assignment-widening
+  fixpoint still runs after, so a genuinely fractional counter (`i = i/3`) overrides back to f64.
+* [x] **Gated on a *fully-i32* index — the game-of-life regression is designed out.** Seeding
+  fires only when `exprType(idx) === 'i32'`. An f64-strided index (`mem[y*w + x]`, f64 `w`)
+  truncs regardless, so narrowing its counter would add a compare-convert for zero trunc
+  savings — exactly the loss the old archive predicted for a blanket pass. Result:
+  game-of-life / mandelbrot / interference wasm **byte-identical** before/after; only
+  fully-i32-indexed kernels (rfft) change. This is *narrower* than "narrow mutable globals":
+  it narrows **index counters**, never the globals, and only where it provably pays.
+* [x] **rfft.js de-hoisted → idiomatic.** Removed `let n = N|0` / `hf = half|0` from
+  transform/rfft/cepstrum; uses `N`/`half` directly. Output **bit-identical** to the hoisted
+  wasm (0.0 diff). Module `trunc_sat` 86 → 18, wasm 10154 → 9902 B. Beats V8 **1.46×** on
+  rfft() / **1.05×** on rfft()+cepstrum() (`examples/rfft/bench.mjs`, best-of-8, N=2048).
+* [x] **Tests + verify.** 3 regression tests in test/perf.js (i32 index stays i32; transitive
+  nest narrows; f64-strided index does NOT narrow). Full suite 1854 pass / 0 fail / 1 skip.
+* [x] **Residual headroom → closed by integer-global inference (2026-05-22).** The loop guard
+  `i < N` used to convert the i32 counter to f64 each iteration (f64 bound). New pass
+  `inferModuleIntGlobals` (src/plan.js) narrows numeric module globals to **i32 by default**,
+  demoting to f64 only on *proof* of a fraction (non-integer literal, `/`, `**`, float `Math.*`,
+  or a reference to an already-fractional value; fixpoint propagates fractionality through
+  cross-global refs). A numeric-init global later assigned a non-number (string/object/array)
+  is disqualified → stays the f64 box (write-path coercion fixed in `writeVar`/emitDecl). With
+  `N` an i32 global the guard is pure-i32 and `mem[y*width+x]` (i32 `width`) is a fully-i32
+  address. Now **no manual `|0` needed** — idiomatic rfft.js beats V8 **1.69–1.74×** rfft() /
+  **1.14–1.16×** +cepstrum() (was 1.46× / 1.05×). game-of-life neutral (branch/call-bound, 0.82×
+  both ways, smaller wasm), interference 1.96×, mandelbrot untouched. Tests: 5 codegen +
+  3 runtime (test/perf.js, test/inference.js). Full suite **1856 pass / 0 fail / 1 skip**.
+  Principle documented in README inference section.
+
+### RFFT i32-hoist beats V8 · cepstrogram demo · linefont FPS sparkline (2026-05-22)
+
+The "beat V8 on RFFT / integer-index by any means" push, plus the demo features it powers.
+
+* [x] **i32-hoist idiom — jz beats V8 1.70× on the FFT kernel.** Root cause of the prior
+  *JS 1.5× ahead* on RFFT: jz's universal-f64 number model boxes loop-bound **globals** as
+  f64 (compile.js only narrows `const` globals with constant-int initializers), so every
+  `x[i]` emitted an `i32.trunc_sat_f64_s` and the loop counters ran in f64. Fix is one line
+  per kernel — hoist the f64 globals into i32 locals at the top of the hot function
+  (`let n = N | 0;`): the narrower types **locals** off the `|0` i32 signal and cascades i32
+  through every derived index (`i0`, `i1`, …). WAT trunc_sat count **76 → 13**; all index
+  locals i32; loop arithmetic native i32. Measured (`.work/rfft-bench.mjs`, paired
+  same-source jz-wasm vs JS-ESM, best-of-8): **rfft() jz 1.63–1.70× over V8** across
+  N=512–8192 (1.70× at 2048: jz 7.7 vs JS 13.0 µs); **rfft()+cepstrum() jz 1.45–1.52×**;
+  correctness max|Δ| ~1e-11; wasm 9909 B (smaller than before). `examples/rfft/rfft.js`.
+* [x] **Idiom is opt-in, NOT a blanket compiler pass — game-of-life regressed.** Applying the
+  same hoist to game-of-life's step/rot (`let w=width|0,h=height|0,off=offset|0`) made it
+  *slower* (0.74× → 0.67× vs JS). Root cause: game-of-life is **branch/call-bound** (per-cell
+  ternaries, `rot()` call, Uint32Array values near 2³²), not index-bound — the hoist adds
+  i32↔f64 traffic without removing a trunc-heavy inner loop. Reverted; production untouched
+  (only `.work/gol-i32.js` probe was edited). This is the evidence that a global "narrow
+  mutable f64 globals to i32" pass would do harm — keep it a documented **kernel idiom**.
+  A mutable-global narrowing pass stays deferred (analyze.js 3818 LOC / 1851 tests, high risk,
+  game-of-life counterexample).
+* [x] **transform() refactor preserves the win.** Extracted the bit-reverse + butterfly core
+  (shared by `rfft()` and `cepstrum()`) into a non-exported `transform()` carrying the i32
+  hoist; both callers re-hoist `n`/`half` locally. Win held (7.74 µs / 1.68× at 2048).
+* [x] **Real cepstrum.** `cepstrum()` = IDFT of the log-magnitude spectrum. Log-mag is real &
+  even-symmetric → its DFT is real, so it reuses the same forward `transform()` and keeps the
+  real part / N. A peak at quefrency q ⇒ period q samples ⇒ pitch ≈ sampleRate/q; the
+  cepstrogram traces the melody. Verified: 220 Hz tone → cepstral peak at quefrency 199
+  (expected 200.5), JS/jz agree 6.9e-11. `examples/rfft/rfft.js`.
+* [x] **Demo (`examples/rfft/index.html`) — all requested features, browser-verified.**
+  Scrolling **cepstrogram** (ABGR palette LUT, log-quefrency rows) with the **momentary
+  waveform overlaid** (transparent oscilloscope canvas), **wavefont** peak-hold spectrum bars,
+  **click-to-shuffle** (picks a different floatbeat tune of 5, rebuilds the looped audio
+  buffer), and a **live code panel** showing the playing tune's source. Audio gated behind a
+  one-gesture `#play`. Verified: cepstrogram lit (maxlum 715), waveform overlay 4231 px,
+  bars 94/110 active, both fonts loaded, jz compute 0.06 ms/frame @ 121 fps, shuffle
+  arp→chord pad, 0 console errors.
+* [x] **linefont FPS sparkline in the shared HUD (`examples/lib/jzdemo.js`).** The FPS line is
+  now a **linefont** sparkline — each recent fps sample is the glyph at `0x100+value`, and the
+  font's ligatures join them into one continuous line chart. Plotted on an **absolute** scale
+  (full height = `ref`, which rises to the display refresh rate) so the line sits at the true
+  level and **steps when the engine is swapped**. Fixed two scaling flaws found in the browser:
+  (1) a decaying-peak relative scale read a steady 23 fps as flat-100 (hid the level and the
+  engine gap) → switched to absolute; (2) `ref` latched onto a transient — the first frame
+  seeded `fps = 1000/dt ≈ 950`, bumping `ref` permanently so steady 121 fps read 13/100 →
+  clamp sub-4ms frames (`Math.min(1000/dt, 240)`) and warm the EMA up from 0 so `ref` settles
+  on the real refresh. Verified: mandelbrot (23 fps) reads ~19/100, RFFT (121 fps) reads
+  ~97/100, JS⇄jz toggle steps the line. Fonts `examples/lib/{linefont,wavefont}.woff2`.
+
+Demos verified live via Playwright; `.work/rfft-bench.mjs` is the reproducible perf harness.
+
+### `x ** 0.5` → `f64.sqrt` fold · startup/REPL bench · numeric monomorphization wontfix (2026-05-22)
+
+Mined two archived JS→WASM compilers (TurboScript, speedy.js) for borrowable design;
+three candidates, each judged against jz's *actual* corpus, not on paper.
+
+* [x] **`x ** 0.5` → `f64.sqrt` fold.** The startup bench flagged the headline `dist`
+  example (`(x*x+y*y) ** 0.5`) compiling to 1058 B / 3.9 ms — it emitted the full
+  `$math.pow` exp/log polyfill. Folded `** 0.5` (and `Math.pow(x, 0.5)`, same handler)
+  to `f64.sqrt` in `module/math.js`, beside the existing integer-exponent square-and-
+  multiply fold. `dist`: **1058 B → 67 B**, compile **3.9 → 0.41 ms**, warm **0.4× →
+  2.3×** vs V8 — size, cold, and warm all at once. Correctness: f64.sqrt is correctly
+  rounded, so bit-identical to `Math.pow(x, 0.5)` on every normal input and to jz's own
+  `Math.sqrt(x)` by construction (always `canon`, since a negative finite base yields a
+  NaN whose sign needs canonicalizing — mirrors the `math.sqrt` emit). Two exotic inputs
+  follow sqrt over Math.pow, deliberate trades in the same class as jz's other boundary
+  divergences: `(-0) ** 0.5` = -0 (Math.pow: +0; -0 === 0), `(-Infinity) ** 0.5` = NaN
+  (Math.pow: +Infinity). `** -0.5` intentionally **not** folded — `1/sqrt` double-rounds
+  and loses the last ULP vs Math.pow's single rounding; keeps the exact `$math.pow` path.
+  Differential-tested across 19 edge inputs before committing. `module/math.js`.
+* [x] **Cold/warm + instantiation benchmark** (speedy.js VMIL'17 methodology). Built
+  `scripts/bench-startup.mjs` (`npm run bench:startup`): per-snippet src→wasm, wasm→
+  instance, jz cold, `new Function`→first result, warm per-call, bytes — snippets are
+  pure scalar kernels, valid jz *and* valid standalone JS. Finding: **jz cold-start is
+  200–1400× slower than `new Function` + first call** — jz does real AOT work (infer/
+  narrow/vectorize/encode) the JS engine skips via lazy compile. The commented-out README
+  "compiles faster than `eval`" line is **false**; kept out. jz's edge is tiny portable
+  wasm + warm numeric speed on real kernels, not REPL latency.
+* [x] **Function-level monomorphization (TurboScript generics) — wontfix.** Idea: clone
+  a non-exported function per call-site numeric signature when sites disagree (one i32,
+  one f64) instead of leaving the param boxed f64. Probed the trigger across the corpus:
+  **bench 0 hits; full suite (~1850 programs) 2 hits**, both a trivial synthetic
+  `add(a,b)`. Root cause it can't pay off: `inlineHotInternalCalls` (plan.js:2100) runs
+  *before* `narrowSignatures` (plan.js:2127) — hot polymorphic helpers are inlined into
+  each site and type-specialized there, strictly better than cloning (no call, no extra
+  function). Cloning would only help a function both too big to inline *and* called at
+  mixed numeric types — doesn't occur. TurboScript needed it for explicit `Foo<T>`
+  generics; jz has none. ~80 speculative lines, zero corpus win. Probe is easy to
+  reconstruct; re-open only if a real workload surfaces the pattern.
+
+Follow-ups carried forward as live tasks: Math.* stdlib-pull audit (Perf §, sister to the
+sqrt fold), README FAQ entry for the `** 0.5` corners (Ship §), parallelism substrate
+(Future § threads/atomics, scope filled in).
+
+Suites: unit 1851 pass / 0 fail; bench gate 81 pass / 0 fail.
 
 ### Lint-inspired structural passes — i32 / switch / dupe-keys / form folds (2026-05-21)
 

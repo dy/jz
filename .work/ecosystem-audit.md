@@ -13,16 +13,61 @@ JS that runs in the browser today, and it compiles to tiny WASM at `clang -O3`
 speed, with no annotations, no runtime, no toolchain.
 
 The corollary nobody else can match: **the same source runs two ways — as JS and
-as jz-WASM — so a speedup can be demoed honestly by flipping one switch.** AS
+as jz-WASM — so the two can be compared honestly by flipping one switch.** AS
 source isn't runnable JS; Rust isn't JS; emscripten isn't JS. Only jz can put the
-*identical bytes* on both sides of the toggle. That toggle is the punchline of
-every demo and the spine of the whole strategy.
+*identical source* on both sides of the toggle. That toggle is the spine of the
+whole strategy — but it is an **honesty instrument, not a guaranteed win**.
+
+> ⚠️ **Measured reality (don't build the pitch on a false premise).** Against V8's
+> JIT in the browser, jz does **not** uniformly beat JS. Per-frame compute time,
+> identical source, optimized jz build:
+>
+> | kernel | nature | jz | JS (V8) | winner |
+> |---|---|---|---|---|
+> | interference | Math.sin/sqrt-heavy | 1.03 ms | 1.31 ms | **jz 1.28×** |
+> | mandelbrot | f64 + Math.log | 5.1 ms | 5.4 ms | tie |
+> | game-of-life | integer-index-heavy, branchy | 0.56 ms | 0.47 ms | **JS 1.2×** |
+> | RFFT 2048 (kernel) | split-radix FFT, idiomatic f64 bounds | 7.8 µs | 13.6 µs | **jz 1.69–1.74×** |
+> | RFFT 2048 (+cepstrum) | above + log-mag IDFT | 27.1 µs | 31.1 µs | **jz 1.14–1.16×** |
+>
+> The pattern: **jz wins when transcendentals (sin/cos/sqrt/exp) dominate** (its
+> Math is faster than V8's). On **integer-index loops** jz's universal-f64 number
+> model used to penalize indexing — every `a[i]` truncs an f64 to i32 and the loop
+> arithmetic runs in f64 — and the prior workaround was a per-kernel idiom: hoist the
+> f64 loop-bound globals into i32 locals (`let n = N | 0`). That is now a **compiler
+> pass, not a source idiom** (`collectI32SafeIndexVars` in `src/analyze.js`): a
+> counter used as an *affine* component of a *fully-i32* array index provably stays
+> in i32 range (a valid wasm32 byte-offset must fit i32), so the analyzer keeps it
+> i32 instead of widening it against the f64 bound — direct indexing, no per-access
+> `trunc_sat`. A companion pass, **integer-global type inference**
+> (`inferModuleIntGlobals` in `src/plan.js`), goes to the root: a numeric module
+> global is `i32` **by default**, demoted to f64 only on proof of a fraction
+> (non-integer literal, `/`, `**`, float `Math.*`, or a reference to an
+> already-fractional value; a fixpoint propagates fractionality through cross-global
+> refs, and a global ever assigned a non-number is left as the f64 box). With `N`/
+> `width` now i32 globals, the loop guard `i < N` is **pure-i32** (no per-iteration
+> convert) and `mem[y*width + x]` is a **fully-i32** address — so the gated index pass
+> above fires automatically. Idiomatic RFFT (no `|0` anywhere) now beats V8
+> **1.69–1.74×** on the kernel / **1.14–1.16×** incl. cepstrum (was 1.46× / 1.05×;
+> `examples/rfft/bench.mjs`, correctness ~1e-12). interference **1.96×**, mandelbrot
+> untouched (no mutable scalar globals). game-of-life stays **neutral** (0.82×, JS
+> ~1.2× ahead) — it's branch/call-bound (per-cell ternaries, `rot()` call,
+> Uint32Array values), not index-bound, so the now-i32 globals shrink its wasm but
+> don't move the ratio. Both passes are correctness-preserving; full suite 1856 pass.
+>
+> jz's *durable* edges are elsewhere, and the demos should say so honestly:
+> **(a) no warmup** — wasm runs full-speed on call #1; JS pays interpreter→JIT
+> warmup; **(b) runs where there is no good JIT** — Hermes/React-Native, QuickJS,
+> old Safari, embedded — there interpreted JS loses badly to compiled wasm;
+> **(c) AOT-to-native** for microcontrollers (no engine at all); **(d) tiny +
+> predictable** — 9 KB, no deopts, no GC pauses. The toggle's job is to show the
+> *identical-source* magic and a *truthful* number, not to fake a win.
 
 A jz example is **astonishing** iff all five hold:
-1. compute-bound, so the win is visceral (FPS / resolution / particle count / sample-rate jumps);
+1. compute-bound, so the per-frame cost is legible (and honest — show ms, not just a vsync-capped FPS);
 2. the kernel reads like plain JS any dev would write;
 3. immediate sensory output (canvas pixels or audio), in real time;
-4. small — the "tiny formula → native speed" feeling; ideally tweetable;
+4. small — the "tiny formula → tiny WASM" feeling; ideally tweetable;
 5. carries the same-source JS↔WASM toggle.
 
 ---
@@ -128,8 +173,13 @@ QOI's reference is ~300 lines of simple logic, trivially in-subset. Competes
 head-on with surma's hand-WAT `miniqoi` (904 B) on *size* while staying readable
 JS. Drag an image → watch it encode. Ties into the user's color-space work.
 
-**H. Real-time FFT spectrogram.** Mic input → FFT → scrolling spectrogram. DSP
-staple, compute-bound, real-time; squarely jz's primary (audio/DSP) audience.
+**H. Real-time FFT spectrogram.** ✅ Shipped — `examples/rfft/`. Floatbeat tune →
+jz-computed split-radix RFFT → scrolling **log/mel spectrogram** (A-weighted per
+IEC 61672, equal-octave log scale by default — pitch-faithful for musicians — mel
+one click away) with the momentary waveform overlaid and wavefont peak-hold bars.
+DSP staple, compute-bound, real-time; squarely jz's primary (audio/DSP) audience —
+and the kernel where the compiler's auto i32-index narrowing makes idiomatic source
+beat V8 (§0).
 
 **I. Dithering & convolution filters** (Floyd-Steinberg, ordered/Bayer, blur,
 edge-detect). Drag image → instant filter. Dithering is visually striking and
@@ -138,8 +188,20 @@ retro-flavored (funky-coder bait); per-pixel compute.
 ### Cross-cutting demo pattern — the toggle and the gallery
 
 - Every demo ships a **"JS ⇆ jz-WASM" switch** that swaps engines on the *same
-  source* and shows a live FPS / sample-rate / particle-count counter. This is
-  the honest, irrefutable speedup and it's unique to jz.
+  source* and shows a live FPS **and per-frame compute-ms** (ms is the honest
+  metric — FPS lies under a vsync cap). The switch is unique to jz: identical
+  source on both sides. It does *not* promise a uniform win — show the real ms
+  and let it land where it lands (jz wins transcendental-heavy work, ties/loses
+  pure-arithmetic loops to V8's JIT). The proof is "same source ⇆ 9 KB WASM,"
+  not a fabricated speedup.
+  - ✅ **Shipped & verified:** the switch + FPS/ms HUD is wired into
+    `examples/{game-of-life,interference,mandelbrot}` and a new
+    `examples/rfft/` (floatbeat tune → live jz-computed spectrogram + waveform
+    overlay + wavefont bars + click-to-shuffle + live code panel). The HUD's FPS
+    line is a **linefont sparkline** (each glyph a sample, ligatures join them
+    into a continuous chart) on an absolute scale, so it tracks the true fps level
+    and steps when the engine is swapped. Shared loader/HUD in
+    `examples/lib/jzdemo.js`; `npm run build:examples` is green.
 - The **vehicle** that makes the world know jz is **one playground site**:
   gallery (A,C,D,E,F,I) + floatbeat (B) + a REPL that shows produced WAT, every
   item a shareable permalink. The demo *is* the marketing. There is no
@@ -342,8 +404,11 @@ the demo itself.
 1. **Close the AS-parity todo** with the §1 verdict: no test port; add 2–3 AS
    showcase kernels (path tracer, emulator core, a codec) to `bench/`/`examples/`.
 2. **Build Tier-1 examples** A (attractors) and C (path tracer) — both reuse the
-   existing `build.mjs` + canvas pattern and need no new infra; add the JS↔WASM
-   toggle to all three existing demos while there.
+   existing `build.mjs` + canvas pattern and need no new infra. ✅ The JS↔WASM
+   toggle is already wired into the three existing demos, plus a new RFFT
+   spectrogram demo (`examples/rfft/`) where the compiler's auto i32-index narrowing
+   makes idiomatic source beat V8 1.69–1.74× on the FFT kernel —
+   `examples/rfft/bench.mjs`.
 3. **Floatbeat playground (B)** — already roadmapped; promote to flagship, it's
    the vibecoder + live-coding + audio proof in one artifact.
 4. **`unplugin-jz`** — highest-leverage integration; turns jz into a drop-in build
