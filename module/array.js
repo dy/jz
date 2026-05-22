@@ -776,9 +776,10 @@ export default (ctx) => {
       // f64.load is correct regardless of elem kind (returns raw f64 for NUMBER,
       // NaN-boxed pointer for OBJECT/STRING; downstream typed() handles both).
       // Fast path fires on schemaId (Array<{x,y,z}> shapes) OR plain elem-val
-      // (Array<NUMBER> from `.map(x => x*k)` etc.).
+      // (Array<NUMBER> from `.map(x => x*k)` etc.) — both are proven facts from
+      // the narrowing fixpoint (carried onto params via paramReps).
       const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
-      const hasElemFact = rep?.arrayElemSchema != null
+      const hasElemFact = rep?.arrayElemSchema != null || rep?.arrayElemValType != null
       if (hasElemFact && keyIsNum) {
         inc('__ptr_offset')
         // __ptr_offset returns i32 — base local must be i32 (not the default
