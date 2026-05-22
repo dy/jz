@@ -685,13 +685,16 @@ export function writeVar(name, valIR, void_) {
       ['local.get', `$${t}`]], 'f64')
   }
   if (isGlobal(name)) {
-    const v = asF64(valIR)
+    // Scalar globals are f64 by default, but integer-global inference (plan.js)
+    // narrows purpose-focused counters/sizes to i32 — coerce the write to match.
+    const gt = ctx.scope.globalTypes.get(name) || 'f64'
+    const v = gt === 'i32' ? asI32(valIR) : asF64(valIR)
     if (void_) return typed(['block', ['global.set', `$${name}`, v]], 'void')
-    const t = temp()
-    return typed(['block', ['result', 'f64'],
+    const t = gt === 'i32' ? tempI32() : temp()
+    return typed(['block', ['result', gt],
       ['local.set', `$${t}`, v],
       ['global.set', `$${name}`, ['local.get', `$${t}`]],
-      ['local.get', `$${t}`]], 'f64')
+      ['local.get', `$${t}`]], gt)
   }
   const t = ctx.func.locals.get(name) || 'f64'
   const ptrKind = repOf(name)?.ptrKind

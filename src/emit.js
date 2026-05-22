@@ -729,7 +729,15 @@ export function emitDecl(...inits) {
         continue
       }
       // Pre-folded numeric const globals have their init baked into the decl — skip.
-      if (ctx.scope.globalTypes.has(name)) continue
+      // A mutable global narrowed to i32 by integer-global inference keeps the
+      // declareGlobal-default `(i32.const 0)` init, so its real initializer must
+      // still run (coerced to the global's type).
+      if (ctx.scope.globalTypes.has(name)) {
+        if (ctx.scope.consts?.has(name)) continue
+        const gt = ctx.scope.globalTypes.get(name)
+        result.push(['global.set', `$${name}`, gt === 'i32' ? asI32(val) : asF64(val)])
+        continue
+      }
       result.push(['global.set', `$${name}`, asF64(val)])
       continue
     }

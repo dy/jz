@@ -436,3 +436,52 @@ test('i32 range-safety: f64-fed accumulator declared f64 in WAT (never i32-narro
   ok(/local\.set \$s\s*\(f64\.add/.test(body), 'accumulation into $s must use f64.add')
   ok(/\(local \$i i32\)/.test(body), 'the i32-bounded counter still narrows independently')
 })
+
+// ───────────────────────────────────────────────────── integer-global inference
+//
+// Purpose-focused numeric module globals (sizes, strides, indices, counters) are
+// integers; demanding `x | 0` annotations defeats clean code. So a numeric global
+// is i32 by default, demoted to f64 only on *proof* of a fraction (a non-integer
+// literal, `/`, `**`, a float `Math.*`, or a reference to an already-fractional
+// value). See research/inference.md ("Assume integer unless provably fractional").
+
+test('integer-global inference: i32 narrowing preserves integer arithmetic end-to-end', () => {
+  // `N`, `acc` carry integers through param assigns, `>>>`, `+= i`. Narrowing to
+  // i32 must compute identically to the f64 path for in-range values:
+  // sum(0..n-1) + (n>>>1) = 499500 + 500 at n=1000.
+  const ex = run(`
+    let N = 0, acc = 0;
+    export let init = (n) => { N = n; acc = 0; };
+    export let run = () => { let i = 0; while (i < N) { acc += i; i++; } return acc + (N >>> 1); };
+  `)
+  ex.init(1000)
+  is(ex.run(), 499500 + 500, 'i32-narrowed counter/accumulator compute exactly')
+})
+
+test('integer-global inference: provably-fractional global stays f64 (no truncation)', () => {
+  // `step = 1.0 / n` is fractional — must NOT narrow to i32, or the running sum
+  // truncates each addend to 0. The f64 carrier preserves the fraction.
+  const ex = run(`
+    let step = 0, total = 0;
+    export let init = (n) => { step = 1.0 / n; total = 0; };
+    export let run = (k) => { let i = 0; while (i < k) { total = total + step; i++; } return total; };
+  `)
+  ex.init(8)               // step = 0.125
+  is(ex.run(4), 0.5, 'fractional global keeps its fraction (4 × 0.125)')
+})
+
+test('integer-global inference: numeric-init global reassigned to a string stays the f64 box', () => {
+  // Safety guard: a global initialized numeric but later assigned a non-number
+  // must remain the f64 NaN-box carrier — narrowing it to i32 would truncate the
+  // boxed pointer to garbage. The disqualifier keeps it f64.
+  const ex = run(`
+    let g = 0;
+    export let setNum = (n) => { g = n; };
+    export let setStr = () => { g = "hello"; };
+    export let get = () => g;
+  `)
+  ex.setNum(42)
+  is(ex.get(), 42, 'numeric value round-trips')
+  ex.setStr()
+  is(ex.get(), 'hello', 'string value round-trips — global was not narrowed to i32')
+})
