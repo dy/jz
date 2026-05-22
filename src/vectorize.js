@@ -51,6 +51,45 @@ const exprEq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const localGetName = n => isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string' ? n[1] : null
 const f64Zero = n => isArr(n) && n[0] === 'f64.const' && Number(n[1]) === 0
 
+// jz wraps every NaN-producing float builtin (Math.sqrt/min/max/…) in a
+// canonicalizing select so a non-canonical NaN never crosses to JS:
+//   (select C X (T.ne X X))   — "use C where X is NaN, else X".
+// The condition `X != X` is true iff X is NaN, so this shape is unambiguously
+// the canonicalization idiom. C is the canonical-NaN value, materialized either
+// inline (T.const) or hoisted into a const-pool global (global.get $__fcN) when
+// reused. We splat C verbatim — faithful regardless of what C holds — so the
+// recognizer never needs to resolve the global's value.
+const isSplatConst = (n, constOp) =>
+  isArr(n) && (n[0] === constOp || n[0] === 'global.get')
+
+// Match `(select C X (T.ne X X))`. Returns { val: X, C } or null.
+function matchCanonSelect(sel, laneType) {
+  if (!isArr(sel) || sel[0] !== 'select') return null
+  const C = sel[1], val = sel[2], cond = sel[3]
+  const neOp = laneType === 'f32' ? 'f32.ne' : 'f64.ne'
+  if (!isSplatConst(C, LANE_INFO[laneType].constOp)) return null
+  if (!(isArr(cond) && cond[0] === neOp && exprEq(cond[1], val) && exprEq(cond[2], val))) return null
+  return { val, C }
+}
+
+// Match the un-flattened canon, emitted when a Math.* result feeds another op
+// in expression position:
+//   (block (result T) (local.set $t CORE) (select C (local.get $t) (T.ne …)))
+// Returns { core: CORE, C } or null.
+function matchCanonBlock(blk, laneType) {
+  if (!isArr(blk) || blk[0] !== 'block') return null
+  let i = 1
+  if (typeof blk[i] === 'string' && blk[i].startsWith('$')) i++
+  if (!(isArr(blk[i]) && blk[i][0] === 'result')) return null
+  i++
+  if (blk.length - i !== 2) return null
+  const setStmt = blk[i]
+  if (!isArr(setStmt) || setStmt[0] !== 'local.set' || typeof setStmt[1] !== 'string') return null
+  const m = matchCanonSelect(blk[i + 1], laneType)
+  if (!m || !isLocalGet(m.val, setStmt[1])) return null
+  return { core: setStmt[2], C: m.C }
+}
+
 const matchF64MulLocals = n => {
   if (!isArr(n) || n[0] !== 'f64.mul') return null
   const a = localGetName(n[1])
@@ -305,6 +344,25 @@ const REDUCE_OP_LOOKUP = (() => {
       m.set(op, REDUCE_OPS[lt][op])
   return m
 })()
+
+// Min/max reductions (`m = Math.max(m, a[i])`). jz wraps every Math.min/max in
+// a NaN-canonicalizing select, so these arrive as a TWO-statement body —
+//   (local.set $cn (OP (local.get $acc) EXPR))
+//   (local.set $acc (select C (local.get $cn) (OP-type.ne $cn $cn)))
+// — handled separately from the bare single-statement reductions above.
+//
+// max/min ARE associative and commutative (exact reassociation, unlike add),
+// so vectorization is value-exact, INCLUDING NaN: f64x2.max/min propagate a
+// NaN lane just as scalar does, and we re-apply the canon to the merged result
+// so the final NaN bit pattern is canonical even when N is a multiple of LANES
+// (zero tail iterations). Identity is the op's annihilator-free neutral:
+// -inf for max, +inf for min.
+const REDUCE_CANON = {
+  'f64.max': { simd: 'f64x2.max', extract: 'f64x2.extract_lane', laneType: 'f64', identity: ['f64.const', '-inf'] },
+  'f64.min': { simd: 'f64x2.min', extract: 'f64x2.extract_lane', laneType: 'f64', identity: ['f64.const', 'inf'] },
+  'f32.max': { simd: 'f32x4.max', extract: 'f32x4.extract_lane', laneType: 'f32', identity: ['f32.const', '-inf'] },
+  'f32.min': { simd: 'f32x4.min', extract: 'f32x4.extract_lane', laneType: 'f32', identity: ['f32.const', 'inf'] },
+}
 
 // ---- Recognizer ------------------------------------------------------------
 
@@ -657,7 +715,8 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
 
   // Build lifted body. If anything fails to lift, bail.
   const newLanedLocals = new Map()  // origName → { laneName, simdType }
-  const ctx = { laneType, incVar, localKind, newLanedLocals, fail: false, failReason: null }
+  const extraLocals = []  // canon temps allocated during lift
+  const ctx = { laneType, incVar, localKind, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null }
   const lifted = []
   for (const s of body) {
     const r = liftStmt(s, ctx)
@@ -705,7 +764,8 @@ function tryVectorize(blockNode, fnLocals, freshIdRef) {
   // Locals to add to function header.
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
-    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128'])
+    ...[...newLanedLocals.values()].map(({ laneName }) => ['local', laneName, 'v128']),
+    ...extraLocals,
   ]
 
   return { wrapper, newLocalDecls }
@@ -755,19 +815,41 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   if (!exitInfo) return null
   if (exitInfo.ind !== incVar) return null
 
-  // Body must be a single statement: the accumulator update.
-  if (incIdx - 3 !== 1) return null
-  const stmt = loopNode[3]
-  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
-  const accName = stmt[1]
-  if (typeof accName !== 'string') return null
-  const rhs = stmt[2]
-  if (!isArr(rhs) || rhs.length !== 3) return null
-  const opName = rhs[0]
-  const reduceEntry = REDUCE_OP_LOOKUP.get(opName)
-  if (!reduceEntry) return null
-  if (!isLocalGet(rhs[1], accName)) return null
-  const exprNode = rhs[2]
+  // Body is either a bare single-statement reduction —
+  //   (local.set $acc (OP (local.get $acc) EXPR))            add/xor/and/or
+  // — or a NaN-canonicalized two-statement min/max reduction —
+  //   (local.set $cn  (OP (local.get $acc) EXPR))
+  //   (local.set $acc (select C (local.get $cn) (T.ne $cn $cn)))
+  const bodyLen = incIdx - 3
+  let accName, opName, reduceEntry, exprNode, canonC = null
+  if (bodyLen === 1) {
+    const stmt = loopNode[3]
+    if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
+    accName = stmt[1]
+    if (typeof accName !== 'string') return null
+    const rhs = stmt[2]
+    if (!isArr(rhs) || rhs.length !== 3) return null
+    opName = rhs[0]
+    reduceEntry = REDUCE_OP_LOOKUP.get(opName)
+    if (!reduceEntry || !isLocalGet(rhs[1], accName)) return null
+    exprNode = rhs[2]
+  } else if (bodyLen === 2) {
+    const s1 = loopNode[3], s2 = loopNode[4]
+    if (!isArr(s1) || s1[0] !== 'local.set' || s1.length !== 3) return null
+    if (!isArr(s2) || s2[0] !== 'local.set' || s2.length !== 3) return null
+    const cnName = s1[1], rhs = s1[2]
+    if (typeof cnName !== 'string' || !isArr(rhs) || rhs.length !== 3) return null
+    opName = rhs[0]
+    reduceEntry = REDUCE_CANON[opName]
+    if (!reduceEntry) return null
+    accName = s2[1]
+    if (typeof accName !== 'string' || accName === cnName) return null
+    const canon = matchCanonSelect(s2[2], reduceEntry.laneType)
+    if (!canon || !isLocalGet(canon.val, cnName)) return null
+    if (!isLocalGet(rhs[1], accName)) return null
+    canonC = canon.C
+    exprNode = rhs[2]
+  } else return null
 
   // Accumulator's declared local type must match the lane element type.
   const accType = fnLocals.get(accName)
@@ -830,10 +912,10 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   for (const name of addrLocals.keys()) localKind.set(name, 'addr')
   for (const name of offsetTees.keys()) localKind.set(name, 'addr')
 
-  const ctx = { laneType, incVar, localKind, newLanedLocals: new Map(), fail: false, failReason: null }
+  const ctx = { laneType, incVar, localKind, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)
   if (ctx.fail) return null
-  if (ctx.newLanedLocals.size > 0) return null
+  if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
 
   // Synthesize SIMD prefix block + horizontal reduce + (preserved scalar tail).
   const id = freshIdRef.next++
@@ -843,10 +925,9 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   const simdLoopLabel = `$__simd_loop${id}`
   const info = LANE_INFO[laneType]
   const lanes = info.lanes
-  const mask = -lanes
   const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
 
-  const initAcc = ['local.set', simdAccName, [info.splat, reduceEntry.constNode]]
+  const initAcc = ['local.set', simdAccName, [info.splat, reduceEntry.constNode ?? reduceEntry.identity]]
   const simdBlock = ['block', simdBrkLabel,
     ['loop', simdLoopLabel,
       ['br_if', simdBrkLabel,
@@ -863,10 +944,24 @@ function tryReduceVectorize(blockNode, fnLocals, freshIdRef) {
   for (let k = 1; k < lanes; k++) {
     horiz = [opName, horiz, [reduceEntry.extract, k, ['local.get', simdAccName]]]
   }
-  const mergeBack = ['local.set', accName, [opName, ['local.get', accName], horiz]]
-  const boundSetup = ['local.set', simdBoundName, ['i32.and', boundExpr, ['i32.const', mask]]]
+  // Merge the SIMD result into the live accumulator. For canon (min/max) the
+  // merged value is re-canonicalized so a NaN that surfaced only in the SIMD
+  // range still crosses as the canonical NaN when the scalar tail is empty.
+  const merged = [opName, ['local.get', accName], horiz]
+  const mergeStmts = canonC == null
+    ? [['local.set', accName, merged]]
+    : [['local.set', accName, merged],
+       ['local.set', accName,
+         ['select', canonC, ['local.get', accName],
+           [`${laneType}.ne`, ['local.get', accName], ['local.get', accName]]]]]
+  // Overshoot-safe SIMD bound: stop while a full `lanes`-wide load stays in
+  // range, for ANY induction start (the min/max idiom seeds m=a[0] and starts
+  // at i=1, which `& ~(lanes-1)` masking would run one lane past the end). For
+  // a lane-aligned start this yields the same iteration set as masking; the
+  // scalar tail (original `i<bound` guard) cleans up regardless.
+  const boundSetup = ['local.set', simdBoundName, ['i32.sub', boundExpr, ['i32.const', lanes - 1]]]
 
-  const wrapper = ['block', boundSetup, initAcc, simdBlock, mergeBack, blockNode]
+  const wrapper = ['block', boundSetup, initAcc, simdBlock, ...mergeStmts, blockNode]
   const newLocalDecls = [
     ['local', simdBoundName, 'i32'],
     ['local', simdAccName, 'v128'],
@@ -911,6 +1006,26 @@ function getOrAllocLanedLocal(name, ctx) {
     ctx.newLanedLocals.set(name, r)
   }
   return r
+}
+
+// Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
+//   v128.bitselect(splat(C), coreV, laneNe(coreV, coreV))
+// coreV is referenced three times. When it's a bare local.get (the common
+// flattened form, where the core was already hoisted to a temp) we share it
+// directly — matching the scalar select, which likewise reads the temp thrice.
+// Otherwise we materialize a fresh v128 temp so the core evaluates once.
+function liftCanon(coreV, C, ctx, info) {
+  const laneNe = ctx.laneType === 'f32' ? 'f32x4.ne' : 'f64x2.ne'
+  const splatC = [info.splat, C]
+  if (isArr(coreV) && coreV[0] === 'local.get') {
+    return ['v128.bitselect', splatC, coreV, [laneNe, coreV, coreV]]
+  }
+  const tmp = `$__canon${ctx.freshIdRef.next++}`
+  ctx.extraLocals.push(['local', tmp, 'v128'])
+  const g = ['local.get', tmp]
+  return ['block', ['result', 'v128'],
+    ['local.set', tmp, coreV],
+    ['v128.bitselect', splatC, g, [laneNe, g, g]]]
 }
 
 /** Lift a statement. Returns lifted stmt, or null to skip, or ['__seq__', ...] for multiple. */
@@ -1009,6 +1124,25 @@ function liftExprV(expr, ctx) {
       ctx.fail = true; return null  // can't be in a value position
     }
     ctx.fail = true; return null
+  }
+
+  // NaN-canonicalization wrapper (float lanes only; integer lanes never carry
+  // it). Both the flattened `select` form and the un-flattened `block` form
+  // lift to a per-lane v128.bitselect — canonical value in NaN lanes, X
+  // elsewhere — exactly reproducing the scalar canonicalization lane-by-lane.
+  if (ctx.laneType === 'f64' || ctx.laneType === 'f32') {
+    if (op === 'select') {
+      const m = matchCanonSelect(expr, ctx.laneType)
+      if (!m) { ctx.fail = true; return null }
+      const coreV = liftExprV(m.val, ctx)
+      return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+    }
+    if (op === 'block') {
+      const m = matchCanonBlock(expr, ctx.laneType)
+      if (!m) { ctx.fail = true; return null }
+      const coreV = liftExprV(m.core, ctx)
+      return ctx.fail ? null : liftCanon(coreV, m.C, ctx, info)
+    }
   }
 
   // Lane-pure op?

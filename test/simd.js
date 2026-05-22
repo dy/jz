@@ -715,6 +715,176 @@ test('vectorize: multi-stmt reduction body must NOT lift', () => {
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
 })
 
+// ---- NaN-canonicalized float maps (Math.sqrt / min / max / clamp) --------
+// jz wraps every NaN-producing float builtin in a per-element canonicalizing
+// `select(C, x, x≠x)`. Each lifts faithfully to `v128.bitselect(splat(C), v, v≠v)`
+// for any C, so these maps vectorize even though a raw lane op would diverge on
+// NaN bit-patterns. Oracle is the exact JS result (integer-valued ⇒ no ulp drift).
+
+test('vectorize: Math.sqrt map lifts to f64x2.sqrt under a NaN-canon bitselect', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i * i
+      for (let i = 0; i < N; i++) a[i] = Math.sqrt(a[i])
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  // sqrt of perfect squares is exact ⇒ Σ_{0}^{1023} i
+  is(runVec(src, SIMD_OPT).main(), (1023 * 1024 / 2) | 0)
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.sqrt/.test(w) && /v128\.bitselect/.test(w),
+    'sqrt map → f64x2.sqrt beneath a v128.bitselect NaN-canon')
+})
+
+test('vectorize: vectorized Math.sqrt canonicalizes NaN lanes (sqrt of negatives)', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i - 3
+      for (let i = 0; i < N; i++) a[i] = Math.sqrt(a[i])
+      let nans = 0
+      for (let i = 0; i < N; i++) nans += (a[i] !== a[i])
+      return nans | 0
+    }
+  `
+  // a[0..2] = -3,-2,-1 ⇒ sqrt → NaN on exactly 3 lanes (rest finite)
+  is(runVec(src, SIMD_OPT).main(), 3)
+  ok(/f64x2\.sqrt/.test(wat(src, SIMD_OPT)), 'sqrt lane op present')
+})
+
+test('vectorize: Math.min / Math.max map with a scalar bound lift', () => {
+  const minSrc = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = Math.min(a[i], 500)
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  const maxSrc = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = Math.max(a[i], 500)
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  // Σ min(i,500): Σ_{0}^{500} i + 523·500 ; Σ max(i,500): 500·500 + Σ_{500}^{1023} i
+  is(runVec(minSrc, SIMD_OPT).main(), (500 * 501 / 2 + 523 * 500) | 0)
+  is(runVec(maxSrc, SIMD_OPT).main(), (500 * 500 + (1023 * 1024 / 2 - 499 * 500 / 2)) | 0)
+  ok(/f64x2\.min/.test(wat(minSrc, SIMD_OPT)), 'min map → f64x2.min')
+  ok(/f64x2\.max/.test(wat(maxSrc, SIMD_OPT)), 'max map → f64x2.max')
+})
+
+test('vectorize: clamp map Math.max(0, Math.min(255, a[i])) lifts both lane ops', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i
+      for (let i = 0; i < N; i++) a[i] = Math.max(0, Math.min(255, a[i]))
+      let s = 0
+      for (let i = 0; i < N; i++) s += a[i]
+      return s | 0
+    }
+  `
+  // clamp i∈[0,1023] to [0,255]: Σ_{0}^{255} i + 768·255
+  is(runVec(src, SIMD_OPT).main(), (255 * 256 / 2 + 768 * 255) | 0)
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.min/.test(w) && /f64x2\.max/.test(w) && /v128\.bitselect/.test(w),
+    'clamp → nested f64x2.min/max beneath a NaN-canon bitselect')
+})
+
+// ---- min / max horizontal reductions (overshoot-safe SIMD bound) ----------
+// The idiom `m=a[0]; for(i=1;…) m=Math.max(m,a[i])` starts induction at 1, so the
+// SIMD bound is `bound-(lanes-1)` (overshoot-safe for any start), not the i=0-only
+// mask. min/max are exactly associative incl. NaN propagation ⇒ bit-exact oracle.
+
+test('vectorize: Math.max reduction lifts to f64x2.max + horizontal extract', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 31) & 1023
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = Math.max(m, a[i])
+      return m | 0
+    }
+  `
+  const N = 1024, a = new Float64Array(N)
+  for (let i = 0; i < N; i++) a[i] = (i * 31) & 1023
+  let m = a[0]; for (let i = 1; i < N; i++) m = Math.max(m, a[i])
+  is(runVec(src, SIMD_OPT).main(), m | 0)
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.max/.test(w) && /f64x2\.extract_lane/.test(w),
+    'max reduction → f64x2.max + horizontal extract')
+})
+
+test('vectorize: Math.min reduction lifts to f64x2.min + horizontal extract', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = ((i * 31) & 1023) + 1
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = Math.min(m, a[i])
+      return m | 0
+    }
+  `
+  const N = 1024, a = new Float64Array(N)
+  for (let i = 0; i < N; i++) a[i] = ((i * 31) & 1023) + 1
+  let m = a[0]; for (let i = 1; i < N; i++) m = Math.min(m, a[i])
+  is(runVec(src, SIMD_OPT).main(), m | 0)
+  ok(/f64x2\.min/.test(wat(src, SIMD_OPT)), 'min reduction → f64x2.min')
+})
+
+test('vectorize: min/max reduction tail correct for non-multiple N (no overshoot read)', () => {
+  const mk = (n) => `
+    export const main = () => {
+      const N = ${n}
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = (i * 7) & 511
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = Math.max(m, a[i])
+      return m | 0
+    }
+  `
+  for (const n of [2, 3, 4, 5, 101, 1023, 1025]) {
+    const a = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = (i * 7) & 511
+    let m = a[0]; for (let i = 1; i < n; i++) m = Math.max(m, a[i])
+    is(runVec(mk(n), SIMD_OPT).main(), m | 0)
+  }
+})
+
+test('vectorize: Math.max reduction propagates a NaN element through the canon merge', () => {
+  const src = `
+    export const main = () => {
+      const N = 1024
+      const a = new Float64Array(N)
+      for (let i = 0; i < N; i++) a[i] = i + 1
+      a[613] = Math.sqrt(-1)
+      let m = a[0]
+      for (let i = 1; i < N; i++) m = Math.max(m, a[i])
+      return (m !== m) | 0
+    }
+  `
+  // a single NaN forces the running max to NaN in both scalar and SIMD folds
+  is(runVec(src, SIMD_OPT).main(), 1)
+  ok(/f64x2\.max/.test(wat(src, SIMD_OPT)), 'max reduction vectorized')
+})
+
 test('vectorize: default level 2 emits SIMD for obvious lane-local loops', () => {
   // At default optimize:true (level 2), the stable SIMD pass is enabled.
   const src = `
