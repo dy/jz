@@ -131,8 +131,6 @@ Not supported
   import()  DOM  fetch  Intl  Node APIs
 ```
 
-`jzify` covers most class syntax — fields, methods, `new`, `this`, `extends`, `super.method()`, `#private`, constant computed member names. Getters/setters, bare `super.x` reads, and dynamic computed names are rejected with a clear message.
-
 ## FAQ
 
 <details>
@@ -216,26 +214,6 @@ So there's nothing to annotate. Type annotations bundle two jobs into one syntax
 </details>
 
 <details>
-<summary><strong>Is it production-ready?</strong></summary>
-
-<br>
-
-It's **experimental** (`0.4.0`) — the compiler API and option names may still change. What's stable is the *output*: jz emits deterministic WASM, gated on every push by test262, a differential fuzzer (`test/differential.js` runs jz-compiled wasm against the same source as plain JS), and the size/speed bench.
-
-The robust way to depend on jz today: compile to `.wasm` at build time, commit the binary, and load it through the dependency-free [`jz/interop`](#interop) bridge — your app then rides on the WASM, not on the compiler's evolving API.
-
-</details>
-
-<details>
-<summary><strong>Why jz over Porffor or AssemblyScript?</strong></summary>
-
-<br>
-
-Pick jz for plain JS that fits the subset and tiny, native-fast numeric/DSP WASM. For full TC39, a typed TypeScript dialect, or running standard JS unchanged, see the [Alternatives](#alternatives) decision table (porffor / AssemblyScript / jawsm).
-
-</details>
-
-<details>
 <summary><strong>Can I compile jz to C?</strong></summary>
 
 <br>
@@ -250,25 +228,6 @@ cc -O3 program.c -o program
 ```
 
 The full native pipeline (jz → `wasm-opt -O3` → `wasm2c` → `clang -O3 -flto` + PGO) lands within a few percent of hand-tuned C — beating V8 on 19 of 21 bench cases on an M4 Max. Details and the regression gate live in [`scripts/native/README.md`](scripts/native/README.md).
-
-</details>
-
-<details>
-<summary><strong>Can I add my own operators or stdlib methods?</strong></summary>
-
-<br>
-
-Yes — jz's emitter table (`ctx.core.emit`) maps AST operators to WASM IR generators, and the whole stdlib is just modules registering on it. Adding one is the same move the built-ins make:
-
-```js
-import { emitter } from './src/emit.js'
-import { typed } from './src/ir.js'
-
-// my.double(x) → x * 2
-emitter['my.double'] = (x) => ['f64.mul', ['f64.const', 2], typed(x, 'f64')]
-```
-
-Handler names follow the AST path: `Math.sin` → `math.sin`, `arr.push` → `.push`, typed variants like `.f64:push`. Any file in [`module/`](module/) is a worked template — each receives `ctx` and registers emitters, stdlib, globals, or helpers. See [CONTRIBUTING.md](CONTRIBUTING.md) for the pipeline.
 
 </details>
 
@@ -291,7 +250,7 @@ Handler names follow the AST path: `Math.sin` → `math.sin`, `arr.push` → `.p
 | [watr](bench/watr/watr.js) | 1.56ms<br>144.4kB | 1.45ms<br>2.6kB | fails | — | — | — | — | — | — | — |
 
 
-_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64); the **geomean** row is the gated cross-case jz/target ratio from `test/bench.js`._
+_Per-case median speed / wasm size from `node bench/bench.mjs` on Apple Silicon (arm64)._
 
 Geomean size: jz **0.86× AS**. jz wasm runs at `clang -O3` speed — native-C parity at geomean 0.96× — and `test/bench.js` gates every figure so a regression fails CI.
 
