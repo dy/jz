@@ -21,103 +21,50 @@
   ( <a href="https://github.com/AssemblyScript/examples/blob/main/mandelbrot/assembly/index.ts">source</a> )
 </h1>
 <canvas></canvas>
-<script>"use strict";
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js";
 
-// Set this to false if you prefer a plain image instead.
-var animate = true;
+const urls = { js: "./mandelbrot.js", wasm: "./mandelbrot.wasm" };
 
 // Set up the canvas with a 2D rendering context
-var cnv = document.getElementsByTagName("canvas")[0];
-var ctx = cnv.getContext("2d");
-var bcr = cnv.getBoundingClientRect();
+const cnv = document.getElementsByTagName("canvas")[0];
+const ctx = cnv.getContext("2d");
+const bcr = cnv.getBoundingClientRect();
 
-// Compute the size of the viewport
-var width  = bcr.width  | 0;
-var height = bcr.height | 0;
-var ratio  = window.devicePixelRatio || 1;
-width  *= ratio;
-height *= ratio;
-var size = width * height;
-var byteSize = size << 1; // discrete color indices in range [0, 2047] (here: 2b per pixel)
+// Viewport size (CSS pixels — every frame recomputes the whole set, so keep it sane)
+const width  = bcr.width  | 0;
+const height = bcr.height | 0;
 
 cnv.width  = width;
 cnv.height = height;
 
-ctx.scale(ratio, ratio);
-
-// Compute the size of and instantiate the module's memory
-
 const imageData = ctx.createImageData(width, height);
 const argb = new Uint32Array(imageData.data.buffer);
 
-// Fetch and instantiate the module
-fetch("mandelbrot.wasm")
-.then(response => response.arrayBuffer())
-.then(buffer => WebAssembly.instantiate(buffer, {
-  env: { 'Math.log': Math.log, 'Math.log2': Math.log2 }
-}))
-.then(module => {
-  const exports = module.instance.exports;
-  const computeLine = exports.computeLine;
-  
-  const ptr = exports.resize(width, height);
-  const _f64 = new Float64Array(1);
-  const _u32 = new Uint32Array(_f64.buffer);
-  _f64[0] = ptr; const offset = _u32[0];
-  const mem = new Uint16Array(exports.memory.buffer, offset, width * height);
-  window.DBGMEM = mem;
-  window.DBGWIDTH = width;
-  window.DBGHEIGHT = height;
-  window.DBGARGB = argb;
+const h = hud({ kind: "jz", note: "full recompute / rAF", onSwitch: start });
 
-  const updateLine = function (y) {
-    var yx = y * width;
-    for (let x = 0; x < width; ++x) {
-      argb[yx + x] = colors[mem[yx + x]];
-    }
-  };
+let gen = 0;
+async function start(kind) {
+  const my = ++gen;
+  const engine = await loadEngine(kind, urls);
+  const mem = engine.resize(width, height); // Uint16Array: JS buffer or wasm view
 
-  // Compute an initial balanced version of the set.
-  const limit = 40;
-  for (let y = 0; y < height; ++y) {
-    computeLine(y, width, height, limit);
-    updateLine(y);
-  }
-
-  // Keep rendering the image buffer.
+  let t = 0;
   (function render() {
-    if (animate) requestAnimationFrame(render);
+    if (my !== gen) return;
+    requestAnimationFrame(render);
+
+    // Breathing iteration limit gives motion, so the metric reflects real cost.
+    const limit = 28 + (24 * (0.5 - 0.5 * Math.cos(t += 0.04))) | 0;
+    const t0 = performance.now();
+    for (let y = 0; y < height; ++y) engine.computeLine(y, width, height, limit);
+    const work = performance.now() - t0;
+    for (let i = 0, n = width * height; i < n; ++i) argb[i] = colors[mem[i]];
     ctx.putImageData(imageData, 0, 0);
+    h.frame(work);
   })();
-
-  if (animate) {
-
-    // Let it glow a bit by occasionally shifting the limit...
-    var currentLimit = limit;
-    const shiftRange = 10;
-
-    (function updateShift() {
-      currentLimit = limit + (2 * Math.random() * shiftRange - shiftRange) | 0
-      setTimeout(updateShift, 1000 + (1500 * Math.random()) | 0);
-    })();
-
-    // ...while continously recomputing a subset of it.
-    const flickerRange = 3;
-    (function updateFlicker() {
-      for (let i = 0, k = (0.05 * height) | 0; i < k; ++i) {
-        let ry = (Math.random() * height) | 0;
-        let rl = (2 * Math.random() * flickerRange - flickerRange) | 0;
-        computeLine(ry, width, height, currentLimit + rl);
-        updateLine(ry);
-      }
-      setTimeout(updateFlicker, 1000 / 30);
-    })();
-
-  }
-}).catch(err => {
-  alert("Failed to load WASM: " + err.message + " (ad blocker, maybe?)");
-  console.log(err.stack);
-});
+}
+start(h.kind);
 
 // Compute a nice set of colors using a gradient
 const colors = (() => {

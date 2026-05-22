@@ -23,115 +23,76 @@
 </h1>
 <canvas></canvas>
 <div id="edge">Might be blurry because MS Edge does not support 'image-rendering: crisp-edges' (yet) :-(</div>
-<script>"use strict";
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js";
+
+const urls = { js: "./game-of-life.js", wasm: "./game-of-life.wasm" };
 
 // Configuration
 const RGB_ALIVE = 0xD392E6;
 const RGB_DEAD  = 0xA61B85;
 const BIT_ROT   = 10;
 
-// Set up the canvas with a 2D rendering context
-var canvas = document.getElementsByTagName("canvas")[0];
-var ctx = canvas.getContext("2d");
-var bcr = canvas.getBoundingClientRect();
+// see assembly/index.ts on why this swap is useful
+const rgb2bgr = (rgb) => ((rgb >>> 16) & 0xff) | (rgb & 0xff00) | (rgb & 0xff) << 16;
 
-// Compute the size of the universe (here: 2px per cell)
-var width    = bcr.width  >>> 1;
-var height   = bcr.height >>> 1;
-var size     = width * height;
-var byteSize = (2 * size) << 2; // input & output (here: 4b per cell)
+// Set up the canvas with a 2D rendering context
+const canvas = document.getElementsByTagName("canvas")[0];
+const ctx = canvas.getContext("2d");
+const bcr = canvas.getBoundingClientRect();
+
+// Universe size (2px per cell)
+const width  = bcr.width  >>> 1;
+const height = bcr.height >>> 1;
+const size   = width * height;
 
 canvas.width  = width;
 canvas.height = height;
-canvas.style = `
-  image-rendering: optimizeSpeed;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: -o-crisp-edges;
-  image-rendering: optimize-contrast;
-  image-rendering: crisp-edges;
-  image-rendering: pixelated;
-  -ms-interpolation-mode: nearest-neighbor;
-`;
+canvas.style = `image-rendering: pixelated; image-rendering: crisp-edges;`;
 ctx.imageSmoothingEnabled = false;
 
-// Compute the size of and instantiate the module's memory
+const imageData = ctx.createImageData(width, height);
+const argb = new Uint32Array(imageData.data.buffer);
 
-// Fetch and instantiate the module
-fetch("game-of-life.wasm")
-.then(response => response.arrayBuffer())
-.then(buffer => WebAssembly.instantiate(buffer, {
-  env: { 'Math.random': Math.random, 'Math.max': Math.max } }))
-.then(module => {
-  var exports = module.instance.exports;
+const h = hud({ kind: "jz", note: "step + render / rAF", onSwitch: start });
 
-  // Initialize the module with the universe's width and height
-    const BIT_ROT_VAL = BIT_ROT;
-  const BGR_ALIVE_VAL = rgb2bgr(RGB_ALIVE) | 1;
-  const BGR_DEAD_VAL = rgb2bgr(RGB_DEAD) & ~1;
-  const ptr = exports.init(width, height, BGR_ALIVE_VAL, BGR_DEAD_VAL, BIT_ROT_VAL);
-  const _f64 = new Float64Array(1);
-  const _u32 = new Uint32Array(_f64.buffer);
-  _f64[0] = ptr; const memOffset = _u32[0];
-  var mem = new Uint32Array(exports.memory.buffer, memOffset, width * height * 2);
+let engine; // current engine — interaction handlers below read this
+let gen = 0;
+async function start(kind) {
+  const my = ++gen;
+  engine = await loadEngine(kind, urls);
+  const mem = engine.init(width, height, rgb2bgr(RGB_ALIVE) | 1, rgb2bgr(RGB_DEAD) & ~1, BIT_ROT);
 
-  // Update about 30 times a second
-  (function update() {
-    setTimeout(update, 1000 / 30);
-    mem.copyWithin(0, size, 2 * size); // copy output to input
-    exports.step();                    // perform the next step
+  (function loop() {
+    if (my !== gen) return;
+    requestAnimationFrame(loop);
+    mem.copyWithin(0, size, 2 * size);       // output → input
+    const t0 = performance.now();
+    engine.step();                           // next generation
+    const work = performance.now() - t0;
+    argb.set(mem.subarray(size, 2 * size));  // output → image
+    ctx.putImageData(imageData, 0, 0);
+    h.frame(work);
   })();
+}
+start(h.kind);
 
-  // Keep rendering the output at [size, 2*size]
-  var imageData = ctx.createImageData(width, height);
-  var argb = new Uint32Array(imageData.data.buffer);
+// Click or drag to seed the current row and column with live cells
+let down = false;
+for (const ty of ["mousedown", "touchstart"]) canvas.addEventListener(ty, () => down = true);
+for (const ty of ["mouseup", "touchend"]) document.addEventListener(ty, () => down = false);
+for (const ty of ["mousemove", "touchmove", "mousedown"]) {
+  canvas.addEventListener(ty, e => {
+    if (!down) return;
+    const loc = e.touches ? (e.touches.length > 1 ? null : e.touches[0]) : e;
+    if (!loc) return;
+    const rect = canvas.getBoundingClientRect();
+    engine.fill((loc.clientX - rect.left) >>> 1, (loc.clientY - rect.top) >>> 1, 0.5);
+  });
+}
 
-  (function render() {
-    requestAnimationFrame(render);
-    argb.set(mem.subarray(size, 2 * size)); // copy output to image buffer
-    ctx.putImageData(imageData, 0, 0);      // apply image buffer
-  })();
-
-  // When clicked or dragged, fill the current row and column with random live cells
-  let down = false;
-  for (const ty of ["mousedown", "touchstart"]) {
-    canvas.addEventListener(ty, e => down = true);
-  }
-  for (const ty of ["mouseup", "touchend"]) {
-    document.addEventListener(ty, e => down = false);
-  }
-  for (const ty of ["mousemove", "touchmove", "mousedown"]) {
-    canvas.addEventListener(ty, e => {
-      if (!down) return;
-      const touches = e.touches;
-      let loc;
-      if (touches) {
-        if (touches.length > 1) return;
-        loc = touches[0];
-      } else {
-        loc = e;
-      }
-      const rect = canvas.getBoundingClientRect();
-      exports.fill(
-        (loc.clientX - rect.left) >>> 1,
-        (loc.clientY - rect.top)  >>> 1,
-        0.5
-      );
-    });
-  }
-
-  // :-(
-  if (navigator.userAgent.includes(" Edge/")) {
-    document.getElementById("edge").style.display = "block";
-  }
-}).catch(err => {
-  alert("Failed to load WASM: " + err.message + " (ad blocker, maybe?)");
-  console.log(err.stack);
-});
-
-// see comment in assembly/index.ts on why this is useful
-function rgb2bgr(rgb) {
-  return ((rgb >>> 16) & 0xff) | (rgb & 0xff00) | (rgb & 0xff) << 16;
+if (navigator.userAgent.includes(" Edge/")) {
+  document.getElementById("edge").style.display = "block";
 }
 </script>
 </body>
