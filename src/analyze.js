@@ -1105,6 +1105,81 @@ function narrowUint32(body, locals) {
   return result
 }
 
+// Operators under which a counter remains a *monotone, bounded* function of the
+// index root: an affine index `base + i*stride` (and `i << k`) whose computed
+// offset must fit i32-addressable wasm32 memory therefore bounds the counter to
+// i32 range. `/ % & | ^ >> >>>` are excluded — they decouple the index magnitude
+// from the counter (`arr[i & 7]` stays small however large `i` grows), so they
+// prove nothing about the counter's range.
+const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
+
+/**
+ * Locals proven to stay within i32 range, so they need not widen to f64 when
+ * compared against an f64 loop bound. Keeping them i32 yields direct i32 indexing
+ * (no per-access `trunc_sat_f64_s`) and lets the relational compare coerce the
+ * counter instead — the compiler-inferred form of the manual `let n = N | 0` hoist.
+ *
+ * Two sound sources of an i32-range proof:
+ *   1. Direct: a local appears as an *affine* component of an array index. A valid
+ *      wasm32 access requires the byte offset to fit i32, and an affine index is
+ *      monotone in the local, so the local is i32-bounded for every non-trapping run.
+ *   2. Transitive (back-propagation): a local that flows — via affine
+ *      assignment/step (`let i0 = ix`, `i0 += id`) — into an already-bounded index
+ *      var is itself bounded by that var's range. This captures the common
+ *      nested-loop shape where the outer bound seeds an inner index (FFT butterflies:
+ *      `while (ix < N) { let i0 = ix; while (i0 < N) … x[i0] … i0 += id }`).
+ *
+ * Fractional locals are unaffected: this set only suppresses *comparison*-driven
+ * widening; the assignment fixpoint that follows still widens any local with an
+ * f64-typed RHS (`i = i / 3`), overriding membership here.
+ */
+function collectI32SafeIndexVars(body, locals) {
+  const safe = new Set()
+  // Collect names reachable from `node` through affine ops only, into `sink`.
+  const addAffine = (node, sink) => {
+    if (typeof node === 'string') { sink.add(node); return }
+    if (!Array.isArray(node)) return
+    if (AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i], sink)
+  }
+  const edges = []  // { target, rhs } for affine assignment/step propagation
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    // Direct seed: computed member `obj[idx]` whose index is *already fully i32*.
+    // Only then does keeping its counters i32 eliminate a real per-access trunc.
+    // If the index carries an f64 operand (an f64 stride/global, e.g. `mem[y*w+x]`
+    // with f64 `w`), the access truncs regardless — narrowing the counter would add
+    // a compare-convert for zero trunc savings (net loss), so we leave it to widen.
+    if (op === '[]' && !isLiteralStr(node[2]) && exprType(node[2], locals) === 'i32') addAffine(node[2], safe)
+    // Record assignment edges (decl init, `=`, and `+= -= *=` steps).
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') edges.push({ target: d[1], rhs: d[2] })
+      }
+    } else if (op === '=' && typeof node[1] === 'string') {
+      edges.push({ target: node[1], rhs: node[2] })
+    } else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') {
+      edges.push({ target: node[1], rhs: node[2] })
+    }
+    if (op === '=>') return  // nested arrows are separate scopes with their own counters
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  // Back-propagate to a fixpoint: feeders of a bounded index var are bounded.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const { target, rhs } of edges) {
+      if (!safe.has(target)) continue
+      const src = new Set()
+      addAffine(rhs, src)
+      for (const s of src) if (!safe.has(s)) { safe.add(s); changed = true }
+    }
+  }
+  return safe
+}
+
 /**
  * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
  * Callers that need to extend (e.g. add params to locals) must clone explicitly
@@ -1476,7 +1551,13 @@ export function analyzeBody(body) {
   try {
     walk(body)
 
-    // Second pass: widen i32 locals compared against f64.
+    // Second pass: widen i32 locals compared against f64 — EXCEPT integer counters
+    // used as affine array indices, which provably stay in i32 range (see
+    // collectI32SafeIndexVars). Keeping those i32 gives direct indexing with no
+    // per-access trunc_sat; the compare coerces the counter to f64 instead. A
+    // genuinely-fractional counter (`i = i / 3`) is still widened by the assignment
+    // fixpoint below, which runs after this pass and overrides the i32 decision.
+  const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
   function widenPass(node) {
     if (!Array.isArray(node)) return
@@ -1484,8 +1565,8 @@ export function analyzeBody(body) {
     if (CMP_OPS.has(op)) {
       const [a, b] = args
       const ta = exprType(a, locals), tb = exprType(b, locals)
-      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a)) locals.set(a, 'f64')
-      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b)) locals.set(b, 'f64')
+      if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !i32SafeIdx.has(a)) locals.set(a, 'f64')
+      if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b) && !i32SafeIdx.has(b)) locals.set(b, 'f64')
     }
     if (op !== '=>') for (const a of args) widenPass(a)
   }

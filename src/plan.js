@@ -1778,6 +1778,138 @@ const unboxConstTypedGlobals = () => {
   }
 }
 
+// Integer-global type inference — narrow purpose-focused numeric module globals
+// (counters, sizes, strides, indices: `N`, `width`, `offset`, …) from f64 to i32.
+//
+// Principle: in purpose-focused code an integer-initialized numeric global is an
+// integer unless an assignment *proves* it fractional. Sizes/strides/indices are
+// the overwhelming majority; demanding the user annotate them (asm.js `x | 0`)
+// defeats clean code. So we assume i32 and demote only on positive proof of a
+// fraction — a non-integer literal, `/` or `**`, a float-valued `Math.*`, or a
+// reference to an already-fractional value. (jz already truncates fractional
+// array indices, so a stray fraction in an integer slot is a pre-existing bug,
+// not one this introduces; a future lint can flag it.)
+//
+// The payoff cascades: an i32 `width` makes `mem[y*width+x]` a fully-i32 index
+// (the per-access `trunc_sat` and the index-counter widen both vanish), and an
+// i32 `N` makes the loop guard `i < N` pure-i32 (no per-iteration convert),
+// unlocking SIMD — all from idiomatic source, no hints.
+const FRACTIONAL_MATH = new Set([
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+  'sqrt', 'cbrt', 'exp', 'expm1', 'log', 'log2', 'log10', 'log1p',
+  'pow', 'hypot', 'random', 'fround',
+])
+const INT_COERCE_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>', '~'])
+const COMPARE_OPS = new Set(['<', '>', '<=', '>=', '==', '===', '!=', '!==', '!', 'in', 'instanceof'])
+const FRAC_COMPOUND = new Set(['/=', '**='])
+const INT_COMPOUND = new Set(['&=', '|=', '^=', '<<=', '>>=', '>>>='])
+
+const inferModuleIntGlobals = (ast) => {
+  if (!ctx.scope.userGlobals?.size) return
+  // Candidates: mutable f64 scalar globals with positive numeric-initializer
+  // evidence and not a function. (const-folded / typed-pointer globals already
+  // carry a non-`(mut f64)` decl, so they're excluded.)
+  const candidates = new Set()
+  for (const name of ctx.scope.userGlobals) {
+    const decl = ctx.scope.globals.get(name)
+    if (typeof decl !== 'string' || !decl.includes('(mut f64)')) continue
+    if (ctx.scope.globalValTypes?.get(name) !== VAL.NUMBER) continue
+    if (ctx.func.names?.has(name)) continue
+    candidates.add(name)
+  }
+  if (!candidates.size) return
+
+  const fractional = new Set()
+  const refIsFractional = (ref) => {
+    if (candidates.has(ref)) return fractional.has(ref)
+    const gt = ctx.scope.globalTypes?.get(ref)
+    if (gt === 'i32') return false
+    if (gt === 'f64') {
+      const vt = ctx.scope.globalValTypes?.get(ref)
+      return vt === VAL.NUMBER || vt == null  // a fractional f64 number; pointers aren't
+    }
+    return false  // param / local / unknown numeric → assume integer
+  }
+  // Does `e` provably evaluate to a non-integer? Integer-coercing ops (bitwise,
+  // shifts) and comparisons launder any fraction; only the *value*-bearing
+  // branches of ternary/logical ops carry it.
+  const producesFraction = (e) => {
+    if (e == null) return false
+    if (typeof e === 'number') return !Number.isInteger(e)
+    if (typeof e === 'string') return refIsFractional(e)
+    if (!Array.isArray(e)) return false
+    const op = e[0]
+    if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
+    if (op === '/' || op === '**') return true
+    if (INT_COERCE_OPS.has(op) || COMPARE_OPS.has(op)) return false
+    if (op === '?:') return producesFraction(e[2]) || producesFraction(e[3])
+    if (op === '&&' || op === '||' || op === '??') return producesFraction(e[1]) || producesFraction(e[2])
+    if (op === '()') {
+      const callee = e[1]
+      if (Array.isArray(callee) && callee[0] === '?') return producesFraction(callee[2]) || producesFraction(callee[3])
+      if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && FRACTIONAL_MATH.has(callee[2])) return true
+      return false  // unknown call → assume integer
+    }
+    for (let i = 1; i < e.length; i++) if (producesFraction(e[i])) return true
+    return false
+  }
+
+  // A numeric-initialized global later assigned a provably non-numeric value
+  // (string/object/array/arrow/`new`/boolean literal) must stay the f64 NaN-box
+  // carrier — narrowing it to i32 would corrupt the boxed value. Disqualify it.
+  const looksNonNumeric = (e) => {
+    if (!Array.isArray(e)) return false
+    const op = e[0]
+    if (op == null) { const v = e[1]; return typeof v === 'string' || typeof v === 'boolean' }
+    // `[` is prepare's array-literal form; `[]` length-2 is the raw (pre-prepare) one.
+    return op === '{}' || op === '[' || (op === '[]' && e.length === 2) || op === '=>' || op === 'new' || op === 'str' || op === '`'
+  }
+
+  // Collect every assignment RHS (init + reassignments, program-wide).
+  const rhsByName = new Map()
+  for (const name of candidates) rhsByName.set(name, [])
+  const record = (name, rhs) => {
+    if (!candidates.has(name)) return
+    if (looksNonNumeric(rhs)) { candidates.delete(name); rhsByName.delete(name); return }
+    rhsByName.get(name)?.push(rhs)
+  }
+  const walk = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=' && typeof node[1] === 'string') record(node[1], node[2])
+    else if ((op === 'let' || op === 'const') && node.length > 1) {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') record(d[1], d[2])
+      }
+    } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof node[1] === 'string' && candidates.has(node[1])) {
+      if (FRAC_COMPOUND.has(op)) fractional.add(node[1])         // `/=`, `**=` → fractional outright
+      else if (!INT_COMPOUND.has(op)) record(node[1], node[2])   // `+= -= *= %= ||= &&= ??=` → as their rhs
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(ast)
+  for (const f of ctx.func.list) if (f.body && !f.raw) walk(f.body)
+
+  // Fixpoint: demote any candidate with a provably-fractional assignment; repeat
+  // so fractionality propagates through globals that reference each other.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const name of candidates) {
+      if (fractional.has(name)) continue
+      if (rhsByName.get(name).some(producesFraction)) { fractional.add(name); changed = true }
+    }
+  }
+
+  for (const name of candidates) {
+    if (fractional.has(name)) continue
+    ctx.scope.globals.set(name, `(global $${name} (mut i32) (i32.const 0))`)
+    ctx.scope.globalTypes.set(name, 'i32')
+  }
+}
+
 /**
  * Function-namespace scalar replacement + devirtualization.
  *
@@ -2084,6 +2216,7 @@ const canSkipWholeProgramNarrowing = (programFacts) =>
 export default function plan(ast) {
   inferModuleLetTypes(ast)
   unboxConstTypedGlobals()
+  inferModuleIntGlobals(ast)
 
   let programFacts = collectProgramFacts(ast)
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module

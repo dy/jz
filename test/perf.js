@@ -570,6 +570,102 @@ test('codegen: loop counter widens to f64 when compared to f64 param', () => {
   ok(wat.includes('(local $i f64)'), 'loop counter i should be f64 when compared to f64 param')
 })
 
+test('codegen: f64-bound counter used as a fully-i32 array index stays i32', () => {
+  // Idiomatic hot loop: counter compared to an f64 global bound, but used as an
+  // affine array index. A valid wasm32 byte-offset must fit i32 and an affine
+  // index is monotone in the counter, so it provably stays in i32 range — jz keeps
+  // it i32 (direct indexing, zero per-access trunc_sat) instead of widening. This
+  // is the compiler-inferred form of the manual `let n = N | 0` hoist, so idiomatic
+  // source runs at int speed with no rewrite.
+  const wat = compile(`
+    let N = 0; let x;
+    export let init = (k) => { N = k; x = new Float64Array(k); return x; };
+    export let run = () => { let i = 0; while (i < N) { x[i] = x[i] * 2.0; i++; } };
+  `, { wat: true })
+  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  ok(run.includes('(local $i i32)'), 'index counter stays i32 against an f64 global bound')
+  is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat')
+})
+
+test('codegen: nested-loop index seeded from an outer counter narrows transitively', () => {
+  // FFT-butterfly shape: an inner index is seeded from an outer counter and stepped
+  // by an i32 stride. i32-safety back-propagates through the affine assignment/step
+  // edges (i0 ← ix, i0 += id) so the whole nest stays i32 — the pattern that drove
+  // the manual hoist in the rfft example.
+  const wat = compile(`
+    let N = 0; let x;
+    export let init = (k) => { N = k; x = new Float64Array(k); return x; };
+    export let run = () => {
+      let ix = 0, id = 4;
+      while (ix < N) {
+        let i0 = ix;
+        while (i0 < N) { x[i0] = x[i0] * 2.0; i0 += id; }
+        ix = 2 * (id - 1);
+        id *= 4;
+      }
+    };
+  `, { wat: true })
+  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  ok(/\(local \$ix i32\)/.test(run) && /\(local \$i0 i32\)/.test(run) && /\(local \$id i32\)/.test(run),
+    'ix, i0, id all stay i32 through transitive back-propagation')
+  is((run.match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the nest')
+})
+
+test('codegen: f64-strided index does NOT force its counter to i32', () => {
+  // Guard against over-narrowing: when the index carries a genuinely-f64 operand
+  // (here `w` is an exported-function param, fixed f64 by the host ABI), the access
+  // truncs no matter what, so keeping the counter i32 would add a compare-convert
+  // per iteration for zero trunc savings (a net loss — the game-of-life regression).
+  // The counter must keep widening to f64 exactly as before the auto-narrow rule.
+  // (A *global* stride is now inferred i32 — that's the integer-global inference win,
+  // covered by the rfft/game-of-life example byte-checks; this guards the f64 case.)
+  const wat = compile(`
+    let mem;
+    export let init = (k) => { mem = new Float64Array(k*k); return mem; };
+    export let run = (w, n) => { let y = 0; while (y < n) { mem[y * w] = 1.0; y++; } };
+  `, { wat: true })
+  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  ok(run.includes('(local $y f64)'), 'counter behind an f64-strided index still widens to f64')
+})
+
+test('codegen: integer-global inference narrows numeric globals, demoting only on proof', () => {
+  // Purpose-focused code: a size/stride/index global is an integer unless an
+  // assignment *proves* it fractional. `N`, `half` (a `>>>`), `width`, `offset`
+  // (a product of i32 globals) → i32; `bSi` (`2.0 / n`) and `scale` (refs the
+  // fractional `bSi`) → f64. No annotations, all inferred from the assignments.
+  const decl = (wat, g) => {
+    const lines = wat.split('\n')
+    const i = lines.findIndex(l => new RegExp(`global \\$${g}\\b`).test(l))
+    return i < 0 ? '' : lines[i + 1].trim()
+  }
+  const wat = compile(`
+    let N = 0, half = 0, bSi = 0, width = 0, offset = 0, scale = 0;
+    export let init = (n, w, h) => {
+      N = n; half = n >>> 1; bSi = 2.0 / n;
+      width = w; offset = width * h; scale = bSi * 2;
+    };
+  `, { wat: true })
+  is(decl(wat, 'N'), '(mut i32)', 'N (param assign) → i32')
+  is(decl(wat, 'half'), '(mut i32)', 'half (>>> shift) → i32')
+  is(decl(wat, 'width'), '(mut i32)', 'width (param assign) → i32')
+  is(decl(wat, 'offset'), '(mut i32)', 'offset (product of i32 globals) → i32')
+  is(decl(wat, 'bSi'), '(mut f64)', 'bSi (2.0 / n) stays f64 — provably fractional')
+  is(decl(wat, 'scale'), '(mut f64)', 'scale (refs fractional bSi) stays f64 via fixpoint')
+})
+
+test('codegen: i32 global bound makes the loop guard pure-i32 (no per-iter convert)', () => {
+  // The payoff of integer-global inference: with `N` an i32 global, `i < N` is a
+  // pure i32 compare — no `f64.convert_i32_s` widening the counter each iteration.
+  const wat = compile(`
+    let N = 0; let x;
+    export let init = (k) => { N = k; x = new Float64Array(k); return x; };
+    export let run = () => { let s = 0.0; let i = 0; while (i < N) { s += x[i]; i++; } return s; };
+  `, { wat: true })
+  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  ok(/i32\.lt_s[\s\S]*global\.get \$N/.test(run.replace(/\n/g, ' ')), 'guard is i32.lt_s against the i32 global')
+  ok(run.includes('(local $i i32)'), 'loop counter stays i32 against the i32 global bound')
+})
+
 test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)', () => {
   // FNV/PRNG hot path: every read of `h` is funnelled through a `>>>` (ToUint32)
   // sink via bit-faithful ops, so narrowUint32 keeps `h` an unsigned i32 local.

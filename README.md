@@ -211,6 +211,8 @@ Inference is mechanical and visible — not the hidden, fragile, coercive thing 
 
 So there's nothing to annotate. Type annotations bundle two jobs into one syntax: hinting storage to the compiler (`let x: number` — which only duplicates what `x | 0` already tells inference) and documenting contracts at boundaries (a *docs* concern, not a *language* one). jz keeps the split clean — inference handles storage, and **valid jz = valid JS** means no parallel type system to learn. To pin a type, write code that implies it: `x | 0` keeps `x` an i32; an `s = ''` default declares a string param. (JSDoc `@type` is planned as an advisory hint, not yet enforced.) Annotations never make code faster; they only sharpen what inference already sees.
 
+The same reading extends to **module globals**: a numeric global is assumed `i32` unless an assignment *proves* it fractional (a non-integer literal, `/`, `**`, a float-valued `Math.*`, or a reference to an already-fractional value). Sizes, strides, indices, and counters — the overwhelming majority of numeric globals in purpose-focused code — are integers, so this lets `mem[y*width + x]` compile as a pure-i32 address and `i < N` as a pure-i32 guard with no per-access `trunc_sat` or per-iteration widen, all from idiomatic source. It's a deliberate, narrow trade (not the locals' "ambiguous → f64" default): a genuine fraction landing in an integer slot truncates — exactly as a fractional array index already does in both JS and jz — so the rule never widens that gap, and a global ever assigned a non-number (string, object, array) is left as the f64 box untouched.
+
 </details>
 
 <details>

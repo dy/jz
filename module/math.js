@@ -226,10 +226,26 @@ export default (ctx) => {
     const inner = typed(['block', ['result', 'f64'], ...stmts, result], 'f64')
     return (minted && !neverNaN(a, baseIR)) ? canon(inner) : inner
   }
+  const constNum = b => typeof b === 'number' ? b
+    : (Array.isArray(b) && b.length === 2 && b[0] == null && typeof b[1] === 'number') ? b[1]
+    : null
+  // `x ** 0.5` folds to f64.sqrt instead of the exp/log $math.pow call — saves the
+  // whole pow/exp/log stdlib (the headline `dist` example drops from ~1.0kB to 70B)
+  // and runs at hardware-sqrt speed. f64.sqrt is correctly-rounded, so for every
+  // normal input it is bit-identical to V8's `Math.pow(x, 0.5)`, and it agrees with
+  // jz's own `Math.sqrt(x)` by construction (mirrors the math.sqrt emit: always
+  // canon, since a negative finite base yields a NaN whose sign needs canonicalizing).
+  // Two exotic inputs follow sqrt rather than Math.pow semantics — a deliberate
+  // trade in the same class as jz's other boundary divergences: `(-0) ** 0.5` is -0
+  // (Math.pow: +0; and -0 === 0), `(-Infinity) ** 0.5` is NaN (Math.pow: +Infinity).
+  // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
+  // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
   const powCall = emitter(['math.pow'], (a, b) => call('math.pow', a, b))
   ctx.core.emit['math.pow'] = (a, b) => {
     const n = constInt(b)
-    return n !== null && Math.abs(n) <= POW_FOLD_MAX ? foldPow(a, n) : powCall(a, b)
+    if (n !== null && Math.abs(n) <= POW_FOLD_MAX) return foldPow(a, n)
+    if (constNum(b) === 0.5) return canon(typed(['f64.sqrt', toNumF64(a, emit(a))], 'f64'))
+    return powCall(a, b)
   }
   ctx.core.emit['math.pow'].deps = powCall.deps   // metadata parity (tabulation/analysis)
   ctx.core.emit['**'] = ctx.core.emit['math.pow']
