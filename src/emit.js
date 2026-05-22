@@ -24,7 +24,7 @@
 
 import { ctx, err, inc, PTR } from './ctx.js'
 import {
-  T, VAL, nonNegIntLiteral, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey,
+  T, VAL, nonNegIntLiteral, exprType, valTypeOf, lookupValType, extractParams, classifyParam, findFreeVars, STMT_OPS, repOf, updateRep, repOfGlobal, staticPropertyKey,
   // AST predicates (formerly in src/ast.js)
   isReassigned, hasOwnContinue, hasOwnBreakOrContinue, containsNestedClosure,
   containsNestedLoop, nestedSmallLoopBudget, containsDeclOf, cloneWithSubst,
@@ -246,6 +246,38 @@ function intIndexIR(key) {
       ctx.schema.slotIntCertainAt?.(key[1], key[2]) === true) return asI32(emit(key))
   return null
 }
+
+/**
+ * Emit an array-index expression in i32 arithmetic. A subscript is truncated to
+ * i32 at the memory boundary regardless, so `+`/`-`/`*` over i32-typed leaves are
+ * computed with wrapping i32 ops instead of the f64 round-trip
+ * (`convert_i32 … f64.mul/add … trunc_sat_f64_s`) that `*` of two non-literal
+ * i32s would otherwise force (see analyze.js exprType `*`).
+ *
+ * Correctness: i32 +/-/* preserve the residue mod 2^32, so the result equals the
+ * expression's true integer value mod 2^32 — even if an intermediate product
+ * overflows. Any valid index is in [0, 2^30) ⊂ [-2^31, 2^31), where two's
+ * complement reproduces the true value exactly; out-of-range indices are OOB
+ * (already UB — jz truncates the index to i32 at the boundary either way). Bails
+ * to the f64 path for any non-i32 leaf (an f64 leaf may be fractional, where
+ * trunc-then-add ≠ add-then-trunc) or non-{+,-,*} operator.
+ */
+const I32_INDEX_OP = { '+': 'i32.add', '-': 'i32.sub', '*': 'i32.mul' }
+function tryI32Index(e) {
+  if (Array.isArray(e)) {
+    const inner = I32_INDEX_OP[e[0]]
+    if (inner && e[2] != null) {
+      const a = tryI32Index(e[1]); if (a == null) return null
+      const b = tryI32Index(e[2]); if (b == null) return null
+      return typed([inner, a, b], 'i32')
+    }
+    return null
+  }
+  const lit = nonNegIntLiteral(e)
+  if (lit != null) return ['i32.const', lit]
+  return exprType(e, ctx.func.locals) === 'i32' ? asI32(emit(e)) : null
+}
+export const emitIndex = (idx) => tryI32Index(idx) ?? asI32(emit(idx))
 
 function emitSingleCharIndexCmp(a, b, negate = false) {
   const leftLit = stringLiteral(a)
