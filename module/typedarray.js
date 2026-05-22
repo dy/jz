@@ -8,7 +8,7 @@
  */
 
 import { typed, asF64, asI32, asI64, toNumF64, UNDEF_NAN, allocPtr, mkPtrIR, ptrOffsetIR, temp, tempI32, tempI64, undefExpr, truthyIR } from '../src/ir.js'
-import { emit } from '../src/emit.js'
+import { emit, emitIndex } from '../src/emit.js'
 import { valTypeOf, lookupValType, VAL } from '../src/analyze.js'
 import { inc, PTR } from '../src/ctx.js'
 
@@ -964,7 +964,7 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null // unknown type, fallback to generic
     const { et, isView, isBigInt } = r
-    const objIR = emit(arr), vi = asI32(emit(idx))
+    const objIR = emit(arr), vi = emitIndex(idx)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) return typed(['f64.reinterpret_i64', ['i64.load', off]], 'f64')
     if (et === 7) return typed(['f64.load', off], 'f64') // Float64Array
@@ -978,7 +978,7 @@ export default (ctx) => {
     const r = resolveElem(arr)
     if (r == null) return null
     const { et, isView, isBigInt } = r
-    const objIR = emit(arr), vi = asI32(emit(idx)), valIR = emit(val)
+    const objIR = emit(arr), vi = emitIndex(idx), valIR = emit(val)
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
     if (isBigInt) {
       const vt = temp('tw')
