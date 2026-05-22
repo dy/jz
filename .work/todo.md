@@ -47,6 +47,17 @@ the honest differentiator and a genuine gap.
 #### Bench corpus (closes AS-parity the right way)
 * [ ] Port 2–3 AS showcase kernels into `bench/` for the head-to-head "plain JS vs typed-TS" story: path tracer, emulator core, a codec (msgpack/LZMA-style), a hash (sha256)
 
+#### Useful tools — returnable, not just demos (full reasoning § "2A" in ecosystem-audit.md)
+Wedge: compute behind an upload / paywall / native install → run it local, free, private, instant. jz = the compute core, JS = the thin UI shell.
+* [ ] **Audio workbench** (Tier 0 — own all the pieces) — decode → EQ/filter → effects → resample/convert/LUFS → export, AudioWorklet on jz kernels. Reuses audio-decode / digital-filter / audio-effect / pcm-convert / web-audio-api. **The useful flagship.**
+* [ ] **QR generator/decoder, tracker-free** — Reed-Solomon + masking = pure integer, jz's floor; universal, self-contained
+* [ ] **Local image converter/optimizer** (PNG/JPEG/WebP/QOI + dithering) — Squoosh-class privacy wedge; reuses color-space
+* [ ] **Function plotter / "compile your math"** — `f(x,t)` → compiled → plotted; showcases "faster than eval"
+* [ ] **Color/palette tool** (OKLCH↔hex, palette extraction, contrast/CVD sim) — reuses color-space
+* [ ] (niche, loyal crowds) Voronoi stippler→plotter SVG · bitmap→SVG tracer · pixel-art upscalers (EPX/xBRZ) · cymatics/harmonograph/guilloché · WFC tile generator
+* [ ] (verticals, build when a user pulls) quant (Black-Scholes/MC) · GIS (simplify/MVT) · fabrication (G-code/STL) · sci kernels (RK4/FFT/least-squares) · bioinformatics (alignment)
+* [ ] **Demoscene / js13k / Genuary culture play** — tiny WASM output = sizecoding hook; same-source JS↔WASM = prototype-then-compile. Targets: Pouët, Dwitter/tixy.land ("tixy but compiled"), Lovebyte, JS13k (jz = the compute kernel, not the DOM glue), Genuary starter. floatbeat doubles as the entry.
+
 ### Deferred — NOT minimal, schedule explicitly
 - Insertion-order Set/Map — open-addressing table iterates slot-order; ES
   mandates insertion order. Needs a per-entry `seq` field or a sibling order
