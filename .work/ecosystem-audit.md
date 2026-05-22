@@ -147,6 +147,84 @@ retro-flavored (funky-coder bait); per-pixel compute.
 
 ---
 
+## 2A. Useful tools (returnable, not just demos)
+
+A demo earns a tweet; a tool earns a bookmark and a backlink. Tools drive
+adoption *and* prove jz is good, because a tool gets used in anger.
+
+**The wedge:** compute that today sits behind an **upload, a paywall, or a native
+install** — run it locally, free, private, instant, in plain JS.
+- *Privacy* — no upload (decisive for images/audio/documents).
+- *Free / unwalled* — no watermark, no "pro" tier, no rate limit.
+- *Instant / offline* — no roundtrip, works on a plane.
+- *jz's part* — fast enough in-browser where plain JS would stutter; small enough
+  to load instantly.
+
+Proven appetite: Google **Squoosh** (local image compression, Rust/C wasm) is
+loved precisely for "no upload." jz isn't "first" there — it wins where the niche
+is **underserved**, where **readable/forkable/tiny** matters, or where it's the
+author's **own domain**. Constraint: jz is the compute core, not the UI — each
+tool is a thin JS+canvas shell over a jz kernel (matches "kernels, not apps").
+
+### Tier 0 — author already owns every piece (lowest effort, highest trust)
+The workspace holds a full audio pipeline: `audio-decode`, `audio-filter`,
+`digital-filter`, `pcm-convert`, `periodic-function`, `audio-effect`,
+`web-audio-api`.
+- **Browser audio workbench** — drag a file → decode → EQ/filter (digital-filter
+  biquads) → effects (reverb/bitcrush/saturation, audio-effect) →
+  resample/convert/normalize-LUFS (pcm-convert) → export. AudioWorklet on
+  jz-compiled kernels. Returnable, private (vs sketchy upload-based converters),
+  dogfoods jz on its primary audience. **The useful flagship.**
+
+### Tier 1 — universal utilities (high search traffic, self-contained)
+| Tool | Why returnable | jz fit / reuse |
+|---|---|---|
+| **QR generator/decoder, tracker-free** | Universal; most online ones track/ad | Reed-Solomon + bit masking = pure integer, jz's floor |
+| **Local image converter/optimizer** (PNG/JPEG/WebP/QOI + dithering) | Squoosh-class; privacy wedge; dithering/QOI underserved | per-pixel + codec; reuses color-space |
+| **Function plotter / "compile your math"** (`f(x,t)` → compiled → plotted) | Desmos-lite people return to | expression→WASM = the literal jz pitch ("faster than eval") |
+| **Color/palette tool** (OKLCH↔hex, palette extraction, contrast/CVD sim) | designers use daily | k-means/median-cut; reuses color-space |
+
+### Tier 2 — underserved niches (small crowds, deep loyalty, little competition)
+- **Voronoi stippler → pen-plotter SVG** — AxiDraw/plotter crowd lacks free tools, returns per piece; weighted stippling is compute-heavy.
+- **Bitmap → SVG tracer** (potrace-like) — laser/vinyl-cutter, logo crowd.
+- **Pixel-art upscalers** (EPX / scale2x / xBRZ-lite) — emulator/pixel-art community.
+- **Cymatics / harmonograph / guilloché** — beautiful *and* practical (guilloché = the curve family on banknotes/certificates; designers want a generator). Pure math.
+- **WFC (Wave Function Collapse) tile generator** — heavily used in gamedev procedural generation.
+
+### Tier 3 — industry verticals (quiet infrastructure; build only when a user pulls)
+Finance/quant (Black-Scholes / Monte Carlo / EMA-RSI), GIS (Douglas-Peucker
+simplify, MVT vector-tile decode, projection), fabrication (G-code optimize, STL
+parse, mesh repair), scientific "MATLAB-in-browser kernels" (RK4 ODE, FFT,
+least-squares fit), bioinformatics (Smith-Waterman alignment).
+
+**Out of scope:** anything ML (background removal, OCR, LLM inference) — out of
+subset, not jz's win. LLM token counter is trendy but needs a multi-MB vocab blob
+that fights the "tiny" story.
+
+### Demoscene + js13k / Genuary — a *culture* fit, not just a feature
+jz fits the demoscene's value system (minimal, tiny, raw math, no framework, no
+runtime). Two hooks: **tiny WASM output** (close to hand-WAT, < AS) → sizecoding
+pitch; **same-source JS↔WASM** → prototype in browser, ship compiled.
+- **Venues:** Pouët.net (the hub), **Dwitter** (140-char JS) + **tixy.land**
+  (16×16 formula art) — sizecoding *in JS already*, so jz powers "tixy/Dwitter but
+  compiled"; **Lovebyte** (sizecoding party); Revision/Evoke/Assembly.
+- **JS13kGames** (≤13 KB zipped, annual): jz is the **compute kernel** (gen /
+  physics / audio synth) compiled tiny — "spend your 13 KB on content, not on a
+  slow JS physics loop." The DOM/canvas glue stays JS (not jz's job).
+- **Genuary** (daily generative-art challenge each January, thousands of
+  participants): a "jz Genuary starter" rides an annual wave straight into the
+  genart community.
+- **floatbeat/bytebeat** (§2 B) is *literally* sizecoding-music — one artifact
+  serving vibecoders, musicians, and the demoscene at once.
+
+### Recommendation
+Build **one** useful flagship now, ride **one** culture wave:
+1. **Audio workbench** (Tier 0) — owns all pieces, primary audience, dogfoods jz.
+2. **floatbeat playground** doubles as the demoscene/Genuary entry (same artifact).
+3. Keep **QR** + **local image/dither** as quick universal wins.
+
+---
+
 ## 3. Integration / affect map
 
 Conceptual frame: jz's affect area is **anywhere people want native-speed compute
