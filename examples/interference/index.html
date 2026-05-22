@@ -21,37 +21,50 @@
 
 <canvas id="canvas"></canvas>
 
-<script>"use strict";
-var step = 0.001;
-WebAssembly.instantiateStreaming(fetch("build/optimized.wasm"), { Math })
-.then(module => {
-  const exports = module.instance.exports;
-  var canvas = document.getElementById("canvas");
-  var context = canvas.getContext("2d");
+<script type="module">
+import { loadEngine, hud } from "../lib/jzdemo.js";
 
-  var width, height, image;
-  function onresize() {
+const urls = { js: "./interference.js", wasm: "./interference.wasm" };
+const canvas = document.getElementById("canvas");
+const context = canvas.getContext("2d");
+var step = 0.001;
+
+const h = hud({ kind: "jz", note: "full-frame compute / rAF", onSwitch: start });
+
+let gen = 0;
+async function start(kind) {
+  const my = ++gen;
+  const engine = await loadEngine(kind, urls);
+
+  let width, height, image, mem;
+  const onresize = () => {
     width = canvas.offsetWidth >>> 2;
     height = canvas.offsetHeight >>> 2;
     canvas.width = width;
     canvas.height = height;
     image = context.createImageData(width, height);
-    let ptr = exports.resize(width, height);
-    let _f64 = new Float64Array(1);
-    let _u32 = new Uint32Array(_f64.buffer);
-    _f64[0] = ptr;
-    window.memOffset = _u32[0];
-  }
+    mem = engine.resize(width, height); // typed array: JS buffer or wasm view
+  };
   onresize();
-  window.addEventListener("resize", onresize);
+  window.onresize = onresize;
 
-  var tick = 0.0;
+  let tick = 0.0;
   (function update() {
+    if (my !== gen) return; // a newer engine took over
     requestAnimationFrame(update);
-    exports.update(tick += step);
-    new Uint32Array(image.data.buffer).set(new Uint32Array(exports.memory.buffer, window.memOffset, width * height));
+    const t0 = performance.now();
+    engine.update(tick += step);
+    const work = performance.now() - t0;
+    new Uint32Array(image.data.buffer).set(mem);
     context.putImageData(image, 0, 0);
+    h.frame(work);
   })();
+}
+start(h.kind);
+
+document.getElementById("warning").addEventListener("click", () => {
+  document.getElementById("warning").remove();
+  step = 0.012;
 });
 </script>
 
@@ -64,8 +77,5 @@ WebAssembly.instantiateStreaming(fetch("build/optimized.wasm"), { Math })
   <p style="text-align: justify">If you experience any of the following symptoms while viewing - dizziness, altered vision, eye or muscle twitches, loss of awareness, disorientation, any involuntary movement, or convulsions - IMMEDIATELY discontinue use and consult your physician.</p>
   <p>(click to continue)</p>
 </div>
-<script>
-document.getElementById("warning").addEventListener("click", event => { document.body.removeChild(document.getElementById("warning")); step = 0.012 });
-</script>
 </body>
 </html>
