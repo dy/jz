@@ -4,51 +4,6 @@
 
 #### Monetization
 
-#### Perf
-
-* [ ] **Auto AoS→SoA carrier.** `xs[i] = rows[i].x + …` — load is a
-  pointer-chase, store lane-aligned; wasm-v1 has no gather. Honest fix is a
-  struct→SoA carrier (sibling to `src/abi/array.js`'s `structInline`),
-  blocked on the narrower emitting SoA-eligible carrier facts. Multi-week,
-  cross-cutting (touches every array consumer). Deferred until a real
-  workload demands it. Hand-written SoA already vectorizes — Archive ›
-  "opts.host user surface + custom sections reference + SoA boundary pin
-  (2026-05-20)".
-
-#### Representation
-
-Per-site carrier inference. Design & rationale: `research.md` › "Representation -> per-site, inferred". The only user knob is the boundary protocol (`opts.host`, landed). Done carriers archived below; open ones:
-
-* [ ] **jsstring carrier — internal-STRING-locals flow.** Propagate
-  externref past the export boundary into internal STRING locals so parsers
-  carry `src` end-to-end without memory-backed copies. Blocked on the
-  narrower converging carrier facts across the call graph (fixpoint, not
-  just leaf exports). Archive › "jsstring boundary carrier (2026-05-20)"
-  covers the landed leaf-export work.
-* [ ] **Boundary string cache in interop.js.** Cache `mem.wrapVal(s)` by
-  string identity so repeat-same-string workloads amortize the UTF-8
-  transcode — orthogonal SSO improvement.
-* [ ] **Schema-object field packing** *(deferred — YAGNI, no consumer)*. Per-field
-  rep so `{count:0, name:''}` lays out `(i32, ptr)` not `(f64-tag, f64-tag)`; halves
-  struct size. Surveyed 2026-05-19: gap real, multi-day. Blocker: `src/abi/object.js`
-  carrier ops are `(base,i,val)` with no schemaId — `packed` needs the carrier API
-  widened + schemaId threaded through every dyn path (~6 modules). Build when a
-  struct-array-of-records workload demands it; benches use TypedArrays/SoA, not AoS records.
-* [ ] **Typed-array element rep** *(deferred — no workload)*. `xs=[1,2,3]` with int-only
-  writes → `Int32Array` backing not tagged-linear. Surveyed 2026-05-19: output shape
-  already proven via explicit `new Int32Array`, just not auto-selected. Blocker:
-  VAL.ARRAY→VAL.TYPED is a value-type change (consumers route through `__arr_*` vs
-  `__typed_*`) + needs a new narrower phase (int-only writes, no shape mutation, closed
-  read set). Benches opt into TypedArrays explicitly; watr/subscript don't show this shape.
-* [ ] **Closure-capture narrowing** *(deferred — regression risk > theoretical win)*.
-  Captured vars widen to nanbox at the cell even when used at one narrow type;
-  `let c=n|0; ()=>c++` round-trips i32↔f64 per access. Surveyed 2026-05-19: ~100 LOC
-  across 5 touch points (new `analyzeBoxedCellTypes` walking arrow bodies; dispatch
-  alloc/init in `emitPreboxedLocalInits`; load/store in `readVar`/`writeVar`; thread into
-  `emitClosureBody`). Bench closures capture objects/strings, not i32 — wins zero ops on
-  real hot paths; watr is closure-heavy and a regression vector. Re-evaluate on a
-  counter/accumulator-closure workload.
-
 ### Ecosystem & reach — sequenced (from `.work/ecosystem-audit.md`)
 
 Ordered by value × leverage × effort. The lens: **valid jz = valid JS** ⇒ the
@@ -150,6 +105,88 @@ the honest differentiator and a genuine gap.
 
 * [ ] Source maps (blocked on watr upstream) — meanwhile add WASM name section (function names) independently
 
+
+### Metacircularity (jz compiling jz)
+
+* [ ] Extract minimal jz parser from subscript features — jz-jessie fork excluding class/async/regex + refactor parse.js function-property assignments (~30 lines)
+* [ ] jzify uses jessie, pure jz uses internal parser
+* [ ] True metacircular bootstrap
+* [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
+
+### REPL
+
+* [ ] Auto-convert var→let, function→arrow on paste
+* [ ] Auto-import implicit globals
+* [ ] Show produced WAT
+* [ ] Document interop
+
+### EdgeJS PR shape
+
+* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup
+
+### Future
+
+* [ ] Component interface (wit)
+* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
+* [ ] memory64 (>4GB)
+* [ ] relaxed SIMD
+* [ ] WebGPU compute shaders
+
+## Ideas
+
+* [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
+* [ ] jz as a compilation target — DSLs that want WASM output emit jz-compatible code (needs a simple IR / intermediate format) and get WASM for free
+* [ ] The template tag as a build tool — jz\`code\` in a Node script replaces a build step. No webpack, no esbuild, no plugin. Uniquely elegant and under-marketed.
+* [ ] AS integrations/plugins from https://www.assemblyscript.org/built-with-assemblyscript.html
+
+
+
+#### Perf
+
+* [ ] **Auto AoS→SoA carrier.** `xs[i] = rows[i].x + …` — load is a
+  pointer-chase, store lane-aligned; wasm-v1 has no gather. Honest fix is a
+  struct→SoA carrier (sibling to `src/abi/array.js`'s `structInline`),
+  blocked on the narrower emitting SoA-eligible carrier facts. Multi-week,
+  cross-cutting (touches every array consumer). Deferred until a real
+  workload demands it. Hand-written SoA already vectorizes — Archive ›
+  "opts.host user surface + custom sections reference + SoA boundary pin
+  (2026-05-20)".
+
+#### Representation
+
+Per-site carrier inference. Design & rationale: `research.md` › "Representation -> per-site, inferred". The only user knob is the boundary protocol (`opts.host`, landed). Done carriers archived below; open ones:
+
+* [ ] **jsstring carrier — internal-STRING-locals flow.** Propagate
+  externref past the export boundary into internal STRING locals so parsers
+  carry `src` end-to-end without memory-backed copies. Blocked on the
+  narrower converging carrier facts across the call graph (fixpoint, not
+  just leaf exports). Archive › "jsstring boundary carrier (2026-05-20)"
+  covers the landed leaf-export work.
+* [ ] **Boundary string cache in interop.js.** Cache `mem.wrapVal(s)` by
+  string identity so repeat-same-string workloads amortize the UTF-8
+  transcode — orthogonal SSO improvement.
+* [ ] **Schema-object field packing** *(deferred — YAGNI, no consumer)*. Per-field
+  rep so `{count:0, name:''}` lays out `(i32, ptr)` not `(f64-tag, f64-tag)`; halves
+  struct size. Surveyed 2026-05-19: gap real, multi-day. Blocker: `src/abi/object.js`
+  carrier ops are `(base,i,val)` with no schemaId — `packed` needs the carrier API
+  widened + schemaId threaded through every dyn path (~6 modules). Build when a
+  struct-array-of-records workload demands it; benches use TypedArrays/SoA, not AoS records.
+* [ ] **Typed-array element rep** *(deferred — no workload)*. `xs=[1,2,3]` with int-only
+  writes → `Int32Array` backing not tagged-linear. Surveyed 2026-05-19: output shape
+  already proven via explicit `new Int32Array`, just not auto-selected. Blocker:
+  VAL.ARRAY→VAL.TYPED is a value-type change (consumers route through `__arr_*` vs
+  `__typed_*`) + needs a new narrower phase (int-only writes, no shape mutation, closed
+  read set). Benches opt into TypedArrays explicitly; watr/subscript don't show this shape.
+* [ ] **Closure-capture narrowing** *(deferred — regression risk > theoretical win)*.
+  Captured vars widen to nanbox at the cell even when used at one narrow type;
+  `let c=n|0; ()=>c++` round-trips i32↔f64 per access. Surveyed 2026-05-19: ~100 LOC
+  across 5 touch points (new `analyzeBoxedCellTypes` walking arrow bodies; dispatch
+  alloc/init in `emitPreboxedLocalInits`; load/store in `readVar`/`writeVar`; thread into
+  `emitClosureBody`). Bench closures capture objects/strings, not i32 — wins zero ops on
+  real hot paths; watr is closure-heavy and a regression vector. Re-evaluate on a
+  counter/accumulator-closure workload.
+
+
 ### Lint-inspired passes — structural fix vs. advisory
 
 ESLint's reusable shape is `detect → message → (autofix | suggestion)`. jz already
@@ -204,39 +241,6 @@ lands as anything but a hard error.
 **Skip — already enforced by the subset.** `no-var` / `eqeqeq` / `no-undef` / `no-with` /
 `no-eval` are rejected at the subset boundary (`src/prepare.js:615`, `:1047`); borrow only
 ESLint's "use Y instead" *message* style (jzify already does this), don't re-implement the rules.
-
-### Metacircularity (jz compiling jz)
-
-* [ ] Extract minimal jz parser from subscript features — jz-jessie fork excluding class/async/regex + refactor parse.js function-property assignments (~30 lines)
-* [ ] jzify uses jessie, pure jz uses internal parser
-* [ ] True metacircular bootstrap
-* [ ] swappable watr: AST likely needs stringifying before compile if an adapter is provided
-
-### REPL
-
-* [ ] Auto-convert var→let, function→arrow on paste
-* [ ] Auto-import implicit globals
-* [ ] Show produced WAT
-* [ ] Document interop
-
-### EdgeJS PR shape
-
-* [ ] Add an EdgeJS test/harness entry only if it can run in their CI without pulling large optional dependencies or network setup
-
-### Future
-
-* [ ] Component interface (wit)
-* [ ] threads/atomics (SharedArrayBuffer, Worker coordination)
-* [ ] memory64 (>4GB)
-* [ ] relaxed SIMD
-* [ ] WebGPU compute shaders
-
-## Ideas
-
-* [ ] webpack, esbuild, unplugin etc – extract and compile fast pieces with jz
-* [ ] jz as a compilation target — DSLs that want WASM output emit jz-compatible code (needs a simple IR / intermediate format) and get WASM for free
-* [ ] The template tag as a build tool — jz\`code\` in a Node script replaces a build step. No webpack, no esbuild, no plugin. Uniquely elegant and under-marketed.
-* [ ] AS integrations/plugins from https://www.assemblyscript.org/built-with-assemblyscript.html
 
 ---
 
